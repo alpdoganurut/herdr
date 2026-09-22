@@ -53,6 +53,7 @@ pub(crate) enum KeybindAction {
     ClosePane,
     EditScrollback,
     ClearPane,
+    ToggleAgentSuspend,
     CopyMode,
     Zoom,
     EnterResizeMode,
@@ -122,6 +123,10 @@ pub(crate) fn resolve_non_indexed_action(
         (&keybinds.rename_pane, KeybindAction::RenamePane),
         (&keybinds.edit_scrollback, KeybindAction::EditScrollback),
         (&keybinds.clear_pane, KeybindAction::ClearPane),
+        (
+            &keybinds.toggle_agent_suspend,
+            KeybindAction::ToggleAgentSuspend,
+        ),
         (&keybinds.copy_mode, KeybindAction::CopyMode),
         (&keybinds.focus_pane_left, KeybindAction::FocusPaneLeft),
         (&keybinds.focus_pane_down, KeybindAction::FocusPaneDown),

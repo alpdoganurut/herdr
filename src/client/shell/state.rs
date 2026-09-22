@@ -529,6 +529,8 @@ pub(super) enum ClientContextMenuAction {
     Zoom,
     ToggleRightClickPassthrough,
     ClosePane,
+    SuspendAgent,
+    ActivateAgent,
 }
 
 #[derive(Debug)]
@@ -543,6 +545,8 @@ pub(super) enum ClientContextMenuTarget {
     Tab {
         tab_id: String,
         workspace_id: String,
+        /// The tab's agent pane and whether it is parked, for Suspend/Activate items.
+        agent: Option<(String, bool)>,
     },
     Pane {
         pane_id: String,

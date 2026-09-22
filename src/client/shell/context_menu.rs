@@ -41,11 +41,19 @@ impl ClientContextMenuOverlay {
                     Action::ToggleGroup,
                 ),
             ],
-            ClientContextMenuTarget::Tab { .. } => vec![
-                item("New tab", Action::NewTab),
-                item("Rename", Action::Rename),
-                item("Close", Action::Close),
-            ],
+            ClientContextMenuTarget::Tab { agent, .. } => {
+                let mut items = vec![
+                    item("New tab", Action::NewTab),
+                    item("Rename", Action::Rename),
+                ];
+                match agent {
+                    Some((_, true)) => items.push(item("Activate agent", Action::ActivateAgent)),
+                    Some((_, false)) => items.push(item("Suspend agent", Action::SuspendAgent)),
+                    None => {}
+                }
+                items.push(item("Close", Action::Close));
+                items
+            }
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -131,10 +139,23 @@ impl ClientShellState {
         else {
             return;
         };
+        let agent = self.snapshot.as_deref().and_then(|snapshot| {
+            snapshot
+                .agents
+                .iter()
+                .find(|agent| agent.tab_id == tab_id)
+                .map(|agent| {
+                    (
+                        agent.pane_id.clone(),
+                        agent.agent_status == crate::api::schema::AgentStatus::Suspended,
+                    )
+                })
+        });
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
                 workspace_id: tab.workspace_id.clone(),
+                agent,
             },
             x,
             y,
@@ -198,6 +219,7 @@ impl ClientShellState {
             ClientContextMenuTarget::Tab {
                 tab_id,
                 workspace_id,
+                ..
             } => self.activate_tab_context_action(tab_id, workspace_id, action, outcome),
             ClientContextMenuTarget::Pane {
                 pane_id,
@@ -359,6 +381,27 @@ impl ClientShellState {
             }
             ClientContextMenuAction::Close => {
                 self.request_tab_close(tab_id, outcome);
+            }
+            ClientContextMenuAction::SuspendAgent | ClientContextMenuAction::ActivateAgent => {
+                let pane_id = self.snapshot.as_deref().and_then(|snapshot| {
+                    snapshot
+                        .agents
+                        .iter()
+                        .find(|agent| agent.tab_id == tab_id)
+                        .map(|agent| agent.pane_id.clone())
+                });
+                if let Some(pane_id) = pane_id {
+                    let method = if action == ClientContextMenuAction::SuspendAgent {
+                        Method::AgentSuspend(crate::api::schema::AgentSuspendParams {
+                            target: pane_id,
+                        })
+                    } else {
+                        Method::AgentActivate(crate::api::schema::AgentActivateParams {
+                            target: pane_id,
+                        })
+                    };
+                    self.push_endpoint_method(method, outcome);
+                }
             }
             _ => {}
         }

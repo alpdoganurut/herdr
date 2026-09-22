@@ -1100,6 +1100,10 @@ impl ClientShellState {
             KeybindAction::ClearPane => Some(Method::PaneClear(PaneTarget {
                 pane_id: focused_pane?,
             })),
+            KeybindAction::ToggleAgentSuspend => {
+                let pane_id = focused_pane?;
+                Some(agent_suspend_toggle_method(snapshot, &pane_id)?)
+            }
             KeybindAction::EditScrollback => Some(Method::PaneEditScrollback(PaneTarget {
                 pane_id: focused_pane?,
             })),
@@ -1114,4 +1118,26 @@ impl ClientShellState {
             _ => None,
         }
     }
+}
+
+/// `agent.activate` for a parked agent pane, `agent.suspend` for a live one; `None`
+/// when the pane hosts no agent the endpoint reports.
+fn agent_suspend_toggle_method(
+    snapshot: &ClientShellSnapshot,
+    pane_id: &str,
+) -> Option<crate::api::schema::Method> {
+    use crate::api::schema::{AgentActivateParams, AgentStatus, AgentSuspendParams, Method};
+    let agent = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.pane_id == pane_id)?;
+    Some(if agent.agent_status == AgentStatus::Suspended {
+        Method::AgentActivate(AgentActivateParams {
+            target: pane_id.to_string(),
+        })
+    } else {
+        Method::AgentSuspend(AgentSuspendParams {
+            target: pane_id.to_string(),
+        })
+    })
 }
