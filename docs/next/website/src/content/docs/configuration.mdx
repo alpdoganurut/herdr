@@ -300,7 +300,7 @@ The active palette is applied in this order: built-in theme, `[theme.custom]`, t
 
 The sidebar is the main Herdr dashboard. Search `ui.` in the [Config reference](/docs/config-reference/) for sizing, collapsed mode, Agent panel ordering, mouse behavior, pane borders, and other presentation settings.
 
-`ui.sidebar_layout = "tabs"` replaces the Space and Agent panels with one row per tab across every space, in tab order. Each row shows the tab's agent status; click focuses the tab and right-click opens the tab menu. The default `"spaces"` keeps the two-panel layout.
+`ui.sidebar_layout = "tabs"` replaces the Space and Agent panels with one row per tab across every space, in tab order. Each row shows the tab's agent status; click focuses the tab and right-click opens the tab menu. The horizontal tab bar is dropped, and `next_tab` / `previous_tab` cycle the whole list across spaces. The default `"spaces"` keeps the two-panel layout.
 
 `ui.pane_borders` accepts `"auto"` (the default, borders only for split panes), `"always"` (also frame a single pane), or `"off"`. A single-pane frame requires `ui.pane_outer_borders = true`, because all its edges are outer edges. Existing boolean values remain valid: `true` means `"auto"` and `false` means `"off"`.
 

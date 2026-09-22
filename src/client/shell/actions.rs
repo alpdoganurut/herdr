@@ -963,10 +963,15 @@ impl ClientShellState {
                 }))
             }
             KeybindAction::PreviousTab | KeybindAction::NextTab => {
+                // The tabs sidebar layout cycles the whole list (every space, in
+                // sidebar order); the spaces layout stays within the focused space.
                 let tabs = snapshot
                     .tabs
                     .iter()
-                    .filter(|tab| tab.workspace_id == focused_workspace)
+                    .filter(|tab| {
+                        self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+                            || tab.workspace_id == focused_workspace
+                    })
                     .collect::<Vec<_>>();
                 let focused_tab = focused_tab?;
                 let current = tabs.iter().position(|tab| tab.tab_id == focused_tab)?;

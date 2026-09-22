@@ -154,3 +154,73 @@ fn live_config_reload_switches_sidebar_layout() {
     assert!(diagnostics.is_empty());
     assert_eq!(shell.sidebar_layout, SidebarLayoutConfig::Tabs);
 }
+
+#[test]
+fn tabs_layout_drops_the_horizontal_tab_bar() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(two_space_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    assert!(state.hits.tabs.is_empty());
+    assert_eq!(state.hits.new_tab, ratatui::layout::Rect::default());
+    let layout = state.layout(106, 20);
+    assert!(layout.tab_bar.is_empty());
+    assert_eq!(layout.pane_surface.height, 20);
+
+    let spaces = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    assert!(!spaces.layout(106, 20).tab_bar.is_empty());
+}
+
+fn tab_action(state: &mut ClientShellState, action: crate::input::KeybindAction) -> Option<String> {
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(crate::input::KeybindMatch::Action(action), &mut outcome);
+    outcome.actions.iter().find_map(|action| match action {
+        ClientShellAction::Endpoint { request, .. } => match &request.method {
+            crate::api::schema::Method::TabFocus(target) => Some(target.tab_id.clone()),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+#[test]
+fn tabs_layout_cycles_next_and_previous_across_spaces() {
+    use crate::input::KeybindAction;
+    let mut snapshot = two_space_snapshot();
+    // Focus the last tab of the first space.
+    snapshot.focused_tab_id = Some("tab_2".into());
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == "tab_2";
+    }
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot.clone()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    assert_eq!(
+        tab_action(&mut state, KeybindAction::NextTab).as_deref(),
+        Some("tab_3"),
+        "next crosses into the second space"
+    );
+
+    snapshot.focused_tab_id = Some("tab_1".into());
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == "tab_1";
+    }
+    state.set_snapshot(Box::new(snapshot.clone()));
+    state.compose(106, 20).expect("composed frame");
+    assert_eq!(
+        tab_action(&mut state, KeybindAction::PreviousTab).as_deref(),
+        Some("tab_3"),
+        "previous wraps to the end of the whole list"
+    );
+
+    // The spaces layout keeps cycling inside the focused space.
+    let mut spaces = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    spaces.set_snapshot(Box::new(snapshot));
+    spaces.set_pane_surface(surface());
+    spaces.compose(106, 20).expect("composed frame");
+    assert_eq!(
+        tab_action(&mut spaces, KeybindAction::PreviousTab).as_deref(),
+        Some("tab_2")
+    );
+}

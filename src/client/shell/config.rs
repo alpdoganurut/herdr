@@ -392,7 +392,11 @@ impl ClientShellConfig {
         }
         .min(cols.saturating_sub(1));
         let main = Rect::new(sidebar_width, 0, cols.saturating_sub(sidebar_width), rows);
-        let show_tab_bar = rows > 1 && !(self.hide_tab_bar_when_single_tab && tab_count == 1);
+        // The tabs sidebar layout already lists every tab; the horizontal bar would
+        // duplicate it, so it is dropped and the pane surface takes the row.
+        let show_tab_bar = rows > 1
+            && self.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs
+            && !(self.hide_tab_bar_when_single_tab && tab_count == 1);
         let tab_height = u16::from(show_tab_bar);
         let (tab_bar, pane_surface) = match self.tab_bar_position {
             TabBarPositionConfig::Top => (
