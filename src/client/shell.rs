@@ -188,11 +188,13 @@ fn status_icon(
         ) => "●",
         (StatusIndicatorStyle::Dots, AgentStatus::Idle) => "○",
         (StatusIndicatorStyle::Dots, AgentStatus::Unknown) => "·",
+        (StatusIndicatorStyle::Dots, AgentStatus::Suspended) => "◌",
         (StatusIndicatorStyle::Symbols, AgentStatus::Blocked) => "×",
         (StatusIndicatorStyle::Symbols, AgentStatus::Working) => "◐",
         (StatusIndicatorStyle::Symbols, AgentStatus::Done) => "✓",
         (StatusIndicatorStyle::Symbols, AgentStatus::Idle) => "○",
         (StatusIndicatorStyle::Symbols, AgentStatus::Unknown) => "·",
+        (StatusIndicatorStyle::Symbols, AgentStatus::Suspended) => "⏸",
     }
 }
 
@@ -203,11 +205,12 @@ fn status_dot(status: crate::api::schema::AgentStatus) -> &'static str {
 fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {
     use crate::api::schema::AgentStatus;
     match status {
-        AgentStatus::Blocked => 4,
-        AgentStatus::Done => 3,
-        AgentStatus::Working => 2,
-        AgentStatus::Idle => 1,
-        AgentStatus::Unknown => 0,
+        AgentStatus::Blocked => 5,
+        AgentStatus::Done => 4,
+        AgentStatus::Working => 3,
+        AgentStatus::Idle => 2,
+        AgentStatus::Unknown => 1,
+        AgentStatus::Suspended => 0,
     }
 }
 
@@ -219,6 +222,7 @@ fn status_text(status: crate::api::schema::AgentStatus) -> &'static str {
         AgentStatus::Done => "done",
         AgentStatus::Idle => "idle",
         AgentStatus::Unknown => "unknown",
+        AgentStatus::Suspended => "suspended",
     }
 }
 
@@ -232,7 +236,7 @@ fn status_color(
         AgentStatus::Blocked => palette.red,
         AgentStatus::Done => palette.teal,
         AgentStatus::Idle => palette.green,
-        AgentStatus::Unknown => palette.overlay0,
+        AgentStatus::Unknown | AgentStatus::Suspended => palette.overlay0,
     }
 }
 

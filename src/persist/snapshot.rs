@@ -109,6 +109,9 @@ pub struct PaneSnapshot {
     pub agent_session: Option<PaneAgentSessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+    /// A parked agent: restored as suspended, never relaunched automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspended_agent: Option<SuspendedAgentSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +120,25 @@ pub struct PaneAgentSessionSnapshot {
     pub agent: String,
     pub kind: crate::agent_resume::AgentSessionRefKind,
     pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SuspendedAgentSnapshot {
+    pub agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub session: PaneAgentSessionSnapshot,
+}
+
+impl PaneAgentSessionSnapshot {
+    pub(super) fn from_persisted(session: &crate::agent_resume::PersistedAgentSession) -> Self {
+        Self {
+            source: session.source.clone(),
+            agent: session.agent.clone(),
+            kind: session.session_ref.kind,
+            value: session.session_ref.value.clone(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -341,7 +363,19 @@ fn capture_tab(
             })
             .unwrap_or_default();
         let launch_argv = terminal.and_then(|terminal| terminal.launch_argv.clone());
+        let suspended_agent = terminal
+            .and_then(|terminal| terminal.suspended_agent.as_ref())
+            .map(|record| SuspendedAgentSnapshot {
+                agent: record.agent.clone(),
+                name: record.name.clone(),
+                session: PaneAgentSessionSnapshot::from_persisted(&record.session),
+            });
         let agent_session = terminal.and_then(|terminal| {
+            // The parked session is the one that relaunches the agent; live
+            // fields may already be wiped by the process exit.
+            if let Some(record) = terminal.suspended_agent.as_ref() {
+                return Some(PaneAgentSessionSnapshot::from_persisted(&record.session));
+            }
             if let Some(authority) = terminal.hook_authority.as_ref() {
                 if let Some(session_ref) = authority.session_ref.as_ref() {
                     return Some(PaneAgentSessionSnapshot {
@@ -371,6 +405,7 @@ fn capture_tab(
                 managed_agent_kind,
                 agent_session,
                 launch_argv,
+                suspended_agent,
             },
         );
     }
@@ -678,6 +713,84 @@ mod tests {
     }
 
     #[test]
+    fn suspended_agent_round_trips_and_is_captured_from_the_terminal_record() {
+        let session = PaneAgentSessionSnapshot {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            kind: crate::agent_resume::AgentSessionRefKind::Id,
+            value: "claude-session".into(),
+        };
+        let pane = PaneSnapshot {
+            cwd: PathBuf::from("/tmp"),
+            label: None,
+            agent_name: Some("reviewer".into()),
+            managed_agent_kind: None,
+            agent_session: Some(session.clone()),
+            launch_argv: None,
+            suspended_agent: Some(SuspendedAgentSnapshot {
+                agent: "claude".into(),
+                name: Some("reviewer".into()),
+                session: session.clone(),
+            }),
+        };
+        let json = serde_json::to_string(&pane).unwrap();
+        let restored: PaneSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.suspended_agent.as_ref().unwrap().session, session);
+        assert_eq!(
+            restored.suspended_agent.as_ref().unwrap().name.as_deref(),
+            Some("reviewer")
+        );
+        let plain: PaneSnapshot = serde_json::from_str(r#"{"cwd":"/tmp"}"#).unwrap();
+        assert!(plain.suspended_agent.is_none());
+
+        let workspace = Workspace::test_new("capture");
+        let root = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(root).unwrap().clone();
+        let mut terminal =
+            crate::terminal::TerminalState::new(terminal_id.clone(), PathBuf::from("/tmp"));
+        terminal.set_detected_state(
+            Some(crate::detect::Agent::Claude),
+            crate::detect::AgentState::Idle,
+        );
+        terminal.set_agent_name("reviewer".into());
+        terminal.begin_agent_suspend(
+            crate::agent_resume::PersistedAgentSession {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").unwrap(),
+            },
+            std::time::Instant::now(),
+        );
+        // The live session fields are wiped once the exit is observed.
+        terminal.set_detected_state_with_visible_blocker(
+            Some(crate::detect::Agent::Claude),
+            crate::detect::AgentState::Idle,
+            false,
+            false,
+            true,
+        );
+        let mut terminals = HashMap::new();
+        terminals.insert(terminal_id, terminal);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(HashMap::new());
+        let captured = capture(&[workspace], &terminals, &runtimes, Some(0), 0);
+        let captured_pane = &captured.workspaces[0].tabs[0].panes[&root.raw()];
+        let suspended = captured_pane
+            .suspended_agent
+            .as_ref()
+            .expect("suspended record is persisted");
+        assert_eq!(suspended.agent, "claude");
+        assert_eq!(suspended.name.as_deref(), Some("reviewer"));
+        assert_eq!(suspended.session, session);
+        assert_eq!(
+            captured_pane.agent_session.as_ref(),
+            Some(&session),
+            "the parked session is the pane's saved session"
+        );
+        assert_eq!(captured_pane.agent_name.as_deref(), Some("reviewer"));
+        assert_eq!(captured_pane.managed_agent_kind, None);
+    }
+
+    #[test]
     fn round_trip_full_workspace_snapshot() {
         let mut panes = HashMap::new();
         panes.insert(
@@ -689,6 +802,7 @@ mod tests {
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,
+                suspended_agent: None,
             },
         );
         panes.insert(
@@ -700,6 +814,7 @@ mod tests {
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,
+                suspended_agent: None,
             },
         );
 
@@ -1351,6 +1466,7 @@ mod tests {
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,
+                suspended_agent: None,
             },
         );
         panes.insert(
@@ -1364,6 +1480,7 @@ mod tests {
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,
+                suspended_agent: None,
             },
         );
 

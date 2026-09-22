@@ -70,14 +70,23 @@
           "type": "string"
         },
         "AgentStatus": {
-          "enum": [
-            "idle",
-            "working",
-            "blocked",
-            "done",
-            "unknown"
-          ],
-          "type": "string"
+          "oneOf": [
+            {
+              "enum": [
+                "idle",
+                "working",
+                "blocked",
+                "done",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "suspended",
+              "description": "The agent process was asked to exit while the pane keeps its native\nsession reference; `agent.activate` relaunches it in place.",
+              "type": "string"
+            }
+          ]
         },
         "EventData": {
           "oneOf": [
@@ -1228,6 +1237,18 @@
     },
     "request": {
       "$defs": {
+        "AgentActivateParams": {
+          "description": "Relaunch a suspended agent in its own pane from the stored session\nreference; `target` is the pane id or the name saved when it was suspended.",
+          "properties": {
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
         "AgentPromptParams": {
           "properties": {
             "target": {
@@ -1373,14 +1394,35 @@
           "type": "object"
         },
         "AgentStatus": {
-          "enum": [
-            "idle",
-            "working",
-            "blocked",
-            "done",
-            "unknown"
+          "oneOf": [
+            {
+              "enum": [
+                "idle",
+                "working",
+                "blocked",
+                "done",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "suspended",
+              "description": "The agent process was asked to exit while the pane keeps its native\nsession reference; `agent.activate` relaunches it in place.",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentSuspendParams": {
+          "description": "Ask a live agent to exit gracefully while its pane keeps the native\nsession reference; `target` is a live agent name or the hosting pane id.",
+          "properties": {
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
           ],
-          "type": "string"
+          "type": "object"
         },
         "AgentTarget": {
           "properties": {
@@ -5488,6 +5530,38 @@
         {
           "properties": {
             "method": {
+              "const": "agent.suspend",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentSuspendParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.activate",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentActivateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -6460,14 +6534,23 @@
     "subscription_event": {
       "$defs": {
         "AgentStatus": {
-          "enum": [
-            "idle",
-            "working",
-            "blocked",
-            "done",
-            "unknown"
-          ],
-          "type": "string"
+          "oneOf": [
+            {
+              "enum": [
+                "idle",
+                "working",
+                "blocked",
+                "done",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "suspended",
+              "description": "The agent process was asked to exit while the pane keeps its native\nsession reference; `agent.activate` relaunches it in place.",
+              "type": "string"
+            }
+          ]
         },
         "PaneAgentStatusChangedEvent": {
           "properties": {
@@ -6899,14 +6982,23 @@
           "type": "string"
         },
         "AgentStatus": {
-          "enum": [
-            "idle",
-            "working",
-            "blocked",
-            "done",
-            "unknown"
-          ],
-          "type": "string"
+          "oneOf": [
+            {
+              "enum": [
+                "idle",
+                "working",
+                "blocked",
+                "done",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "suspended",
+              "description": "The agent process was asked to exit while the pane keeps its native\nsession reference; `agent.activate` relaunches it in place.",
+              "type": "string"
+            }
+          ]
         },
         "ClientWindowTitleReason": {
           "enum": [
@@ -9605,6 +9697,38 @@
                 "type",
                 "agent",
                 "argv"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "pane_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "agent_suspended",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "pane_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "agent_activated",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id"
               ],
               "type": "object"
             },

@@ -1,9 +1,10 @@
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{
-    AgentPromptParams, AgentPromptWaitOptions, AgentReadParams, AgentRenameParams,
-    AgentSendKeysParams, AgentStartParams, AgentTarget, AgentWaitParams, EmptyParams, ErrorBody,
-    ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
+    AgentActivateParams, AgentPromptParams, AgentPromptWaitOptions, AgentReadParams,
+    AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentSuspendParams, AgentTarget,
+    AgentWaitParams, EmptyParams, ErrorBody, ErrorResponse, Method, PaneProcessInfoParams,
+    PaneTarget, ReadFormat, ReadSource, Request,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -26,6 +27,8 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "wait" => agent_wait(&args[1..]),
         "attach" => agent_attach(&args[1..]),
         "start" => agent_start(&args[1..]),
+        "suspend" => agent_suspend(&args[1..]),
+        "activate" => agent_activate(&args[1..]),
         "explain" => agent_explain(&args[1..]),
         "help" | "--help" | "-h" => {
             print_agent_help();
@@ -478,6 +481,34 @@ fn agent_focus(args: &[String]) -> std::io::Result<i32> {
     super::print_response(&super::send_request(&Request {
         id: "cli:agent:focus".into(),
         method: Method::AgentFocus(AgentTarget {
+            target: target.clone(),
+        }),
+    })?)
+}
+
+fn agent_suspend(args: &[String]) -> std::io::Result<i32> {
+    let (Some(target), 1) = (args.first(), args.len()) else {
+        eprintln!("usage: herdr agent suspend <target>");
+        return Ok(2);
+    };
+
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:suspend".into(),
+        method: Method::AgentSuspend(AgentSuspendParams {
+            target: target.clone(),
+        }),
+    })?)
+}
+
+fn agent_activate(args: &[String]) -> std::io::Result<i32> {
+    let (Some(target), 1) = (args.first(), args.len()) else {
+        eprintln!("usage: herdr agent activate <target>");
+        return Ok(2);
+    };
+
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:activate".into(),
+        method: Method::AgentActivate(AgentActivateParams {
             target: target.clone(),
         }),
     })?)
@@ -937,6 +968,8 @@ fn print_agent_help() {
     eprintln!(
         "  herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
     );
+    eprintln!("  herdr agent suspend <target>");
+    eprintln!("  herdr agent activate <target>");
     eprintln!("  herdr agent explain <target> [--json|--format text|json] [--verbose]");
     eprintln!(
         "  herdr agent explain --file PATH --agent LABEL [--json|--format text|json] [--verbose]"

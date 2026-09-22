@@ -913,6 +913,7 @@ where
         "working" => crate::api::schema::AgentStatus::Working,
         "blocked" => crate::api::schema::AgentStatus::Blocked,
         "done" => crate::api::schema::AgentStatus::Done,
+        "suspended" => crate::api::schema::AgentStatus::Suspended,
         _ => crate::api::schema::AgentStatus::Unknown,
     })
 }

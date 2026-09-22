@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 mod agent_view;
 mod agents;
+pub(super) use agents::AGENT_PROMPT_SUBMIT_DELAY;
 mod env;
 mod integrations;
 mod layouts;
@@ -14,7 +15,7 @@ mod tabs;
 mod workspaces;
 mod worktrees;
 
-use super::{api_helpers::pane_agent_status, App, Mode, OverlayPaneState, ToastKind};
+use super::{api_helpers::agent_status, App, Mode, OverlayPaneState, ToastKind};
 use crate::events::AppEvent;
 
 const API_NOTIFICATION_RATE_LIMIT: Duration = Duration::from_secs(1);
@@ -675,14 +676,24 @@ impl App {
             });
         }
 
-        let previous_agent_status = pane_agent_status(update.previous_state, update.previous_seen);
+        // A parked agent reports `suspended` on both sides of a detection
+        // change so residual state churn during the exit wait stays silent.
+        let suspended = self
+            .state
+            .workspaces
+            .get(update.ws_idx)
+            .and_then(|ws| ws.pane_state(update.pane_id))
+            .and_then(|pane| self.state.terminals.get(&pane.attached_terminal_id))
+            .is_some_and(|terminal| terminal.suspended_agent.is_some());
+        let previous_agent_status =
+            agent_status(update.previous_state, update.previous_seen, suspended);
         let agent_status = self
             .state
             .workspaces
             .get(update.ws_idx)
             .and_then(|ws| ws.pane_state(update.pane_id))
-            .map(|pane| pane_agent_status(update.state, pane.seen))
-            .unwrap_or_else(|| pane_agent_status(update.state, update.seen));
+            .map(|pane| agent_status(update.state, pane.seen, suspended))
+            .unwrap_or_else(|| agent_status(update.state, update.seen, suspended));
 
         if previous_agent_status != agent_status
             || update.previous_presentation != update.presentation
@@ -1087,6 +1098,12 @@ impl App {
                 return self.handle_agent_view_clear(request.id, params);
             }
             Method::AgentStart(params) => return self.handle_agent_start(request.id, params),
+            Method::AgentSuspend(params) => {
+                return self.handle_agent_suspend(request.id, params);
+            }
+            Method::AgentActivate(params) => {
+                return self.handle_agent_activate(request.id, params);
+            }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

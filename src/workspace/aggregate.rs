@@ -13,8 +13,28 @@ pub struct PaneDetail {
     pub agent_kind_label: Option<String>,
     pub state: AgentState,
     pub seen: bool,
+    /// The pane hosts a parked agent whose process was asked to exit.
+    pub suspended: bool,
     pub last_agent_state_change_seq: Option<u64>,
     pub tokens: HashMap<String, String>,
+}
+
+/// One pane's contribution to a workspace attention rollup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneAttention {
+    pub state: AgentState,
+    pub seen: bool,
+    pub suspended: bool,
+}
+
+impl PaneAttention {
+    fn for_terminal(terminal: &TerminalState, seen: bool) -> Self {
+        Self {
+            state: terminal.state,
+            seen,
+            suspended: terminal.suspended_agent.is_some(),
+        }
+    }
 }
 
 impl Tab {
@@ -29,7 +49,15 @@ impl Tab {
             .filter_map(|id| {
                 let pane = self.panes.get(id)?;
                 let terminal = terminals.get(&pane.attached_terminal_id)?;
-                let agent_kind_label = terminal.effective_agent_label().map(str::to_string);
+                let agent_kind_label = terminal
+                    .effective_agent_label()
+                    .map(str::to_string)
+                    .or_else(|| {
+                        terminal
+                            .suspended_agent
+                            .as_ref()
+                            .map(|record| record.agent.clone())
+                    });
                 if terminal.agent_name.is_none() && agent_kind_label.is_none() {
                     return None;
                 }
@@ -39,6 +67,7 @@ impl Tab {
                     agent_kind_label,
                     state: terminal.state,
                     seen: pane.seen,
+                    suspended: terminal.suspended_agent.is_some(),
                     last_agent_state_change_seq: terminal.last_agent_state_change_seq,
                     tokens: terminal.metadata_tokens.values(),
                 })
@@ -47,31 +76,37 @@ impl Tab {
     }
 }
 
-fn pane_attention_priority(state: AgentState, seen: bool) -> u8 {
-    match (state, seen) {
-        (AgentState::Blocked, _) => 4,
-        (AgentState::Idle, false) => 3,
-        (AgentState::Working, _) => 2,
-        (AgentState::Idle, true) => 1,
-        (AgentState::Unknown, _) => 0,
+/// Mirrors the API status ranking: a suspended pane never outranks a pane
+/// with a running agent, and ranks below an unclassified one.
+fn pane_attention_priority(attention: PaneAttention) -> u8 {
+    if attention.suspended {
+        return 0;
+    }
+    match (attention.state, attention.seen) {
+        (AgentState::Blocked, _) => 5,
+        (AgentState::Idle, false) => 4,
+        (AgentState::Working, _) => 3,
+        (AgentState::Idle, true) => 2,
+        (AgentState::Unknown, _) => 1,
     }
 }
 
 impl Workspace {
-    pub fn aggregate_state(
-        &self,
-        terminals: &HashMap<TerminalId, TerminalState>,
-    ) -> (AgentState, bool) {
+    pub fn aggregate_state(&self, terminals: &HashMap<TerminalId, TerminalState>) -> PaneAttention {
         self.tabs
             .iter()
             .flat_map(|tab| tab.panes.values())
             .filter_map(|pane| {
                 terminals
                     .get(&pane.attached_terminal_id)
-                    .map(|terminal| (terminal.state, pane.seen))
+                    .map(|terminal| PaneAttention::for_terminal(terminal, pane.seen))
             })
-            .max_by_key(|(state, seen)| pane_attention_priority(*state, *seen))
-            .unwrap_or((AgentState::Unknown, true))
+            .max_by_key(|attention| pane_attention_priority(*attention))
+            .unwrap_or(PaneAttention {
+                state: AgentState::Unknown,
+                seen: true,
+                suspended: false,
+            })
     }
 
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {
@@ -101,7 +136,7 @@ mod tests {
         let root = ws.tabs[0].root_pane;
         let terminal = terminal_for_pane(&ws, root);
         terminals.insert(terminal.id.clone(), terminal);
-        let (state, seen) = ws.aggregate_state(&terminals);
+        let PaneAttention { state, seen, .. } = ws.aggregate_state(&terminals);
         assert_eq!(state, AgentState::Unknown);
         assert!(seen);
     }
@@ -124,7 +159,7 @@ mod tests {
         second_terminal.state = AgentState::Working;
         terminals.insert(second_terminal.id.clone(), second_terminal);
 
-        let (state, seen) = ws.aggregate_state(&terminals);
+        let PaneAttention { state, seen, .. } = ws.aggregate_state(&terminals);
 
         assert_eq!(state, AgentState::Working);
         assert!(seen);
@@ -150,10 +185,56 @@ mod tests {
         let root = ws.tabs[0].panes.get_mut(&root_id).unwrap();
         root.seen = false;
 
-        let (state, seen) = ws.aggregate_state(&terminals);
+        let PaneAttention { state, seen, .. } = ws.aggregate_state(&terminals);
 
         assert_eq!(state, AgentState::Idle);
         assert!(!seen);
+    }
+
+    #[test]
+    fn suspended_pane_ranks_below_a_seen_idle_pane_and_stays_listed() {
+        let mut ws = Workspace::test_new("test");
+        let id2 = ws.test_split(Direction::Horizontal);
+        let root_id = ws.tabs[0]
+            .panes
+            .keys()
+            .find(|id| **id != id2)
+            .copied()
+            .unwrap();
+        let session = crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").unwrap(),
+        };
+        let mut terminals = HashMap::new();
+        let mut root_terminal = terminal_for_pane(&ws, root_id);
+        root_terminal.state = AgentState::Idle;
+        terminals.insert(root_terminal.id.clone(), root_terminal);
+        let mut parked = terminal_for_pane(&ws, id2);
+        parked.state = AgentState::Blocked;
+        parked.restore_suspended_agent("claude".into(), None, session.clone());
+        terminals.insert(parked.id.clone(), parked);
+
+        let attention = ws.aggregate_state(&terminals);
+        assert_eq!(attention.state, AgentState::Idle);
+        assert!(
+            !attention.suspended,
+            "residual blocked state of a parked agent never wins"
+        );
+
+        let details = ws.pane_details(&terminals);
+        let parked = details
+            .iter()
+            .find(|detail| detail.pane_id == id2)
+            .expect("an unnamed suspended pane is still an agent pane");
+        assert!(parked.suspended);
+        assert_eq!(parked.agent_kind_label.as_deref(), Some("claude"));
+
+        let mut only_parked = HashMap::new();
+        let mut parked = terminal_for_pane(&ws, id2);
+        parked.restore_suspended_agent("claude".into(), None, session);
+        only_parked.insert(parked.id.clone(), parked);
+        assert!(ws.aggregate_state(&only_parked).suspended);
     }
 
     #[test]

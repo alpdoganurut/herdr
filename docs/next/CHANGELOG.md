@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Park a running Claude Code agent with `herdr agent suspend <target>` (`agent.suspend`): Herdr submits its exit command, keeps the pane's native session reference and agent name, and reports the new `suspended` status. `herdr agent activate <target>` (`agent.activate`) relaunches it in the same pane with the native resume command. Suspended panes survive server restarts as suspended and are never relaunched automatically.
+
 ## [0.9.1] - 2026-09-16
 
 ### Added

@@ -175,6 +175,20 @@ pub struct AgentStartParams {
     pub timeout_ms: Option<u64>,
 }
 
+/// Ask a live agent to exit gracefully while its pane keeps the native
+/// session reference; `target` is a live agent name or the hosting pane id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentSuspendParams {
+    pub target: String,
+}
+
+/// Relaunch a suspended agent in its own pane from the stored session
+/// reference; `target` is the pane id or the name saved when it was suspended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentActivateParams {
+    pub target: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentPromptParams {
     pub target: String,

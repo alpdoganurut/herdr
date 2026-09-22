@@ -255,6 +255,19 @@ pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<
     })
 }
 
+/// Input that asks a running agent to exit gracefully from its own prompt.
+///
+/// Only agents with a verified in-app exit command are listed; an agent
+/// without an entry cannot be suspended because Herdr has no way to stop it
+/// without losing its native session. The text is submitted like a prompt
+/// (text, then delayed Enter), so it must be a complete slash command.
+pub fn graceful_exit_input(agent: &str) -> Option<&'static str> {
+    match agent {
+        "claude" => Some("/exit"),
+        _ => None,
+    }
+}
+
 pub fn dedupe_key(source: &str, agent: &str, session_ref: &AgentSessionRef) -> String {
     format!(
         "{source}\u{0}{agent}\u{0}{:?}\u{0}{}",
@@ -307,6 +320,14 @@ mod tests {
             .join(name)
             .display()
             .to_string()
+    }
+
+    #[test]
+    fn graceful_exit_input_is_only_known_for_verified_agents() {
+        assert_eq!(graceful_exit_input("claude"), Some("/exit"));
+        for agent in ["codex", "pi", "opencode", "unknown"] {
+            assert_eq!(graceful_exit_input(agent), None, "{agent}");
+        }
     }
 
     #[test]

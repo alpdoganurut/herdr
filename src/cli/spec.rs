@@ -384,7 +384,14 @@ fn agent_command() -> Command {
                 .arg(
                     option("until", "STATUS")
                         .action(ArgAction::Append)
-                        .value_parser(["idle", "working", "blocked", "done", "unknown"])
+                        .value_parser([
+                            "idle",
+                            "working",
+                            "blocked",
+                            "done",
+                            "unknown",
+                            "suspended",
+                        ])
                         .help("State to match; repeat for more than one state"),
                 )
                 .arg(option("timeout", "MS").help("Fail after this many milliseconds"))
@@ -429,6 +436,24 @@ fn agent_command() -> Command {
                 )
                 .after_help(
                     "The pane must be at its interactive shell prompt. Success means the expected agent was detected in the same terminal and is ready for input.\n\nnext: herdr agent prompt <TARGET> <TEXT> --wait",
+                ),
+        )
+        .subcommand(
+            Command::new("suspend")
+                .about("Ask a running agent to exit while its pane keeps the native session")
+                .override_usage("herdr agent suspend <TARGET>")
+                .arg(required("target", "TARGET"))
+                .after_help(
+                    "The agent must be running with a known native session reference and a resume plan (currently Claude Code). Herdr submits the agent's exit command, then terminates and finally kills the foreground job if it does not exit. The pane reports `suspended`, keeps its name, and survives server restarts without being relaunched.\n\nnext: herdr agent activate <TARGET>",
+                ),
+        )
+        .subcommand(
+            Command::new("activate")
+                .about("Relaunch a suspended agent in its own pane")
+                .override_usage("herdr agent activate <TARGET>")
+                .arg(required("target", "TARGET"))
+                .after_help(
+                    "The pane must be back at its interactive shell prompt. Herdr runs the stored native resume command in that pane and restores the agent name.\n\nnext: herdr agent wait <TARGET>",
                 ),
         )
         .subcommand(
@@ -1243,7 +1268,7 @@ mod tests {
         assert!(!has_option(wait, "status"));
         assert_eq!(
             option_values(wait, "until"),
-            ["idle", "working", "blocked", "done", "unknown"]
+            ["idle", "working", "blocked", "done", "unknown", "suspended"]
         );
         assert!(has_option(wait, "timeout"));
     }
@@ -1306,6 +1331,23 @@ mod tests {
         assert!(agent_start
             .get_arguments()
             .any(|arg| arg.get_id() == "agent_args"));
+    }
+
+    #[test]
+    fn spec_models_agent_suspend_and_activate_targets() {
+        let cmd = super::command();
+        for name in ["suspend", "activate"] {
+            let command = command_path(&cmd, &["agent", name]);
+            let target = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == "target")
+                .unwrap_or_else(|| panic!("agent {name} is missing its TARGET argument"));
+            assert!(target.is_required_set(), "agent {name} target is optional");
+            assert!(!has_option(command, "pane"), "agent {name} takes no --pane");
+            assert!(!has_option(command, "kind"), "agent {name} takes no --kind");
+        }
+        let agent_wait = command_path(&cmd, &["agent", "wait"]);
+        assert!(option_values(agent_wait, "until").contains(&"suspended".to_string()));
     }
 
     fn long_help(path: &[&str]) -> String {

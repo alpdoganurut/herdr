@@ -13,7 +13,7 @@ use crate::layout::{find_in_direction, NavDirection};
 use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
 use crate::workspace::WorkspaceGitStatus;
 
-use super::api_helpers::pane_agent_status;
+use super::api_helpers::agent_status;
 use super::state::{
     AgentNotificationDelivery, AppState, Mode, PaneFocusTarget, PendingAgentNotification,
     ToastKind, ToastNotification, ToastTarget,
@@ -1643,6 +1643,7 @@ impl AppState {
             unchanged_change,
             suppress_acquisition_completion,
             completion_reset,
+            suspended,
         ) = {
             let terminal = self.terminals.get_mut(&terminal_id)?;
             let previous_agent_name = terminal.agent_name.clone();
@@ -1670,6 +1671,7 @@ impl AppState {
                 unchanged_change,
                 suppress_acquisition_completion,
                 completion_reset,
+                terminal.suspended_agent.is_some(),
             )
         };
         if completion_reset {
@@ -1681,7 +1683,10 @@ impl AppState {
         }
         let agent_released = mutation.agent_released;
         let change = mutation.effective_state_change.or(unchanged_change)?;
+        // A parked agent's exit is expected: never a completion to announce
+        // or to leave unseen, whatever residual state detection reports.
         let suppress_completion = force_suppress_completion
+            || suspended
             || (change.state == AgentState::Idle && suppress_acquisition_completion);
         if change.previous_state != change.state {
             self.next_agent_state_change_seq += 1;
@@ -1716,7 +1721,15 @@ impl AppState {
             presentation: change.presentation.clone(),
             agent_name_changed,
             agent_released,
-            agent_release_status: agent_released.then(|| pane_agent_status(change.state, seen)),
+            agent_release_status: agent_released.then(|| {
+                agent_status(
+                    change.state,
+                    seen,
+                    self.terminals
+                        .get(&terminal_id)
+                        .is_some_and(|terminal| terminal.suspended_agent.is_some()),
+                )
+            }),
             suppress_completion,
         };
         Some(update)
@@ -1726,6 +1739,13 @@ impl AppState {
         self.terminals
             .values()
             .filter_map(crate::terminal::TerminalState::next_managed_agent_deadline)
+            .min()
+    }
+
+    pub(crate) fn next_suspended_agent_exit_deadline(&self) -> Option<Instant> {
+        self.terminals
+            .values()
+            .filter_map(crate::terminal::TerminalState::suspended_agent_exit_deadline)
             .min()
     }
 

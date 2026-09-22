@@ -1,4 +1,4 @@
-use super::{api_helpers::pane_agent_status, App};
+use super::{api_helpers::terminal_agent_status, App};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalTarget {
@@ -133,7 +133,7 @@ impl App {
         }
     }
 
-    fn terminal_targets(&self) -> Vec<TerminalTarget> {
+    pub(super) fn terminal_targets(&self) -> Vec<TerminalTarget> {
         self.state
             .workspaces
             .iter()
@@ -189,7 +189,7 @@ impl App {
             cwd: ws.tabs[tab_idx]
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
-            agent_status: pane_agent_status(terminal.state, pane.seen),
+            agent_status: terminal_agent_status(terminal, pane.seen),
         })
     }
 }

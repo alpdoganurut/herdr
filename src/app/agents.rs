@@ -5,7 +5,7 @@ use bytes::Bytes;
 use super::{terminal_targets::TerminalTargetError, App};
 use crate::api::schema::AgentStartParams;
 
-const DEFAULT_AGENT_START_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const DEFAULT_AGENT_START_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_AGENT_START_TIMEOUT: Duration = Duration::from_secs(300);
 pub(crate) const AGENT_START_SETTLE_DELAY: Duration = Duration::from_secs(3);
 const INVALID_AGENT_TIMEOUT_MESSAGE: &str =
@@ -416,7 +416,7 @@ impl App {
     }
 }
 
-fn available_shell_name(runtime: &crate::terminal::TerminalRuntime) -> Option<String> {
+pub(super) fn available_shell_name(runtime: &crate::terminal::TerminalRuntime) -> Option<String> {
     #[cfg(test)]
     if runtime.child_pid().is_none() {
         return Some("sh".into());
@@ -436,14 +436,24 @@ pub(super) fn runtime_hosts_agent(
 }
 
 fn live_runtime_agent(runtime: &crate::terminal::TerminalRuntime) -> Option<crate::detect::Agent> {
+    live_runtime_agent_job(runtime).and_then(|(_, agent)| agent)
+}
+
+/// The pane's foreground job together with the agent identified in it, using
+/// the same identification chain as detection (process names, then the
+/// platform agent hint) so callers never disagree with `runtime_hosts_agent`.
+pub(super) fn live_runtime_agent_job(
+    runtime: &crate::terminal::TerminalRuntime,
+) -> Option<(crate::platform::ForegroundJob, Option<crate::detect::Agent>)> {
     let job = crate::detect::foreground_job(runtime.child_pid()?)?;
-    crate::detect::identify_agent_in_job(&job)
+    let agent = crate::detect::identify_agent_in_job(&job)
         .map(|(agent, _)| agent)
         .or_else(|| {
             job.processes
                 .iter()
                 .find_map(|process| crate::platform::process_agent_hint(process.pid))
-        })
+        });
+    Some((job, agent))
 }
 
 pub(super) enum AgentStartError {
