@@ -245,6 +245,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Collapsed sidebar presentation: "compact" keeps the narrow status rail, "hidden" uses zero width.
 # sidebar_collapsed_mode = "compact"
 
+# Expanded sidebar composition: "spaces" stacks the space panel over the agent panel;
+# "tabs" lists one row per tab across every space, in tab order.
+# sidebar_layout = "spaces"
+
 # Terminal width at or below which Herdr uses the mobile single-column layout.
 # Increase this for foldables, tablets, or wide phone terminals.
 # mobile_width_threshold = 64

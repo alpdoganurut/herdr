@@ -1815,8 +1815,9 @@ impl ClientShellState {
                 }
                 let tab_id = self
                     .hits
-                    .tabs
+                    .sidebar_tabs
                     .iter()
+                    .chain(self.hits.tabs.iter())
                     .find(|(rect, _)| super::contains(*rect, point))
                     .map(|(_, tab_id)| tab_id.clone());
                 if let Some(tab_id) = tab_id {
@@ -2082,6 +2083,21 @@ impl ClientShellState {
                     });
                 if let Some(workspace_press) = workspace_press {
                     self.workspace_press = Some(workspace_press);
+                    return;
+                }
+                let sidebar_tab_id = self
+                    .hits
+                    .sidebar_tabs
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, tab_id)| tab_id.clone());
+                if let Some(tab_id) = sidebar_tab_id {
+                    self.push_endpoint_method(
+                        crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
+                            tab_id,
+                        }),
+                        outcome,
+                    );
                     return;
                 }
                 let tab_press = self

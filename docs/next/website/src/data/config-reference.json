@@ -894,6 +894,16 @@
           ]
         },
         {
+          "key": "ui.sidebar_layout",
+          "type": "enum",
+          "default": "spaces",
+          "description": "Expanded sidebar composition. \"spaces\" stacks the space panel over the agent panel; \"tabs\" lists one row per tab across every space, in tab order.",
+          "values": [
+            "spaces",
+            "tabs"
+          ]
+        },
+        {
           "key": "ui.mobile_width_threshold",
           "type": "integer",
           "default": "64",

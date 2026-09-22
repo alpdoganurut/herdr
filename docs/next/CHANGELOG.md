@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- `ui.sidebar_layout = "tabs"` lists one row per tab across every space, in tab order, with each tab's agent status. Rows focus on click and open the tab menu on right-click. The default `"spaces"` layout is unchanged.
+
 ## [0.9.1] - 2026-09-16
 
 ### Added
