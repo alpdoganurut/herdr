@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use super::{
-    api_helpers::{pane_agent_status, tab_attention_priority},
+    api_helpers::{agent_status, agent_status_priority, terminal_agent_status},
     App, Mode,
 };
 use crate::api::schema::{EventData, EventEnvelope, EventKind};
@@ -206,17 +206,17 @@ impl App {
     ) -> Option<crate::api::schema::TabInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab = ws.tabs.get(tab_idx)?;
-        let (agg_state, seen) = tab
+        let agent_status = tab
             .panes
             .values()
             .filter_map(|pane| {
                 self.state
                     .terminals
                     .get(&pane.attached_terminal_id)
-                    .map(|terminal| (terminal.state, pane.seen))
+                    .map(|terminal| terminal_agent_status(terminal, pane.seen))
             })
-            .max_by_key(|(state, seen)| tab_attention_priority(*state, *seen))
-            .unwrap_or((crate::detect::AgentState::Unknown, true));
+            .max_by_key(|status| agent_status_priority(*status))
+            .unwrap_or(crate::api::schema::AgentStatus::Unknown);
         Some(crate::api::schema::TabInfo {
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             workspace_id: self.public_workspace_id(ws_idx),
@@ -224,7 +224,7 @@ impl App {
             label: ws.tab_display_name(tab_idx)?,
             focused: self.state.active == Some(ws_idx) && ws.active_tab == tab_idx,
             pane_count: tab.panes.len(),
-            agent_status: pane_agent_status(agg_state, seen),
+            agent_status,
         })
     }
 
@@ -342,12 +342,20 @@ impl App {
                 .map(|cwd| cwd.display().to_string()),
             restore_error: terminal.restore_error.clone(),
             label: terminal.manual_label.clone(),
-            agent: terminal.effective_agent_label().map(str::to_string),
+            agent: terminal
+                .effective_agent_label()
+                .map(str::to_string)
+                .or_else(|| {
+                    terminal
+                        .suspended_agent
+                        .as_ref()
+                        .map(|record| record.agent.clone())
+                }),
             title: presentation.title,
             terminal_title: terminal.terminal_title.clone(),
             terminal_title_stripped: terminal.terminal_title_stripped(),
             display_agent: presentation.display_agent,
-            agent_status: pane_agent_status(terminal.state, pane.seen),
+            agent_status: terminal_agent_status(terminal, pane.seen),
             state_labels: presentation.state_labels,
             tokens: terminal.metadata_tokens.values(),
             agent_session: terminal_agent_session_info(terminal),
@@ -378,7 +386,7 @@ impl App {
 
     pub(super) fn workspace_info(&self, index: usize) -> crate::api::schema::WorkspaceInfo {
         let ws = &self.state.workspaces[index];
-        let (agg_state, seen) = ws.aggregate_state(&self.state.terminals);
+        let aggregate = ws.aggregate_state(&self.state.terminals);
         crate::api::schema::WorkspaceInfo {
             workspace_id: self.public_workspace_id(index),
             number: index + 1,
@@ -389,7 +397,7 @@ impl App {
             active_tab_id: self.public_tab_id(index, ws.active_tab).unwrap_or_else(|| {
                 crate::workspace::public_tab_id_for_number(&ws.id, ws.active_tab + 1)
             }),
-            agent_status: pane_agent_status(agg_state, seen),
+            agent_status: agent_status(aggregate.state, aggregate.seen, aggregate.suspended),
             tokens: ws.metadata_tokens.values(),
             worktree: ws
                 .worktree_space()
@@ -407,6 +415,14 @@ impl App {
 fn terminal_agent_session_info(
     terminal: &crate::terminal::TerminalState,
 ) -> Option<crate::api::schema::AgentSessionInfo> {
+    if let Some(record) = terminal.suspended_agent.as_ref() {
+        return Some(crate::api::schema::AgentSessionInfo {
+            source: record.session.source.clone(),
+            agent: record.session.agent.clone(),
+            kind: record.session.session_ref.kind,
+            value: record.session.session_ref.value.clone(),
+        });
+    }
     if let Some(authority) = terminal.hook_authority.as_ref() {
         if let Some(session_ref) = authority.session_ref.as_ref() {
             return Some(crate::api::schema::AgentSessionInfo {

@@ -465,8 +465,30 @@ fn unavailable_restored_terminal(
             (Some(name), None) => terminal.set_agent_name(name.clone()),
             _ => {}
         }
+        reinstate_suspended_agent(&mut terminal, pane.suspended_agent.as_ref());
     }
     terminal
+}
+
+/// Park a restored pane again when its snapshot carried a suspended agent.
+/// The session is validated like any other saved session reference; an
+/// invalid one drops the record rather than restoring a pane that could
+/// never be activated.
+fn reinstate_suspended_agent(
+    terminal: &mut TerminalState,
+    suspended: Option<&super::snapshot::SuspendedAgentSnapshot>,
+) {
+    let Some(suspended) = suspended else {
+        return;
+    };
+    let Some(session) = persisted_agent_session_from_snapshot(&suspended.session) else {
+        warn!(
+            agent = %suspended.agent,
+            "dropping suspended agent with an invalid saved session reference"
+        );
+        return;
+    };
+    terminal.restore_suspended_agent(suspended.agent.clone(), suspended.name.clone(), session);
 }
 
 fn restored_worktree_space_membership(
@@ -530,11 +552,13 @@ fn restore_tab(
             .and_then(crate::detect::parse_canonical_agent_label);
         let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
+        let saved_suspended_agent = saved_pane.and_then(|p| p.suspended_agent.as_ref());
         let saved_history =
             old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
         let startup = {
             let mut agent_restore = AgentRestoreState {
-                enabled: runtime_context.resume_agents_on_restore,
+                enabled: runtime_context.resume_agents_on_restore
+                    && saved_suspended_agent.is_none(),
                 resumed_sessions: resumed_agent_sessions,
             };
             pane_restore_startup(saved_agent_session, saved_history, &mut agent_restore)
@@ -686,6 +710,7 @@ fn restore_tab(
                     (Some(_), None) => {}
                     (None, _) => {}
                 }
+                reinstate_suspended_agent(&mut terminal, saved_suspended_agent);
                 if let Some(agent) = initial_restore_agent {
                     let _ = terminal.set_detected_state_with_screen_signals_at(
                         Some(agent),
@@ -793,7 +818,8 @@ fn pane_restore_startup<'a>(
     // Native agent resume owns the conversation history. If a pane has a
     // resumable agent session and resume is enabled, do not replay saved pane
     // presentation history into that terminal, even when this pane is a
-    // duplicate suppressed by session de-duplication.
+    // duplicate suppressed by session de-duplication. A suspended pane has
+    // resume disabled by its caller: it comes back parked, with history.
     let restore_plan =
         session.and_then(|session| restore_plan_for_snapshot(session, agent_restore.enabled));
     let has_native_agent_restore = restore_plan.is_some();
@@ -1303,6 +1329,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_keeps_suspended_panes_parked_without_a_resume_plan() {
+        let cwd = std::env::current_dir().unwrap();
+        let session = super::super::snapshot::PaneAgentSessionSnapshot {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            kind: crate::agent_resume::AgentSessionRefKind::Id,
+            value: "claude-session".into(),
+        };
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneSnapshot {
+                            cwd,
+                            label: None,
+                            agent_name: Some("reviewer".into()),
+                            managed_agent_kind: None,
+                            agent_session: Some(session.clone()),
+                            launch_argv: None,
+                            suspended_agent: Some(super::super::snapshot::SuspendedAgentSnapshot {
+                                agent: "claude".into(),
+                                name: Some("reviewer".into()),
+                                session,
+                            }),
+                        },
+                    )]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let history = SessionHistorySnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            layout_fingerprint: None,
+            workspaces: vec![WorkspaceHistorySnapshot {
+                tabs: vec![TabHistorySnapshot {
+                    panes: HashMap::from([(
+                        0,
+                        PaneHistorySnapshot {
+                            ansi: "PARKED_HISTORY\r\n".into(),
+                            lines: 1,
+                        },
+                    )]),
+                }],
+            }],
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            Some(&history),
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            true,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+
+        let root = workspaces[0].tabs[0].root_pane;
+        let terminal_id = workspaces[0].tabs[0].terminal_id(root).unwrap();
+        let terminal = &terminals[terminal_id];
+        assert!(
+            terminal.pending_agent_resume_plan.is_none(),
+            "a suspended pane must not be relaunched even when resume is enabled"
+        );
+        assert!(
+            runtimes.get(terminal_id).is_some(),
+            "the pane comes back as a plain shell with history"
+        );
+        let record = terminal
+            .suspended_agent
+            .as_ref()
+            .expect("suspended record is reinstated");
+        assert_eq!(record.agent, "claude");
+        assert_eq!(record.name.as_deref(), Some("reviewer"));
+        assert_eq!(record.session.session_ref.value, "claude-session");
+        assert!(record.exit_deadline.is_none());
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+        assert!(terminal.is_agent_terminal());
+        assert!(!terminal.managed_agent_launch_pending());
+
+        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let pane = captured.workspaces[0].tabs[0]
+            .panes
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(
+            pane.suspended_agent.as_ref().map(|s| s.agent.as_str()),
+            Some("claude"),
+            "a restored suspended pane persists as suspended again"
+        );
+    }
+
+    #[tokio::test]
     async fn restore_carries_persisted_agent_session_metadata() {
         let cwd = std::env::current_dir().unwrap();
         let snapshot = SessionSnapshot {
@@ -1333,6 +1478,7 @@ mod tests {
                                 value: "opencode-session".into(),
                             }),
                             launch_argv: None,
+                            suspended_agent: None,
                         },
                     )]),
                     zoomed: false,
@@ -1414,6 +1560,7 @@ mod tests {
                                 managed_agent_kind: None,
                                 agent_session: None,
                                 launch_argv: None,
+                                suspended_agent: None,
                             },
                         ),
                         (
@@ -1425,6 +1572,7 @@ mod tests {
                                 managed_agent_kind: None,
                                 agent_session: None,
                                 launch_argv: None,
+                                suspended_agent: None,
                             },
                         ),
                     ]),
@@ -1478,6 +1626,7 @@ mod tests {
                     managed_agent_kind: None,
                     agent_session: None,
                     launch_argv: None,
+                    suspended_agent: None,
                 },
             )
         };
@@ -1493,6 +1642,7 @@ mod tests {
                 value: "codex-session".into(),
             }),
             launch_argv: None,
+            suspended_agent: None,
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -1644,6 +1794,7 @@ mod tests {
                                 value: "codex-session".into(),
                             }),
                             launch_argv: None,
+                            suspended_agent: None,
                         },
                     )]),
                     zoomed: false,
@@ -1949,6 +2100,7 @@ mod tests {
                 managed_agent_kind: None,
                 agent_session: None,
                 launch_argv: None,
+                suspended_agent: None,
             },
         );
         let mut history = SessionHistorySnapshot {

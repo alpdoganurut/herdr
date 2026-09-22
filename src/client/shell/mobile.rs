@@ -245,6 +245,7 @@ fn render_agent_summary(
         (AgentStatus::Done, "done"),
         (AgentStatus::Working, "working"),
         (AgentStatus::Idle, "idle"),
+        (AgentStatus::Suspended, "suspended"),
     ]
     .map(|(status, label)| {
         (

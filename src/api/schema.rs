@@ -135,6 +135,10 @@ pub enum Method {
     AgentFocus(AgentTarget),
     #[serde(rename = "agent.start")]
     AgentStart(AgentStartParams),
+    #[serde(rename = "agent.suspend")]
+    AgentSuspend(AgentSuspendParams),
+    #[serde(rename = "agent.activate")]
+    AgentActivate(AgentActivateParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

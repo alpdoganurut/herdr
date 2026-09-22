@@ -76,6 +76,7 @@ pub(crate) fn apply_agent_view(app: &AppState, entries: &mut Vec<AgentPanelEntry
                 std::cmp::Reverse(super::api_helpers::tab_attention_priority(
                     entry.state,
                     entry.seen,
+                    entry.suspended,
                 )),
                 std::cmp::Reverse(entry.last_agent_state_change_seq),
             )
@@ -113,7 +114,7 @@ impl AgentViewEntry for AppAgentViewEntry<'_> {
     }
 
     fn status(&self) -> &'static str {
-        status_name(self.entry.state, self.entry.seen)
+        status_name(self.entry.state, self.entry.seen, self.entry.suspended)
     }
 
     fn workspace_id(&self) -> Option<Cow<'_, str>> {
@@ -171,6 +172,7 @@ impl AgentViewEntry for AppAgentViewEntry<'_> {
         u64::from(super::api_helpers::tab_attention_priority(
             self.entry.state,
             self.entry.seen,
+            self.entry.suspended,
         ))
     }
 }
@@ -293,7 +295,7 @@ fn validate_field_value(field: &AgentViewField, value: &AgentViewValue) -> Resul
                 AgentViewField::Builtin(AgentViewBuiltinField::Status)
             ) && !matches!(
                 value.as_str(),
-                "idle" | "working" | "blocked" | "done" | "unknown"
+                "idle" | "working" | "blocked" | "done" | "unknown" | "suspended"
             ) {
                 return Err(format!("unknown agent status `{value}`"));
             }
@@ -322,7 +324,10 @@ fn validate_token(token: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn status_name(state: crate::detect::AgentState, seen: bool) -> &'static str {
+fn status_name(state: crate::detect::AgentState, seen: bool, suspended: bool) -> &'static str {
+    if suspended {
+        return "suspended";
+    }
     match (state, seen) {
         (crate::detect::AgentState::Idle, false) => "done",
         (crate::detect::AgentState::Idle, true) => "idle",

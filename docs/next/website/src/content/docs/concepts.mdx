@@ -47,6 +47,7 @@ Agent states are:
 | `done` | The agent finished and you have not looked at it yet. |
 | `idle` | The agent is finished or waiting and has been seen. |
 | `unknown` | Herdr cannot confidently classify the state. |
+| `suspended` | The agent was asked to exit with `agent suspend`; the pane keeps its native session and `agent activate` relaunches it. |
 
 Each client tracks which completions it has displayed. Viewing a completion in one client does not clear another client's Done badge. CLI/API statuses use the server's seen state, so they need not match a particular client's badge; both `idle` and `done` mean ready for input.
 

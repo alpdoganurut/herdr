@@ -908,8 +908,9 @@ fn parse_agent_status(value: &str) -> std::io::Result<AgentStatus> {
         "blocked" => Ok(AgentStatus::Blocked),
         "done" => Ok(AgentStatus::Done),
         "unknown" => Ok(AgentStatus::Unknown),
+        "suspended" => Ok(AgentStatus::Suspended),
         _ => Err(std::io::Error::other(format!(
-            "invalid agent status: {value} (expected idle, working, blocked, done, or unknown)"
+            "invalid agent status: {value} (expected idle, working, blocked, done, unknown, or suspended)"
         ))),
     }
 }

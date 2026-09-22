@@ -52,7 +52,7 @@ Choose the primitive that matches the job:
 - Pane commands control raw terminals, shells, tests, servers, input, and output.
 - Agent commands control the recognized coding agent currently occupying a pane.
 
-A pane exists whether or not it contains an agent. `agent start` requires an existing available shell pane and never creates, splits, or moves layout. Use pane commands for ordinary processes. Use agent commands when Herdr must validate agent identity or interpret `idle`, `working`, `blocked`, `done`, and `unknown` lifecycle states.
+A pane exists whether or not it contains an agent. `agent start` requires an existing available shell pane and never creates, splits, or moves layout. Use pane commands for ordinary processes. Use agent commands when Herdr must validate agent identity or interpret `idle`, `working`, `blocked`, `done`, `unknown`, and `suspended` lifecycle states.
 
 Agent commands accept either a unique live agent name or the pane ID currently hosting that agent. They do not accept terminal IDs or bare agent-kind labels. Names must match `[a-z][a-z0-9_-]{0,31}` and be unique among live agents. A name follows the current pane occupant and is cleared when that agent exits, is released, or is replaced.
 
@@ -153,6 +153,15 @@ herdr agent wait reviewer --until blocked --timeout 120000
 ```
 
 Without `--until`, standalone `agent wait` uses the same settled-state defaults as `agent prompt --wait`.
+
+Park a Claude Code agent without losing its conversation and bring it back later in the same pane:
+
+```bash
+herdr agent suspend reviewer
+herdr agent activate reviewer
+```
+
+`agent suspend` submits the agent's exit command and keeps the pane's native session reference and name; the pane reports `suspended` and survives server restarts without being relaunched. It returns `agent_not_suspendable` for agents without a known session reference, resume plan, or exit command. `agent activate` runs the native resume command in that pane once it is back at its shell prompt (`pane_not_available` otherwise), then wait for `idle` before prompting.
 
 Use logical keys for interactive agent UI controls:
 

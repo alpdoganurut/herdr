@@ -84,6 +84,37 @@ struct ManagedAgent {
     phase: ManagedAgentPhase,
 }
 
+/// How far Herdr has escalated while waiting for a suspended agent to exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuspendExitEscalation {
+    /// The graceful exit input was sent; nothing has been signaled yet.
+    Pending,
+    /// The foreground job received `SIGTERM` after the graceful deadline passed.
+    Terminated,
+    /// The foreground job received `SIGKILL` after `SIGTERM` did not end it.
+    Killed,
+}
+
+/// An agent parked in its pane: the process was asked to exit while the pane
+/// keeps the native session reference needed to relaunch it in place.
+///
+/// `exit_deadline` is only set while the process is still expected to exit;
+/// it is never persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuspendedAgent {
+    /// Canonical agent kind label, e.g. `claude`.
+    pub agent: String,
+    /// Agent name at suspend time, restored on activation.
+    pub name: Option<String>,
+    pub session: crate::agent_resume::PersistedAgentSession,
+    /// Set while the process is still expected to exit; escalation clears it.
+    pub exit_deadline: Option<Instant>,
+    pub escalation: SuspendExitEscalation,
+    /// Detection reported the agent process gone. Only then is a live
+    /// observation of the same agent kind a manual relaunch.
+    pub exit_observed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveStateChange {
     pub previous_agent_label: Option<String>,
@@ -158,6 +189,7 @@ pub struct TerminalState {
     recent_agent_process_exit: Option<RecentAgentProcessExit>,
     agent_process_acquisition_pending: bool,
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
+    pub suspended_agent: Option<SuspendedAgent>,
     pub restore_error: Option<String>,
 }
 
@@ -195,6 +227,7 @@ impl TerminalState {
             recent_agent_process_exit: None,
             agent_process_acquisition_pending: false,
             pending_agent_resume_plan: None,
+            suspended_agent: None,
             restore_error: None,
         }
     }
@@ -419,6 +452,7 @@ impl TerminalState {
             };
         }
         self.detected_agent = agent;
+        self.reconcile_suspended_agent_with_detection(agent, process_exited);
         if let Some(agent) = agent {
             let agent_label = crate::detect::agent_label(agent);
             self.reconcile_agent_name_owner(agent_label, None);
@@ -617,7 +651,12 @@ impl TerminalState {
         // is the only handle its owner has on the pane. Detection uncertainty
         // already keeps the name, so free it at the point the agent actually
         // leaves the pane - a recorded exit with no agent detected any more.
-        if agent.is_none() && self.recent_agent_process_exit.is_some() {
+        // A suspended agent is expected to leave; its name stays with the
+        // parked session until activation or a different agent takes the pane.
+        if agent.is_none()
+            && self.recent_agent_process_exit.is_some()
+            && self.suspended_agent.is_none()
+        {
             self.clear_agent_name();
         }
         let effective_state_change = self.recompute_effective_state(
@@ -1989,20 +2028,26 @@ impl TerminalState {
     }
 
     pub fn managed_agent_launch_pending(&self) -> bool {
-        self.managed_agent.is_some_and(|managed| {
-            matches!(
-                managed.phase,
-                ManagedAgentPhase::Pending { .. } | ManagedAgentPhase::Blocked
-            )
-        })
+        self.suspended_agent.is_none()
+            && self.managed_agent.is_some_and(|managed| {
+                matches!(
+                    managed.phase,
+                    ManagedAgentPhase::Pending { .. } | ManagedAgentPhase::Blocked
+                )
+            })
     }
 
     pub fn managed_agent_interactive_ready(&self) -> bool {
-        self.managed_agent
-            .is_some_and(|managed| matches!(managed.phase, ManagedAgentPhase::Active))
+        self.suspended_agent.is_none()
+            && self
+                .managed_agent
+                .is_some_and(|managed| matches!(managed.phase, ManagedAgentPhase::Active))
     }
 
     pub fn managed_agent_kind(&self) -> Option<Agent> {
+        if self.suspended_agent.is_some() {
+            return None;
+        }
         self.managed_agent.map(|managed| managed.kind)
     }
 
@@ -2022,6 +2067,13 @@ impl TerminalState {
         let Some(managed) = self.managed_agent else {
             return false;
         };
+        if self.suspended_agent.is_some() {
+            // A parked agent is no longer a managed launch; the name stays
+            // with the suspended record instead of the launch lifecycle.
+            self.managed_agent = None;
+            self.managed_agent_launch_session = None;
+            return true;
+        }
         let known_agent = self.effective_known_agent();
         let observed_expected = match managed.phase {
             ManagedAgentPhase::Pending {
@@ -2148,10 +2200,133 @@ impl TerminalState {
         self.agent_process_acquisition_pending = false;
         self.pending_agent_resume_plan = None;
         self.clear_agent_name();
+        // The parked session outlives the shell that hosted the agent; only
+        // the exit wait is over.
+        if let Some(record) = self.suspended_agent.as_mut() {
+            record.exit_deadline = None;
+            record.exit_observed = true;
+            if let Some(name) = record.name.clone() {
+                self.set_agent_name(name);
+            }
+        }
     }
 
     pub fn is_agent_terminal(&self) -> bool {
-        self.agent_name.is_some() || self.effective_agent_label().is_some()
+        self.agent_name.is_some()
+            || self.effective_agent_label().is_some()
+            || self.suspended_agent.is_some()
+    }
+
+    /// The official native session the live agent could be relaunched from.
+    ///
+    /// Prefers the lifecycle hook authority, then the persisted session, and
+    /// requires the session owner to be the agent currently detected in the
+    /// pane so a stale reference from a previous occupant is never captured.
+    pub fn suspendable_agent_session(&self) -> Option<crate::agent_resume::PersistedAgentSession> {
+        let live_agent = self.effective_known_agent()?;
+        let session = self
+            .hook_authority
+            .as_ref()
+            .and_then(|authority| {
+                authority.session_ref.as_ref().map(|session_ref| {
+                    crate::agent_resume::PersistedAgentSession {
+                        source: authority.source.clone(),
+                        agent: authority.agent_label.clone(),
+                        session_ref: session_ref.clone(),
+                    }
+                })
+            })
+            .or_else(|| self.persisted_agent_session.clone())?;
+        (crate::detect::parse_agent_label(&session.agent) == Some(live_agent)
+            && crate::agent_resume::is_official_agent_source(&session.source, &session.agent))
+        .then_some(session)
+    }
+
+    /// Park the live agent: record its session and name before the exit input
+    /// is sent, because the process-exit path wipes the live session fields.
+    ///
+    /// The managed launch phase ends on the next reconcile without clearing
+    /// the name, and the managed accessors already report nothing while
+    /// parked, so a suspended pane never claims interactive readiness or
+    /// persists a managed kind that a cold restore would treat as running.
+    pub fn begin_agent_suspend(
+        &mut self,
+        session: crate::agent_resume::PersistedAgentSession,
+        exit_deadline: Instant,
+    ) {
+        self.suspended_agent = Some(SuspendedAgent {
+            agent: session.agent.clone(),
+            name: self.agent_name.clone(),
+            session,
+            exit_deadline: Some(exit_deadline),
+            escalation: SuspendExitEscalation::Pending,
+            exit_observed: false,
+        });
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    /// Reinstate a parked agent from persisted state: no process is expected
+    /// to exit, and the saved name resolves the pane again.
+    pub fn restore_suspended_agent(
+        &mut self,
+        agent: String,
+        name: Option<String>,
+        session: crate::agent_resume::PersistedAgentSession,
+    ) {
+        if let Some(name) = name.clone() {
+            self.set_agent_name(name);
+        }
+        self.suspended_agent = Some(SuspendedAgent {
+            agent,
+            name,
+            session,
+            exit_deadline: None,
+            escalation: SuspendExitEscalation::Pending,
+            exit_observed: true,
+        });
+    }
+
+    pub fn take_suspended_agent(&mut self) -> Option<SuspendedAgent> {
+        let record = self.suspended_agent.take();
+        if record.is_some() {
+            self.revision = self.revision.saturating_add(1);
+        }
+        record
+    }
+
+    pub fn suspended_agent_exit_deadline(&self) -> Option<Instant> {
+        self.suspended_agent
+            .as_ref()
+            .and_then(|record| record.exit_deadline)
+    }
+
+    /// A process observation while parked either completes the exit or shows
+    /// that something else took the pane. The same agent kind seen live before
+    /// detection reported the exit is the suspended process itself (including
+    /// a stale observation that overtook the escalation tick); seen live after
+    /// the observed exit, it is a manual relaunch and the parked record no
+    /// longer describes the pane.
+    fn reconcile_suspended_agent_with_detection(
+        &mut self,
+        agent: Option<Agent>,
+        process_exited: bool,
+    ) {
+        let Some(record) = self.suspended_agent.as_mut() else {
+            return;
+        };
+        if process_exited {
+            record.exit_deadline = None;
+            record.exit_observed = true;
+            return;
+        }
+        let Some(agent) = agent else {
+            return;
+        };
+        let same_agent = crate::detect::parse_agent_label(&record.agent) == Some(agent);
+        if !same_agent || record.exit_observed {
+            self.suspended_agent = None;
+            self.revision = self.revision.saturating_add(1);
+        }
     }
 
     fn reconcile_agent_name_owner(
@@ -6174,5 +6349,275 @@ mod tests {
             terminal.hook_authority.as_ref().unwrap().source,
             "custom:pi"
         );
+    }
+
+    fn claude_session(id: &str) -> crate::agent_resume::PersistedAgentSession {
+        crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id(id).unwrap(),
+        }
+    }
+
+    fn live_named_claude(name: &str, session_id: &str) -> TerminalState {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        terminal
+            .set_agent_session_ref(
+                "herdr:claude".into(),
+                "claude".into(),
+                crate::agent_resume::AgentSessionRef::id(session_id),
+                Some(1),
+            )
+            .expect("session ref accepted");
+        terminal.set_agent_name(name.into());
+        terminal
+    }
+
+    #[test]
+    fn suspendable_session_requires_the_live_agent_to_own_it() {
+        let terminal = live_named_claude("reviewer", "claude-session");
+        let session = terminal
+            .suspendable_agent_session()
+            .expect("live claude with a session ref is suspendable");
+        assert_eq!(session, claude_session("claude-session"));
+
+        let mut foreign = test_terminal();
+        foreign.set_persisted_agent_session(claude_session("stale-session"));
+        foreign.set_detected_state(Some(Agent::Codex), AgentState::Idle);
+        assert!(
+            foreign.suspendable_agent_session().is_none(),
+            "a stale session from another occupant must not be captured"
+        );
+        assert!(test_terminal().suspendable_agent_session().is_none());
+    }
+
+    #[test]
+    fn suspended_record_survives_process_exit_and_keeps_the_name() {
+        let mut terminal = live_named_claude("reviewer", "claude-session");
+        let now = Instant::now();
+        terminal.begin_agent_suspend(
+            claude_session("claude-session"),
+            now + Duration::from_secs(5),
+        );
+        let record = terminal.suspended_agent.as_ref().expect("record stored");
+        assert_eq!(record.agent, "claude");
+        assert_eq!(record.name.as_deref(), Some("reviewer"));
+        assert_eq!(record.escalation, SuspendExitEscalation::Pending);
+        assert!(terminal.suspended_agent_exit_deadline().is_some());
+        assert!(terminal.is_agent_terminal());
+
+        // The exit publisher reports the last known agent with process_exited.
+        let mutation = terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Claude),
+            AgentState::Idle,
+            false,
+            true,
+            false,
+            true,
+            now + Duration::from_secs(1),
+        );
+        assert!(mutation.agent_released);
+        let record = terminal
+            .suspended_agent
+            .as_ref()
+            .expect("record survives exit");
+        assert_eq!(record.session, claude_session("claude-session"));
+        assert!(
+            record.exit_deadline.is_none(),
+            "exit observed ends the wait"
+        );
+        assert!(record.exit_observed);
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+
+        // The shell prompt comes back with no agent at all.
+        terminal.set_detected_state(None, AgentState::Unknown);
+        assert!(terminal.suspended_agent.is_some());
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+        assert!(terminal.is_agent_terminal());
+        assert!(terminal.suspendable_agent_session().is_none());
+    }
+
+    #[test]
+    fn same_agent_seen_live_during_the_exit_wait_keeps_the_record() {
+        let mut terminal = live_named_claude("reviewer", "claude-session");
+        terminal.begin_agent_suspend(
+            claude_session("claude-session"),
+            Instant::now() + Duration::from_secs(5),
+        );
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+        assert!(terminal.suspended_agent.is_some());
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn escalation_clearing_the_deadline_does_not_count_as_an_observed_exit() {
+        let mut terminal = live_named_claude("reviewer", "claude-session");
+        terminal.begin_agent_suspend(
+            claude_session("claude-session"),
+            Instant::now() + Duration::from_secs(5),
+        );
+        // The escalation tick found no agent process and ended the wait, but
+        // a detection observation captured just before that is still in flight.
+        terminal.suspended_agent.as_mut().unwrap().exit_deadline = None;
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+        let record = terminal
+            .suspended_agent
+            .as_ref()
+            .expect("a stale live report must not drop the parked session");
+        assert!(!record.exit_observed);
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+
+        terminal.set_detected_state_with_visible_blocker(
+            Some(Agent::Claude),
+            AgentState::Idle,
+            false,
+            false,
+            true,
+        );
+        assert!(terminal.suspended_agent.as_ref().unwrap().exit_observed);
+        terminal.set_detected_state(None, AgentState::Unknown);
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert!(terminal.suspended_agent.is_none());
+    }
+
+    #[test]
+    fn different_live_agent_clears_the_suspended_record() {
+        let mut terminal = live_named_claude("reviewer", "claude-session");
+        terminal.begin_agent_suspend(
+            claude_session("claude-session"),
+            Instant::now() + Duration::from_secs(5),
+        );
+        terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
+        assert!(terminal.suspended_agent.is_none());
+        assert_eq!(
+            terminal.agent_name, None,
+            "the name followed the parked agent"
+        );
+    }
+
+    #[test]
+    fn same_agent_relaunched_manually_after_the_exit_clears_the_record() {
+        let mut terminal = live_named_claude("reviewer", "claude-session");
+        let now = Instant::now();
+        terminal.begin_agent_suspend(
+            claude_session("claude-session"),
+            now + Duration::from_secs(5),
+        );
+        terminal.set_detected_state_with_visible_blocker(
+            Some(Agent::Claude),
+            AgentState::Idle,
+            false,
+            false,
+            true,
+        );
+        terminal.set_detected_state(None, AgentState::Unknown);
+        assert!(terminal.suspended_agent.is_some());
+
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert!(
+            terminal.suspended_agent.is_none(),
+            "a live claude after the observed exit is a manual relaunch, not the parked one"
+        );
+    }
+
+    #[test]
+    fn suspend_ends_the_managed_launch_phase_without_dropping_the_name() {
+        let mut terminal = test_terminal();
+        terminal.restore_managed_agent("reviewer".into(), Agent::Claude);
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        terminal
+            .set_agent_session_ref(
+                "herdr:claude".into(),
+                "claude".into(),
+                crate::agent_resume::AgentSessionRef::id("claude-session"),
+                Some(1),
+            )
+            .expect("session ref accepted");
+        assert!(terminal.managed_agent_interactive_ready());
+
+        terminal.begin_agent_suspend(
+            claude_session("claude-session"),
+            Instant::now() + Duration::from_secs(5),
+        );
+        assert!(!terminal.managed_agent_interactive_ready());
+        assert!(!terminal.managed_agent_launch_pending());
+        assert_eq!(terminal.managed_agent_kind(), None);
+        assert!(terminal.reconcile_managed_agent_at(Instant::now(), false));
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+
+        let record = terminal.take_suspended_agent().expect("record");
+        assert_eq!(record.name.as_deref(), Some("reviewer"));
+        assert_eq!(terminal.managed_agent_kind(), None);
+        assert!(terminal.suspended_agent.is_none());
+    }
+
+    #[test]
+    fn restored_suspended_record_has_no_exit_wait_and_resolves_the_name() {
+        let mut terminal = test_terminal();
+        terminal.restore_suspended_agent(
+            "claude".into(),
+            Some("reviewer".into()),
+            claude_session("claude-session"),
+        );
+        assert!(terminal.suspended_agent_exit_deadline().is_none());
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+        assert!(terminal.is_agent_terminal());
+
+        terminal.clear_agent_runtime_identity_after_respawn();
+        assert!(
+            terminal.suspended_agent.is_some(),
+            "a respawned shell keeps the parked agent"
+        );
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn relaunched_agent_reports_the_same_session_ref_after_a_suspend_cycle() {
+        let mut terminal = live_named_claude("reviewer", "claude-session");
+        let now = Instant::now();
+        terminal.begin_agent_suspend(
+            claude_session("claude-session"),
+            now + Duration::from_secs(5),
+        );
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Claude),
+            AgentState::Idle,
+            false,
+            true,
+            false,
+            true,
+            now + Duration::from_secs(1),
+        );
+        terminal.set_detected_state(None, AgentState::Unknown);
+        assert!(terminal.persisted_agent_session.is_none());
+
+        // Activation: the record is consumed and the same session is relaunched.
+        let record = terminal.take_suspended_agent().expect("record");
+        terminal.begin_managed_agent(
+            record.name.clone().unwrap(),
+            Agent::Claude,
+            now + Duration::from_secs(2),
+            Duration::from_secs(3),
+            Duration::from_secs(30),
+        );
+        terminal.set_managed_agent_launch_session(record.session);
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        let mutation = terminal.set_agent_session_ref(
+            "herdr:claude".into(),
+            "claude".into(),
+            crate::agent_resume::AgentSessionRef::id("claude-session"),
+            Some(2),
+        );
+        assert!(
+            mutation.is_some(),
+            "the relaunched agent's identical session ref must not be treated as stale"
+        );
+        assert_eq!(
+            terminal.persisted_agent_session,
+            Some(claude_session("claude-session"))
+        );
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+        assert!(terminal.suspended_agent.is_none());
     }
 }

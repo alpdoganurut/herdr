@@ -91,6 +91,57 @@ fn workspace_close_group_intent_defaults_false_and_round_trips() {
 }
 
 #[test]
+fn agent_suspend_and_activate_requests_round_trip() {
+    let suspend = Request {
+        id: "suspend".into(),
+        method: Method::AgentSuspend(AgentSuspendParams {
+            target: "reviewer".into(),
+        }),
+    };
+    let suspend_json = serde_json::to_value(&suspend).unwrap();
+    assert_eq!(suspend_json["method"], "agent.suspend");
+    assert_eq!(suspend_json["params"]["target"], "reviewer");
+    assert_eq!(
+        serde_json::from_value::<Request>(suspend_json).unwrap(),
+        suspend
+    );
+
+    let activate = Request {
+        id: "activate".into(),
+        method: Method::AgentActivate(AgentActivateParams {
+            target: "w1:p2".into(),
+        }),
+    };
+    let activate_json = serde_json::to_value(&activate).unwrap();
+    assert_eq!(activate_json["method"], "agent.activate");
+    assert_eq!(
+        serde_json::from_value::<Request>(activate_json).unwrap(),
+        activate
+    );
+
+    let suspended = serde_json::to_value(ResponseResult::AgentSuspended {
+        pane_id: "w1:p2".into(),
+    })
+    .unwrap();
+    assert_eq!(suspended["type"], "agent_suspended");
+    assert_eq!(suspended["pane_id"], "w1:p2");
+    let activated = serde_json::to_value(ResponseResult::AgentActivated {
+        pane_id: "w1:p2".into(),
+    })
+    .unwrap();
+    assert_eq!(activated["type"], "agent_activated");
+
+    assert_eq!(
+        serde_json::to_value(AgentStatus::Suspended).unwrap(),
+        "suspended"
+    );
+    assert_eq!(
+        serde_json::from_value::<AgentStatus>(serde_json::json!("suspended")).unwrap(),
+        AgentStatus::Suspended
+    );
+}
+
+#[test]
 fn agent_start_and_prompt_requests_round_trip() {
     let start = Request {
         id: "start".into(),

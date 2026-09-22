@@ -163,6 +163,9 @@ pub enum AgentStatus {
     Blocked,
     Done,
     Unknown,
+    /// The agent process was asked to exit while the pane keeps its native
+    /// session reference; `agent.activate` relaunches it in place.
+    Suspended,
 }
 
 pub(crate) fn default_true() -> bool {

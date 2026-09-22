@@ -13,6 +13,8 @@ pub(crate) const MAX_ENDPOINT_REQUEST_ID_BYTES: usize = 128;
 const ENDPOINT_RESPONSE_CHUNK_BYTES: usize = 512 * 1024;
 
 const CLIENT_SHELL_METHODS: &[&str] = &[
+    "agent.activate",
+    "agent.suspend",
     "client_shell.surface.set",
     "command.invoke",
     "integration.install",
@@ -296,6 +298,14 @@ mod tests {
         assert_eq!(
             actual.remove("pane.link.resolve").as_deref(),
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
+        );
+        assert_eq!(
+            actual.remove("agent.suspend").as_deref(),
+            Some("8f5505e98a84d17e84b6a0e6adfa519288db204f2cec400ef4ce24a7819c582c")
+        );
+        assert_eq!(
+            actual.remove("agent.activate").as_deref(),
+            Some("ab4e42fe98b4334c06bc65f0dd8ca9f6c9f7ec1c8da950d6df755d992ec4b06b")
         );
 
         assert_eq!(

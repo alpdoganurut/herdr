@@ -3,14 +3,14 @@ use std::time::Duration;
 use bytes::Bytes;
 
 use crate::api::schema::{
-    AgentPromptParams, AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget,
-    PaneReadResult, ResponseResult,
+    AgentActivateParams, AgentPromptParams, AgentRenameParams, AgentSendKeysParams,
+    AgentStartParams, AgentSuspendParams, AgentTarget, PaneReadResult, ResponseResult,
 };
 use crate::app::App;
 
 use super::responses::{encode_error, encode_error_body, encode_success};
 
-const AGENT_PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(300);
+pub(in crate::app) const AGENT_PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(300);
 
 // Codex's Windows input reader does not surface bracketed paste. It detects the prompt as a
 // "paste burst" and, while that burst is buffered, rewrites a following Enter into a newline
@@ -77,6 +77,32 @@ impl App {
         };
 
         encode_success(id, ResponseResult::AgentStarted { agent, argv })
+    }
+
+    pub(super) fn handle_agent_suspend(
+        &mut self,
+        id: String,
+        params: AgentSuspendParams,
+    ) -> String {
+        let pane_id = match self.suspend_agent(&params.target) {
+            Ok(pane_id) => pane_id,
+            Err(err) => return encode_error_body(id, self.agent_suspend_error_body(err)),
+        };
+
+        encode_success(id, ResponseResult::AgentSuspended { pane_id })
+    }
+
+    pub(super) fn handle_agent_activate(
+        &mut self,
+        id: String,
+        params: AgentActivateParams,
+    ) -> String {
+        let pane_id = match self.activate_agent(&params.target) {
+            Ok(pane_id) => pane_id,
+            Err(err) => return encode_error_body(id, self.agent_activate_error_body(err)),
+        };
+
+        encode_success(id, ResponseResult::AgentActivated { pane_id })
     }
 
     pub(crate) fn handle_deferred_agent_api_request(
