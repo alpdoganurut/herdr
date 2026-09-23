@@ -153,6 +153,12 @@ pub struct App {
     /// Next periodic transcript backup pass.
     pub(crate) agent_transcript_backup_deadline: Option<Instant>,
     agent_transcript_backup_thread: Option<std::thread::JoinHandle<()>>,
+    /// Sessions queued for the next backup pass ahead of the periodic
+    /// interval (a suspended agent), keyed by session so repeats coalesce.
+    agent_transcript_backup_pending: std::collections::BTreeMap<
+        String,
+        crate::persist::agent_transcripts::TranscriptBackupRequest,
+    >,
     pub(crate) detached_process_children: Vec<std::process::Child>,
     tab_bar_status_generation: u64,
     tab_bar_datetimes: Vec<tab_bar_status::TabBarDatetimeRuntime>,
@@ -627,6 +633,7 @@ impl App {
                 .persist_session
                 .then_some(Instant::now() + agent_transcripts::AGENT_TRANSCRIPT_BACKUP_INTERVAL),
             agent_transcript_backup_thread: None,
+            agent_transcript_backup_pending: std::collections::BTreeMap::new(),
             detached_process_children: Vec::new(),
             tab_bar_status_generation: 0,
             tab_bar_datetimes: Vec::new(),

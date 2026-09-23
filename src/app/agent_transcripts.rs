@@ -2,9 +2,9 @@
 //!
 //! The copies live under the session directory (see
 //! [`crate::persist::agent_transcripts`]). A periodic pass and the shutdown
-//! save back up every pane's session; suspending an agent backs up that
-//! session right away; a native resume first puts a copy back when the agent
-//! has deleted its own transcript.
+//! save back up every pane's session; suspending an agent queues that
+//! session for a prompt pass; a native resume first puts a copy back when
+//! the agent has deleted its own transcript.
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -15,6 +15,8 @@ use crate::persist::agent_transcripts::{self, TranscriptBackupRequest};
 
 /// How often open and suspended agent transcripts are backed up.
 pub(super) const AGENT_TRANSCRIPT_BACKUP_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// How soon a pass is retried when the previous one is still copying.
+const AGENT_TRANSCRIPT_BACKUP_RETRY: Duration = Duration::from_secs(1);
 
 impl App {
     fn agent_transcript_backups_enabled(&self) -> bool {
@@ -33,16 +35,29 @@ impl App {
                     let Some(request) = self.agent_transcript_backup_request(tab, *pane_id) else {
                         continue;
                     };
-                    let key = crate::agent_resume::dedupe_key(
-                        &request.session.source,
-                        &request.session.agent,
-                        &request.session.session_ref,
-                    );
-                    if seen.insert(key) {
+                    if seen.insert(request_key(&request)) {
                         requests.push(request);
                     }
                 }
             }
+        }
+        requests
+    }
+
+    /// The pane sessions plus everything queued ahead of the interval,
+    /// draining the queue. A queued session is kept even when its pane has
+    /// closed since: it was queued because it must survive.
+    fn take_agent_transcript_backup_requests(&mut self) -> Vec<TranscriptBackupRequest> {
+        let mut requests = self.agent_transcript_backup_requests();
+        let pending = std::mem::take(&mut self.agent_transcript_backup_pending);
+        if !pending.is_empty() {
+            let present: HashSet<String> = requests.iter().map(request_key).collect();
+            requests.extend(
+                pending
+                    .into_iter()
+                    .filter(|(key, _)| !present.contains(key))
+                    .map(|(_, request)| request),
+            );
         }
         requests
     }
@@ -99,30 +114,44 @@ impl App {
     }
 
     /// The periodic pass: copy every pane's native transcript on a
-    /// background thread so file I/O never stalls the app loop.
+    /// background thread so file I/O never stalls the app loop. Queued
+    /// sessions ride along.
     pub(crate) fn sync_agent_transcript_backups(&mut self) {
         self.agent_transcript_backup_deadline = self
             .policy
             .persist_session
             .then_some(Instant::now() + AGENT_TRANSCRIPT_BACKUP_INTERVAL);
         if !self.agent_transcript_backups_enabled() {
+            self.agent_transcript_backup_pending.clear();
             return;
         }
         self.reap_finished_agent_transcript_backup();
         if self.agent_transcript_backup_thread.is_some() {
-            // The previous pass is still copying; the next tick retries.
+            // The previous pass is still copying; retry shortly so queued
+            // sessions do not wait a whole interval.
+            tracing::debug!(
+                event = "agent.transcript.backup.pass",
+                outcome = "skipped",
+                pending = self.agent_transcript_backup_pending.len(),
+                "previous native agent transcript backup pass is still running"
+            );
+            self.agent_transcript_backup_deadline =
+                Some(Instant::now() + AGENT_TRANSCRIPT_BACKUP_RETRY);
             return;
         }
-        let requests = self.agent_transcript_backup_requests();
+        let requests = self.take_agent_transcript_backup_requests();
         if requests.is_empty() {
             return;
         }
         let store_dir = agent_transcripts::store_dir();
         let thread_store_dir = store_dir.clone();
+        // Shared so the inline fallback copies the same list, queue included.
+        let requests = std::sync::Arc::new(requests);
+        let thread_requests = std::sync::Arc::clone(&requests);
         match std::thread::Builder::new()
             .name("herdr-agent-transcripts".into())
             .spawn(move || {
-                agent_transcripts::sync_backups(&thread_store_dir, &requests);
+                agent_transcripts::sync_backups(&thread_store_dir, &thread_requests);
             }) {
             Ok(thread) => self.agent_transcript_backup_thread = Some(thread),
             Err(err) => {
@@ -130,16 +159,17 @@ impl App {
                     err = %err,
                     "failed to spawn agent transcript backup thread; copying inline"
                 );
-                let requests = self.agent_transcript_backup_requests();
                 agent_transcripts::sync_backups(&store_dir, &requests);
             }
         }
     }
 
-    /// Back up one pane's session immediately (used when an agent is
-    /// suspended, whose session must survive even if Herdr stops soon).
-    pub(crate) fn backup_agent_transcript_now(
-        &self,
+    /// Queue one pane's session for the next backup pass and bring that
+    /// pass forward (used when an agent is suspended, whose session must
+    /// survive even if Herdr stops soon; the shutdown pass drains the queue
+    /// too). The copy itself stays off the app loop.
+    pub(crate) fn queue_agent_transcript_backup(
+        &mut self,
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
         session: PersistedAgentSession,
@@ -157,10 +187,9 @@ impl App {
             return;
         };
         let request = self.agent_transcript_backup_request_for(tab, terminal_id, session);
-        agent_transcripts::sync_backups(
-            &agent_transcripts::store_dir(),
-            std::slice::from_ref(&request),
-        );
+        self.agent_transcript_backup_pending
+            .insert(request_key(&request), request);
+        self.agent_transcript_backup_deadline = Some(Instant::now());
     }
 
     /// The shutdown pass: wait for a running background pass, then copy
@@ -170,9 +199,10 @@ impl App {
             let _ = thread.join();
         }
         if !self.agent_transcript_backups_enabled() {
+            self.agent_transcript_backup_pending.clear();
             return;
         }
-        let requests = self.agent_transcript_backup_requests();
+        let requests = self.take_agent_transcript_backup_requests();
         if requests.is_empty() {
             return;
         }
@@ -201,10 +231,19 @@ impl App {
     }
 }
 
+fn request_key(request: &TranscriptBackupRequest) -> String {
+    crate::agent_resume::dedupe_key(
+        &request.session.source,
+        &request.session.agent,
+        &request.session.session_ref,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::workspace::Workspace;
+    use std::path::{Path, PathBuf};
 
     fn test_app() -> App {
         App::new(
@@ -221,8 +260,91 @@ mod tests {
             source: "herdr:claude".into(),
             agent: "claude".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id(id).unwrap(),
-            transcript_path: Some(std::path::PathBuf::from(format!("/tmp/{id}.jsonl"))),
+            transcript_path: Some(PathBuf::from(format!("/tmp/{id}.jsonl"))),
         }
+    }
+
+    /// A private home and config directory for tests that run a real pass,
+    /// so neither the user's transcripts nor their store are touched.
+    /// nextest runs each test in its own process, so the environment is
+    /// not shared.
+    struct Sandbox {
+        root: PathBuf,
+    }
+
+    impl Sandbox {
+        fn new(name: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "herdr-app-transcripts-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            std::env::set_var("HOME", root.join("home"));
+            std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
+            Self { root }
+        }
+
+        /// A native Claude transcript for `id`, with the session naming it.
+        fn native_session(&self, id: &str) -> PersistedAgentSession {
+            let project = self
+                .root
+                .join("home")
+                .join(".claude")
+                .join("projects")
+                .join("-tmp-project");
+            std::fs::create_dir_all(&project).unwrap();
+            let file = project.join(format!("{id}.jsonl"));
+            std::fs::write(&file, "{\"type\":\"user\"}\n").unwrap();
+            PersistedAgentSession {
+                transcript_path: Some(file),
+                ..claude_session(id)
+            }
+        }
+
+        fn backup_of(&self, id: &str) -> Option<PathBuf> {
+            fn find(dir: &Path, id: &str) -> Option<PathBuf> {
+                for entry in std::fs::read_dir(dir).ok()?.filter_map(Result::ok) {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        if path.file_name().is_some_and(|name| name == id)
+                            && path.join("transcript.jsonl").is_file()
+                        {
+                            return Some(path.join("transcript.jsonl"));
+                        }
+                        if let Some(found) = find(&path, id) {
+                            return Some(found);
+                        }
+                    }
+                }
+                None
+            }
+            find(&self.root.join("config"), id)
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn app_with_agent_pane(session: PersistedAgentSession) -> (App, crate::layout::PaneId) {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("transcripts");
+        let pane = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane).unwrap().clone();
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_persisted_agent_session(session);
+        app.policy.persist_session = true;
+        app.backup_agent_transcripts = true;
+        (app, pane)
     }
 
     #[test]
@@ -239,10 +361,10 @@ mod tests {
         app.state.ensure_test_terminals();
 
         let terminal = app.state.terminals.get_mut(&live_terminal).unwrap();
-        terminal.cwd = std::path::PathBuf::from("/tmp/live");
+        terminal.cwd = PathBuf::from("/tmp/live");
         terminal.set_persisted_agent_session(claude_session("live-session"));
         let terminal = app.state.terminals.get_mut(&parked_terminal).unwrap();
-        terminal.cwd = std::path::PathBuf::from("/tmp/parked");
+        terminal.cwd = PathBuf::from("/tmp/parked");
         terminal.restore_suspended_agent(
             "claude".into(),
             Some("reviewer".into()),
@@ -260,18 +382,12 @@ mod tests {
         assert_eq!(requests[0].session.session_ref.value, "live-session");
         assert_eq!(
             requests[0].session.transcript_path.as_deref(),
-            Some(std::path::Path::new("/tmp/live-session.jsonl"))
+            Some(Path::new("/tmp/live-session.jsonl"))
         );
-        assert_eq!(
-            requests[0].cwd.as_deref(),
-            Some(std::path::Path::new("/tmp/live"))
-        );
+        assert_eq!(requests[0].cwd.as_deref(), Some(Path::new("/tmp/live")));
         assert_eq!(requests[0].label.as_deref(), Some("review"));
         assert_eq!(requests[1].session.session_ref.value, "parked-session");
-        assert_eq!(
-            requests[1].cwd.as_deref(),
-            Some(std::path::Path::new("/tmp/parked"))
-        );
+        assert_eq!(requests[1].cwd.as_deref(), Some(Path::new("/tmp/parked")));
     }
 
     #[test]
@@ -325,5 +441,95 @@ mod tests {
             .expect("next pass is scheduled");
         assert!(deadline >= before + AGENT_TRANSCRIPT_BACKUP_INTERVAL);
         assert!(app.agent_transcript_backup_thread.is_none());
+    }
+
+    #[test]
+    fn queued_session_brings_the_next_pass_forward_and_rides_along() {
+        let sandbox = Sandbox::new("queue");
+        let session = sandbox.native_session("queued-session");
+        let (mut app, pane) = app_with_agent_pane(session.clone());
+        assert!(!app.agent_transcript_backup_due(Instant::now()));
+
+        app.queue_agent_transcript_backup(0, pane, session.clone());
+        app.queue_agent_transcript_backup(0, pane, session.clone());
+        assert_eq!(app.agent_transcript_backup_pending.len(), 1);
+        assert!(app.agent_transcript_backup_due(Instant::now()));
+        assert!(sandbox.backup_of("queued-session").is_none());
+
+        // The pass runs off the loop and drains the queue; a closed pane's
+        // queued session is still copied.
+        app.state.workspaces.clear();
+        app.sync_agent_transcript_backups();
+        assert!(app.agent_transcript_backup_pending.is_empty());
+        let thread = app
+            .agent_transcript_backup_thread
+            .take()
+            .expect("pass runs on a thread");
+        thread.join().unwrap();
+        let backup = sandbox.backup_of("queued-session").expect("backup written");
+        assert_eq!(
+            std::fs::read_to_string(backup).unwrap(),
+            "{\"type\":\"user\"}\n"
+        );
+        assert!(!app.agent_transcript_backup_due(Instant::now()));
+    }
+
+    #[test]
+    fn queue_is_inert_when_backups_are_off_and_cleared_by_a_disabled_pass() {
+        let (mut app, pane) = app_with_agent_pane(claude_session("off"));
+        app.backup_agent_transcripts = false;
+        app.agent_transcript_backup_deadline = None;
+        app.queue_agent_transcript_backup(0, pane, claude_session("off"));
+        assert!(app.agent_transcript_backup_pending.is_empty());
+        assert!(app.agent_transcript_backup_deadline.is_none());
+
+        app.backup_agent_transcripts = true;
+        app.queue_agent_transcript_backup(0, pane, claude_session("off"));
+        assert_eq!(app.agent_transcript_backup_pending.len(), 1);
+        app.backup_agent_transcripts = false;
+        app.sync_agent_transcript_backups();
+        assert!(app.agent_transcript_backup_pending.is_empty());
+        assert!(app.agent_transcript_backup_thread.is_none());
+    }
+
+    #[test]
+    fn a_pass_behind_a_running_one_retries_soon_and_keeps_the_queue() {
+        let (mut app, pane) = app_with_agent_pane(claude_session("busy"));
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        app.agent_transcript_backup_thread = Some(std::thread::spawn(move || {
+            let _ = release_rx.recv();
+        }));
+        app.queue_agent_transcript_backup(0, pane, claude_session("busy"));
+        let before = Instant::now();
+        app.sync_agent_transcript_backups();
+        assert_eq!(app.agent_transcript_backup_pending.len(), 1);
+        let deadline = app
+            .agent_transcript_backup_deadline
+            .expect("retry scheduled");
+        assert!(deadline <= before + AGENT_TRANSCRIPT_BACKUP_RETRY + Duration::from_secs(1));
+        assert!(deadline < before + AGENT_TRANSCRIPT_BACKUP_INTERVAL);
+        release_tx.send(()).unwrap();
+        app.agent_transcript_backup_thread
+            .take()
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn shutdown_pass_drains_the_queue_even_when_the_snapshot_is_current() {
+        let sandbox = Sandbox::new("shutdown");
+        let session = sandbox.native_session("shutdown-session");
+        let (mut app, pane) = app_with_agent_pane(session.clone());
+        app.queue_agent_transcript_backup(0, pane, session);
+        // The early-skip branch of the shutdown save: nothing to snapshot.
+        app.pane_exit_checkpoint_pending = true;
+        app.state.session_dirty = false;
+
+        app.save_session_on_shutdown();
+        assert!(app.agent_transcript_backup_pending.is_empty());
+        assert!(app.agent_transcript_backup_thread.is_none());
+        assert!(app.session_save_deadline.is_none());
+        assert!(sandbox.backup_of("shutdown-session").is_some());
     }
 }

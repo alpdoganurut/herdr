@@ -187,8 +187,9 @@ impl App {
             return Err(AgentSuspendError::InputFailed(err.to_string()));
         }
         // The parked session must outlive the agent's own transcript
-        // retention; copy it now rather than waiting for the periodic pass.
-        self.backup_agent_transcript_now(resolved.ws_idx, resolved.pane_id, session);
+        // retention; queue it for the next backup pass rather than waiting
+        // for the periodic interval.
+        self.queue_agent_transcript_backup(resolved.ws_idx, resolved.pane_id, session);
         self.state.mark_session_dirty();
         self.schedule_session_save();
         self.emit_agent_status_transition(resolved.ws_idx, resolved.pane_id);
