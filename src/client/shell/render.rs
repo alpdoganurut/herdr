@@ -248,6 +248,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) reveal_navigation_workspace: &'a mut bool,
     pub(super) dragged_workspace_id: Option<&'a str>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
+    /// `tabs` layout: indicator row of an in-flight tab drag.
+    pub(super) sidebar_tab_drop_row: Option<u16>,
 }
 
 pub(super) fn render_shell(
@@ -342,6 +344,10 @@ pub(super) fn render_shell(
         hits.machines.clear();
         hits.workspaces.clear();
         hits.sidebar_tabs.clear();
+        hits.sidebar_groups.clear();
+        hits.group_fold_all = Rect::default();
+        hits.group_unfold_all = Rect::default();
+        hits.group_new = Rect::default();
         hits.agents.clear();
         hits.endpoint_agents.clear();
         hits.tab_scroll_left = Rect::default();

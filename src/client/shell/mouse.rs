@@ -1174,6 +1174,17 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                Some(ClientChromeDrag::SidebarTab { .. }) => {
+                    let target = self.sidebar_tab_drop_at(point);
+                    if let Some(ClientChromeDrag::SidebarTab {
+                        target: current, ..
+                    }) = self.chrome_drag.as_mut()
+                    {
+                        *current = target;
+                    }
+                    outcome.repaint = true;
+                    return;
+                }
                 Some(ClientChromeDrag::Workspace { .. }) => {
                     let target = self.workspace_drop_target_at(point);
                     if let Some(ClientChromeDrag::Workspace {
@@ -1213,7 +1224,16 @@ impl ClientShellState {
                     .abs_diff(press.start_column)
                     .max(mouse.row.abs_diff(press.start_row));
                 if delta >= 1 {
-                    if let Some(insert_index) = self.tab_drop_index_at(point) {
+                    if self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs {
+                        // No tab bar in this layout: the press came from a sidebar row.
+                        let target = self.sidebar_tab_drop_at(point);
+                        self.chrome_drag = Some(ClientChromeDrag::SidebarTab {
+                            tab_id: press.tab_id.clone(),
+                            workspace_id: press.workspace_id.clone(),
+                            target,
+                        });
+                        outcome.repaint = true;
+                    } else if let Some(insert_index) = self.tab_drop_index_at(point) {
                         self.chrome_drag = Some(ClientChromeDrag::Tab {
                             tab_id: press.tab_id.clone(),
                             workspace_id: press.workspace_id.clone(),
@@ -1267,11 +1287,43 @@ impl ClientShellState {
                         source_workspace_id,
                         target,
                     } => {
-                        if let Some((before_workspace_id, _)) = target {
+                        if let Some((mut before_workspace_id, _)) = target {
+                            // tabs layout: the first space is the ungrouped bucket and
+                            // nothing may be dropped above it.
+                            if self.config.sidebar_layout
+                                == crate::config::SidebarLayoutConfig::Tabs
+                            {
+                                if let Some(snapshot) = self.snapshot.as_deref() {
+                                    let first = snapshot
+                                        .workspaces
+                                        .first()
+                                        .map(|workspace| workspace.workspace_id.as_str());
+                                    if before_workspace_id.as_deref() == first {
+                                        before_workspace_id = snapshot
+                                            .workspaces
+                                            .get(1)
+                                            .map(|workspace| workspace.workspace_id.clone());
+                                    }
+                                }
+                            }
                             if let Some(method) = self.workspace_move_method(
                                 &source_workspace_id,
                                 before_workspace_id.as_deref(),
                             ) {
+                                self.push_endpoint_method(method, outcome);
+                            }
+                        }
+                        outcome.repaint = true;
+                    }
+                    ClientChromeDrag::SidebarTab {
+                        tab_id,
+                        workspace_id,
+                        target,
+                    } => {
+                        if let Some(target) = target {
+                            if let Some(method) =
+                                self.sidebar_tab_move_method(&tab_id, &workspace_id, &target)
+                            {
                                 self.push_endpoint_method(method, outcome);
                             }
                         }
@@ -1811,7 +1863,11 @@ impl ClientShellState {
                     .then(|| self.active_endpoint_workspace_at(point))
                     .flatten();
                 if let Some(workspace_id) = workspace_id {
-                    self.open_workspace_context_menu(workspace_id, mouse.column, mouse.row);
+                    if self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs {
+                        self.open_group_context_menu(workspace_id, mouse.column, mouse.row);
+                    } else {
+                        self.open_workspace_context_menu(workspace_id, mouse.column, mouse.row);
+                    }
                     outcome.repaint = true;
                     return;
                 }
@@ -2090,6 +2146,43 @@ impl ClientShellState {
                     self.persist_chrome_preferences(outcome);
                     return;
                 }
+                if super::contains(self.hits.group_fold_all, point) {
+                    self.set_all_groups_folded(true, outcome);
+                    return;
+                }
+                if super::contains(self.hits.group_unfold_all, point) {
+                    self.set_all_groups_folded(false, outcome);
+                    return;
+                }
+                if super::contains(self.hits.group_new, point) {
+                    self.open_move_tab_to_group_overlay();
+                    outcome.repaint = true;
+                    return;
+                }
+                let sidebar_tab_press = self
+                    .hits
+                    .sidebar_tabs
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .and_then(|(_, tab_id)| {
+                        let tab = self
+                            .snapshot
+                            .as_deref()?
+                            .tabs
+                            .iter()
+                            .find(|tab| tab.tab_id == *tab_id)?;
+                        Some(ClientTabPress {
+                            tab_id: tab.tab_id.clone(),
+                            workspace_id: tab.workspace_id.clone(),
+                            start_column: mouse.column,
+                            start_row: mouse.row,
+                        })
+                    });
+                if let Some(press) = sidebar_tab_press {
+                    // Click focuses on release; a moved press becomes a drag.
+                    self.tab_press = Some(press);
+                    return;
+                }
                 let workspace_press = self
                     .hits
                     .workspaces
@@ -2105,21 +2198,7 @@ impl ClientShellState {
                     self.workspace_press = Some(workspace_press);
                     return;
                 }
-                let sidebar_tab_id = self
-                    .hits
-                    .sidebar_tabs
-                    .iter()
-                    .find(|(rect, _)| super::contains(*rect, point))
-                    .map(|(_, tab_id)| tab_id.clone());
-                if let Some(tab_id) = sidebar_tab_id {
-                    self.push_endpoint_method(
-                        crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
-                            tab_id,
-                        }),
-                        outcome,
-                    );
-                    return;
-                }
+
                 let tab_press = self
                     .config
                     .mouse_capture
@@ -2413,5 +2492,201 @@ impl ClientShellState {
             },
             outcome,
         );
+    }
+}
+
+impl ClientShellState {
+    /// Drop slot for a sidebar tab drag. Slots sit above every tab row (insert
+    /// before that tab) and below the last row of each group's run (append);
+    /// a group header is "append to that group". Nearest row wins.
+    pub(super) fn sidebar_tab_drop_at(&self, point: (u16, u16)) -> Option<ClientSidebarTabDrop> {
+        let snapshot = self.snapshot.as_deref()?;
+        let body = self.hits.agent_body;
+        if body.height == 0 || point.1 < body.y.saturating_sub(1) || point.1 > body.bottom() {
+            return None;
+        }
+        let tab_workspace = |tab_id: &str| {
+            snapshot
+                .tabs
+                .iter()
+                .find(|tab| tab.tab_id == tab_id)
+                .map(|tab| tab.workspace_id.clone())
+        };
+        let index_in_workspace = |tab_id: &str, workspace_id: &str| {
+            snapshot
+                .tabs
+                .iter()
+                .filter(|tab| tab.workspace_id == workspace_id)
+                .position(|tab| tab.tab_id == tab_id)
+        };
+        // Exact rows win: a header row means "append to that group", a tab row
+        // means "insert before that tab". Only the gaps fall back to nearest.
+        if let Some((_, workspace_id)) = self
+            .hits
+            .sidebar_groups
+            .iter()
+            .find(|(rect, _)| rect.y == point.1)
+        {
+            let len = snapshot
+                .tabs
+                .iter()
+                .filter(|tab| tab.workspace_id == *workspace_id)
+                .count();
+            return Some(ClientSidebarTabDrop {
+                workspace_id: workspace_id.clone(),
+                insert_index: len,
+                row: point.1,
+            });
+        }
+        if let Some((rect, tab_id)) = self
+            .hits
+            .sidebar_tabs
+            .iter()
+            .find(|(rect, _)| rect.y == point.1)
+        {
+            let workspace_id = tab_workspace(tab_id)?;
+            let index = index_in_workspace(tab_id, &workspace_id)?;
+            return Some(ClientSidebarTabDrop {
+                workspace_id,
+                insert_index: index,
+                row: rect.y,
+            });
+        }
+        let mut slots: Vec<ClientSidebarTabDrop> = Vec::new();
+        for (rect, tab_id) in &self.hits.sidebar_tabs {
+            let Some(workspace_id) = tab_workspace(tab_id) else {
+                continue;
+            };
+            let Some(index) = index_in_workspace(tab_id, &workspace_id) else {
+                continue;
+            };
+            slots.push(ClientSidebarTabDrop {
+                workspace_id: workspace_id.clone(),
+                insert_index: index,
+                row: rect.y,
+            });
+            // After the last tab of a group's run: append.
+            let next_is_same_group = self
+                .hits
+                .sidebar_tabs
+                .iter()
+                .find(|(other, _)| other.y == rect.y + 1)
+                .and_then(|(_, other_id)| tab_workspace(other_id))
+                .is_some_and(|other| other == workspace_id);
+            if !next_is_same_group {
+                let len = snapshot
+                    .tabs
+                    .iter()
+                    .filter(|tab| tab.workspace_id == workspace_id)
+                    .count();
+                slots.push(ClientSidebarTabDrop {
+                    workspace_id,
+                    insert_index: len,
+                    row: rect.bottom(),
+                });
+            }
+        }
+        for (rect, workspace_id) in &self.hits.sidebar_groups {
+            let len = snapshot
+                .tabs
+                .iter()
+                .filter(|tab| tab.workspace_id == *workspace_id)
+                .count();
+            slots.push(ClientSidebarTabDrop {
+                workspace_id: workspace_id.clone(),
+                insert_index: len,
+                row: rect.y,
+            });
+        }
+        slots
+            .into_iter()
+            .enumerate()
+            .min_by_key(|(index, slot)| (point.1.abs_diff(slot.row), *index))
+            .map(|(_, slot)| slot)
+    }
+
+    /// The method a sidebar tab drop turns into: `tab.move` inside its own group,
+    /// `pane.move` into another group (appended there; a single-pane tab moves
+    /// as a whole and keeps its label).
+    pub(super) fn sidebar_tab_move_method(
+        &self,
+        tab_id: &str,
+        workspace_id: &str,
+        target: &ClientSidebarTabDrop,
+    ) -> Option<crate::api::schema::Method> {
+        let snapshot = self.snapshot.as_deref()?;
+        if target.workspace_id == workspace_id {
+            let tabs = snapshot
+                .tabs
+                .iter()
+                .filter(|tab| tab.workspace_id == workspace_id)
+                .collect::<Vec<_>>();
+            let source = tabs.iter().position(|tab| tab.tab_id == tab_id)?;
+            // List semantics: dropping on a row below the source lands after that
+            // row; above, before it. `insert_index` counts the pre-removal list.
+            let insert_index = if target.insert_index > source {
+                (target.insert_index + 1).min(tabs.len())
+            } else {
+                target.insert_index
+            };
+            if insert_index == source || insert_index == source + 1 {
+                return None;
+            }
+            return Some(crate::api::schema::Method::TabMove(
+                crate::api::schema::TabMoveParams {
+                    tab_id: tab_id.to_owned(),
+                    insert_index,
+                },
+            ));
+        }
+        self.move_tab_to_workspace_method(tab_id, &target.workspace_id, true)
+    }
+
+    /// `pane.move` that carries a whole single-pane tab into `workspace_id`.
+    pub(super) fn move_tab_to_workspace_method(
+        &self,
+        tab_id: &str,
+        workspace_id: &str,
+        focus: bool,
+    ) -> Option<crate::api::schema::Method> {
+        let snapshot = self.snapshot.as_deref()?;
+        let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id)?;
+        let pane = snapshot.panes.iter().find(|pane| pane.tab_id == tab_id)?;
+        Some(crate::api::schema::Method::PaneMove(
+            crate::api::schema::PaneMoveParams {
+                pane_id: pane.pane_id.clone(),
+                destination: crate::api::schema::PaneMoveDestination::NewTab {
+                    workspace_id: Some(workspace_id.to_owned()),
+                    label: tab.custom_label.then(|| tab.label.clone()),
+                },
+                focus,
+            },
+        ))
+    }
+
+    /// Fold or unfold every group at once (`tabs` layout toolbar).
+    pub(super) fn set_all_groups_folded(&mut self, folded: bool, outcome: &mut ClientShellInput) {
+        let keys = self
+            .snapshot
+            .as_deref()
+            .map(|snapshot| {
+                snapshot
+                    .workspaces
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| super::tab_sidebar::is_group_index(*index))
+                    .map(|(_, workspace)| group_key(&workspace.workspace_id))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for key in keys {
+            if folded {
+                self.collapsed_groups.insert(key);
+            } else {
+                self.collapsed_groups.remove(&key);
+            }
+        }
+        outcome.repaint = true;
+        self.persist_chrome_preferences(outcome);
     }
 }

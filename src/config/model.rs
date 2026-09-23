@@ -453,6 +453,8 @@ pub struct KeysConfig {
     pub clear_pane: BindingConfig,
     /// Suspend the focused pane's agent, or activate it again when it is suspended. Unset by default.
     pub toggle_agent_suspend: BindingConfig,
+    /// "tabs" sidebar layout: move the focused tab to a group by name, creating it when new. Unset by default.
+    pub move_tab_to_group: BindingConfig,
     /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
     pub copy_mode: BindingConfig,
     /// Focus the pane to the left. Default: "prefix+h".
@@ -588,6 +590,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_agent_suspend: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    move_tab_to_group: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     copy_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus_pane_left: Option<BindingConfig>,
@@ -699,6 +703,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(edit_scrollback);
         apply_field!(clear_pane);
         apply_field!(toggle_agent_suspend);
+        apply_field!(move_tab_to_group);
         apply_field!(copy_mode);
         apply_field!(focus_pane_left);
         apply_field!(focus_pane_down);
@@ -805,6 +810,7 @@ impl KeysConfig {
         copy_effective_action_field!(edit_scrollback, keybinds.edit_scrollback);
         copy_effective_action_field!(clear_pane, keybinds.clear_pane);
         copy_effective_action_field!(toggle_agent_suspend, keybinds.toggle_agent_suspend);
+        copy_effective_action_field!(move_tab_to_group, keybinds.move_tab_to_group);
         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
         copy_effective_action_field!(focus_pane_left, keybinds.focus_pane_left);
         copy_effective_action_field!(focus_pane_down, keybinds.focus_pane_down);
@@ -1181,6 +1187,7 @@ impl Default for KeysConfig {
             edit_scrollback: BindingConfig::one("prefix+e"),
             clear_pane: BindingConfig::default(),
             toggle_agent_suspend: BindingConfig::default(),
+            move_tab_to_group: BindingConfig::default(),
             copy_mode: BindingConfig::one("prefix+["),
             focus_pane_left: BindingConfig::one("prefix+h"),
             focus_pane_down: BindingConfig::one("prefix+j"),

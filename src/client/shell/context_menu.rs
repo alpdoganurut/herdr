@@ -58,6 +58,11 @@ impl ClientContextMenuOverlay {
                 items.push(item("Close", Action::Close));
                 items
             }
+            ClientContextMenuTarget::Group { .. } => vec![
+                item("Rename group", Action::Rename),
+                item("Ungroup", Action::Ungroup),
+                item("Close group", Action::CloseGroup),
+            ],
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -217,6 +222,9 @@ impl ClientShellState {
         match menu.target {
             ClientContextMenuTarget::Workspace { workspace_id, .. } => {
                 self.activate_workspace_context_action(workspace_id, action, outcome)
+            }
+            ClientContextMenuTarget::Group { workspace_id } => {
+                self.activate_group_context_action(workspace_id, action, outcome)
             }
             ClientContextMenuTarget::Tab {
                 tab_id,
@@ -499,6 +507,87 @@ impl ClientShellState {
             ),
             ClientContextMenuAction::ClosePane => {
                 self.push_endpoint_method(Method::PaneClose(PaneTarget { pane_id }), outcome)
+            }
+            _ => {}
+        }
+    }
+}
+
+impl ClientShellState {
+    /// `tabs` layout: right-click on a group header.
+    pub(super) fn open_group_context_menu(&mut self, workspace_id: String, x: u16, y: u16) {
+        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::Group { workspace_id },
+            x,
+            y,
+            highlighted: 0,
+        }));
+    }
+
+    fn activate_group_context_action(
+        &mut self,
+        workspace_id: String,
+        action: ClientContextMenuAction,
+        outcome: &mut ClientShellInput,
+    ) {
+        match action {
+            ClientContextMenuAction::Rename => {
+                let label = self.snapshot.as_deref().and_then(|snapshot| {
+                    snapshot
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.workspace_id == workspace_id)
+                        .map(|workspace| workspace.label.clone())
+                });
+                if let Some(label) = label {
+                    self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+                        title: "rename group",
+                        input: TextEditor::new(&label, false),
+                        target: ClientRenameTarget::Workspace { workspace_id },
+                    }));
+                }
+            }
+            ClientContextMenuAction::Ungroup => {
+                // Every member goes to the ungrouped bucket (the first space); the
+                // emptied space is removed by the server.
+                let moves = self
+                    .snapshot
+                    .as_deref()
+                    .and_then(|snapshot| {
+                        let first = snapshot.workspaces.first()?.workspace_id.clone();
+                        if first == workspace_id {
+                            return None;
+                        }
+                        Some(
+                            snapshot
+                                .tabs
+                                .iter()
+                                .filter(|tab| tab.workspace_id == workspace_id)
+                                .filter_map(|tab| {
+                                    self.move_tab_to_workspace_method(&tab.tab_id, &first, false)
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .unwrap_or_default();
+                for method in moves {
+                    self.push_endpoint_method(method, outcome);
+                }
+            }
+            ClientContextMenuAction::CloseGroup => {
+                if self.config.confirm_close {
+                    self.open_close_group_confirmation(workspace_id);
+                } else {
+                    self.push_endpoint_method(
+                        crate::api::schema::Method::WorkspaceClose(
+                            crate::api::schema::WorkspaceCloseParams {
+                                workspace_id,
+                                close_group: false,
+                            },
+                        ),
+                        outcome,
+                    );
+                }
             }
             _ => {}
         }

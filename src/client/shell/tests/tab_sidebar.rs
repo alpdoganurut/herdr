@@ -64,11 +64,15 @@ fn tabs_layout_lists_every_tab_in_order_and_hides_space_rows() {
     state.set_pane_surface(surface());
     let frame = state.compose(106, 20).expect("composed frame");
 
-    assert!(
-        state.hits.workspaces.is_empty(),
-        "no space rows in tabs layout"
-    );
-    assert_eq!(state.hits.new_workspace, ratatui::layout::Rect::default());
+    // Only group headers register as space hits (ws_2 is a group; ws_1 is the bucket).
+    let header_ids = state
+        .hits
+        .workspaces
+        .iter()
+        .map(|hit| hit.workspace_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(header_ids, ["ws_2"]);
+    assert_eq!(state.hits.new_workspace.width, 0, "no new-space button");
     assert_eq!(
         state.hits.sidebar_section_divider,
         ratatui::layout::Rect::default()
@@ -97,8 +101,8 @@ fn tabs_layout_lists_every_tab_in_order_and_hides_space_rows() {
     );
     assert!(state.hits.agent_body.height >= 3);
     assert_eq!(
-        state.hits.sidebar_tabs[0].0.y, 0,
-        "the list starts on the first row; there is no header"
+        state.hits.sidebar_tabs[0].0.y, 1,
+        "the list starts right under the one-row toolbar"
     );
 }
 
@@ -110,8 +114,18 @@ fn tabs_layout_rows_focus_on_click_and_open_the_tab_menu_on_right_click() {
     state.compose(106, 20).expect("composed frame");
 
     let (rect, _) = state.hits.sidebar_tabs[2];
-    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+    let pressed = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
+        column: rect.x + 2,
+        row: rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(
+        pressed.actions.is_empty(),
+        "focus waits for release (drag-safe)"
+    );
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
         column: rect.x + 2,
         row: rect.y,
         modifiers: KeyModifiers::empty(),
@@ -729,4 +743,394 @@ fn tab_menu_acts_on_the_pane_captured_when_it_opened() {
         method,
         crate::api::schema::Method::AgentActivate(params) if params.target == "pane_2"
     )));
+}
+
+fn pane(pane_id: &str, workspace_id: &str, tab_id: &str) -> ClientShellPane {
+    ClientShellPane {
+        pane_id: pane_id.into(),
+        workspace_id: workspace_id.into(),
+        tab_id: tab_id.into(),
+        label: None,
+        cwd: Some("/repo".into()),
+        foreground_cwd: Some("/repo".into()),
+        focused: false,
+        right_click_passthrough: false,
+    }
+}
+
+/// Bucket ws_1 (reviewer, planner), group "api" ws_2 (notes), group "infra" ws_3 (deploy).
+fn three_space_snapshot() -> ClientShellSnapshot {
+    let mut snapshot = two_space_snapshot();
+    snapshot.workspaces[1].label = "api".into();
+    let mut third = snapshot.workspaces[1].clone();
+    third.workspace_id = "ws_3".into();
+    third.active_tab_id = "tab_4".into();
+    third.number = 3;
+    third.label = "infra".into();
+    snapshot.workspaces.push(third);
+    snapshot.tabs.push(tab(
+        "tab_4",
+        "ws_3",
+        1,
+        "deploy",
+        false,
+        AgentStatus::Working,
+    ));
+    snapshot.panes = vec![
+        pane("pane_1", "ws_1", "tab_1"),
+        pane("pane_2", "ws_1", "tab_2"),
+        pane("pane_3", "ws_2", "tab_3"),
+        pane("pane_4", "ws_3", "tab_4"),
+    ];
+    snapshot
+}
+
+fn grouped_state() -> ClientShellState {
+    let mut config = tabs_config();
+    config.keys.move_tab_to_group = crate::config::BindingConfig::one("alt+g");
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(three_space_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("composed frame");
+    state
+}
+
+fn listed_tab_ids(state: &ClientShellState) -> Vec<String> {
+    state
+        .hits
+        .sidebar_tabs
+        .iter()
+        .map(|(_, id)| id.clone())
+        .collect()
+}
+
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> RawInputEvent {
+    RawInputEvent::Mouse(MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    })
+}
+
+#[test]
+fn groups_render_headers_after_the_bucket_and_the_focused_group_never_folds() {
+    let mut state = grouped_state();
+    let frame = state.compose(106, 24).expect("composed frame");
+    let headers = state
+        .hits
+        .sidebar_groups
+        .iter()
+        .map(|(rect, id)| (row_text(&frame, *rect), id.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(headers.len(), 2);
+    assert!(
+        headers[0].0.contains("▾ api") && headers[0].0.contains('1'),
+        "{headers:?}"
+    );
+    assert_eq!(headers[0].1, "ws_2");
+    assert!(headers[1].0.contains("▾ infra"), "{headers:?}");
+    let body = state.hits.agent_body;
+    let rows = (0..body.height)
+        .map(|offset| {
+            row_text(
+                &frame,
+                ratatui::layout::Rect::new(body.x, body.y + offset, body.width, 1),
+            )
+            .trim()
+            .to_string()
+        })
+        .filter(|row| !row.is_empty())
+        .collect::<Vec<_>>();
+    assert!(
+        rows[0].contains("reviewer") && rows[1].contains("planner"),
+        "{rows:?}"
+    );
+    assert!(
+        rows[2].contains("api") && rows[3].contains("notes"),
+        "{rows:?}"
+    );
+    assert!(
+        rows[4].contains("infra") && rows[5].contains("deploy"),
+        "{rows:?}"
+    );
+
+    state.collapsed_groups.insert(group_key("ws_2"));
+    state.collapsed_groups.insert(group_key("ws_3"));
+    state.compose(106, 24).expect("composed frame");
+    assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_2"]);
+
+    let mut snapshot = three_space_snapshot();
+    snapshot.focused_tab_id = Some("tab_4".into());
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == "tab_4";
+    }
+    state.set_snapshot(Box::new(snapshot));
+    state.compose(106, 24).expect("composed frame");
+    assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_2", "tab_4"]);
+}
+
+#[test]
+fn header_click_toggles_one_group_and_the_toolbar_folds_or_unfolds_all() {
+    let mut state = grouped_state();
+    let (header, _) = state.hits.sidebar_groups[0];
+    let outcome = state.handle_raw_events(vec![
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            header.x + 3,
+            header.y,
+        ),
+        mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            header.x + 3,
+            header.y,
+        ),
+    ]);
+    assert!(
+        endpoint_methods(&outcome).is_empty(),
+        "a header click folds, it does not focus the space"
+    );
+    assert!(state.collapsed_groups.contains(&group_key("ws_2")));
+    state.compose(106, 24).expect("composed frame");
+    assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_2", "tab_4"]);
+
+    let fold_all = state.hits.group_fold_all;
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        fold_all.x,
+        fold_all.y,
+    )]);
+    state.compose(106, 24).expect("composed frame");
+    assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_2"]);
+
+    let unfold_all = state.hits.group_unfold_all;
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        unfold_all.x,
+        unfold_all.y,
+    )]);
+    state.compose(106, 24).expect("composed frame");
+    assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_2", "tab_3", "tab_4"]);
+    assert!(state.collapsed_groups.is_empty());
+}
+
+#[test]
+fn header_menu_renames_ungroups_and_closes_a_group_without_touching_worktree_siblings() {
+    let mut state = grouped_state();
+    let (header, _) = state.hits.sidebar_groups[1];
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Right),
+        header.x + 3,
+        header.y,
+    )]);
+    let items = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => {
+            assert!(matches!(
+                menu.target,
+                ClientContextMenuTarget::Group { ref workspace_id } if workspace_id == "ws_3"
+            ));
+            menu.items()
+        }
+        _ => panic!("group context menu"),
+    };
+    let actions = items.iter().map(|item| item.action).collect::<Vec<_>>();
+    assert_eq!(
+        actions,
+        [
+            ClientContextMenuAction::Rename,
+            ClientContextMenuAction::Ungroup,
+            ClientContextMenuAction::CloseGroup
+        ]
+    );
+
+    state.compose(106, 24).expect("menu");
+    let row = state.hits.context_menu_rows[1].0;
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        row.x + 1,
+        row.y,
+    )]);
+    let moves = endpoint_methods(&outcome)
+        .into_iter()
+        .filter_map(|method| match method {
+            crate::api::schema::Method::PaneMove(params) => Some(params.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(moves.len(), 1);
+    assert_eq!(moves[0].pane_id, "pane_4");
+    assert!(matches!(
+        &moves[0].destination,
+        crate::api::schema::PaneMoveDestination::NewTab { workspace_id: Some(ws), label: Some(label) }
+            if ws == "ws_1" && label == "deploy"
+    ));
+
+    state.compose(106, 24).expect("composed frame");
+    let (header, _) = state.hits.sidebar_groups[0];
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Right),
+        header.x + 3,
+        header.y,
+    )]);
+    state.compose(106, 24).expect("menu");
+    let row = state.hits.context_menu_rows[2].0;
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        row.x + 1,
+        row.y,
+    )]);
+    // confirm_close is on by default: a "Close group?" prompt, then Enter closes
+    // the space alone (never its worktree siblings).
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::ConfirmClose(ClientConfirmCloseOverlay {
+            ref title, close_group: false, ..
+        })) if title == "Close group?"
+    ));
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::WorkspaceClose(params)
+            if params.workspace_id == "ws_2" && !params.close_group
+    )));
+}
+
+#[test]
+fn move_tab_to_group_prompt_joins_an_existing_group_or_creates_one() {
+    use crate::input::{KeybindAction, KeybindMatch};
+    let mut state = grouped_state();
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        KeybindMatch::Action(KeybindAction::MoveTabToGroup),
+        &mut outcome,
+    );
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            target: ClientRenameTarget::MoveTabToGroup { ref pane_id, .. },
+            ..
+        })) if pane_id == "pane_1"
+    ));
+    let outcome = state.handle_input_bytes(b"API\r");
+    assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::PaneMove(params)
+            if params.pane_id == "pane_1" && params.focus && matches!(
+                &params.destination,
+                crate::api::schema::PaneMoveDestination::NewTab { workspace_id: Some(ws), .. } if ws == "ws_2"
+            )
+    )));
+
+    state.compose(106, 24).expect("composed frame");
+    let plus = state.hits.group_new;
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        plus.x,
+        plus.y,
+    )]);
+    let outcome = state.handle_input_bytes(b"parked\r");
+    assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::PaneMove(params)
+            if matches!(
+                &params.destination,
+                crate::api::schema::PaneMoveDestination::NewWorkspace { label: Some(label), tab_label: Some(tab_label) }
+                    if label == "parked" && tab_label == "reviewer"
+            )
+    )));
+}
+
+#[test]
+fn header_drag_reorders_groups_and_tab_drag_moves_within_or_across_groups() {
+    let mut state = grouped_state();
+    let (api, _) = state.hits.sidebar_groups[0];
+    let (infra, _) = state.hits.sidebar_groups[1];
+    let outcome = state.handle_raw_events(vec![
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            infra.x + 3,
+            infra.y,
+        ),
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            infra.x + 3,
+            api.y.saturating_sub(1),
+        ),
+        mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            infra.x + 3,
+            api.y.saturating_sub(1),
+        ),
+    ]);
+    assert!(
+        endpoint_methods(&outcome).iter().any(|method| matches!(
+            method,
+            crate::api::schema::Method::WorkspaceMove(params)
+                if params.workspace_id == "ws_3" && params.insert_index == 1
+        )),
+        "{:?}",
+        endpoint_methods(&outcome)
+    );
+
+    state.compose(106, 24).expect("composed frame");
+    let (reviewer, _) = state.hits.sidebar_tabs[0];
+    let (planner, _) = state.hits.sidebar_tabs[1];
+    let outcome = state.handle_raw_events(vec![
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            reviewer.x + 3,
+            reviewer.y,
+        ),
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            reviewer.x + 3,
+            planner.y,
+        ),
+        mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            reviewer.x + 3,
+            planner.y,
+        ),
+    ]);
+    assert!(
+        endpoint_methods(&outcome).iter().any(|method| matches!(
+            method,
+            crate::api::schema::Method::TabMove(params)
+                if params.tab_id == "tab_1" && params.insert_index == 2
+        )),
+        "{:?}",
+        endpoint_methods(&outcome)
+    );
+
+    state.compose(106, 24).expect("composed frame");
+    let (planner, _) = state.hits.sidebar_tabs[1];
+    let (api, _) = state.hits.sidebar_groups[0];
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        planner.x + 3,
+        planner.y,
+    )]);
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        planner.x + 3,
+        api.y,
+    )]);
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        planner.x + 3,
+        api.y,
+    )]);
+    assert!(
+        endpoint_methods(&outcome).iter().any(|method| matches!(
+            method,
+            crate::api::schema::Method::PaneMove(params)
+                if params.pane_id == "pane_2" && matches!(
+                    &params.destination,
+                    crate::api::schema::PaneMoveDestination::NewTab { workspace_id: Some(ws), label: Some(label) }
+                        if ws == "ws_2" && label == "planner"
+                )
+        )),
+        "{:?}",
+        endpoint_methods(&outcome)
+    );
 }

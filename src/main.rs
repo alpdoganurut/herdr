@@ -174,6 +174,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # edit_scrollback = "prefix+e"
 # clear_pane = ""                  # unbound; e.g. "prefix+ctrl+k"
 # toggle_agent_suspend = ""        # unbound; suspends the focused agent, or activates it again
+# move_tab_to_group = ""            # unbound; "tabs" layout: move the focused tab to a group by name
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"

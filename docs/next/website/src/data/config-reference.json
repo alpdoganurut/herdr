@@ -710,6 +710,12 @@
           "description": "Suspend the focused pane's agent (graceful exit, native session reference kept), or activate it again when it is suspended. Unset by default; for example, toggle_agent_suspend = \"alt+s\"."
         },
         {
+          "key": "keys.move_tab_to_group",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "\"tabs\" sidebar layout: prompt for a group name and move the focused tab there; a new name creates the group with this tab. Unset by default; for example, move_tab_to_group = \"alt+g\"."
+        },
+        {
           "key": "keys.copy_mode",
           "type": "keybinding",
           "default": "\"prefix+[\"",

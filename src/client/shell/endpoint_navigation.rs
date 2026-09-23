@@ -35,6 +35,16 @@ impl ClientShellState {
         press: ClientWorkspacePress,
         outcome: &mut ClientShellInput,
     ) {
+        if self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+            && press.endpoint_id.is_local()
+        {
+            // A group header click folds or unfolds that group.
+            let key = group_key(&press.workspace_id);
+            self.toggle_collapsed_group(&ClientEndpointId::Local, key);
+            outcome.repaint = true;
+            self.persist_chrome_preferences(outcome);
+            return;
+        }
         self.focus_or_activate(
             press.endpoint_id,
             ClientEndpointFocusTarget::Workspace(press.workspace_id),

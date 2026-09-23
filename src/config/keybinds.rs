@@ -349,6 +349,7 @@ pub struct Keybinds {
     pub edit_scrollback: ActionKeybinds,
     pub clear_pane: ActionKeybinds,
     pub toggle_agent_suspend: ActionKeybinds,
+    pub move_tab_to_group: ActionKeybinds,
     pub copy_mode: ActionKeybinds,
     pub focus_pane_left: ActionKeybinds,
     pub focus_pane_down: ActionKeybinds,
@@ -519,6 +520,7 @@ impl Config {
             edit_scrollback: empty_action!(),
             clear_pane: empty_action!(),
             toggle_agent_suspend: empty_action!(),
+            move_tab_to_group: empty_action!(),
             copy_mode: empty_action!(),
             focus_pane_left: empty_action!(),
             focus_pane_down: empty_action!(),
@@ -668,6 +670,7 @@ impl Config {
             apply_action!(keybinds.edit_scrollback, edit_scrollback, source);
             apply_action!(keybinds.clear_pane, clear_pane, source);
             apply_action!(keybinds.toggle_agent_suspend, toggle_agent_suspend, source);
+            apply_action!(keybinds.move_tab_to_group, move_tab_to_group, source);
             apply_action!(keybinds.copy_mode, copy_mode, source);
             apply_action!(keybinds.focus_pane_left, focus_pane_left, source);
             apply_action!(keybinds.focus_pane_down, focus_pane_down, source);

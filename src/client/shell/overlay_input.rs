@@ -377,6 +377,28 @@ impl ClientShellState {
         }));
     }
 
+    /// `tabs` layout: move the focused tab to a group named in the prompt,
+    /// creating the group when the name is new.
+    pub(super) fn open_move_tab_to_group_overlay(&mut self) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let Some(tab) = snapshot.tabs.iter().find(|tab| tab.focused) else {
+            return;
+        };
+        let Some(pane) = snapshot.panes.iter().find(|pane| pane.tab_id == tab.tab_id) else {
+            return;
+        };
+        self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            title: "move tab to group (existing name, or a new one)",
+            input: TextEditor::new("", true),
+            target: ClientRenameTarget::MoveTabToGroup {
+                pane_id: pane.pane_id.clone(),
+                tab_label: tab.custom_label.then(|| tab.label.clone()),
+            },
+        }));
+    }
+
     pub(super) fn open_new_tab_overlay(&mut self) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
@@ -980,6 +1002,41 @@ impl ClientShellState {
                     label: Some(trimmed.to_owned()),
                 },
             )),
+            ClientRenameTarget::MoveTabToGroup { pane_id, tab_label } => {
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    // An existing group (any space but the first, matched by name,
+                    // case-insensitively) takes the tab; otherwise the name creates
+                    // the group with this tab as its first member.
+                    let existing = self.snapshot.as_deref().and_then(|snapshot| {
+                        snapshot
+                            .workspaces
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| super::tab_sidebar::is_group_index(*index))
+                            .find(|(_, workspace)| workspace.label.eq_ignore_ascii_case(trimmed))
+                            .map(|(_, workspace)| workspace.workspace_id.clone())
+                    });
+                    let destination = match existing {
+                        Some(workspace_id) => crate::api::schema::PaneMoveDestination::NewTab {
+                            workspace_id: Some(workspace_id),
+                            label: tab_label,
+                        },
+                        None => crate::api::schema::PaneMoveDestination::NewWorkspace {
+                            label: Some(trimmed.to_owned()),
+                            tab_label,
+                        },
+                    };
+                    Some(crate::api::schema::Method::PaneMove(
+                        crate::api::schema::PaneMoveParams {
+                            pane_id,
+                            destination,
+                            focus: true,
+                        },
+                    ))
+                }
+            }
         };
         if let Some(method) = method {
             self.push_endpoint_method(method, outcome);
@@ -1035,7 +1092,7 @@ impl ClientShellState {
         } else {
             crate::api::schema::Method::WorkspaceClose(crate::api::schema::WorkspaceCloseParams {
                 workspace_id: confirm.workspace_id,
-                close_group: true,
+                close_group: confirm.close_group,
             })
         };
         self.push_endpoint_method(method, outcome);
@@ -1119,6 +1176,43 @@ impl ClientShellState {
                     "Close workspace?".to_owned()
                 },
                 detail: format!("{} — {scope}", workspace.label),
+                close_group: true,
+            },
+        ));
+        true
+    }
+
+    /// `tabs` layout: confirm closing a group (a space) and every tab in it. Never
+    /// `close_group: true` — a plain space may share a worktree key with another
+    /// space that must survive.
+    pub(super) fn open_close_group_confirmation(&mut self, workspace_id: String) -> bool {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return false;
+        };
+        let Some(workspace) = snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == workspace_id)
+        else {
+            return false;
+        };
+        let tabs = snapshot
+            .tabs
+            .iter()
+            .filter(|tab| tab.workspace_id == workspace_id)
+            .count();
+        let detail = if tabs == 1 {
+            format!("{} — 1 tab", workspace.label)
+        } else {
+            format!("{} — {tabs} tabs", workspace.label)
+        };
+        self.overlay = Some(ClientShellOverlay::ConfirmClose(
+            ClientConfirmCloseOverlay {
+                workspace_id,
+                tab_target: None,
+                title: "Close group?".to_owned(),
+                detail,
+                close_group: false,
             },
         ));
         true

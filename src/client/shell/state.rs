@@ -95,6 +95,12 @@ pub(super) struct ShellHitMap {
     /// Tab rows drawn by the `tabs` sidebar layout, separate from the tab bar's `tabs`
     /// so tab-bar drag/drop and mode-bar clearing keep their single-row assumptions.
     pub(super) sidebar_tabs: Vec<(Rect, String)>,
+    /// Group header rows of the `tabs` layout (rect, workspace id). Headers are also
+    /// registered in `workspaces` so the space drag machinery reorders groups.
+    pub(super) sidebar_groups: Vec<(Rect, String)>,
+    pub(super) group_fold_all: Rect,
+    pub(super) group_unfold_all: Rect,
+    pub(super) group_new: Rect,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
@@ -184,6 +190,20 @@ pub(super) struct ClientWorkspacePress {
     pub(super) start_row: u16,
 }
 
+/// Drop slot for a sidebar tab drag: the group it lands in, the position among
+/// that group's tabs (in the pre-removal list), and the indicator row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ClientSidebarTabDrop {
+    pub(super) workspace_id: String,
+    pub(super) insert_index: usize,
+    pub(super) row: u16,
+}
+
+/// Fold-state key for a space used as a tab group.
+pub(super) fn group_key(workspace_id: &str) -> String {
+    format!("space:{workspace_id}")
+}
+
 pub(super) struct ClientTabPress {
     pub(super) tab_id: String,
     pub(super) workspace_id: String,
@@ -220,6 +240,13 @@ pub(super) enum ClientChromeDrag {
     Workspace {
         source_workspace_id: String,
         target: Option<(Option<String>, u16)>,
+    },
+    /// A tab row dragged in the `tabs` sidebar layout: reorder inside its group or
+    /// move it to another group.
+    SidebarTab {
+        tab_id: String,
+        workspace_id: String,
+        target: Option<ClientSidebarTabDrop>,
     },
     PaneSplit {
         hit: PaneSplitHit,
@@ -319,6 +346,12 @@ pub(super) enum ClientRenameTarget {
     },
     Pane {
         pane_id: String,
+    },
+    /// `tabs` layout: type an existing group name to move the tab there, or a new
+    /// name to create the group with this tab.
+    MoveTabToGroup {
+        pane_id: String,
+        tab_label: Option<String>,
     },
 }
 
@@ -532,6 +565,8 @@ pub(super) enum ClientContextMenuAction {
     ClosePane,
     SuspendAgent,
     ActivateAgent,
+    Ungroup,
+    CloseGroup,
 }
 
 /// The agent pane a tab context menu acts on.
@@ -556,6 +591,8 @@ pub(super) enum ClientContextMenuTarget {
         /// The tab's agent pane, captured when the menu opened, for Suspend/Activate items.
         agent: Option<ClientTabMenuAgent>,
     },
+    /// A space shown as a tab group in the `tabs` layout.
+    Group { workspace_id: String },
     Pane {
         pane_id: String,
         workspace_id: String,
@@ -590,6 +627,8 @@ pub(super) struct ClientConfirmCloseOverlay {
     pub(super) tab_target: Option<ClientTabCloseConfirmation>,
     pub(super) title: String,
     pub(super) detail: String,
+    /// Whether the close also takes sibling worktree spaces (never for a tab group).
+    pub(super) close_group: bool,
 }
 
 #[derive(Debug)]

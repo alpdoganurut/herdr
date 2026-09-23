@@ -77,6 +77,7 @@ impl ClientShellState {
             reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
+            sidebar_tab_drop_row: None,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -229,6 +230,13 @@ impl ClientShellState {
                 reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
                 dragged_workspace_id,
                 workspace_drop_indicator_row,
+                sidebar_tab_drop_row: match &self.chrome_drag {
+                    Some(ClientChromeDrag::SidebarTab {
+                        target: Some(target),
+                        ..
+                    }) => Some(target.row),
+                    _ => None,
+                },
             },
         );
         self.hits.panes = surface
