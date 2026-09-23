@@ -677,23 +677,20 @@ impl App {
         }
 
         // A parked agent reports `suspended` on both sides of a detection
-        // change so residual state churn during the exit wait stays silent.
-        let suspended = self
-            .state
-            .workspaces
-            .get(update.ws_idx)
-            .and_then(|ws| ws.pane_state(update.pane_id))
-            .and_then(|pane| self.state.terminals.get(&pane.attached_terminal_id))
-            .is_some_and(|terminal| terminal.suspended_agent.is_some());
-        let previous_agent_status =
-            agent_status(update.previous_state, update.previous_seen, suspended);
+        // change so residual state churn during the exit wait stays silent;
+        // the record being dropped (a manual relaunch) is a real transition.
+        let previous_agent_status = agent_status(
+            update.previous_state,
+            update.previous_seen,
+            update.previous_suspended,
+        );
         let agent_status = self
             .state
             .workspaces
             .get(update.ws_idx)
             .and_then(|ws| ws.pane_state(update.pane_id))
-            .map(|pane| agent_status(update.state, pane.seen, suspended))
-            .unwrap_or_else(|| agent_status(update.state, update.seen, suspended));
+            .map(|pane| agent_status(update.state, pane.seen, update.suspended))
+            .unwrap_or_else(|| agent_status(update.state, update.seen, update.suspended));
 
         if previous_agent_status != agent_status
             || update.previous_presentation != update.presentation

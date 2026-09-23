@@ -172,7 +172,7 @@ impl App {
         })
     }
 
-    fn terminal_target_candidate(
+    pub(super) fn terminal_target_candidate(
         &self,
         ws_idx: usize,
         pane_id: crate::layout::PaneId,

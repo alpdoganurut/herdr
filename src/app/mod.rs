@@ -7,6 +7,8 @@ pub(crate) mod actions;
 mod agent_resume;
 mod agent_suspend;
 pub(crate) mod agent_view;
+#[cfg(unix)]
+pub(crate) use agent_suspend::SUSPEND_GRACEFUL_EXIT_GRACE;
 mod agents;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;

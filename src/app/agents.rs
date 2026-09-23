@@ -124,6 +124,11 @@ impl App {
         if terminal.managed_agent_launch_pending() {
             return Err(AgentRenameError::PendingLaunch);
         }
+        // The parked record carries the name that the exit path and
+        // activation restore; renaming only the live field would be undone.
+        if terminal.suspended_agent.is_some() {
+            return Err(AgentRenameError::Suspended(target.to_string()));
+        }
         if terminal.effective_agent_label().is_none() {
             return Err(AgentRenameError::NotAgent);
         }
@@ -341,6 +346,10 @@ impl App {
                 code: "agent_launch_pending".into(),
                 message: "agent name cannot change while startup is pending".into(),
             },
+            AgentRenameError::Suspended(target) => crate::api::schema::ErrorBody {
+                code: "agent_suspended".into(),
+                message: format!("agent {target} is suspended; activate it before renaming"),
+            },
             AgentRenameError::DuplicateName { name, candidates } => crate::api::schema::ErrorBody {
                 code: "agent_name_taken".into(),
                 message: format!(
@@ -476,6 +485,7 @@ pub(super) enum AgentRenameError {
     InvalidName,
     NotAgent,
     PendingLaunch,
+    Suspended(String),
     DuplicateName {
         name: String,
         candidates: Vec<crate::api::schema::AgentInfo>,

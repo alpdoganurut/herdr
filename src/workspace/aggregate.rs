@@ -76,19 +76,49 @@ impl Tab {
     }
 }
 
-/// Mirrors the API status ranking: a suspended pane never outranks a pane
-/// with a running agent, and ranks below an unclassified one.
+/// The API status of one pane: a parked agent reports `suspended` regardless
+/// of the residual detection state; otherwise idle splits into `done` (not yet
+/// seen) and `idle`.
+pub(crate) fn agent_status(
+    state: AgentState,
+    seen: bool,
+    suspended: bool,
+) -> crate::api::schema::AgentStatus {
+    use crate::api::schema::AgentStatus;
+    if suspended {
+        return AgentStatus::Suspended;
+    }
+    match (state, seen) {
+        (AgentState::Idle, false) => AgentStatus::Done,
+        (AgentState::Idle, true) => AgentStatus::Idle,
+        (AgentState::Working, _) => AgentStatus::Working,
+        (AgentState::Blocked, _) => AgentStatus::Blocked,
+        (AgentState::Unknown, _) => AgentStatus::Unknown,
+    }
+}
+
+/// Attention ranking shared by the API's tab and workspace rollups and the
+/// workspace aggregate: blocked first, unseen completions next, then
+/// activity; a suspended agent ranks below everything else, including an
+/// unclassified one, because nothing is running.
+pub(crate) fn agent_status_priority(status: crate::api::schema::AgentStatus) -> u8 {
+    use crate::api::schema::AgentStatus;
+    match status {
+        AgentStatus::Blocked => 5,
+        AgentStatus::Done => 4,
+        AgentStatus::Working => 3,
+        AgentStatus::Idle => 2,
+        AgentStatus::Unknown => 1,
+        AgentStatus::Suspended => 0,
+    }
+}
+
 fn pane_attention_priority(attention: PaneAttention) -> u8 {
-    if attention.suspended {
-        return 0;
-    }
-    match (attention.state, attention.seen) {
-        (AgentState::Blocked, _) => 5,
-        (AgentState::Idle, false) => 4,
-        (AgentState::Working, _) => 3,
-        (AgentState::Idle, true) => 2,
-        (AgentState::Unknown, _) => 1,
-    }
+    agent_status_priority(agent_status(
+        attention.state,
+        attention.seen,
+        attention.suspended,
+    ))
 }
 
 impl Workspace {

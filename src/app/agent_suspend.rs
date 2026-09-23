@@ -18,7 +18,7 @@ use super::{
     terminal_targets::{TerminalTarget, TerminalTargetError},
     App,
 };
-use crate::terminal::SuspendExitEscalation;
+use crate::terminal::{SuspendEscalationOutcome, SuspendExitEscalation, SuspendProbe, TerminalId};
 
 /// How long the agent gets to exit on its own after the graceful exit input
 /// before Herdr terminates its foreground job.
@@ -33,6 +33,7 @@ const FALLBACK_RELAUNCH_SIZE: (u16, u16) = (24, 80);
 pub(super) enum AgentSuspendError {
     Target(TerminalTargetError),
     NotRunning(String),
+    Blocked(String),
     AlreadySuspended(String),
     NotSuspendable { target: String, reason: String },
     InputFailed(String),
@@ -42,8 +43,50 @@ pub(super) enum AgentActivateError {
     Target(TerminalTargetError),
     NotSuspended(String),
     PaneNotAvailable(String),
+    /// Detection has not yet reported the parked process gone; relaunching
+    /// now would race the late exit report that wipes the live session.
+    ExitPending(String),
     InvalidArgument,
     InputFailed(String),
+}
+
+/// The parked agent's pids in the pane's foreground job, as the escalation
+/// tick sees them: a missing job is a failed probe; a job that is not the
+/// expected agent holds no agent pids. The pane's own child process is never
+/// signalled.
+pub(super) fn suspend_probe_from_job(
+    child_pid: Option<u32>,
+    live_job: Option<(crate::platform::ForegroundJob, Option<crate::detect::Agent>)>,
+    expected: Option<crate::detect::Agent>,
+) -> SuspendProbe {
+    let Some((job, agent)) = live_job else {
+        return SuspendProbe::Failed;
+    };
+    let agent_pids = if expected.is_some() && agent == expected {
+        job.processes
+            .iter()
+            .map(|process| process.pid)
+            .filter(|pid| Some(*pid) != child_pid)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    SuspendProbe::Job { agent_pids }
+}
+
+/// The identified agent is the pane's direct child (an imported
+/// `launch_argv` pane), so there is no shell to return to and the exit
+/// escalation could never signal it.
+pub(super) fn agent_is_pane_process(
+    child_pid: Option<u32>,
+    live_job: Option<&(crate::platform::ForegroundJob, Option<crate::detect::Agent>)>,
+    expected: crate::detect::Agent,
+) -> bool {
+    let Some(child_pid) = child_pid else {
+        return false;
+    };
+    live_job
+        .is_some_and(|(job, agent)| *agent == Some(expected) && job.process_group_id == child_pid)
 }
 
 impl App {
@@ -74,6 +117,11 @@ impl App {
             .ok_or_else(not_found)?;
         if terminal.suspended_agent.is_some() {
             return Err(AgentSuspendError::AlreadySuspended(target.to_string()));
+        }
+        // The exit command is typed into the agent's prompt; a blocked
+        // approval or question UI would swallow it, like `agent.prompt`.
+        if terminal.state == crate::detect::AgentState::Blocked {
+            return Err(AgentSuspendError::Blocked(target.to_string()));
         }
         let Some(expected_agent) = terminal.effective_known_agent() else {
             return Err(AgentSuspendError::NotRunning(target.to_string()));
@@ -107,6 +155,18 @@ impl App {
             .ok_or_else(not_found)?;
         if !runtime_hosts_agent(runtime, expected_agent) {
             return Err(AgentSuspendError::NotRunning(target.to_string()));
+        }
+        if runtime.child_pid().is_some()
+            && agent_is_pane_process(
+                runtime.child_pid(),
+                live_runtime_agent_job(runtime).as_ref(),
+                expected_agent,
+            )
+        {
+            return Err(AgentSuspendError::NotSuspendable {
+                target: target.to_string(),
+                reason: "it is the pane's process; close the tab instead".into(),
+            });
         }
         let (text, enter) = super::api_helpers::encode_api_submission_parts(runtime, exit_input);
 
@@ -167,6 +227,11 @@ impl App {
         let kind = crate::detect::parse_agent_label(&record.agent);
 
         if let Some(runtime) = self.terminal_runtimes.get(&terminal_id) {
+            // The shell can look available before detection publishes the
+            // exit; that late report would then wipe the relaunched session.
+            if !record.exit_observed() {
+                return Err(AgentActivateError::ExitPending(target.to_string()));
+            }
             let shell_name = available_shell_name(runtime)
                 .ok_or_else(|| AgentActivateError::PaneNotAvailable(target.to_string()))?;
             let command = crate::platform::interactive_shell_command(&plan.argv, &shell_name)
@@ -237,9 +302,37 @@ impl App {
     ///
     /// The foreground job is inspected for the parked agent kind; its pids are
     /// signaled with `SIGTERM`, then `SIGKILL`, never the pane shell itself.
-    /// Once the job no longer contains the agent the wait ends; only the
-    /// detection loop's process-exit observation marks the exit as seen.
+    /// A probe that cannot read the job keeps waiting (up to a retry cap);
+    /// once a job is read without the agent the wait ends. Only the detection
+    /// loop's process-exit observation marks the exit as seen.
     pub(crate) fn escalate_suspended_agent_exits(&mut self, now: Instant) -> bool {
+        self.escalate_suspended_agent_exits_with(
+            now,
+            |runtimes, terminal_id, expected| {
+                let runtime = runtimes.get(terminal_id);
+                suspend_probe_from_job(
+                    runtime.and_then(|runtime| runtime.child_pid()),
+                    runtime.and_then(live_runtime_agent_job),
+                    expected,
+                )
+            },
+            crate::platform::signal_processes,
+        )
+    }
+
+    /// The escalation tick with its process I/O injected: `probe` reads the
+    /// pane's foreground job and `signal` delivers the escalation signal. The
+    /// state transition itself lives in `TerminalState`.
+    pub(crate) fn escalate_suspended_agent_exits_with(
+        &mut self,
+        now: Instant,
+        mut probe: impl FnMut(
+            &crate::terminal::TerminalRuntimeRegistry,
+            &TerminalId,
+            Option<crate::detect::Agent>,
+        ) -> SuspendProbe,
+        mut signal: impl FnMut(&[u32], crate::platform::Signal),
+    ) -> bool {
         let due: Vec<_> = self
             .state
             .terminals
@@ -253,49 +346,73 @@ impl App {
             .collect();
         let mut changed = false;
         for terminal_id in due {
-            let runtime = self.terminal_runtimes.get(&terminal_id);
-            let child_pid = runtime.and_then(|runtime| runtime.child_pid());
-            let live_job = runtime.and_then(live_runtime_agent_job);
-            let Some(record) = self
+            let Some(agent) = self
                 .state
                 .terminals
-                .get_mut(&terminal_id)
-                .and_then(|terminal| terminal.suspended_agent.as_mut())
+                .get(&terminal_id)
+                .and_then(|terminal| terminal.suspended_agent.as_ref())
+                .map(|record| record.agent.clone())
             else {
                 continue;
             };
-            let expected = crate::detect::parse_agent_label(&record.agent);
-            let agent_pids: Vec<u32> = live_job
-                .filter(|(_, agent)| expected.is_some() && *agent == expected)
-                .map(|(job, _)| {
-                    job.processes
-                        .iter()
-                        .map(|process| process.pid)
-                        .filter(|pid| Some(*pid) != child_pid)
-                        .collect()
-                })
-                .unwrap_or_default();
-            if agent_pids.is_empty() {
-                record.exit_deadline = None;
-                changed = true;
+            let expected = crate::detect::parse_agent_label(&agent);
+            let probe = probe(&self.terminal_runtimes, &terminal_id, expected);
+            let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
                 continue;
-            }
-            match record.escalation {
-                SuspendExitEscalation::Pending => {
-                    crate::platform::signal_processes(
-                        &agent_pids,
-                        crate::platform::Signal::Terminate,
+            };
+            match terminal.advance_suspend_escalation(now, SUSPEND_SIGNAL_ESCALATION_GRACE, probe) {
+                SuspendEscalationOutcome::NotDue => continue,
+                SuspendEscalationOutcome::ProbeRetried { retries } => {
+                    tracing::debug!(
+                        event = "agent.suspend.probe_retry",
+                        terminal_id = %terminal_id,
+                        agent = %agent,
+                        retries,
+                        "could not read the pane's foreground job; retrying the exit wait"
                     );
-                    record.escalation = SuspendExitEscalation::Terminated;
-                    record.exit_deadline = Some(now + SUSPEND_SIGNAL_ESCALATION_GRACE);
                 }
-                SuspendExitEscalation::Terminated => {
-                    crate::platform::signal_processes(&agent_pids, crate::platform::Signal::Kill);
-                    record.escalation = SuspendExitEscalation::Killed;
-                    record.exit_deadline = None;
+                SuspendEscalationOutcome::ProbeGaveUp => {
+                    let (retries, escalation) = terminal
+                        .suspended_agent
+                        .as_ref()
+                        .map_or((0, SuspendExitEscalation::Pending), |record| {
+                            (record.probe_retries(), record.escalation())
+                        });
+                    tracing::warn!(
+                        event = "agent.suspend.probe_gave_up",
+                        terminal_id = %terminal_id,
+                        agent = %agent,
+                        retries,
+                        escalation = ?escalation,
+                        "could not read the pane's foreground job; giving up the exit wait, the agent may still be running"
+                    );
                 }
-                SuspendExitEscalation::Killed => {
-                    record.exit_deadline = None;
+                SuspendEscalationOutcome::NoAgentProcess => {
+                    tracing::debug!(
+                        event = "agent.suspend.exit_wait_ended",
+                        terminal_id = %terminal_id,
+                        agent = %agent,
+                        "no agent process left in the pane's foreground job"
+                    );
+                }
+                SuspendEscalationOutcome::Signal { signal: step, pids } => {
+                    tracing::warn!(
+                        event = "agent.suspend.escalate",
+                        terminal_id = %terminal_id,
+                        agent = %agent,
+                        pids = ?pids,
+                        step = ?step,
+                        "escalating suspended agent exit"
+                    );
+                    signal(&pids, step);
+                }
+                SuspendEscalationOutcome::Exhausted => {
+                    tracing::debug!(
+                        event = "agent.suspend.exit_wait_ended",
+                        terminal_id = %terminal_id,
+                        agent = %agent,
+                        "agent process outlived SIGKILL; waiting on detection only"
+                    );
                 }
             }
             changed = true;
@@ -329,9 +446,18 @@ impl App {
             })
             .collect();
         match matches.len() {
-            1 => Ok(matches.into_iter().next().expect("one match")),
-            _ => Err(AgentActivateError::Target(TerminalTargetError::NotFound {
+            0 => Err(AgentActivateError::Target(TerminalTargetError::NotFound {
                 target: target.to_string(),
+            })),
+            1 => Ok(matches.into_iter().next().expect("one match")),
+            _ => Err(AgentActivateError::Target(TerminalTargetError::Ambiguous {
+                target: target.to_string(),
+                candidates: matches
+                    .into_iter()
+                    .filter_map(|candidate| {
+                        self.terminal_target_candidate(candidate.ws_idx, candidate.pane_id)
+                    })
+                    .collect(),
             })),
         }
     }
@@ -365,6 +491,12 @@ impl App {
                 code: "agent_not_ready".into(),
                 message: format!("agent {target} is not a running agent"),
             },
+            AgentSuspendError::Blocked(target) => crate::api::schema::ErrorBody {
+                code: "agent_blocked".into(),
+                message: format!(
+                    "agent {target} is blocked on a prompt; answer it before suspending"
+                ),
+            },
             AgentSuspendError::AlreadySuspended(target) => crate::api::schema::ErrorBody {
                 code: "agent_already_suspended".into(),
                 message: format!("agent {target} is already suspended"),
@@ -396,6 +528,12 @@ impl App {
                     "the pane hosting suspended agent {target} is not at an available shell prompt"
                 ),
             },
+            AgentActivateError::ExitPending(target) => crate::api::schema::ErrorBody {
+                code: "pane_not_available".into(),
+                message: format!(
+                    "the process of suspended agent {target} is still exiting; try again in a moment"
+                ),
+            },
             AgentActivateError::InvalidArgument => crate::api::schema::ErrorBody {
                 code: "invalid_agent_argument".into(),
                 message: "the resume command cannot be encoded safely for the target shell".into(),
@@ -415,6 +553,7 @@ mod tests {
     use super::*;
     use crate::api::schema::{AgentActivateParams, AgentStatus, AgentSuspendParams, Method};
     use crate::detect::{Agent, AgentState};
+    use crate::terminal::SuspendExitEscalation;
     use crate::workspace::Workspace;
 
     fn test_app() -> App {
@@ -554,7 +693,7 @@ mod tests {
         let record = terminal.suspended_agent.as_ref().expect("record stored");
         assert_eq!(record.name.as_deref(), Some("reviewer"));
         assert_eq!(record.session, claude_session("claude-session"));
-        assert!(record.exit_deadline.is_some());
+        assert!(record.exit_deadline().is_some());
         assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
         assert_eq!(agent_status(&mut app, &pane_id), AgentStatus::Suspended);
         assert!(app.collect_agent_infos().iter().any(|agent| {
@@ -806,8 +945,333 @@ mod tests {
         assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
     }
 
+    #[tokio::test]
+    async fn suspend_rejects_a_blocked_agent_without_writing() {
+        let mut app = test_app();
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Blocked);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+
+        let response = suspend(&mut app, "reviewer");
+        assert_eq!(response["error"]["code"], "agent_blocked", "{response}");
+        assert_eq!(
+            response["error"]["message"],
+            "agent reviewer is blocked on a prompt; answer it before suspending"
+        );
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
+        assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Blocked);
+        assert!(
+            tokio::time::timeout(
+                super::super::api::AGENT_PROMPT_SUBMIT_DELAY + Duration::from_millis(100),
+                rx.recv()
+            )
+            .await
+            .is_err(),
+            "a blocked suspend wrote or scheduled terminal input"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_waits_until_detection_observed_the_exit() {
+        let mut app = test_app();
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        assert_eq!(
+            suspend(&mut app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        assert_eq!(
+            next_input(&mut rx).await,
+            bytes::Bytes::from_static(b"/exit")
+        );
+        assert_eq!(next_input(&mut rx).await, bytes::Bytes::from_static(b"\r"));
+
+        // The shell prompt can look available before the exit is published.
+        let response = activate(&mut app, "reviewer");
+        assert_eq!(
+            response["error"]["code"], "pane_not_available",
+            "{response}"
+        );
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("still exiting"));
+        let terminal = &app.state.terminals[&terminal_id];
+        assert!(terminal.suspended_agent.is_some(), "the record is kept");
+        assert!(!terminal.managed_agent_launch_pending());
+        assert!(rx.try_recv().is_err(), "nothing was launched");
+
+        observe_exit(&mut app);
+        let response = activate(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_activated", "{response}");
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_manual_relaunch_dropping_the_record_publishes_the_new_status() {
+        let mut app = test_app();
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        assert_eq!(
+            suspend(&mut app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        observe_exit(&mut app);
+        assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
+        let seen_events = app
+            .event_hub
+            .events_after(0)
+            .last()
+            .map(|(seq, _)| *seq)
+            .unwrap_or(0);
+        app.state.session_dirty = false;
+
+        // The same agent kind seen live after the observed exit: the user
+        // relaunched it by hand, so the parked record no longer applies.
+        app.handle_internal_event(crate::events::AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Claude),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: Instant::now(),
+        });
+
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
+        assert!(
+            app.state.session_dirty,
+            "dropping the persisted record must be saved"
+        );
+        let statuses: Vec<_> = app
+            .event_hub
+            .events_after(seen_events)
+            .into_iter()
+            .filter_map(|(_, event)| match event.data {
+                crate::api::schema::EventData::PaneAgentStatusChanged { agent_status, .. } => {
+                    Some(agent_status)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            statuses
+                .iter()
+                .any(|status| *status != AgentStatus::Suspended),
+            "subscribers must learn the pane left suspended: {statuses:?}"
+        );
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+        assert_ne!(
+            agent_status(&mut app, &public_pane_id),
+            AgentStatus::Suspended
+        );
+    }
+
     #[test]
-    fn escalation_ends_the_wait_when_no_agent_process_remains() {
+    fn activation_by_name_is_ambiguous_across_suspended_panes() {
+        let mut app = test_app();
+        app.state.workspaces[0].test_add_tab(Some("other"));
+        app.state.ensure_test_terminals();
+        let terminal_ids: Vec<_> = app.state.terminals.keys().cloned().collect();
+        assert!(terminal_ids.len() >= 2, "two panes host suspended records");
+        for terminal_id in &terminal_ids {
+            app.state
+                .terminals
+                .get_mut(terminal_id)
+                .unwrap()
+                .restore_suspended_agent(
+                    "claude".into(),
+                    Some("reviewer".into()),
+                    claude_session("claude-session"),
+                );
+        }
+
+        let response = activate(&mut app, "reviewer");
+        assert_eq!(
+            response["error"]["code"], "agent_target_ambiguous",
+            "{response}"
+        );
+        assert!(app
+            .state
+            .terminals
+            .values()
+            .all(|terminal| terminal.suspended_agent.is_some()));
+    }
+
+    #[test]
+    fn suspend_probe_excludes_the_pane_child_and_flags_a_pane_process_agent() {
+        fn process(pid: u32, name: &str) -> crate::platform::ForegroundProcess {
+            crate::platform::ForegroundProcess {
+                pid,
+                name: name.into(),
+                argv0: None,
+                argv: None,
+                cmdline: None,
+            }
+        }
+        let child_job = || {
+            (
+                crate::platform::ForegroundJob {
+                    process_group_id: 200,
+                    processes: vec![process(200, "claude"), process(201, "node")],
+                },
+                Some(Agent::Claude),
+            )
+        };
+
+        assert_eq!(
+            suspend_probe_from_job(Some(100), None, Some(Agent::Claude)),
+            SuspendProbe::Failed,
+            "no readable job is not a verdict"
+        );
+        assert_eq!(
+            suspend_probe_from_job(Some(100), Some(child_job()), Some(Agent::Claude)),
+            SuspendProbe::Job {
+                agent_pids: vec![200, 201]
+            }
+        );
+        assert_eq!(
+            suspend_probe_from_job(Some(200), Some(child_job()), Some(Agent::Claude)),
+            SuspendProbe::Job {
+                agent_pids: vec![201]
+            },
+            "the pane's own child is never signalled"
+        );
+        assert_eq!(
+            suspend_probe_from_job(Some(100), Some(child_job()), Some(Agent::Codex)),
+            SuspendProbe::Job { agent_pids: vec![] },
+            "a job that is not the parked agent holds no agent pids"
+        );
+        assert_eq!(
+            suspend_probe_from_job(Some(100), Some(child_job()), None),
+            SuspendProbe::Job { agent_pids: vec![] }
+        );
+
+        assert!(agent_is_pane_process(
+            Some(200),
+            Some(&child_job()),
+            Agent::Claude
+        ));
+        assert!(!agent_is_pane_process(
+            Some(100),
+            Some(&child_job()),
+            Agent::Claude
+        ));
+        assert!(!agent_is_pane_process(
+            Some(200),
+            Some(&child_job()),
+            Agent::Codex
+        ));
+        assert!(!agent_is_pane_process(
+            None,
+            Some(&child_job()),
+            Agent::Claude
+        ));
+        assert!(!agent_is_pane_process(Some(200), None, Agent::Claude));
+    }
+
+    #[test]
+    fn escalation_signals_terminate_then_kill_with_the_probed_pids() {
+        let mut app = test_app();
+        let terminal_id = root_terminal_id(&app);
+        let now = Instant::now();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .begin_agent_suspend(claude_session("claude-session"), now);
+        let mut signals: Vec<(Vec<u32>, crate::platform::Signal)> = Vec::new();
+        let mut probed = Vec::new();
+
+        let changed = app.escalate_suspended_agent_exits_with(
+            now,
+            |_, terminal_id, expected| {
+                probed.push((terminal_id.clone(), expected));
+                SuspendProbe::Job {
+                    agent_pids: vec![4242, 4243],
+                }
+            },
+            |pids, signal| signals.push((pids.to_vec(), signal)),
+        );
+        assert!(changed);
+        assert_eq!(probed, vec![(terminal_id.clone(), Some(Agent::Claude))]);
+        assert_eq!(
+            signals,
+            vec![(vec![4242, 4243], crate::platform::Signal::Terminate)]
+        );
+        let record = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .unwrap();
+        assert_eq!(record.escalation(), SuspendExitEscalation::Terminated);
+        assert_eq!(
+            record.exit_deadline(),
+            Some(now + SUSPEND_SIGNAL_ESCALATION_GRACE)
+        );
+
+        // Not due yet: no probe, no signal.
+        assert!(!app.escalate_suspended_agent_exits_with(
+            now + Duration::from_millis(10),
+            |_, _, _| panic!("no probe before the deadline"),
+            |_, _| panic!("no signal before the deadline"),
+        ));
+
+        let later = now + SUSPEND_SIGNAL_ESCALATION_GRACE;
+        assert!(app.escalate_suspended_agent_exits_with(
+            later,
+            |_, _, _| SuspendProbe::Job {
+                agent_pids: vec![4242],
+            },
+            |pids, signal| signals.push((pids.to_vec(), signal)),
+        ));
+        assert_eq!(
+            signals.last(),
+            Some(&(vec![4242], crate::platform::Signal::Kill))
+        );
+        let terminal = &app.state.terminals[&terminal_id];
+        let record = terminal.suspended_agent.as_ref().unwrap();
+        assert_eq!(record.escalation(), SuspendExitEscalation::Killed);
+        assert!(terminal.suspended_agent_exit_deadline().is_none());
+        assert!(
+            !record.exit_observed(),
+            "only detection marks the exit seen"
+        );
+        assert_eq!(app.state.next_suspended_agent_exit_deadline(), None);
+        assert!(!app.escalate_suspended_agent_exits_with(
+            later + Duration::from_secs(10),
+            |_, _, _| panic!("the wait is over"),
+            |_, _| panic!("the wait is over"),
+        ));
+    }
+
+    #[test]
+    fn escalation_ends_the_wait_when_a_read_job_has_no_agent_process() {
         let mut app = test_app();
         let terminal_id = root_terminal_id(&app);
         let now = Instant::now();
@@ -822,7 +1286,11 @@ mod tests {
             Some(overdue)
         );
 
-        assert!(app.escalate_suspended_agent_exits(now));
+        assert!(app.escalate_suspended_agent_exits_with(
+            now,
+            |_, _, _| SuspendProbe::Job { agent_pids: vec![] },
+            |_, _| panic!("nothing to signal"),
+        ));
         let terminal = &app.state.terminals[&terminal_id];
         assert!(
             terminal.suspended_agent.is_some(),
@@ -830,12 +1298,53 @@ mod tests {
         );
         assert!(terminal.suspended_agent_exit_deadline().is_none());
         assert_eq!(
-            terminal.suspended_agent.as_ref().unwrap().escalation,
+            terminal.suspended_agent.as_ref().unwrap().escalation(),
             SuspendExitEscalation::Pending,
             "nothing was signaled because no agent process was found"
         );
         assert!(!app.escalate_suspended_agent_exits(now + Duration::from_secs(10)));
         assert_eq!(app.state.next_suspended_agent_exit_deadline(), None);
+    }
+
+    #[test]
+    fn escalation_keeps_waiting_while_the_probe_fails_then_gives_up() {
+        let mut app = test_app();
+        let terminal_id = root_terminal_id(&app);
+        let mut now = Instant::now();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .begin_agent_suspend(claude_session("claude-session"), now);
+
+        // A pane with no runtime: the real probe cannot read a job.
+        for retries in 1..=crate::terminal::state::SUSPEND_PROBE_RETRY_LIMIT {
+            assert!(app.escalate_suspended_agent_exits(now));
+            let record = app.state.terminals[&terminal_id]
+                .suspended_agent
+                .as_ref()
+                .unwrap();
+            assert_eq!(record.probe_retries(), retries);
+            assert_eq!(record.escalation(), SuspendExitEscalation::Pending);
+            assert_eq!(
+                app.state.next_suspended_agent_exit_deadline(),
+                Some(now + SUSPEND_SIGNAL_ESCALATION_GRACE),
+                "the deadline is pushed forward instead of cleared"
+            );
+            now += SUSPEND_SIGNAL_ESCALATION_GRACE;
+        }
+        assert!(app.escalate_suspended_agent_exits(now));
+        let terminal = &app.state.terminals[&terminal_id];
+        assert!(terminal.suspended_agent.is_some());
+        assert!(
+            terminal.suspended_agent_exit_deadline().is_none(),
+            "after the cap the wait is given up"
+        );
+        assert!(!terminal.suspended_agent.as_ref().unwrap().exit_observed());
+        let pane_id = app
+            .public_pane_id(0, app.state.workspaces[0].tabs[0].root_pane)
+            .unwrap();
+        assert_eq!(agent_status(&mut app, &pane_id), AgentStatus::Suspended);
     }
 
     #[test]

@@ -589,6 +589,10 @@ fn restore_tab(
         let handoff_agent_state = imported_runtime
             .as_ref()
             .and_then(|imported| imported.state.agent_state.clone());
+        #[cfg(unix)]
+        let handoff_suspended_exit_pending = imported_runtime
+            .as_ref()
+            .is_some_and(|imported| imported.state.suspended_exit_pending);
         let pending_native_agent_restore = if was_imported {
             None
         } else {
@@ -711,6 +715,17 @@ fn restore_tab(
                     (None, _) => {}
                 }
                 reinstate_suspended_agent(&mut terminal, saved_suspended_agent);
+                // A cold restore reinstates the record with the exit already
+                // observed (no process survives a server restart). A live
+                // handoff can transfer the pane mid-exit; then the wait is
+                // reopened so the still-running agent is not mistaken for a
+                // manual relaunch and escalation starts over on this side.
+                #[cfg(unix)]
+                if handoff_suspended_exit_pending {
+                    terminal.resume_suspend_exit_wait(
+                        std::time::Instant::now() + crate::app::SUSPEND_GRACEFUL_EXIT_GRACE,
+                    );
+                }
                 if let Some(agent) = initial_restore_agent {
                     let _ = terminal.set_detected_state_with_screen_signals_at(
                         Some(agent),
@@ -1429,7 +1444,8 @@ mod tests {
         assert_eq!(record.agent, "claude");
         assert_eq!(record.name.as_deref(), Some("reviewer"));
         assert_eq!(record.session.session_ref.value, "claude-session");
-        assert!(record.exit_deadline.is_none());
+        assert!(record.exit_deadline().is_none());
+        assert!(record.exit_observed());
         assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
         assert!(terminal.is_agent_terminal());
         assert!(!terminal.managed_agent_launch_pending());
@@ -1865,6 +1881,102 @@ mod tests {
             handoff_runtimes.is_empty(),
             "handoff restore should not replace pending native agent resume with a shell runtime"
         );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn live_handoff_resumes_a_suspended_exit_wait_in_flight() {
+        let (snapshot, _) = snapshot_with_saved_pane_history();
+        let (events, _events_rx) = mpsc::channel(32);
+        let (workspaces, mut terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let session = crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").unwrap(),
+        };
+        let terminal = terminals.values_mut().next().unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(crate::detect::Agent::Claude), AgentState::Idle);
+        terminal.begin_agent_suspend(
+            session.clone(),
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+        );
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let snapshot = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let pane_id = workspaces[0].tabs[0].panes.keys().next().copied().unwrap();
+        let runtime = runtimes.values().next().unwrap();
+        runtime
+            .pause_handoff_reader(std::time::Duration::from_secs(2))
+            .unwrap();
+        let mut state = runtime.handoff_runtime_state(pane_id.raw());
+        let record = terminals
+            .values()
+            .next()
+            .and_then(|terminal| terminal.suspended_agent.as_ref())
+            .expect("record parked");
+        state.suspended_exit_pending = !record.exit_observed();
+        assert!(state.suspended_exit_pending);
+        let state = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        let mut imports = HashMap::from([(
+            pane_id.raw(),
+            crate::handoff_runtime::ImportedHandoffRuntime {
+                master_fd: runtime.duplicate_handoff_fd().unwrap(),
+                state,
+            },
+        )]);
+        let (_, mut restored_terminals, restored_runtimes) = restore_handoff(
+            &snapshot,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            &mut imports,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+        drop(restored_runtimes);
+        drop(runtimes);
+
+        let terminal = restored_terminals.values_mut().next().unwrap();
+        let record = terminal
+            .suspended_agent
+            .as_ref()
+            .expect("the parked session crosses the handoff");
+        assert_eq!(record.session, session);
+        assert_eq!(record.name.as_deref(), Some("reviewer"));
+        assert!(
+            !record.exit_observed(),
+            "the exit was not observed on the old server either"
+        );
+        assert!(
+            terminal.suspended_agent_exit_deadline().is_some(),
+            "escalation resumes on the receiving side"
+        );
+        // The still-running process is seen live: it is the parked agent.
+        terminal.set_detected_state(Some(crate::detect::Agent::Claude), AgentState::Working);
+        assert!(terminal.suspended_agent.is_some());
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+
+        // Without the flag (an older sending server) the cold-restore rule applies.
+        let mut cold = crate::terminal::TerminalState::new(
+            crate::terminal::TerminalId::alloc(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        cold.restore_suspended_agent("claude".into(), Some("reviewer".into()), session);
+        assert!(cold.suspended_agent.as_ref().unwrap().exit_observed());
     }
 
     #[tokio::test]
