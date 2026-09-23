@@ -88,6 +88,14 @@ fn fast_path_blocker(
             .any(|hit| hit.pane_id == pane.pane_id)
     }) {
         Some("client_surface_patch.fallback.pane_hits")
+    } else if patch
+        .panes
+        .iter()
+        .any(|pane| state.suspended_pane_locked(&pane.pane_id))
+    {
+        // The suspended card is painted at compose time; patched rows would land
+        // on top of it until the next full compose.
+        Some("client_surface_patch.fallback.suspended_pane")
     } else {
         None
     }

@@ -507,7 +507,7 @@ fn tabs_layout_ignores_pane_topology_actions_and_routes_pane_right_click_to_the_
 /// A 60x12 single-pane surface so the card has room; the shared fixture is 4x2.
 fn wide_surface() -> PaneSurfaceFrame {
     let mut frame = surface();
-    let lines = vec!["SHELL SCROLLBACK LINE".to_string(); 12];
+    let lines = vec![format!("{:<60}", "SHELL SCROLLBACK LINE"); 12];
     frame.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
         &ratatui::buffer::Buffer::with_lines(lines),
         Some(crate::protocol::CursorState {
@@ -527,4 +527,77 @@ fn wide_surface() -> PaneSurfaceFrame {
     frame.panes[0].rect = rect;
     frame.panes[0].inner_rect = rect;
     frame
+}
+
+#[test]
+fn suspended_pane_shell_output_takes_the_full_compose_path_so_the_card_stays_on_top() {
+    let mut state = suspended_state();
+    let composed = state.compose(106, 20).expect("initial composed frame");
+    let pane = state.hits.panes[0].inner_rect;
+    assert!(frame_text(&composed, pane).contains("suspended"));
+
+    // The parked shell redraws its prompt: a row patch against the current surface.
+    let mut updated_pane = state.pane_surface.as_ref().unwrap().panes[0].clone();
+    updated_pane.content_revision = 2;
+    let patch = crate::protocol::PaneSurfacePatch {
+        boot_id: "boot-1".into(),
+        projection_revision: 1,
+        base_surface_revision: 1,
+        surface_revision: 2,
+        rows: vec![crate::protocol::PaneSurfacePatchRow {
+            x: 0,
+            y: 5,
+            cells: vec![
+                crate::protocol::CellData {
+                    symbol: "$".into(),
+                    fg: 0,
+                    bg: 0,
+                    modifier: 0,
+                    skip: false,
+                    hyperlink: None,
+                };
+                60
+            ],
+        }],
+        panes: vec![updated_pane],
+        cursor: None,
+    };
+    let outcome = state.apply_pane_surface_patch(patch);
+    match outcome {
+        ClientPaneSurfacePatchOutcome::Applied(None) => {}
+        ClientPaneSurfacePatchOutcome::Applied(Some(_)) => {
+            panic!("a suspended pane must never take the retained fast path")
+        }
+        ClientPaneSurfacePatchOutcome::Rejected => panic!("patch should apply"),
+    }
+    assert_eq!(state.pane_surface.as_ref().unwrap().surface_revision, 2);
+
+    let recomposed = state.compose(106, 20).expect("recomposed frame");
+    let text = frame_text(&recomposed, pane);
+    assert!(text.contains("suspended"), "{text}");
+    assert!(
+        !text.contains("$$$"),
+        "shell rows must stay under the card: {text}"
+    );
+}
+
+#[test]
+fn tabs_layout_switch_tab_indexes_the_whole_list() {
+    use crate::input::KeybindAction;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(two_space_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    assert_eq!(
+        tab_action(&mut state, KeybindAction::SwitchTab(2)).as_deref(),
+        Some("tab_3"),
+        "third row is the second space's tab"
+    );
+    assert_eq!(tab_action(&mut state, KeybindAction::SwitchTab(7)), None);
+
+    let mut spaces = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    spaces.set_snapshot(Box::new(two_space_snapshot()));
+    spaces.set_pane_surface(surface());
+    spaces.compose(106, 20).expect("composed frame");
+    assert_eq!(tab_action(&mut spaces, KeybindAction::SwitchTab(2)), None);
 }

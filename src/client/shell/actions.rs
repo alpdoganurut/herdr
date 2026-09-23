@@ -956,10 +956,15 @@ impl ClientShellState {
                 Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
             }
             KeybindAction::SwitchTab(index) => {
+                // Same scope rule as next/previous: the tabs layout indexes the
+                // whole list, the spaces layout the focused space.
                 let tabs = snapshot
                     .tabs
                     .iter()
-                    .filter(|tab| tab.workspace_id == focused_workspace)
+                    .filter(|tab| {
+                        self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+                            || tab.workspace_id == focused_workspace
+                    })
                     .collect::<Vec<_>>();
                 Some(Method::TabFocus(TabTarget {
                     tab_id: tabs.get(index)?.tab_id.clone(),
