@@ -345,8 +345,7 @@ pub(super) fn render_shell(
         hits.workspaces.clear();
         hits.sidebar_tabs.clear();
         hits.sidebar_groups.clear();
-        hits.group_fold_all = Rect::default();
-        hits.group_unfold_all = Rect::default();
+        hits.group_toggle_all = Rect::default();
         hits.group_new = Rect::default();
         hits.agents.clear();
         hits.endpoint_agents.clear();

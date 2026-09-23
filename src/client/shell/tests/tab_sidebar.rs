@@ -1,3 +1,4 @@
+use super::super::tab_sidebar::{FOLD_ALL_LABEL, UNFOLD_ALL_LABEL};
 use super::*;
 use crate::config::{Config, SidebarLayoutConfig};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
@@ -894,20 +895,24 @@ fn header_click_toggles_one_group_and_the_toolbar_folds_or_unfolds_all() {
     state.compose(106, 24).expect("composed frame");
     assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_2", "tab_4"]);
 
-    let fold_all = state.hits.group_fold_all;
+    // One group open, one folded: the toggle reads "fold all" and folds the rest.
+    let toggle = state.hits.group_toggle_all;
+    let frame = state.compose(106, 24).expect("composed frame");
+    assert_eq!(row_text(&frame, toggle), FOLD_ALL_LABEL);
     state.handle_raw_events(vec![mouse(
         MouseEventKind::Down(MouseButton::Left),
-        fold_all.x,
-        fold_all.y,
+        toggle.x,
+        toggle.y,
     )]);
-    state.compose(106, 24).expect("composed frame");
+    let frame = state.compose(106, 24).expect("composed frame");
     assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_2"]);
-
-    let unfold_all = state.hits.group_unfold_all;
+    // Everything folded: the same button now reads "expand all" and expands.
+    let toggle = state.hits.group_toggle_all;
+    assert_eq!(row_text(&frame, toggle), UNFOLD_ALL_LABEL);
     state.handle_raw_events(vec![mouse(
         MouseEventKind::Down(MouseButton::Left),
-        unfold_all.x,
-        unfold_all.y,
+        toggle.x,
+        toggle.y,
     )]);
     state.compose(106, 24).expect("composed frame");
     assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_2", "tab_3", "tab_4"]);

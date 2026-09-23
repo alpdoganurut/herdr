@@ -2146,12 +2146,11 @@ impl ClientShellState {
                     self.persist_chrome_preferences(outcome);
                     return;
                 }
-                if super::contains(self.hits.group_fold_all, point) {
-                    self.set_all_groups_folded(true, outcome);
-                    return;
-                }
-                if super::contains(self.hits.group_unfold_all, point) {
-                    self.set_all_groups_folded(false, outcome);
+                if super::contains(self.hits.group_toggle_all, point) {
+                    let all_folded = self.snapshot.as_deref().is_some_and(|snapshot| {
+                        super::tab_sidebar::all_groups_folded(snapshot, &self.collapsed_groups)
+                    });
+                    self.set_all_groups_folded(!all_folded, outcome);
                     return;
                 }
                 if super::contains(self.hits.group_new, point) {

@@ -98,8 +98,9 @@ pub(super) struct ShellHitMap {
     /// Group header rows of the `tabs` layout (rect, workspace id). Headers are also
     /// registered in `workspaces` so the space drag machinery reorders groups.
     pub(super) sidebar_groups: Vec<(Rect, String)>,
-    pub(super) group_fold_all: Rect,
-    pub(super) group_unfold_all: Rect,
+    /// One toggle: folds every group while any is open, expands all once every
+    /// group is folded.
+    pub(super) group_toggle_all: Rect,
     pub(super) group_new: Rect,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,

@@ -30,9 +30,25 @@ use super::*;
 
 const TOOLBAR_ROWS: u16 = 1;
 const FOOTER_ROWS: u16 = 1;
-pub(super) const FOLD_ALL_LABEL: &str = "▸▸";
-pub(super) const UNFOLD_ALL_LABEL: &str = "▾▾";
+/// Toolbar glyphs: the fold toggle shows the action it will take.
+pub(super) const FOLD_ALL_LABEL: &str = "\u{23F6}"; // ⏶ black medium up-pointing triangle
+pub(super) const UNFOLD_ALL_LABEL: &str = "\u{23F7}"; // ⏷ black medium down-pointing triangle
 pub(super) const NEW_GROUP_LABEL: &str = "+";
+
+/// Every group is folded (so the toggle expands), given at least one group.
+pub(super) fn all_groups_folded(
+    snapshot: &ClientShellSnapshot,
+    collapsed_groups: &HashSet<String>,
+) -> bool {
+    let mut groups = snapshot
+        .workspaces
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| is_group_index(*index))
+        .map(|(_, workspace)| group_key(&workspace.workspace_id))
+        .peekable();
+    groups.peek().is_some() && groups.all(|key| collapsed_groups.contains(&key))
+}
 
 /// One row of the tab list.
 enum Entry<'a> {
@@ -104,7 +120,13 @@ pub(super) fn render_tab_sidebar(
         return;
     }
 
-    render_toolbar(buffer, content, config, hits);
+    render_toolbar(
+        buffer,
+        content,
+        all_groups_folded(snapshot, state.collapsed_groups),
+        config,
+        hits,
+    );
 
     let body = Rect::new(
         content.x,
@@ -277,27 +299,27 @@ pub(super) fn render_tab_sidebar(
     );
 }
 
-/// `▸▸ ▾▾` on the left, `+` on the right, all one row.
+/// The fold toggle on the left, `+` on the right, all one row.
 fn render_toolbar(
     buffer: &mut Buffer,
     content: Rect,
+    all_folded: bool,
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
     let style = Style::default().fg(palette.overlay0);
     let y = content.y;
-    let mut x = content.x.saturating_add(1);
-    let fold_width = display_width(FOLD_ALL_LABEL) as u16;
-    put_text(buffer, x, y, fold_width, FOLD_ALL_LABEL, style);
+    let x = content.x.saturating_add(1);
+    let toggle = if all_folded {
+        UNFOLD_ALL_LABEL
+    } else {
+        FOLD_ALL_LABEL
+    };
+    let toggle_width = display_width(toggle) as u16;
+    put_text(buffer, x, y, toggle_width, toggle, style);
     if config.mouse_capture {
-        hits.group_fold_all = Rect::new(x, y, fold_width, 1);
-    }
-    x = x.saturating_add(fold_width + 1);
-    let unfold_width = display_width(UNFOLD_ALL_LABEL) as u16;
-    put_text(buffer, x, y, unfold_width, UNFOLD_ALL_LABEL, style);
-    if config.mouse_capture {
-        hits.group_unfold_all = Rect::new(x, y, unfold_width, 1);
+        hits.group_toggle_all = Rect::new(x, y, toggle_width, 1);
     }
     let new_width = display_width(NEW_GROUP_LABEL) as u16;
     let new_x = content.right().saturating_sub(new_width + 1);
