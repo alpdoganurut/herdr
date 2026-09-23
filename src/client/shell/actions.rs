@@ -51,16 +51,21 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                if action == crate::input::KeybindAction::MoveTabToGroup {
-                    self.open_move_tab_to_group_overlay();
-                    outcome.repaint = true;
-                    return;
-                }
-                if action == crate::input::KeybindAction::ToggleGroupsFolded {
-                    let all_folded = self.snapshot.as_deref().is_some_and(|snapshot| {
-                        super::tab_sidebar::all_groups_folded(snapshot, &self.collapsed_groups)
-                    });
-                    self.set_all_groups_folded(!all_folded, outcome);
+                if matches!(
+                    action,
+                    crate::input::KeybindAction::MoveTabToGroup
+                        | crate::input::KeybindAction::ToggleGroupsFolded
+                ) {
+                    // Group actions only mean something in the tabs layout.
+                    if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs {
+                        return;
+                    }
+                    if action == crate::input::KeybindAction::MoveTabToGroup {
+                        self.open_move_tab_to_group_overlay();
+                        outcome.repaint = true;
+                    } else {
+                        self.toggle_all_groups_folded(outcome);
+                    }
                     return;
                 }
                 if action == crate::input::KeybindAction::Help {

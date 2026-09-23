@@ -35,19 +35,40 @@ pub(super) const FOLD_ALL_LABEL: &str = "\u{23F6}"; // ⏶ black medium up-point
 pub(super) const UNFOLD_ALL_LABEL: &str = "\u{23F7}"; // ⏷ black medium down-pointing triangle
 pub(super) const NEW_GROUP_LABEL: &str = "+";
 
-/// Every group is folded (so the toggle expands), given at least one group.
-pub(super) fn all_groups_folded(
+/// The space holding the focused tab; its group is always drawn open.
+fn focused_workspace(snapshot: &ClientShellSnapshot) -> Option<&str> {
+    snapshot
+        .tabs
+        .iter()
+        .find(|tab| tab.focused)
+        .map(|tab| tab.workspace_id.as_str())
+}
+
+/// Fold keys of every group that can actually fold: all groups except the one
+/// holding the focused tab.
+pub(super) fn foldable_group_keys(
     snapshot: &ClientShellSnapshot,
-    collapsed_groups: &HashSet<String>,
-) -> bool {
-    let mut groups = snapshot
+) -> impl Iterator<Item = String> + '_ {
+    let focused = focused_workspace(snapshot);
+    snapshot
         .workspaces
         .iter()
         .enumerate()
-        .filter(|(index, _)| is_group_index(*index))
+        .filter(move |(index, workspace)| {
+            is_group_index(*index) && focused != Some(workspace.workspace_id.as_str())
+        })
         .map(|(_, workspace)| group_key(&workspace.workspace_id))
-        .peekable();
-    groups.peek().is_some() && groups.all(|key| collapsed_groups.contains(&key))
+}
+
+/// `Some(true)` when every foldable group is folded (the toggle expands),
+/// `Some(false)` when at least one is open, `None` without foldable groups.
+pub(super) fn all_groups_folded(
+    snapshot: &ClientShellSnapshot,
+    collapsed_groups: &HashSet<String>,
+) -> Option<bool> {
+    let mut keys = foldable_group_keys(snapshot).peekable();
+    keys.peek()?;
+    Some(keys.all(|key| collapsed_groups.contains(&key)))
 }
 
 /// One row of the tab list.
@@ -66,34 +87,39 @@ pub(super) fn is_group_index(index: usize) -> bool {
 }
 
 /// The rows to draw, honouring fold state except for the focused tab's group.
+/// One pass over the tabs, which the endpoint emits space by space.
 fn entries<'a>(
     snapshot: &'a ClientShellSnapshot,
     collapsed_groups: &HashSet<String>,
 ) -> Vec<Entry<'a>> {
-    let focused_workspace = snapshot
-        .tabs
+    let focused = focused_workspace(snapshot);
+    let position: HashMap<&str, usize> = snapshot
+        .workspaces
         .iter()
-        .find(|tab| tab.focused)
-        .map(|tab| tab.workspace_id.as_str());
-    let mut rows = Vec::new();
-    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
-        let members = snapshot
-            .tabs
-            .iter()
-            .filter(|tab| tab.workspace_id == workspace.workspace_id)
-            .collect::<Vec<_>>();
+        .enumerate()
+        .map(|(index, workspace)| (workspace.workspace_id.as_str(), index))
+        .collect();
+    let mut members: Vec<Vec<&crate::protocol::ClientShellTab>> =
+        vec![Vec::new(); snapshot.workspaces.len()];
+    for tab in &snapshot.tabs {
+        if let Some(index) = position.get(tab.workspace_id.as_str()) {
+            members[*index].push(tab);
+        }
+    }
+    let mut rows = Vec::with_capacity(snapshot.tabs.len() + snapshot.workspaces.len());
+    for (index, (workspace, tabs)) in snapshot.workspaces.iter().zip(members).enumerate() {
         let mut folded = false;
         if is_group_index(index) {
-            folded = collapsed_groups.contains(&group_key(&workspace.workspace_id))
-                && focused_workspace != Some(workspace.workspace_id.as_str());
+            folded = focused != Some(workspace.workspace_id.as_str())
+                && collapsed_groups.contains(&group_key(&workspace.workspace_id));
             rows.push(Entry::Header {
                 workspace,
                 folded,
-                members: members.len(),
+                members: tabs.len(),
             });
         }
         if !folded {
-            rows.extend(members.into_iter().map(Entry::Tab));
+            rows.extend(tabs.into_iter().map(Entry::Tab));
         }
     }
     rows
@@ -299,11 +325,12 @@ pub(super) fn render_tab_sidebar(
     );
 }
 
-/// The fold toggle on the left, `+` on the right, all one row.
+/// The fold toggle on the left (absent without foldable groups), `+` on the
+/// right, all one row.
 fn render_toolbar(
     buffer: &mut Buffer,
     content: Rect,
-    all_folded: bool,
+    all_folded: Option<bool>,
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
 ) {
@@ -311,15 +338,17 @@ fn render_toolbar(
     let style = Style::default().fg(palette.overlay0);
     let y = content.y;
     let x = content.x.saturating_add(1);
-    let toggle = if all_folded {
-        UNFOLD_ALL_LABEL
-    } else {
-        FOLD_ALL_LABEL
-    };
-    let toggle_width = display_width(toggle) as u16;
-    put_text(buffer, x, y, toggle_width, toggle, style);
-    if config.mouse_capture {
-        hits.group_toggle_all = Rect::new(x, y, toggle_width, 1);
+    if let Some(all_folded) = all_folded {
+        let toggle = if all_folded {
+            UNFOLD_ALL_LABEL
+        } else {
+            FOLD_ALL_LABEL
+        };
+        let toggle_width = display_width(toggle) as u16;
+        put_text(buffer, x, y, toggle_width, toggle, style);
+        if config.mouse_capture {
+            hits.group_toggle_all = Rect::new(x, y, toggle_width, 1);
+        }
     }
     let new_width = display_width(NEW_GROUP_LABEL) as u16;
     let new_x = content.right().saturating_sub(new_width + 1);

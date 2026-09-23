@@ -549,27 +549,40 @@ impl ClientShellState {
             }
             ClientContextMenuAction::Ungroup => {
                 // Every member goes to the ungrouped bucket (the first space); the
-                // emptied space is removed by the server.
-                let moves = self
-                    .snapshot
-                    .as_deref()
-                    .and_then(|snapshot| {
-                        let first = snapshot.workspaces.first()?.workspace_id.clone();
-                        if first == workspace_id {
-                            return None;
+                // emptied space is removed by the server. All or nothing: a member
+                // that cannot move (several panes) refuses the whole ungroup.
+                let (first, member_ids) = match self.snapshot.as_deref() {
+                    Some(snapshot) => {
+                        let Some(first) = snapshot.workspaces.first() else {
+                            return;
+                        };
+                        if first.workspace_id == workspace_id {
+                            return;
                         }
-                        Some(
+                        (
+                            first.workspace_id.clone(),
                             snapshot
                                 .tabs
                                 .iter()
                                 .filter(|tab| tab.workspace_id == workspace_id)
-                                .filter_map(|tab| {
-                                    self.move_tab_to_workspace_method(&tab.tab_id, &first, false)
-                                })
+                                .map(|tab| tab.tab_id.clone())
                                 .collect::<Vec<_>>(),
                         )
-                    })
-                    .unwrap_or_default();
+                    }
+                    None => return,
+                };
+                if let Some(reason) = member_ids
+                    .iter()
+                    .find_map(|tab_id| self.tab_group_move_blocker(tab_id))
+                {
+                    self.notify_group_move_refused(reason);
+                    outcome.repaint = true;
+                    return;
+                }
+                let moves = member_ids
+                    .iter()
+                    .filter_map(|tab_id| self.move_tab_to_workspace_method(tab_id, &first, false))
+                    .collect::<Vec<_>>();
                 for method in moves {
                     self.push_endpoint_method(method, outcome);
                 }

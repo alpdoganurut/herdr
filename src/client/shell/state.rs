@@ -351,6 +351,7 @@ pub(super) enum ClientRenameTarget {
     /// `tabs` layout: type an existing group name to move the tab there, or a new
     /// name to create the group with this tab.
     MoveTabToGroup {
+        tab_id: String,
         pane_id: String,
         tab_label: Option<String>,
     },

@@ -393,6 +393,7 @@ impl ClientShellState {
             title: "move tab to group (existing name, or a new one)",
             input: TextEditor::new("", true),
             target: ClientRenameTarget::MoveTabToGroup {
+                tab_id: tab.tab_id.clone(),
                 pane_id: pane.pane_id.clone(),
                 tab_label: tab.custom_label.then(|| tab.label.clone()),
             },
@@ -1002,39 +1003,79 @@ impl ClientShellState {
                     label: Some(trimmed.to_owned()),
                 },
             )),
-            ClientRenameTarget::MoveTabToGroup { pane_id, tab_label } => {
+            ClientRenameTarget::MoveTabToGroup {
+                tab_id,
+                pane_id,
+                tab_label,
+            } => {
                 if trimmed.is_empty() {
                     None
+                } else if let Some(reason) = self.tab_group_move_blocker(&tab_id) {
+                    self.notify_group_move_refused(reason);
+                    None
                 } else {
-                    // An existing group (any space but the first, matched by name,
-                    // case-insensitively) takes the tab; otherwise the name creates
-                    // the group with this tab as its first member.
-                    let existing = self.snapshot.as_deref().and_then(|snapshot| {
+                    // Targets: every space that is not a linked worktree checkout,
+                    // including the bucket (its name means "ungroup"). Exact name
+                    // first, then case-insensitive. The tab's own group is a no-op;
+                    // an unknown name creates the group with this tab in it.
+                    let snapshot = self.snapshot.as_deref();
+                    let source_workspace = snapshot.and_then(|snapshot| {
                         snapshot
-                            .workspaces
+                            .tabs
                             .iter()
-                            .enumerate()
-                            .filter(|(index, _)| super::tab_sidebar::is_group_index(*index))
-                            .find(|(_, workspace)| workspace.label.eq_ignore_ascii_case(trimmed))
-                            .map(|(_, workspace)| workspace.workspace_id.clone())
+                            .find(|tab| tab.tab_id == tab_id)
+                            .map(|tab| tab.workspace_id.clone())
                     });
-                    let destination = match existing {
-                        Some(workspace_id) => crate::api::schema::PaneMoveDestination::NewTab {
-                            workspace_id: Some(workspace_id),
-                            label: tab_label,
-                        },
-                        None => crate::api::schema::PaneMoveDestination::NewWorkspace {
-                            label: Some(trimmed.to_owned()),
-                            tab_label,
-                        },
-                    };
-                    Some(crate::api::schema::Method::PaneMove(
-                        crate::api::schema::PaneMoveParams {
-                            pane_id,
-                            destination,
-                            focus: true,
-                        },
-                    ))
+                    let candidates = snapshot
+                        .map(|snapshot| {
+                            snapshot
+                                .workspaces
+                                .iter()
+                                .filter(|workspace| {
+                                    !workspace
+                                        .worktree
+                                        .as_ref()
+                                        .is_some_and(|worktree| worktree.is_linked_worktree)
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let wanted = trimmed.to_lowercase();
+                    let existing = candidates
+                        .iter()
+                        .find(|workspace| workspace.label == trimmed)
+                        .or_else(|| {
+                            candidates
+                                .iter()
+                                .find(|workspace| workspace.label.to_lowercase() == wanted)
+                        })
+                        .map(|workspace| workspace.workspace_id.clone());
+                    match existing {
+                        Some(workspace_id) if Some(&workspace_id) == source_workspace.as_ref() => {
+                            None
+                        }
+                        Some(workspace_id) => Some(crate::api::schema::Method::PaneMove(
+                            crate::api::schema::PaneMoveParams {
+                                pane_id,
+                                destination: crate::api::schema::PaneMoveDestination::NewTab {
+                                    workspace_id: Some(workspace_id),
+                                    label: tab_label,
+                                },
+                                focus: true,
+                            },
+                        )),
+                        None => Some(crate::api::schema::Method::PaneMove(
+                            crate::api::schema::PaneMoveParams {
+                                pane_id,
+                                destination:
+                                    crate::api::schema::PaneMoveDestination::NewWorkspace {
+                                        label: Some(trimmed.to_owned()),
+                                        tab_label,
+                                    },
+                                focus: true,
+                            },
+                        )),
+                    }
                 }
             }
         };

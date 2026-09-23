@@ -1174,8 +1174,9 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                Some(ClientChromeDrag::SidebarTab { .. }) => {
-                    let target = self.sidebar_tab_drop_at(point);
+                Some(ClientChromeDrag::SidebarTab { workspace_id, .. }) => {
+                    let source = workspace_id.clone();
+                    let target = self.sidebar_tab_drop_at(point, &source);
                     if let Some(ClientChromeDrag::SidebarTab {
                         target: current, ..
                     }) = self.chrome_drag.as_mut()
@@ -1226,7 +1227,8 @@ impl ClientShellState {
                 if delta >= 1 {
                     if self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs {
                         // No tab bar in this layout: the press came from a sidebar row.
-                        let target = self.sidebar_tab_drop_at(point);
+                        let source = press.workspace_id.clone();
+                        let target = self.sidebar_tab_drop_at(point, &source);
                         self.chrome_drag = Some(ClientChromeDrag::SidebarTab {
                             tab_id: press.tab_id.clone(),
                             workspace_id: press.workspace_id.clone(),
@@ -1287,25 +1289,7 @@ impl ClientShellState {
                         source_workspace_id,
                         target,
                     } => {
-                        if let Some((mut before_workspace_id, _)) = target {
-                            // tabs layout: the first space is the ungrouped bucket and
-                            // nothing may be dropped above it.
-                            if self.config.sidebar_layout
-                                == crate::config::SidebarLayoutConfig::Tabs
-                            {
-                                if let Some(snapshot) = self.snapshot.as_deref() {
-                                    let first = snapshot
-                                        .workspaces
-                                        .first()
-                                        .map(|workspace| workspace.workspace_id.as_str());
-                                    if before_workspace_id.as_deref() == first {
-                                        before_workspace_id = snapshot
-                                            .workspaces
-                                            .get(1)
-                                            .map(|workspace| workspace.workspace_id.clone());
-                                    }
-                                }
-                            }
+                        if let Some((before_workspace_id, _)) = target {
                             if let Some(method) = self.workspace_move_method(
                                 &source_workspace_id,
                                 before_workspace_id.as_deref(),
@@ -1320,12 +1304,24 @@ impl ClientShellState {
                         workspace_id,
                         target,
                     } => {
-                        if let Some(target) = target {
-                            if let Some(method) =
-                                self.sidebar_tab_move_method(&tab_id, &workspace_id, &target)
-                            {
-                                self.push_endpoint_method(method, outcome);
+                        let method = target.as_ref().and_then(|target| {
+                            if target.workspace_id != workspace_id {
+                                if let Some(reason) = self.tab_group_move_blocker(&tab_id) {
+                                    self.notify_group_move_refused(reason);
+                                    return None;
+                                }
                             }
+                            self.sidebar_tab_move_method(&tab_id, &workspace_id, target)
+                        });
+                        match method {
+                            Some(method) => self.push_endpoint_method(method, outcome),
+                            // A drop that moves nothing (same row, jitter) is a click.
+                            None => self.push_endpoint_method(
+                                crate::api::schema::Method::TabFocus(
+                                    crate::api::schema::TabTarget { tab_id },
+                                ),
+                                outcome,
+                            ),
                         }
                         outcome.repaint = true;
                     }
@@ -2147,10 +2143,7 @@ impl ClientShellState {
                     return;
                 }
                 if super::contains(self.hits.group_toggle_all, point) {
-                    let all_folded = self.snapshot.as_deref().is_some_and(|snapshot| {
-                        super::tab_sidebar::all_groups_folded(snapshot, &self.collapsed_groups)
-                    });
-                    self.set_all_groups_folded(!all_folded, outcome);
+                    self.toggle_all_groups_folded(outcome);
                     return;
                 }
                 if super::contains(self.hits.group_new, point) {
@@ -2498,44 +2491,53 @@ impl ClientShellState {
     /// Drop slot for a sidebar tab drag. Slots sit above every tab row (insert
     /// before that tab) and below the last row of each group's run (append);
     /// a group header is "append to that group". Nearest row wins.
-    pub(super) fn sidebar_tab_drop_at(&self, point: (u16, u16)) -> Option<ClientSidebarTabDrop> {
+    /// Drop slot for a sidebar tab drag. Inside the source group, slots sit on
+    /// every tab row (before that tab) and after the run's last row (append);
+    /// any other group is one slot, "append there", drawn at that group's append
+    /// row (or its header when folded), so the indicator shows what will happen.
+    pub(super) fn sidebar_tab_drop_at(
+        &self,
+        point: (u16, u16),
+        source_workspace_id: &str,
+    ) -> Option<ClientSidebarTabDrop> {
         let snapshot = self.snapshot.as_deref()?;
         let body = self.hits.agent_body;
         if body.height == 0 || point.1 < body.y.saturating_sub(1) || point.1 > body.bottom() {
             return None;
         }
-        let tab_workspace = |tab_id: &str| {
-            snapshot
-                .tabs
-                .iter()
-                .find(|tab| tab.tab_id == tab_id)
-                .map(|tab| tab.workspace_id.clone())
+        // One pass: tab -> (group, index in group), and each group's size.
+        let mut tab_index: HashMap<&str, (&str, usize)> = HashMap::new();
+        let mut group_len: HashMap<&str, usize> = HashMap::new();
+        for tab in &snapshot.tabs {
+            let len = group_len.entry(tab.workspace_id.as_str()).or_insert(0);
+            tab_index.insert(tab.tab_id.as_str(), (tab.workspace_id.as_str(), *len));
+            *len += 1;
+        }
+        // Append row per group: below its last visible tab row, else its header.
+        let mut append_row: HashMap<&str, u16> = HashMap::new();
+        for (rect, tab_id) in &self.hits.sidebar_tabs {
+            if let Some((workspace_id, _)) = tab_index.get(tab_id.as_str()) {
+                append_row.insert(workspace_id, rect.bottom());
+            }
+        }
+        for (rect, workspace_id) in &self.hits.sidebar_groups {
+            append_row.entry(workspace_id.as_str()).or_insert(rect.y);
+        }
+        let append_slot = |workspace_id: &str| ClientSidebarTabDrop {
+            workspace_id: workspace_id.to_owned(),
+            insert_index: group_len.get(workspace_id).copied().unwrap_or(0),
+            row: append_row.get(workspace_id).copied().unwrap_or(point.1),
         };
-        let index_in_workspace = |tab_id: &str, workspace_id: &str| {
-            snapshot
-                .tabs
-                .iter()
-                .filter(|tab| tab.workspace_id == workspace_id)
-                .position(|tab| tab.tab_id == tab_id)
-        };
+        let mut slots: Vec<ClientSidebarTabDrop> = Vec::new();
         // Exact rows win: a header row means "append to that group", a tab row
-        // means "insert before that tab". Only the gaps fall back to nearest.
+        // means "insert before that tab" (or "append" when it is another group).
         if let Some((_, workspace_id)) = self
             .hits
             .sidebar_groups
             .iter()
             .find(|(rect, _)| rect.y == point.1)
         {
-            let len = snapshot
-                .tabs
-                .iter()
-                .filter(|tab| tab.workspace_id == *workspace_id)
-                .count();
-            return Some(ClientSidebarTabDrop {
-                workspace_id: workspace_id.clone(),
-                insert_index: len,
-                row: point.1,
-            });
+            return Some(append_slot(workspace_id));
         }
         if let Some((rect, tab_id)) = self
             .hits
@@ -2543,59 +2545,46 @@ impl ClientShellState {
             .iter()
             .find(|(rect, _)| rect.y == point.1)
         {
-            let workspace_id = tab_workspace(tab_id)?;
-            let index = index_in_workspace(tab_id, &workspace_id)?;
-            return Some(ClientSidebarTabDrop {
-                workspace_id,
-                insert_index: index,
-                row: rect.y,
+            let (workspace_id, index) = tab_index.get(tab_id.as_str()).copied()?;
+            return Some(if workspace_id == source_workspace_id {
+                ClientSidebarTabDrop {
+                    workspace_id: workspace_id.to_owned(),
+                    insert_index: index,
+                    row: rect.y,
+                }
+            } else {
+                append_slot(workspace_id)
             });
         }
-        let mut slots: Vec<ClientSidebarTabDrop> = Vec::new();
+        let rows_by_y: HashMap<u16, &str> = self
+            .hits
+            .sidebar_tabs
+            .iter()
+            .map(|(rect, tab_id)| (rect.y, tab_id.as_str()))
+            .collect();
         for (rect, tab_id) in &self.hits.sidebar_tabs {
-            let Some(workspace_id) = tab_workspace(tab_id) else {
+            let Some((workspace_id, index)) = tab_index.get(tab_id.as_str()).copied() else {
                 continue;
             };
-            let Some(index) = index_in_workspace(tab_id, &workspace_id) else {
+            if workspace_id != source_workspace_id {
+                slots.push(append_slot(workspace_id));
                 continue;
-            };
+            }
             slots.push(ClientSidebarTabDrop {
-                workspace_id: workspace_id.clone(),
+                workspace_id: workspace_id.to_owned(),
                 insert_index: index,
                 row: rect.y,
             });
-            // After the last tab of a group's run: append.
-            let next_is_same_group = self
-                .hits
-                .sidebar_tabs
-                .iter()
-                .find(|(other, _)| other.y == rect.y + 1)
-                .and_then(|(_, other_id)| tab_workspace(other_id))
-                .is_some_and(|other| other == workspace_id);
+            let next_is_same_group = rows_by_y
+                .get(&(rect.y + 1))
+                .and_then(|next| tab_index.get(next))
+                .is_some_and(|(other, _)| *other == workspace_id);
             if !next_is_same_group {
-                let len = snapshot
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.workspace_id == workspace_id)
-                    .count();
-                slots.push(ClientSidebarTabDrop {
-                    workspace_id,
-                    insert_index: len,
-                    row: rect.bottom(),
-                });
+                slots.push(append_slot(workspace_id));
             }
         }
-        for (rect, workspace_id) in &self.hits.sidebar_groups {
-            let len = snapshot
-                .tabs
-                .iter()
-                .filter(|tab| tab.workspace_id == *workspace_id)
-                .count();
-            slots.push(ClientSidebarTabDrop {
-                workspace_id: workspace_id.clone(),
-                insert_index: len,
-                row: rect.y,
-            });
+        for (_, workspace_id) in &self.hits.sidebar_groups {
+            slots.push(append_slot(workspace_id));
         }
         slots
             .into_iter()
@@ -2641,6 +2630,50 @@ impl ClientShellState {
         self.move_tab_to_workspace_method(tab_id, &target.workspace_id, true)
     }
 
+    /// Why `tab_id` cannot move between groups right now, if it can't: the
+    /// tabs layout moves whole single-pane tabs only, and the ungrouped bucket
+    /// (the first space) must keep at least one tab or the server removes it
+    /// and the next group would silently become the bucket.
+    pub(super) fn tab_group_move_blocker(&self, tab_id: &str) -> Option<String> {
+        let snapshot = self.snapshot.as_deref()?;
+        let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id)?;
+        let panes = snapshot
+            .panes
+            .iter()
+            .filter(|pane| pane.tab_id == tab_id)
+            .count();
+        if panes > 1 {
+            return Some(format!(
+                "\"{}\" has {panes} panes; only single-pane tabs move between groups",
+                tab.label
+            ));
+        }
+        let bucket = snapshot.workspaces.first()?;
+        if tab.workspace_id == bucket.workspace_id
+            && snapshot
+                .tabs
+                .iter()
+                .filter(|other| other.workspace_id == bucket.workspace_id)
+                .count()
+                == 1
+        {
+            return Some("the ungrouped list must keep at least one tab".to_owned());
+        }
+        None
+    }
+
+    /// Surface a refused group move to the user.
+    pub(super) fn notify_group_move_refused(&mut self, reason: String) {
+        // `Rejected`: a short toast that repeats for each refusal (the other
+        // kinds show once per endpoint boot).
+        self.push_endpoint_notice(
+            ClientEndpointNoticeKind::Rejected,
+            "tab_groups.move_refused",
+            "Tab groups",
+            reason,
+        );
+    }
+
     /// `pane.move` that carries a whole single-pane tab into `workspace_id`.
     pub(super) fn move_tab_to_workspace_method(
         &self,
@@ -2663,20 +2696,13 @@ impl ClientShellState {
         ))
     }
 
-    /// Fold or unfold every group at once (`tabs` layout toolbar).
+    /// Fold or unfold every foldable group at once (`tabs` layout toolbar and
+    /// `toggle_groups_folded`). The focused tab's group is never folded.
     pub(super) fn set_all_groups_folded(&mut self, folded: bool, outcome: &mut ClientShellInput) {
         let keys = self
             .snapshot
             .as_deref()
-            .map(|snapshot| {
-                snapshot
-                    .workspaces
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| super::tab_sidebar::is_group_index(*index))
-                    .map(|(_, workspace)| group_key(&workspace.workspace_id))
-                    .collect::<Vec<_>>()
-            })
+            .map(|snapshot| super::tab_sidebar::foldable_group_keys(snapshot).collect::<Vec<_>>())
             .unwrap_or_default();
         for key in keys {
             if folded {
@@ -2687,5 +2713,16 @@ impl ClientShellState {
         }
         outcome.repaint = true;
         self.persist_chrome_preferences(outcome);
+    }
+
+    /// Toolbar / keybinding fold toggle: fold everything foldable, or expand
+    /// everything once it is all folded. No-op without foldable groups.
+    pub(super) fn toggle_all_groups_folded(&mut self, outcome: &mut ClientShellInput) {
+        let all_folded = self.snapshot.as_deref().and_then(|snapshot| {
+            super::tab_sidebar::all_groups_folded(snapshot, &self.collapsed_groups)
+        });
+        if let Some(all_folded) = all_folded {
+            self.set_all_groups_folded(!all_folded, outcome);
+        }
     }
 }

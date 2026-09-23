@@ -38,7 +38,19 @@ impl ClientShellState {
         if self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
             && press.endpoint_id.is_local()
         {
-            // A group header click folds or unfolds that group.
+            // A group header click folds or unfolds that group. The focused
+            // tab's group is always drawn open, so toggling it would only flip
+            // hidden state: no-op.
+            let focused = self.snapshot.as_deref().and_then(|snapshot| {
+                snapshot
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.focused)
+                    .map(|tab| tab.workspace_id.clone())
+            });
+            if focused.as_deref() == Some(press.workspace_id.as_str()) {
+                return;
+            }
             let key = group_key(&press.workspace_id);
             self.toggle_collapsed_group(&ClientEndpointId::Local, key);
             outcome.repaint = true;

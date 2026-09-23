@@ -1165,3 +1165,273 @@ fn toggle_groups_folded_binding_mirrors_the_toolbar_toggle() {
         .map(|(keybinds, _)| keybinds.keybinds.toggle_groups_folded.bindings.is_empty())
         .unwrap_or(true));
 }
+
+fn notices(outcome: &ClientShellInput, state: &ClientShellState) -> bool {
+    let _ = outcome;
+    state.visible_endpoint_notice.is_some()
+}
+
+#[test]
+fn group_moves_refuse_multi_pane_tabs_and_the_buckets_last_tab() {
+    // "notes" (tab_3, group api) gets a second pane; the bucket keeps one tab.
+    let mut snapshot = three_space_snapshot();
+    snapshot.panes.push(pane("pane_3b", "ws_2", "tab_3"));
+    snapshot.tabs.retain(|tab| tab.tab_id != "tab_2");
+    snapshot.panes.retain(|pane| pane.pane_id != "pane_2");
+    let mut config = tabs_config();
+    config.keys.move_tab_to_group = crate::config::BindingConfig::one("alt+g");
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("composed frame");
+
+    // Dragging the split tab onto "infra" is refused with a notice, no pane.move.
+    let (notes, _) = state.hits.sidebar_tabs[1];
+    let (infra, _) = state.hits.sidebar_groups[1];
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        notes.x + 3,
+        notes.y,
+    )]);
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        notes.x + 3,
+        infra.y,
+    )]);
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        notes.x + 3,
+        infra.y,
+    )]);
+    assert!(!endpoint_methods(&outcome)
+        .iter()
+        .any(|method| matches!(method, crate::api::schema::Method::PaneMove(_))));
+    assert!(notices(&outcome, &state), "a refusal must be visible");
+
+    // Ungrouping "api" is all-or-nothing: the split member blocks it.
+    state.visible_endpoint_notice = None;
+    state.compose(106, 24).expect("composed frame");
+    let (api, _) = state.hits.sidebar_groups[0];
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Right),
+        api.x + 3,
+        api.y,
+    )]);
+    state.compose(106, 24).expect("menu");
+    let row = state.hits.context_menu_rows[1].0;
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        row.x + 1,
+        row.y,
+    )]);
+    assert!(endpoint_methods(&outcome).is_empty());
+    assert!(notices(&outcome, &state));
+
+    // The bucket's only tab ("reviewer") cannot leave via the prompt either.
+    state.visible_endpoint_notice = None;
+    let mut binding = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::MoveTabToGroup),
+        &mut binding,
+    );
+    let outcome = state.handle_input_bytes(b"infra\r");
+    assert!(endpoint_methods(&outcome).is_empty());
+    assert!(notices(&outcome, &state));
+}
+
+#[test]
+fn jittered_press_on_a_tab_row_still_focuses_it() {
+    let mut state = grouped_state();
+    let (planner, _) = state.hits.sidebar_tabs[1];
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        planner.x + 3,
+        planner.y,
+    )]);
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        planner.x + 4,
+        planner.y,
+    )]);
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        planner.x + 4,
+        planner.y,
+    )]);
+    assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_2"
+    )));
+}
+
+#[test]
+fn cross_group_drop_indicator_sits_on_the_target_groups_append_row() {
+    let mut state = grouped_state();
+    let (reviewer, _) = state.hits.sidebar_tabs[0];
+    let (notes, _) = state.hits.sidebar_tabs[2];
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        reviewer.x + 3,
+        reviewer.y,
+    )]);
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        reviewer.x + 3,
+        notes.y,
+    )]);
+    match &state.chrome_drag {
+        Some(ClientChromeDrag::SidebarTab {
+            target: Some(target),
+            ..
+        }) => {
+            assert_eq!(target.workspace_id, "ws_2");
+            assert_eq!(target.insert_index, 1, "append to api");
+            assert_eq!(target.row, notes.bottom(), "indicator below api's last tab");
+        }
+        other => panic!("expected a sidebar tab drag, got {:?}", other.is_some()),
+    }
+}
+
+#[test]
+fn focused_groups_header_click_is_a_no_op_and_the_toggle_ignores_it() {
+    let mut snapshot = three_space_snapshot();
+    snapshot.focused_tab_id = Some("tab_3".into());
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == "tab_3";
+    }
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("composed frame");
+    let (api, _) = state.hits.sidebar_groups[0];
+    state.handle_raw_events(vec![
+        mouse(MouseEventKind::Down(MouseButton::Left), api.x + 3, api.y),
+        mouse(MouseEventKind::Up(MouseButton::Left), api.x + 3, api.y),
+    ]);
+    assert!(
+        state.collapsed_groups.is_empty(),
+        "focused group never folds"
+    );
+
+    // Fold all: only infra folds, and the toggle then reads "expand all".
+    let toggle = state.hits.group_toggle_all;
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        toggle.x,
+        toggle.y,
+    )]);
+    let frame = state.compose(106, 24).expect("composed frame");
+    assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_2", "tab_3"]);
+    assert_eq!(
+        row_text(&frame, state.hits.group_toggle_all),
+        UNFOLD_ALL_LABEL
+    );
+}
+
+#[test]
+fn toolbar_toggle_is_absent_when_only_the_focused_group_could_fold() {
+    let mut snapshot = two_space_snapshot();
+    snapshot.focused_tab_id = Some("tab_3".into());
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == "tab_3";
+    }
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    assert_eq!(
+        state.hits.group_toggle_all,
+        ratatui::layout::Rect::default()
+    );
+}
+
+#[test]
+fn move_prompt_treats_current_group_as_no_op_bucket_name_as_ungroup_and_skips_worktrees() {
+    let mut snapshot = three_space_snapshot();
+    // A linked worktree space labelled like a group name must never be a target.
+    let mut worktree = snapshot.workspaces[2].clone();
+    worktree.workspace_id = "ws_wt".into();
+    worktree.label = "Api".into();
+    worktree.worktree = Some(ClientShellWorktree {
+        key: "/repo".into(),
+        label: "api".into(),
+        is_linked_worktree: true,
+    });
+    snapshot.workspaces.push(worktree);
+    snapshot.focused_tab_id = Some("tab_3".into());
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == "tab_3";
+    }
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("composed frame");
+
+    // "notes" already lives in api: naming its own group does nothing.
+    let mut binding = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::MoveTabToGroup),
+        &mut binding,
+    );
+    let outcome = state.handle_input_bytes(b"api\r");
+    assert!(endpoint_methods(&outcome).is_empty());
+
+    // Naming the bucket moves the tab back to the bucket.
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::MoveTabToGroup),
+        &mut binding,
+    );
+    let outcome = state.handle_input_bytes(b"client-shell\r");
+    assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::PaneMove(params) if matches!(
+            &params.destination,
+            crate::api::schema::PaneMoveDestination::NewTab { workspace_id: Some(ws), .. } if ws == "ws_1"
+        )
+    )));
+
+    // "API" matches the group "api" case-insensitively, never the worktree "Api".
+    let mut snapshot = three_space_snapshot();
+    let mut worktree = snapshot.workspaces[2].clone();
+    worktree.workspace_id = "ws_wt".into();
+    worktree.label = "API".into();
+    worktree.worktree = Some(ClientShellWorktree {
+        key: "/repo".into(),
+        label: "api".into(),
+        is_linked_worktree: true,
+    });
+    snapshot.workspaces.push(worktree);
+    state.set_snapshot(Box::new(snapshot));
+    state.compose(106, 24).expect("composed frame");
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::MoveTabToGroup),
+        &mut binding,
+    );
+    let outcome = state.handle_input_bytes(b"API\r");
+    assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::PaneMove(params) if matches!(
+            &params.destination,
+            crate::api::schema::PaneMoveDestination::NewTab { workspace_id: Some(ws), .. } if ws == "ws_2"
+        )
+    )));
+}
+
+#[test]
+fn group_keys_do_nothing_outside_the_tabs_layout() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(three_space_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("composed frame");
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::MoveTabToGroup),
+        &mut outcome,
+    );
+    assert!(state.overlay.is_none());
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleGroupsFolded),
+        &mut outcome,
+    );
+    assert!(state.collapsed_groups.is_empty());
+}
