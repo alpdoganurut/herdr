@@ -1555,14 +1555,22 @@ impl App {
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
             return invalid_agent(id);
         };
+        let session_ref = crate::agent_resume::session_ref_from_report(
+            &params.source,
+            &agent_label,
+            params.agent_session_id,
+            params.agent_session_path.clone(),
+        );
+        let transcript_path = crate::agent_resume::transcript_path_from_report(
+            &params.source,
+            &agent_label,
+            session_ref.as_ref(),
+            params.agent_session_path.as_deref(),
+        );
         self.handle_internal_event(crate::events::AppEvent::HookStateReported {
             pane_id,
-            session_ref: crate::agent_resume::session_ref_from_report(
-                &params.source,
-                &agent_label,
-                params.agent_session_id,
-                params.agent_session_path,
-            ),
+            session_ref,
+            transcript_path,
             source: params.source,
             agent_label,
             state: detect_state_from_api(params.state),
@@ -1584,14 +1592,22 @@ impl App {
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
             return invalid_agent(id);
         };
+        let session_ref = crate::agent_resume::session_ref_from_report(
+            &params.source,
+            &agent_label,
+            params.agent_session_id,
+            params.agent_session_path.clone(),
+        );
+        let transcript_path = crate::agent_resume::transcript_path_from_report(
+            &params.source,
+            &agent_label,
+            session_ref.as_ref(),
+            params.agent_session_path.as_deref(),
+        );
         self.handle_internal_event(crate::events::AppEvent::AgentSessionReported {
             pane_id,
-            session_ref: crate::agent_resume::session_ref_from_report(
-                &params.source,
-                &agent_label,
-                params.agent_session_id,
-                params.agent_session_path,
-            ),
+            session_ref,
+            transcript_path,
             source: params.source,
             agent_label,
             seq: params.seq,

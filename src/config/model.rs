@@ -312,6 +312,10 @@ pub struct SessionConfig {
     pub resume_agents_on_restore: bool,
     /// Milliseconds between automatic agent restores. Zero disables spacing.
     pub startup_per_agent_delay_ms: u32,
+    /// Keep a copy of each open or suspended agent pane's native conversation
+    /// transcript under the session directory (`agent-transcripts/`) and put
+    /// it back before a resume if the agent has deleted its own. Default: true.
+    pub backup_agent_transcripts: bool,
 }
 
 impl Default for SessionConfig {
@@ -319,6 +323,7 @@ impl Default for SessionConfig {
         Self {
             resume_agents_on_restore: true,
             startup_per_agent_delay_ms: 100,
+            backup_agent_transcripts: true,
         }
     }
 }

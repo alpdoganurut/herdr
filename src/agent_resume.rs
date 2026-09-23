@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +30,39 @@ pub struct PersistedAgentSession {
     pub source: String,
     pub agent: String,
     pub session_ref: AgentSessionRef,
+    /// Where the agent keeps this session's native conversation transcript,
+    /// as reported by its integration. Informational only: it never takes
+    /// part in deciding whether two records name the same session.
+    pub transcript_path: Option<PathBuf>,
+}
+
+/// The native transcript files behind a persisted agent session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeTranscript {
+    /// The conversation transcript itself.
+    pub file: PathBuf,
+    /// A directory of per-session side data (tool results, subagent
+    /// transcripts) kept next to the file; it may not exist.
+    pub side_dir: Option<PathBuf>,
+}
+
+impl PersistedAgentSession {
+    /// Whether both records name the same native session, ignoring the
+    /// informational transcript path.
+    pub fn same_session(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.agent == other.agent
+            && self.session_ref == other.session_ref
+    }
+
+    /// The same record with `transcript_path` filled from `path` when it was
+    /// still unknown.
+    pub fn with_transcript_path(mut self, path: Option<PathBuf>) -> Self {
+        if self.transcript_path.is_none() {
+            self.transcript_path = path;
+        }
+        self
+    }
 }
 
 impl AgentSessionRef {
@@ -69,6 +102,104 @@ pub fn session_ref_from_report(
     agent_session_id.and_then(AgentSessionRef::id)
 }
 
+/// The transcript path an integration reported next to an Id-kind session
+/// reference. Path-kind references already are the transcript; other reports
+/// carry no usable path.
+pub fn transcript_path_from_report(
+    source: &str,
+    agent: &str,
+    session_ref: Option<&AgentSessionRef>,
+    agent_session_path: Option<&str>,
+) -> Option<PathBuf> {
+    if !is_official_agent_source(source, agent) {
+        return None;
+    }
+    let session_ref = session_ref?;
+    if session_ref.kind != AgentSessionRefKind::Id {
+        return None;
+    }
+    let path = agent_session_path?;
+    valid_session_path(path).then(|| PathBuf::from(path))
+}
+
+/// Where the agent behind `session` keeps its native transcript, when Herdr
+/// knows how that agent stores conversations.
+///
+/// Claude Code stores `~/.claude/projects/<project-slug>/<session-id>.jsonl`
+/// plus a `<session-id>/` side directory next to it. The reported transcript
+/// path wins; without one the project directories are searched for the id.
+/// A known path is returned even when the file no longer exists so a backup
+/// can be put back in place.
+pub fn native_transcript_locations(session: &PersistedAgentSession) -> Option<NativeTranscript> {
+    let home = home_dir_from_env()?;
+    native_transcript_locations_in(session, &home)
+}
+
+pub fn native_transcript_locations_in(
+    session: &PersistedAgentSession,
+    home: &Path,
+) -> Option<NativeTranscript> {
+    if !is_official_agent_source(&session.source, &session.agent) {
+        return None;
+    }
+    match (
+        session.source.as_str(),
+        session.agent.as_str(),
+        session.session_ref.kind,
+    ) {
+        ("herdr:claude", "claude", AgentSessionRefKind::Id) => {
+            let id = &session.session_ref.value;
+            if !is_safe_path_component(id) {
+                return None;
+            }
+            let file = match session.transcript_path.clone() {
+                Some(path) => path,
+                None => find_claude_transcript(home, id)?,
+            };
+            let side_dir = file.parent().map(|parent| parent.join(id));
+            Some(NativeTranscript { file, side_dir })
+        }
+        _ => None,
+    }
+}
+
+fn find_claude_transcript(home: &Path, id: &str) -> Option<PathBuf> {
+    let projects = home.join(".claude").join("projects");
+    let mut project_dirs: Vec<PathBuf> = std::fs::read_dir(&projects)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    project_dirs.sort();
+    project_dirs
+        .into_iter()
+        .map(|dir| dir.join(format!("{id}.jsonl")))
+        .find(|candidate| candidate.is_file())
+}
+
+/// A session id or agent label that can be used as a single path component
+/// without escaping the directory it is joined onto.
+pub fn is_safe_path_component(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('.')
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+fn home_dir_from_env() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        if let Some(profile) = std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()) {
+            return Some(PathBuf::from(profile));
+        }
+    }
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 pub fn persisted_session_from_launch_args(
     agent: crate::detect::Agent,
     args: &[String],
@@ -84,6 +215,7 @@ pub fn persisted_session_from_launch_args(
         source: "herdr:codex".into(),
         agent: "codex".into(),
         session_ref: AgentSessionRef::id(session_id.clone())?,
+        transcript_path: None,
     })
 }
 
@@ -130,6 +262,7 @@ pub fn session_ref_from_snapshot(
         source: source.to_string(),
         agent: agent.to_string(),
         session_ref,
+        transcript_path: None,
     })
 }
 
@@ -320,6 +453,179 @@ mod tests {
             .join(name)
             .display()
             .to_string()
+    }
+
+    struct TempHome(PathBuf);
+
+    impl TempHome {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "herdr-agent-resume-{name}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn claude_session(id: &str, transcript_path: Option<PathBuf>) -> PersistedAgentSession {
+        PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: AgentSessionRef::id(id).unwrap(),
+            transcript_path,
+        }
+    }
+
+    #[test]
+    fn transcript_path_is_kept_only_for_official_id_refs_with_absolute_paths() {
+        let transcript = absolute_test_path("claude-session.jsonl");
+        let claude_ref = AgentSessionRef::id("claude-session").unwrap();
+        assert_eq!(
+            transcript_path_from_report(
+                "herdr:claude",
+                "claude",
+                Some(&claude_ref),
+                Some(&transcript)
+            ),
+            Some(PathBuf::from(&transcript))
+        );
+        assert_eq!(
+            transcript_path_from_report(
+                "custom:claude",
+                "claude",
+                Some(&claude_ref),
+                Some(&transcript)
+            ),
+            None
+        );
+        assert_eq!(
+            transcript_path_from_report("herdr:claude", "claude", None, Some(&transcript)),
+            None
+        );
+        assert_eq!(
+            transcript_path_from_report("herdr:claude", "claude", Some(&claude_ref), None),
+            None
+        );
+        assert_eq!(
+            transcript_path_from_report(
+                "herdr:claude",
+                "claude",
+                Some(&claude_ref),
+                Some("relative/claude-session.jsonl")
+            ),
+            None
+        );
+        let pi_ref = AgentSessionRef::path(absolute_test_path("pi-session.jsonl")).unwrap();
+        assert_eq!(
+            transcript_path_from_report("herdr:pi", "pi", Some(&pi_ref), Some(&transcript)),
+            None
+        );
+    }
+
+    #[test]
+    fn same_session_ignores_the_transcript_path_while_equality_does_not() {
+        let without = claude_session("claude-session", None);
+        let with = claude_session("claude-session", Some(PathBuf::from("/tmp/a.jsonl")));
+        assert!(without.same_session(&with));
+        assert_ne!(without, with);
+        assert!(!without.same_session(&claude_session("other", None)));
+        assert_eq!(
+            without
+                .clone()
+                .with_transcript_path(Some(PathBuf::from("/tmp/a.jsonl"))),
+            with
+        );
+        // A known path is not replaced.
+        assert_eq!(
+            with.clone()
+                .with_transcript_path(Some(PathBuf::from("/tmp/b.jsonl"))),
+            with
+        );
+    }
+
+    #[test]
+    fn native_transcript_uses_the_reported_path_even_when_the_file_is_gone() {
+        let home = TempHome::new("reported");
+        let file = home.0.join("projects").join("slug").join("id-1.jsonl");
+        let session = claude_session("id-1", Some(file.clone()));
+        assert_eq!(
+            native_transcript_locations_in(&session, &home.0),
+            Some(NativeTranscript {
+                side_dir: Some(file.parent().unwrap().join("id-1")),
+                file,
+            })
+        );
+    }
+
+    #[test]
+    fn native_transcript_falls_back_to_the_claude_projects_glob() {
+        let home = TempHome::new("glob");
+        let projects = home.0.join(".claude").join("projects");
+        let first = projects.join("-home-user-a");
+        let second = projects.join("-home-user-b");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(second.join("id-2.jsonl"), "{}\n").unwrap();
+        std::fs::write(first.join("other.jsonl"), "{}\n").unwrap();
+
+        let session = claude_session("id-2", None);
+        assert_eq!(
+            native_transcript_locations_in(&session, &home.0),
+            Some(NativeTranscript {
+                file: second.join("id-2.jsonl"),
+                side_dir: Some(second.join("id-2")),
+            })
+        );
+        assert_eq!(
+            native_transcript_locations_in(&claude_session("id-3", None), &home.0),
+            None
+        );
+        assert_eq!(
+            native_transcript_locations_in(&claude_session("id-2", None), &home.0.join("missing")),
+            None
+        );
+    }
+
+    #[test]
+    fn native_transcript_is_unknown_for_other_agents_and_unsafe_ids() {
+        let home = TempHome::new("others");
+        let codex = PersistedAgentSession {
+            source: "herdr:codex".into(),
+            agent: "codex".into(),
+            session_ref: AgentSessionRef::id("codex-session").unwrap(),
+            transcript_path: Some(home.0.join("codex.jsonl")),
+        };
+        assert_eq!(native_transcript_locations_in(&codex, &home.0), None);
+        let custom = PersistedAgentSession {
+            source: "custom:claude".into(),
+            agent: "claude".into(),
+            session_ref: AgentSessionRef::id("claude-session").unwrap(),
+            transcript_path: Some(home.0.join("claude.jsonl")),
+        };
+        assert_eq!(native_transcript_locations_in(&custom, &home.0), None);
+        for id in ["../escape", "a/b", ".hidden", "with space"] {
+            let session = claude_session(id, Some(home.0.join("claude.jsonl")));
+            assert_eq!(
+                native_transcript_locations_in(&session, &home.0),
+                None,
+                "{id}"
+            );
+        }
+        assert!(is_safe_path_component(
+            "0f3c1a2b-4d5e-6f70-8192-a3b4c5d6e7f8"
+        ));
+        assert!(is_safe_path_component("session_1.v2"));
+        assert!(!is_safe_path_component(""));
+        assert!(!is_safe_path_component(".."));
     }
 
     #[test]

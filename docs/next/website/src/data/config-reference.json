@@ -1457,6 +1457,12 @@
           "type": "integer",
           "default": "100",
           "description": "Milliseconds between automatic agent restores after a server restart. The first agent starts without this delay; 0 disables spacing. Does not delay manual launches or explicit terminal attaches. Restart the server to apply."
+        },
+        {
+          "key": "session.backup_agent_transcripts",
+          "type": "boolean",
+          "default": "true",
+          "description": "Keep a copy of each open or suspended agent pane's native conversation transcript under the session directory (`agent-transcripts/`) and put it back before a resume if the agent has deleted its own. When false, no new backups are written; existing backups are still used before a resume. Herdr never deletes backups."
         }
       ]
     },

@@ -404,6 +404,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # resume_agents_on_restore = true
 # Milliseconds between automatic agent restores; 0 starts them without spacing.
 # startup_per_agent_delay_ms = 100
+# Keep a copy of each open or suspended agent pane's native conversation
+# transcript under the session directory (agent-transcripts/) and put it back
+# before a resume if the agent has deleted its own. Herdr never deletes backups.
+# backup_agent_transcripts = true
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

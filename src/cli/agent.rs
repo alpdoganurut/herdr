@@ -30,6 +30,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "suspend" => agent_suspend(&args[1..]),
         "activate" => agent_activate(&args[1..]),
         "explain" => agent_explain(&args[1..]),
+        "transcripts" => agent_transcripts(&args[1..]),
         "help" | "--help" | "-h" => {
             print_agent_help();
             Ok(0)
@@ -39,6 +40,80 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
             Ok(2)
         }
     }
+}
+
+/// List the native transcript backups kept under the session directory.
+/// Reads the store directly; no server is needed.
+fn agent_transcripts(args: &[String]) -> std::io::Result<i32> {
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "help" | "--help" | "-h" => {
+                eprintln!("usage: herdr agent transcripts [--json]");
+                return Ok(0);
+            }
+            _ => {
+                eprintln!("usage: herdr agent transcripts [--json]");
+                return Ok(2);
+            }
+        }
+    }
+    let store_dir = crate::persist::agent_transcripts::store_dir();
+    let entries = crate::persist::agent_transcripts::list_backups(&store_dir)?;
+    if json {
+        let value = serde_json::json!({
+            "store_dir": store_dir,
+            "transcripts": entries,
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(0);
+    }
+    println!("{}", format_agent_transcripts(&store_dir, &entries));
+    Ok(0)
+}
+
+fn format_agent_transcripts(
+    store_dir: &std::path::Path,
+    entries: &[crate::persist::agent_transcripts::TranscriptBackupEntry],
+) -> String {
+    let mut out = format!("store: {}\n", store_dir.display());
+    if entries.is_empty() {
+        out.push_str("no agent transcript backups");
+        return out;
+    }
+    let id_width = entries
+        .iter()
+        .map(|entry| entry.session_id.len())
+        .max()
+        .unwrap_or(0)
+        .max("SESSION".len());
+    let agent_width = entries
+        .iter()
+        .map(|entry| entry.agent.len())
+        .max()
+        .unwrap_or(0)
+        .max("AGENT".len());
+    out.push_str(&format!(
+        "{:agent_width$}  {:id_width$}  {:>10}  {:25}  NATIVE\n",
+        "AGENT", "SESSION", "BYTES", "BACKED_UP_AT"
+    ));
+    for entry in entries {
+        out.push_str(&format!(
+            "{:agent_width$}  {:id_width$}  {:>10}  {:25}  {}\n",
+            entry.agent,
+            entry.session_id,
+            entry.bytes,
+            entry.backed_up_at,
+            if entry.native_present {
+                "present"
+            } else {
+                "missing"
+            }
+        ));
+    }
+    out.pop();
+    out
 }
 
 fn agent_explain(args: &[String]) -> std::io::Result<i32> {
@@ -974,6 +1049,7 @@ fn print_agent_help() {
     eprintln!(
         "  herdr agent explain --file PATH --agent LABEL [--json|--format text|json] [--verbose]"
     );
+    eprintln!("  herdr agent transcripts [--json]");
     eprintln!("  targets accept unique agent names and pane ids that currently host agents");
     eprintln!("  kinds: {}", super::spec::agent_kind_values().join("|"));
 }

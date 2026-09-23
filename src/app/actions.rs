@@ -1037,6 +1037,21 @@ pub(super) fn url_from_link_target(target: crate::ghostty::LinkTarget) -> Option
     }
 }
 
+/// Keep a reported native transcript path on the pane before the session
+/// reference itself is routed; the routing may hold the reference back but
+/// the path stays valid for whichever record of the session is persisted.
+fn remember_reported_transcript_path(
+    terminal: &mut crate::terminal::TerminalState,
+    source: &str,
+    agent_label: &str,
+    session_ref: Option<&crate::agent_resume::AgentSessionRef>,
+    transcript_path: Option<std::path::PathBuf>,
+) {
+    if let (Some(session_ref), Some(path)) = (session_ref, transcript_path) {
+        terminal.remember_agent_transcript_path(source, agent_label, session_ref, path);
+    }
+}
+
 pub(crate) fn safe_web_url(url: &str) -> Option<&str> {
     (url.starts_with("http://") || url.starts_with("https://")).then_some(url)
 }
@@ -1477,15 +1492,30 @@ impl AppState {
                 message,
                 seq,
                 session_ref,
+                transcript_path,
             } => {
                 if crate::agent_resume::is_reserved_native_state_source(&source, &agent_label) {
                     self.update_terminal_state(pane_id, |terminal| {
+                        remember_reported_transcript_path(
+                            terminal,
+                            &source,
+                            &agent_label,
+                            session_ref.as_ref(),
+                            transcript_path,
+                        );
                         terminal.set_agent_session_ref(source, agent_label, session_ref, seq)
                     })
                     .into_iter()
                     .collect()
                 } else {
                     self.update_terminal_state(pane_id, |terminal| {
+                        remember_reported_transcript_path(
+                            terminal,
+                            &source,
+                            &agent_label,
+                            session_ref.as_ref(),
+                            transcript_path,
+                        );
                         terminal.set_hook_authority_with_session_ref(
                             source,
                             agent_label,
@@ -1506,8 +1536,16 @@ impl AppState {
                 seq,
                 session_ref,
                 session_start_source,
+                transcript_path,
             } => self
                 .update_terminal_state(pane_id, |terminal| {
+                    remember_reported_transcript_path(
+                        terminal,
+                        &source,
+                        &agent_label,
+                        session_ref.as_ref(),
+                        transcript_path,
+                    );
                     terminal.set_agent_session_ref_for_session_start(
                         source,
                         agent_label,
@@ -3174,6 +3212,7 @@ mod tests {
                 message: None,
                 seq: Some(seq),
                 session_ref: None,
+                transcript_path: None,
             });
             if seq == 2 {
                 assert!(!app.workspaces[1].panes[&pane_id].seen);
@@ -3201,6 +3240,7 @@ mod tests {
                 seq: Some(seq),
                 session_ref: crate::agent_resume::AgentSessionRef::id(session),
                 session_start_source: Some(reason.into()),
+                transcript_path: None,
             });
             if seq == 1 {
                 for state in [AgentState::Working, AgentState::Idle] {
@@ -3546,6 +3586,7 @@ mod tests {
             message: None,
             seq: None,
             session_ref: None,
+            transcript_path: None,
         });
 
         let toast = state.toast.as_ref().unwrap();
@@ -3584,6 +3625,7 @@ mod tests {
             message: None,
             seq: Some(1),
             session_ref: None,
+            transcript_path: None,
         });
         state.handle_app_event(AppEvent::StateChanged {
             pane_id: bg_pane_id,
@@ -3632,11 +3674,23 @@ mod tests {
             message: None,
             seq: Some(1),
             session_ref: crate::agent_resume::AgentSessionRef::id("claude-session"),
+            transcript_path: Some(std::path::PathBuf::from(
+                "/tmp/claude/projects/slug/claude-session.jsonl",
+            )),
         });
         let terminal = state.terminals.get(&terminal_id).unwrap();
         assert_eq!(terminal.state, AgentState::Working);
         assert!(terminal.hook_authority.is_none());
         assert!(terminal.persisted_agent_session.is_some());
+        assert_eq!(
+            terminal
+                .persistable_agent_session()
+                .and_then(|session| session.transcript_path),
+            Some(std::path::PathBuf::from(
+                "/tmp/claude/projects/slug/claude-session.jsonl"
+            )),
+            "the reported transcript path follows the persisted session"
+        );
 
         state.handle_app_event(AppEvent::StateChanged {
             pane_id,
@@ -3685,6 +3739,7 @@ mod tests {
                     .to_string(),
             )
             .unwrap(),
+            transcript_path: None,
         });
         terminal.set_hook_authority(
             "herdr:pi".into(),
@@ -3741,6 +3796,7 @@ mod tests {
             message: None,
             seq: Some(1),
             session_ref: crate::agent_resume::AgentSessionRef::id("devin-session"),
+            transcript_path: None,
         });
 
         let terminal = state.terminals.get(&terminal_id).unwrap();
@@ -3765,6 +3821,7 @@ mod tests {
             message: None,
             seq: Some(20),
             session_ref: crate::agent_resume::AgentSessionRef::path(first_session),
+            transcript_path: None,
         });
         assert_eq!(first_updates.len(), 1);
         state.session_dirty = false;
@@ -3777,6 +3834,7 @@ mod tests {
             message: None,
             seq: Some(21),
             session_ref: crate::agent_resume::AgentSessionRef::path(second_session),
+            transcript_path: None,
         });
 
         assert!(second_updates.is_empty());

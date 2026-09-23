@@ -3435,6 +3435,10 @@ impl HeadlessServer {
             self.app.start_background_session_save();
         }
 
+        if self.app.agent_transcript_backup_due(now) {
+            self.app.sync_agent_transcript_backups();
+        }
+
         if let Some(deadline) = self
             .app
             .agent_metadata_deadline

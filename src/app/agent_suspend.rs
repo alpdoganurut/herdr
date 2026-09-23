@@ -176,7 +176,7 @@ impl App {
             .terminals
             .get_mut(&terminal_id)
             .ok_or_else(not_found)?;
-        terminal.begin_agent_suspend(session, now + SUSPEND_GRACEFUL_EXIT_GRACE);
+        terminal.begin_agent_suspend(session.clone(), now + SUSPEND_GRACEFUL_EXIT_GRACE);
         if let Err(err) = runtime.queue_user_input_submission(
             Bytes::from(text),
             Bytes::from(enter),
@@ -186,6 +186,9 @@ impl App {
             terminal.take_suspended_agent();
             return Err(AgentSuspendError::InputFailed(err.to_string()));
         }
+        // The parked session must outlive the agent's own transcript
+        // retention; copy it now rather than waiting for the periodic pass.
+        self.backup_agent_transcript_now(resolved.ws_idx, resolved.pane_id, session);
         self.state.mark_session_dirty();
         self.schedule_session_save();
         self.emit_agent_status_transition(resolved.ws_idx, resolved.pane_id);
@@ -237,6 +240,7 @@ impl App {
             let command = crate::platform::interactive_shell_command(&plan.argv, &shell_name)
                 .ok_or(AgentActivateError::InvalidArgument)?;
             let bytes = super::api_helpers::encode_api_submission(runtime, &command);
+            self.restore_agent_transcript_before_resume(&record.session);
             let now = Instant::now();
             let terminal = self
                 .state
@@ -585,6 +589,7 @@ mod tests {
             source: "herdr:claude".into(),
             agent: "claude".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id(id).unwrap(),
+            transcript_path: None,
         }
     }
 

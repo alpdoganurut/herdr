@@ -116,6 +116,8 @@ Unsupported, missing, invalid, duplicated, or stale session references restore a
 
 If native agent session restore applies to a pane, Herdr resumes the agent session instead of replaying saved pane history for that pane.
 
+Some agents delete their own conversation transcripts after a period of inactivity, and a later native resume then finds no conversation. Herdr keeps a copy of the transcript behind every open or suspended agent pane under the session directory at `agent-transcripts/<agent>/<session-id>/` (`transcript.jsonl`, a `side/` directory for tool results and subagent transcripts, and `meta.json` with the original path, pane directory, and backup time). Copies are refreshed every five minutes, when an agent is suspended, and on shutdown; only sources that changed are copied, and Herdr never deletes a backup. Before a native resume, whether after a restart or through `agent activate`, Herdr puts the backup back in place if the agent's own file is missing, and never overwrites one that exists. Currently Claude Code transcripts are backed up. Disable new backups with `backup_agent_transcripts = false` under `[session]`; existing backups are still used before a resume. `herdr agent transcripts` lists the store.
+
 ## Live handoff
 
 Live handoff is for update and remote attach flows that need to replace a running Herdr server. It asks the old server to transfer live panes to the new server, so pane processes can keep running across the server replacement.

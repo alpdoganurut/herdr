@@ -295,6 +295,17 @@ impl App {
             }
         };
 
+        // The agent may have deleted its own transcript while Herdr was down;
+        // put the backup back before the resume command looks for it.
+        if let Some(session) = self
+            .state
+            .terminals
+            .get(&terminal_id)
+            .and_then(|terminal| terminal.persisted_agent_session.clone())
+        {
+            self.restore_agent_transcript_before_resume(&session);
+        }
+
         let mut input = resume_command;
         input.push('\r');
         if let Err(err) = runtime.try_send_bytes(Bytes::from(input)) {
@@ -516,6 +527,7 @@ mod tests {
                 source: "herdr:codex".into(),
                 agent: "codex".into(),
                 session_ref: crate::agent_resume::AgentSessionRef::id("resume-test").unwrap(),
+                transcript_path: None,
             };
             terminal.persisted_agent_session = Some(session.clone());
             terminal.pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {

@@ -657,6 +657,7 @@ mod tests {
             source: "herdr:claude".into(),
             agent: "claude".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").unwrap(),
+            transcript_path: None,
         }
     }
 

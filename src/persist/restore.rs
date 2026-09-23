@@ -891,6 +891,7 @@ fn persisted_agent_session_from_snapshot(
         session.kind,
         &session.value,
     )
+    .map(|persisted| persisted.with_transcript_path(session.transcript_path.clone()))
 }
 
 fn restored_terminal_agent_session(
@@ -1107,6 +1108,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: pi_session_path.clone(),
+            transcript_path: None,
         };
 
         assert!(restore_plan_for_snapshot(&session, false).is_none());
@@ -1120,6 +1122,7 @@ mod tests {
             agent: "claude".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: test_session_path("claude-session"),
+            transcript_path: None,
         };
         assert!(restore_plan_for_snapshot(&unsupported_path, true).is_none());
     }
@@ -1132,6 +1135,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: pi_session_path.clone(),
+            transcript_path: None,
         };
         let mut resumed = HashSet::new();
 
@@ -1154,6 +1158,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: test_session_path("pi-session.jsonl"),
+            transcript_path: None,
         };
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
@@ -1179,6 +1184,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: test_session_path("pi-session.jsonl"),
+            transcript_path: None,
         };
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
@@ -1207,6 +1213,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: test_session_path("pi-session.jsonl"),
+            transcript_path: None,
         };
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
@@ -1233,6 +1240,7 @@ mod tests {
             agent: "hermes".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Id,
             value: "hermes-session".into(),
+            transcript_path: None,
         };
 
         let preserved = restored_terminal_agent_session(Some(&session), false)
@@ -1249,6 +1257,7 @@ mod tests {
             agent: "pi".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: test_session_path("pi-session.jsonl"),
+            transcript_path: None,
         };
         let mut resumed = HashSet::new();
         assert!(take_restore_plan_for_snapshot(&session, true, &mut resumed).is_some());
@@ -1283,6 +1292,7 @@ mod tests {
                 agent: "opencode".into(),
                 kind: crate::agent_resume::AgentSessionRefKind::Id,
                 value: "keep-my-session".into(),
+                transcript_path: None,
             });
             let (events, _rx) = mpsc::channel(32);
             let (workspaces, terminals, runtimes) = restore(
@@ -1351,6 +1361,7 @@ mod tests {
             agent: "claude".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Id,
             value: "claude-session".into(),
+            transcript_path: None,
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -1492,6 +1503,7 @@ mod tests {
                                 agent: "opencode".into(),
                                 kind: crate::agent_resume::AgentSessionRefKind::Id,
                                 value: "opencode-session".into(),
+                                transcript_path: None,
                             }),
                             launch_argv: None,
                             suspended_agent: None,
@@ -1656,6 +1668,7 @@ mod tests {
                 agent: "codex".into(),
                 kind: crate::agent_resume::AgentSessionRefKind::Id,
                 value: "codex-session".into(),
+                transcript_path: None,
             }),
             launch_argv: None,
             suspended_agent: None,
@@ -1808,6 +1821,7 @@ mod tests {
                                 agent: "codex".into(),
                                 kind: crate::agent_resume::AgentSessionRefKind::Id,
                                 value: "codex-session".into(),
+                                transcript_path: None,
                             }),
                             launch_argv: None,
                             suspended_agent: None,
@@ -1905,6 +1919,7 @@ mod tests {
             source: "herdr:claude".into(),
             agent: "claude".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").unwrap(),
+            transcript_path: None,
         };
         let terminal = terminals.values_mut().next().unwrap();
         terminal.set_agent_name("reviewer".into());
@@ -2008,6 +2023,7 @@ mod tests {
                     "/var/tmp/handoff-test.jsonl",
                 )
                 .unwrap(),
+                transcript_path: None,
             });
             terminal.set_hook_authority_with_session_ref(
                 "herdr:pi".into(),
