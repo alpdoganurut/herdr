@@ -18,7 +18,7 @@ use ratatui::{
 use super::render::{put_right_text, put_text, render_sidebar_background, ShellRenderState};
 use super::*;
 
-const HEADER_ROWS: u16 = 1;
+const HEADER_ROWS: u16 = 0;
 const FOOTER_ROWS: u16 = 1;
 
 pub(super) fn render_tab_sidebar(
@@ -41,17 +41,6 @@ pub(super) fn render_tab_sidebar(
     if content.is_empty() {
         return;
     }
-    put_text(
-        buffer,
-        content.x,
-        content.y,
-        content.width,
-        " tabs",
-        Style::default()
-            .fg(palette.overlay0)
-            .add_modifier(Modifier::BOLD),
-    );
-
     let body = Rect::new(
         content.x,
         content.y.saturating_add(HEADER_ROWS),
@@ -113,7 +102,7 @@ pub(super) fn render_tab_sidebar(
     }
 
     let footer_y = content.bottom().saturating_sub(1);
-    if config.mouse_capture && content.height > HEADER_ROWS {
+    if config.mouse_capture && content.height > 1 {
         let attention = super::global_menu::global_menu_attention(snapshot);
         let launcher_width = if attention { 8 } else { 6 }.min(content.width);
         hits.global_launcher = Rect::new(

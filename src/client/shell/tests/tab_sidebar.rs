@@ -96,6 +96,10 @@ fn tabs_layout_lists_every_tab_in_order_and_hides_space_rows() {
         "{rows:?}"
     );
     assert!(state.hits.agent_body.height >= 3);
+    assert_eq!(
+        state.hits.sidebar_tabs[0].0.y, 0,
+        "the list starts on the first row; there is no header"
+    );
 }
 
 #[test]
