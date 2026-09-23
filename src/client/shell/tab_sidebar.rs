@@ -339,19 +339,19 @@ fn render_group_header(
     config: &ClientShellConfig,
 ) {
     let palette = &config.palette;
+    // Headers are dividers, not items: a quiet band with dim text so the tab
+    // rows stay the visually dominant lines.
     let row_style = if dragged {
         Style::default().bg(palette.surface1)
     } else {
-        Style::default()
+        Style::default().bg(palette.surface0)
     };
     let marker = if folded { "▸" } else { "▾" };
-    let name_style = Style::default()
-        .fg(if workspace.focused {
-            palette.text
-        } else {
-            palette.subtext0
-        })
-        .add_modifier(Modifier::BOLD);
+    let name_style = Style::default().fg(if workspace.focused {
+        palette.subtext0
+    } else {
+        palette.overlay1
+    });
     let count = format!("{members}");
     let status_icon_text = status_icon(workspace.agent_status, config.status_indicators);
     let tail_width = display_width(&count) as u16 + 1 + display_width(status_icon_text) as u16 + 1;
@@ -361,13 +361,14 @@ fn render_group_header(
     let pad = rect
         .width
         .saturating_sub(lead + display_width(&label) as u16 + tail_width + 1);
+    let dim = Style::default().fg(palette.overlay0);
     let spans = vec![
         Span::raw(" "),
-        Span::styled(marker.to_string(), Style::default().fg(palette.overlay0)),
+        Span::styled(marker.to_string(), dim),
         Span::raw(" "),
         Span::styled(label, name_style),
         Span::raw(" ".repeat(usize::from(pad) + 1)),
-        Span::styled(count, Style::default().fg(palette.overlay0)),
+        Span::styled(count, dim),
         Span::raw(" "),
         Span::styled(
             status_icon_text,
