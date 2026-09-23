@@ -55,6 +55,7 @@ fn backups_section_requests_the_store_once_and_renders_it() {
     ));
     let text = settings_frame_text(&mut state);
     assert!(text.contains("transcript backups"));
+    assert!(text.contains("copies of the native transcripts behind open and suspended agents"));
     assert!(text.contains("loading backup status"));
     // Read-only: no apply button, only close.
     assert!(!text.contains("↵ apply"));
@@ -91,7 +92,8 @@ fn backups_section_requests_the_store_once_and_renders_it() {
     ));
 
     let text = settings_frame_text(&mut state);
-    assert!(text.contains("on · next pass in 2m 30s"));
+    // The countdown ticks from receipt, so a few milliseconds may have passed.
+    assert!(text.contains("on · next pass in 2m 30s") || text.contains("on · next pass in 2m 29s"));
     assert!(text.contains("29 (1 whose native transcript is gone)"));
     assert!(text.contains("3.0 GB on disk · 2.7 GB of transcripts"));
     assert!(text.contains("2m ago · took 145 ms"));

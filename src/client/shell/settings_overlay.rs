@@ -325,7 +325,7 @@ fn render_backups(
         area.x,
         area.y + 1,
         area.width,
-        "copies of the native conversation transcripts behind open and suspended agents",
+        "copies of the native transcripts behind open and suspended agents",
         Style::default().fg(palette.overlay1).bg(palette.panel_bg),
     );
     let dim = Style::default().fg(palette.overlay1).bg(palette.panel_bg);
@@ -342,7 +342,11 @@ fn render_backups(
     let schedule = if !store.enabled {
         "off (session.backup_agent_transcripts)".to_string()
     } else if let Some(next) = store.next_pass_in_ms {
-        format!("on · next pass in {}", format_duration_ms(next))
+        let elapsed = u64::try_from(store.received_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        format!(
+            "on · next pass in {}",
+            format_duration_ms(next.saturating_sub(elapsed))
+        )
     } else {
         "on".to_string()
     };

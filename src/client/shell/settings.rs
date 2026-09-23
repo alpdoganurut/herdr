@@ -399,6 +399,7 @@ impl ClientShellState {
                                 disk_bytes,
                                 last_pass,
                                 next_pass_in_ms,
+                                received_at: std::time::Instant::now(),
                             });
                         }
                         Ok(_) => {

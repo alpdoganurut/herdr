@@ -465,6 +465,8 @@ pub(super) struct ClientTranscriptStore {
     pub(super) disk_bytes: u64,
     pub(super) last_pass: Option<crate::api::schema::AgentTranscriptBackupPass>,
     pub(super) next_pass_in_ms: Option<u64>,
+    /// When the result arrived, so the next-pass countdown can tick.
+    pub(super) received_at: std::time::Instant,
 }
 
 #[derive(Debug)]
