@@ -1859,7 +1859,13 @@ impl TerminalState {
             session_ref,
             transcript_path: None,
         };
-        if self.managed_agent_launch_session.as_ref() == Some(&persisted_session) {
+        // The launch session may carry a transcript path (activate from
+        // suspend); the hook report never does, so compare identity only.
+        if self
+            .managed_agent_launch_session
+            .as_ref()
+            .is_some_and(|session| session.same_session(&persisted_session))
+        {
             self.managed_agent_launch_session = None;
         }
         self.persisted_agent_session = Some(persisted_session);
@@ -7162,5 +7168,51 @@ mod tests {
         );
         assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
         assert!(terminal.suspended_agent.is_none());
+    }
+
+    #[test]
+    fn hook_confirmed_session_outlives_a_launch_session_that_carried_a_transcript_path() {
+        // Activating from suspend relaunches with the record's session, whose
+        // transcript path the hook report does not repeat; the report must
+        // still consume the launch session so a later name clear does not
+        // drop the hook-confirmed session.
+        let mut terminal = live_named_claude("reviewer", "claude-session");
+        let now = Instant::now();
+        let mut parked = claude_session("claude-session");
+        parked.transcript_path = Some(std::path::PathBuf::from(
+            "/home/user/.claude/projects/slug/claude-session.jsonl",
+        ));
+        terminal.begin_agent_suspend(parked, now + Duration::from_secs(5));
+        terminal.set_detected_state(None, AgentState::Unknown);
+        let record = terminal.take_suspended_agent().expect("record");
+        assert!(record.session.transcript_path.is_some());
+        terminal.begin_managed_agent(
+            record.name.clone().unwrap(),
+            Agent::Claude,
+            now + Duration::from_secs(2),
+            Duration::from_secs(3),
+            Duration::from_secs(30),
+        );
+        terminal.set_managed_agent_launch_session(record.session);
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert!(terminal
+            .set_agent_session_ref(
+                "herdr:claude".into(),
+                "claude".into(),
+                crate::agent_resume::AgentSessionRef::id("claude-session"),
+                Some(2),
+            )
+            .is_some());
+        assert!(
+            terminal.managed_agent_launch_session.is_none(),
+            "the hook report consumes the launch session by identity"
+        );
+
+        terminal.clear_agent_name();
+        assert_eq!(
+            terminal.persisted_agent_session,
+            Some(claude_session("claude-session")),
+            "the hook-confirmed session survives the name clear"
+        );
     }
 }

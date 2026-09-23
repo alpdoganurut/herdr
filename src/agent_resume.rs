@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -104,7 +105,10 @@ pub fn session_ref_from_report(
 
 /// The transcript path an integration reported next to an Id-kind session
 /// reference. Path-kind references already are the transcript; other reports
-/// carry no usable path.
+/// carry no usable path. Only a path shaped like the agent's own transcript
+/// location for that session id is kept (see [`is_native_transcript_path`]):
+/// the path decides where a backup is restored to, so an arbitrary reported
+/// path must not become a write target.
 pub fn transcript_path_from_report(
     source: &str,
     agent: &str,
@@ -119,19 +123,39 @@ pub fn transcript_path_from_report(
         return None;
     }
     let path = agent_session_path?;
-    valid_session_path(path).then(|| PathBuf::from(path))
+    if !valid_session_path(path) {
+        return None;
+    }
+    let path = PathBuf::from(path);
+    is_native_transcript_path(&path, &session_ref.value).then_some(path)
+}
+
+/// Whether `path` has the shape of a native transcript for session `id`:
+/// `<config dir>/projects/<project-slug>/<id>.jsonl`, as Claude Code stores
+/// them. The config directory is not pinned to `~/.claude` because Claude
+/// honours `CLAUDE_CONFIG_DIR`. Reported, snapshotted, and backed-up paths
+/// all pass through this check before Herdr reads from or writes to them.
+pub fn is_native_transcript_path(path: &Path, id: &str) -> bool {
+    path.is_absolute()
+        && path.file_name().and_then(OsStr::to_str) == Some(format!("{id}.jsonl").as_str())
+        && path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            == Some(OsStr::new("projects"))
 }
 
 /// Where the agent behind `session` keeps its native transcript, when Herdr
 /// knows how that agent stores conversations.
 ///
 /// Claude Code stores `~/.claude/projects/<project-slug>/<session-id>.jsonl`
-/// plus a `<session-id>/` side directory next to it. The reported transcript
-/// path wins; without one the project directories are searched for the id.
-/// A known path is returned even when the file no longer exists so a backup
-/// can be put back in place.
+/// plus a `<session-id>/` side directory next to it. A reported transcript
+/// path wins when it has that shape and the file exists; otherwise the
+/// project directories are searched for the id. A well-formed but missing
+/// path is still returned when the search finds nothing, so a backup can be
+/// put back in place; a malformed path is ignored.
 pub fn native_transcript_locations(session: &PersistedAgentSession) -> Option<NativeTranscript> {
-    let home = home_dir_from_env()?;
+    let home = crate::integration::home_dir().ok()?;
     native_transcript_locations_in(session, &home)
 }
 
@@ -152,8 +176,15 @@ pub fn native_transcript_locations_in(
             if !is_safe_path_component(id) {
                 return None;
             }
-            let file = match session.transcript_path.clone() {
-                Some(path) => path,
+            let reported = session
+                .transcript_path
+                .clone()
+                .filter(|path| is_native_transcript_path(path, id));
+            let file = match reported {
+                Some(path) if path.is_file() => path,
+                // A stale reported path must not hide a transcript that
+                // moved; a known-but-missing one stays the restore target.
+                Some(path) => find_claude_transcript(home, id).unwrap_or(path),
                 None => find_claude_transcript(home, id)?,
             };
             let side_dir = file.parent().map(|parent| parent.join(id));
@@ -186,18 +217,6 @@ pub fn is_safe_path_component(value: &str) -> bool {
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-}
-
-fn home_dir_from_env() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        if let Some(profile) = std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()) {
-            return Some(PathBuf::from(profile));
-        }
-    }
-    std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
 }
 
 pub fn persisted_session_from_launch_args(
@@ -486,8 +505,55 @@ mod tests {
     }
 
     #[test]
-    fn transcript_path_is_kept_only_for_official_id_refs_with_absolute_paths() {
-        let transcript = absolute_test_path("claude-session.jsonl");
+    fn native_transcript_path_shape_is_projects_slug_and_session_id() {
+        // Absolute on every platform, unlike a literal `/home/...`.
+        let cwd = std::env::current_dir().unwrap();
+        let projects = cwd.join("projects");
+        let ok = projects.join("-home-user-repo").join("id-1.jsonl");
+        assert!(is_native_transcript_path(&ok, "id-1"));
+        // Any config dir works: Claude honours CLAUDE_CONFIG_DIR.
+        assert!(is_native_transcript_path(
+            &cwd.join("claude-config")
+                .join("projects")
+                .join("slug")
+                .join("id-1.jsonl"),
+            "id-1"
+        ));
+        assert!(is_native_transcript_path(
+            &cwd.join(".claude")
+                .join("projects")
+                .join("slug")
+                .join("id-1.jsonl"),
+            "id-1"
+        ));
+        for (path, id) in [
+            // Another session's file.
+            (ok.clone(), "id-2"),
+            // Wrong extension or no extension.
+            (projects.join("slug").join("id-1.json"), "id-1"),
+            (projects.join("slug").join("id-1"), "id-1"),
+            // `projects` is the parent, not the grandparent.
+            (projects.join("id-1.jsonl"), "id-1"),
+            // No `projects` directory.
+            (
+                std::env::current_dir()
+                    .unwrap()
+                    .join("elsewhere")
+                    .join("slug")
+                    .join("id-1.jsonl"),
+                "id-1",
+            ),
+            (PathBuf::from("/etc/cron.d/id-1.jsonl"), "id-1"),
+            // Relative paths.
+            (PathBuf::from("projects/slug/id-1.jsonl"), "id-1"),
+        ] {
+            assert!(!is_native_transcript_path(&path, id), "{}", path.display());
+        }
+    }
+
+    #[test]
+    fn transcript_path_is_kept_only_for_official_id_refs_with_native_shape() {
+        let transcript = absolute_test_path("projects/slug/claude-session.jsonl");
         let claude_ref = AgentSessionRef::id("claude-session").unwrap();
         assert_eq!(
             transcript_path_from_report(
@@ -520,10 +586,29 @@ mod tests {
                 "herdr:claude",
                 "claude",
                 Some(&claude_ref),
-                Some("relative/claude-session.jsonl")
+                Some("relative/projects/slug/claude-session.jsonl")
             ),
             None
         );
+        // An absolute path without the transcript shape would become a
+        // restore target: dropped, the projects glob takes over.
+        for reported in [
+            absolute_test_path("claude-session.jsonl"),
+            absolute_test_path("projects/claude-session.jsonl"),
+            absolute_test_path("projects/slug/other-session.jsonl"),
+            "/etc/cron.d/claude-session.jsonl".to_string(),
+        ] {
+            assert_eq!(
+                transcript_path_from_report(
+                    "herdr:claude",
+                    "claude",
+                    Some(&claude_ref),
+                    Some(&reported)
+                ),
+                None,
+                "{reported}"
+            );
+        }
         let pi_ref = AgentSessionRef::path(absolute_test_path("pi-session.jsonl")).unwrap();
         assert_eq!(
             transcript_path_from_report("herdr:pi", "pi", Some(&pi_ref), Some(&transcript)),
@@ -562,6 +647,87 @@ mod tests {
             Some(NativeTranscript {
                 side_dir: Some(file.parent().unwrap().join("id-1")),
                 file,
+            })
+        );
+    }
+
+    #[test]
+    fn native_transcript_ignores_a_reported_path_without_the_native_shape() {
+        let home = TempHome::new("shape");
+        let projects = home.0.join(".claude").join("projects");
+        let slug = projects.join("-home-user-repo");
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join("id-1.jsonl"), "{}\n").unwrap();
+        for reported in [
+            home.0.join("id-1.jsonl"),
+            projects.join("id-1.jsonl"),
+            slug.join("other.jsonl"),
+            PathBuf::from("/etc/cron.d/id-1.jsonl"),
+        ] {
+            // The glob wins over a malformed path...
+            assert_eq!(
+                native_transcript_locations_in(
+                    &claude_session("id-1", Some(reported.clone())),
+                    &home.0
+                ),
+                Some(NativeTranscript {
+                    file: slug.join("id-1.jsonl"),
+                    side_dir: Some(slug.join("id-1")),
+                }),
+                "{}",
+                reported.display()
+            );
+            // ...and without a glob hit the malformed path is not returned.
+            assert_eq!(
+                native_transcript_locations_in(
+                    &claude_session("id-9", Some(reported.clone())),
+                    &home.0
+                ),
+                None,
+                "{}",
+                reported.display()
+            );
+        }
+    }
+
+    #[test]
+    fn native_transcript_prefers_the_glob_over_a_stale_reported_path() {
+        let home = TempHome::new("stale");
+        let projects = home.0.join(".claude").join("projects");
+        let old = projects.join("-home-user-old");
+        let new = projects.join("-home-user-new");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join("id-1.jsonl"), "{}\n").unwrap();
+
+        // The reported file moved: the glob finds it and the backup pass
+        // is not stuck on NoNativeTranscript forever.
+        let stale = claude_session("id-1", Some(old.join("id-1.jsonl")));
+        assert_eq!(
+            native_transcript_locations_in(&stale, &home.0),
+            Some(NativeTranscript {
+                file: new.join("id-1.jsonl"),
+                side_dir: Some(new.join("id-1")),
+            })
+        );
+        // The reported file exists: it wins even when the glob would find
+        // another candidate first.
+        std::fs::write(old.join("id-1.jsonl"), "{}\n").unwrap();
+        assert_eq!(
+            native_transcript_locations_in(&stale, &home.0),
+            Some(NativeTranscript {
+                file: old.join("id-1.jsonl"),
+                side_dir: Some(old.join("id-1")),
+            })
+        );
+        // Gone everywhere: the reported path stays the restore target.
+        std::fs::remove_file(old.join("id-1.jsonl")).unwrap();
+        std::fs::remove_file(new.join("id-1.jsonl")).unwrap();
+        assert_eq!(
+            native_transcript_locations_in(&stale, &home.0),
+            Some(NativeTranscript {
+                file: old.join("id-1.jsonl"),
+                side_dir: Some(old.join("id-1")),
             })
         );
     }

@@ -121,14 +121,16 @@ impl App {
     }
 
     pub(crate) fn save_session_on_shutdown(&mut self) {
-        // Transcripts change independently of the layout, so back them up
-        // even when the session snapshot itself is already current.
-        self.backup_agent_transcripts_on_shutdown();
+        // The snapshot goes first: it is what a restart resumes from, and
+        // copying transcripts can take a while. Transcripts change
+        // independently of the layout, so they are backed up on both
+        // branches, even when the snapshot itself is already current.
         if self.pane_exit_checkpoint_pending && !self.state.session_dirty {
             self.session_save_deadline = None;
-            return;
+        } else {
+            self.save_session_now();
         }
-        self.save_session_now();
+        self.backup_agent_transcripts_on_shutdown();
     }
 }
 
