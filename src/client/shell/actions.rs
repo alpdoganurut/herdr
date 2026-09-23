@@ -56,6 +56,13 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                if action == crate::input::KeybindAction::ToggleGroupsFolded {
+                    let all_folded = self.snapshot.as_deref().is_some_and(|snapshot| {
+                        super::tab_sidebar::all_groups_folded(snapshot, &self.collapsed_groups)
+                    });
+                    self.set_all_groups_folded(!all_folded, outcome);
+                    return;
+                }
                 if action == crate::input::KeybindAction::Help {
                     self.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
                         query: TextEditor::default(),

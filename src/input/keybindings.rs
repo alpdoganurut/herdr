@@ -55,6 +55,7 @@ pub(crate) enum KeybindAction {
     ClearPane,
     ToggleAgentSuspend,
     MoveTabToGroup,
+    ToggleGroupsFolded,
     CopyMode,
     Zoom,
     EnterResizeMode,
@@ -129,6 +130,10 @@ pub(crate) fn resolve_non_indexed_action(
             KeybindAction::ToggleAgentSuspend,
         ),
         (&keybinds.move_tab_to_group, KeybindAction::MoveTabToGroup),
+        (
+            &keybinds.toggle_groups_folded,
+            KeybindAction::ToggleGroupsFolded,
+        ),
         (&keybinds.copy_mode, KeybindAction::CopyMode),
         (&keybinds.focus_pane_left, KeybindAction::FocusPaneLeft),
         (&keybinds.focus_pane_down, KeybindAction::FocusPaneDown),

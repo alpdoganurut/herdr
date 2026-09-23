@@ -716,6 +716,12 @@
           "description": "\"tabs\" sidebar layout: prompt for a group name and move the focused tab there; a new name creates the group with this tab. Unset by default; for example, move_tab_to_group = \"alt+g\"."
         },
         {
+          "key": "keys.toggle_groups_folded",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "\"tabs\" sidebar layout: fold every group; once every group is folded, expand them all (the same toggle as the sidebar's ⏶/⏷ button). Unset by default; for example, toggle_groups_folded = \"alt+e\"."
+        },
+        {
           "key": "keys.copy_mode",
           "type": "keybinding",
           "default": "\"prefix+[\"",

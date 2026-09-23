@@ -1139,3 +1139,29 @@ fn header_drag_reorders_groups_and_tab_drag_moves_within_or_across_groups() {
         endpoint_methods(&outcome)
     );
 }
+
+#[test]
+fn toggle_groups_folded_binding_mirrors_the_toolbar_toggle() {
+    use crate::input::{KeybindAction, KeybindMatch};
+    let mut state = grouped_state();
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        KeybindMatch::Action(KeybindAction::ToggleGroupsFolded),
+        &mut outcome,
+    );
+    assert!(outcome.repaint && outcome.actions.is_empty());
+    state.compose(106, 24).expect("composed frame");
+    assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_2"]);
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        KeybindMatch::Action(KeybindAction::ToggleGroupsFolded),
+        &mut outcome,
+    );
+    state.compose(106, 24).expect("composed frame");
+    assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_2", "tab_3", "tab_4"]);
+    let bound: Config = toml::from_str("[keys]\ntoggle_groups_folded = \"alt+e\"").unwrap();
+    assert!(!bound
+        .live_keybinds_with_diagnostics()
+        .map(|(keybinds, _)| keybinds.keybinds.toggle_groups_folded.bindings.is_empty())
+        .unwrap_or(true));
+}
