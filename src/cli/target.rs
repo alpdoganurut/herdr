@@ -291,6 +291,7 @@ fn validate_machine_command(args: &[String]) -> Result<(), String> {
         "workspace" | "worktree" | "tab" | "pane" | "notification" => true,
         "agent" => {
             subcommand != "attach"
+                && subcommand != "transcripts"
                 && !(subcommand == "explain"
                     && args[3..]
                         .iter()
@@ -443,6 +444,7 @@ mod tests {
             &["session", "delete", "default"],
             &["server", "live-handoff"],
             &["agent", "attach", "w4:p1"],
+            &["agent", "transcripts"],
             &["terminal", "attach", "w4:p1"],
             &["terminal", "session", "control", "w4:p1"],
             &["plugin", "install", "./plugin"],

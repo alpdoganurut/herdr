@@ -5468,6 +5468,7 @@ fn headless_scheduled_tasks_expire_agent_metadata() {
             message: None,
             seq: None,
             session_ref: None,
+            transcript_path: None
         })
     );
     assert!(
@@ -7163,6 +7164,7 @@ fn completion_guard_api_session_replacement_does_not_notify_finished() {
                 source: "herdr:pi".into(),
                 agent: "pi".into(),
                 session_ref: old_session.clone(),
+                transcript_path: None,
             });
             terminal
                 .set_hook_authority_with_session_ref(
@@ -7341,6 +7343,7 @@ fn stale_api_agent_report_does_not_forward_done_sound() {
                     .to_string(),
             )
             .unwrap(),
+            transcript_path: None,
         });
     server
         .app

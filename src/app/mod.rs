@@ -6,6 +6,7 @@
 pub(crate) mod actions;
 mod agent_resume;
 mod agent_suspend;
+mod agent_transcripts;
 pub(crate) mod agent_view;
 #[cfg(unix)]
 pub(crate) use agent_suspend::SUSPEND_GRACEFUL_EXIT_GRACE;
@@ -146,6 +147,12 @@ pub struct App {
     pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
     session_writer: Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
     pane_exit_checkpoint_pending: bool,
+    /// `session.backup_agent_transcripts`: keep copies of native agent
+    /// transcripts under the session directory.
+    pub(crate) backup_agent_transcripts: bool,
+    /// Next periodic transcript backup pass.
+    pub(crate) agent_transcript_backup_deadline: Option<Instant>,
+    agent_transcript_backup_thread: Option<std::thread::JoinHandle<()>>,
     pub(crate) detached_process_children: Vec<std::process::Child>,
     tab_bar_status_generation: u64,
     tab_bar_datetimes: Vec<tab_bar_status::TabBarDatetimeRuntime>,
@@ -615,6 +622,11 @@ impl App {
             session_save_thread: None,
             session_writer,
             pane_exit_checkpoint_pending: false,
+            backup_agent_transcripts: config.session.backup_agent_transcripts,
+            agent_transcript_backup_deadline: policy
+                .persist_session
+                .then_some(Instant::now() + agent_transcripts::AGENT_TRANSCRIPT_BACKUP_INTERVAL),
+            agent_transcript_backup_thread: None,
             detached_process_children: Vec::new(),
             tab_bar_status_generation: 0,
             tab_bar_datetimes: Vec::new(),
@@ -868,14 +880,16 @@ impl App {
             }
         }
 
-        if !invalid_section("session")
-            && Duration::from_millis(config.session.startup_per_agent_delay_ms.into())
+        if !invalid_section("session") {
+            self.backup_agent_transcripts = config.session.backup_agent_transcripts;
+            if Duration::from_millis(config.session.startup_per_agent_delay_ms.into())
                 != self.startup_per_agent_delay
-        {
-            diagnostics.push(
-                "session.startup_per_agent_delay_ms changes require restarting Herdr; kept current setting"
-                    .into(),
-            );
+            {
+                diagnostics.push(
+                    "session.startup_per_agent_delay_ms changes require restarting Herdr; kept current setting"
+                        .into(),
+                );
+            }
         }
 
         let graphics_config_valid = !invalid_section("terminal")

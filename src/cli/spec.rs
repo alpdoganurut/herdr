@@ -471,6 +471,15 @@ fn agent_command() -> Command {
                         .action(ArgAction::SetTrue),
                 ),
         )
+        .subcommand(
+            Command::new("transcripts")
+                .about("List backed-up native agent transcripts")
+                .override_usage("herdr agent transcripts [--json]")
+                .arg(json_flag())
+                .after_help(
+                    "Reads the backup store under the session directory (agent-transcripts/) directly; no server is needed. Each row shows the agent, session id, size, backup time, and whether the agent's own transcript file is currently present or missing. Backups are written for open and suspended agent panes while session.backup_agent_transcripts is enabled and are never deleted by Herdr.",
+                ),
+        )
 }
 
 pub(super) fn agent_kind_values() -> Vec<&'static str> {
@@ -1348,6 +1357,21 @@ mod tests {
         }
         let agent_wait = command_path(&cmd, &["agent", "wait"]);
         assert!(option_values(agent_wait, "until").contains(&"suspended".to_string()));
+    }
+
+    #[test]
+    fn spec_models_agent_transcripts_as_a_local_listing() {
+        let cmd = super::command();
+        let transcripts = command_path(&cmd, &["agent", "transcripts"]);
+        assert!(
+            !transcripts
+                .get_arguments()
+                .any(|arg| arg.get_id() == "target"),
+            "agent transcripts takes no target"
+        );
+        assert!(has_option(transcripts, "json"));
+        assert!(!has_option(transcripts, "pane"));
+        assert!(long_help(&["agent", "transcripts"]).contains("agent-transcripts/"));
     }
 
     fn long_help(path: &[&str]) -> String {

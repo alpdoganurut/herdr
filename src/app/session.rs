@@ -121,6 +121,9 @@ impl App {
     }
 
     pub(crate) fn save_session_on_shutdown(&mut self) {
+        // Transcripts change independently of the layout, so back them up
+        // even when the session snapshot itself is already current.
+        self.backup_agent_transcripts_on_shutdown();
         if self.pane_exit_checkpoint_pending && !self.state.session_dirty {
             self.session_save_deadline = None;
             return;

@@ -250,7 +250,15 @@ pub struct TerminalState {
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
     pub suspended_agent: Option<SuspendedAgent>,
     pub restore_error: Option<String>,
+    /// Native transcript paths reported for sessions seen in this pane, keyed
+    /// by the session's dedupe key. Kept aside from the hook authority so the
+    /// path survives whichever record ends up persisted for the session.
+    agent_transcript_paths: HashMap<String, PathBuf>,
 }
+
+/// How many reported transcript paths a pane remembers before the ones that
+/// no longer match any live, persisted, or parked session are dropped.
+const AGENT_TRANSCRIPT_PATH_LIMIT: usize = 8;
 
 impl TerminalState {
     pub fn new(id: TerminalId, cwd: PathBuf) -> Self {
@@ -288,7 +296,109 @@ impl TerminalState {
             pending_agent_resume_plan: None,
             suspended_agent: None,
             restore_error: None,
+            agent_transcript_paths: HashMap::new(),
         }
+    }
+
+    /// Remember where an integration says the native transcript for
+    /// `session_ref` lives, so the path can be attached to whichever record
+    /// of that session is persisted later.
+    pub fn remember_agent_transcript_path(
+        &mut self,
+        source: &str,
+        agent_label: &str,
+        session_ref: &crate::agent_resume::AgentSessionRef,
+        path: PathBuf,
+    ) {
+        let key = crate::agent_resume::dedupe_key(source, agent_label, session_ref);
+        if self.agent_transcript_paths.len() >= AGENT_TRANSCRIPT_PATH_LIMIT
+            && !self.agent_transcript_paths.contains_key(&key)
+        {
+            let live_keys: Vec<String> = self
+                .known_agent_sessions()
+                .iter()
+                .map(|session| {
+                    crate::agent_resume::dedupe_key(
+                        &session.source,
+                        &session.agent,
+                        &session.session_ref,
+                    )
+                })
+                .collect();
+            self.agent_transcript_paths
+                .retain(|key, _| live_keys.contains(key));
+        }
+        self.agent_transcript_paths.insert(key, path);
+    }
+
+    /// The reported transcript path for `session`, from the remembered
+    /// reports first and then from any stored record of the same session.
+    pub fn agent_transcript_path(
+        &self,
+        session: &crate::agent_resume::PersistedAgentSession,
+    ) -> Option<PathBuf> {
+        let key =
+            crate::agent_resume::dedupe_key(&session.source, &session.agent, &session.session_ref);
+        if let Some(path) = self.agent_transcript_paths.get(&key) {
+            return Some(path.clone());
+        }
+        self.known_agent_sessions()
+            .into_iter()
+            .filter(|known| known.same_session(session))
+            .find_map(|known| known.transcript_path)
+    }
+
+    /// `session` with its transcript path filled in when this pane knows it.
+    pub fn attach_transcript_path(
+        &self,
+        session: crate::agent_resume::PersistedAgentSession,
+    ) -> crate::agent_resume::PersistedAgentSession {
+        let path = self.agent_transcript_path(&session);
+        session.with_transcript_path(path)
+    }
+
+    /// The session records this pane currently holds: the parked session,
+    /// the hook authority's session, and the persisted session.
+    fn known_agent_sessions(&self) -> Vec<crate::agent_resume::PersistedAgentSession> {
+        let mut sessions = Vec::new();
+        if let Some(record) = self.suspended_agent.as_ref() {
+            sessions.push(record.session.clone());
+        }
+        if let Some(session) = self.hook_authority_session() {
+            sessions.push(session);
+        }
+        if let Some(session) = self.persisted_agent_session.clone() {
+            sessions.push(session);
+        }
+        sessions
+    }
+
+    /// The hook authority's session without a transcript path attached.
+    fn hook_authority_session(&self) -> Option<crate::agent_resume::PersistedAgentSession> {
+        let authority = self.hook_authority.as_ref()?;
+        let session_ref = authority.session_ref.as_ref()?;
+        Some(crate::agent_resume::PersistedAgentSession {
+            source: authority.source.clone(),
+            agent: authority.agent_label.clone(),
+            session_ref: session_ref.clone(),
+            transcript_path: None,
+        })
+    }
+
+    /// The native session a snapshot or transcript backup should record for
+    /// this pane: the parked session first, because it relaunches the agent
+    /// and the live fields may already be wiped by the exit; then the hook
+    /// authority's session; then the persisted session.
+    pub fn persistable_agent_session(&self) -> Option<crate::agent_resume::PersistedAgentSession> {
+        if let Some(record) = self.suspended_agent.as_ref() {
+            return Some(self.attach_transcript_path(record.session.clone()));
+        }
+        if let Some(session) = self.hook_authority_session() {
+            return Some(self.attach_transcript_path(session));
+        }
+        self.persisted_agent_session
+            .clone()
+            .map(|session| self.attach_transcript_path(session))
     }
 
     pub fn set_detected_agent_process_at(
@@ -690,15 +800,9 @@ impl TerminalState {
                             == previous_detected_agent
                     })))
         {
-            let durable_session = self.hook_authority.as_ref().and_then(|authority| {
-                authority.session_ref.as_ref().map(|session_ref| {
-                    crate::agent_resume::PersistedAgentSession {
-                        source: authority.source.clone(),
-                        agent: authority.agent_label.clone(),
-                        session_ref: session_ref.clone(),
-                    }
-                })
-            });
+            let durable_session = self
+                .hook_authority_session()
+                .map(|session| self.attach_transcript_path(session));
             self.suppress_current_full_lifecycle_hook_authority(
                 FullLifecycleHookSuppressionReason::HookClear,
             );
@@ -1308,11 +1412,13 @@ impl TerminalState {
         for (source, agent_label, session_ref, pending) in validated_replacement_sessions {
             self.forget_stale_full_lifecycle_hook_session(&source, &agent_label, &session_ref);
             self.reconcile_agent_name_owner(&agent_label, Some(&session_ref));
-            self.persisted_agent_session = Some(crate::agent_resume::PersistedAgentSession {
+            let session = crate::agent_resume::PersistedAgentSession {
                 source: source.clone(),
                 agent: agent_label,
                 session_ref,
-            });
+                transcript_path: None,
+            };
+            self.persisted_agent_session = Some(self.attach_transcript_path(session));
             if let Some(pending) = pending {
                 self.hook_report_sequences.insert(source, pending.seq);
                 self.hook_authority = Some(pending.authority);
@@ -1751,6 +1857,7 @@ impl TerminalState {
             source,
             agent: agent_label,
             session_ref,
+            transcript_path: None,
         };
         if self.managed_agent_launch_session.as_ref() == Some(&persisted_session) {
             self.managed_agent_launch_session = None;
@@ -2233,7 +2340,11 @@ impl TerminalState {
             .managed_agent_launch_session
             .take()
             .as_ref()
-            .is_some_and(|session| self.persisted_agent_session.as_ref() == Some(session))
+            .is_some_and(|session| {
+                self.persisted_agent_session
+                    .as_ref()
+                    .is_some_and(|persisted| persisted.same_session(session))
+            })
         {
             self.persisted_agent_session = None;
         }
@@ -2287,21 +2398,11 @@ impl TerminalState {
     pub fn suspendable_agent_session(&self) -> Option<crate::agent_resume::PersistedAgentSession> {
         let live_agent = self.effective_known_agent()?;
         let session = self
-            .hook_authority
-            .as_ref()
-            .and_then(|authority| {
-                authority.session_ref.as_ref().map(|session_ref| {
-                    crate::agent_resume::PersistedAgentSession {
-                        source: authority.source.clone(),
-                        agent: authority.agent_label.clone(),
-                        session_ref: session_ref.clone(),
-                    }
-                })
-            })
+            .hook_authority_session()
             .or_else(|| self.persisted_agent_session.clone())?;
         (crate::detect::parse_agent_label(&session.agent) == Some(live_agent)
             && crate::agent_resume::is_official_agent_source(&session.source, &session.agent))
-        .then_some(session)
+        .then(|| self.attach_transcript_path(session))
     }
 
     /// Park the live agent: record its session and name before the exit input
@@ -2599,6 +2700,7 @@ mod tests {
             source: source.into(),
             agent: agent_label.into(),
             session_ref,
+            transcript_path: None,
         });
     }
 
@@ -2673,6 +2775,7 @@ mod tests {
             source: "herdr:codex".into(),
             agent: "codex".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").unwrap(),
+            transcript_path: None,
         });
         assert!(timed_out.reconcile_managed_agent_at(now + Duration::from_millis(20), false));
         assert_eq!(timed_out.agent_name, None);
@@ -3097,6 +3200,7 @@ mod tests {
             agent: "pi".into(),
             session_ref: crate::agent_resume::AgentSessionRef::path(old_session)
                 .expect("test session path should be valid"),
+            transcript_path: None,
         });
 
         let startup = terminal.set_agent_session_ref_for_session_start(
@@ -5520,6 +5624,7 @@ mod tests {
             source: "herdr:claude".into(),
             agent: "claude".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").unwrap(),
+            transcript_path: None,
         });
         terminal.set_detected_state(Some(Agent::Grok), AgentState::Idle);
 
@@ -5550,6 +5655,7 @@ mod tests {
                 source: "herdr:codex".into(),
                 agent: "codex".into(),
                 session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").unwrap(),
+                transcript_path: None,
             });
             terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
 
@@ -5586,6 +5692,7 @@ mod tests {
                 source: "herdr:codex".into(),
                 agent: "codex".into(),
                 session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").unwrap(),
+                transcript_path: None,
             });
             terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
 
@@ -5621,6 +5728,7 @@ mod tests {
                     source: "herdr:codex".into(),
                     agent: "codex".into(),
                     session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").unwrap(),
+                    transcript_path: None,
                 });
                 terminal.set_detected_state(detected_agent, AgentState::Idle);
 
@@ -5655,6 +5763,7 @@ mod tests {
             source: "herdr:codex".into(),
             agent: "codex".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").unwrap(),
+            transcript_path: None,
         });
         terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
 
@@ -6164,6 +6273,7 @@ mod tests {
             source: "herdr:hermes".into(),
             agent: "hermes".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id("hermes-session").unwrap(),
+            transcript_path: None,
         });
 
         let mutation = terminal
@@ -6182,6 +6292,7 @@ mod tests {
             source: "herdr:claude".into(),
             agent: "claude".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").unwrap(),
+            transcript_path: None,
         });
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
 
@@ -6209,6 +6320,7 @@ mod tests {
             source: "herdr:pi".into(),
             agent: "pi".into(),
             session_ref: session_ref.clone(),
+            transcript_path: None,
         });
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
 
@@ -6242,6 +6354,7 @@ mod tests {
             source: "herdr:claude".into(),
             agent: "claude".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").unwrap(),
+            transcript_path: None,
         });
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
 
@@ -6274,6 +6387,7 @@ mod tests {
             source: "herdr:codex".into(),
             agent: "codex".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").unwrap(),
+            transcript_path: None,
         });
         terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
         terminal.set_detected_agent_process_at(Agent::Codex, Instant::now());
@@ -6383,6 +6497,7 @@ mod tests {
             source: "herdr:opencode".into(),
             agent: "opencode".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id("opencode-session").unwrap(),
+            transcript_path: None,
         });
 
         let first =
@@ -6402,6 +6517,7 @@ mod tests {
             source: "herdr:hermes".into(),
             agent: "hermes".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id("hermes-session").unwrap(),
+            transcript_path: None,
         });
 
         let mutation = terminal.set_detected_state_with_mutation(None, AgentState::Unknown);
@@ -6498,6 +6614,7 @@ mod tests {
             source: "herdr:claude".into(),
             agent: "claude".into(),
             session_ref: crate::agent_resume::AgentSessionRef::id(id).unwrap(),
+            transcript_path: None,
         }
     }
 
@@ -6532,6 +6649,93 @@ mod tests {
             "a stale session from another occupant must not be captured"
         );
         assert!(test_terminal().suspendable_agent_session().is_none());
+    }
+
+    #[test]
+    fn reported_transcript_path_follows_the_session_into_every_persisted_record() {
+        let mut terminal = live_named_claude("reviewer", "claude-session");
+        let session_ref = crate::agent_resume::AgentSessionRef::id("claude-session").unwrap();
+        let path = PathBuf::from("/tmp/claude/projects/slug/claude-session.jsonl");
+        terminal.remember_agent_transcript_path(
+            "herdr:claude",
+            "claude",
+            &session_ref,
+            path.clone(),
+        );
+
+        let suspendable = terminal.suspendable_agent_session().unwrap();
+        assert!(suspendable.same_session(&claude_session("claude-session")));
+        assert_eq!(suspendable.transcript_path.as_deref(), Some(path.as_path()));
+        assert_eq!(
+            terminal
+                .persistable_agent_session()
+                .unwrap()
+                .transcript_path,
+            Some(path.clone())
+        );
+
+        // Parking the agent keeps the path on the suspended record and on
+        // the session the snapshot writer picks.
+        terminal.begin_agent_suspend(suspendable, Instant::now());
+        assert_eq!(
+            terminal
+                .persistable_agent_session()
+                .unwrap()
+                .transcript_path,
+            Some(path.clone())
+        );
+
+        // A session that was never reported with a path stays without one,
+        // and an unrelated session's path is never borrowed.
+        let mut other = test_terminal();
+        other.set_persisted_agent_session(claude_session("other-session"));
+        assert_eq!(
+            other.persistable_agent_session().unwrap().transcript_path,
+            None
+        );
+        other.remember_agent_transcript_path(
+            "herdr:claude",
+            "claude",
+            &crate::agent_resume::AgentSessionRef::id("third-session").unwrap(),
+            PathBuf::from("/tmp/third.jsonl"),
+        );
+        assert_eq!(
+            other.persistable_agent_session().unwrap().transcript_path,
+            None
+        );
+        assert_eq!(
+            other.agent_transcript_path(&claude_session("third-session")),
+            Some(PathBuf::from("/tmp/third.jsonl"))
+        );
+    }
+
+    #[test]
+    fn remembered_transcript_paths_are_bounded_to_live_sessions() {
+        let mut terminal = test_terminal();
+        terminal.set_persisted_agent_session(claude_session("kept"));
+        let kept_ref = crate::agent_resume::AgentSessionRef::id("kept").unwrap();
+        terminal.remember_agent_transcript_path(
+            "herdr:claude",
+            "claude",
+            &kept_ref,
+            PathBuf::from("/tmp/kept.jsonl"),
+        );
+        for index in 0..(AGENT_TRANSCRIPT_PATH_LIMIT * 2) {
+            let session_ref =
+                crate::agent_resume::AgentSessionRef::id(format!("stale-{index}")).unwrap();
+            terminal.remember_agent_transcript_path(
+                "herdr:claude",
+                "claude",
+                &session_ref,
+                PathBuf::from(format!("/tmp/stale-{index}.jsonl")),
+            );
+        }
+        assert!(terminal.agent_transcript_paths.len() <= AGENT_TRANSCRIPT_PATH_LIMIT);
+        assert_eq!(
+            terminal.agent_transcript_path(&claude_session("kept")),
+            Some(PathBuf::from("/tmp/kept.jsonl")),
+            "the persisted session's path survives eviction"
+        );
     }
 
     #[test]

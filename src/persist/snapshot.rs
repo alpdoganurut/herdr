@@ -120,6 +120,9 @@ pub struct PaneAgentSessionSnapshot {
     pub agent: String,
     pub kind: crate::agent_resume::AgentSessionRefKind,
     pub value: String,
+    /// The agent's native transcript file for this session, when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +140,7 @@ impl PaneAgentSessionSnapshot {
             agent: session.agent.clone(),
             kind: session.session_ref.kind,
             value: session.session_ref.value.clone(),
+            transcript_path: session.transcript_path.clone(),
         }
     }
 }
@@ -363,38 +367,24 @@ fn capture_tab(
             })
             .unwrap_or_default();
         let launch_argv = terminal.and_then(|terminal| terminal.launch_argv.clone());
-        let suspended_agent = terminal
-            .and_then(|terminal| terminal.suspended_agent.as_ref())
-            .map(|record| SuspendedAgentSnapshot {
-                agent: record.agent.clone(),
-                name: record.name.clone(),
-                session: PaneAgentSessionSnapshot::from_persisted(&record.session),
-            });
-        let agent_session = terminal.and_then(|terminal| {
-            // The parked session is the one that relaunches the agent; live
-            // fields may already be wiped by the process exit.
-            if let Some(record) = terminal.suspended_agent.as_ref() {
-                return Some(PaneAgentSessionSnapshot::from_persisted(&record.session));
-            }
-            if let Some(authority) = terminal.hook_authority.as_ref() {
-                if let Some(session_ref) = authority.session_ref.as_ref() {
-                    return Some(PaneAgentSessionSnapshot {
-                        source: authority.source.clone(),
-                        agent: authority.agent_label.clone(),
-                        kind: session_ref.kind,
-                        value: session_ref.value.clone(),
-                    });
-                }
-            }
+        let suspended_agent = terminal.and_then(|terminal| {
             terminal
-                .persisted_agent_session
+                .suspended_agent
                 .as_ref()
-                .map(|session| PaneAgentSessionSnapshot {
-                    source: session.source.clone(),
-                    agent: session.agent.clone(),
-                    kind: session.session_ref.kind,
-                    value: session.session_ref.value.clone(),
+                .map(|record| SuspendedAgentSnapshot {
+                    agent: record.agent.clone(),
+                    name: record.name.clone(),
+                    session: PaneAgentSessionSnapshot::from_persisted(
+                        &terminal.attach_transcript_path(record.session.clone()),
+                    ),
                 })
+        });
+        // The parked session is the one that relaunches the agent; live
+        // fields may already be wiped by the process exit.
+        let agent_session = terminal.and_then(|terminal| {
+            terminal
+                .persistable_agent_session()
+                .map(|session| PaneAgentSessionSnapshot::from_persisted(&session))
         });
         panes.insert(
             id.raw(),
@@ -714,11 +704,13 @@ mod tests {
 
     #[test]
     fn suspended_agent_round_trips_and_is_captured_from_the_terminal_record() {
+        let transcript_path = PathBuf::from("/tmp/claude/projects/slug/claude-session.jsonl");
         let session = PaneAgentSessionSnapshot {
             source: "herdr:claude".into(),
             agent: "claude".into(),
             kind: crate::agent_resume::AgentSessionRefKind::Id,
             value: "claude-session".into(),
+            transcript_path: Some(transcript_path.clone()),
         };
         let pane = PaneSnapshot {
             cwd: PathBuf::from("/tmp"),
@@ -740,8 +732,22 @@ mod tests {
             restored.suspended_agent.as_ref().unwrap().name.as_deref(),
             Some("reviewer")
         );
+        assert_eq!(
+            restored.agent_session.as_ref().unwrap().transcript_path,
+            Some(transcript_path.clone())
+        );
         let plain: PaneSnapshot = serde_json::from_str(r#"{"cwd":"/tmp"}"#).unwrap();
         assert!(plain.suspended_agent.is_none());
+        // Snapshots written before transcript paths existed still load, and a
+        // path-less session serializes without the key.
+        let legacy: PaneAgentSessionSnapshot = serde_json::from_str(
+            r#"{"source":"herdr:claude","agent":"claude","kind":"id","value":"claude-session"}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.transcript_path, None);
+        assert!(!serde_json::to_string(&legacy)
+            .unwrap()
+            .contains("transcript_path"));
 
         let workspace = Workspace::test_new("capture");
         let root = workspace.tabs[0].root_pane;
@@ -758,6 +764,7 @@ mod tests {
                 source: "herdr:claude".into(),
                 agent: "claude".into(),
                 session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").unwrap(),
+                transcript_path: Some(transcript_path),
             },
             std::time::Instant::now(),
         );
@@ -1376,6 +1383,7 @@ mod tests {
             source: "herdr:pi".into(),
             agent: "pi".into(),
             session_ref: crate::agent_resume::AgentSessionRef::path(session_path.clone()).unwrap(),
+            transcript_path: None,
         });
         terminal.set_hook_authority_with_session_ref(
             "herdr:pi".into(),
@@ -1417,6 +1425,7 @@ mod tests {
                 source: "herdr:opencode".into(),
                 agent: "opencode".into(),
                 session_ref: crate::agent_resume::AgentSessionRef::id("opencode-session").unwrap(),
+                transcript_path: None,
             });
 
         let snapshot = capture_from_state(&state);
