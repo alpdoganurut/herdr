@@ -601,3 +601,48 @@ fn tabs_layout_switch_tab_indexes_the_whole_list() {
     spaces.compose(106, 20).expect("composed frame");
     assert_eq!(tab_action(&mut spaces, KeybindAction::SwitchTab(2)), None);
 }
+
+#[test]
+fn tab_rows_end_with_the_agent_glyph() {
+    let mut snapshot = two_space_snapshot();
+    let mut codex = agent("pane_2", "tab_2", AgentStatus::Idle);
+    codex.agent = Some("codex".into());
+    let mut other = agent("pane_3", "tab_3", AgentStatus::Idle);
+    other.agent = Some("gemini".into());
+    snapshot.agents = vec![agent("pane_1", "tab_1", AgentStatus::Working), codex, other];
+    snapshot.tabs.push(tab(
+        "tab_4",
+        "ws_2",
+        2,
+        "shell",
+        false,
+        AgentStatus::Unknown,
+    ));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot.clone()));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let rows = state
+        .hits
+        .sidebar_tabs
+        .iter()
+        .map(|(rect, _)| row_text(&frame, *rect).trim_end().to_string())
+        .collect::<Vec<_>>();
+    assert!(rows[0].ends_with('\u{29C6}'), "claude: {rows:?}");
+    assert!(rows[1].ends_with('\u{29C7}'), "codex: {rows:?}");
+    assert!(rows[2].ends_with('\u{237E}'), "other agent: {rows:?}");
+    assert!(rows[3].ends_with('\u{25A1}'), "plain shell: {rows:?}");
+    assert!(rows[0].contains("reviewer"), "{rows:?}");
+
+    let mut config = tabs_config();
+    config
+        .ui
+        .tab_agent_glyphs
+        .insert("claude".into(), "C".into());
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let (rect, _) = state.hits.sidebar_tabs[0];
+    assert!(row_text(&frame, rect).trim_end().ends_with('C'));
+}

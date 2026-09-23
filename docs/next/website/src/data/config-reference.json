@@ -910,6 +910,12 @@
           ]
         },
         {
+          "key": "ui.tab_agent_glyphs",
+          "type": "table",
+          "default": "{ claude = \"⧆\", codex = \"⧇\", other = \"⍾\", shell = \"□\" }",
+          "description": "Glyph at the right edge of a tab row in the \"tabs\" sidebar layout, keyed by canonical agent id, plus \"other\" (any other agent) and \"shell\" (no agent). Keys you omit keep their defaults."
+        },
+        {
           "key": "ui.mobile_width_threshold",
           "type": "integer",
           "default": "64",

@@ -142,6 +142,36 @@ pub enum SidebarCollapsedModeConfig {
     Hidden,
 }
 
+/// Built-in tab-row glyphs for the "tabs" sidebar layout; `ui.tab_agent_glyphs`
+/// overrides individual keys. All four are text-only codepoints (no emoji form).
+pub const DEFAULT_TAB_AGENT_GLYPHS: [(&str, &str); 4] = [
+    ("claude", "\u{29C6}"),
+    ("codex", "\u{29C7}"),
+    ("other", "\u{237E}"),
+    ("shell", "\u{25A1}"),
+];
+
+/// Resolve the tab-row glyph for `key` ("claude", "codex", ..., "other", "shell"):
+/// the user's override first, then the built-in default, then the "other" entry.
+pub fn tab_agent_glyph<'a>(
+    overrides: &'a std::collections::BTreeMap<String, String>,
+    key: &str,
+) -> &'a str {
+    if let Some(glyph) = overrides.get(key) {
+        return glyph;
+    }
+    DEFAULT_TAB_AGENT_GLYPHS
+        .iter()
+        .find(|(name, _)| *name == key)
+        .or_else(|| {
+            DEFAULT_TAB_AGENT_GLYPHS
+                .iter()
+                .find(|(name, _)| *name == "other")
+        })
+        .map(|(_, glyph)| *glyph)
+        .unwrap_or("")
+}
+
 /// Expanded sidebar composition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -936,6 +966,10 @@ pub struct UiConfig {
     pub sidebar_collapsed_mode: SidebarCollapsedModeConfig,
     /// Expanded sidebar composition. Saved values are "spaces" or "tabs". Default: "spaces".
     pub sidebar_layout: SidebarLayoutConfig,
+    /// Glyph at the right edge of a tab row in the "tabs" sidebar layout, keyed by canonical
+    /// agent id, plus "other" (any other agent) and "shell" (no agent). Keys you omit keep
+    /// their defaults. Default: claude "⧆", codex "⧇", other "⍾", shell "□".
+    pub tab_agent_glyphs: std::collections::BTreeMap<String, String>,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
@@ -1192,6 +1226,7 @@ impl Default for UiConfig {
             sidebar_start_collapsed: false,
             sidebar_collapsed_mode: SidebarCollapsedModeConfig::Compact,
             sidebar_layout: SidebarLayoutConfig::Spaces,
+            tab_agent_glyphs: std::collections::BTreeMap::new(),
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,
@@ -1726,6 +1761,29 @@ sidebar_layout = "tabs"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.ui.sidebar_layout, SidebarLayoutConfig::Tabs);
+    }
+
+    #[test]
+    fn tab_agent_glyphs_override_single_keys_and_fall_back() {
+        let defaults = Config::default();
+        assert_eq!(
+            tab_agent_glyph(&defaults.ui.tab_agent_glyphs, "claude"),
+            "\u{29C6}"
+        );
+        assert_eq!(
+            tab_agent_glyph(&defaults.ui.tab_agent_glyphs, "gemini"),
+            "\u{237E}"
+        );
+        let config: Config = toml::from_str("[ui]\ntab_agent_glyphs = { claude = \"C\" }").unwrap();
+        assert_eq!(tab_agent_glyph(&config.ui.tab_agent_glyphs, "claude"), "C");
+        assert_eq!(
+            tab_agent_glyph(&config.ui.tab_agent_glyphs, "codex"),
+            "\u{29C7}"
+        );
+        assert_eq!(
+            tab_agent_glyph(&config.ui.tab_agent_glyphs, "shell"),
+            "\u{25A1}"
+        );
     }
 
     #[test]

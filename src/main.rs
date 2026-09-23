@@ -250,6 +250,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # "tabs" lists one row per tab across every space, in tab order.
 # sidebar_layout = "spaces"
 
+# Tab-row agent glyphs for the "tabs" layout, keyed by canonical agent id plus
+# "other" (any other agent) and "shell" (no agent). Omitted keys keep their defaults.
+# tab_agent_glyphs = { claude = "⧆", codex = "⧇", other = "⍾", shell = "□" }
+
 # Terminal width at or below which Herdr uses the mobile single-column layout.
 # Increase this for foldables, tablets, or wide phone terminals.
 # mobile_width_threshold = 64

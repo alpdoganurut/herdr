@@ -119,6 +119,7 @@ impl ClientShellConfig {
             sidebar_start_collapsed: config.ui.sidebar_start_collapsed,
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_layout: config.ui.sidebar_layout,
+            tab_agent_glyphs: config.ui.tab_agent_glyphs.clone(),
             mobile_width_threshold: config.ui.mobile_width_threshold,
             tab_bar_position: config.ui.tab_bar_position,
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
@@ -322,6 +323,7 @@ impl ClientShellConfig {
                 self.sidebar_max_width = ui.sidebar_max_width;
                 self.sidebar_collapsed_mode = ui.sidebar_collapsed_mode;
                 self.sidebar_layout = ui.sidebar_layout;
+                self.tab_agent_glyphs = ui.tab_agent_glyphs.clone();
                 self.mobile_width_threshold = ui.mobile_width_threshold;
                 self.tab_bar_position = ui.tab_bar_position;
                 self.hide_tab_bar_when_single_tab = ui.hide_tab_bar_when_single_tab;

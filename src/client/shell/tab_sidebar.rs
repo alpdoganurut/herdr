@@ -95,7 +95,13 @@ pub(super) fn render_tab_sidebar(
             break;
         }
         let rect = Rect::new(body.x, y, content_width, 1);
-        render_tab_row(buffer, rect, tab, config);
+        let glyph_key = snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.tab_id == tab.tab_id)
+            .map_or("shell", |agent| agent.agent.as_deref().unwrap_or("other"));
+        let glyph = crate::config::tab_agent_glyph(&config.tab_agent_glyphs, glyph_key);
+        render_tab_row(buffer, rect, tab, glyph, config);
         hits.sidebar_tabs.push((rect, tab.tab_id.clone()));
         y = y.saturating_add(1);
     }
@@ -167,6 +173,7 @@ fn render_tab_row(
     buffer: &mut Buffer,
     rect: Rect,
     tab: &crate::protocol::ClientShellTab,
+    glyph: &str,
     config: &ClientShellConfig,
 ) {
     let palette = &config.palette;
@@ -184,16 +191,30 @@ fn render_tab_row(
     };
     let icon_style = Style::default().fg(status_color(tab.agent_status, palette));
     let icon = status_icon(tab.agent_status, config.status_indicators);
-    let available = rect
-        .width
-        .saturating_sub(1 + display_width(icon) as u16 + 1) as usize;
+    // " <icon> <label>...<glyph> ": the agent glyph is right-aligned with a one
+    // cell margin and the label gives way to it.
+    let glyph_width = display_width(glyph) as u16;
+    let glyph_cells = if glyph_width > 0 { glyph_width + 2 } else { 0 };
+    let lead = 1 + display_width(icon) as u16 + 1;
+    let available = rect.width.saturating_sub(lead + glyph_cells) as usize;
     let label = crate::ui::truncate_end(&tab.label, available);
-    let spans = vec![
+    let pad = rect
+        .width
+        .saturating_sub(lead + display_width(&label) as u16 + glyph_cells);
+    let mut spans = vec![
         Span::raw(" "),
         Span::styled(icon, icon_style),
         Span::raw(" "),
         Span::styled(label, label_style),
     ];
+    if glyph_cells > 0 {
+        spans.push(Span::raw(" ".repeat(usize::from(pad) + 1)));
+        spans.push(Span::styled(
+            glyph.to_string(),
+            Style::default().fg(palette.overlay0),
+        ));
+        spans.push(Span::raw(" "));
+    }
     Paragraph::new(Line::from(spans))
         .style(row_style)
         .render(rect, buffer);
