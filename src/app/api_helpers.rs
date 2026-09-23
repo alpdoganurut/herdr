@@ -1,16 +1,6 @@
-/// Attention ranking shared by tab and workspace rollups: blocked first,
-/// unseen completions next, then activity; a suspended agent ranks below
-/// everything else, including an unclassified one, because nothing is running.
-pub(super) fn agent_status_priority(status: crate::api::schema::AgentStatus) -> u8 {
-    match status {
-        crate::api::schema::AgentStatus::Blocked => 5,
-        crate::api::schema::AgentStatus::Done => 4,
-        crate::api::schema::AgentStatus::Working => 3,
-        crate::api::schema::AgentStatus::Idle => 2,
-        crate::api::schema::AgentStatus::Unknown => 1,
-        crate::api::schema::AgentStatus::Suspended => 0,
-    }
-}
+/// The status ranking and status mapping are owned by the workspace rollup
+/// so the API and the workspace aggregate can never disagree.
+pub(super) use crate::workspace::{agent_status, agent_status_priority};
 
 pub(super) fn tab_attention_priority(
     state: crate::detect::AgentState,
@@ -27,18 +17,6 @@ pub(super) fn terminal_agent_status(
     seen: bool,
 ) -> crate::api::schema::AgentStatus {
     agent_status(terminal.state, seen, terminal.suspended_agent.is_some())
-}
-
-pub(super) fn agent_status(
-    state: crate::detect::AgentState,
-    seen: bool,
-    suspended: bool,
-) -> crate::api::schema::AgentStatus {
-    if suspended {
-        crate::api::schema::AgentStatus::Suspended
-    } else {
-        pane_agent_status(state, seen)
-    }
 }
 
 fn parse_api_key(key: &str) -> Option<crossterm::event::KeyEvent> {
@@ -123,19 +101,6 @@ pub(super) fn detect_state_from_api(
         crate::api::schema::PaneAgentState::Working => crate::detect::AgentState::Working,
         crate::api::schema::PaneAgentState::Blocked => crate::detect::AgentState::Blocked,
         crate::api::schema::PaneAgentState::Unknown => crate::detect::AgentState::Unknown,
-    }
-}
-
-pub(super) fn pane_agent_status(
-    state: crate::detect::AgentState,
-    seen: bool,
-) -> crate::api::schema::AgentStatus {
-    match (state, seen) {
-        (crate::detect::AgentState::Idle, false) => crate::api::schema::AgentStatus::Done,
-        (crate::detect::AgentState::Idle, true) => crate::api::schema::AgentStatus::Idle,
-        (crate::detect::AgentState::Working, _) => crate::api::schema::AgentStatus::Working,
-        (crate::detect::AgentState::Blocked, _) => crate::api::schema::AgentStatus::Blocked,
-        (crate::detect::AgentState::Unknown, _) => crate::api::schema::AgentStatus::Unknown,
     }
 }
 

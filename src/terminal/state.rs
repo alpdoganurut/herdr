@@ -95,11 +95,17 @@ pub enum SuspendExitEscalation {
     Killed,
 }
 
+/// How many failed foreground-job probes an exit wait tolerates before the
+/// escalation gives up waiting; each retry pushes the deadline forward.
+pub const SUSPEND_PROBE_RETRY_LIMIT: u8 = 5;
+
 /// An agent parked in its pane: the process was asked to exit while the pane
 /// keeps the native session reference needed to relaunch it in place.
 ///
 /// `exit_deadline` is only set while the process is still expected to exit;
-/// it is never persisted.
+/// it is never persisted. The wait fields are private so every transition
+/// goes through [`TerminalState::advance_suspend_escalation`] and bumps the
+/// terminal revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SuspendedAgent {
     /// Canonical agent kind label, e.g. `claude`.
@@ -108,11 +114,64 @@ pub struct SuspendedAgent {
     pub name: Option<String>,
     pub session: crate::agent_resume::PersistedAgentSession,
     /// Set while the process is still expected to exit; escalation clears it.
-    pub exit_deadline: Option<Instant>,
-    pub escalation: SuspendExitEscalation,
+    exit_deadline: Option<Instant>,
+    escalation: SuspendExitEscalation,
     /// Detection reported the agent process gone. Only then is a live
     /// observation of the same agent kind a manual relaunch.
-    pub exit_observed: bool,
+    exit_observed: bool,
+    /// Escalation ticks whose foreground-job probe failed; capped by
+    /// [`SUSPEND_PROBE_RETRY_LIMIT`].
+    probe_retries: u8,
+}
+
+impl SuspendedAgent {
+    pub fn exit_deadline(&self) -> Option<Instant> {
+        self.exit_deadline
+    }
+
+    pub fn escalation(&self) -> SuspendExitEscalation {
+        self.escalation
+    }
+
+    pub fn exit_observed(&self) -> bool {
+        self.exit_observed
+    }
+
+    pub fn probe_retries(&self) -> u8 {
+        self.probe_retries
+    }
+}
+
+/// What an escalation tick learned about the pane's foreground job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SuspendProbe {
+    /// The pane has no runtime or child pid, or its foreground job could not
+    /// be read; nothing is known about the agent process.
+    Failed,
+    /// The foreground job was read. The pids are the parked agent's processes
+    /// (never the pane shell); empty means the job holds no such agent.
+    Job { agent_pids: Vec<u32> },
+}
+
+/// The state transition an escalation tick produced; the caller performs the
+/// process I/O it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SuspendEscalationOutcome {
+    /// No parked agent or its deadline has not passed.
+    NotDue,
+    /// The probe failed; the deadline was pushed forward for another try.
+    ProbeRetried { retries: u8 },
+    /// The probe failed too often; the wait ended without a verdict.
+    ProbeGaveUp,
+    /// The job was read and holds no agent process; the wait ended.
+    NoAgentProcess,
+    /// Send this signal to the agent pids the probe reported.
+    Signal {
+        signal: crate::platform::Signal,
+        pids: Vec<u32>,
+    },
+    /// `SIGKILL` was already sent; the wait ended.
+    Exhausted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1878,7 +1937,10 @@ impl TerminalState {
             self.fallback_state = AgentState::Unknown;
             self.fallback_visible_blocker = false;
             self.fallback_observed_at = None;
-            self.clear_agent_name();
+            // A parked agent's name stays with the suspended record.
+            if self.suspended_agent.is_none() {
+                self.clear_agent_name();
+            }
         }
         self.hook_authority = None;
         if !preserve_foreign_persisted_session {
@@ -2261,6 +2323,7 @@ impl TerminalState {
             exit_deadline: Some(exit_deadline),
             escalation: SuspendExitEscalation::Pending,
             exit_observed: false,
+            probe_retries: 0,
         });
         self.revision = self.revision.saturating_add(1);
     }
@@ -2283,7 +2346,86 @@ impl TerminalState {
             exit_deadline: None,
             escalation: SuspendExitEscalation::Pending,
             exit_observed: true,
+            probe_retries: 0,
         });
+    }
+
+    /// Reopen the exit wait on a reinstated record whose process was handed
+    /// off mid-exit: the agent is still live, so a same-kind observation must
+    /// not be mistaken for a manual relaunch, and escalation starts over.
+    #[cfg(unix)]
+    pub fn resume_suspend_exit_wait(&mut self, exit_deadline: Instant) -> bool {
+        let Some(record) = self.suspended_agent.as_mut() else {
+            return false;
+        };
+        record.exit_deadline = Some(exit_deadline);
+        record.escalation = SuspendExitEscalation::Pending;
+        record.exit_observed = false;
+        record.probe_retries = 0;
+        self.revision = self.revision.saturating_add(1);
+        true
+    }
+
+    /// Advance the exit wait of the parked agent once its deadline has passed.
+    ///
+    /// A failed probe keeps waiting (deadline pushed by `grace`) until
+    /// [`SUSPEND_PROBE_RETRY_LIMIT`] is reached; a job read without the agent
+    /// ends the wait. Otherwise the escalation steps `Pending` → `Terminated`
+    /// → `Killed`, naming the signal the caller must send. Only detection's
+    /// process-exit observation marks the exit as seen.
+    pub fn advance_suspend_escalation(
+        &mut self,
+        now: Instant,
+        grace: Duration,
+        probe: SuspendProbe,
+    ) -> SuspendEscalationOutcome {
+        let Some(record) = self.suspended_agent.as_mut() else {
+            return SuspendEscalationOutcome::NotDue;
+        };
+        if record.exit_deadline.is_none_or(|deadline| now < deadline) {
+            return SuspendEscalationOutcome::NotDue;
+        }
+        let outcome = match probe {
+            SuspendProbe::Failed if record.probe_retries < SUSPEND_PROBE_RETRY_LIMIT => {
+                record.probe_retries += 1;
+                record.exit_deadline = Some(now + grace);
+                SuspendEscalationOutcome::ProbeRetried {
+                    retries: record.probe_retries,
+                }
+            }
+            SuspendProbe::Failed => {
+                record.exit_deadline = None;
+                SuspendEscalationOutcome::ProbeGaveUp
+            }
+            SuspendProbe::Job { agent_pids } if agent_pids.is_empty() => {
+                record.exit_deadline = None;
+                SuspendEscalationOutcome::NoAgentProcess
+            }
+            SuspendProbe::Job { agent_pids } => match record.escalation {
+                SuspendExitEscalation::Pending => {
+                    record.escalation = SuspendExitEscalation::Terminated;
+                    record.exit_deadline = Some(now + grace);
+                    SuspendEscalationOutcome::Signal {
+                        signal: crate::platform::Signal::Terminate,
+                        pids: agent_pids,
+                    }
+                }
+                SuspendExitEscalation::Terminated => {
+                    record.escalation = SuspendExitEscalation::Killed;
+                    record.exit_deadline = None;
+                    SuspendEscalationOutcome::Signal {
+                        signal: crate::platform::Signal::Kill,
+                        pids: agent_pids,
+                    }
+                }
+                SuspendExitEscalation::Killed => {
+                    record.exit_deadline = None;
+                    SuspendEscalationOutcome::Exhausted
+                }
+            },
+        };
+        self.revision = self.revision.saturating_add(1);
+        outcome
     }
 
     pub fn take_suspended_agent(&mut self) -> Option<SuspendedAgent> {
@@ -2297,7 +2439,7 @@ impl TerminalState {
     pub fn suspended_agent_exit_deadline(&self) -> Option<Instant> {
         self.suspended_agent
             .as_ref()
-            .and_then(|record| record.exit_deadline)
+            .and_then(SuspendedAgent::exit_deadline)
     }
 
     /// A process observation while parked either completes the exit or shows
@@ -6459,13 +6601,21 @@ mod tests {
         );
         // The escalation tick found no agent process and ended the wait, but
         // a detection observation captured just before that is still in flight.
-        terminal.suspended_agent.as_mut().unwrap().exit_deadline = None;
+        assert_eq!(
+            terminal.advance_suspend_escalation(
+                Instant::now() + Duration::from_secs(10),
+                Duration::from_secs(2),
+                SuspendProbe::Job { agent_pids: vec![] },
+            ),
+            SuspendEscalationOutcome::NoAgentProcess
+        );
+        assert!(terminal.suspended_agent_exit_deadline().is_none());
         terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
         let record = terminal
             .suspended_agent
             .as_ref()
             .expect("a stale live report must not drop the parked session");
-        assert!(!record.exit_observed);
+        assert!(!record.exit_observed());
         assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
 
         terminal.set_detected_state_with_visible_blocker(
@@ -6475,10 +6625,199 @@ mod tests {
             false,
             true,
         );
-        assert!(terminal.suspended_agent.as_ref().unwrap().exit_observed);
+        assert!(terminal.suspended_agent.as_ref().unwrap().exit_observed());
         terminal.set_detected_state(None, AgentState::Unknown);
         terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
         assert!(terminal.suspended_agent.is_none());
+    }
+
+    #[test]
+    fn suspend_escalation_steps_pending_terminated_killed_and_bumps_the_revision() {
+        let mut terminal = live_named_claude("reviewer", "claude-session");
+        let now = Instant::now();
+        let grace = Duration::from_secs(2);
+        terminal.begin_agent_suspend(claude_session("claude-session"), now);
+        let revision = terminal.revision;
+
+        assert_eq!(
+            terminal.advance_suspend_escalation(
+                now - Duration::from_secs(1),
+                grace,
+                SuspendProbe::Job {
+                    agent_pids: vec![42]
+                },
+            ),
+            SuspendEscalationOutcome::NotDue,
+            "nothing happens before the deadline"
+        );
+        assert_eq!(terminal.revision, revision);
+
+        assert_eq!(
+            terminal.advance_suspend_escalation(
+                now,
+                grace,
+                SuspendProbe::Job {
+                    agent_pids: vec![42, 43]
+                },
+            ),
+            SuspendEscalationOutcome::Signal {
+                signal: crate::platform::Signal::Terminate,
+                pids: vec![42, 43],
+            }
+        );
+        let record = terminal.suspended_agent.as_ref().unwrap();
+        assert_eq!(record.escalation(), SuspendExitEscalation::Terminated);
+        assert_eq!(record.exit_deadline(), Some(now + grace));
+        assert!(terminal.revision > revision);
+        let revision = terminal.revision;
+
+        assert_eq!(
+            terminal.advance_suspend_escalation(
+                now + grace,
+                grace,
+                SuspendProbe::Job {
+                    agent_pids: vec![42]
+                },
+            ),
+            SuspendEscalationOutcome::Signal {
+                signal: crate::platform::Signal::Kill,
+                pids: vec![42],
+            }
+        );
+        let record = terminal.suspended_agent.as_ref().unwrap();
+        assert_eq!(record.escalation(), SuspendExitEscalation::Killed);
+        assert!(
+            record.exit_deadline().is_none(),
+            "the wait ends after SIGKILL"
+        );
+        assert!(
+            !record.exit_observed(),
+            "only detection marks the exit seen"
+        );
+        assert!(terminal.revision > revision);
+
+        // A later tick with a stale deadline is not due any more.
+        assert_eq!(
+            terminal.advance_suspend_escalation(
+                now + grace * 2,
+                grace,
+                SuspendProbe::Job {
+                    agent_pids: vec![42]
+                },
+            ),
+            SuspendEscalationOutcome::NotDue
+        );
+        assert!(
+            terminal.suspended_agent.is_some(),
+            "the parked session is kept"
+        );
+    }
+
+    #[test]
+    fn suspend_escalation_retries_a_failed_probe_until_the_cap() {
+        let mut terminal = live_named_claude("reviewer", "claude-session");
+        let mut now = Instant::now();
+        let grace = Duration::from_secs(2);
+        terminal.begin_agent_suspend(claude_session("claude-session"), now);
+
+        for expected in 1..=SUSPEND_PROBE_RETRY_LIMIT {
+            assert_eq!(
+                terminal.advance_suspend_escalation(now, grace, SuspendProbe::Failed),
+                SuspendEscalationOutcome::ProbeRetried { retries: expected }
+            );
+            let record = terminal.suspended_agent.as_ref().unwrap();
+            assert_eq!(record.exit_deadline(), Some(now + grace), "deadline pushed");
+            assert_eq!(record.escalation(), SuspendExitEscalation::Pending);
+            assert_eq!(record.probe_retries(), expected);
+            now += grace;
+        }
+        assert_eq!(
+            terminal.advance_suspend_escalation(now, grace, SuspendProbe::Failed),
+            SuspendEscalationOutcome::ProbeGaveUp
+        );
+        let record = terminal.suspended_agent.as_ref().unwrap();
+        assert!(record.exit_deadline().is_none());
+        assert!(!record.exit_observed());
+        assert_eq!(record.escalation(), SuspendExitEscalation::Pending);
+
+        // A successful probe after retries still escalates normally.
+        let mut terminal = live_named_claude("reviewer", "claude-session");
+        let now = Instant::now();
+        terminal.begin_agent_suspend(claude_session("claude-session"), now);
+        assert_eq!(
+            terminal.advance_suspend_escalation(now, grace, SuspendProbe::Failed),
+            SuspendEscalationOutcome::ProbeRetried { retries: 1 }
+        );
+        assert_eq!(
+            terminal.advance_suspend_escalation(
+                now + grace,
+                grace,
+                SuspendProbe::Job {
+                    agent_pids: vec![7]
+                },
+            ),
+            SuspendEscalationOutcome::Signal {
+                signal: crate::platform::Signal::Terminate,
+                pids: vec![7],
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resumed_exit_wait_treats_the_same_agent_as_still_exiting() {
+        let mut terminal = test_terminal();
+        terminal.restore_suspended_agent(
+            "claude".into(),
+            Some("reviewer".into()),
+            claude_session("claude-session"),
+        );
+        assert!(!test_terminal().resume_suspend_exit_wait(Instant::now()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let revision = terminal.revision;
+        assert!(terminal.resume_suspend_exit_wait(deadline));
+        assert!(terminal.revision > revision);
+        let record = terminal.suspended_agent.as_ref().unwrap();
+        assert!(!record.exit_observed());
+        assert_eq!(record.exit_deadline(), Some(deadline));
+
+        // The handed-off process is seen live: still the parked one.
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+        assert!(terminal.suspended_agent.is_some());
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn releasing_the_hook_authority_during_the_exit_keeps_a_suspended_name() {
+        // The agent's exit hook releases its authority while the screen has
+        // already lost the agent, so the process no longer "owns" the label.
+        let mut terminal = live_named_claude("reviewer", "claude-session");
+        terminal.begin_agent_suspend(
+            claude_session("claude-session"),
+            Instant::now() + Duration::from_secs(5),
+        );
+        terminal.set_detected_state(None, AgentState::Unknown);
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+
+        assert!(terminal
+            .release_agent_with_mutation("herdr:claude", "claude", Some(2))
+            .is_some());
+        assert!(terminal.suspended_agent.is_some());
+        assert_eq!(
+            terminal.agent_name.as_deref(),
+            Some("reviewer"),
+            "the name stays with the parked session"
+        );
+
+        let mut plain = live_named_claude("reviewer", "claude-session");
+        plain.set_detected_state(None, AgentState::Unknown);
+        assert!(plain
+            .release_agent_with_mutation("herdr:claude", "claude", Some(2))
+            .is_some());
+        assert_eq!(
+            plain.agent_name, None,
+            "an unparked exit still frees the name"
+        );
     }
 
     #[test]

@@ -29,6 +29,10 @@ pub(crate) struct HandoffRuntimeState {
     pub initial_history_ansi: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_state: Option<crate::terminal::state::HandoffAgentState>,
+    /// A suspended agent whose process had not yet been observed gone when
+    /// the pane was handed off: the exit wait resumes on the receiving side.
+    #[serde(default)]
+    pub suspended_exit_pending: bool,
 }
 
 #[cfg(unix)]

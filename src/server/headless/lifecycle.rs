@@ -89,6 +89,13 @@ impl HeadlessServer {
                 .terminals
                 .get(terminal_id)
                 .and_then(|terminal| terminal.handoff_agent_state());
+            handoff_runtime.suspended_exit_pending = self
+                .app
+                .state
+                .terminals
+                .get(terminal_id)
+                .and_then(|terminal| terminal.suspended_agent.as_ref())
+                .is_some_and(|record| !record.exit_observed());
             let has_agent_session = self
                 .app
                 .state

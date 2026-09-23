@@ -169,6 +169,11 @@ impl App {
         let Some(terminal) = self.state.terminals.get(&terminal_id) else {
             return Err(agent_not_found(id, &params.target));
         };
+        // During the exit wait every other gate still passes; the text and
+        // the delayed Enter would land in the bare shell once the agent exits.
+        if terminal.suspended_agent.is_some() {
+            return Err(agent_suspended(id, &params.target));
+        }
         if terminal.state == crate::detect::AgentState::Blocked {
             return Err(encode_error(
                 id,
@@ -370,12 +375,14 @@ impl App {
         else {
             return agent_not_found(id, &params.target);
         };
-        let Some(expected_agent) = self
-            .state
-            .terminals
-            .get(terminal_id)
-            .and_then(|terminal| terminal.effective_known_agent())
-        else {
+        let Some(terminal) = self.state.terminals.get(terminal_id) else {
+            return agent_not_found(id, &params.target);
+        };
+        // Keys sent during the exit wait would reach the bare shell.
+        if terminal.suspended_agent.is_some() {
+            return agent_suspended(id, &params.target);
+        }
+        let Some(expected_agent) = terminal.effective_known_agent() else {
             return agent_not_ready(id, &params.target);
         };
         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
@@ -412,6 +419,14 @@ fn agent_not_found(id: String, target: &str) -> String {
         id,
         "agent_not_found",
         format!("agent target {target} not found"),
+    )
+}
+
+fn agent_suspended(id: String, target: &str) -> String {
+    encode_error(
+        id,
+        "agent_suspended",
+        format!("agent {target} is suspended"),
     )
 }
 
@@ -635,6 +650,102 @@ mod tests {
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&rejected).unwrap();
         assert_eq!(error.error.code, "agent_not_found");
         assert!(rx.try_recv().is_err());
+    }
+
+    fn suspended_claude_session() -> crate::agent_resume::PersistedAgentSession {
+        crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_and_send_keys_reject_a_suspended_agent_during_the_exit_wait() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        // Still detected live while the exit input is being processed.
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        terminal.begin_agent_suspend(
+            suspended_claude_session(),
+            std::time::Instant::now() + Duration::from_secs(5),
+        );
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        let response = run_deferred_agent_prompt(
+            &mut app,
+            "req:prompt",
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "late prompt".into(),
+                wait: None,
+            },
+        );
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "agent_suspended");
+        assert_eq!(error.error.message, "agent reviewer is suspended");
+
+        let response = app.handle_agent_send_keys(
+            "req:keys".into(),
+            AgentSendKeysParams {
+                target: "reviewer".into(),
+                keys: vec!["enter".into()],
+            },
+        );
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "agent_suspended");
+
+        assert!(
+            tokio::time::timeout(
+                AGENT_PROMPT_SUBMIT_DELAY + Duration::from_millis(100),
+                rx.recv()
+            )
+            .await
+            .is_err(),
+            "input reached the pane while the agent was parked"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_rename_is_refused_while_the_agent_is_suspended() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        terminal.begin_agent_suspend(
+            suspended_claude_session(),
+            std::time::Instant::now() + Duration::from_secs(5),
+        );
+
+        let response = app.handle_agent_rename(
+            "req".into(),
+            AgentRenameParams {
+                target: "reviewer".into(),
+                name: Some("other".into()),
+            },
+        );
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "agent_suspended");
+        let terminal = &app.state.terminals[&terminal_id];
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+        assert_eq!(
+            terminal
+                .suspended_agent
+                .as_ref()
+                .and_then(|record| record.name.as_deref()),
+            Some("reviewer"),
+            "the parked record keeps the name it will restore"
+        );
     }
 
     #[tokio::test]

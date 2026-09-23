@@ -180,6 +180,10 @@ pub struct PaneStateUpdate {
     pub agent_name_changed: bool,
     pub agent_released: bool,
     pub agent_release_status: Option<crate::api::schema::AgentStatus>,
+    /// The pane hosted a parked agent before this update.
+    pub previous_suspended: bool,
+    /// The pane hosts a parked agent after this update.
+    pub suspended: bool,
     pub suppress_completion: bool,
 }
 
@@ -301,10 +305,9 @@ impl AppState {
             .into_iter()
             .filter_map(|(ws_idx, pane_id, terminal_id)| {
                 let previous_seen = self.workspaces[ws_idx].pane_state(pane_id)?.seen;
-                let mutation = self
-                    .terminals
-                    .get_mut(&terminal_id)?
-                    .expire_agent_metadata_at(scheduled_deadline, now)?;
+                let terminal = self.terminals.get_mut(&terminal_id)?;
+                let mutation = terminal.expire_agent_metadata_at(scheduled_deadline, now)?;
+                let suspended = terminal.suspended_agent.is_some();
                 let change = mutation.effective_state_change?;
                 let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, false)?;
                 let update = PaneStateUpdate {
@@ -323,6 +326,8 @@ impl AppState {
                     agent_name_changed: false,
                     agent_released: false,
                     agent_release_status: None,
+                    previous_suspended: suspended,
+                    suspended,
                     suppress_completion: false,
                 };
                 Some(update)
@@ -1643,11 +1648,16 @@ impl AppState {
             unchanged_change,
             suppress_acquisition_completion,
             completion_reset,
+            previous_suspended,
             suspended,
         ) = {
             let terminal = self.terminals.get_mut(&terminal_id)?;
             let previous_agent_name = terminal.agent_name.clone();
             let had_completion = terminal.last_agent_completion_seq.is_some() || !previous_seen;
+            // Captured before the update: the mutation may drop the parked
+            // record (a manual relaunch), and that must surface as a status
+            // change rather than stay hidden behind the current value.
+            let previous_suspended = terminal.suspended_agent.is_some();
             let mutation = update(terminal)?;
             let completion_reset = mutation.session_ref_changed
                 || mutation
@@ -1660,8 +1670,10 @@ impl AppState {
             let managed_changed = terminal.reconcile_managed_agent_at(now, false);
             let suppress_acquisition_completion = terminal.finish_agent_process_acquisition();
             let agent_name_changed = terminal.agent_name != previous_agent_name;
+            let suspended = terminal.suspended_agent.is_some();
             let unchanged_change = (mutation.agent_released
                 || agent_name_changed
+                || previous_suspended != suspended
                 || (completion_reset && had_completion))
                 .then(|| terminal.unchanged_effective_state_change_at(now));
             (
@@ -1671,14 +1683,19 @@ impl AppState {
                 unchanged_change,
                 suppress_acquisition_completion,
                 completion_reset,
-                terminal.suspended_agent.is_some(),
+                previous_suspended,
+                suspended,
             )
         };
         if completion_reset {
             self.pending_agent_notifications.remove(&pane_id);
             self.workspaces[ws_idx].pane_state_mut(pane_id)?.seen = true;
         }
-        if mutation.session_ref_changed || managed_changed || agent_name_changed {
+        if mutation.session_ref_changed
+            || managed_changed
+            || agent_name_changed
+            || previous_suspended != suspended
+        {
             self.mark_session_dirty();
         }
         let agent_released = mutation.agent_released;
@@ -1721,15 +1738,10 @@ impl AppState {
             presentation: change.presentation.clone(),
             agent_name_changed,
             agent_released,
-            agent_release_status: agent_released.then(|| {
-                agent_status(
-                    change.state,
-                    seen,
-                    self.terminals
-                        .get(&terminal_id)
-                        .is_some_and(|terminal| terminal.suspended_agent.is_some()),
-                )
-            }),
+            agent_release_status: agent_released
+                .then(|| agent_status(change.state, seen, suspended)),
+            previous_suspended,
+            suspended,
             suppress_completion,
         };
         Some(update)
