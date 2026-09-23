@@ -650,3 +650,83 @@ fn tab_rows_end_with_the_agent_glyph() {
     let (rect, _) = state.hits.sidebar_tabs[0];
     assert!(row_text(&frame, rect).trim_end().ends_with('C'));
 }
+
+#[test]
+fn suspended_pane_mouse_press_starts_no_gesture_and_no_selection() {
+    let mut state = suspended_state();
+    state.compose(106, 20).expect("composed frame");
+    let pane = state.hits.panes[0].inner_rect;
+    let mut events = Vec::new();
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Drag(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        events.push(RawInputEvent::Mouse(MouseEvent {
+            kind,
+            column: pane.x + 3,
+            row: pane.y + 2,
+            modifiers: KeyModifiers::empty(),
+        }));
+    }
+    let outcome = state.handle_raw_events(events);
+    assert!(
+        !outcome
+            .requests
+            .iter()
+            .any(|request| matches!(request, ClientMessage::ClientShellPaneInput { .. })),
+        "no mouse input may reach a suspended pane"
+    );
+    assert!(
+        state.pane_mouse_gesture.is_none(),
+        "no gesture on a locked pane"
+    );
+    assert!(state.selection.is_none(), "no selection on a hidden shell");
+    // Focusing the pane by click is still fine.
+    assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_1"
+    )));
+}
+
+#[test]
+fn tab_menu_acts_on_the_pane_captured_when_it_opened() {
+    let mut snapshot = two_space_snapshot();
+    snapshot.agents = vec![agent("pane_2", "tab_2", AgentStatus::Suspended)];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot.clone()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    let (rect, _) = state.hits.sidebar_tabs[1];
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: rect.x + 2,
+        row: rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    // The snapshot changes under the open menu: another agent now leads the tab.
+    let mut newcomer = agent("pane_9", "tab_2", AgentStatus::Working);
+    newcomer.pane_id = "pane_9".into();
+    snapshot.agents.insert(0, newcomer);
+    state.set_snapshot(Box::new(snapshot));
+    state.compose(106, 20).expect("menu open");
+    let activate_index = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .iter()
+            .position(|item| item.action == ClientContextMenuAction::ActivateAgent)
+            .expect("activate item"),
+        _ => panic!("tab context menu"),
+    };
+    let row = state.hits.context_menu_rows[activate_index].0;
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: row.x + 1,
+        row: row.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::AgentActivate(params) if params.target == "pane_2"
+    )));
+}

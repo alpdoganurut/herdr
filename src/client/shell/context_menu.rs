@@ -47,8 +47,12 @@ impl ClientContextMenuOverlay {
                     item("Rename", Action::Rename),
                 ];
                 match agent {
-                    Some((_, true)) => items.push(item("Activate agent", Action::ActivateAgent)),
-                    Some((_, false)) => items.push(item("Suspend agent", Action::SuspendAgent)),
+                    Some(ClientTabMenuAgent {
+                        suspended: true, ..
+                    }) => items.push(item("Activate agent", Action::ActivateAgent)),
+                    Some(ClientTabMenuAgent {
+                        suspended: false, ..
+                    }) => items.push(item("Suspend agent", Action::SuspendAgent)),
                     None => {}
                 }
                 items.push(item("Close", Action::Close));
@@ -144,11 +148,9 @@ impl ClientShellState {
                 .agents
                 .iter()
                 .find(|agent| agent.tab_id == tab_id)
-                .map(|agent| {
-                    (
-                        agent.pane_id.clone(),
-                        agent.agent_status == crate::api::schema::AgentStatus::Suspended,
-                    )
+                .map(|agent| ClientTabMenuAgent {
+                    pane_id: agent.pane_id.clone(),
+                    suspended: agent.agent_status == crate::api::schema::AgentStatus::Suspended,
                 })
         });
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
@@ -219,8 +221,8 @@ impl ClientShellState {
             ClientContextMenuTarget::Tab {
                 tab_id,
                 workspace_id,
-                ..
-            } => self.activate_tab_context_action(tab_id, workspace_id, action, outcome),
+                agent,
+            } => self.activate_tab_context_action(tab_id, workspace_id, agent, action, outcome),
             ClientContextMenuTarget::Pane {
                 pane_id,
                 workspace_id,
@@ -314,6 +316,7 @@ impl ClientShellState {
         &mut self,
         tab_id: String,
         workspace_id: String,
+        agent: Option<ClientTabMenuAgent>,
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,
     ) {
@@ -383,14 +386,9 @@ impl ClientShellState {
                 self.request_tab_close(tab_id, outcome);
             }
             ClientContextMenuAction::SuspendAgent | ClientContextMenuAction::ActivateAgent => {
-                let pane_id = self.snapshot.as_deref().and_then(|snapshot| {
-                    snapshot
-                        .agents
-                        .iter()
-                        .find(|agent| agent.tab_id == tab_id)
-                        .map(|agent| agent.pane_id.clone())
-                });
-                if let Some(pane_id) = pane_id {
+                // Act on the pane the menu described when it opened, not whatever
+                // agent the tab holds now.
+                if let Some(pane_id) = agent.map(|agent| agent.pane_id) {
                     let method = if action == ClientContextMenuAction::SuspendAgent {
                         Method::AgentSuspend(crate::api::schema::AgentSuspendParams {
                             target: pane_id,

@@ -152,23 +152,24 @@ pub const DEFAULT_TAB_AGENT_GLYPHS: [(&str, &str); 4] = [
 ];
 
 /// Resolve the tab-row glyph for `key` ("claude", "codex", ..., "other", "shell"):
-/// the user's override first, then the built-in default, then the "other" entry.
+/// the user's override for the key, then the built-in default for the key, then
+/// the user's "other" override, then the built-in "other".
 pub fn tab_agent_glyph<'a>(
     overrides: &'a std::collections::BTreeMap<String, String>,
     key: &str,
 ) -> &'a str {
-    if let Some(glyph) = overrides.get(key) {
-        return glyph;
-    }
-    DEFAULT_TAB_AGENT_GLYPHS
-        .iter()
-        .find(|(name, _)| *name == key)
-        .or_else(|| {
-            DEFAULT_TAB_AGENT_GLYPHS
-                .iter()
-                .find(|(name, _)| *name == "other")
-        })
-        .map(|(_, glyph)| *glyph)
+    let builtin = |name: &str| {
+        DEFAULT_TAB_AGENT_GLYPHS
+            .iter()
+            .find(|(candidate, _)| *candidate == name)
+            .map(|(_, glyph)| *glyph)
+    };
+    overrides
+        .get(key)
+        .map(String::as_str)
+        .or_else(|| builtin(key))
+        .or_else(|| overrides.get("other").map(String::as_str))
+        .or_else(|| builtin("other"))
         .unwrap_or("")
 }
 
@@ -1783,6 +1784,12 @@ sidebar_layout = "tabs"
         assert_eq!(
             tab_agent_glyph(&config.ui.tab_agent_glyphs, "shell"),
             "\u{29C5}"
+        );
+        let config: Config = toml::from_str("[ui]\ntab_agent_glyphs = { other = \"X\" }").unwrap();
+        assert_eq!(tab_agent_glyph(&config.ui.tab_agent_glyphs, "gemini"), "X");
+        assert_eq!(
+            tab_agent_glyph(&config.ui.tab_agent_glyphs, "claude"),
+            "\u{29C6}"
         );
     }
 

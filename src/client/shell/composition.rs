@@ -340,9 +340,12 @@ impl ClientShellState {
             frame.cells[start..start + usize::from(bar.width)].to_vec()
         });
         blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
-        self.paint_suspended_panes(&mut frame, snapshot);
+        let suspended_cards = self.paint_suspended_panes(&mut frame, snapshot);
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
+        for card in suspended_cards {
+            occlusion.cover(card);
+        }
         let has_selection = self
             .selection
             .as_ref()

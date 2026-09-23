@@ -1792,13 +1792,15 @@ impl ClientShellState {
                             }),
                             outcome,
                         );
-                        self.pane_mouse_gesture = Some(ClientPaneMouseGesture {
-                            last_position: self.pane_mouse_position(&hit, mouse),
-                            hit,
-                            button: MouseButton::Right,
-                            stripped_modifiers,
-                            last_event: mouse,
-                        });
+                        if !self.suspended_pane_locked(&hit.pane_id) {
+                            self.pane_mouse_gesture = Some(ClientPaneMouseGesture {
+                                last_position: self.pane_mouse_position(&hit, mouse),
+                                hit,
+                                button: MouseButton::Right,
+                                stripped_modifiers,
+                                last_event: mouse,
+                            });
+                        }
                         return;
                     }
                 }
@@ -2236,7 +2238,11 @@ impl ClientShellState {
                     .find(|hit| super::contains(hit.rect, point))
                     .cloned();
                 if let Some(hit) = pane_hit {
-                    if hit.mouse_reporting && super::contains(hit.inner_rect, point) {
+                    let locked = self.suspended_pane_locked(&hit.pane_id);
+                    if locked {
+                        // A suspended pane takes no input and shows no shell: no
+                        // gesture, no selection, only focus.
+                    } else if hit.mouse_reporting && super::contains(hit.inner_rect, point) {
                         self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome);
                         self.pane_mouse_gesture = Some(ClientPaneMouseGesture {
                             last_position: self.pane_mouse_position(&hit, mouse),
@@ -2290,6 +2296,7 @@ impl ClientShellState {
                     .iter()
                     .find(|hit| super::contains(hit.inner_rect, point) && hit.mouse_reporting)
                     .cloned()
+                    .filter(|hit| !self.suspended_pane_locked(&hit.pane_id))
                 {
                     self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome);
                     self.pane_mouse_gesture = Some(ClientPaneMouseGesture {

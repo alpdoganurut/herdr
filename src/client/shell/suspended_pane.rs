@@ -13,14 +13,25 @@ use super::*;
 use crate::protocol::{color_to_u32, CellData, FrameData};
 
 impl ClientShellState {
+    /// Rebuild the suspended pane set from the active snapshot.
+    pub(super) fn refresh_suspended_pane_ids(&mut self) {
+        self.suspended_pane_ids.clear();
+        if let Some(snapshot) = self.snapshot.as_deref() {
+            self.suspended_pane_ids.extend(
+                snapshot
+                    .agents
+                    .iter()
+                    .filter(|agent| {
+                        agent.agent_status == crate::api::schema::AgentStatus::Suspended
+                    })
+                    .map(|agent| agent.pane_id.clone()),
+            );
+        }
+    }
+
     /// Whether the endpoint reports `pane_id` as a suspended agent pane.
     pub(super) fn pane_suspended(&self, pane_id: &str) -> bool {
-        self.snapshot.as_deref().is_some_and(|snapshot| {
-            snapshot.agents.iter().any(|agent| {
-                agent.pane_id == pane_id
-                    && agent.agent_status == crate::api::schema::AgentStatus::Suspended
-            })
-        })
+        self.suspended_pane_ids.contains(pane_id)
     }
 
     /// Pane input is locked while the pane is suspended in the tabs layout.
@@ -36,13 +47,17 @@ impl ClientShellState {
 
     /// Replace every suspended pane's screen with its card. Runs after the pane
     /// surface is blitted so the card covers the shell rather than the chrome.
+    /// Returns the painted areas so graphics can be occluded under them.
     pub(super) fn paint_suspended_panes(
         &self,
         frame: &mut FrameData,
         snapshot: &ClientShellSnapshot,
-    ) {
-        if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs {
-            return;
+    ) -> Vec<Rect> {
+        let mut painted = Vec::new();
+        if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs
+            || self.suspended_pane_ids.is_empty()
+        {
+            return painted;
         }
         for hit in &self.hits.panes {
             if hit.popup || !self.pane_suspended(&hit.pane_id) {
@@ -88,6 +103,7 @@ impl ClientShellState {
                 (hint, palette.accent),
             ];
             paint_card(frame, hit.inner_rect, &lines, palette);
+            painted.push(hit.inner_rect);
             if let Some(cursor) = frame.cursor.as_ref() {
                 let inside = cursor.x >= hit.inner_rect.x
                     && cursor.x < hit.inner_rect.right()
@@ -98,6 +114,7 @@ impl ClientShellState {
                 }
             }
         }
+        painted
     }
 }
 
@@ -126,6 +143,17 @@ fn paint_card(
                 *cell = blank(bg);
             }
         }
+    }
+    // Clamp to the frame like the fill loop: a pane rect past the frame edge must
+    // not spill into the next row.
+    let area = Rect::new(
+        area.x,
+        area.y,
+        area.width.min(frame.width.saturating_sub(area.x)),
+        area.height.min(frame.height.saturating_sub(area.y)),
+    );
+    if area.is_empty() {
+        return;
     }
     let visible = lines
         .iter()

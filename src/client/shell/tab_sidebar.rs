@@ -18,7 +18,6 @@ use ratatui::{
 use super::render::{put_right_text, put_text, render_sidebar_background, ShellRenderState};
 use super::*;
 
-const HEADER_ROWS: u16 = 0;
 const FOOTER_ROWS: u16 = 1;
 
 pub(super) fn render_tab_sidebar(
@@ -43,12 +42,23 @@ pub(super) fn render_tab_sidebar(
     }
     let body = Rect::new(
         content.x,
-        content.y.saturating_add(HEADER_ROWS),
+        content.y,
         content.width,
-        content.height.saturating_sub(HEADER_ROWS + FOOTER_ROWS),
+        content.height.saturating_sub(FOOTER_ROWS),
     );
     hits.agent_body = body;
     let tabs = &snapshot.tabs;
+    // One pass over the agents; rows then look their glyph key up by tab id.
+    let glyph_keys: std::collections::HashMap<&str, &str> = snapshot
+        .agents
+        .iter()
+        .map(|agent| {
+            (
+                agent.tab_id.as_str(),
+                agent.agent.as_deref().unwrap_or("other"),
+            )
+        })
+        .collect();
     let row_heights = vec![1u16; tabs.len()];
     let gaps = vec![0u16; tabs.len()];
     let mut metrics =
@@ -84,11 +94,10 @@ pub(super) fn render_tab_sidebar(
             break;
         }
         let rect = Rect::new(body.x, y, content_width, 1);
-        let glyph_key = snapshot
-            .agents
-            .iter()
-            .find(|agent| agent.tab_id == tab.tab_id)
-            .map_or("shell", |agent| agent.agent.as_deref().unwrap_or("other"));
+        let glyph_key = glyph_keys
+            .get(tab.tab_id.as_str())
+            .copied()
+            .unwrap_or("shell");
         let glyph = crate::config::tab_agent_glyph(&config.tab_agent_glyphs, glyph_key);
         render_tab_row(buffer, rect, tab, glyph, config);
         hits.sidebar_tabs.push((rect, tab.tab_id.clone()));

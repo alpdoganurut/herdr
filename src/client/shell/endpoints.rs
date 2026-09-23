@@ -104,6 +104,7 @@ impl ClientShellState {
         self.active_endpoint_id = ClientEndpointId::Local;
         self.mode = ClientShellMode::Terminal;
         self.snapshot = None;
+        self.refresh_suspended_pane_ids();
         self.graphics.set_scope("local:unavailable");
         self.reconcile_input_source();
     }
@@ -667,6 +668,7 @@ impl ClientShellState {
         };
         if changed {
             self.snapshot = self.endpoints[index].snapshot.clone();
+            self.refresh_suspended_pane_ids();
         }
         changed
     }

@@ -534,6 +534,13 @@ pub(super) enum ClientContextMenuAction {
     ActivateAgent,
 }
 
+/// The agent pane a tab context menu acts on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ClientTabMenuAgent {
+    pub(super) pane_id: String,
+    pub(super) suspended: bool,
+}
+
 #[derive(Debug)]
 pub(super) enum ClientContextMenuTarget {
     Workspace {
@@ -546,8 +553,8 @@ pub(super) enum ClientContextMenuTarget {
     Tab {
         tab_id: String,
         workspace_id: String,
-        /// The tab's agent pane and whether it is parked, for Suspend/Activate items.
-        agent: Option<(String, bool)>,
+        /// The tab's agent pane, captured when the menu opened, for Suspend/Activate items.
+        agent: Option<ClientTabMenuAgent>,
     },
     Pane {
         pane_id: String,
@@ -856,6 +863,9 @@ pub(crate) struct ClientShellState {
     pub(super) machine_diagnostics: super::machine_diagnostics::MachineDiagnostics,
     pub(super) config: ClientShellConfig,
     pub(super) snapshot: Option<Box<ClientShellSnapshot>>,
+    /// Pane ids the active snapshot reports as suspended; refreshed with the snapshot so
+    /// per-frame and per-event checks don't rescan `snapshot.agents`.
+    pub(super) suspended_pane_ids: HashSet<String>,
     pub(super) active_snapshot_generation: Option<u64>,
     pub(super) pane_surface_generation: Option<u64>,
     pub(super) pane_surface: Option<PaneSurfaceFrame>,
@@ -1020,6 +1030,7 @@ impl ClientShellState {
             machine_diagnostics: Default::default(),
             config,
             snapshot: None,
+            suspended_pane_ids: HashSet::new(),
             active_snapshot_generation: None,
             pane_surface_generation: None,
             pane_surface: None,
@@ -1570,6 +1581,7 @@ impl ClientShellState {
             }
         }
         self.snapshot = Some(snapshot);
+        self.refresh_suspended_pane_ids();
         self.reconcile_pending_workspace_highlight();
         let pending_surface = self.pending_pane_surface.take();
         if let Some(surface) = pending_surface {
