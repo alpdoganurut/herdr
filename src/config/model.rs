@@ -148,7 +148,7 @@ pub const DEFAULT_TAB_AGENT_GLYPHS: [(&str, &str); 4] = [
     ("claude", "\u{29C6}"),
     ("codex", "\u{29C7}"),
     ("other", "\u{237E}"),
-    ("shell", "\u{25A1}"),
+    ("shell", "\u{29C5}"),
 ];
 
 /// Resolve the tab-row glyph for `key` ("claude", "codex", ..., "other", "shell"):
@@ -968,7 +968,7 @@ pub struct UiConfig {
     pub sidebar_layout: SidebarLayoutConfig,
     /// Glyph at the right edge of a tab row in the "tabs" sidebar layout, keyed by canonical
     /// agent id, plus "other" (any other agent) and "shell" (no agent). Keys you omit keep
-    /// their defaults. Default: claude "⧆", codex "⧇", other "⍾", shell "□".
+    /// their defaults. Default: claude "⧆", codex "⧇", other "⍾", shell "⧅".
     pub tab_agent_glyphs: std::collections::BTreeMap<String, String>,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
@@ -1782,7 +1782,7 @@ sidebar_layout = "tabs"
         );
         assert_eq!(
             tab_agent_glyph(&config.ui.tab_agent_glyphs, "shell"),
-            "\u{25A1}"
+            "\u{29C5}"
         );
     }
 

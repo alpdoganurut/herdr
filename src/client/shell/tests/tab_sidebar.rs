@@ -631,7 +631,7 @@ fn tab_rows_end_with_the_agent_glyph() {
     assert!(rows[0].ends_with('\u{29C6}'), "claude: {rows:?}");
     assert!(rows[1].ends_with('\u{29C7}'), "codex: {rows:?}");
     assert!(rows[2].ends_with('\u{237E}'), "other agent: {rows:?}");
-    assert!(rows[3].ends_with('\u{25A1}'), "plain shell: {rows:?}");
+    assert!(rows[3].ends_with('\u{29C5}'), "plain shell: {rows:?}");
     assert!(rows[0].contains("reviewer"), "{rows:?}");
 
     let mut config = tabs_config();
