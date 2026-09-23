@@ -1018,6 +1018,11 @@ impl ClientShellState {
         key: crate::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
+        if let ClientInputTarget::Pane(pane_id) = &target {
+            if self.suspended_pane_locked(pane_id) {
+                return;
+            }
+        }
         if let Some(event) = ClientPaneInputEvent::from_terminal_key(key) {
             super::push_target_event(target, event, outcome);
         }
@@ -1025,6 +1030,9 @@ impl ClientShellState {
 
     fn push_focused_pane_event(&self, event: ClientPaneInputEvent, outcome: &mut ClientShellInput) {
         if let Some(pane_id) = self.focused_pane_id() {
+            if self.suspended_pane_locked(&pane_id) {
+                return;
+            }
             super::push_target_event(ClientInputTarget::Pane(pane_id), event, outcome);
         }
     }

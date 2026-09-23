@@ -1832,7 +1832,25 @@ impl ClientShellState {
                     .find(|hit| super::contains(hit.rect, point))
                     .map(|hit| hit.pane_id.clone());
                 if let Some(pane_id) = pane_id {
-                    self.open_pane_context_menu(pane_id, mouse.column, mouse.row);
+                    // tabs layout: a tab is one pane, so the pane surface gets the
+                    // tab menu (rename, suspend/activate, close) instead of pane ops.
+                    let tab_id = (self.config.sidebar_layout
+                        == crate::config::SidebarLayoutConfig::Tabs)
+                        .then(|| {
+                            self.snapshot.as_deref().and_then(|snapshot| {
+                                snapshot
+                                    .panes
+                                    .iter()
+                                    .find(|pane| pane.pane_id == pane_id)
+                                    .map(|pane| pane.tab_id.clone())
+                            })
+                        })
+                        .flatten();
+                    if let Some(tab_id) = tab_id {
+                        self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
+                    } else {
+                        self.open_pane_context_menu(pane_id, mouse.column, mouse.row);
+                    }
                     outcome.repaint = true;
                 }
             }
@@ -2357,6 +2375,9 @@ impl ClientShellState {
         modifiers: crossterm::event::KeyModifiers,
         outcome: &mut ClientShellInput,
     ) {
+        if !hit.popup && self.suspended_pane_locked(&hit.pane_id) {
+            return;
+        }
         let Some(kind) = crate::protocol::ClientMouseKind::from_crossterm(mouse.kind) else {
             return;
         };

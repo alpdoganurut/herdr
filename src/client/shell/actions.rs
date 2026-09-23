@@ -20,6 +20,9 @@ impl ClientShellState {
                 self.persist_chrome_preferences(outcome);
             }
             crate::input::KeybindMatch::Action(action) => {
+                if self.pane_topology_locked() && pane_topology_action(action) {
+                    return;
+                }
                 if self.workspace_preview_action_blocked()
                     && matches!(
                         action,
@@ -1140,4 +1143,35 @@ fn agent_suspend_toggle_method(
             target: pane_id.to_string(),
         })
     })
+}
+
+/// Actions that split, arrange, or address individual panes. The tabs layout
+/// keeps one pane per tab, so these are inert there (see
+/// `ClientShellState::pane_topology_locked`).
+fn pane_topology_action(action: crate::input::KeybindAction) -> bool {
+    use crate::input::KeybindAction as A;
+    matches!(
+        action,
+        A::SplitVertical
+            | A::SplitHorizontal
+            | A::ClosePane
+            | A::RenamePane
+            | A::SwapPaneLeft
+            | A::SwapPaneDown
+            | A::SwapPaneUp
+            | A::SwapPaneRight
+            | A::FocusPaneLeft
+            | A::FocusPaneDown
+            | A::FocusPaneUp
+            | A::FocusPaneRight
+            | A::CyclePaneNext
+            | A::CyclePanePrevious
+            | A::LastPane
+            | A::Zoom
+            | A::EnterResizeMode
+            | A::ResizePaneLeft
+            | A::ResizePaneDown
+            | A::ResizePaneUp
+            | A::ResizePaneRight
+    )
 }

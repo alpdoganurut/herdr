@@ -373,3 +373,158 @@ fn toggle_agent_suspend_targets_the_focused_pane_by_its_status() {
         .map(|(keybinds, _)| keybinds.keybinds.toggle_agent_suspend.bindings.is_empty())
         .unwrap_or(true));
 }
+
+fn frame_text(frame: &FrameData, rect: ratatui::layout::Rect) -> String {
+    (rect.y..rect.bottom())
+        .map(|y| {
+            (rect.x..rect.right())
+                .map(|x| frame.cells[(y * frame.width + x) as usize].symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn suspended_state() -> ClientShellState {
+    let mut config = tabs_config();
+    config.keys.toggle_agent_suspend = crate::config::BindingConfig::one("alt+s");
+    let mut snapshot = two_space_snapshot();
+    snapshot.agents = vec![agent("pane_1", "tab_1", AgentStatus::Suspended)];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(wide_surface());
+    state
+}
+
+#[test]
+fn suspended_pane_shows_a_card_instead_of_the_shell_and_hides_the_cursor() {
+    let mut state = suspended_state();
+    let frame = state.compose(106, 20).expect("composed frame");
+    let pane = state.hits.panes[0].inner_rect;
+    let text = frame_text(&frame, pane);
+    assert!(text.contains("suspended"), "{text}");
+    assert!(text.contains("reviewer"), "{text}");
+    assert!(text.contains("alt+s to activate"), "{text}");
+    assert!(
+        !text.contains("SHELL SCROLLBACK"),
+        "old screen must not bleed through: {text}"
+    );
+    assert!(
+        frame.cursor.is_none(),
+        "cursor must not show inside a suspended pane"
+    );
+
+    // The spaces layout leaves the pane alone.
+    let mut snapshot = two_space_snapshot();
+    snapshot.agents = vec![agent("pane_1", "tab_1", AgentStatus::Suspended)];
+    let mut spaces = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    spaces.set_snapshot(Box::new(snapshot));
+    spaces.set_pane_surface(wide_surface());
+    let frame = spaces.compose(106, 20).expect("composed frame");
+    let pane = spaces.hits.panes[0].inner_rect;
+    let text = frame_text(&frame, pane);
+    assert!(!text.contains("suspended"), "{text}");
+    assert!(text.contains("SHELL SCROLLBACK"), "{text}");
+}
+
+#[test]
+fn suspended_pane_swallows_input_but_the_toggle_binding_still_activates() {
+    use crossterm::event::KeyCode;
+    let mut state = suspended_state();
+    state.compose(106, 20).expect("composed frame");
+
+    let outcome = state.handle_raw_events(vec![
+        RawInputEvent::Key(crate::input::TerminalKey::new(
+            KeyCode::Enter,
+            KeyModifiers::empty(),
+        )),
+        RawInputEvent::Key(crate::input::TerminalKey::new(
+            KeyCode::Char('l'),
+            KeyModifiers::empty(),
+        )),
+        RawInputEvent::Text(crate::input::TextCommit::new("ls")),
+        RawInputEvent::Paste("rm -rf /".into()),
+    ]);
+    assert!(
+        !outcome
+            .requests
+            .iter()
+            .any(|request| matches!(request, ClientMessage::ClientShellPaneInput { .. })),
+        "no input may reach a suspended pane: {:?}",
+        outcome.requests.len()
+    );
+
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
+        crate::input::TerminalKey::new(KeyCode::Char('s'), KeyModifiers::ALT),
+    )]);
+    assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::AgentActivate(params) if params.target == "pane_1"
+    )));
+}
+
+#[test]
+fn tabs_layout_ignores_pane_topology_actions_and_routes_pane_right_click_to_the_tab_menu() {
+    use crate::input::{KeybindAction, KeybindMatch};
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(two_space_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+
+    for action in [
+        KeybindAction::SplitVertical,
+        KeybindAction::SplitHorizontal,
+        KeybindAction::Zoom,
+        KeybindAction::ClosePane,
+        KeybindAction::EnterResizeMode,
+    ] {
+        let mut outcome = ClientShellInput::default();
+        state.record_binding(KeybindMatch::Action(action), &mut outcome);
+        assert!(outcome.actions.is_empty(), "{action:?} must be inert");
+        assert_eq!(
+            state.mode,
+            ClientShellMode::Terminal,
+            "{action:?} must not change mode"
+        );
+    }
+
+    let pane = state.hits.panes[0].rect;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: pane.x + 1,
+        row: pane.y + 1,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::Tab { ref tab_id, .. },
+            ..
+        })) if tab_id == "tab_1"
+    ));
+}
+
+/// A 60x12 single-pane surface so the card has room; the shared fixture is 4x2.
+fn wide_surface() -> PaneSurfaceFrame {
+    let mut frame = surface();
+    let lines = vec!["SHELL SCROLLBACK LINE".to_string(); 12];
+    frame.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
+        &ratatui::buffer::Buffer::with_lines(lines),
+        Some(crate::protocol::CursorState {
+            x: 3,
+            y: 5,
+            visible: true,
+            shape: 2,
+        }),
+        &[],
+    );
+    let rect = SurfaceRect {
+        x: 0,
+        y: 0,
+        width: 60,
+        height: 12,
+    };
+    frame.panes[0].rect = rect;
+    frame.panes[0].inner_rect = rect;
+    frame
+}
