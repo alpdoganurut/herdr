@@ -15,6 +15,7 @@ const ENDPOINT_RESPONSE_CHUNK_BYTES: usize = 512 * 1024;
 const CLIENT_SHELL_METHODS: &[&str] = &[
     "agent.activate",
     "agent.suspend",
+    "agent.transcripts",
     "client_shell.surface.set",
     "command.invoke",
     "integration.install",
@@ -311,6 +312,10 @@ mod tests {
         assert_eq!(
             actual.remove("pane.move").as_deref(),
             Some("eaed63cf205db2dc043ecce9e1a79cdca7f6e2521b364226bbf3121affadce7c")
+        );
+        assert_eq!(
+            actual.remove("agent.transcripts").as_deref(),
+            Some("8f06825b38522b26205170bb58195c5401724155c18c878ca06555b9a4917cc8")
         );
 
         assert_eq!(

@@ -152,7 +152,10 @@ pub struct App {
     pub(crate) backup_agent_transcripts: bool,
     /// Next periodic transcript backup pass.
     pub(crate) agent_transcript_backup_deadline: Option<Instant>,
-    agent_transcript_backup_thread: Option<std::thread::JoinHandle<()>>,
+    agent_transcript_backup_thread:
+        Option<std::thread::JoinHandle<agent_transcripts::AgentTranscriptBackupPass>>,
+    /// The most recent finished backup pass, for `agent.transcripts`.
+    agent_transcript_backup_last: Option<agent_transcripts::AgentTranscriptBackupPass>,
     /// Sessions queued for the next backup pass ahead of the periodic
     /// interval (a suspended agent), keyed by session so repeats coalesce.
     agent_transcript_backup_pending: std::collections::BTreeMap<
@@ -633,6 +636,7 @@ impl App {
                 .persist_session
                 .then_some(Instant::now() + agent_transcripts::AGENT_TRANSCRIPT_BACKUP_INTERVAL),
             agent_transcript_backup_thread: None,
+            agent_transcript_backup_last: None,
             agent_transcript_backup_pending: std::collections::BTreeMap::new(),
             detached_process_children: Vec::new(),
             tab_bar_status_generation: 0,

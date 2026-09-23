@@ -42,6 +42,8 @@ impl ClientShellState {
             integration_messages: Vec::new(),
             loading_integrations: false,
             installing_integrations: false,
+            transcripts: None,
+            loading_transcripts: false,
         }));
     }
 
@@ -51,7 +53,7 @@ impl ClientShellState {
             ClientSettingsSection::Indicators => indicator_index(self.config.status_indicators),
             ClientSettingsSection::Sound => usize::from(!self.config.sound_enabled),
             ClientSettingsSection::Toast => toast_index(self.config.toast_delivery),
-            ClientSettingsSection::Integrations => 0,
+            ClientSettingsSection::Integrations | ClientSettingsSection::Backups => 0,
         }
     }
 
@@ -70,12 +72,23 @@ impl ClientShellState {
                     ..
                 }))
             );
+        let request_transcripts = matches!(section, ClientSettingsSection::Backups)
+            && matches!(
+                self.overlay,
+                Some(ClientShellOverlay::Settings(ClientSettingsOverlay {
+                    loading_transcripts: false,
+                    ..
+                }))
+            );
         if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
             settings.section = section;
             settings.selected = selected;
         }
         if request_integrations {
             self.queue_integration_list(outcome, true);
+        }
+        if request_transcripts {
+            self.queue_agent_transcripts(outcome);
         }
         outcome.repaint = true;
     }
@@ -100,6 +113,7 @@ impl ClientShellState {
                 ClientSettingsSection::Indicators | ClientSettingsSection::Sound => 2,
                 ClientSettingsSection::Toast => 4,
                 ClientSettingsSection::Integrations => settings.integrations.len(),
+                ClientSettingsSection::Backups => 0,
             },
             _ => 0,
         }
@@ -223,6 +237,25 @@ impl ClientShellState {
                 );
             }
             ClientSettingsSection::Integrations => self.install_recommended_integrations(outcome),
+            // Read-only: the store is shown, not edited.
+            ClientSettingsSection::Backups => {}
+        }
+    }
+
+    fn queue_agent_transcripts(&mut self, outcome: &mut ClientShellInput) {
+        if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+            settings.loading_transcripts = true;
+        }
+        if !self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::AgentTranscripts(
+                crate::api::schema::EmptyParams::default(),
+            ),
+            PendingEndpointKind::AgentTranscripts,
+            outcome,
+        ) {
+            if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                settings.loading_transcripts = false;
+            }
         }
     }
 
@@ -342,6 +375,41 @@ impl ClientShellState {
                     Vec::new()
                 };
                 (true, actions)
+            }
+            PendingEndpointKind::AgentTranscripts => {
+                if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                    settings.loading_transcripts = false;
+                    match result {
+                        Ok(crate::api::schema::ResponseResult::AgentTranscripts {
+                            store_dir,
+                            enabled,
+                            sessions,
+                            native_missing,
+                            transcript_bytes,
+                            disk_bytes,
+                            last_pass,
+                            next_pass_in_ms,
+                        }) => {
+                            settings.transcripts = Some(ClientTranscriptStore {
+                                store_dir,
+                                enabled,
+                                sessions,
+                                native_missing,
+                                transcript_bytes,
+                                disk_bytes,
+                                last_pass,
+                                next_pass_in_ms,
+                            });
+                        }
+                        Ok(_) => {
+                            self.set_endpoint_error(
+                                "endpoint returned an unexpected transcript store result",
+                            );
+                        }
+                        Err(_) => {}
+                    }
+                }
+                (true, Vec::new())
             }
             _ => (false, Vec::new()),
         }

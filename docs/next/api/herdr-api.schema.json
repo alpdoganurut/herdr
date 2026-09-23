@@ -5562,6 +5562,22 @@
         {
           "properties": {
             "method": {
+              "const": "agent.transcripts",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -6999,6 +7015,54 @@
               "type": "string"
             }
           ]
+        },
+        "AgentTranscriptBackupPass": {
+          "description": "A finished native transcript backup pass, as reported by\n`agent.transcripts`.",
+          "properties": {
+            "duration_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "failed": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "finished_unix": {
+              "description": "When the pass finished, in seconds since the Unix epoch.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "skipped": {
+              "description": "Sessions without a native transcript, or whose agent has none.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "unchanged": {
+              "description": "Sessions whose backup already matched.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "updated": {
+              "description": "Sessions whose transcript or side data was copied.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "finished_unix",
+            "duration_ms",
+            "updated",
+            "unchanged",
+            "skipped",
+            "failed"
+          ],
+          "type": "object"
         },
         "ClientWindowTitleReason": {
           "enum": [
@@ -9729,6 +9793,69 @@
               "required": [
                 "type",
                 "pane_id"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "disk_bytes": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "enabled": {
+                  "description": "Whether backup passes run (the config flag and session\npersistence together).",
+                  "type": "boolean"
+                },
+                "last_pass": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/AgentTranscriptBackupPass"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "native_missing": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "next_pass_in_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "sessions": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "store_dir": {
+                  "type": "string"
+                },
+                "transcript_bytes": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "agent_transcripts",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "store_dir",
+                "enabled",
+                "sessions",
+                "native_missing",
+                "transcript_bytes",
+                "disk_bytes"
               ],
               "type": "object"
             },

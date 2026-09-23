@@ -189,6 +189,22 @@ pub struct AgentActivateParams {
     pub target: String,
 }
 
+/// A finished native transcript backup pass, as reported by
+/// `agent.transcripts`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentTranscriptBackupPass {
+    /// When the pass finished, in seconds since the Unix epoch.
+    pub finished_unix: u64,
+    pub duration_ms: u64,
+    /// Sessions whose transcript or side data was copied.
+    pub updated: u64,
+    /// Sessions whose backup already matched.
+    pub unchanged: u64,
+    /// Sessions without a native transcript, or whose agent has none.
+    pub skipped: u64,
+    pub failed: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentPromptParams {
     pub target: String,

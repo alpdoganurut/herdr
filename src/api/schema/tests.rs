@@ -258,6 +258,58 @@ fn generated_protocol_schema_artifact_is_current() {
 }
 
 #[test]
+fn agent_transcripts_request_and_response_round_trip() {
+    let request = Request {
+        id: "transcripts".into(),
+        method: Method::AgentTranscripts(EmptyParams::default()),
+    };
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["method"], "agent.transcripts");
+    assert_eq!(serde_json::from_value::<Request>(json).unwrap(), request);
+
+    let result = ResponseResult::AgentTranscripts {
+        store_dir: "/tmp/herdr/agent-transcripts".into(),
+        enabled: true,
+        sessions: 3,
+        native_missing: 1,
+        transcript_bytes: 4096,
+        disk_bytes: 8192,
+        last_pass: Some(AgentTranscriptBackupPass {
+            finished_unix: 1_700_000_000,
+            duration_ms: 12,
+            updated: 1,
+            unchanged: 2,
+            skipped: 0,
+            failed: 0,
+        }),
+        next_pass_in_ms: Some(250_000),
+    };
+    let json = serde_json::to_value(&result).unwrap();
+    assert_eq!(json["type"], "agent_transcripts");
+    assert_eq!(json["sessions"], 3);
+    assert_eq!(json["last_pass"]["updated"], 1);
+    assert_eq!(
+        serde_json::from_value::<ResponseResult>(json).unwrap(),
+        result
+    );
+
+    // The optional fields stay absent until a pass has run.
+    let idle = serde_json::to_value(ResponseResult::AgentTranscripts {
+        store_dir: String::new(),
+        enabled: false,
+        sessions: 0,
+        native_missing: 0,
+        transcript_bytes: 0,
+        disk_bytes: 0,
+        last_pass: None,
+        next_pass_in_ms: None,
+    })
+    .unwrap();
+    assert!(idle.get("last_pass").is_none());
+    assert!(idle.get("next_pass_in_ms").is_none());
+}
+
+#[test]
 fn request_round_trips_for_server_stop() {
     let request = Request {
         id: "req_stop".into(),

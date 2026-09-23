@@ -139,6 +139,8 @@ pub enum Method {
     AgentSuspend(AgentSuspendParams),
     #[serde(rename = "agent.activate")]
     AgentActivate(AgentActivateParams),
+    #[serde(rename = "agent.transcripts")]
+    AgentTranscripts(EmptyParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

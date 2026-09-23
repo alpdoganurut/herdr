@@ -7,16 +7,47 @@
 //! the agent has deleted its own transcript.
 
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::time::{Duration, Instant, SystemTime};
 
 use super::App;
 use crate::agent_resume::PersistedAgentSession;
-use crate::persist::agent_transcripts::{self, TranscriptBackupRequest};
+use crate::persist::agent_transcripts::{self, BackupSummary, TranscriptBackupRequest};
 
 /// How often open and suspended agent transcripts are backed up.
 pub(super) const AGENT_TRANSCRIPT_BACKUP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// How soon a pass is retried when the previous one is still copying.
 const AGENT_TRANSCRIPT_BACKUP_RETRY: Duration = Duration::from_secs(1);
+
+/// The outcome of one finished backup pass.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AgentTranscriptBackupPass {
+    pub(crate) finished: SystemTime,
+    pub(crate) duration: Duration,
+    pub(crate) summary: BackupSummary,
+}
+
+/// What `agent.transcripts` reports about the schedule.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AgentTranscriptBackupSchedule {
+    pub(crate) enabled: bool,
+    pub(crate) last_pass: Option<AgentTranscriptBackupPass>,
+    /// Time until the next periodic pass, when passes run.
+    pub(crate) next_pass_in: Option<Duration>,
+}
+
+fn run_backup_pass(
+    store_dir: &Path,
+    requests: &[TranscriptBackupRequest],
+) -> AgentTranscriptBackupPass {
+    let started = Instant::now();
+    let summary = agent_transcripts::sync_backups(store_dir, requests);
+    AgentTranscriptBackupPass {
+        finished: SystemTime::now(),
+        duration: started.elapsed(),
+        summary,
+    }
+}
 
 impl App {
     fn agent_transcript_backups_enabled(&self) -> bool {
@@ -108,8 +139,37 @@ impl App {
             .is_some_and(std::thread::JoinHandle::is_finished)
         {
             if let Some(thread) = self.agent_transcript_backup_thread.take() {
-                let _ = thread.join();
+                self.record_agent_transcript_backup_pass(thread.join());
             }
+        }
+    }
+
+    fn record_agent_transcript_backup_pass(
+        &mut self,
+        pass: std::thread::Result<AgentTranscriptBackupPass>,
+    ) {
+        match pass {
+            Ok(pass) => self.agent_transcript_backup_last = Some(pass),
+            Err(_) => tracing::warn!(
+                event = "agent.transcript.backup.pass",
+                outcome = "error",
+                "native agent transcript backup thread panicked"
+            ),
+        }
+    }
+
+    /// The backup schedule for `agent.transcripts`: whether passes run, the
+    /// most recent finished pass, and the time until the next one.
+    pub(crate) fn agent_transcript_backup_schedule(&mut self) -> AgentTranscriptBackupSchedule {
+        self.reap_finished_agent_transcript_backup();
+        let enabled = self.agent_transcript_backups_enabled();
+        AgentTranscriptBackupSchedule {
+            enabled,
+            last_pass: self.agent_transcript_backup_last,
+            next_pass_in: enabled
+                .then_some(self.agent_transcript_backup_deadline)
+                .flatten()
+                .map(|deadline| deadline.saturating_duration_since(Instant::now())),
         }
     }
 
@@ -150,16 +210,15 @@ impl App {
         let thread_requests = std::sync::Arc::clone(&requests);
         match std::thread::Builder::new()
             .name("herdr-agent-transcripts".into())
-            .spawn(move || {
-                agent_transcripts::sync_backups(&thread_store_dir, &thread_requests);
-            }) {
+            .spawn(move || run_backup_pass(&thread_store_dir, &thread_requests))
+        {
             Ok(thread) => self.agent_transcript_backup_thread = Some(thread),
             Err(err) => {
                 tracing::warn!(
                     err = %err,
                     "failed to spawn agent transcript backup thread; copying inline"
                 );
-                agent_transcripts::sync_backups(&store_dir, &requests);
+                self.agent_transcript_backup_last = Some(run_backup_pass(&store_dir, &requests));
             }
         }
     }
@@ -196,7 +255,7 @@ impl App {
     /// everything inline so nothing is lost when the process exits.
     pub(crate) fn backup_agent_transcripts_on_shutdown(&mut self) {
         if let Some(thread) = self.agent_transcript_backup_thread.take() {
-            let _ = thread.join();
+            self.record_agent_transcript_backup_pass(thread.join());
         }
         if !self.agent_transcript_backups_enabled() {
             self.agent_transcript_backup_pending.clear();
@@ -206,7 +265,8 @@ impl App {
         if requests.is_empty() {
             return;
         }
-        agent_transcripts::sync_backups(&agent_transcripts::store_dir(), &requests);
+        self.agent_transcript_backup_last =
+            Some(run_backup_pass(&agent_transcripts::store_dir(), &requests));
     }
 
     /// Put a backed-up transcript back before the native resume command
@@ -498,6 +558,11 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         app.agent_transcript_backup_thread = Some(std::thread::spawn(move || {
             let _ = release_rx.recv();
+            AgentTranscriptBackupPass {
+                finished: SystemTime::now(),
+                duration: Duration::ZERO,
+                summary: BackupSummary::default(),
+            }
         }));
         app.queue_agent_transcript_backup(0, pane, claude_session("busy"));
         let before = Instant::now();
@@ -531,5 +596,71 @@ mod tests {
         assert!(app.agent_transcript_backup_thread.is_none());
         assert!(app.session_save_deadline.is_none());
         assert!(sandbox.backup_of("shutdown-session").is_some());
+    }
+
+    fn transcripts_status(app: &mut App) -> serde_json::Value {
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req".into(),
+            method: crate::api::schema::Method::AgentTranscripts(
+                crate::api::schema::EmptyParams::default(),
+            ),
+        });
+        serde_json::from_str(&response).unwrap()
+    }
+
+    #[test]
+    fn transcripts_status_reports_the_store_and_the_last_pass() {
+        let sandbox = Sandbox::new("status");
+        let session = sandbox.native_session("status-session");
+        let (mut app, _pane) = app_with_agent_pane(session);
+
+        // Before any pass: an empty store, a scheduled pass, no history.
+        let idle = transcripts_status(&mut app);
+        assert_eq!(idle["result"]["type"], "agent_transcripts");
+        assert_eq!(idle["result"]["enabled"], true);
+        assert_eq!(idle["result"]["sessions"], 0);
+        assert!(idle["result"].get("last_pass").is_none());
+        assert!(idle["result"]["store_dir"]
+            .as_str()
+            .unwrap()
+            .ends_with(agent_transcripts::STORE_DIR_NAME));
+
+        // A finished background pass is picked up when the status is read.
+        app.sync_agent_transcript_backups();
+        while app
+            .agent_transcript_backup_thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let after = transcripts_status(&mut app);
+        assert!(app.agent_transcript_backup_thread.is_none());
+        assert_eq!(after["result"]["sessions"], 1);
+        assert_eq!(after["result"]["native_missing"], 0);
+        assert_eq!(
+            after["result"]["transcript_bytes"],
+            "{\"type\":\"user\"}\n".len() as u64
+        );
+        assert!(after["result"]["disk_bytes"].as_u64().unwrap() > 0);
+        assert_eq!(after["result"]["last_pass"]["updated"], 1);
+        assert_eq!(after["result"]["last_pass"]["failed"], 0);
+        assert!(
+            after["result"]["last_pass"]["finished_unix"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(
+            after["result"]["next_pass_in_ms"].as_u64().unwrap()
+                <= AGENT_TRANSCRIPT_BACKUP_INTERVAL.as_millis() as u64
+        );
+
+        // Backups off: no schedule, the store is still reported.
+        app.backup_agent_transcripts = false;
+        let off = transcripts_status(&mut app);
+        assert_eq!(off["result"]["enabled"], false);
+        assert!(off["result"].get("next_pass_in_ms").is_none());
+        assert_eq!(off["result"]["sessions"], 1);
     }
 }

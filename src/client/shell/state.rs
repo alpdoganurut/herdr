@@ -428,6 +428,7 @@ pub(super) enum ClientSettingsSection {
     Sound,
     Toast,
     Integrations,
+    Backups,
 }
 
 impl ClientSettingsSection {
@@ -437,6 +438,7 @@ impl ClientSettingsSection {
         Self::Sound,
         Self::Toast,
         Self::Integrations,
+        Self::Backups,
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -446,8 +448,23 @@ impl ClientSettingsSection {
             Self::Sound => "sound",
             Self::Toast => "toasts",
             Self::Integrations => "integrations",
+            Self::Backups => "backups",
         }
     }
+}
+
+/// The endpoint's `agent.transcripts` result, shown read-only in the
+/// settings overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ClientTranscriptStore {
+    pub(super) store_dir: String,
+    pub(super) enabled: bool,
+    pub(super) sessions: u64,
+    pub(super) native_missing: u64,
+    pub(super) transcript_bytes: u64,
+    pub(super) disk_bytes: u64,
+    pub(super) last_pass: Option<crate::api::schema::AgentTranscriptBackupPass>,
+    pub(super) next_pass_in_ms: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -460,6 +477,8 @@ pub(super) struct ClientSettingsOverlay {
     pub(super) integration_messages: Vec<String>,
     pub(super) loading_integrations: bool,
     pub(super) installing_integrations: bool,
+    pub(super) transcripts: Option<ClientTranscriptStore>,
+    pub(super) loading_transcripts: bool,
 }
 
 #[derive(Debug)]
@@ -682,6 +701,7 @@ pub(super) enum PendingEndpointKind {
     ReloadConfig,
     IntegrationList,
     IntegrationInstall,
+    AgentTranscripts,
     PrepareWorktreeCreate {
         workspace_id: String,
     },

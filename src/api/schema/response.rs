@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::agents::AgentInfo;
+use super::agents::{AgentInfo, AgentTranscriptBackupPass};
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
 use super::events::EventEnvelope;
 use super::integrations::{
@@ -106,6 +106,20 @@ pub enum ResponseResult {
     },
     AgentActivated {
         pane_id: String,
+    },
+    AgentTranscripts {
+        store_dir: String,
+        /// Whether backup passes run (the config flag and session
+        /// persistence together).
+        enabled: bool,
+        sessions: u64,
+        native_missing: u64,
+        transcript_bytes: u64,
+        disk_bytes: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_pass: Option<AgentTranscriptBackupPass>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_pass_in_ms: Option<u64>,
     },
     AgentPrompted {
         agent: AgentInfo,

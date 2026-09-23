@@ -4,7 +4,8 @@ use bytes::Bytes;
 
 use crate::api::schema::{
     AgentActivateParams, AgentPromptParams, AgentRenameParams, AgentSendKeysParams,
-    AgentStartParams, AgentSuspendParams, AgentTarget, PaneReadResult, ResponseResult,
+    AgentStartParams, AgentSuspendParams, AgentTarget, AgentTranscriptBackupPass, PaneReadResult,
+    ResponseResult,
 };
 use crate::app::App;
 
@@ -30,6 +31,10 @@ fn append_codex_paste_boundary(runtime: &crate::terminal::TerminalRuntime, text:
     if let Some(key) = keys.into_iter().find(|bytes| !bytes.is_empty()) {
         text.extend_from_slice(&key);
     }
+}
+
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 impl App {
@@ -244,6 +249,47 @@ impl App {
             )
             .map_err(|err| encode_error(id.clone(), "agent_prompt_failed", err.to_string()))?;
         Ok((id, agent, completion))
+    }
+
+    /// The transcript backup store and schedule. Reads the store on demand;
+    /// it holds one small metadata file per session.
+    pub(super) fn handle_agent_transcripts(&mut self, id: String) -> String {
+        let schedule = self.agent_transcript_backup_schedule();
+        let store_dir = crate::persist::agent_transcripts::store_dir();
+        let summary = match crate::persist::agent_transcripts::summarize_store(&store_dir) {
+            Ok(summary) => summary,
+            Err(err) => {
+                return encode_error(
+                    id,
+                    "agent_transcripts_unavailable",
+                    format!("failed to read the transcript store: {err}"),
+                )
+            }
+        };
+        encode_success(
+            id,
+            ResponseResult::AgentTranscripts {
+                store_dir: store_dir.display().to_string(),
+                enabled: schedule.enabled,
+                sessions: summary.sessions,
+                native_missing: summary.native_missing,
+                transcript_bytes: summary.transcript_bytes,
+                disk_bytes: summary.disk_bytes,
+                last_pass: schedule.last_pass.map(|pass| AgentTranscriptBackupPass {
+                    finished_unix: pass
+                        .finished
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|age| age.as_secs())
+                        .unwrap_or(0),
+                    duration_ms: millis(pass.duration),
+                    updated: pass.summary.updated as u64,
+                    unchanged: pass.summary.unchanged as u64,
+                    skipped: pass.summary.skipped as u64,
+                    failed: pass.summary.failed as u64,
+                }),
+                next_pass_in_ms: schedule.next_pass_in.map(millis),
+            },
+        )
     }
 
     pub(super) fn handle_agent_read(

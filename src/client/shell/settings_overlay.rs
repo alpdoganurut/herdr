@@ -197,13 +197,20 @@ pub(super) fn render_settings_overlay(
         ClientSettingsSection::Integrations => {
             render_integrations(buffer, content, settings, palette);
         }
+        ClientSettingsSection::Backups => {
+            render_backups(buffer, content, settings, palette);
+        }
     }
 
     let installable = settings
         .integrations
         .iter()
         .any(super::super::settings::integration_needs_install);
-    let show_primary = settings.section != ClientSettingsSection::Integrations || installable;
+    let show_primary = match settings.section {
+        ClientSettingsSection::Integrations => installable,
+        ClientSettingsSection::Backups => false,
+        _ => true,
+    };
     let labels = if show_primary { vec![10, 12] } else { vec![12] };
     let buttons = row(inner, &labels, 2, inner.height.saturating_sub(1));
     let (primary, close) = if show_primary {
@@ -292,6 +299,167 @@ fn render_choice_section(
         let rect = Rect::new(area.x, y, area.width, 1);
         draw_choice(buffer, rect, choice, index == selected, false, palette);
         hits.push((rect, index));
+    }
+}
+
+/// The transcript backup store: one label/value row per fact.
+fn render_backups(
+    buffer: &mut Buffer,
+    area: Rect,
+    settings: &ClientSettingsOverlay,
+    palette: &Palette,
+) {
+    put_text(
+        buffer,
+        area.x,
+        area.y,
+        area.width,
+        "transcript backups",
+        Style::default()
+            .fg(palette.text)
+            .bg(palette.panel_bg)
+            .add_modifier(Modifier::BOLD),
+    );
+    put_text(
+        buffer,
+        area.x,
+        area.y + 1,
+        area.width,
+        "copies of the native conversation transcripts behind open and suspended agents",
+        Style::default().fg(palette.overlay1).bg(palette.panel_bg),
+    );
+    let dim = Style::default().fg(palette.overlay1).bg(palette.panel_bg);
+    let Some(store) = settings.transcripts.as_ref() else {
+        let message = if settings.loading_transcripts {
+            " loading backup status…"
+        } else {
+            " backup status unavailable"
+        };
+        put_text(buffer, area.x, area.y + 3, area.width, message, dim);
+        return;
+    };
+
+    let schedule = if !store.enabled {
+        "off (session.backup_agent_transcripts)".to_string()
+    } else if let Some(next) = store.next_pass_in_ms {
+        format!("on · next pass in {}", format_duration_ms(next))
+    } else {
+        "on".to_string()
+    };
+    let sessions = match store.native_missing {
+        0 => store.sessions.to_string(),
+        1 => format!("{} (1 whose native transcript is gone)", store.sessions),
+        missing => format!(
+            "{} ({missing} whose native transcripts are gone)",
+            store.sessions
+        ),
+    };
+    let size = format!(
+        "{} on disk · {} of transcripts",
+        format_bytes(store.disk_bytes),
+        format_bytes(store.transcript_bytes)
+    );
+    let (last_pass, last_pass_counts) = match store.last_pass.as_ref() {
+        Some(pass) => (
+            format!(
+                "{} · took {}",
+                format_age(pass.finished_unix),
+                format_duration_ms(pass.duration_ms)
+            ),
+            format!(
+                "{} copied, {} unchanged, {} skipped, {} failed",
+                pass.updated, pass.unchanged, pass.skipped, pass.failed
+            ),
+        ),
+        None => ("none since the server started".to_string(), String::new()),
+    };
+    let rows = [
+        ("backups", schedule),
+        ("sessions", sessions),
+        ("size", size),
+        ("last pass", last_pass),
+        ("", last_pass_counts),
+        ("store", store.store_dir.clone()),
+    ];
+    const LABEL_WIDTH: u16 = 12;
+    let value_width = area.width.saturating_sub(LABEL_WIDTH);
+    for (index, (label, value)) in rows.iter().enumerate() {
+        let y = area.y + 3 + index as u16;
+        if y >= area.bottom() {
+            break;
+        }
+        put_text(
+            buffer,
+            area.x,
+            y,
+            LABEL_WIDTH.min(area.width),
+            &format!(" {label}"),
+            Style::default().fg(palette.subtext0).bg(palette.panel_bg),
+        );
+        let value = if *label == "store" {
+            fit_tail(value, value_width as usize)
+        } else {
+            value.clone()
+        };
+        put_text(
+            buffer,
+            area.x + LABEL_WIDTH,
+            y,
+            value_width,
+            &value,
+            Style::default().fg(palette.text).bg(palette.panel_bg),
+        );
+    }
+}
+
+/// Keep the end of a path when it does not fit, since the tail is the part
+/// that tells the store apart.
+fn fit_tail(text: &str, width: usize) -> String {
+    let length = text.chars().count();
+    if width == 0 || length <= width {
+        return text.to_string();
+    }
+    let keep = width.saturating_sub(1);
+    let tail: String = text.chars().skip(length - keep).collect();
+    format!("…{tail}")
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn format_duration_ms(ms: u64) -> String {
+    match ms {
+        0..=999 => format!("{ms} ms"),
+        1_000..=59_999 => format!("{}s", ms / 1_000),
+        60_000..=3_599_999 => format!("{}m {}s", ms / 60_000, (ms % 60_000) / 1_000),
+        _ => format!("{}h {}m", ms / 3_600_000, (ms % 3_600_000) / 60_000),
+    }
+}
+
+/// How long ago a Unix timestamp was, by this client's clock.
+fn format_age(finished_unix: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|age| age.as_secs())
+        .unwrap_or(0);
+    let seconds = now.saturating_sub(finished_unix);
+    match seconds {
+        0..=4 => "just now".to_string(),
+        5..=59 => format!("{seconds}s ago"),
+        60..=3_599 => format!("{}m ago", seconds / 60),
+        _ => format!("{}h {}m ago", seconds / 3_600, (seconds % 3_600) / 60),
     }
 }
 
@@ -411,5 +579,33 @@ fn render_integrations(
             " installing…",
             Style::default().fg(palette.overlay1).bg(palette.panel_bg),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fit_tail, format_bytes, format_duration_ms};
+
+    #[test]
+    fn backup_size_and_duration_formats() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(532_984_110), "508.3 MB");
+        assert_eq!(format_bytes(3_221_225_472), "3.0 GB");
+        assert_eq!(format_duration_ms(145), "145 ms");
+        assert_eq!(format_duration_ms(12_000), "12s");
+        assert_eq!(format_duration_ms(150_000), "2m 30s");
+        assert_eq!(format_duration_ms(3_660_000), "1h 1m");
+    }
+
+    #[test]
+    fn store_path_keeps_its_tail_when_narrow() {
+        assert_eq!(fit_tail("/a/b/c", 10), "/a/b/c");
+        assert_eq!(
+            fit_tail("/home/me/.config/herdr/agent-transcripts", 12),
+            "…transcripts"
+        );
+        assert_eq!(fit_tail("/a/b/c", 0), "/a/b/c");
     }
 }

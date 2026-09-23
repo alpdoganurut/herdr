@@ -377,6 +377,58 @@ pub fn list_backups(store_dir: &Path) -> io::Result<Vec<TranscriptBackupEntry>> 
     Ok(entries)
 }
 
+/// Totals for the whole store.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StoreSummary {
+    /// Sessions with a backed-up transcript.
+    pub sessions: u64,
+    /// Of those, how many no longer have their native transcript.
+    pub native_missing: u64,
+    /// Transcript bytes as recorded in each session's metadata.
+    pub transcript_bytes: u64,
+    /// Everything on disk below the store: transcripts, previous copies,
+    /// side data and metadata.
+    pub disk_bytes: u64,
+}
+
+/// Count the store's sessions and bytes. A missing store is empty.
+pub fn summarize_store(store_dir: &Path) -> io::Result<StoreSummary> {
+    let entries = list_backups(store_dir)?;
+    let mut summary = StoreSummary {
+        sessions: entries.len() as u64,
+        ..StoreSummary::default()
+    };
+    for entry in &entries {
+        summary.transcript_bytes = summary.transcript_bytes.saturating_add(entry.bytes);
+        if !entry.native_present {
+            summary.native_missing += 1;
+        }
+    }
+    summary.disk_bytes = disk_bytes(store_dir, 0);
+    Ok(summary)
+}
+
+fn disk_bytes(dir: &Path, depth: usize) -> u64 {
+    if depth > MAX_STORE_DEPTH {
+        return 0;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for entry in entries.filter_map(Result::ok) {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            total = total.saturating_add(disk_bytes(&entry.path(), depth + 1));
+        } else if file_type.is_file() {
+            total = total.saturating_add(entry.metadata().map(|meta| meta.len()).unwrap_or(0));
+        }
+    }
+    total
+}
+
 /// Remove temporary files an interrupted copy left below `store_dir`.
 /// Only regular files named like [`temp_path_for`] produces
 /// (`.<name>.tmp-<pid>-<n>`) are removed, and only under the store.
@@ -1153,6 +1205,40 @@ mod tests {
         assert_eq!(entries[1].original_path, present.file);
         assert_eq!(entries[1].bytes, "{\"type\":\"user\"}\n".len() as u64);
         assert!(!entries[1].backed_up_at.is_empty());
+    }
+
+    #[test]
+    fn store_summary_counts_sessions_and_bytes() {
+        let home = TempDir::new("home");
+        let store = TempDir::new("store");
+        assert_eq!(
+            summarize_store(&store.path().join("missing")).unwrap(),
+            StoreSummary::default()
+        );
+
+        let present = native_fixture(home.path(), "session-b");
+        let gone = native_fixture(home.path(), "session-a");
+        for native in [&present, &gone] {
+            let id = native
+                .file
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let session = claude_session(&id, Some(native.file.clone()));
+            backup_session_from(store.path(), &request(session), Some(native)).unwrap();
+        }
+        fs::remove_file(&gone.file).unwrap();
+
+        let summary = summarize_store(store.path()).unwrap();
+        let transcript_len = "{\"type\":\"user\"}\n".len() as u64;
+        assert_eq!(summary.sessions, 2);
+        assert_eq!(summary.native_missing, 1);
+        assert_eq!(summary.transcript_bytes, 2 * transcript_len);
+        // Metadata and side data count towards disk usage, transcripts alone
+        // do not.
+        assert!(summary.disk_bytes > summary.transcript_bytes);
+        assert_eq!(summary.disk_bytes, disk_bytes(store.path(), 0));
     }
 
     #[cfg(unix)]
