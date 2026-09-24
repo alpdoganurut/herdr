@@ -806,6 +806,10 @@ fn restore_tab(
         Some((
             crate::workspace::Tab {
                 custom_name: snap.custom_name.clone(),
+                // A color this build does not know restores as no color.
+                color: snap
+                    .color
+                    .filter(|color| *color != crate::api::schema::TabColor::Unknown),
                 number,
                 root_pane,
                 layout,
@@ -1354,6 +1358,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tab_colors_round_trip_through_session_json_and_restore() {
+        let cwd = std::env::current_dir().unwrap();
+        let tab = |color: Option<&str>| {
+            let mut tab = serde_json::json!({
+                "custom_name": null,
+                "layout": {"Pane": 0},
+                "panes": {"0": {"cwd": cwd}},
+                "zoomed": false,
+                "focused": 0,
+                "root_pane": 0,
+            });
+            if let Some(color) = color {
+                tab["color"] = color.into();
+            }
+            tab
+        };
+        // An old session file has no color key; a newer build may have
+        // written a color this build does not know.
+        let json = serde_json::json!({
+            "version": super::super::snapshot::SNAPSHOT_VERSION,
+            "workspaces": [{
+                "id": "workspace",
+                "identity_cwd": cwd,
+                "tabs": [tab(Some("cyan")), tab(None), tab(Some("chartreuse"))],
+            }],
+            "active": 0,
+            "selected": 0,
+        });
+        let snapshot: SessionSnapshot = serde_json::from_value(json).unwrap();
+        let tabs = &snapshot.workspaces[0].tabs;
+        assert_eq!(tabs[0].color, Some(crate::api::schema::TabColor::Cyan));
+        assert_eq!(tabs[1].color, None);
+        assert_eq!(tabs[2].color, Some(crate::api::schema::TabColor::Unknown));
+        let written = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(written["workspaces"][0]["tabs"][0]["color"], "cyan");
+        assert!(written["workspaces"][0]["tabs"][1].get("color").is_none());
+
+        let (events, _event_rx) = mpsc::channel(4);
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+
+        let colors: Vec<_> = workspaces[0].tabs.iter().map(|tab| tab.color).collect();
+        assert_eq!(
+            colors,
+            [Some(crate::api::schema::TabColor::Cyan), None, None]
+        );
+        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let captured: Vec<_> = captured.workspaces[0]
+            .tabs
+            .iter()
+            .map(|tab| tab.color)
+            .collect();
+        assert_eq!(
+            captured,
+            [Some(crate::api::schema::TabColor::Cyan), None, None]
+        );
+    }
+
+    #[tokio::test]
     async fn restore_keeps_suspended_panes_parked_without_a_resume_plan() {
         let cwd = std::env::current_dir().unwrap();
         let session = super::super::snapshot::PaneAgentSessionSnapshot {
@@ -1376,6 +1451,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     custom_name: None,
+                    color: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -1559,6 +1635,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     custom_name: None,
+                    color: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -1641,6 +1718,7 @@ mod tests {
                 next_public_tab_number: 6,
                 tabs: vec![TabSnapshot {
                     custom_name: None,
+                    color: None,
                     layout: LayoutSnapshot::Split {
                         direction: super::super::snapshot::DirectionSnapshot::Horizontal,
                         ratio: 0.5,
@@ -1756,6 +1834,7 @@ mod tests {
                 tabs: vec![
                     TabSnapshot {
                         custom_name: None,
+                        color: None,
                         layout: LayoutSnapshot::Pane(10),
                         panes: HashMap::from([pane_snap("10")]),
                         zoomed: false,
@@ -1764,6 +1843,7 @@ mod tests {
                     },
                     TabSnapshot {
                         custom_name: None,
+                        color: None,
                         layout: LayoutSnapshot::Pane(11),
                         panes: HashMap::from([pane_snap("11")]),
                         zoomed: false,
@@ -1772,6 +1852,7 @@ mod tests {
                     },
                     TabSnapshot {
                         custom_name: None,
+                        color: None,
                         layout: LayoutSnapshot::Pane(12),
                         panes: HashMap::from([pane_snap("12")]),
                         zoomed: false,
@@ -1780,6 +1861,7 @@ mod tests {
                     },
                     TabSnapshot {
                         custom_name: None,
+                        color: None,
                         layout: LayoutSnapshot::Pane(13),
                         panes: HashMap::from([(13, final_pane)]),
                         zoomed: false,
@@ -1838,6 +1920,7 @@ mod tests {
             next_public_tab_number: 0,
             tabs: vec![TabSnapshot {
                 custom_name: None,
+                color: None,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
                     ratio: 0.5,
@@ -1877,6 +1960,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     custom_name: None,
+                    color: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -2332,6 +2416,7 @@ mod tests {
                 next_public_tab_number: 0,
                 tabs: vec![TabSnapshot {
                     custom_name: None,
+                    color: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes,
                     zoomed: false,

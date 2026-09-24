@@ -293,6 +293,18 @@ fn tab_command() -> Command {
                 .arg(required("tab_id", "TAB_ID"))
                 .arg(required("label", "LABEL").num_args(1..)),
         )
+        .subcommand(
+            Command::new("color")
+                .about("Set or clear a tab's color tag")
+                .override_usage("herdr tab color <TAB_ID> <COLOR>")
+                .arg(required("tab_id", "TAB_ID"))
+                .arg(required("color", "COLOR").value_parser([
+                    "red", "orange", "yellow", "green", "cyan", "blue", "purple", "none",
+                ]))
+                .after_help(
+                    "Tags the tab with a named theme color (tab.set_color); `none` clears it. The color is stored with the tab, persists across server restarts and follows the tab when it moves to another space. The `tabs` sidebar layout draws the tab's name in the color.",
+                ),
+        )
         .subcommand(id_command("close", "tab_id", "Close a tab"))
 }
 
@@ -1366,6 +1378,28 @@ mod tests {
         }
         let agent_wait = command_path(&cmd, &["agent", "wait"]);
         assert!(option_values(agent_wait, "until").contains(&"suspended".to_string()));
+    }
+
+    #[test]
+    fn spec_models_tab_color_values() {
+        let cmd = super::command();
+        let color = command_path(&cmd, &["tab", "color"]);
+        let values: Vec<String> = color
+            .get_arguments()
+            .find(|arg| arg.get_id() == "color")
+            .expect("tab color takes a COLOR argument")
+            .get_value_parser()
+            .possible_values()
+            .into_iter()
+            .flatten()
+            .map(|value| value.get_name().to_string())
+            .collect();
+        let mut expected: Vec<String> = crate::api::schema::TabColor::ALL
+            .iter()
+            .map(|color| color.name().to_string())
+            .collect();
+        expected.push("none".into());
+        assert_eq!(values, expected);
     }
 
     #[test]

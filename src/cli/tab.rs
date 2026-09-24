@@ -14,6 +14,7 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         "get" => tab_get(&args[1..]),
         "focus" => tab_focus(&args[1..]),
         "rename" => tab_rename(&args[1..]),
+        "color" => tab_color(&args[1..]),
         "close" => tab_close(&args[1..]),
         "help" | "--help" | "-h" => {
             print_tab_help();
@@ -161,6 +162,32 @@ fn tab_rename(args: &[String]) -> std::io::Result<i32> {
     })
 }
 
+fn tab_color(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str =
+        "usage: herdr tab color <tab_id> <red|orange|yellow|green|cyan|blue|purple|none>";
+    let [raw_tab_id, raw_color] = args else {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    let color = if raw_color.eq_ignore_ascii_case("none") {
+        None
+    } else if let Some(color) = crate::api::schema::TabColor::from_name(raw_color) {
+        Some(color)
+    } else {
+        eprintln!("unknown tab color: {raw_color}");
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+
+    super::print_response(&super::send_request(&crate::api::schema::Request {
+        id: "cli:tab:color".into(),
+        method: crate::api::schema::Method::TabSetColor(crate::api::schema::TabSetColorParams {
+            tab_id: super::normalize_tab_id(raw_tab_id),
+            color,
+        }),
+    })?)
+}
+
 fn tab_close(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_tab_id) = args.first() else {
         eprintln!("usage: herdr tab close <tab_id>");
@@ -183,5 +210,6 @@ fn print_tab_help() {
     eprintln!("  herdr tab get <tab_id>");
     eprintln!("  herdr tab focus <tab_id>");
     eprintln!("  herdr tab rename <tab_id> <label>");
+    eprintln!("  herdr tab color <tab_id> <red|orange|yellow|green|cyan|blue|purple|none>");
     eprintln!("  herdr tab close <tab_id>");
 }

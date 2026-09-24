@@ -598,6 +598,10 @@ pub(super) enum ClientContextMenuAction {
     Ungroup,
     CloseGroup,
     RestartAgent,
+    /// Tab menu: open the color picker.
+    Color,
+    /// Color picker: set (or clear with `None`) the tab's color.
+    SetTabColor(Option<crate::api::schema::TabColor>),
 }
 
 /// The agent pane a tab context menu acts on.
@@ -630,6 +634,11 @@ pub(super) enum ClientContextMenuTarget {
         source_pane_id: Option<String>,
         has_manual_label: bool,
         right_click_passthrough: bool,
+    },
+    /// The tab color picker, opened from the tab menu's "Color" item.
+    TabColor {
+        tab_id: String,
+        current: Option<crate::api::schema::TabColor>,
     },
 }
 

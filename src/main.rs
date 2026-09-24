@@ -177,6 +177,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # move_tab_to_group = ""            # unbound; "tabs" layout: move the focused tab to a group by name
 # toggle_groups_folded = ""         # unbound; "tabs" layout: fold all groups, or expand all once folded
 # restart_agent = ""                # unbound; exits the focused idle agent and relaunches it in place
+# cycle_tab_color = ""              # unbound; cycles the focused tab's color: none, red, ... purple, none
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"

@@ -623,6 +623,10 @@ impl ClientShellState {
         }
 
         if matches!(self.overlay, Some(ClientShellOverlay::ContextMenu(_))) {
+            if self.route_tab_color_picker_key(key.code) {
+                outcome.repaint = true;
+                return;
+            }
             match key.code {
                 KeyCode::Esc => {
                     self.overlay = None;

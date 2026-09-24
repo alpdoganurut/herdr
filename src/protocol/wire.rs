@@ -1059,6 +1059,11 @@ pub struct ClientShellTab {
     pub focused: bool,
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
     pub agent_status: crate::api::schema::AgentStatus,
+    /// The tab's color tag; an unknown name decodes as `TabColor::Unknown`,
+    /// an absent key as `None`. Not skipped when `None`: the private bincode
+    /// codec of `ClientShellSnapshot` needs every field present.
+    #[serde(default)]
+    pub color: Option<crate::api::schema::TabColor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2729,6 +2734,7 @@ mod tests {
                 zoomed: false,
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
+                color: None,
             }],
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),
