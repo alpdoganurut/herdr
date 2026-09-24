@@ -44,14 +44,18 @@ pub(super) enum AgentSuspendError {
     Target(TerminalTargetError),
     NotRunning(String),
     Blocked(String),
+    /// Mid-turn: the exit input would interrupt the agent's work.
+    Working(String),
     AlreadySuspended(String),
-    NotSuspendable { target: String, reason: String },
+    NotSuspendable {
+        target: String,
+        reason: String,
+    },
     InputFailed(String),
 }
 
 pub(super) enum AgentRestartError {
     Target(TerminalTargetError),
-    Working(String),
     Blocked(String),
     Suspended(String),
     Suspend(AgentSuspendError),
@@ -148,6 +152,10 @@ impl App {
         // approval or question UI would swallow it, like `agent.prompt`.
         if terminal.state == crate::detect::AgentState::Blocked {
             return Err(AgentSuspendError::Blocked(target.to_string()));
+        }
+        // A working agent would lose its turn; wait for it to go idle.
+        if terminal.state == crate::detect::AgentState::Working {
+            return Err(AgentSuspendError::Working(target.to_string()));
         }
         let Some(expected_agent) = terminal.effective_known_agent() else {
             return Err(AgentSuspendError::NotRunning(target.to_string()));
@@ -255,14 +263,10 @@ impl App {
         if terminal.suspended_agent.is_some() {
             return Err(AgentRestartError::Suspended(target.to_string()));
         }
-        match terminal.state {
-            crate::detect::AgentState::Blocked => {
-                return Err(AgentRestartError::Blocked(target.to_string()));
-            }
-            crate::detect::AgentState::Working => {
-                return Err(AgentRestartError::Working(target.to_string()));
-            }
-            _ => {}
+        // Blocked keeps its restart-specific wording; the working guard is
+        // the shared one in `suspend_resolved_agent`.
+        if terminal.state == crate::detect::AgentState::Blocked {
+            return Err(AgentRestartError::Blocked(target.to_string()));
         }
         let pane_id = self
             .suspend_resolved_agent(target, &resolved)
@@ -686,6 +690,10 @@ impl App {
                     "agent {target} is blocked on a prompt; answer it before suspending"
                 ),
             },
+            AgentSuspendError::Working(target) => crate::api::schema::ErrorBody {
+                code: "agent_working".into(),
+                message: format!("agent {target} is working; wait for idle or blocked-free state"),
+            },
             AgentSuspendError::AlreadySuspended(target) => crate::api::schema::ErrorBody {
                 code: "agent_already_suspended".into(),
                 message: format!("agent {target} is already suspended"),
@@ -707,10 +715,6 @@ impl App {
     ) -> crate::api::schema::ErrorBody {
         match err {
             AgentRestartError::Target(err) => self.agent_target_error_body(err),
-            AgentRestartError::Working(target) => crate::api::schema::ErrorBody {
-                code: "agent_working".into(),
-                message: format!("agent {target} is working; wait for idle or blocked-free state"),
-            },
             AgentRestartError::Blocked(target) => crate::api::schema::ErrorBody {
                 code: "agent_blocked".into(),
                 message: format!(
@@ -1140,11 +1144,6 @@ mod tests {
         );
         let terminal_id = root_terminal_id(&app);
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .unwrap()
-            .set_detected_state(Some(Agent::Claude), AgentState::Working);
         let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
         app.terminal_runtimes.insert(terminal_id.clone(), runtime);
         // Another tab is active so a completion here would normally notify.
@@ -1154,6 +1153,15 @@ mod tests {
             suspend(&mut app, "reviewer")["result"]["type"],
             "agent_suspended"
         );
+        // The exiting process is seen working (for example while it saves),
+        // so its exit is a working-to-idle transition that would normally
+        // count as a completion.
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Working);
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_some());
 
         observe_exit(&mut app);
 
@@ -1425,6 +1433,69 @@ mod tests {
         assert_ne!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
         assert_eq!(app.state.next_suspended_agent_resume_deadline(), None);
         assert!(!app.start_pending_agent_restarts(Instant::now()));
+    }
+
+    #[tokio::test]
+    async fn suspend_refuses_a_working_agent_without_writing() {
+        let mut app = test_app();
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Working);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+
+        let response = suspend(&mut app, "reviewer");
+        assert_eq!(response["error"]["code"], "agent_working", "{response}");
+        assert_eq!(
+            response["error"]["message"],
+            "agent reviewer is working; wait for idle or blocked-free state"
+        );
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
+        assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Working);
+        assert!(
+            tokio::time::timeout(
+                super::super::api::AGENT_PROMPT_SUBMIT_DELAY + Duration::from_millis(100),
+                rx.recv()
+            )
+            .await
+            .is_err(),
+            "a refused suspend wrote or scheduled terminal input"
+        );
+
+        // Blocked still wins over working in the check order.
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Blocked);
+        assert_eq!(
+            suspend(&mut app, "reviewer")["error"]["code"],
+            "agent_blocked"
+        );
+
+        // Once idle again the same agent suspends normally.
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert_eq!(
+            suspend(&mut app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        assert_eq!(
+            next_input(&mut rx).await,
+            bytes::Bytes::from_static(b"/exit")
+        );
     }
 
     #[tokio::test]
