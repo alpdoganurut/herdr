@@ -666,6 +666,115 @@ fn tab_rows_end_with_the_agent_glyph() {
     assert!(row_text(&frame, rect).trim_end().ends_with('C'));
 }
 
+/// The glyph cell (fg, bg) of each tab row, in row order.
+fn glyph_cells(state: &ClientShellState, frame: &FrameData) -> Vec<(String, u32, u32)> {
+    state
+        .hits
+        .sidebar_tabs
+        .iter()
+        .map(|(rect, _)| {
+            // " <icon> <label>...<glyph> ": the glyph sits one cell in from the right.
+            let x = rect.right() - 2;
+            let cell = &frame.cells[(rect.y * frame.width + x) as usize];
+            (cell.symbol.clone(), cell.fg, cell.bg)
+        })
+        .collect()
+}
+
+fn glyph_color_state(config: &Config, focused_tab: &str) -> (ClientShellState, FrameData) {
+    let mut snapshot = two_space_snapshot();
+    // tab_1 and tab_2 run claude, tab_3 is a plain shell.
+    snapshot.agents = vec![
+        agent("pane_1", "tab_1", AgentStatus::Working),
+        agent("pane_2", "tab_2", AgentStatus::Idle),
+    ];
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == focused_tab;
+    }
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("composed frame");
+    (state, frame)
+}
+
+#[test]
+fn focused_tab_glyph_wears_the_agent_brand_color() {
+    use crate::protocol::color_to_u32;
+    use ratatui::style::Color;
+    let (state, frame) = glyph_color_state(&tabs_config(), "tab_1");
+    let palette = &state.config.palette;
+    let orange = color_to_u32(Color::Rgb(0xD9, 0x77, 0x57));
+    let cells = glyph_cells(&state, &frame);
+    assert_eq!(cells[0].0, "\u{29C6}", "{cells:?}");
+    assert_eq!(cells[0].1, orange, "focused claude glyph is orange");
+    assert_eq!(
+        cells[0].2,
+        color_to_u32(palette.active_row_bg),
+        "keeps the selected row background"
+    );
+    assert_eq!(cells[1].0, "\u{29C6}", "{cells:?}");
+    assert_ne!(
+        cells[1].1, orange,
+        "unfocused claude glyph stays monochrome"
+    );
+    assert_eq!(cells[1].1, color_to_u32(palette.overlay0));
+
+    // A focused shell tab keeps the monochrome glyph.
+    let (state, frame) = glyph_color_state(&tabs_config(), "tab_3");
+    let cells = glyph_cells(&state, &frame);
+    assert_eq!(cells[2].0, "\u{29C5}", "{cells:?}");
+    assert_eq!(cells[2].1, color_to_u32(state.config.palette.overlay0));
+    assert_eq!(cells[2].2, color_to_u32(state.config.palette.active_row_bg));
+    assert_eq!(cells[0].1, color_to_u32(state.config.palette.overlay0));
+}
+
+#[test]
+fn tab_agent_glyph_color_overrides_win_and_invalid_values_stay_monochrome() {
+    use crate::protocol::color_to_u32;
+    use ratatui::style::Color;
+    let mut config = tabs_config();
+    config
+        .ui
+        .tab_agent_glyph_colors
+        .insert("claude".into(), "magenta".into());
+    let (state, frame) = glyph_color_state(&config, "tab_1");
+    assert_eq!(
+        glyph_cells(&state, &frame)[0].1,
+        color_to_u32(Color::Magenta)
+    );
+
+    let mut config = tabs_config();
+    config
+        .ui
+        .tab_agent_glyph_colors
+        .insert("claude".into(), "not-a-color".into());
+    let (state, frame) = glyph_color_state(&config, "tab_1");
+    assert_eq!(
+        glyph_cells(&state, &frame)[0].1,
+        color_to_u32(state.config.palette.overlay0),
+        "an invalid color keeps the glyph monochrome"
+    );
+    assert!(config
+        .collect_diagnostics()
+        .iter()
+        .any(|diagnostic| diagnostic.contains("ui.tab_agent_glyph_colors.claude")));
+
+    // A live reload reports the same diagnostic and applies the fallback.
+    let mut shell = ClientShellConfig::from_config(&tabs_config());
+    let diagnostics = shell.apply_live_config(&config, &[], &[]);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("ui.tab_agent_glyph_colors.claude")),
+        "{diagnostics:?}"
+    );
+    assert_eq!(
+        crate::config::tab_agent_glyph_color(&shell.tab_agent_glyph_colors, "claude"),
+        None
+    );
+}
+
 #[test]
 fn suspended_pane_mouse_press_starts_no_gesture_and_no_selection() {
     let mut state = suspended_state();

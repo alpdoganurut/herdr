@@ -240,7 +240,11 @@ pub(super) fn render_tab_sidebar(
                     .copied()
                     .unwrap_or("shell");
                 let glyph = crate::config::tab_agent_glyph(&config.tab_agent_glyphs, glyph_key);
-                render_tab_row(buffer, rect, tab, glyph, config);
+                // Only the focused row wears the agent's brand color.
+                let glyph_color = tab.focused.then(|| {
+                    crate::config::tab_agent_glyph_color(&config.tab_agent_glyph_colors, glyph_key)
+                });
+                render_tab_row(buffer, rect, tab, glyph, glyph_color.flatten(), config);
                 hits.sidebar_tabs.push((rect, tab.tab_id.clone()));
             }
         }
@@ -415,6 +419,7 @@ fn render_tab_row(
     rect: Rect,
     tab: &crate::protocol::ClientShellTab,
     glyph: &str,
+    glyph_color: Option<ratatui::style::Color>,
     config: &ClientShellConfig,
 ) {
     let palette = &config.palette;
@@ -452,7 +457,7 @@ fn render_tab_row(
         spans.push(Span::raw(" ".repeat(usize::from(pad) + 1)));
         spans.push(Span::styled(
             glyph.to_string(),
-            Style::default().fg(palette.overlay0),
+            Style::default().fg(glyph_color.unwrap_or(palette.overlay0)),
         ));
         spans.push(Span::raw(" "));
     }

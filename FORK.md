@@ -44,6 +44,7 @@ src/server/headless/tests/fork_smoke.rs
 | SessionConfig | backup_agent_transcripts | true |
 | UiConfig | sidebar_layout | crate::config::SidebarLayoutConfig::Spaces |
 | UiConfig | tab_agent_glyphs | std::collections::BTreeMap::new() |
+| UiConfig | tab_agent_glyph_colors | std::collections::BTreeMap::new() |
 | KeysConfig | toggle_agent_suspend | crate::config::BindingConfig::default() |
 | KeysConfig | move_tab_to_group | crate::config::BindingConfig::default() |
 | KeysConfig | toggle_groups_folded | crate::config::BindingConfig::default() |
@@ -55,6 +56,7 @@ src/server/headless/tests/fork_smoke.rs
 | Keybinds | toggle_groups_folded | crate::config::ActionKeybinds::default() |
 | ClientShellConfig | sidebar_layout | crate::config::SidebarLayoutConfig::Spaces |
 | ClientShellConfig | tab_agent_glyphs | std::collections::BTreeMap::new() |
+| ClientShellConfig | tab_agent_glyph_colors | std::collections::BTreeMap::new() |
 | ClientShellState | suspended_pane_ids | std::collections::HashSet::new() |
 | ShellHitMap | sidebar_tabs | Vec::new() |
 | ShellHitMap | sidebar_groups | Vec::new() |
@@ -107,9 +109,9 @@ tests/fixtures/endpoint-*-v1.json and src/protocol/** frozen tests: never edited
 Upstream adding "pane.move" to CLIENT_SHELL_METHODS, or adding any section 9 identifier = deny (collision).
 
 ## 6. Config keys (cross-checked by scripts/config_reference_check.py)
-ui.sidebar_layout, ui.tab_agent_glyphs, session.backup_agent_transcripts,
+ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors, session.backup_agent_transcripts,
 keys.toggle_agent_suspend, keys.move_tab_to_group, keys.toggle_groups_folded
-Placement in docs/next/website/src/data/config-reference.json: keys.* directly after keys.clear_pane, ui.* directly after ui.sidebar_collapsed_mode, session.backup_agent_transcripts last in the session group. The same keys appear as commented defaults in src/main.rs DEFAULT_CONFIG (after clear_pane, sidebar_collapsed_mode, startup_per_agent_delay_ms) and in docs/next/website/src/content/docs/configuration.mdx.
+Placement in docs/next/website/src/data/config-reference.json: keys.* directly after keys.clear_pane, ui.* directly after ui.sidebar_collapsed_mode (in the order ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors), session.backup_agent_transcripts last in the session group. The same keys appear as commented defaults in src/main.rs DEFAULT_CONFIG (after clear_pane, sidebar_collapsed_mode, startup_per_agent_delay_ms) and in docs/next/website/src/content/docs/configuration.mdx.
 After any merge touching config-reference.json: python3 -m json.tool on the file, then python3 scripts/config_reference_check.py.
 
 ## 7. Per-file merge rules
@@ -166,6 +168,7 @@ src/client/shell/surface_patch.rs  mid-logic: fast_path_blocker else-if for susp
 src/client/shell/composition.rs  mid-logic: compose paints the suspended card and occludes graphics
 src/client/shell/render.rs  mid-logic: render_shell else-if for the tabs layout
 src/client/shell/config.rs  mid-logic: layout (show_tab_bar), from_config, apply_live_config
+src/config.rs  mid-logic: Config::collect_diagnostics chains tab_agent_glyph_color_diagnostics
 src/client/shell/actions.rs  mid-logic: record_binding (topology lock, group keys), endpoint_method_for_action (SwitchTab/NextTab scope)
 src/client/shell/context_menu.rs  mid-logic: items, open_tab_context_menu, activate_context_menu_item
 src/client/shell/overlay_input.rs  mid-logic: save_rename_overlay, accept_close_confirmation (close_group now from the overlay)
@@ -229,6 +232,7 @@ client::shell::tests::settings_backups::fork_smoke::every_settings_section_fits_
 - Tab groups in the `tabs` sidebar layout: spaces after the first render as collapsible groups with header rows; fold per group (header click) or all at once (one toolbar toggle: ⏶ folds, ⏷ expands once everything is folded; `keys.toggle_groups_folded` is the keyboard form), move the focused tab to a group by name with `keys.move_tab_to_group` or the `+` button (a new name creates the group), reorder groups by dragging headers, drag tabs within or across groups, and rename / ungroup / close a group from its header menu.
 - The tab context menu offers "Suspend agent" / "Activate agent" for the tab's agent, and the new `keys.toggle_agent_suspend` binding (unset by default) suspends the focused pane's agent or activates it again.
 - In the `tabs` sidebar layout a suspended pane shows a card (status, agent, directory, the activate binding) instead of its shell, and swallows all pane input until the agent is activated. The layout also keeps one pane per tab: split, swap, zoom, resize and pane-focus actions are inert, and right-clicking the pane opens the tab menu. `switch_tab` (for example `alt+1..9`) indexes the whole list in this layout, and shell output in a suspended pane always goes through a full compose so the card is never overdrawn. Tab rows show a right-aligned agent glyph (`ui.tab_agent_glyphs`; default ⧆ claude, ⧇ codex, ⍾ other agents, ⧅ plain shell).
+- The focused row's agent glyph in the `tabs` sidebar layout wears the agent's brand color (`ui.tab_agent_glyph_colors`; default claude `#D97757`, codex `#3B82F6`; other agents and plain shells stay monochrome, as do unfocused rows). An invalid color keeps the glyph monochrome and reports a config diagnostic.
 - Herdr backs up the native conversation transcript behind every open or suspended Claude Code pane under the session directory (`agent-transcripts/<agent>/<session-id>/`) every five minutes, on suspend, and on shutdown, and puts the copy back before a native resume when Claude has deleted its own transcript, so `claude --resume` no longer fails with "No conversation found" after Claude's cleanup period. `session.backup_agent_transcripts = false` stops new backups; `herdr agent transcripts` lists the store, and the settings overlay's `backups` tab shows its size, session count, the last backup pass and the next scheduled one (`agent.transcripts` over the socket API). Herdr never deletes a backup.
 
 ## 12. Install rule
