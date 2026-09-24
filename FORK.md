@@ -159,7 +159,9 @@ docs/next/website/src/data/config-reference.json  additive: upstream entries fir
 docs/next/website/src/content/docs/configuration.mdx  additive: upstream first, fork after
 src/server/client_commands.rs  section-5
 src/api/schema/common.rs  deny: AgentStatus is append-closed
-src/protocol/wire.rs  deny: the fork's lines are one inside deserialize_client_shell_agent_status, ClientShellTab.color (serde default, deliberately not skip_serializing_if: the bincode round-trip needs every field) and `color: None` in the client_shell_snapshot_roundtrip literal (section 2)
+tests/api_ping.rs  deny: the fork's one line is the protocol literal in ping_over_socket_returns_version; it must equal PROTOCOL_VERSION in src/protocol/wire.rs after the sync
+tests/support/mod.rs  deny: the fork's one line is CURRENT_PROTOCOL; it must equal PROTOCOL_VERSION in src/protocol/wire.rs after the sync
+src/protocol/wire.rs  deny: PROTOCOL_VERSION is the fork's value (upstream + 1 for ClientShellTab.color; when upstream bumps, resolve to upstream's new value + 1 and keep the fork comment), the fork's other lines are one inside deserialize_client_shell_agent_status, ClientShellTab.color (serde default, deliberately not skip_serializing_if: the bincode round-trip needs every field) and `color: None` in the client_shell_snapshot_roundtrip literal (section 2)
 src/api/schema.rs  additive: fork Method variants stay directly after AgentStart
 src/api/schema/response.rs  additive: fork ResponseResult variants stay directly after AgentStarted
 src/api/schema/agents.rs  additive: fork params types stay after AgentStartParams
@@ -319,3 +321,4 @@ client::shell::tests::tab_sidebar::fork_smoke::colored_tab_label_reaches_the_ren
 Compare PROTOCOL_VERSION (src/protocol/wire.rs) and ENDPOINT_PROTOCOL_GENERATION (src/protocol/endpoint.rs)
 between ~/.local/state/herdr-fork-sync/installed-sha and the merge. Changed: stage as ~/.local/bin/herdr.next, never install.
 Unchanged: cp .new, codesign -s - -f, keep .prev, mv -f. Never restart the server.
+Any fork change that adds a field or enum variant to a bincode-encoded wire type (ServerMessage, ClientShellSnapshot and everything it contains) must bump PROTOCOL_VERSION, so a new client refuses an old server with "Stop the old server" instead of misdecoding.
