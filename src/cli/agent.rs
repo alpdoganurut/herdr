@@ -2,9 +2,9 @@ use std::time::{Duration, Instant};
 
 use crate::api::schema::{
     AgentActivateParams, AgentPromptParams, AgentPromptWaitOptions, AgentReadParams,
-    AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentSuspendParams, AgentTarget,
-    AgentWaitParams, EmptyParams, ErrorBody, ErrorResponse, Method, PaneProcessInfoParams,
-    PaneTarget, ReadFormat, ReadSource, Request,
+    AgentRenameParams, AgentRestartParams, AgentSendKeysParams, AgentStartParams,
+    AgentSuspendParams, AgentTarget, AgentWaitParams, EmptyParams, ErrorBody, ErrorResponse,
+    Method, PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -29,6 +29,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "start" => agent_start(&args[1..]),
         "suspend" => agent_suspend(&args[1..]),
         "activate" => agent_activate(&args[1..]),
+        "restart" => agent_restart(&args[1..]),
         "explain" => agent_explain(&args[1..]),
         "transcripts" => agent_transcripts(&args[1..]),
         "help" | "--help" | "-h" => {
@@ -589,6 +590,20 @@ fn agent_activate(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
+fn agent_restart(args: &[String]) -> std::io::Result<i32> {
+    let (Some(target), 1) = (args.first(), args.len()) else {
+        eprintln!("usage: herdr agent restart <target>");
+        return Ok(2);
+    };
+
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:restart".into(),
+        method: Method::AgentRestart(AgentRestartParams {
+            target: target.clone(),
+        }),
+    })?)
+}
+
 fn agent_attach(args: &[String]) -> std::io::Result<i32> {
     let (target, takeover) =
         match super::parse_attach_target(args, "usage: herdr agent attach <target> [--takeover]") {
@@ -1045,6 +1060,7 @@ fn print_agent_help() {
     );
     eprintln!("  herdr agent suspend <target>");
     eprintln!("  herdr agent activate <target>");
+    eprintln!("  herdr agent restart <target>");
     eprintln!("  herdr agent explain <target> [--json|--format text|json] [--verbose]");
     eprintln!(
         "  herdr agent explain --file PATH --agent LABEL [--json|--format text|json] [--verbose]"

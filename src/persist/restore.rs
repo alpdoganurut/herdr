@@ -1475,6 +1475,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_drops_a_pending_restart_and_keeps_the_pane_parked() {
+        let (snapshot, _) = snapshot_with_saved_pane_history();
+        let (events, _events_rx) = mpsc::channel(32);
+        let (workspaces, mut terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let session = crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").unwrap(),
+            transcript_path: None,
+        };
+        let now = std::time::Instant::now();
+        let terminal = terminals.values_mut().next().unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(crate::detect::Agent::Claude), AgentState::Idle);
+        terminal.begin_agent_suspend(session.clone(), now + std::time::Duration::from_secs(5));
+        assert!(terminal
+            .mark_suspended_agent_resume_pending(now, now + std::time::Duration::from_secs(30)));
+        assert!(terminal.suspended_agent_resume_deadline().is_some());
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+
+        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let json = serde_json::to_string(&captured).unwrap();
+        assert!(
+            !json.contains("resume_pending"),
+            "the pending relaunch is never persisted: {json}"
+        );
+        let saved: SessionSnapshot = serde_json::from_str(&json).unwrap();
+        drop(runtimes);
+
+        let (_, restored_terminals, _restored_runtimes) = restore(
+            &saved,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            true,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let terminal = restored_terminals.values().next().unwrap();
+        let record = terminal
+            .suspended_agent
+            .as_ref()
+            .expect("the restarted pane comes back parked");
+        assert_eq!(record.session, session);
+        assert!(
+            record.resume_pending().is_none(),
+            "a restart in flight must not relaunch after a server restart"
+        );
+        assert!(terminal.suspended_agent_resume_deadline().is_none());
+        assert!(terminal.pending_agent_resume_plan.is_none());
+    }
+
+    #[tokio::test]
     async fn restore_carries_persisted_agent_session_metadata() {
         let cwd = std::env::current_dir().unwrap();
         let snapshot = SessionSnapshot {

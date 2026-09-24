@@ -91,6 +91,43 @@ fn workspace_close_group_intent_defaults_false_and_round_trips() {
 }
 
 #[test]
+fn agent_restart_request_and_response_round_trip() {
+    let restart = Request {
+        id: "restart".into(),
+        method: Method::AgentRestart(AgentRestartParams {
+            target: "reviewer".into(),
+        }),
+    };
+    let restart_json = serde_json::to_value(&restart).unwrap();
+    assert_eq!(restart_json["method"], "agent.restart");
+    assert_eq!(restart_json["params"]["target"], "reviewer");
+    assert_eq!(
+        serde_json::from_value::<Request>(restart_json).unwrap(),
+        restart
+    );
+    let parsed: Request =
+        serde_json::from_str(r#"{"id":"r","method":"agent.restart","params":{"target":"w1:p2"}}"#)
+            .unwrap();
+    assert_eq!(
+        parsed.method,
+        Method::AgentRestart(AgentRestartParams {
+            target: "w1:p2".into(),
+        })
+    );
+
+    let restarted = ResponseResult::AgentRestarted {
+        pane_id: "w1:p2".into(),
+    };
+    let restarted_json = serde_json::to_value(&restarted).unwrap();
+    assert_eq!(restarted_json["type"], "agent_restarted");
+    assert_eq!(restarted_json["pane_id"], "w1:p2");
+    assert_eq!(
+        serde_json::from_value::<ResponseResult>(restarted_json).unwrap(),
+        restarted
+    );
+}
+
+#[test]
 fn agent_suspend_and_activate_requests_round_trip() {
     let suspend = Request {
         id: "suspend".into(),

@@ -1341,6 +1341,18 @@
           ],
           "type": "object"
         },
+        "AgentRestartParams": {
+          "description": "Exit an idle live agent gracefully and relaunch it in the same pane with\nits native resume command; `target` is a live agent name or the hosting\npane id.",
+          "properties": {
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
         "AgentSendKeysParams": {
           "properties": {
             "keys": {
@@ -5551,6 +5563,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentActivateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.restart",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentRestartParams"
             }
           },
           "required": [
@@ -9787,6 +9815,22 @@
                 },
                 "type": {
                   "const": "agent_activated",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "pane_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "agent_restarted",
                   "type": "string"
                 }
               },

@@ -351,6 +351,7 @@ pub struct Keybinds {
     pub toggle_agent_suspend: ActionKeybinds,
     pub move_tab_to_group: ActionKeybinds,
     pub toggle_groups_folded: ActionKeybinds,
+    pub restart_agent: ActionKeybinds,
     pub copy_mode: ActionKeybinds,
     pub focus_pane_left: ActionKeybinds,
     pub focus_pane_down: ActionKeybinds,
@@ -523,6 +524,7 @@ impl Config {
             toggle_agent_suspend: empty_action!(),
             move_tab_to_group: empty_action!(),
             toggle_groups_folded: empty_action!(),
+            restart_agent: empty_action!(),
             copy_mode: empty_action!(),
             focus_pane_left: empty_action!(),
             focus_pane_down: empty_action!(),
@@ -674,6 +676,7 @@ impl Config {
             apply_action!(keybinds.toggle_agent_suspend, toggle_agent_suspend, source);
             apply_action!(keybinds.move_tab_to_group, move_tab_to_group, source);
             apply_action!(keybinds.toggle_groups_folded, toggle_groups_folded, source);
+            apply_action!(keybinds.restart_agent, restart_agent, source);
             apply_action!(keybinds.copy_mode, copy_mode, source);
             apply_action!(keybinds.focus_pane_left, focus_pane_left, source);
             apply_action!(keybinds.focus_pane_down, focus_pane_down, source);

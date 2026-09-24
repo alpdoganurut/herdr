@@ -107,6 +107,9 @@ pub enum ResponseResult {
     AgentActivated {
         pane_id: String,
     },
+    AgentRestarted {
+        pane_id: String,
+    },
     AgentTranscripts {
         store_dir: String,
         /// Whether backup passes run (the config flag and session

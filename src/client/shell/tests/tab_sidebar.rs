@@ -393,6 +393,135 @@ fn toggle_agent_suspend_targets_the_focused_pane_by_its_status() {
         .unwrap_or(true));
 }
 
+fn tab_menu_items(state: &mut ClientShellState, row: usize) -> Vec<ClientContextMenuItem> {
+    state.overlay = None;
+    state.compose(106, 20).expect("composed frame");
+    let (rect, _) = state.hits.sidebar_tabs[row];
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: rect.x + 2,
+        row: rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu.items(),
+        _ => panic!("tab context menu"),
+    }
+}
+
+#[test]
+fn tab_menu_offers_restart_only_for_live_agents() {
+    let mut snapshot = two_space_snapshot();
+    snapshot.agents = vec![
+        agent("pane_1", "tab_1", AgentStatus::Idle),
+        agent("pane_2", "tab_2", AgentStatus::Suspended),
+    ];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+
+    let live = tab_menu_items(&mut state, 0);
+    let suspend_index = live
+        .iter()
+        .position(|item| item.action == ClientContextMenuAction::SuspendAgent)
+        .expect("suspend item");
+    let restart_index = live
+        .iter()
+        .position(|item| item.action == ClientContextMenuAction::RestartAgent)
+        .expect("restart item for a live agent");
+    assert_eq!(restart_index, suspend_index + 1, "next to Suspend agent");
+    assert_eq!(live[restart_index].label, "Restart agent");
+
+    state.compose(106, 20).expect("tab context menu");
+    let row = state.hits.context_menu_rows[restart_index].0;
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        row.x + 1,
+        row.y,
+    )]);
+    assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::AgentRestart(params) if params.target == "pane_1"
+    )));
+
+    let parked = tab_menu_items(&mut state, 1);
+    assert!(!parked
+        .iter()
+        .any(|item| item.action == ClientContextMenuAction::RestartAgent));
+    assert!(parked
+        .iter()
+        .any(|item| item.action == ClientContextMenuAction::ActivateAgent));
+
+    let plain = tab_menu_items(&mut state, 2);
+    assert!(!plain
+        .iter()
+        .any(|item| item.action == ClientContextMenuAction::RestartAgent));
+}
+
+#[test]
+fn restart_agent_binding_requests_a_restart_and_surfaces_a_refusal() {
+    use crate::input::{KeybindAction, KeybindMatch};
+    let mut snapshot = two_space_snapshot();
+    snapshot.agents = vec![agent("pane_1", "tab_1", AgentStatus::Working)];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot.clone()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        KeybindMatch::Action(KeybindAction::RestartAgent),
+        &mut outcome,
+    );
+    let request_id = outcome
+        .actions
+        .iter()
+        .find_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => match &request.method {
+                crate::api::schema::Method::AgentRestart(params) if params.target == "pane_1" => {
+                    Some(request.id.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("agent.restart request for the focused pane");
+
+    // The server's refusal takes the generic rejected-action path.
+    let (repaint, _) = state.handle_endpoint_result(
+        &snapshot.boot_id,
+        &request_id,
+        Err(ClientShellEndpointError {
+            code: Some("agent_working".into()),
+            message: "agent pane_1 is working; wait for idle or blocked-free state".into(),
+        }),
+    );
+    assert!(repaint);
+    let notice = state
+        .visible_endpoint_notice
+        .as_ref()
+        .expect("rejected restart notice");
+    assert_eq!(notice.key.kind, ClientEndpointNoticeKind::Rejected);
+    assert_eq!(notice.key.code, "agent.restart:agent_working");
+
+    // A suspended agent is activated, not restarted.
+    snapshot.agents[0].agent_status = AgentStatus::Suspended;
+    state.set_snapshot(Box::new(snapshot));
+    state.compose(106, 20).expect("composed frame");
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        KeybindMatch::Action(KeybindAction::RestartAgent),
+        &mut outcome,
+    );
+    assert!(endpoint_methods(&outcome).is_empty());
+
+    assert!(!Config::default().keys.restart_agent.has_values());
+    let bound: Config = toml::from_str("[keys]\nrestart_agent = \"alt+r\"").unwrap();
+    assert!(!bound
+        .live_keybinds_with_diagnostics()
+        .map(|(keybinds, _)| keybinds.keybinds.restart_agent.bindings.is_empty())
+        .unwrap_or(true));
+}
+
 fn frame_text(frame: &FrameData, rect: ratatui::layout::Rect) -> String {
     (rect.y..rect.bottom())
         .map(|y| {

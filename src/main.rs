@@ -176,6 +176,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # toggle_agent_suspend = ""        # unbound; suspends the focused agent, or activates it again
 # move_tab_to_group = ""            # unbound; "tabs" layout: move the focused tab to a group by name
 # toggle_groups_folded = ""         # unbound; "tabs" layout: fold all groups, or expand all once folded
+# restart_agent = ""                # unbound; exits the focused idle agent and relaunches it in place
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"

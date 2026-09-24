@@ -47,12 +47,15 @@ src/server/headless/tests/fork_smoke.rs
 | KeysConfig | toggle_agent_suspend | crate::config::BindingConfig::default() |
 | KeysConfig | move_tab_to_group | crate::config::BindingConfig::default() |
 | KeysConfig | toggle_groups_folded | crate::config::BindingConfig::default() |
+| KeysConfig | restart_agent | crate::config::BindingConfig::default() |
 | KeysConfigOverlay | toggle_agent_suspend | None |
 | KeysConfigOverlay | move_tab_to_group | None |
 | KeysConfigOverlay | toggle_groups_folded | None |
+| KeysConfigOverlay | restart_agent | None |
 | Keybinds | toggle_agent_suspend | crate::config::ActionKeybinds::default() |
 | Keybinds | move_tab_to_group | crate::config::ActionKeybinds::default() |
 | Keybinds | toggle_groups_folded | crate::config::ActionKeybinds::default() |
+| Keybinds | restart_agent | crate::config::ActionKeybinds::default() |
 | ClientShellConfig | sidebar_layout | crate::config::SidebarLayoutConfig::Spaces |
 | ClientShellConfig | tab_agent_glyphs | std::collections::BTreeMap::new() |
 | ClientShellState | suspended_pane_ids | std::collections::HashSet::new() |
@@ -79,18 +82,22 @@ Visibility widened by the fork (upstream renaming or narrowing one breaks fork c
 AgentStatus::Suspended   [src/api/schema/common.rs, last after Unknown; wire: JSON "suspended" in the socket API, events and the client shell snapshot, any non-human-readable serde codec encodes it as variant index 5; append-closed, deny on conflict]
 Method::AgentSuspend   [src/api/schema.rs, after AgentStart, not last; wire by serde name "agent.suspend", order irrelevant]
 Method::AgentActivate   [src/api/schema.rs, after AgentSuspend; wire "agent.activate"]
-Method::AgentTranscripts   [src/api/schema.rs, after AgentActivate; wire "agent.transcripts"]
+Method::AgentRestart   [src/api/schema.rs, after AgentActivate; wire "agent.restart"]
+Method::AgentTranscripts   [src/api/schema.rs, after AgentRestart; wire "agent.transcripts"]
 ResponseResult::AgentSuspended   [src/api/schema/response.rs, after AgentStarted, not last; wire by tag "agent_suspended"]
 ResponseResult::AgentActivated   [src/api/schema/response.rs; wire "agent_activated"]
+ResponseResult::AgentRestarted   [src/api/schema/response.rs, after AgentActivated; wire "agent_restarted"]
 ResponseResult::AgentTranscripts   [src/api/schema/response.rs; wire "agent_transcripts"]
 KeybindAction::ToggleAgentSuspend   [src/input/keybindings.rs, after ClearPane; internal]
 KeybindAction::MoveTabToGroup   [src/input/keybindings.rs; internal]
 KeybindAction::ToggleGroupsFolded   [src/input/keybindings.rs; internal]
+KeybindAction::RestartAgent   [src/input/keybindings.rs, after ToggleGroupsFolded; internal]
 ClientSettingsSection::Backups   [src/client/shell/state.rs, last; UI tab order, ALL keeps it last; internal]
-ClientContextMenuAction::SuspendAgent   [src/client/shell/state.rs, last four; internal]
+ClientContextMenuAction::SuspendAgent   [src/client/shell/state.rs, last five; internal]
 ClientContextMenuAction::ActivateAgent   [internal]
 ClientContextMenuAction::Ungroup   [internal]
 ClientContextMenuAction::CloseGroup   [internal]
+ClientContextMenuAction::RestartAgent   [src/client/shell/state.rs, last; internal]
 ClientContextMenuTarget::Group   [src/client/shell/state.rs, between Tab and Pane; internal]
 ClientChromeDrag::SidebarTab   [src/client/shell/state.rs, before PaneSplit; internal]
 ClientRenameTarget::MoveTabToGroup   [src/client/shell/state.rs, last; internal]
@@ -98,17 +105,18 @@ PendingEndpointKind::AgentTranscripts   [src/client/shell/state.rs, after Integr
 AgentRenameError::Suspended   [src/app/agents.rs, after PendingLaunch; internal, surfaces as error code agent_suspended]
 
 ## 5. Owned API methods and digests
-agent.suspend, agent.activate, agent.transcripts: fork-defined (Method variants, api_method_name arms, request_changes_ui for suspend/activate, CLI `herdr agent suspend|activate|transcripts`).
+agent.suspend, agent.activate, agent.restart, agent.transcripts: fork-defined (Method variants, api_method_name arms, request_changes_ui for suspend/activate/restart, CLI `herdr agent suspend|activate|restart|transcripts`).
+agent.restart digest: dc124dcfe9d7fc0fe3d9a85e00548a0263574d3de68ffd16370f2b6ba67ad062 (AgentRestartParams { target }).
 pane.move: upstream method, advertised to the client shell only by the fork (absent from base CLIENT_SHELL_METHODS).
 CLIENT_SHELL_METHODS (src/server/client_commands.rs): union, sorted; the test advertised_client_shell_methods_are_sorted_unique_and_in_schema enforces it.
-Digest asserts in advertised_client_shell_method_shapes_stay_at_the_v1_contract: the fork appends four `actual.remove(..)` asserts (agent.suspend, agent.activate, pane.move, agent.transcripts) after upstream's pane.link.resolve assert. Resolve an assert-block conflict as the union of `actual.remove` blocks, upstream first, no method name twice.
+Digest asserts in advertised_client_shell_method_shapes_stay_at_the_v1_contract: the fork appends five `actual.remove(..)` asserts (agent.suspend, agent.activate, pane.move, agent.transcripts, agent.restart) after upstream's pane.link.resolve assert. Resolve an assert-block conflict as the union of `actual.remove` blocks, upstream first, no method name twice.
 Any digest value change = deny (contract change, never a fixture fix). pane.move's digest covers upstream-owned PaneMoveParams/PaneMoveDestination: an upstream reshape fails it after a clean merge, and that is a deny.
 tests/fixtures/endpoint-*-v1.json and src/protocol/** frozen tests: never edited (the fork has no diff under tests/).
 Upstream adding "pane.move" to CLIENT_SHELL_METHODS, or adding any section 9 identifier = deny (collision).
 
 ## 6. Config keys (cross-checked by scripts/config_reference_check.py)
 ui.sidebar_layout, ui.tab_agent_glyphs, session.backup_agent_transcripts,
-keys.toggle_agent_suspend, keys.move_tab_to_group, keys.toggle_groups_folded
+keys.toggle_agent_suspend, keys.move_tab_to_group, keys.toggle_groups_folded, keys.restart_agent
 Placement in docs/next/website/src/data/config-reference.json: keys.* directly after keys.clear_pane, ui.* directly after ui.sidebar_collapsed_mode, session.backup_agent_transcripts last in the session group. The same keys appear as commented defaults in src/main.rs DEFAULT_CONFIG (after clear_pane, sidebar_collapsed_mode, startup_per_agent_delay_ms) and in docs/next/website/src/content/docs/configuration.mdx.
 After any merge touching config-reference.json: python3 -m json.tool on the file, then python3 scripts/config_reference_check.py.
 
@@ -151,11 +159,11 @@ src/app/session.rs  mid-logic: save_session_on_shutdown (early return became if/
 src/app/agents.rs  mid-logic: rename refuses suspended; live_runtime_agent split into live_runtime_agent_job
 src/app/agent_view.rs  mid-logic: apply_agent_view, validate_field_value, status_name
 src/app/agent_resume.rs  mid-logic: start_pending_agent_resume restores the transcript backup before the resume command
-src/app/runtime.rs  mid-logic: next_headless_loop_deadline_with_git_refresh gains two deadlines
+src/app/runtime.rs  mid-logic: next_headless_loop_deadline_with_git_refresh gains three deadlines (suspend exit, restart resume, transcript backup)
 src/workspace/aggregate.rs  mid-logic: pane_details, aggregate_state, agent_status, agent_status_priority
 src/persist/snapshot.rs  mid-logic: capture_tab agent_session block rewritten to persistable_agent_session
 src/persist/restore.rs  mid-logic: restore_tab (resume disabled for suspended panes, handoff exit wait), unavailable_restored_terminal, pane_restore_startup, persisted_agent_session_from_snapshot
-src/server/headless.rs  mid-logic: handle_scheduled_tasks_headless (backup pass, suspend escalation)
+src/server/headless.rs  mid-logic: handle_scheduled_tasks_headless (backup pass, suspend escalation, start_pending_agent_restarts)
 src/server/headless/lifecycle.rs  mid-logic: perform_live_handoff sets suspended_exit_pending
 src/pane.rs  mid-logic: handoff_runtime_state, from_handoff_fd
 src/protocol/wire.rs  mid-logic: deserialize_client_shell_agent_status
@@ -207,6 +215,12 @@ toggle_groups_folded
 ToggleAgentSuspend
 MoveTabToGroup
 ToggleGroupsFolded
+agent.restart
+AgentRestart
+RestartAgent
+restart_agent
+resume_pending
+"agent_working"
 agent_status_priority
 terminal_agent_status
 PaneAttention
@@ -229,6 +243,7 @@ client::shell::tests::settings_backups::fork_smoke::every_settings_section_fits_
 - Tab groups in the `tabs` sidebar layout: spaces after the first render as collapsible groups with header rows; fold per group (header click) or all at once (one toolbar toggle: ⏶ folds, ⏷ expands once everything is folded; `keys.toggle_groups_folded` is the keyboard form), move the focused tab to a group by name with `keys.move_tab_to_group` or the `+` button (a new name creates the group), reorder groups by dragging headers, drag tabs within or across groups, and rename / ungroup / close a group from its header menu.
 - The tab context menu offers "Suspend agent" / "Activate agent" for the tab's agent, and the new `keys.toggle_agent_suspend` binding (unset by default) suspends the focused pane's agent or activates it again.
 - In the `tabs` sidebar layout a suspended pane shows a card (status, agent, directory, the activate binding) instead of its shell, and swallows all pane input until the agent is activated. The layout also keeps one pane per tab: split, swap, zoom, resize and pane-focus actions are inert, and right-clicking the pane opens the tab menu. `switch_tab` (for example `alt+1..9`) indexes the whole list in this layout, and shell output in a suspended pane always goes through a full compose so the card is never overdrawn. Tab rows show a right-aligned agent glyph (`ui.tab_agent_glyphs`; default ⧆ claude, ⧇ codex, ⍾ other agents, ⧅ plain shell).
+- Restart an idle agent in place with `herdr agent restart <target>` (`agent.restart`), the tab menu's "Restart agent" item, or the new `keys.restart_agent` binding (unset by default): Herdr suspends it (graceful exit, `suspended` in between) and relaunches it in the same pane with the native resume command as soon as the exit is observed and the shell prompt is back, without a second request. Working agents are refused with `agent_working`, blocked ones with `agent_blocked`, suspended ones with `agent_suspended`; a restart whose exit needed `SIGKILL` or whose shell prompt does not return within 30 seconds leaves the pane suspended with a warning, and a restart in flight never survives a server restart.
 - Herdr backs up the native conversation transcript behind every open or suspended Claude Code pane under the session directory (`agent-transcripts/<agent>/<session-id>/`) every five minutes, on suspend, and on shutdown, and puts the copy back before a native resume when Claude has deleted its own transcript, so `claude --resume` no longer fails with "No conversation found" after Claude's cleanup period. `session.backup_agent_transcripts = false` stops new backups; `herdr agent transcripts` lists the store, and the settings overlay's `backups` tab shows its size, session count, the last backup pass and the next scheduled one (`agent.transcripts` over the socket API). Herdr never deletes a backup.
 
 ## 12. Install rule

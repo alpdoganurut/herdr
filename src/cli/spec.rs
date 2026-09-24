@@ -457,6 +457,15 @@ fn agent_command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("restart")
+                .about("Exit an idle agent and relaunch it in place with its native resume command")
+                .override_usage("herdr agent restart <TARGET>")
+                .arg(required("target", "TARGET"))
+                .after_help(
+                    "Suspends the agent like `agent suspend`, then relaunches it in the same pane with its native resume command as soon as its exit is observed and the shell prompt is back; no `agent activate` is needed. A working agent is refused (`agent_working`), as are blocked (`agent_blocked`) and suspended (`agent_suspended`) ones. If the relaunch cannot happen (the agent had to be killed, or the shell never returns) the pane stays suspended.\n\nnext: herdr agent wait <TARGET>",
+                ),
+        )
+        .subcommand(
             Command::new("explain")
                 .about("Explain agent detection state")
                 .arg(Arg::new("target").value_name("TARGET"))
@@ -1345,7 +1354,7 @@ mod tests {
     #[test]
     fn spec_models_agent_suspend_and_activate_targets() {
         let cmd = super::command();
-        for name in ["suspend", "activate"] {
+        for name in ["suspend", "activate", "restart"] {
             let command = command_path(&cmd, &["agent", name]);
             let target = command
                 .get_arguments()

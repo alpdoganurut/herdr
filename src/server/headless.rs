@@ -3450,6 +3450,7 @@ impl HeadlessServer {
 
         changed |= self.app.handle_tab_bar_status_tasks(now);
         changed |= self.app.escalate_suspended_agent_exits(now);
+        changed |= self.app.start_pending_agent_restarts(now);
 
         if geometry_dirty {
             self.app.pending_agent_resume_deadline = None;

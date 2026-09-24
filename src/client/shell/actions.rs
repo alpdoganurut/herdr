@@ -1130,6 +1130,10 @@ impl ClientShellState {
                 let pane_id = focused_pane?;
                 Some(agent_suspend_toggle_method(snapshot, &pane_id)?)
             }
+            KeybindAction::RestartAgent => {
+                let pane_id = focused_pane?;
+                Some(agent_restart_method(snapshot, &pane_id)?)
+            }
             KeybindAction::EditScrollback => Some(Method::PaneEditScrollback(PaneTarget {
                 pane_id: focused_pane?,
             })),
@@ -1166,6 +1170,23 @@ fn agent_suspend_toggle_method(
             target: pane_id.to_string(),
         })
     })
+}
+
+/// `agent.restart` for a live agent pane; `None` when the pane hosts no agent
+/// the endpoint reports or the agent is suspended (activate it instead).
+fn agent_restart_method(
+    snapshot: &ClientShellSnapshot,
+    pane_id: &str,
+) -> Option<crate::api::schema::Method> {
+    use crate::api::schema::{AgentRestartParams, AgentStatus, Method};
+    snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.pane_id == pane_id)
+        .filter(|agent| agent.agent_status != AgentStatus::Suspended)?;
+    Some(Method::AgentRestart(AgentRestartParams {
+        target: pane_id.to_string(),
+    }))
 }
 
 /// Actions that split, arrange, or address individual panes. The tabs layout

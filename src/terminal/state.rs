@@ -122,6 +122,19 @@ pub struct SuspendedAgent {
     /// Escalation ticks whose foreground-job probe failed; capped by
     /// [`SUSPEND_PROBE_RETRY_LIMIT`].
     probe_retries: u8,
+    /// Set by `agent.restart`: relaunch with the native resume command as
+    /// soon as activation's preconditions hold. Never persisted, so a
+    /// restored or handed-off record is always a plain parked agent.
+    resume_pending: Option<AgentRestartResume>,
+}
+
+/// The automatic relaunch an `agent.restart` owes a suspended agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentRestartResume {
+    /// Past this instant the restart is abandoned and the pane stays parked.
+    pub give_up_at: Instant,
+    /// The next time the pane is probed for an available shell prompt.
+    pub next_check: Instant,
 }
 
 impl SuspendedAgent {
@@ -139,6 +152,10 @@ impl SuspendedAgent {
 
     pub fn probe_retries(&self) -> u8 {
         self.probe_retries
+    }
+
+    pub fn resume_pending(&self) -> Option<AgentRestartResume> {
+        self.resume_pending
     }
 }
 
@@ -2431,6 +2448,7 @@ impl TerminalState {
             escalation: SuspendExitEscalation::Pending,
             exit_observed: false,
             probe_retries: 0,
+            resume_pending: None,
         });
         self.revision = self.revision.saturating_add(1);
     }
@@ -2454,6 +2472,7 @@ impl TerminalState {
             escalation: SuspendExitEscalation::Pending,
             exit_observed: true,
             probe_retries: 0,
+            resume_pending: None,
         });
     }
 
@@ -2533,6 +2552,61 @@ impl TerminalState {
         };
         self.revision = self.revision.saturating_add(1);
         outcome
+    }
+
+    /// Owe the parked agent an automatic relaunch (`agent.restart`), probed
+    /// from `now` until `give_up_at`.
+    pub fn mark_suspended_agent_resume_pending(
+        &mut self,
+        now: Instant,
+        give_up_at: Instant,
+    ) -> bool {
+        let Some(record) = self.suspended_agent.as_mut() else {
+            return false;
+        };
+        record.resume_pending = Some(AgentRestartResume {
+            give_up_at,
+            next_check: now,
+        });
+        self.revision = self.revision.saturating_add(1);
+        true
+    }
+
+    /// Push the next shell-prompt probe of a pending relaunch to `next_check`.
+    pub fn defer_suspended_agent_resume(&mut self, next_check: Instant) {
+        if let Some(pending) = self
+            .suspended_agent
+            .as_mut()
+            .and_then(|record| record.resume_pending.as_mut())
+        {
+            pending.next_check = next_check;
+        }
+    }
+
+    /// Drop a pending relaunch; the agent stays parked.
+    pub fn clear_suspended_agent_resume_pending(&mut self) -> bool {
+        let cleared = self
+            .suspended_agent
+            .as_mut()
+            .and_then(|record| record.resume_pending.take())
+            .is_some();
+        if cleared {
+            self.revision = self.revision.saturating_add(1);
+        }
+        cleared
+    }
+
+    /// When the pending relaunch next needs the scheduler: the probe instant
+    /// once the exit was observed, otherwise only the give-up instant (the
+    /// exit observation itself arrives as an event).
+    pub fn suspended_agent_resume_deadline(&self) -> Option<Instant> {
+        let record = self.suspended_agent.as_ref()?;
+        let pending = record.resume_pending?;
+        Some(if record.exit_observed {
+            pending.next_check.min(pending.give_up_at)
+        } else {
+            pending.give_up_at
+        })
     }
 
     pub fn take_suspended_agent(&mut self) -> Option<SuspendedAgent> {
