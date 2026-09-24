@@ -647,6 +647,7 @@ impl ClientShellState {
                 endpoint.agent_view_projection = None;
             }
         }
+        self.prune_sticky_notifications(endpoint_id);
     }
 
     pub(crate) fn acknowledge_active_surface_agents(&mut self, surface: &PaneSurfaceFrame) -> bool {

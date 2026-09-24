@@ -487,6 +487,8 @@ position = "bottom-right"
 
 Choose `herdr` for an in-app toast, `terminal` for an outer-terminal notification that also works over SSH, `system` for the local OS notification service, or `off` to disable popups. Herdr suppresses popups for the active tab. Search `ui.toast` in the [Config reference](/docs/config-reference/) for positions, delay behavior, and clipboard feedback settings.
 
+With `delivery = "herdr"`, `ui.toast.herdr.sticky = true` keeps toasts on screen until you handle them instead of expiring them. Cards stack from the configured corner with the newest nearest it; beyond `ui.toast.herdr.max_stack` cards (default 6, 1 through 20), or half of the frame height, older cards fold into one "+N more" line. Left-click a card to focus its pane, right-click to dismiss it, or press `keys.open_notification_target` for the newest card. A card also clears when its tab becomes focused, its pane closes, a needs-input agent is no longer blocked, a finished agent starts working again, or a newer notification for the same pane replaces it.
+
 On macOS, `system` tries `terminal-notifier` first and falls back to `/usr/bin/osascript` when it is unavailable or fails. The fallback appears as Script Editor in Notification Center and cannot activate the hosting terminal. Install `terminal-notifier` with `brew install terminal-notifier`. For a supported, detected terminal, it can activate the terminal app when you click the notification. Alternatively, choose `terminal` to let a supported outer terminal own the notification.
 
 ## Sound

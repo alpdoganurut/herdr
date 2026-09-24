@@ -33,6 +33,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) toast_delivery: crate::config::ToastDelivery,
     pub(super) toast_delay_seconds: u64,
     pub(super) toast_position: crate::config::ToastHerdrPosition,
+    pub(super) toast_sticky: bool,
+    pub(super) toast_max_stack: usize,
     pub(super) copy_on_select: bool,
     pub(super) clipboard_toast_enabled: bool,
     pub(super) clipboard_toast_position: crate::config::ToastClipboardPosition,
@@ -127,6 +129,9 @@ pub(super) struct ShellHitMap {
     pub(super) mobile_max_scroll: usize,
     pub(super) global_launcher: Rect,
     pub(super) notification_toast: Rect,
+    /// One hit per drawn notification card: the index into `visible_notifications`, or
+    /// `None` for the sticky stack's "+N more" line.
+    pub(super) notification_toasts: Vec<(Rect, Option<usize>)>,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
     pub(super) overlay_primary: Rect,
@@ -1007,7 +1012,9 @@ pub(crate) struct ClientShellState {
     pub(super) pending_requests: HashMap<String, PendingEndpointRequest>,
     pub(super) pending_integration_installs: usize,
     pub(super) pending_notifications: Vec<ClientPendingNotification>,
-    pub(super) visible_notification: Option<ClientVisibleNotification>,
+    /// Visible toast cards, oldest first. Timed mode holds at most one (the rest wait in
+    /// `queued_notifications`); sticky mode keeps every card until it is cleared.
+    pub(super) visible_notifications: VecDeque<ClientVisibleNotification>,
     pub(super) queued_notifications: VecDeque<ClientVisibleNotification>,
     pub(super) endpoint_notice_seen: HashSet<ClientEndpointNoticeKey>,
     pub(super) visible_endpoint_notice: Option<ClientVisibleEndpointNotice>,
@@ -1173,7 +1180,7 @@ impl ClientShellState {
             pending_requests: HashMap::new(),
             pending_integration_installs: 0,
             pending_notifications: Vec::new(),
-            visible_notification: None,
+            visible_notifications: VecDeque::new(),
             queued_notifications: VecDeque::new(),
             endpoint_notice_seen: HashSet::new(),
             visible_endpoint_notice: None,

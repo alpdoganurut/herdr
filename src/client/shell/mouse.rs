@@ -975,17 +975,40 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         }
-        if self.overlay.is_none()
-            && self.mode == ClientShellMode::Terminal
-            && self
-                .visible_notification
-                .as_ref()
-                .is_some_and(|notification| notification.event.pane_id.is_some())
-            && mouse.kind == MouseEventKind::Down(MouseButton::Left)
-            && super::contains(self.hits.notification_toast, point)
-        {
-            self.focus_visible_notification(outcome);
-            return;
+        if self.overlay.is_none() && self.mode == ClientShellMode::Terminal {
+            let card = self
+                .hits
+                .notification_toasts
+                .iter()
+                .find(|(rect, _)| super::contains(*rect, point))
+                .map(|(_, index)| *index);
+            if self.config.toast_sticky {
+                // Every sticky card, and the "+N more" line, swallows its clicks: left
+                // focuses the target (or dismisses a targetless card), right dismisses.
+                match (card, mouse.kind) {
+                    (Some(Some(index)), MouseEventKind::Down(MouseButton::Left)) => {
+                        self.focus_notification_at(index, outcome);
+                        return;
+                    }
+                    (Some(Some(index)), MouseEventKind::Down(MouseButton::Right)) => {
+                        self.dismiss_notification_at(index, outcome);
+                        return;
+                    }
+                    (Some(_), MouseEventKind::Down(_) | MouseEventKind::Up(_)) => return,
+                    _ => {}
+                }
+            } else if let Some(Some(index)) =
+                card.filter(|_| mouse.kind == MouseEventKind::Down(MouseButton::Left))
+            {
+                if self
+                    .visible_notifications
+                    .get(index)
+                    .is_some_and(|notification| notification.event.pane_id.is_some())
+                {
+                    self.focus_notification_at(index, outcome);
+                    return;
+                }
+            }
         }
         if self.handle_mobile_mouse(mouse, outcome) {
             return;

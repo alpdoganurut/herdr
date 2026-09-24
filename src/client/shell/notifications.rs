@@ -205,6 +205,117 @@ pub(super) fn render_visible_notification(
     )
 }
 
+fn notification_corner(position: crate::config::ToastHerdrPosition) -> usize {
+    match position {
+        crate::config::ToastHerdrPosition::TopLeft => 0,
+        crate::config::ToastHerdrPosition::TopRight => 1,
+        crate::config::ToastHerdrPosition::BottomLeft => 2,
+        crate::config::ToastHerdrPosition::BottomRight => 3,
+    }
+}
+
+/// Draws the sticky card stack, newest nearest each card's corner with one blank row
+/// between cards. At most `max_stack` cards are drawn and each corner's stack stays
+/// within half of `area`; everything older folds into one "+N more" line in the
+/// default corner. Returns one hit per drawn card (its index into `cards`) and a
+/// `None` hit for the fold line.
+pub(super) fn render_notification_stack(
+    buffer: &mut Buffer,
+    area: Rect,
+    cards: &VecDeque<ClientVisibleNotification>,
+    default_position: crate::config::ToastHerdrPosition,
+    max_stack: usize,
+    base_offset: u16,
+    palette: &Palette,
+) -> Vec<(Rect, Option<usize>)> {
+    let mut hits = Vec::new();
+    if area.is_empty() || cards.is_empty() {
+        return hits;
+    }
+    let height_cap = area.height / 2;
+    let default_corner = notification_corner(default_position);
+    let mut next_offset = [base_offset; 4];
+    let mut folded = 0;
+    for (shown, (index, card)) in cards.iter().enumerate().rev().enumerate() {
+        let corner = notification_corner(card.event.position.unwrap_or(default_position));
+        let height: u16 = if card.event.body.as_deref().unwrap_or_default().is_empty() {
+            3
+        } else {
+            4
+        };
+        let top_offset = next_offset[corner];
+        let used = top_offset - base_offset;
+        // Older cards remain, so the default corner must keep room for the fold line.
+        let fold_reserve = if index > 0 && corner == default_corner {
+            2
+        } else {
+            0
+        };
+        if shown >= max_stack || (used > 0 && used + height + fold_reserve > height_cap) {
+            folded = index + 1;
+            break;
+        }
+        let rect =
+            render_visible_notification(buffer, area, card, default_position, top_offset, palette);
+        hits.push((rect, Some(index)));
+        next_offset[corner] = top_offset.saturating_add(height).saturating_add(1);
+    }
+    if folded > 0 {
+        let rect = render_notification_fold_line(
+            buffer,
+            area,
+            folded,
+            default_position,
+            next_offset[default_corner],
+            palette,
+        );
+        hits.push((rect, None));
+    }
+    hits
+}
+
+fn render_notification_fold_line(
+    buffer: &mut Buffer,
+    area: Rect,
+    folded: usize,
+    position: crate::config::ToastHerdrPosition,
+    top_offset: u16,
+    palette: &Palette,
+) -> Rect {
+    let text = format!(" +{folded} more ");
+    let width = u16::try_from(unicode_width::UnicodeWidthStr::width(text.as_str()))
+        .unwrap_or(u16::MAX)
+        .min(area.width);
+    let x = match position {
+        crate::config::ToastHerdrPosition::TopLeft
+        | crate::config::ToastHerdrPosition::BottomLeft => area.x,
+        crate::config::ToastHerdrPosition::TopRight
+        | crate::config::ToastHerdrPosition::BottomRight => area.right().saturating_sub(width),
+    };
+    let max_y = area.bottom().saturating_sub(1).max(area.y);
+    let y = match position {
+        crate::config::ToastHerdrPosition::TopLeft
+        | crate::config::ToastHerdrPosition::TopRight => area.y.saturating_add(top_offset),
+        crate::config::ToastHerdrPosition::BottomLeft
+        | crate::config::ToastHerdrPosition::BottomRight => {
+            area.bottom().saturating_sub(top_offset.saturating_add(1))
+        }
+    }
+    .clamp(area.y, max_y);
+    let rect = Rect::new(x, y, width, 1);
+    Clear.render(rect, buffer);
+    buffer.set_style(rect, Style::default().bg(palette.panel_bg));
+    super::render::put_text(
+        buffer,
+        rect.x,
+        rect.y,
+        rect.width,
+        &text,
+        Style::default().fg(palette.overlay0).bg(palette.panel_bg),
+    );
+    rect
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,26 +368,28 @@ mod tests {
     #[test]
     fn unavailable_notification_target_stays_visible_and_reports_the_machine() {
         let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-        state.visible_notification = Some(ClientVisibleNotification {
-            endpoint_id: ClientEndpointId::Local,
-            event: SemanticNotification {
-                kind: SemanticNotificationKind::NeedsAttention,
-                title: "agent needs attention".into(),
-                body: None,
-                sound: None,
-                agent: Some("agent".into()),
-                workspace_id: Some("workspace".into()),
-                tab_id: Some("tab".into()),
-                pane_id: Some("pane".into()),
-                position: None,
-            },
-            deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
-        });
+        state
+            .visible_notifications
+            .push_back(ClientVisibleNotification {
+                endpoint_id: ClientEndpointId::Local,
+                event: SemanticNotification {
+                    kind: SemanticNotificationKind::NeedsAttention,
+                    title: "agent needs attention".into(),
+                    body: None,
+                    sound: None,
+                    agent: Some("agent".into()),
+                    workspace_id: Some("workspace".into()),
+                    tab_id: Some("tab".into()),
+                    pane_id: Some("pane".into()),
+                    position: None,
+                },
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+            });
         let mut outcome = ClientShellInput::default();
 
         state.focus_visible_notification(&mut outcome);
 
-        assert!(state.visible_notification.is_some());
+        assert!(state.visible_notifications.front().is_some());
         assert!(state
             .visible_endpoint_notice
             .as_ref()
@@ -327,7 +440,7 @@ mod tests {
 
         assert!(effects.is_empty());
         assert!(!repaint);
-        assert!(state.visible_notification.is_none());
+        assert!(state.visible_notifications.is_empty());
     }
 
     #[test]
@@ -394,15 +507,15 @@ mod tests {
         let mut remote = notification();
         remote.endpoint_id = remote_id.clone();
         remote.event.title = "remote".into();
-        state.visible_notification = Some(local);
+        state.visible_notifications.push_back(local);
         state.queued_notifications.push_back(remote);
 
         state.retire_endpoint_notifications(&ClientEndpointId::Local);
 
         assert_eq!(
             state
-                .visible_notification
-                .as_ref()
+                .visible_notifications
+                .front()
                 .map(|notification| (&notification.endpoint_id, notification.event.title.as_str())),
             Some((&remote_id, "remote"))
         );
@@ -434,8 +547,8 @@ mod tests {
 
         assert_eq!(
             state
-                .visible_notification
-                .as_ref()
+                .visible_notifications
+                .front()
                 .map(|notification| notification.event.title.as_str()),
             Some("first")
         );
@@ -445,8 +558,8 @@ mod tests {
 
         assert_eq!(
             state
-                .visible_notification
-                .as_ref()
+                .visible_notifications
+                .front()
                 .map(|notification| notification.event.title.as_str()),
             Some("second")
         );

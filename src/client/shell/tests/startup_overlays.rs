@@ -540,21 +540,23 @@ fn config_diagnostic_offsets_only_the_pane_rows_it_overlaps() {
     endpoint_snapshot.config_diagnostic = Some("one-line warning".into());
     state.set_snapshot(Box::new(endpoint_snapshot));
     state.set_pane_surface(surface());
-    state.visible_notification = Some(ClientVisibleNotification {
-        endpoint_id: ClientEndpointId::Local,
-        event: SemanticNotification {
-            kind: SemanticNotificationKind::Custom,
-            title: "notification".into(),
-            body: None,
-            sound: None,
-            agent: None,
-            workspace_id: None,
-            tab_id: None,
-            pane_id: None,
-            position: Some(crate::config::ToastHerdrPosition::TopRight),
-        },
-        deadline: std::time::Instant::now(),
-    });
+    state
+        .visible_notifications
+        .push_back(ClientVisibleNotification {
+            endpoint_id: ClientEndpointId::Local,
+            event: SemanticNotification {
+                kind: SemanticNotificationKind::Custom,
+                title: "notification".into(),
+                body: None,
+                sound: None,
+                agent: None,
+                workspace_id: None,
+                tab_id: None,
+                pane_id: None,
+                position: Some(crate::config::ToastHerdrPosition::TopRight),
+            },
+            deadline: std::time::Instant::now(),
+        });
 
     state.compose(106, 20).expect("one-line frame");
     let pane_area = state.layout(106, 20).pane_surface;
@@ -566,7 +568,7 @@ fn config_diagnostic_offsets_only_the_pane_rows_it_overlaps() {
         row: targetless_hit.y,
         modifiers: KeyModifiers::empty(),
     })]);
-    assert!(state.visible_notification.is_some());
+    assert!(state.visible_notifications.front().is_some());
 
     let mut endpoint_snapshot = snapshot();
     endpoint_snapshot.config_diagnostic = Some("first warning\nsecond warning".into());
@@ -575,8 +577,8 @@ fn config_diagnostic_offsets_only_the_pane_rows_it_overlaps() {
     assert_eq!(state.hits.notification_toast.y, pane_area.y);
 
     state
-        .visible_notification
-        .as_mut()
+        .visible_notifications
+        .front_mut()
         .expect("visible notification")
         .event
         .position = Some(crate::config::ToastHerdrPosition::BottomRight);

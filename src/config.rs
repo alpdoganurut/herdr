@@ -127,6 +127,7 @@ impl Config {
             .chain(tab_agent_glyph_color_diagnostics(
                 &self.ui.tab_agent_glyph_colors,
             ))
+            .chain(self.ui.toast.herdr.diagnostic())
             .collect()
     }
 

@@ -54,6 +54,35 @@ fn apply_patch_to_surface(
     true
 }
 
+/// A timed toast always forces a full compose. Sticky cards can stay up for a long time,
+/// so they only block patches whose rows would land on a drawn card.
+fn notification_blocks_patch(
+    state: &ClientShellState,
+    patch: &crate::protocol::PaneSurfacePatch,
+) -> bool {
+    if state.visible_notifications.is_empty() {
+        return false;
+    }
+    if !state.config.toast_sticky || state.hits.notification_toasts.is_empty() {
+        return true;
+    }
+    let (cols, rows) = state.last_composed_size.unwrap_or_default();
+    let area = state.layout(cols, rows).pane_surface;
+    patch.rows.iter().any(|row| {
+        let rect = Rect::new(
+            area.x.saturating_add(row.x),
+            area.y.saturating_add(row.y),
+            u16::try_from(row.cells.len()).unwrap_or(u16::MAX),
+            1,
+        );
+        state
+            .hits
+            .notification_toasts
+            .iter()
+            .any(|(card, _)| card.intersects(rect))
+    })
+}
+
 fn fast_path_blocker(
     state: &ClientShellState,
     patch: &crate::protocol::PaneSurfacePatch,
@@ -68,7 +97,7 @@ fn fast_path_blocker(
         Some("client_surface_patch.fallback.config_diagnostic")
     } else if state.visible_endpoint_notice.is_some() {
         Some("client_surface_patch.fallback.endpoint_notice")
-    } else if state.visible_notification.is_some() {
+    } else if notification_blocks_patch(state, patch) {
         Some("client_surface_patch.fallback.notification")
     } else if state.copy_feedback.is_some() {
         Some("client_surface_patch.fallback.copy_feedback")

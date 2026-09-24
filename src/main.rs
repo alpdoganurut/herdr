@@ -387,6 +387,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 
 [ui.toast.herdr]
 # position = "bottom-right"
+# sticky = false
+# max_stack = 6
 
 [ui.toast.clipboard]
 # enabled = true

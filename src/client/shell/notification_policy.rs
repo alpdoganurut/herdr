@@ -28,12 +28,15 @@ impl ClientShellState {
         self.queued_notifications
             .retain(|queued| &queued.endpoint_id != endpoint_id);
         if self
-            .visible_notification
-            .as_ref()
-            .is_some_and(|visible| &visible.endpoint_id == endpoint_id)
+            .visible_notifications
+            .iter()
+            .any(|visible| &visible.endpoint_id == endpoint_id)
         {
-            self.visible_notification = None;
-            self.promote_queued_notification(std::time::Instant::now());
+            self.visible_notifications
+                .retain(|visible| &visible.endpoint_id != endpoint_id);
+            if self.visible_notifications.is_empty() {
+                self.promote_queued_notification(std::time::Instant::now());
+            }
         }
     }
 
@@ -42,9 +45,16 @@ impl ClientShellState {
         mut notification: ClientVisibleNotification,
         now: std::time::Instant,
     ) {
-        if self.visible_notification.is_none() {
+        if self.config.toast_sticky {
+            // Sticky cards never expire; the deadline is unread until a live reload
+            // switches back to timed mode.
             notification.deadline = now + notification_duration(notification.event.kind);
-            self.visible_notification = Some(notification);
+            self.visible_notifications.push_back(notification);
+            return;
+        }
+        if self.visible_notifications.is_empty() {
+            notification.deadline = now + notification_duration(notification.event.kind);
+            self.visible_notifications.push_back(notification);
             return;
         }
         if self.queued_notifications.len() == MAX_QUEUED_NOTIFICATIONS {
@@ -58,12 +68,38 @@ impl ClientShellState {
             return false;
         };
         notification.deadline = now + notification_duration(notification.event.kind);
-        self.visible_notification = Some(notification);
+        self.visible_notifications.push_back(notification);
         true
     }
 
+    /// Index of the card `open_notification_target` acts on: the single timed toast, or
+    /// the newest sticky card.
+    pub(super) fn primary_notification_index(&self) -> Option<usize> {
+        if self.config.toast_sticky {
+            self.visible_notifications.len().checked_sub(1)
+        } else {
+            (!self.visible_notifications.is_empty()).then_some(0)
+        }
+    }
+
     pub(super) fn focus_visible_notification(&mut self, outcome: &mut ClientShellInput) {
-        let Some(notification) = self.visible_notification.as_ref() else {
+        if let Some(index) = self.primary_notification_index() {
+            self.focus_notification_at(index, outcome);
+        }
+    }
+
+    pub(super) fn dismiss_notification_at(&mut self, index: usize, outcome: &mut ClientShellInput) {
+        if self.visible_notifications.remove(index).is_none() {
+            return;
+        }
+        if self.visible_notifications.is_empty() {
+            self.promote_queued_notification(std::time::Instant::now());
+        }
+        outcome.repaint = true;
+    }
+
+    pub(super) fn focus_notification_at(&mut self, index: usize, outcome: &mut ClientShellInput) {
+        let Some(notification) = self.visible_notifications.get(index) else {
             return;
         };
         if notification.event.pane_id.is_some()
@@ -75,10 +111,12 @@ impl ClientShellState {
             return;
         }
         let notification = self
-            .visible_notification
-            .take()
+            .visible_notifications
+            .remove(index)
             .expect("checked visible notification");
-        self.promote_queued_notification(std::time::Instant::now());
+        if self.visible_notifications.is_empty() {
+            self.promote_queued_notification(std::time::Instant::now());
+        }
         outcome.repaint = true;
         let Some(pane_id) = notification.event.pane_id else {
             return;
@@ -96,6 +134,82 @@ impl ClientShellState {
         }
     }
 
+    /// Moves cards between the sticky list and the timed queue after a live reload
+    /// flips `ui.toast.herdr.sticky`.
+    pub(super) fn rebalance_notification_cards(&mut self, now: std::time::Instant) {
+        if self.config.toast_sticky {
+            self.visible_notifications
+                .extend(self.queued_notifications.drain(..));
+            return;
+        }
+        while self.visible_notifications.len() > 1 {
+            let Some(card) = self.visible_notifications.pop_back() else {
+                break;
+            };
+            self.queued_notifications.push_front(card);
+        }
+        while self.queued_notifications.len() > MAX_QUEUED_NOTIFICATIONS {
+            self.queued_notifications.pop_front();
+        }
+        if let Some(front) = self.visible_notifications.front_mut() {
+            front.deadline = front
+                .deadline
+                .min(now + notification_duration(front.event.kind));
+        }
+    }
+
+    /// Sticky clearing on every endpoint snapshot: a card whose target tab became
+    /// focused, whose pane is gone, or whose agent status contradicts it is removed.
+    pub(super) fn prune_sticky_notifications(&mut self, endpoint_id: &ClientEndpointId) {
+        if !self.config.toast_sticky || self.visible_notifications.is_empty() {
+            return;
+        }
+        let cards = std::mem::take(&mut self.visible_notifications);
+        self.visible_notifications = cards
+            .into_iter()
+            .filter(|card| {
+                &card.endpoint_id != endpoint_id
+                    || !(self.notification_target_is_active(&card.endpoint_id, &card.event)
+                        || self.sticky_notification_is_stale(&card.endpoint_id, &card.event))
+            })
+            .collect();
+    }
+
+    fn sticky_notification_is_stale(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        event: &SemanticNotification,
+    ) -> bool {
+        let Some(pane_id) = event.pane_id.as_deref() else {
+            return false;
+        };
+        let Some(snapshot) = self
+            .endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .and_then(|endpoint| endpoint.snapshot.as_deref())
+        else {
+            return false;
+        };
+        let agent = snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.pane_id == pane_id);
+        if agent.is_none() && !snapshot.panes.iter().any(|pane| pane.pane_id == pane_id) {
+            return true;
+        }
+        if event.kind == SemanticNotificationKind::Finished
+            && agent
+                .is_some_and(|agent| agent.agent_status == crate::api::schema::AgentStatus::Working)
+        {
+            return true;
+        }
+        matches!(
+            self.notification_validation(endpoint_id, event),
+            NotificationValidation::Stale
+        )
+    }
+
     pub(crate) fn receive_notification(
         &mut self,
         endpoint_id: &ClientEndpointId,
@@ -111,7 +225,7 @@ impl ClientShellState {
             .checked_add(std::time::Duration::from_secs(delay))
             .unwrap_or(now);
         let cleared_visible = event.pane_id.as_deref().is_some_and(|pane_id| {
-            self.visible_notification.as_ref().is_some_and(|visible| {
+            self.visible_notifications.iter().any(|visible| {
                 visible.endpoint_id == *endpoint_id
                     && visible.event.pane_id.as_deref() == Some(pane_id)
             })
@@ -126,8 +240,13 @@ impl ClientShellState {
                     || queued.event.pane_id.as_deref() != Some(pane_id)
             });
             if cleared_visible {
-                self.visible_notification = None;
-                self.promote_queued_notification(now);
+                self.visible_notifications.retain(|visible| {
+                    visible.endpoint_id != *endpoint_id
+                        || visible.event.pane_id.as_deref() != Some(pane_id)
+                });
+                if self.visible_notifications.is_empty() {
+                    self.promote_queued_notification(now);
+                }
             }
         }
         // Completion evidence is advisory. A Finished effect is valid only while the
@@ -149,12 +268,13 @@ impl ClientShellState {
         now: std::time::Instant,
     ) -> (Vec<ClientShellNotificationEffect>, bool) {
         let mut repaint = false;
-        if self
-            .visible_notification
-            .as_ref()
-            .is_some_and(|visible| now >= visible.deadline)
+        if !self.config.toast_sticky
+            && self
+                .visible_notifications
+                .front()
+                .is_some_and(|visible| now >= visible.deadline)
         {
-            self.visible_notification = None;
+            self.visible_notifications.pop_front();
             self.promote_queued_notification(now);
             repaint = true;
         }

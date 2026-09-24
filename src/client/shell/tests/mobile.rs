@@ -29,21 +29,23 @@ fn navigate_update_status_uses_released_desktop_and_mobile_placement() {
     assert!(state.hits.tab_scroll_right.is_empty());
 
     state.config.tab_bar_position = crate::config::TabBarPositionConfig::Top;
-    state.visible_notification = Some(ClientVisibleNotification {
-        endpoint_id: ClientEndpointId::Local,
-        event: SemanticNotification {
-            kind: SemanticNotificationKind::Custom,
-            title: "bottom notification".into(),
-            body: None,
-            sound: None,
-            agent: None,
-            workspace_id: None,
-            tab_id: None,
-            pane_id: None,
-            position: Some(crate::config::ToastHerdrPosition::BottomRight),
-        },
-        deadline: std::time::Instant::now(),
-    });
+    state
+        .visible_notifications
+        .push_back(ClientVisibleNotification {
+            endpoint_id: ClientEndpointId::Local,
+            event: SemanticNotification {
+                kind: SemanticNotificationKind::Custom,
+                title: "bottom notification".into(),
+                body: None,
+                sound: None,
+                agent: None,
+                workspace_id: None,
+                tab_id: None,
+                pane_id: None,
+                position: Some(crate::config::ToastHerdrPosition::BottomRight),
+            },
+            deadline: std::time::Instant::now(),
+        });
     let top = state.compose(106, 30).expect("top-tab update shell");
     assert!(row_text(&top, 29).contains("update ready"));
 
