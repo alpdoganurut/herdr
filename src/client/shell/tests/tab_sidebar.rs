@@ -459,6 +459,55 @@ fn tab_menu_offers_restart_only_for_live_agents() {
 }
 
 #[test]
+fn toggle_agent_suspend_on_a_working_agent_surfaces_the_refusal() {
+    use crate::input::{KeybindAction, KeybindMatch};
+    let mut snapshot = two_space_snapshot();
+    snapshot.agents = vec![agent("pane_1", "tab_1", AgentStatus::Working)];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot.clone()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        KeybindMatch::Action(KeybindAction::ToggleAgentSuspend),
+        &mut outcome,
+    );
+    let request_id = outcome
+        .actions
+        .iter()
+        .find_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => match &request.method {
+                crate::api::schema::Method::AgentSuspend(params) if params.target == "pane_1" => {
+                    Some(request.id.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("the toggle still asks the server to suspend a working agent");
+
+    let (repaint, _) = state.handle_endpoint_result(
+        &snapshot.boot_id,
+        &request_id,
+        Err(ClientShellEndpointError {
+            code: Some("agent_working".into()),
+            message: "agent pane_1 is working; wait for idle or blocked-free state".into(),
+        }),
+    );
+    assert!(repaint);
+    let notice = state
+        .visible_endpoint_notice
+        .as_ref()
+        .expect("rejected suspend notice");
+    assert_eq!(notice.key.kind, ClientEndpointNoticeKind::Rejected);
+    assert_eq!(notice.key.code, "agent.suspend:agent_working");
+    assert_eq!(
+        notice.body,
+        "agent pane_1 is working; wait for idle or blocked-free state"
+    );
+}
+
+#[test]
 fn restart_agent_binding_requests_a_restart_and_surfaces_a_refusal() {
     use crate::input::{KeybindAction, KeybindMatch};
     let mut snapshot = two_space_snapshot();
