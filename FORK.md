@@ -127,7 +127,7 @@ docs/next/CHANGELOG.md  take-theirs: fork entries live in section 11
 docs/next/api/herdr-api.schema.json  take-theirs: after every .rs conflict is resolved, regenerate with HERDR_UPDATE_API_SCHEMA=1 cargo nextest run generated_protocol_schema_artifact_is_current, rerun it clean, require git diff --exit-code docs/next/api/
 Cargo.lock  take-theirs: exact; the --locked gate verifies
 Cargo.toml  take-theirs: the fork does not touch it
-skills/herdr/SKILL.md  take-theirs+reapply: re-apply the fork's three hunks with git diff <base> <fork tip> -- skills/herdr/SKILL.md | git apply --3way; a hunk that does not apply = deny
+skills/herdr/SKILL.md  take-theirs+reapply: re-apply the fork's hunks (two at the time of writing) with git diff <base> <fork tip> -- skills/herdr/SKILL.md | git apply --3way; a hunk that does not apply = deny
 docs/next/website/src/data/config-reference.json  additive: upstream entries first, fork entries after (placement in section 6), then json.tool and config_reference_check.py
 docs/next/website/src/content/docs/configuration.mdx  additive: upstream first, fork after
 src/server/client_commands.rs  section-5
