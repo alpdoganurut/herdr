@@ -1044,10 +1044,35 @@
           ],
           "type": "string"
         },
+        "TabColor": {
+          "description": "A named color tag on a tab. Clients map each name to a theme color.\n`Unknown` is the fallback for a name this build does not know, so a newer\npeer's color decodes (and is ignored) instead of failing the message.",
+          "enum": [
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "cyan",
+            "blue",
+            "purple",
+            "unknown"
+          ],
+          "type": "string"
+        },
         "TabInfo": {
           "properties": {
             "agent_status": {
               "$ref": "#/schemas/event/$defs/AgentStatus"
+            },
+            "color": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/TabColor"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The tab's color tag; absent when the tab has none."
             },
             "focused": {
               "type": "boolean"
@@ -4408,6 +4433,20 @@
             }
           ]
         },
+        "TabColor": {
+          "description": "A named color tag on a tab. Clients map each name to a theme color.\n`Unknown` is the fallback for a name this build does not know, so a newer\npeer's color decodes (and is ignored) instead of failing the message.",
+          "enum": [
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "cyan",
+            "blue",
+            "purple",
+            "unknown"
+          ],
+          "type": "string"
+        },
         "TabCreateParams": {
           "properties": {
             "cwd": {
@@ -4481,6 +4520,29 @@
           "required": [
             "tab_id",
             "label"
+          ],
+          "type": "object"
+        },
+        "TabSetColorParams": {
+          "description": "Set or clear (`color: null`) a tab's color tag.",
+          "properties": {
+            "color": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/TabColor"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id"
           ],
           "type": "object"
         },
@@ -5595,6 +5657,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.set_color",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabSetColorParams"
             }
           },
           "required": [
@@ -11063,10 +11141,35 @@
           ],
           "type": "string"
         },
+        "TabColor": {
+          "description": "A named color tag on a tab. Clients map each name to a theme color.\n`Unknown` is the fallback for a name this build does not know, so a newer\npeer's color decodes (and is ignored) instead of failing the message.",
+          "enum": [
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "cyan",
+            "blue",
+            "purple",
+            "unknown"
+          ],
+          "type": "string"
+        },
         "TabInfo": {
           "properties": {
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
+            },
+            "color": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TabColor"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The tab's color tag; absent when the tab has none."
             },
             "focused": {
               "type": "boolean"

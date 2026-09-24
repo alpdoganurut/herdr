@@ -975,6 +975,7 @@ impl App {
             previous_tab_label: self.state.workspaces[source_ws_idx].tabs[source_tab_idx]
                 .custom_name
                 .clone(),
+            previous_tab_color: self.state.workspaces[source_ws_idx].tabs[source_tab_idx].color,
             previous_worktree_space: self.state.workspaces[source_ws_idx].worktree_space.clone(),
             identity_cwd: self.state.workspaces[source_ws_idx].identity_cwd.clone(),
         };
@@ -1136,6 +1137,11 @@ impl App {
             None => return encode_error(id, "pane_move_failed", "source pane could not be moved"),
         };
         let source_removed_tab_id = taken.removed_tab_idx.map(|_| previous_tab_id.clone());
+        // A pane that took its whole tab along keeps the tab's color tag in
+        // the new tab; a pane split out of a larger tab starts uncolored.
+        let carried_tab_color = recovery_context
+            .previous_tab_color
+            .filter(|_| source_removed_tab_id.is_some());
         let source_workspace_empty = taken.workspace_empty;
         let moved = taken.moved;
         let cross_workspace = match &resolved {
@@ -1233,6 +1239,12 @@ impl App {
                         self.render_notify.clone(),
                         self.render_dirty.clone(),
                     );
+                if let Some(tab) = self.state.workspaces[target_ws_idx]
+                    .tabs
+                    .get_mut(target_tab_idx)
+                {
+                    tab.color = carried_tab_color;
+                }
                 created_tab = true;
                 (target_ws_idx, target_tab_idx, moved_pane_id)
             }
@@ -1244,7 +1256,7 @@ impl App {
                     .map(|terminal| terminal.cwd.clone())
                     .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
                 let moved_pane_id = moved.pane_id;
-                let workspace = crate::workspace::Workspace::from_existing_pane(
+                let mut workspace = crate::workspace::Workspace::from_existing_pane(
                     label,
                     tab_label,
                     identity_cwd,
@@ -1253,6 +1265,9 @@ impl App {
                     self.render_notify.clone(),
                     self.render_dirty.clone(),
                 );
+                if let Some(tab) = workspace.tabs.first_mut() {
+                    tab.color = carried_tab_color;
+                }
                 self.state.workspaces.push(workspace);
                 let target_ws_idx = self.state.workspaces.len() - 1;
                 created_workspace = true;
@@ -1365,13 +1380,16 @@ impl App {
         moved: crate::workspace::MovedPane,
     ) {
         if let Some(ws_idx) = self.parse_workspace_id(&context.previous_workspace_id) {
-            self.state.workspaces[ws_idx].create_tab_from_existing_pane(
+            let tab_idx = self.state.workspaces[ws_idx].create_tab_from_existing_pane(
                 moved,
                 context.previous_tab_label,
                 self.event_tx.clone(),
                 self.render_notify.clone(),
                 self.render_dirty.clone(),
             );
+            if let Some(tab) = self.state.workspaces[ws_idx].tabs.get_mut(tab_idx) {
+                tab.color = context.previous_tab_color;
+            }
         } else {
             let mut workspace = crate::workspace::Workspace::from_existing_pane(
                 context.previous_workspace_label,
@@ -1384,6 +1402,9 @@ impl App {
             );
             workspace.id = context.previous_workspace_id;
             workspace.worktree_space = context.previous_worktree_space;
+            if let Some(tab) = workspace.tabs.first_mut() {
+                tab.color = context.previous_tab_color;
+            }
             let insert_idx = context.source_ws_idx.min(self.state.workspaces.len());
             if let Some(active) = self.state.active {
                 if active >= insert_idx {
@@ -2157,6 +2178,7 @@ struct PaneMoveRecoveryContext {
     previous_workspace_id: String,
     previous_workspace_label: Option<String>,
     previous_tab_label: Option<String>,
+    previous_tab_color: Option<crate::api::schema::TabColor>,
     previous_worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
     identity_cwd: std::path::PathBuf,
 }
@@ -3714,6 +3736,7 @@ mod tests {
             previous_workspace_id: previous_workspace_id.clone(),
             previous_workspace_label: app.state.workspaces[0].custom_name.clone(),
             previous_tab_label: app.state.workspaces[0].tabs[0].custom_name.clone(),
+            previous_tab_color: None,
             previous_worktree_space: app.state.workspaces[0].worktree_space.clone(),
             identity_cwd: app.state.workspaces[0].identity_cwd.clone(),
         };

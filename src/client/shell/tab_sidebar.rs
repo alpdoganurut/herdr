@@ -428,12 +428,15 @@ fn render_tab_row(
     } else {
         Style::default()
     };
+    // A color tag only changes the label's foreground; background, bold,
+    // the status icon and the glyph keep their own styling.
+    let tag_fg = super::tab_color::tab_label_fg(tab.color, palette);
     let label_style = if tab.focused {
         Style::default()
-            .fg(palette.text)
+            .fg(tag_fg.unwrap_or(palette.text))
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(palette.subtext0)
+        Style::default().fg(tag_fg.unwrap_or(palette.subtext0))
     };
     let icon_style = Style::default().fg(status_color(tab.agent_status, palette));
     let icon = status_icon(tab.agent_status, config.status_indicators);

@@ -174,6 +174,7 @@ pub(crate) fn keybind_help_groups(
                     "fold/expand all groups",
                 ),
                 entry(binding_label(&keybinds.restart_agent), "restart agent"),
+                entry(binding_label(&keybinds.cycle_tab_color), "cycle tab color"),
                 entry(binding_label(&keybinds.copy_mode), "copy mode"),
                 entry(binding_label(&keybinds.zoom), "zoom pane"),
                 entry(binding_label(&keybinds.resize_mode), "resize mode"),

@@ -1134,6 +1134,10 @@ impl ClientShellState {
                 let pane_id = focused_pane?;
                 Some(agent_restart_method(snapshot, &pane_id)?)
             }
+            KeybindAction::CycleTabColor => {
+                let tab_id = focused_tab?;
+                Some(tab_color_cycle_method(snapshot, &tab_id)?)
+            }
             KeybindAction::EditScrollback => Some(Method::PaneEditScrollback(PaneTarget {
                 pane_id: focused_pane?,
             })),
@@ -1186,6 +1190,19 @@ fn agent_restart_method(
         .filter(|agent| agent.agent_status != AgentStatus::Suspended)?;
     Some(Method::AgentRestart(AgentRestartParams {
         target: pane_id.to_string(),
+    }))
+}
+
+/// `tab.set_color` with the next step of the color cycle for `tab_id`.
+fn tab_color_cycle_method(
+    snapshot: &ClientShellSnapshot,
+    tab_id: &str,
+) -> Option<crate::api::schema::Method> {
+    use crate::api::schema::{Method, TabColor, TabSetColorParams};
+    let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id)?;
+    Some(Method::TabSetColor(TabSetColorParams {
+        tab_id: tab.tab_id.clone(),
+        color: TabColor::cycle_next(tab.color),
     }))
 }
 

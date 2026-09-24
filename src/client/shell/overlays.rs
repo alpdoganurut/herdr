@@ -169,6 +169,34 @@ pub(crate) fn render_context_menu(
 ) -> Option<OverlayRender> {
     let items = menu.items();
     let screen = buffer.area;
+    if let ClientContextMenuTarget::TabColor { current, .. } = &menu.target {
+        // The tab color picker: one row of swatches instead of a list.
+        let (width, height) = super::super::tab_color::picker_size();
+        let width = width.min(screen.width.max(1));
+        let height = height.min(screen.height.max(1));
+        let x = menu
+            .x
+            .min(screen.x.saturating_add(screen.width.saturating_sub(width)));
+        let y = menu.y.min(
+            screen
+                .y
+                .saturating_add(screen.height.saturating_sub(height)),
+        );
+        let rect = Rect::new(x, y, width, height);
+        let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
+        let rows = super::super::tab_color::render_swatches(
+            buffer,
+            inner,
+            *current,
+            menu.highlighted,
+            palette,
+        );
+        return Some(OverlayRender {
+            area: rect,
+            menu_rows: rows,
+            ..OverlayRender::default()
+        });
+    }
     let max_item_width = items
         .iter()
         .map(|item| display_width(item.label))

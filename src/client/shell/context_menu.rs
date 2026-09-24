@@ -59,6 +59,9 @@ impl ClientContextMenuOverlay {
                     None => {}
                 }
                 items.push(item("Close", Action::Close));
+                // Last, so upstream's item positions (Close at 2 without an
+                // agent) stay put.
+                items.push(item("Color", Action::Color));
                 items
             }
             ClientContextMenuTarget::Group { .. } => vec![
@@ -66,6 +69,14 @@ impl ClientContextMenuOverlay {
                 item("Ungroup", Action::Ungroup),
                 item("Close group", Action::CloseGroup),
             ],
+            ClientContextMenuTarget::TabColor { .. } => super::tab_color::picker_choices()
+                .map(|choice| {
+                    item(
+                        choice.map_or("none", crate::api::schema::TabColor::name),
+                        Action::SetTabColor(choice),
+                    )
+                })
+                .collect(),
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -222,6 +233,15 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         };
+        if let (ClientContextMenuAction::Color, ClientContextMenuTarget::Tab { tab_id, .. }) =
+            (action, &menu.target)
+        {
+            // The picker takes the menu's place; picking a color does not
+            // focus the tab.
+            self.open_tab_color_picker(tab_id.clone(), menu.x, menu.y);
+            outcome.repaint = true;
+            return;
+        }
         match menu.target {
             ClientContextMenuTarget::Workspace { workspace_id, .. } => {
                 self.activate_workspace_context_action(workspace_id, action, outcome)
@@ -234,6 +254,9 @@ impl ClientShellState {
                 workspace_id,
                 agent,
             } => self.activate_tab_context_action(tab_id, workspace_id, agent, action, outcome),
+            ClientContextMenuTarget::TabColor { tab_id, .. } => {
+                self.activate_tab_color_choice(tab_id, action, outcome)
+            }
             ClientContextMenuTarget::Pane {
                 pane_id,
                 workspace_id,

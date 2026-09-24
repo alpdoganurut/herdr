@@ -26,6 +26,7 @@ fn tab(
         zoomed: false,
         focused,
         agent_status: status,
+        color: None,
     }
 }
 
@@ -1723,6 +1724,345 @@ fn group_keys_do_nothing_outside_the_tabs_layout() {
     assert!(state.collapsed_groups.is_empty());
 }
 
+/// fg of every cell of `needle` inside `area`.
+fn text_fgs(frame: &FrameData, area: ratatui::layout::Rect, needle: &str) -> Vec<u32> {
+    let (x, y) = cell_symbol_position(frame, area, needle);
+    (x..x + needle.chars().count() as u16)
+        .map(|x| frame.cells[(y * frame.width + x) as usize].fg)
+        .collect()
+}
+
+fn colored_tabs_state(config: &Config) -> (ClientShellState, FrameData) {
+    use crate::api::schema::TabColor;
+    let mut snapshot = two_space_snapshot();
+    snapshot.agents = vec![
+        agent("pane_1", "tab_1", AgentStatus::Working),
+        agent("pane_2", "tab_2", AgentStatus::Idle),
+    ];
+    snapshot.tabs[0].color = Some(TabColor::Purple);
+    snapshot.tabs[1].color = Some(TabColor::Red);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("composed frame");
+    (state, frame)
+}
+
+#[test]
+fn tab_color_tints_only_the_label_on_focused_and_unfocused_rows() {
+    use crate::protocol::color_to_u32;
+    use ratatui::style::{Color, Modifier};
+    let (state, frame) = colored_tabs_state(&tabs_config());
+    let palette = state.config.palette.clone();
+    let rows = state.hits.sidebar_tabs.clone();
+    let cell = |x: u16, y: u16| &frame.cells[(y * frame.width + x) as usize];
+
+    // Focused row (purple -> mauve): label tinted, still bold on the selected background.
+    let focused = rows[0].0;
+    let mauve = color_to_u32(palette.mauve);
+    assert!(text_fgs(&frame, focused, "reviewer")
+        .iter()
+        .all(|fg| *fg == mauve));
+    let (x, y) = cell_symbol_position(&frame, focused, "reviewer");
+    assert!(cell(x, y).modifier & Modifier::BOLD.bits() != 0);
+    assert_eq!(cell(x, y).bg, color_to_u32(palette.active_row_bg));
+    // The status icon and the brand-colored glyph keep their own colors.
+    assert_eq!(
+        cell(focused.x + 1, focused.y).fg,
+        color_to_u32(status_color(AgentStatus::Working, &palette))
+    );
+    let glyphs = glyph_cells(&state, &frame);
+    assert_eq!(glyphs[0].1, color_to_u32(Color::Rgb(0xD9, 0x77, 0x57)));
+
+    // Unfocused row (red): label tinted, glyph stays monochrome.
+    let unfocused = rows[1].0;
+    let red = color_to_u32(palette.red);
+    assert!(text_fgs(&frame, unfocused, "planner")
+        .iter()
+        .all(|fg| *fg == red));
+    let (x, y) = cell_symbol_position(&frame, unfocused, "planner");
+    assert!(cell(x, y).modifier & Modifier::BOLD.bits() == 0);
+    assert_eq!(
+        cell(unfocused.x + 1, unfocused.y).fg,
+        color_to_u32(status_color(AgentStatus::Idle, &palette))
+    );
+    assert_eq!(glyphs[1].1, color_to_u32(palette.overlay0));
+
+    // An uncolored tab keeps the default label color.
+    let plain = rows[2].0;
+    let subtext = color_to_u32(palette.subtext0);
+    assert!(text_fgs(&frame, plain, "notes")
+        .iter()
+        .all(|fg| *fg == subtext));
+}
+
+#[test]
+fn tab_color_maps_every_name_to_a_theme_slot_and_ignores_unknown() {
+    use crate::api::schema::TabColor;
+    let palette = ClientShellConfig::from_config(&tabs_config()).palette;
+    let fg = |color| super::super::tab_color::tab_color_fg(color, &palette);
+    assert_eq!(fg(TabColor::Red), Some(palette.red));
+    assert_eq!(fg(TabColor::Orange), Some(palette.peach));
+    assert_eq!(fg(TabColor::Yellow), Some(palette.yellow));
+    assert_eq!(fg(TabColor::Green), Some(palette.green));
+    assert_eq!(fg(TabColor::Cyan), Some(palette.teal));
+    assert_eq!(fg(TabColor::Blue), Some(palette.blue));
+    assert_eq!(fg(TabColor::Purple), Some(palette.mauve));
+    assert_eq!(fg(TabColor::Unknown), None);
+
+    // A newer server's color name decodes as Unknown and draws uncolored;
+    // an older server's snapshot without the key decodes as no color.
+    let mut value = serde_json::to_value(two_space_snapshot()).unwrap();
+    value["tabs"][1]["color"] = "magenta".into();
+    value["tabs"][2].as_object_mut().unwrap().remove("color");
+    let snapshot: ClientShellSnapshot = serde_json::from_value(value).unwrap();
+    assert_eq!(snapshot.tabs[1].color, Some(TabColor::Unknown));
+    assert_eq!(snapshot.tabs[2].color, None);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let row = state.hits.sidebar_tabs[1].0;
+    let subtext = crate::protocol::color_to_u32(state.config.palette.subtext0);
+    assert!(text_fgs(&frame, row, "planner")
+        .iter()
+        .all(|fg| *fg == subtext));
+}
+
+#[test]
+fn spaces_layout_tints_unfocused_tab_bar_labels_only() {
+    use crate::protocol::color_to_u32;
+    let (state, frame) = colored_tabs_state(&Config::default());
+    let palette = &state.config.palette;
+    let rect = |tab_id: &str| {
+        state
+            .hits
+            .tabs
+            .iter()
+            .find(|(_, id)| id == tab_id)
+            .map(|(rect, _)| *rect)
+            .expect("tab bar hit")
+    };
+    let red = color_to_u32(palette.red);
+    assert!(text_fgs(&frame, rect("tab_2"), "planner")
+        .iter()
+        .all(|fg| *fg == red));
+    let contrast = color_to_u32(panel_contrast_fg(palette));
+    assert!(text_fgs(&frame, rect("tab_1"), "reviewer")
+        .iter()
+        .all(|fg| *fg == contrast));
+}
+
+fn open_color_picker(state: &mut ClientShellState, row: usize) -> usize {
+    let items = tab_menu_items(state, row);
+    let color = items
+        .iter()
+        .position(|item| item.action == ClientContextMenuAction::Color)
+        .expect("color item");
+    assert_eq!(color, items.len() - 1, "Color is the last tab menu item");
+    assert_eq!(items[color].label, "Color");
+    state.compose(106, 20).expect("tab context menu");
+    let menu_row = state.hits.context_menu_rows[color].0;
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        menu_row.x + 1,
+        menu_row.y,
+    )]);
+    assert!(
+        endpoint_methods(&outcome).is_empty(),
+        "opening the picker sends nothing (not even a tab focus)"
+    );
+    color
+}
+
+fn key(code: crossterm::event::KeyCode) -> RawInputEvent {
+    RawInputEvent::Key(crate::input::TerminalKey::new(code, KeyModifiers::empty()))
+}
+
+fn picked_colors(
+    outcome: &ClientShellInput,
+) -> Vec<(String, Option<crate::api::schema::TabColor>)> {
+    endpoint_methods(outcome)
+        .into_iter()
+        .filter_map(|method| match method {
+            crate::api::schema::Method::TabSetColor(params) => {
+                Some((params.tab_id.clone(), params.color))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn color_menu_item_opens_a_swatch_row_marking_the_current_color() {
+    use crate::api::schema::TabColor;
+    use crate::protocol::color_to_u32;
+    let (mut state, _) = colored_tabs_state(&tabs_config());
+    open_color_picker(&mut state, 0);
+    let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_ref() else {
+        panic!("picker overlay");
+    };
+    assert!(matches!(
+        &menu.target,
+        ClientContextMenuTarget::TabColor { tab_id, current: Some(TabColor::Purple) }
+            if tab_id == "tab_1"
+    ));
+    assert_eq!(menu.highlighted, 7, "the current color starts highlighted");
+    let labels = menu
+        .items()
+        .iter()
+        .map(|item| item.label)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        labels,
+        ["none", "red", "orange", "yellow", "green", "cyan", "blue", "purple"]
+    );
+
+    let frame = state.compose(106, 20).expect("picker frame");
+    let swatches = state.hits.context_menu_rows.clone();
+    assert_eq!(swatches.len(), 8);
+    for (index, (rect, hit)) in swatches.iter().enumerate() {
+        assert_eq!(*hit, index);
+        assert_eq!((rect.width, rect.height), (3, 1));
+        assert_eq!(rect.y, swatches[0].0.y, "one row");
+        assert_eq!(rect.x, swatches[0].0.x + 3 * index as u16, "side by side");
+    }
+    let text = |rect: ratatui::layout::Rect| row_text(&frame, rect);
+    assert_eq!(text(swatches[0].0), " \u{2205} ");
+    assert_eq!(text(swatches[1].0), " \u{25A0} ");
+    assert_eq!(
+        text(swatches[7].0),
+        "[\u{25A0}]",
+        "current color is bracketed"
+    );
+    let glyph_fg = |index: usize| {
+        let rect = swatches[index].0;
+        frame.cells[(rect.y * frame.width + rect.x + 1) as usize].fg
+    };
+    let palette = &state.config.palette;
+    assert_eq!(glyph_fg(0), color_to_u32(palette.overlay0));
+    assert_eq!(glyph_fg(1), color_to_u32(palette.red));
+    assert_eq!(glyph_fg(2), color_to_u32(palette.peach));
+    assert_eq!(glyph_fg(5), color_to_u32(palette.teal));
+    assert_eq!(glyph_fg(7), color_to_u32(palette.mauve));
+    // The highlighted swatch wears the menu's highlight background.
+    let highlight_bg = |index: usize| {
+        let rect = swatches[index].0;
+        frame.cells[(rect.y * frame.width + rect.x) as usize].bg
+    };
+    assert_eq!(highlight_bg(7), color_to_u32(palette.accent));
+    assert_eq!(highlight_bg(3), color_to_u32(palette.panel_bg));
+}
+
+#[test]
+fn color_picker_keys_move_along_the_row_and_enter_picks() {
+    use crate::api::schema::TabColor;
+    use crossterm::event::KeyCode;
+    let (mut state, _) = colored_tabs_state(&tabs_config());
+    open_color_picker(&mut state, 0);
+    let highlighted = |state: &ClientShellState| match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu.highlighted,
+        _ => panic!("picker overlay"),
+    };
+    state.handle_raw_events(vec![key(KeyCode::Right)]);
+    assert_eq!(highlighted(&state), 7, "stops at the last swatch");
+    state.handle_raw_events(vec![key(KeyCode::Left), key(KeyCode::Char('h'))]);
+    assert_eq!(highlighted(&state), 5);
+    state.handle_raw_events(vec![key(KeyCode::Char('l'))]);
+    assert_eq!(highlighted(&state), 6);
+    let outcome = state.handle_raw_events(vec![key(KeyCode::Enter)]);
+    assert_eq!(
+        picked_colors(&outcome),
+        [("tab_1".to_string(), Some(TabColor::Blue))]
+    );
+    assert!(state.overlay.is_none());
+
+    // Esc closes without a request.
+    open_color_picker(&mut state, 1);
+    let outcome = state.handle_raw_events(vec![key(KeyCode::Esc)]);
+    assert!(picked_colors(&outcome).is_empty());
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn clicking_a_swatch_sends_tab_set_color_at_once() {
+    use crate::api::schema::TabColor;
+    let (mut state, _) = colored_tabs_state(&tabs_config());
+    open_color_picker(&mut state, 1);
+    state.compose(106, 20).expect("picker frame");
+    let swatch = state.hits.context_menu_rows[4].0;
+    // Hovering highlights; the click on a swatch's edge cell still picks it.
+    state.handle_raw_events(vec![mouse(MouseEventKind::Moved, swatch.x, swatch.y)]);
+    assert!(matches!(
+        state.overlay.as_ref(),
+        Some(ClientShellOverlay::ContextMenu(menu)) if menu.highlighted == 4
+    ));
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        swatch.right() - 1,
+        swatch.y,
+    )]);
+    assert_eq!(
+        picked_colors(&outcome),
+        [("tab_2".to_string(), Some(TabColor::Green))]
+    );
+    assert!(state.overlay.is_none());
+
+    // The none swatch clears.
+    open_color_picker(&mut state, 1);
+    state.compose(106, 20).expect("picker frame");
+    let none = state.hits.context_menu_rows[0].0;
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        none.x + 1,
+        none.y,
+    )]);
+    assert_eq!(picked_colors(&outcome), [("tab_2".to_string(), None)]);
+}
+
+#[test]
+fn cycle_tab_color_binding_steps_the_focused_tab_and_wraps() {
+    use crate::api::schema::TabColor;
+    use crate::input::{KeybindAction, KeybindMatch};
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    let mut snapshot = two_space_snapshot();
+    let mut expected = Vec::new();
+    let mut current = None;
+    for _ in 0..8 {
+        snapshot.tabs[0].color = current;
+        state.set_snapshot(Box::new(snapshot.clone()));
+        let mut outcome = ClientShellInput::default();
+        state.record_binding(
+            KeybindMatch::Action(KeybindAction::CycleTabColor),
+            &mut outcome,
+        );
+        let picked = picked_colors(&outcome);
+        assert_eq!(picked.len(), 1, "{picked:?}");
+        assert_eq!(picked[0].0, "tab_1", "targets the focused tab");
+        expected.push(picked[0].1);
+        current = picked[0].1;
+    }
+    assert_eq!(
+        expected,
+        [
+            Some(TabColor::Red),
+            Some(TabColor::Orange),
+            Some(TabColor::Yellow),
+            Some(TabColor::Green),
+            Some(TabColor::Cyan),
+            Some(TabColor::Blue),
+            Some(TabColor::Purple),
+            None,
+        ]
+    );
+    let bound: Config = toml::from_str("[keys]\ncycle_tab_color = \"alt+c\"").unwrap();
+    assert!(!bound
+        .live_keybinds_with_diagnostics()
+        .map(|(keybinds, _)| keybinds.keybinds.cycle_tab_color.bindings.is_empty())
+        .unwrap_or(true));
+    assert!(!Config::default().keys.cycle_tab_color.has_values());
+}
+
 /// Fork smoke tests: FORK.md section 10 lists them by name and the sync gate
 /// runs them with `-E 'test(fork_smoke)'`.
 mod fork_smoke {
@@ -1812,5 +2152,22 @@ mod fork_smoke {
             0,
             "no mouse input may reach a suspended pane"
         );
+    }
+
+    /// A colored tab's label reaches the renderer in its mapped theme color.
+    /// An upstream change to how sidebar rows are styled would silently drop
+    /// the tint without any merge conflict.
+    #[test]
+    fn colored_tab_label_reaches_the_renderer_in_its_color() {
+        let mut snapshot = two_space_snapshot();
+        snapshot.tabs[2].color = Some(crate::api::schema::TabColor::Green);
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+        state.set_snapshot(Box::new(snapshot));
+        state.set_pane_surface(wide_surface());
+        let frame = state.compose(106, 20).expect("composed frame");
+        let row = state.hits.sidebar_tabs[2].0;
+        let green = crate::protocol::color_to_u32(state.config.palette.green);
+        let fgs = text_fgs(&frame, row, "notes");
+        assert!(fgs.iter().all(|fg| *fg == green), "{fgs:?}");
     }
 }

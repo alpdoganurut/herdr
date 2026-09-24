@@ -34,6 +34,7 @@ mod settings;
 mod state;
 mod surface_patch;
 mod suspended_pane;
+mod tab_color;
 mod tab_sidebar;
 mod text_editor;
 mod word_selection;

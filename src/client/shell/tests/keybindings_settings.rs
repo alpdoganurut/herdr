@@ -124,6 +124,7 @@ fn tab_bar_renders_endpoint_status_ellipses_and_clamps_to_useful_scroll() {
             zoomed: false,
             focused: false,
             agent_status: AgentStatus::Idle,
+            color: None,
         });
     }
     let mut config = ClientShellConfig::from_config(&Config::default());
@@ -176,6 +177,7 @@ fn inactive_auto_named_tab_label_does_not_stack_terminal_faint() {
         zoomed: false,
         focused: false,
         agent_status: AgentStatus::Idle,
+        color: None,
     });
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(projected));

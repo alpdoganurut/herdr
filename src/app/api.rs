@@ -1105,6 +1105,7 @@ impl App {
                 return self.handle_agent_restart(request.id, params);
             }
             Method::AgentTranscripts(_) => return self.handle_agent_transcripts(request.id),
+            Method::TabSetColor(params) => return self.handle_tab_set_color(request.id, params),
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

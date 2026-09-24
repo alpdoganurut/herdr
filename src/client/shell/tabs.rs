@@ -109,6 +109,10 @@ pub(crate) fn render_tab_bar(
             } else {
                 base
             }
+        } else if let Some(fg) = super::tab_color::tab_label_fg(tab.color, palette) {
+            // A color tag tints unfocused tabs only: the focused tab keeps the
+            // contrast foreground its accent background needs.
+            Style::default().fg(fg).bg(palette.surface0)
         } else if tab.custom_label {
             Style::default().fg(palette.overlay1).bg(palette.surface0)
         } else {

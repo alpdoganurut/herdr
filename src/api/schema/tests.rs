@@ -91,6 +91,90 @@ fn workspace_close_group_intent_defaults_false_and_round_trips() {
 }
 
 #[test]
+fn tab_set_color_request_and_tab_color_round_trip() {
+    let set = Request {
+        id: "color".into(),
+        method: Method::TabSetColor(TabSetColorParams {
+            tab_id: "w1:t2".into(),
+            color: Some(TabColor::Purple),
+        }),
+    };
+    let json = serde_json::to_value(&set).unwrap();
+    assert_eq!(json["method"], "tab.set_color");
+    assert_eq!(json["params"]["color"], "purple");
+    assert_eq!(serde_json::from_value::<Request>(json).unwrap(), set);
+
+    // null and an absent key both clear.
+    for raw in [
+        r#"{"id":"c","method":"tab.set_color","params":{"tab_id":"w1:t2","color":null}}"#,
+        r#"{"id":"c","method":"tab.set_color","params":{"tab_id":"w1:t2"}}"#,
+    ] {
+        let parsed: Request = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            parsed.method,
+            Method::TabSetColor(TabSetColorParams {
+                tab_id: "w1:t2".into(),
+                color: None,
+            })
+        );
+    }
+
+    for color in TabColor::ALL {
+        let json = serde_json::to_value(color).unwrap();
+        assert_eq!(json, color.name());
+        assert_eq!(serde_json::from_value::<TabColor>(json).unwrap(), color);
+        assert_eq!(TabColor::from_name(color.name()), Some(color));
+    }
+    // A color name from a newer peer decodes as the Unknown fallback.
+    assert_eq!(
+        serde_json::from_str::<TabColor>(r#""magenta""#).unwrap(),
+        TabColor::Unknown
+    );
+    assert_eq!(TabColor::from_name("unknown"), None);
+    assert_eq!(TabColor::from_name("magenta"), None);
+
+    let mut cycle = vec![None];
+    let mut current = None;
+    loop {
+        current = TabColor::cycle_next(current);
+        cycle.push(current);
+        if current.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        cycle,
+        [
+            None,
+            Some(TabColor::Red),
+            Some(TabColor::Orange),
+            Some(TabColor::Yellow),
+            Some(TabColor::Green),
+            Some(TabColor::Cyan),
+            Some(TabColor::Blue),
+            Some(TabColor::Purple),
+            None,
+        ]
+    );
+    assert_eq!(
+        TabColor::cycle_next(Some(TabColor::Unknown)),
+        Some(TabColor::Red)
+    );
+
+    let info: TabInfo = serde_json::from_str(
+        r#"{"tab_id":"t","workspace_id":"w","number":1,"label":"x","focused":false,"pane_count":1,"agent_status":"idle","color":"teal"}"#,
+    )
+    .unwrap();
+    assert_eq!(info.color, Some(TabColor::Unknown));
+    let info: TabInfo = serde_json::from_str(
+        r#"{"tab_id":"t","workspace_id":"w","number":1,"label":"x","focused":false,"pane_count":1,"agent_status":"idle"}"#,
+    )
+    .unwrap();
+    assert_eq!(info.color, None);
+    assert!(serde_json::to_value(&info).unwrap().get("color").is_none());
+}
+
+#[test]
 fn agent_restart_request_and_response_round_trip() {
     let restart = Request {
         id: "restart".into(),
@@ -957,6 +1041,7 @@ fn worktree_request_and_response_round_trip() {
                 focused: true,
                 pane_count: 1,
                 agent_status: AgentStatus::Unknown,
+                color: None,
             },
             root_pane: PaneInfo {
                 pane_id: "w_1-1".into(),
@@ -1386,6 +1471,7 @@ fn create_response_round_trips_with_root_pane() {
                 focused: false,
                 pane_count: 1,
                 agent_status: AgentStatus::Unknown,
+                color: None,
             },
             root_pane: PaneInfo {
                 pane_id: "w_1-3".into(),
