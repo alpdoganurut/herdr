@@ -177,3 +177,53 @@ fn unavailable_transcript_store_does_not_wedge_the_backups_section() {
             if matches!(request.method, crate::api::schema::Method::AgentTranscripts(_))
     ));
 }
+
+/// Fork smoke tests: FORK.md section 10 lists them by name and the sync gate
+/// runs them with `-E 'test(fork_smoke)'`.
+mod fork_smoke {
+    use super::*;
+
+    /// Section tabs are clipped with `.min()` to the fixed 76-column popup; a
+    /// longer upstream label or a new upstream section would silently cut
+    /// `backups` off. Checked with the integrations badge on, the widest row.
+    #[test]
+    fn every_settings_section_fits_the_76_column_popup() {
+        let mut snapshot = snapshot();
+        snapshot.integration_updates_available = true;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(snapshot));
+        state.set_pane_surface(surface());
+        state.open_settings_overlay();
+        let frame = state.compose(106, 30).expect("settings frame");
+
+        let tabs = state.hits.settings_tabs.clone();
+        assert_eq!(
+            tabs.iter().map(|(_, section)| *section).collect::<Vec<_>>(),
+            ClientSettingsSection::ALL.to_vec(),
+            "every section gets a tab, in order"
+        );
+        assert_eq!(
+            ClientSettingsSection::ALL.last(),
+            Some(&ClientSettingsSection::Backups)
+        );
+        let popup_left = tabs[0].0.x;
+        for (rect, section) in &tabs {
+            let label = if *section == ClientSettingsSection::Integrations {
+                format!(" ● {} ", section.label())
+            } else {
+                format!(" {} ", section.label())
+            };
+            assert_eq!(
+                rect.width,
+                crate::client::shell::render::display_width(&label),
+                "{section:?} tab is clipped"
+            );
+            assert!(
+                rect.right() <= popup_left + 74,
+                "{section:?} tab ends past the popup's inner width"
+            );
+        }
+        let row = frame_rows(&frame)[usize::from(tabs[0].0.y)].clone();
+        assert!(row.contains(" backups "), "{row}");
+    }
+}
