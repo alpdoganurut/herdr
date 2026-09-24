@@ -1101,6 +1101,9 @@ impl App {
             Method::AgentActivate(params) => {
                 return self.handle_agent_activate(request.id, params);
             }
+            Method::AgentRestart(params) => {
+                return self.handle_agent_restart(request.id, params);
+            }
             Method::AgentTranscripts(_) => return self.handle_agent_transcripts(request.id),
             Method::AgentPrompt(_) => {
                 return responses::encode_error(

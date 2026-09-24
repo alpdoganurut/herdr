@@ -518,6 +518,8 @@ pub struct KeysConfig {
     pub move_tab_to_group: BindingConfig,
     /// "tabs" sidebar layout: fold every group, or expand all once every group is folded. Unset by default.
     pub toggle_groups_folded: BindingConfig,
+    /// Exit the focused pane's idle agent and relaunch it in place with its native resume command. Unset by default.
+    pub restart_agent: BindingConfig,
     /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
     pub copy_mode: BindingConfig,
     /// Focus the pane to the left. Default: "prefix+h".
@@ -657,6 +659,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_groups_folded: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    restart_agent: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     copy_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus_pane_left: Option<BindingConfig>,
@@ -770,6 +774,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(toggle_agent_suspend);
         apply_field!(move_tab_to_group);
         apply_field!(toggle_groups_folded);
+        apply_field!(restart_agent);
         apply_field!(copy_mode);
         apply_field!(focus_pane_left);
         apply_field!(focus_pane_down);
@@ -878,6 +883,7 @@ impl KeysConfig {
         copy_effective_action_field!(toggle_agent_suspend, keybinds.toggle_agent_suspend);
         copy_effective_action_field!(move_tab_to_group, keybinds.move_tab_to_group);
         copy_effective_action_field!(toggle_groups_folded, keybinds.toggle_groups_folded);
+        copy_effective_action_field!(restart_agent, keybinds.restart_agent);
         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
         copy_effective_action_field!(focus_pane_left, keybinds.focus_pane_left);
         copy_effective_action_field!(focus_pane_down, keybinds.focus_pane_down);
@@ -1260,6 +1266,7 @@ impl Default for KeysConfig {
             toggle_agent_suspend: BindingConfig::default(),
             move_tab_to_group: BindingConfig::default(),
             toggle_groups_folded: BindingConfig::default(),
+            restart_agent: BindingConfig::default(),
             copy_mode: BindingConfig::one("prefix+["),
             focus_pane_left: BindingConfig::one("prefix+h"),
             focus_pane_down: BindingConfig::one("prefix+j"),

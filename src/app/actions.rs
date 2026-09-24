@@ -1799,6 +1799,13 @@ impl AppState {
             .min()
     }
 
+    pub(crate) fn next_suspended_agent_resume_deadline(&self) -> Option<Instant> {
+        self.terminals
+            .values()
+            .filter_map(crate::terminal::TerminalState::suspended_agent_resume_deadline)
+            .min()
+    }
+
     pub(crate) fn publish_pane_process_exit_if_agent(
         &mut self,
         pane_id: PaneId,

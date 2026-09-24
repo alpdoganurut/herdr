@@ -722,6 +722,12 @@
           "description": "\"tabs\" sidebar layout: fold every group; once every group is folded, expand them all (the same toggle as the sidebar's ⏶/⏷ button). Unset by default; for example, toggle_groups_folded = \"alt+e\"."
         },
         {
+          "key": "keys.restart_agent",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Restart the focused pane's live agent in place: graceful exit, then an automatic relaunch with its native resume command (agent.restart). A working, blocked or suspended agent is refused with a notice. Unset by default; for example, restart_agent = \"alt+r\"."
+        },
+        {
           "key": "keys.copy_mode",
           "type": "keybinding",
           "default": "\"prefix+[\"",

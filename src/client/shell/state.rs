@@ -592,6 +592,7 @@ pub(super) enum ClientContextMenuAction {
     ActivateAgent,
     Ungroup,
     CloseGroup,
+    RestartAgent,
 }
 
 /// The agent pane a tab context menu acts on.

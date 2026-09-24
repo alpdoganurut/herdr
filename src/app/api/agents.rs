@@ -3,9 +3,9 @@ use std::time::Duration;
 use bytes::Bytes;
 
 use crate::api::schema::{
-    AgentActivateParams, AgentPromptParams, AgentRenameParams, AgentSendKeysParams,
-    AgentStartParams, AgentSuspendParams, AgentTarget, AgentTranscriptBackupPass, PaneReadResult,
-    ResponseResult,
+    AgentActivateParams, AgentPromptParams, AgentRenameParams, AgentRestartParams,
+    AgentSendKeysParams, AgentStartParams, AgentSuspendParams, AgentTarget,
+    AgentTranscriptBackupPass, PaneReadResult, ResponseResult,
 };
 use crate::app::App;
 
@@ -108,6 +108,19 @@ impl App {
         };
 
         encode_success(id, ResponseResult::AgentActivated { pane_id })
+    }
+
+    pub(super) fn handle_agent_restart(
+        &mut self,
+        id: String,
+        params: AgentRestartParams,
+    ) -> String {
+        let pane_id = match self.restart_agent(&params.target) {
+            Ok(pane_id) => pane_id,
+            Err(err) => return encode_error_body(id, self.agent_restart_error_body(err)),
+        };
+
+        encode_success(id, ResponseResult::AgentRestarted { pane_id })
     }
 
     pub(crate) fn handle_deferred_agent_api_request(

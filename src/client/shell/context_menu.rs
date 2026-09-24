@@ -52,7 +52,10 @@ impl ClientContextMenuOverlay {
                     }) => items.push(item("Activate agent", Action::ActivateAgent)),
                     Some(ClientTabMenuAgent {
                         suspended: false, ..
-                    }) => items.push(item("Suspend agent", Action::SuspendAgent)),
+                    }) => {
+                        items.push(item("Suspend agent", Action::SuspendAgent));
+                        items.push(item("Restart agent", Action::RestartAgent));
+                    }
                     None => {}
                 }
                 items.push(item("Close", Action::Close));
@@ -407,6 +410,16 @@ impl ClientShellState {
                         })
                     };
                     self.push_endpoint_method(method, outcome);
+                }
+            }
+            ClientContextMenuAction::RestartAgent => {
+                if let Some(pane_id) = agent.map(|agent| agent.pane_id) {
+                    self.push_endpoint_method(
+                        Method::AgentRestart(crate::api::schema::AgentRestartParams {
+                            target: pane_id,
+                        }),
+                        outcome,
+                    );
                 }
             }
             _ => {}

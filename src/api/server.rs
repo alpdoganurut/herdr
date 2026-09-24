@@ -530,6 +530,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::AgentStart(_) => "agent.start",
         Method::AgentSuspend(_) => "agent.suspend",
         Method::AgentActivate(_) => "agent.activate",
+        Method::AgentRestart(_) => "agent.restart",
         Method::AgentTranscripts(_) => "agent.transcripts",
         Method::AgentPrompt(_) => "agent.prompt",
         Method::AgentWait(_) => "agent.wait",

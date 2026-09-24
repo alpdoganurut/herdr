@@ -4,7 +4,9 @@
 //! the native session reference and the agent's name; the pane reports
 //! `suspended` until it is activated. Activating rebuilds the resume plan from
 //! that reference and launches it in the same pane, reusing the managed launch
-//! path that `agent.start` uses.
+//! path that `agent.start` uses. Restarting is a suspend that owes the pane
+//! an automatic activation: the scheduler tick relaunches the agent once the
+//! exit is observed and the shell prompt is back.
 
 use std::time::{Duration, Instant};
 
@@ -29,6 +31,14 @@ pub(crate) const SUSPEND_SIGNAL_ESCALATION_GRACE: Duration = Duration::from_secs
 /// Terminal size used for a relaunch when the pane has no runtime and no
 /// computed geometry yet; the next resize corrects it.
 const FALLBACK_RELAUNCH_SIZE: (u16, u16) = (24, 80);
+/// How long an `agent.restart` waits for the observed exit and an available
+/// shell prompt before it gives up and leaves the agent suspended. Covers the
+/// whole exit escalation (graceful grace, `SIGTERM`, `SIGKILL`) with room for
+/// the shell to settle.
+pub(crate) const RESTART_RESUME_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often a pending restart probes for the shell prompt once the exit was
+/// observed.
+pub(crate) const RESTART_RESUME_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(super) enum AgentSuspendError {
     Target(TerminalTargetError),
@@ -37,6 +47,14 @@ pub(super) enum AgentSuspendError {
     AlreadySuspended(String),
     NotSuspendable { target: String, reason: String },
     InputFailed(String),
+}
+
+pub(super) enum AgentRestartError {
+    Target(TerminalTargetError),
+    Working(String),
+    Blocked(String),
+    Suspended(String),
+    Suspend(AgentSuspendError),
 }
 
 pub(super) enum AgentActivateError {
@@ -98,6 +116,14 @@ impl App {
         let resolved = self
             .resolve_agent_target(target)
             .map_err(AgentSuspendError::Target)?;
+        self.suspend_resolved_agent(target, &resolved)
+    }
+
+    fn suspend_resolved_agent(
+        &mut self,
+        target: &str,
+        resolved: &TerminalTarget,
+    ) -> Result<String, AgentSuspendError> {
         let not_found = || {
             AgentSuspendError::Target(TerminalTargetError::NotFound {
                 target: target.to_string(),
@@ -198,9 +224,167 @@ impl App {
             .unwrap_or_else(|| target.to_string()))
     }
 
+    /// Exit the live agent hosted by `target` and relaunch it in the same
+    /// pane with its native resume command, as one request.
+    ///
+    /// Only an idle agent restarts: a working one would lose its turn, a
+    /// blocked one would swallow the exit input, and a suspended one is
+    /// activated instead. The suspend runs now; the relaunch is owed to the
+    /// record and performed by [`App::start_pending_agent_restarts`].
+    pub(super) fn restart_agent(&mut self, target: &str) -> Result<String, AgentRestartError> {
+        let resolved = self
+            .resolve_suspended_agent_target(target)
+            .map_err(|err| match err {
+                AgentActivateError::Target(err) => AgentRestartError::Target(err),
+                _ => AgentRestartError::Target(TerminalTargetError::NotFound {
+                    target: target.to_string(),
+                }),
+            })?;
+        let terminal = self
+            .state
+            .workspaces
+            .get(resolved.ws_idx)
+            .and_then(|workspace| workspace.terminal_id(resolved.pane_id))
+            .and_then(|terminal_id| self.state.terminals.get(terminal_id))
+            .ok_or_else(|| {
+                AgentRestartError::Target(TerminalTargetError::NotFound {
+                    target: target.to_string(),
+                })
+            })?;
+        let terminal_id = terminal.id.clone();
+        if terminal.suspended_agent.is_some() {
+            return Err(AgentRestartError::Suspended(target.to_string()));
+        }
+        match terminal.state {
+            crate::detect::AgentState::Blocked => {
+                return Err(AgentRestartError::Blocked(target.to_string()));
+            }
+            crate::detect::AgentState::Working => {
+                return Err(AgentRestartError::Working(target.to_string()));
+            }
+            _ => {}
+        }
+        let pane_id = self
+            .suspend_resolved_agent(target, &resolved)
+            .map_err(AgentRestartError::Suspend)?;
+        let now = Instant::now();
+        if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+            terminal.mark_suspended_agent_resume_pending(now, now + RESTART_RESUME_TIMEOUT);
+        }
+        Ok(pane_id)
+    }
+
+    /// Relaunch every restarted agent whose activation preconditions now
+    /// hold: the exit was observed and the pane is back at an available shell
+    /// prompt. Runs on every scheduler pass; the shell probe is rate-limited
+    /// by the record's `next_check`.
+    ///
+    /// A restart is abandoned (the agent stays suspended, with a warning)
+    /// when the exit escalation had to `SIGKILL` the agent, when activation
+    /// fails for any reason other than the pane not being ready yet, or when
+    /// [`RESTART_RESUME_TIMEOUT`] passes first.
+    pub(crate) fn start_pending_agent_restarts(&mut self, now: Instant) -> bool {
+        let pending: Vec<_> = self
+            .state
+            .terminals
+            .values()
+            .filter_map(|terminal| {
+                let record = terminal.suspended_agent.as_ref()?;
+                let resume = record.resume_pending()?;
+                Some((
+                    terminal.id.clone(),
+                    record.agent.clone(),
+                    resume,
+                    record.escalation(),
+                    record.exit_observed(),
+                ))
+            })
+            .collect();
+        let mut changed = false;
+        for (terminal_id, agent, resume, escalation, exit_observed) in pending {
+            let abandon = if escalation == SuspendExitEscalation::Killed {
+                Some("the agent had to be killed; leaving it suspended".to_string())
+            } else if now >= resume.give_up_at {
+                Some(if exit_observed {
+                    "the pane never returned to an available shell prompt; leaving the agent suspended"
+                        .to_string()
+                } else {
+                    "the agent exit was never observed; leaving it suspended".to_string()
+                })
+            } else {
+                None
+            };
+            if let Some(reason) = abandon {
+                self.abandon_agent_restart(&terminal_id, &agent, &reason);
+                changed = true;
+                continue;
+            }
+            if !exit_observed || now < resume.next_check {
+                continue;
+            }
+            let Some(resolved) = self
+                .terminal_targets()
+                .into_iter()
+                .find(|candidate| candidate.terminal_id == terminal_id.to_string())
+            else {
+                self.abandon_agent_restart(&terminal_id, &agent, "the pane is gone");
+                changed = true;
+                continue;
+            };
+            let target = self
+                .public_pane_id(resolved.ws_idx, resolved.pane_id)
+                .unwrap_or_else(|| terminal_id.to_string());
+            match self.activate_resolved_agent(&target, &resolved) {
+                Ok(_) => {
+                    tracing::info!(
+                        event = "agent.restart.resumed",
+                        terminal_id = %terminal_id,
+                        agent = %agent,
+                        "relaunched the restarted agent with its native resume command"
+                    );
+                    changed = true;
+                }
+                Err(
+                    AgentActivateError::ExitPending(_) | AgentActivateError::PaneNotAvailable(_),
+                ) => {
+                    if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                        terminal.defer_suspended_agent_resume(now + RESTART_RESUME_POLL_INTERVAL);
+                    }
+                }
+                Err(err) => {
+                    let reason = self.agent_activate_error_body(err).message;
+                    self.abandon_agent_restart(&terminal_id, &agent, &reason);
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    fn abandon_agent_restart(&mut self, terminal_id: &TerminalId, agent: &str, reason: &str) {
+        if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
+            terminal.clear_suspended_agent_resume_pending();
+        }
+        tracing::warn!(
+            event = "agent.restart.abandoned",
+            terminal_id = %terminal_id,
+            agent = %agent,
+            reason,
+            "agent restart did not relaunch the agent"
+        );
+    }
+
     /// Relaunch the parked agent hosted by `target` in its own pane.
     pub(super) fn activate_agent(&mut self, target: &str) -> Result<String, AgentActivateError> {
         let resolved = self.resolve_suspended_agent_target(target)?;
+        self.activate_resolved_agent(target, &resolved)
+    }
+
+    fn activate_resolved_agent(
+        &mut self,
+        target: &str,
+        resolved: &TerminalTarget,
+    ) -> Result<String, AgentActivateError> {
         let not_found = || {
             AgentActivateError::Target(TerminalTargetError::NotFound {
                 target: target.to_string(),
@@ -517,6 +701,30 @@ impl App {
         }
     }
 
+    pub(super) fn agent_restart_error_body(
+        &self,
+        err: AgentRestartError,
+    ) -> crate::api::schema::ErrorBody {
+        match err {
+            AgentRestartError::Target(err) => self.agent_target_error_body(err),
+            AgentRestartError::Working(target) => crate::api::schema::ErrorBody {
+                code: "agent_working".into(),
+                message: format!("agent {target} is working; wait for idle or blocked-free state"),
+            },
+            AgentRestartError::Blocked(target) => crate::api::schema::ErrorBody {
+                code: "agent_blocked".into(),
+                message: format!(
+                    "agent {target} is blocked on a prompt; answer it before restarting"
+                ),
+            },
+            AgentRestartError::Suspended(target) => crate::api::schema::ErrorBody {
+                code: "agent_suspended".into(),
+                message: format!("agent {target} is suspended; activate it instead"),
+            },
+            AgentRestartError::Suspend(err) => self.agent_suspend_error_body(err),
+        }
+    }
+
     pub(super) fn agent_activate_error_body(
         &self,
         err: AgentActivateError,
@@ -556,7 +764,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::api::schema::{AgentActivateParams, AgentStatus, AgentSuspendParams, Method};
+    use crate::api::schema::{
+        AgentActivateParams, AgentRestartParams, AgentStatus, AgentSuspendParams, Method,
+    };
     use crate::detect::{Agent, AgentState};
     use crate::terminal::SuspendExitEscalation;
     use crate::workspace::Workspace;
@@ -632,6 +842,15 @@ mod tests {
         request(
             app,
             Method::AgentActivate(AgentActivateParams {
+                target: target.into(),
+            }),
+        )
+    }
+
+    fn restart(app: &mut App, target: &str) -> serde_json::Value {
+        request(
+            app,
+            Method::AgentRestart(AgentRestartParams {
                 target: target.into(),
             }),
         )
@@ -1128,6 +1347,241 @@ mod tests {
             .terminals
             .values()
             .all(|terminal| terminal.suspended_agent.is_some()));
+    }
+
+    fn resume_command() -> String {
+        let plan = crate::agent_resume::plan(
+            "herdr:claude",
+            "claude",
+            &crate::agent_resume::AgentSessionRef::id("claude-session").unwrap(),
+        )
+        .unwrap();
+        crate::platform::interactive_shell_command(&plan.argv, "sh").unwrap()
+    }
+
+    #[tokio::test]
+    async fn restart_exits_then_relaunches_with_the_resume_command_without_a_second_request() {
+        let mut app = test_app();
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        let pane_id = app
+            .pane_info(0, app.state.workspaces[0].tabs[0].root_pane)
+            .unwrap()
+            .pane_id;
+
+        let response = restart(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_restarted", "{response}");
+        assert_eq!(response["result"]["pane_id"], pane_id);
+        assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
+        let record = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .expect("the restart parks the agent first");
+        assert!(record.resume_pending().is_some());
+        assert_eq!(
+            next_input(&mut rx).await,
+            bytes::Bytes::from_static(b"/exit")
+        );
+        assert_eq!(next_input(&mut rx).await, bytes::Bytes::from_static(b"\r"));
+
+        // Before detection reports the exit the tick relaunches nothing.
+        assert!(!app.start_pending_agent_restarts(Instant::now()));
+        assert!(rx.try_recv().is_err(), "nothing was launched");
+        assert!(app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .and_then(|record| record.resume_pending())
+            .is_some());
+        assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
+
+        // The observed exit plus the available shell prompt (the test runtime
+        // has no child, so the prompt counts as available) are enough.
+        observe_exit(&mut app);
+        assert!(app.state.next_suspended_agent_resume_deadline().is_some());
+        assert!(app.start_pending_agent_restarts(Instant::now()));
+
+        let terminal = &app.state.terminals[&terminal_id];
+        assert!(terminal.suspended_agent.is_none());
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+        assert!(terminal.managed_agent_launch_pending());
+        assert_eq!(
+            terminal.persisted_agent_session,
+            Some(claude_session("claude-session"))
+        );
+        let sent = String::from_utf8(next_input(&mut rx).await.to_vec()).unwrap();
+        let expected = resume_command();
+        assert!(
+            sent.starts_with(&expected),
+            "sent {sent:?}, expected {expected:?}"
+        );
+        assert!(sent.ends_with('\r'));
+        assert_ne!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
+        assert_eq!(app.state.next_suspended_agent_resume_deadline(), None);
+        assert!(!app.start_pending_agent_restarts(Instant::now()));
+    }
+
+    #[tokio::test]
+    async fn restart_refuses_a_working_agent_without_writing() {
+        let mut app = test_app();
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Working);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+
+        let response = restart(&mut app, "reviewer");
+        assert_eq!(response["error"]["code"], "agent_working", "{response}");
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("is working; wait for idle"));
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
+        assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Working);
+        assert!(
+            tokio::time::timeout(
+                super::super::api::AGENT_PROMPT_SUBMIT_DELAY + Duration::from_millis(100),
+                rx.recv()
+            )
+            .await
+            .is_err(),
+            "a refused restart wrote or scheduled terminal input"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_refuses_blocked_and_suspended_agents() {
+        let mut app = test_app();
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Blocked);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+
+        let response = restart(&mut app, "reviewer");
+        assert_eq!(response["error"]["code"], "agent_blocked", "{response}");
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
+        assert!(
+            tokio::time::timeout(
+                super::super::api::AGENT_PROMPT_SUBMIT_DELAY + Duration::from_millis(100),
+                rx.recv()
+            )
+            .await
+            .is_err(),
+            "a blocked restart wrote or scheduled terminal input"
+        );
+
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert_eq!(
+            suspend(&mut app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        observe_exit(&mut app);
+        for target in [
+            "reviewer".to_string(),
+            app.public_pane_id(0, app.state.workspaces[0].tabs[0].root_pane)
+                .unwrap(),
+        ] {
+            let response = restart(&mut app, &target);
+            assert_eq!(response["error"]["code"], "agent_suspended", "{response}");
+        }
+        let record = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .unwrap();
+        assert!(
+            record.resume_pending().is_none(),
+            "a refused restart never arms the relaunch of a manual suspend"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_gives_up_and_stays_suspended_when_the_relaunch_never_becomes_possible() {
+        let mut app = test_app();
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        assert_eq!(
+            restart(&mut app, "reviewer")["result"]["type"],
+            "agent_restarted"
+        );
+        // The exit is never observed: the restart times out.
+        let give_up_at = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .and_then(|record| record.resume_pending())
+            .unwrap()
+            .give_up_at;
+        assert!(!app.start_pending_agent_restarts(give_up_at - Duration::from_millis(1)));
+        assert!(app.start_pending_agent_restarts(give_up_at));
+        let terminal = &app.state.terminals[&terminal_id];
+        let record = terminal.suspended_agent.as_ref().expect("still parked");
+        assert!(record.resume_pending().is_none());
+        assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
+
+        // An exit that needed SIGKILL abandons the relaunch at once.
+        let mut app = test_app();
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        assert_eq!(
+            restart(&mut app, "reviewer")["result"]["type"],
+            "agent_restarted"
+        );
+        let now = Instant::now() + SUSPEND_GRACEFUL_EXIT_GRACE;
+        let probe = |_: &_, _: &_, _| SuspendProbe::Job {
+            agent_pids: vec![4242],
+        };
+        assert!(app.escalate_suspended_agent_exits_with(now, probe, |_, _| {}));
+        let later = now + SUSPEND_SIGNAL_ESCALATION_GRACE;
+        assert!(app.escalate_suspended_agent_exits_with(later, probe, |_, _| {}));
+        observe_exit(&mut app);
+        assert!(app.start_pending_agent_restarts(later));
+        let terminal = &app.state.terminals[&terminal_id];
+        let record = terminal.suspended_agent.as_ref().expect("still parked");
+        assert_eq!(record.escalation(), SuspendExitEscalation::Killed);
+        assert!(record.resume_pending().is_none());
+        assert!(!terminal.managed_agent_launch_pending());
     }
 
     #[test]

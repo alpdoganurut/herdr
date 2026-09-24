@@ -161,7 +161,7 @@ herdr agent suspend reviewer
 herdr agent activate reviewer
 ```
 
-`agent suspend` submits the agent's exit command and keeps the pane's native session reference and name; the pane reports `suspended` and survives server restarts without being relaunched. It returns `agent_not_suspendable` for agents without a known session reference, resume plan, or exit command. `agent activate` runs the native resume command in that pane once it is back at its shell prompt (`pane_not_available` otherwise), then wait for `idle` before prompting.
+`agent suspend` submits the agent's exit command and keeps the pane's native session reference and name; the pane reports `suspended` and survives server restarts without being relaunched. It returns `agent_not_suspendable` for agents without a known session reference, resume plan, or exit command. `agent activate` runs the native resume command in that pane once it is back at its shell prompt (`pane_not_available` otherwise), then wait for `idle` before prompting. `agent restart` does both in one command for an idle agent (refused with `agent_working`, `agent_blocked`, or `agent_suspended`): the relaunch happens on its own once the exit is observed and the shell prompt is back.
 
 Use logical keys for interactive agent UI controls:
 

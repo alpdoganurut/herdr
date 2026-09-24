@@ -189,6 +189,14 @@ pub struct AgentActivateParams {
     pub target: String,
 }
 
+/// Exit an idle live agent gracefully and relaunch it in the same pane with
+/// its native resume command; `target` is a live agent name or the hosting
+/// pane id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentRestartParams {
+    pub target: String,
+}
+
 /// A finished native transcript backup pass, as reported by
 /// `agent.transcripts`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
