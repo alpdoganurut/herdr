@@ -35,6 +35,9 @@ LIB="$SCRIPT_DIR/fork_sync_lib.py"
 unset HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH HERDR_PANE_ID HERDR_ENV \
   HERDR_SESSION HERDR_WORKSPACE_ID HERDR_TAB_ID
 export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+# Remote git (fetch/ls-remote/push to mine over SSH) fails fast instead of prompting.
+export GIT_TERMINAL_PROMPT=0
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -oBatchMode=yes}"
 
 die() {
   local code=$1
@@ -210,10 +213,15 @@ cmd_prepare() {
   mkdir -p "$LOCAL_DIR"
   load_state
   case "$S_phase" in
-    merging | conflicts | merged | gating | gate_failed | gated)
+    merging | conflicts | merged | gating | gate_failed | gated | committed | parked)
       say "discarding in-progress run $S_run_id (phase $S_phase); the sync worktree is reset"
       ;;
   esac
+  if [[ -n "$S_land_merge_sha" && "$S_land_landed" != true ]] &&
+    ! git -C "$MAIN" merge-base --is-ancestor "$S_land_merge_sha" "refs/heads/$FORK_BRANCH" 2>/dev/null; then
+    git -C "$MAIN" update-ref "refs/fork-sync/$S_run_id" "$S_land_merge_sha"
+    say "kept the unlanded merge of run $S_run_id at refs/fork-sync/$S_run_id"
+  fi
 
   fetch_refs
   local U F0 base count run_id ushort report
@@ -319,8 +327,8 @@ gate_steps() {
   local schema_test=generated_protocol_schema_artifact_is_current
   printf 'fmt\t%s\n' "cargo fmt --check"
   printf 'clippy\t%s\n' "cargo clippy --all-targets --locked -- -D warnings"
-  printf 'schema-regen\t%s\n' "HERDR_UPDATE_API_SCHEMA=1 cargo nextest run --locked $schema_test && git add docs/next/api"
-  printf 'schema-verify\t%s\n' "cargo nextest run --locked $schema_test && git diff --exit-code docs/next/api/"
+  printf 'schema-regen\t%s\n' "HERDR_UPDATE_API_SCHEMA=1 cargo nextest run --locked --no-tests=fail $schema_test && git add docs/next/api"
+  printf 'schema-verify\t%s\n' "cargo nextest run --locked --no-tests=fail $schema_test && git diff --exit-code docs/next/api/"
   printf 'nextest\t%s\n' "cargo nextest run --locked --status-level fail --final-status-level slow --failure-output final --success-output never"
   printf 'maintenance-test\t%s\n' "python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input"
   printf 'ui-hot-path-architecture-test\t%s\n' "python3 -m unittest scripts.test_ui_hot_path_architecture"
@@ -366,6 +374,8 @@ cmd_gate() {
   markers=$(git -C "$WT" diff --cached --name-only -z "$S_fork_sha" |
     (cd "$WT" && xargs -0 grep -lE '^(<<<<<<<|>>>>>>>) ' 2>/dev/null) || true)
   [[ -z "$markers" ]] || die 1 "conflict markers left in: $(echo "$markers" | tr '\n' ' ')"
+  local pre_tree
+  pre_tree=$(git -C "$WT" write-tree)
 
   local gate_dir="$LOCAL_DIR/$S_run_id-gate"
   rm -rf "$gate_dir"
@@ -401,9 +411,28 @@ cmd_gate() {
   done 3< <(gate_steps)
   steps_json+="]"
 
+  local post_tree stray
+  git -C "$WT" add -A
+  post_tree=$(git -C "$WT" write-tree)
+  # The gate may only regenerate docs/next/api. Anything else it wrote is
+  # reverted to the pre-gate tree (so a rerun cannot bake it into M) and fails it.
+  stray=$(git -C "$WT" diff --name-only "$pre_tree" "$post_tree" | grep -v '^docs/next/api/' || true)
+  if [[ -n "$stray" ]]; then
+    git -C "$WT" diff --name-only "$pre_tree" "$post_tree" >"$gate_dir/unexpected-files.log"
+    git -C "$WT" read-tree "$pre_tree"
+    git -C "$WT" checkout-index -f -a
+    git -C "$WT" clean -fdq
+    post_tree=$pre_tree
+    if [[ -z "$failed" ]]; then
+      log="$gate_dir/unexpected-files.log"
+      failed="unexpected files written by the gate: $(echo "$stray" | tr '\n' ' ')"
+    else
+      st_append warnings "gate wrote unexpected files (reverted): $(echo "$stray" | tr '\n' ' ')"
+    fi
+  fi
+
   if [[ -z "$failed" ]]; then
-    git -C "$WT" add -A
-    st_set "gate.steps:=$steps_json" gate.result=passed "gate.gated_tree=$(git -C "$WT" write-tree)" \
+    st_set "gate.steps:=$steps_json" gate.result=passed "gate.gated_tree=$post_tree" \
       phase=gated outcome="merged, gate passed"
     say "gate passed"
     say "report: $S_report"

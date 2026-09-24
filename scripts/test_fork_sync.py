@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -308,6 +309,7 @@ class PrepareTests(ForkSyncCase):
         kinds = self.denial_kinds()
         self.assertIn("upstream deleted a fork path", kinds)
         self.assertIn("non-content conflict", kinds)
+        self.assertNotIn("manifest drift", kinds)
 
     def test_watch_list_identifier_in_incoming_diff_denied(self) -> None:
         self.upstream("collision", {"src/server/core.rs": "fn core() {}\nstruct S { transcript_path: PathBuf }\n"})
@@ -476,6 +478,17 @@ class GateTests(ForkSyncCase):
                 self.assertEqual(self.state()["gate"]["result"], "failed")
         self.assertExit(self.sync("land"), 1)
 
+    def test_gate_writing_unexpected_files_is_denied(self) -> None:
+        self.upstream("docs", {"docs/notes.md": "v2\n"})
+        self.assertExit(self.sync("prepare"), 0)
+        proc = self.sync("gate", FORK_SYNC_GATE_CMD="echo junk > stray.txt")
+        self.assertExit(proc, 20)
+        self.assertIn("unexpected files", self.state()["gate"]["failed_step"])
+        self.assertFalse((self.worktree / "stray.txt").exists(), "stray output is reverted")
+        # a schema regeneration under docs/next/api is allowed
+        proc = self.sync("gate", FORK_SYNC_GATE_CMD="mkdir -p docs/next/api && echo '{}' > docs/next/api/s.json")
+        self.assertExit(proc, 0)
+
     def test_skip_gate_knob(self) -> None:
         self.upstream("docs", {"docs/notes.md": "v2\n"})
         self.assertExit(self.sync("prepare"), 0)
@@ -589,6 +602,17 @@ class LandTests(ForkSyncCase):
         self.assertExit(self.sync("install", FORK_SYNC_DRY_RUN="1"), 0)
         self.assertFalse(self.bin_dir.exists())
 
+    def test_reprepare_parks_an_unlanded_merge(self) -> None:
+        self._gated()
+        self.assertExit(self.sync("land", FORK_SYNC_DRY_RUN="1"), 0)
+        state = self.state()
+        m, run_id = state["land"]["merge_sha"], state["run_id"]
+        self.upstream("more", {"docs/notes.md": "v3\n"})
+        time.sleep(1.1)  # run ids have one-second resolution
+        proc = self.sync("prepare")
+        self.assertExit(proc, 0)
+        self.assertEqual(git(self.main, "rev-parse", f"refs/fork-sync/{run_id}"), m)
+
     def test_abort_drops_merge_and_keeps_report(self) -> None:
         self.upstream("upstream field", {"src/config/model.rs": "fn base_one() {}\nfn base_two() {}\nfn upstream_added() {}\n"})
         self.assertExit(self.sync("prepare"), 10)
@@ -658,6 +682,14 @@ class InstallTests(ForkSyncCase):
         self.assertExit(proc, 0)
         self.assertIn("reattach needed", proc.stdout)
         self.assertEqual(self.state()["install"]["verdict"], "reattach needed")
+
+    def test_non_src_build_input_change_is_server_restart(self) -> None:
+        self.upstream("deps", {"Cargo.lock": "# lock v2\n", "docs/notes.md": "v2\n"})
+        self.seed_stamp(self.f0)
+        self.run_to_landed()
+        proc = self.sync("install")
+        self.assertExit(proc, 0)
+        self.assertIn("server restart needed for: Cargo.lock", proc.stdout)
 
     def test_install_requires_landing(self) -> None:
         self.upstream("docs", {"docs/notes.md": "v2\n"})

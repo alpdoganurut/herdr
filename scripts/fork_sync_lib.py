@@ -432,8 +432,9 @@ def classify(repo: str, fork: str, upstream: str, base: str, manifest: dict[str,
             git(repo, "diff", "--diff-filter=A", "--name-only", upstream, mt["tree"], "--", *DRIFT_PATHSPEC).splitlines(),
         )
     )
+    upstream_deleted = {e["old"] for e in name_status(repo, base, upstream) if e["status"] in "DR"}
     drift = {
-        "unlisted": sorted(added - owned),
+        "unlisted": sorted(added - owned - upstream_deleted),
         "missing": sorted(owned - added),
     }
     if drift["unlisted"] or drift["missing"]:
@@ -501,10 +502,21 @@ def analyze_gate_log(log: str, manifest: dict[str, Any]) -> dict[str, Any]:
     return {"codes": codes, "missing": missing, "unknown": unknown, "e0063_only": e0063_only}
 
 
-def is_test_or_doc(path: str) -> bool:
-    if not path.startswith("src/"):
+REATTACH_SAFE_PREFIXES = ("src/client/", "docs/", "tests/", "scripts/", "skills/", ".github/", ".claude/")
+
+
+def reattach_safe(path: str) -> bool:
+    """True when a change cannot alter the server half of the binary.
+
+    Conservative: only src/client/**, test code, docs, scripts and markdown.
+    Everything else (rest of src/, vendor/, Cargo.*, build.rs, .cargo/) means
+    a server restart.
+    """
+    if path.startswith(REATTACH_SAFE_PREFIXES):
         return True
-    return "/tests/" in path or path.endswith("/tests.rs")
+    if path.endswith(".md"):
+        return True
+    return path.startswith("src/") and ("/tests/" in path or path.endswith("/tests.rs"))
 
 
 def restart_verdict(repo: str, before: str | None, after: str, proto_before: dict | None) -> dict[str, Any]:
@@ -519,7 +531,7 @@ def restart_verdict(repo: str, before: str | None, after: str, proto_before: dic
             "server_files": [],
         }
     changed = [p for p in git(repo, "diff", "--name-only", before, after).splitlines() if p]
-    server_files = [p for p in changed if not is_test_or_doc(p) and not p.startswith("src/client/")]
+    server_files = [p for p in changed if not reattach_safe(p)]
     protocol_changed = proto_before != proto_after
     if protocol_changed:
         if proto_before["protocol_version"] != proto_after["protocol_version"]:
