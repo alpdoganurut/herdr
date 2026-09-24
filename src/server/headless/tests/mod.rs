@@ -8,6 +8,9 @@ mod pane_move_tests;
 mod surface_delta_tests;
 #[path = "surface_interest.rs"]
 mod surface_interest_tests;
+// fork: smoke tests run by name in the sync gate (FORK.md section 10).
+#[path = "fork_smoke.rs"]
+mod fork_smoke;
 
 fn client_shell_projection(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,

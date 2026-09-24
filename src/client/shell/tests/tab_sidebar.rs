@@ -1435,3 +1435,95 @@ fn group_keys_do_nothing_outside_the_tabs_layout() {
     );
     assert!(state.collapsed_groups.is_empty());
 }
+
+/// Fork smoke tests: FORK.md section 10 lists them by name and the sync gate
+/// runs them with `-E 'test(fork_smoke)'`.
+mod fork_smoke {
+    use super::*;
+    use crossterm::event::KeyCode;
+
+    fn tabs_state_with_agent(status: AgentStatus) -> ClientShellState {
+        let mut snapshot = two_space_snapshot();
+        snapshot.agents = vec![agent("pane_1", "tab_1", status)];
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+        state.set_snapshot(Box::new(snapshot));
+        state.set_pane_surface(wide_surface());
+        state.compose(106, 20).expect("composed frame");
+        state
+    }
+
+    fn typed_input() -> Vec<RawInputEvent> {
+        vec![
+            RawInputEvent::Key(crate::input::TerminalKey::new(
+                KeyCode::Char('l'),
+                KeyModifiers::empty(),
+            )),
+            RawInputEvent::Key(crate::input::TerminalKey::new(
+                KeyCode::Enter,
+                KeyModifiers::empty(),
+            )),
+            RawInputEvent::Key(crate::input::TerminalKey::new(
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+            )),
+            RawInputEvent::Text(crate::input::TextCommit::new("ls")),
+            RawInputEvent::Paste("rm -rf /".into()),
+        ]
+    }
+
+    fn pane_input_requests(outcome: &ClientShellInput) -> usize {
+        outcome
+            .requests
+            .iter()
+            .filter(|request| matches!(request, ClientMessage::ClientShellPaneInput { .. }))
+            .count()
+    }
+
+    /// The tabs-layout input lock guards specific client entry points. An
+    /// upstream input route that bypasses them would type into the bare shell
+    /// behind the suspended card without any merge conflict.
+    #[test]
+    fn locked_suspended_pane_emits_no_pane_input() {
+        // Control: the same keys on a live agent pane do reach the pane, so
+        // the locked assertion below cannot pass because input moved to a
+        // different message.
+        let mut live = tabs_state_with_agent(AgentStatus::Working);
+        let outcome = live.handle_raw_events(typed_input());
+        assert!(
+            pane_input_requests(&outcome) > 0,
+            "typed input must reach a live pane"
+        );
+
+        let mut parked = tabs_state_with_agent(AgentStatus::Suspended);
+        assert!(parked.suspended_pane_locked("pane_1"));
+        let outcome = parked.handle_raw_events(typed_input());
+        assert_eq!(
+            pane_input_requests(&outcome),
+            0,
+            "no typed input may reach a suspended pane"
+        );
+        let pane = parked.hits.panes[0].inner_rect;
+        let outcome = parked.handle_raw_events(
+            [
+                MouseEventKind::Down(MouseButton::Left),
+                MouseEventKind::Up(MouseButton::Left),
+                MouseEventKind::ScrollUp,
+            ]
+            .into_iter()
+            .map(|kind| {
+                RawInputEvent::Mouse(MouseEvent {
+                    kind,
+                    column: pane.x + 2,
+                    row: pane.y + 1,
+                    modifiers: KeyModifiers::empty(),
+                })
+            })
+            .collect(),
+        );
+        assert_eq!(
+            pane_input_requests(&outcome),
+            0,
+            "no mouse input may reach a suspended pane"
+        );
+    }
+}
