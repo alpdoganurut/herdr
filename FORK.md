@@ -8,7 +8,11 @@ Formats: 1 one path per line; 2 a pipe table `| struct | field | default |` whos
 Section 2 also covers E0027 (an exhaustive struct pattern missing a fork field): add `<field>: _`.
 
 ## 1. Owned files (added by the fork; upstream R/D/T on any = deny)
+.claude/skills/fork-sync/SKILL.md
 FORK.md
+scripts/fork_sync.sh
+scripts/fork_sync_lib.py
+scripts/test_fork_sync.py
 src/app/agent_suspend.rs
 src/app/agent_transcripts.rs
 src/client/shell/suspended_pane.rs
