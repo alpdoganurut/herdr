@@ -63,6 +63,11 @@ impl ClientShellState {
             || self.popup_pending
             || self.hits.popup.is_some()
             || contains(self.hits.notification_toast, (mouse.column, mouse.row))
+            || self
+                .hits
+                .notification_toasts
+                .iter()
+                .any(|(rect, _)| contains(*rect, (mouse.column, mouse.row)))
         {
             return false;
         }

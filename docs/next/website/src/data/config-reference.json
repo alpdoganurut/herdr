@@ -1161,6 +1161,18 @@
           ]
         },
         {
+          "key": "ui.toast.herdr.sticky",
+          "type": "boolean",
+          "default": "false",
+          "description": "Keep in-app toasts on screen until they are handled instead of expiring. Cards stack from ui.toast.herdr.position, newest nearest the corner. Left-click focuses the card's pane and removes it, right-click dismisses it, and keys.open_notification_target focuses the newest card. A card also clears when its tab becomes focused, when its pane closes, when a needs-input agent is no longer blocked, when a finished agent starts working again, or when a newer notification for the same pane arrives."
+        },
+        {
+          "key": "ui.toast.herdr.max_stack",
+          "type": "integer",
+          "default": "6",
+          "description": "Sticky cards drawn before older ones fold into one \"+N more\" line. The stack also stays within half of the frame height. Valid values are 1 through 20; values outside that range are clamped with a config warning."
+        },
+        {
           "key": "ui.toast.clipboard.enabled",
           "type": "boolean",
           "default": "true",

@@ -460,6 +460,8 @@ impl ClientShellState {
         }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         self.hits.notification_toast = Rect::default();
+        self.hits.notification_toasts.clear();
+        let mut notification_stack_bounds = Rect::default();
         let has_config_diagnostic = self.config_diagnostic.is_some();
         let active_lifecycle = self
             .endpoints
@@ -470,7 +472,7 @@ impl ClientShellState {
         if has_config_diagnostic
             || active_lifecycle.is_some()
             || self.visible_endpoint_notice.is_some()
-            || self.visible_notification.is_some()
+            || !self.visible_notifications.is_empty()
         {
             let cursor = frame.cursor.clone();
             let mut composed = frame.to_ratatui_buffer()?;
@@ -517,7 +519,22 @@ impl ClientShellState {
                         &self.config.palette,
                     )
                 };
-            } else if let Some(notification) = self.visible_notification.as_ref() {
+            } else if self.config.toast_sticky && layout.mobile_header.is_empty() {
+                self.hits.notification_toasts = notifications::render_notification_stack(
+                    &mut composed,
+                    Rect::new(0, 0, cols, rows),
+                    &self.visible_notifications,
+                    self.config.toast_position,
+                    self.config.toast_max_stack,
+                    u16::from(has_config_diagnostic) + lifecycle_offset,
+                    &self.config.palette,
+                );
+                for (rect, _) in &self.hits.notification_toasts {
+                    occlusion.cover(*rect);
+                    notification_stack_bounds = notification_stack_bounds.union(*rect);
+                }
+            } else if let Some(index) = self.primary_notification_index() {
+                let notification = &self.visible_notifications[index];
                 self.hits.notification_toast = if layout.mobile_header.is_empty() {
                     notifications::render_visible_notification(
                         &mut composed,
@@ -536,6 +553,9 @@ impl ClientShellState {
                         &self.config.palette,
                     )
                 };
+                self.hits
+                    .notification_toasts
+                    .push((self.hits.notification_toast, Some(index)));
             }
             occlusion.cover(self.hits.notification_toast);
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
@@ -554,7 +574,11 @@ impl ClientShellState {
                 feedback,
                 base_offset,
                 self.config.clipboard_toast_position,
-                self.hits.notification_toast,
+                if notification_stack_bounds.is_empty() {
+                    self.hits.notification_toast
+                } else {
+                    notification_stack_bounds
+                },
             );
             occlusion.cover(crate::ui::render_copy_feedback_buffer(
                 &mut composed,

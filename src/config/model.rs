@@ -10,6 +10,9 @@ use super::{
 };
 
 pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
+pub const DEFAULT_TOAST_MAX_STACK: u8 = 6;
+pub const MIN_TOAST_MAX_STACK: u8 = 1;
+pub const MAX_TOAST_MAX_STACK: u8 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -249,6 +252,10 @@ pub struct ToastConfig {
 #[serde(default)]
 pub struct HerdrToastConfig {
     pub position: ToastHerdrPosition,
+    /// Keep in-app toasts on screen, stacked, until they are clicked, dismissed, or stale.
+    pub sticky: bool,
+    /// Sticky cards drawn before the rest fold into one "+N more" line (1 through 20).
+    pub max_stack: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -1305,7 +1312,30 @@ impl Default for HerdrToastConfig {
     fn default() -> Self {
         Self {
             position: ToastHerdrPosition::BottomRight,
+            sticky: false,
+            max_stack: DEFAULT_TOAST_MAX_STACK,
         }
+    }
+}
+
+impl HerdrToastConfig {
+    /// `max_stack` clamped to 1..=20; out-of-range values are reported by
+    /// [`HerdrToastConfig::diagnostic`].
+    pub fn effective_max_stack(&self) -> usize {
+        usize::from(
+            self.max_stack
+                .clamp(MIN_TOAST_MAX_STACK, MAX_TOAST_MAX_STACK),
+        )
+    }
+
+    pub fn diagnostic(&self) -> Option<String> {
+        (!(MIN_TOAST_MAX_STACK..=MAX_TOAST_MAX_STACK).contains(&self.max_stack)).then(|| {
+            format!(
+                "ui.toast.herdr.max_stack must be between {MIN_TOAST_MAX_STACK} and {MAX_TOAST_MAX_STACK} (got {}); using {}",
+                self.max_stack,
+                self.effective_max_stack()
+            )
+        })
     }
 }
 
@@ -2037,6 +2067,34 @@ delivery = "terminal"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.ui.toast.delivery, ToastDelivery::Terminal);
+    }
+
+    #[test]
+    fn herdr_toast_sticky_and_max_stack_parse_and_clamp() {
+        let config: Config = toml::from_str(
+            r#"
+[ui.toast.herdr]
+sticky = true
+max_stack = 3
+"#,
+        )
+        .unwrap();
+        assert!(config.ui.toast.herdr.sticky);
+        assert_eq!(config.ui.toast.herdr.effective_max_stack(), 3);
+        assert!(config.ui.toast.herdr.diagnostic().is_none());
+
+        let defaults = Config::default();
+        assert!(!defaults.ui.toast.herdr.sticky);
+        assert_eq!(defaults.ui.toast.herdr.effective_max_stack(), 6);
+
+        for (raw, clamped) in [(0, 1), (21, 20)] {
+            let config: Config =
+                toml::from_str(&format!("[ui.toast.herdr]\nmax_stack = {raw}\n")).unwrap();
+            assert_eq!(config.ui.toast.herdr.effective_max_stack(), clamped);
+            let diagnostic = config.ui.toast.herdr.diagnostic().expect("out of range");
+            assert!(diagnostic.contains("ui.toast.herdr.max_stack must be between 1 and 20"));
+            assert!(config.collect_diagnostics().contains(&diagnostic));
+        }
     }
 
     #[test]

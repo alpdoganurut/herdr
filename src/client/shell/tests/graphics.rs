@@ -67,7 +67,12 @@ fn is_placed(bytes: &[u8], point: (u16, u16)) -> bool {
     String::from_utf8_lossy(bytes).contains(&format!("\x1b[{};{}H", point.1 + 1, point.0 + 1))
 }
 
-fn assert_graphics_cover(state: &mut ClientShellState, covered: Rect, cols: u16, rows: u16) {
+pub(super) fn assert_graphics_cover(
+    state: &mut ClientShellState,
+    covered: Rect,
+    cols: u16,
+    rows: u16,
+) {
     let layout = state.layout(cols, rows);
     let covered = covered.intersection(layout.pane_surface);
     assert!(!covered.is_empty());
@@ -109,21 +114,23 @@ fn notifications_and_clipboard_feedback_only_cover_their_drawn_corners() {
             state.sidebar_collapsed = true;
             state.set_snapshot(Box::new(snapshot()));
             state.set_pane_surface(surface());
-            state.visible_notification = Some(ClientVisibleNotification {
-                endpoint_id: ClientEndpointId::Local,
-                event: SemanticNotification {
-                    kind: SemanticNotificationKind::Custom,
-                    title: "notice".into(),
-                    body: Some("body".into()),
-                    sound: None,
-                    agent: None,
-                    workspace_id: None,
-                    tab_id: None,
-                    pane_id: None,
-                    position: Some(position),
-                },
-                deadline: std::time::Instant::now(),
-            });
+            state
+                .visible_notifications
+                .push_back(ClientVisibleNotification {
+                    endpoint_id: ClientEndpointId::Local,
+                    event: SemanticNotification {
+                        kind: SemanticNotificationKind::Custom,
+                        title: "notice".into(),
+                        body: Some("body".into()),
+                        sound: None,
+                        agent: None,
+                        workspace_id: None,
+                        tab_id: None,
+                        pane_id: None,
+                        position: Some(position),
+                    },
+                    deadline: std::time::Instant::now(),
+                });
             state.compose(cols, rows).unwrap();
             let rect = state.hits.notification_toast;
             assert_graphics_cover(&mut state, rect, cols, rows);
