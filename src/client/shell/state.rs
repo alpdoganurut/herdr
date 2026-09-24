@@ -20,6 +20,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) sidebar_collapsed_mode: SidebarCollapsedModeConfig,
     pub(super) sidebar_layout: crate::config::SidebarLayoutConfig,
     pub(super) tab_agent_glyphs: std::collections::BTreeMap<String, String>,
+    pub(super) tab_agent_glyph_colors:
+        std::collections::BTreeMap<String, Option<ratatui::style::Color>>,
     pub(super) mobile_width_threshold: u16,
     pub(super) tab_bar_position: TabBarPositionConfig,
     pub(super) hide_tab_bar_when_single_tab: bool,

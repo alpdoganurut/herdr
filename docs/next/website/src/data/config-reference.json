@@ -928,6 +928,12 @@
           "description": "Glyph at the right edge of a tab row in the \"tabs\" sidebar layout, keyed by canonical agent id, plus \"other\" (any other agent) and \"shell\" (no agent). Keys you omit keep their defaults."
         },
         {
+          "key": "ui.tab_agent_glyph_colors",
+          "type": "table",
+          "default": "{ claude = \"#D97757\", codex = \"#3B82F6\" }",
+          "description": "Color of the focused tab row's agent glyph in the \"tabs\" sidebar layout, keyed like ui.tab_agent_glyphs. Values accept hex (\"#rrggbb\", \"#rgb\"), rgb(r,g,b) or named colors. Keys you omit keep their defaults; keys without a color, and invalid values, keep the monochrome glyph. Unfocused rows are always monochrome."
+        },
+        {
           "key": "ui.mobile_width_threshold",
           "type": "integer",
           "default": "64",

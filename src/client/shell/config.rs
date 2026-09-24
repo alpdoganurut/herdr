@@ -120,6 +120,9 @@ impl ClientShellConfig {
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_layout: config.ui.sidebar_layout,
             tab_agent_glyphs: config.ui.tab_agent_glyphs.clone(),
+            tab_agent_glyph_colors: crate::config::resolve_tab_agent_glyph_colors(
+                &config.ui.tab_agent_glyph_colors,
+            ),
             mobile_width_threshold: config.ui.mobile_width_threshold,
             tab_bar_position: config.ui.tab_bar_position,
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
@@ -324,6 +327,11 @@ impl ClientShellConfig {
                 self.sidebar_collapsed_mode = ui.sidebar_collapsed_mode;
                 self.sidebar_layout = ui.sidebar_layout;
                 self.tab_agent_glyphs = ui.tab_agent_glyphs.clone();
+                diagnostics.extend(crate::config::tab_agent_glyph_color_diagnostics(
+                    &ui.tab_agent_glyph_colors,
+                ));
+                self.tab_agent_glyph_colors =
+                    crate::config::resolve_tab_agent_glyph_colors(&ui.tab_agent_glyph_colors);
                 self.mobile_width_threshold = ui.mobile_width_threshold;
                 self.tab_bar_position = ui.tab_bar_position;
                 self.hide_tab_bar_when_single_tab = ui.hide_tab_bar_when_single_tab;

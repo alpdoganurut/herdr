@@ -173,6 +173,62 @@ pub fn tab_agent_glyph<'a>(
         .unwrap_or("")
 }
 
+/// Built-in brand colors for the focused tab row's agent glyph in the "tabs"
+/// sidebar layout; `ui.tab_agent_glyph_colors` overrides individual keys. Keys
+/// without a color ("other", "shell" by default) keep the monochrome glyph.
+pub const DEFAULT_TAB_AGENT_GLYPH_COLORS: [(&str, &str); 2] =
+    [("claude", "#D97757"), ("codex", "#3B82F6")];
+
+/// Parse a glyph color with the shared theme color parser. `parse_color` maps
+/// anything it does not recognise to cyan, so a cyan result only counts when the
+/// value names cyan.
+fn parse_tab_agent_glyph_color(value: &str) -> Option<ratatui::style::Color> {
+    let color = super::parse_color(value);
+    (color != ratatui::style::Color::Cyan || value.trim().eq_ignore_ascii_case("cyan"))
+        .then_some(color)
+}
+
+/// Resolve `ui.tab_agent_glyph_colors` once per config load: every built-in key
+/// and every override key, `Some(color)` when it parses and `None` when the
+/// user's value is invalid (that key stays monochrome instead of falling back).
+pub fn resolve_tab_agent_glyph_colors(
+    overrides: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, Option<ratatui::style::Color>> {
+    let mut resolved = DEFAULT_TAB_AGENT_GLYPH_COLORS
+        .iter()
+        .map(|(key, color)| ((*key).to_string(), parse_tab_agent_glyph_color(color)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (key, value) in overrides {
+        resolved.insert(key.clone(), parse_tab_agent_glyph_color(value));
+    }
+    resolved
+}
+
+/// The focused-row glyph color for `key`, mirroring `tab_agent_glyph`: the key's
+/// resolved color (override, then built-in), then the "other" color. `None`
+/// keeps the monochrome glyph.
+pub fn tab_agent_glyph_color(
+    resolved: &std::collections::BTreeMap<String, Option<ratatui::style::Color>>,
+    key: &str,
+) -> Option<ratatui::style::Color> {
+    match resolved.get(key) {
+        Some(color) => *color,
+        None => resolved.get("other").copied().flatten(),
+    }
+}
+
+pub fn tab_agent_glyph_color_diagnostics(
+    overrides: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    overrides
+        .iter()
+        .filter(|(_, value)| parse_tab_agent_glyph_color(value).is_none())
+        .map(|(key, value)| {
+            format!("invalid color ui.tab_agent_glyph_colors.{key} = {value:?}; keeping the glyph monochrome")
+        })
+        .collect()
+}
+
 /// Expanded sidebar composition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -988,6 +1044,10 @@ pub struct UiConfig {
     /// agent id, plus "other" (any other agent) and "shell" (no agent). Keys you omit keep
     /// their defaults. Default: claude "⧆", codex "⧇", other "⍾", shell "⧅".
     pub tab_agent_glyphs: std::collections::BTreeMap<String, String>,
+    /// Color of the focused tab row's agent glyph in the "tabs" sidebar layout, keyed like
+    /// `tab_agent_glyphs`. Values use the theme color syntax. Keys you omit keep their defaults;
+    /// keys without a color stay monochrome. Default: claude "#D97757", codex "#3B82F6".
+    pub tab_agent_glyph_colors: std::collections::BTreeMap<String, String>,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
@@ -1247,6 +1307,7 @@ impl Default for UiConfig {
             sidebar_collapsed_mode: SidebarCollapsedModeConfig::Compact,
             sidebar_layout: SidebarLayoutConfig::Spaces,
             tab_agent_glyphs: std::collections::BTreeMap::new(),
+            tab_agent_glyph_colors: std::collections::BTreeMap::new(),
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,
@@ -1810,6 +1871,47 @@ sidebar_layout = "tabs"
             tab_agent_glyph(&config.ui.tab_agent_glyphs, "claude"),
             "\u{29C6}"
         );
+    }
+
+    #[test]
+    fn tab_agent_glyph_colors_resolve_overrides_and_reject_invalid_values() {
+        use ratatui::style::Color;
+        let defaults = Config::default();
+        let resolved = resolve_tab_agent_glyph_colors(&defaults.ui.tab_agent_glyph_colors);
+        assert_eq!(
+            tab_agent_glyph_color(&resolved, "claude"),
+            Some(Color::Rgb(0xD9, 0x77, 0x57))
+        );
+        assert_eq!(
+            tab_agent_glyph_color(&resolved, "codex"),
+            Some(Color::Rgb(0x3B, 0x82, 0xF6))
+        );
+        assert_eq!(tab_agent_glyph_color(&resolved, "shell"), None);
+        assert_eq!(tab_agent_glyph_color(&resolved, "gemini"), None);
+        assert!(tab_agent_glyph_color_diagnostics(&defaults.ui.tab_agent_glyph_colors).is_empty());
+
+        let config: Config = toml::from_str(
+            "[ui]\ntab_agent_glyph_colors = { claude = \"magenta\", other = \"cyan\", codex = \"blurple\" }",
+        )
+        .unwrap();
+        let colors = &config.ui.tab_agent_glyph_colors;
+        let resolved = resolve_tab_agent_glyph_colors(colors);
+        assert_eq!(
+            tab_agent_glyph_color(&resolved, "claude"),
+            Some(Color::Magenta)
+        );
+        assert_eq!(
+            tab_agent_glyph_color(&resolved, "gemini"),
+            Some(Color::Cyan)
+        );
+        assert_eq!(tab_agent_glyph_color(&resolved, "codex"), None);
+        let diagnostics = tab_agent_glyph_color_diagnostics(colors);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].contains("ui.tab_agent_glyph_colors.codex"));
+        assert!(config
+            .collect_diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.contains("ui.tab_agent_glyph_colors.codex")));
     }
 
     #[test]

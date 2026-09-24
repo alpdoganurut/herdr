@@ -256,6 +256,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # "other" (any other agent) and "shell" (no agent). Omitted keys keep their defaults.
 # tab_agent_glyphs = { claude = "⧆", codex = "⧇", other = "⍾", shell = "⧅" }
 
+# Color of the focused tab row's agent glyph in the "tabs" layout, keyed like
+# tab_agent_glyphs; hex or named colors. Keys without a color stay monochrome.
+# tab_agent_glyph_colors = { claude = "#D97757", codex = "#3B82F6" }
+
 # Terminal width at or below which Herdr uses the mobile single-column layout.
 # Increase this for foldables, tablets, or wide phone terminals.
 # mobile_width_threshold = 64
