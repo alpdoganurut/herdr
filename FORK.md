@@ -19,10 +19,12 @@ src/app/subagents.rs
 src/app/tab_color.rs
 src/app/tab_remind.rs
 src/client/shell/idle_reminders.rs
+src/client/shell/notification_format.rs
 src/client/shell/suspended_pane.rs
 src/client/shell/tab_color.rs
 src/client/shell/tab_sidebar.rs
 src/client/shell/tests/idle_reminders.rs
+src/client/shell/tests/notification_format.rs
 src/client/shell/tests/settings_backups.rs
 src/client/shell/tests/sticky_notifications.rs
 src/client/shell/tests/tab_sidebar.rs
@@ -246,7 +248,7 @@ src/client/shell/surface_patch.rs  mid-logic: fast_path_blocker else-if for susp
 src/client/shell/composition.rs  mid-logic: compose paints the suspended card and occludes graphics; compose draws the sticky notification stack (render_notification_stack), occludes every card rect, fills hits.notification_toasts, and hands the stack bounds to copy_feedback_offset_for_toast; the context menu branch copies rendered.menu_swatches into hits.context_menu_swatches
 src/client/shell/render.rs  mid-logic: render_shell else-if for the tabs layout
 src/client/shell/config.rs  mid-logic: layout (show_tab_bar), from_config, apply_live_config, reload_client_config (rebalance_notification_cards after a sticky flip)
-src/client/shell/notification_policy.rs  mid-logic: retire_endpoint_notifications, queue_visible_notification (sticky push), promote_queued_notification, focus_visible_notification (split into focus_notification_at), receive_notification (replace-by-pane moved into replace_pane_notifications), tick_notifications (starts with tick_idle_reminders, whose due reminders it delivers from the pending list; expiry gated on !toast_sticky); notification_validation is reused by sticky_notification_is_stale; notification_target_is_active is the idle reminders' focus test
+src/client/shell/notification_policy.rs  mid-logic: retire_endpoint_notifications, queue_visible_notification (sticky push), promote_queued_notification, focus_visible_notification (split into focus_notification_at), receive_notification (replace-by-pane moved into replace_pane_notifications), tick_notifications (starts with tick_idle_reminders, whose due reminders it delivers from the pending list; a validated pending event is passed through format_agent_notification before the target/sound/delivery code, so every path gets the `tabs` layout text; expiry gated on !toast_sticky); notification_validation is reused by sticky_notification_is_stale; notification_target_is_active is the idle reminders' focus test
 src/client/shell/endpoints.rs  mid-logic: cache_endpoint_snapshot_with_surface ends with prune_sticky_notifications
 src/client/shell/machine_diagnostics.rs  mid-logic: handle_machine_badge_event also yields to hits.notification_toasts
 src/client/shell/state.rs  mid-logic: ClientShellState::new initialises visible_notifications and idle_reminders; timer_delay chains next_idle_reminder_deadline
@@ -347,6 +349,8 @@ active_subagent_count
 record_subagent
 SUBAGENT_LIMIT
 claude_subagent_hooks
+format_agent_notification
+agent_notification_body
 
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot
@@ -365,6 +369,7 @@ client::shell::tests::idle_reminders::fork_smoke::marked_done_tab_reminds_after_
 - Suspend refuses agents that are blocked on a prompt, prompts and send-keys refuse suspended panes, activation waits for the observed exit, a failed process probe retries instead of ending the exit wait, and dropping a suspended record emits a status event. The tabs-layout input lock now also covers mouse gestures and selections on a suspended pane, the card occludes graphics, and `ui.tab_agent_glyphs` honours an `other` override.
 
 ### Changed
+- In the `tabs` sidebar layout, agent notifications name the tab instead of the agent and drop the space number: "level plan finished" with the body "claude · leap-bi-4" (agent, then the basename of the pane's directory, else the space's name) instead of "claude finished" / "leap-bi-4 · 1 · level plan". The client rewrites them once as they leave its pending list, so in-app cards, the mobile banner and terminal/system notifications agree; idle reminder bodies use the same "agent · directory" form in both layouts. A tab the client cannot resolve and the `spaces` layout keep the server's text.
 - `agent.suspend` (and so `herdr agent suspend`, the "Suspend agent" menu item and `keys.toggle_agent_suspend`) refuses a `working` agent with `agent_working`, the same guard `agent.restart` uses, and sends it no input.
 
 ### Added
