@@ -29,6 +29,7 @@ fn agent(pane_id: &str, tab_id: &str, status: AgentStatus) -> ClientShellAgent {
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: false,
+        subagents: 0,
     }
 }
 

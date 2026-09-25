@@ -175,6 +175,7 @@ pub(super) fn snapshot_with_completions(
                 state_labels,
                 tokens,
                 focused,
+                subagents: agent.subagents,
             }
         })
         .collect();

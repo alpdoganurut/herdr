@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
 /// Fork: 24 = upstream 22 + ClientShellTab.color (23) + ClientShellTab.remind
-/// (24); bincode needs every field.
+/// and ClientShellAgent.subagents (24); bincode needs every field.
 pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
@@ -1101,6 +1101,11 @@ pub struct ClientShellAgent {
     pub state_labels: Vec<(String, String)>,
     pub tokens: Vec<(String, String)>,
     pub focused: bool,
+    /// Claude Code subagents running under this working agent
+    /// (`pane.report_subagent`); an absent key is 0. Not skipped when 0, for
+    /// the same bincode reason as `ClientShellTab.color`.
+    #[serde(default)]
+    pub subagents: u32,
 }
 
 /// Origin-relative geometry for one pane in a rendered pane surface.

@@ -145,6 +145,13 @@ pub(crate) fn install_claude() -> io::Result<ClaudeInstallPaths> {
         "{}".to_string()
     };
     let updated_settings = install_claude_settings(&existing_settings, &settings_path, &hook_path)?;
+    // Fork: SubagentStart/SubagentStop report running subagents. The Windows
+    // asset has no subagent action, so the hooks are not installed there.
+    let updated_settings = if cfg!(windows) {
+        updated_settings
+    } else {
+        super::claude_subagent_hooks::install(&updated_settings, &settings_path, &hook_path)?
+    };
     remove_legacy_bash_hook_file(&hook_path)?;
 
     if updated_settings != existing_settings {
@@ -582,6 +589,8 @@ pub(crate) fn uninstall_claude() -> io::Result<ClaudeUninstallResult> {
         let existing_settings = fs::read_to_string(&settings_path)?;
         let new_settings =
             uninstall_claude_settings(&existing_settings, &settings_path, &hook_path)?;
+        let new_settings =
+            super::claude_subagent_hooks::uninstall(&new_settings, &settings_path, &hook_path)?;
         updated_settings = new_settings != existing_settings;
         if updated_settings {
             write_config(&settings_path, new_settings)?;

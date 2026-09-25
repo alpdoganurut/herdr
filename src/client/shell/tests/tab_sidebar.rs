@@ -262,6 +262,7 @@ fn agent(pane_id: &str, tab_id: &str, status: AgentStatus) -> ClientShellAgent {
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: false,
+        subagents: 0,
     }
 }
 
@@ -2120,6 +2121,51 @@ fn cycle_tab_color_binding_steps_the_focused_tab_and_wraps() {
         .map(|(keybinds, _)| keybinds.keybinds.cycle_tab_color.bindings.is_empty())
         .unwrap_or(true));
     assert!(!Config::default().keys.cycle_tab_color.has_values());
+}
+
+#[test]
+fn working_tab_with_subagents_shows_the_subagent_icon() {
+    use crate::config::StatusIndicatorStyle;
+    let icon = super::super::tab_sidebar::TAB_SUBAGENTS_ICON;
+    for style in [StatusIndicatorStyle::Dots, StatusIndicatorStyle::Symbols] {
+        let mut snapshot = two_space_snapshot();
+        snapshot.tabs[2].agent_status = AgentStatus::Working;
+        let mut with_subagents = agent("pane_1", "tab_1", AgentStatus::Working);
+        with_subagents.subagents = 2;
+        let mut blocked = agent("pane_2", "tab_2", AgentStatus::Blocked);
+        blocked.subagents = 3;
+        snapshot.agents = vec![
+            with_subagents,
+            blocked,
+            agent("pane_3", "tab_3", AgentStatus::Working),
+        ];
+        let mut config = tabs_config();
+        config.ui.status_indicators = style;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(snapshot));
+        state.set_pane_surface(surface());
+        let frame = state.compose(106, 20).expect("composed frame");
+        let icon_cell = |row: usize| {
+            let (rect, _) = state.hits.sidebar_tabs[row];
+            frame.cells[(rect.y * frame.width + rect.x + 1) as usize].clone()
+        };
+        assert_eq!(
+            icon_cell(0).symbol,
+            icon,
+            "{style:?}: working with subagents"
+        );
+        assert_ne!(
+            icon_cell(1).symbol,
+            icon,
+            "{style:?}: blocked keeps its icon"
+        );
+        assert_ne!(icon_cell(2).symbol, icon, "{style:?}: no subagents");
+        assert_eq!(
+            icon_cell(0).fg,
+            icon_cell(2).fg,
+            "{style:?}: drawn in the working color"
+        );
+    }
 }
 
 /// Fork smoke tests: FORK.md section 10 lists them by name and the sync gate

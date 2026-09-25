@@ -1,5 +1,6 @@
 mod actions;
 mod claude_settings;
+mod claude_subagent_hooks;
 mod command;
 mod config_edit;
 mod config_file;

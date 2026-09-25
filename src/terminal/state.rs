@@ -271,7 +271,14 @@ pub struct TerminalState {
     /// by the session's dedupe key. Kept aside from the hook authority so the
     /// path survives whichever record ends up persisted for the session.
     agent_transcript_paths: HashMap<String, PathBuf>,
+    /// Claude Code subagents reported running (`pane.report_subagent`), by
+    /// subagent id. Runtime only: never persisted or handed off, cleared when
+    /// the agent stops working, is suspended, released or replaced.
+    active_subagents: std::collections::HashSet<String>,
 }
+
+/// Most subagents a pane tracks; further starts are ignored until some stop.
+pub const SUBAGENT_LIMIT: usize = 64;
 
 /// How many reported transcript paths a pane remembers before the ones that
 /// no longer match any live, persisted, or parked session are dropped.
@@ -314,6 +321,7 @@ impl TerminalState {
             suspended_agent: None,
             restore_error: None,
             agent_transcript_paths: HashMap::new(),
+            active_subagents: std::collections::HashSet::new(),
         }
     }
 
@@ -2076,6 +2084,7 @@ impl TerminalState {
         if !preserve_foreign_persisted_session {
             self.persisted_agent_session = None;
         }
+        self.clear_subagents();
         let current_session = self.current_session_identity_for_persistence();
         Some(TerminalStateMutation {
             effective_state_change: self.recompute_effective_state(
@@ -2388,6 +2397,7 @@ impl TerminalState {
         self.suppressed_full_lifecycle_hook_reports.clear();
         self.stale_full_lifecycle_hook_sessions.clear();
         self.state = AgentState::Unknown;
+        self.clear_subagents();
         self.last_agent_state_change_seq = None;
         self.last_agent_completion_seq = None;
         self.launch_argv = None;
@@ -2440,6 +2450,7 @@ impl TerminalState {
         session: crate::agent_resume::PersistedAgentSession,
         exit_deadline: Instant,
     ) {
+        self.clear_subagents();
         self.suspended_agent = Some(SuspendedAgent {
             agent: session.agent.clone(),
             name: self.agent_name.clone(),
@@ -2725,6 +2736,13 @@ impl TerminalState {
 
         let presentation = self.effective_presentation_for_state_at(state, now);
         self.clear_expiry_pending_for_hidden_metadata();
+        // Subagents only run under a working (or momentarily blocked) agent;
+        // an idle, gone or replaced agent has none left.
+        if !matches!(state, AgentState::Working | AgentState::Blocked)
+            || previous_agent_label != agent_label
+        {
+            self.clear_subagents();
+        }
 
         if previous_agent_label == agent_label
             && previous_state == state
@@ -2744,6 +2762,39 @@ impl TerminalState {
             state,
             presentation,
         })
+    }
+}
+
+impl TerminalState {
+    /// Record a subagent starting (`start`) or stopping. Returns whether the
+    /// set changed. Starts beyond `SUBAGENT_LIMIT` are ignored.
+    pub fn record_subagent(&mut self, start: bool, subagent_id: &str) -> bool {
+        let changed = if start {
+            self.active_subagents.len() < SUBAGENT_LIMIT
+                && self.active_subagents.insert(subagent_id.to_owned())
+        } else {
+            self.active_subagents.remove(subagent_id)
+        };
+        if changed {
+            self.revision = self.revision.saturating_add(1);
+        }
+        changed
+    }
+
+    /// Subagents running under this agent while it works; 0 otherwise.
+    pub fn active_subagent_count(&self) -> u32 {
+        if self.state == AgentState::Working {
+            u32::try_from(self.active_subagents.len()).unwrap_or(u32::MAX)
+        } else {
+            0
+        }
+    }
+
+    fn clear_subagents(&mut self) {
+        if !self.active_subagents.is_empty() {
+            self.active_subagents.clear();
+            self.revision = self.revision.saturating_add(1);
+        }
     }
 }
 

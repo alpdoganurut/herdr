@@ -1105,6 +1105,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: true,
+        subagents: 0,
     };
     let mut second_agent = first_agent.clone();
     second_agent.pane_id = "pane_2".into();

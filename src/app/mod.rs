@@ -26,6 +26,7 @@ mod popup;
 mod runtime;
 mod session;
 pub mod state;
+mod subagents;
 mod tab_bar_status;
 mod tab_color;
 mod tab_remind;

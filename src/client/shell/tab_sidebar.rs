@@ -166,17 +166,20 @@ pub(super) fn render_tab_sidebar(
     let footer_y = content.bottom().saturating_sub(1);
     hits.new_workspace = Rect::new(content.x, footer_y, 0, 1);
 
-    // One pass over the agents; rows then look their glyph key up by tab id.
-    let glyph_keys: std::collections::HashMap<&str, &str> = snapshot
-        .agents
-        .iter()
-        .map(|agent| {
-            (
-                agent.tab_id.as_str(),
-                agent.agent.as_deref().unwrap_or("other"),
-            )
-        })
-        .collect();
+    // One pass over the agents; rows then look their glyph key and running
+    // subagent count up by tab id.
+    let mut glyph_keys = std::collections::HashMap::<&str, &str>::new();
+    let mut tab_subagents = std::collections::HashMap::<&str, u32>::new();
+    for agent in &snapshot.agents {
+        glyph_keys.insert(
+            agent.tab_id.as_str(),
+            agent.agent.as_deref().unwrap_or("other"),
+        );
+        if agent.subagents > 0 && agent.agent_status == crate::api::schema::AgentStatus::Working {
+            let count = tab_subagents.entry(agent.tab_id.as_str()).or_default();
+            *count = count.saturating_add(agent.subagents);
+        }
+    }
     let rows = entries(snapshot, state.collapsed_groups);
     let row_heights = vec![1u16; rows.len()];
     let gaps = vec![0u16; rows.len()];
@@ -244,7 +247,16 @@ pub(super) fn render_tab_sidebar(
                 let glyph_color = tab.focused.then(|| {
                     crate::config::tab_agent_glyph_color(&config.tab_agent_glyph_colors, glyph_key)
                 });
-                render_tab_row(buffer, rect, tab, glyph, glyph_color.flatten(), config);
+                let subagents = tab_subagents.get(tab.tab_id.as_str()).copied().unwrap_or(0);
+                render_tab_row(
+                    buffer,
+                    rect,
+                    tab,
+                    glyph,
+                    glyph_color.flatten(),
+                    subagents,
+                    config,
+                );
                 hits.sidebar_tabs.push((rect, tab.tab_id.clone()));
             }
         }
@@ -414,6 +426,9 @@ fn render_group_header(
         .render(rect, buffer);
 }
 
+/// The status icon of a working tab whose agent has subagents running.
+pub(super) const TAB_SUBAGENTS_ICON: &str = "\u{25CE}"; // ◎
+
 /// The monochrome marker on a tab row marked for idle reminders (`tab.set_remind`).
 pub(super) const TAB_REMIND_MARKER: &str = "\u{25F7}"; // ◷
 
@@ -423,6 +438,7 @@ fn render_tab_row(
     tab: &crate::protocol::ClientShellTab,
     glyph: &str,
     glyph_color: Option<ratatui::style::Color>,
+    subagents: u32,
     config: &ClientShellConfig,
 ) {
     let palette = &config.palette;
@@ -442,7 +458,13 @@ fn render_tab_row(
         Style::default().fg(tag_fg.unwrap_or(palette.subtext0))
     };
     let icon_style = Style::default().fg(status_color(tab.agent_status, palette));
-    let icon = status_icon(tab.agent_status, config.status_indicators);
+    // A working agent with Claude Code subagents running shows the subagent
+    // icon in the working color, in either indicator style.
+    let icon = if tab.agent_status == crate::api::schema::AgentStatus::Working && subagents > 0 {
+        TAB_SUBAGENTS_ICON
+    } else {
+        status_icon(tab.agent_status, config.status_indicators)
+    };
     // " <icon> <label>...<glyph> ": the agent glyph is right-aligned with a one
     // cell margin and the label gives way to it. A tab marked for idle
     // reminders shows the reminder marker just before the glyph.

@@ -3251,6 +3251,30 @@
           ],
           "type": "object"
         },
+        "PaneReportSubagentParams": {
+          "description": "A Claude Code subagent starting or stopping in a pane's agent\n(`pane.report_subagent`, sent by the Claude hook asset).",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "event": {
+              "$ref": "#/schemas/request/$defs/SubagentEvent"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "subagent_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "agent",
+            "event",
+            "subagent_id"
+          ],
+          "type": "object"
+        },
         "PaneResizeParams": {
           "properties": {
             "amount": {
@@ -4064,6 +4088,13 @@
           "enum": [
             "right",
             "down"
+          ],
+          "type": "string"
+        },
+        "SubagentEvent": {
+          "enum": [
+            "start",
+            "stop"
           ],
           "type": "string"
         },
@@ -5720,6 +5751,22 @@
         {
           "properties": {
             "method": {
+              "const": "pane.report_subagent",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneReportSubagentParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -6998,6 +7045,12 @@
                 "type": "string"
               },
               "type": "object"
+            },
+            "subagents": {
+              "description": "Claude Code subagents running under this working agent\n(`pane.report_subagent`); absent when none.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
             },
             "tab_id": {
               "type": "string"

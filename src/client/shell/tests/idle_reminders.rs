@@ -39,6 +39,7 @@ fn agent(pane_id: &str, tab_id: &str, status: AgentStatus, seq: u64) -> ClientSh
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: false,
+        subagents: 0,
     }
 }
 

@@ -223,6 +223,34 @@ fn tab_set_remind_request_and_tab_info_mark_round_trip() {
 }
 
 #[test]
+fn pane_report_subagent_request_round_trips() {
+    let report = Request {
+        id: "subagent".into(),
+        method: Method::PaneReportSubagent(PaneReportSubagentParams {
+            pane_id: "p_1".into(),
+            agent: "claude".into(),
+            event: SubagentEvent::Start,
+            subagent_id: "a1b2".into(),
+        }),
+    };
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["method"], "pane.report_subagent");
+    assert_eq!(json["params"]["event"], "start");
+    assert_eq!(serde_json::from_value::<Request>(json).unwrap(), report);
+    let stop: Request = serde_json::from_str(
+        r#"{"id":"s","method":"pane.report_subagent","params":{"pane_id":"p_1","agent":"claude","event":"stop","subagent_id":"a1b2"}}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        stop.method,
+        Method::PaneReportSubagent(PaneReportSubagentParams {
+            event: SubagentEvent::Stop,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn agent_restart_request_and_response_round_trip() {
     let restart = Request {
         id: "restart".into(),
