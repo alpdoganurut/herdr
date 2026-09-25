@@ -87,7 +87,7 @@ impl TabColor {
         TabColor::Red,
         TabColor::Yellow,
         TabColor::Green,
-        TabColor::Blue,
+        TabColor::Purple,
     ];
 
     pub fn name(self) -> &'static str {
@@ -110,7 +110,7 @@ impl TabColor {
             .find(|color| color.name().eq_ignore_ascii_case(name))
     }
 
-    /// The next step of the cycle none -> red -> yellow -> green -> blue ->
+    /// The next step of the cycle none -> red -> yellow -> green -> purple ->
     /// none over `OFFERED`. A color outside it (set earlier, through the API,
     /// or unknown) restarts the cycle at the first offered color.
     pub fn cycle_next(current: Option<TabColor>) -> Option<TabColor> {
