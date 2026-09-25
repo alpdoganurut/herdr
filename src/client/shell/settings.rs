@@ -44,6 +44,7 @@ impl ClientShellState {
             installing_integrations: false,
             transcripts: None,
             loading_transcripts: false,
+            idle_reminder_minutes: self.config.idle_reminder_minutes,
         }));
     }
 
@@ -54,6 +55,9 @@ impl ClientShellState {
             ClientSettingsSection::Sound => usize::from(!self.config.sound_enabled),
             ClientSettingsSection::Toast => toast_index(self.config.toast_delivery),
             ClientSettingsSection::Integrations | ClientSettingsSection::Backups => 0,
+            ClientSettingsSection::Reminders => {
+                super::idle_reminders::reminder_choice_index(self.config.idle_reminder_minutes)
+            }
         }
     }
 
@@ -80,9 +84,11 @@ impl ClientShellState {
                     ..
                 }))
             );
+        let idle_reminder_minutes = self.config.idle_reminder_minutes;
         if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
             settings.section = section;
             settings.selected = selected;
+            settings.idle_reminder_minutes = idle_reminder_minutes;
         }
         if request_integrations {
             self.queue_integration_list(outcome, true);
@@ -114,6 +120,9 @@ impl ClientShellState {
                 ClientSettingsSection::Toast => 4,
                 ClientSettingsSection::Integrations => settings.integrations.len(),
                 ClientSettingsSection::Backups => 0,
+                ClientSettingsSection::Reminders => {
+                    super::idle_reminders::reminder_choices(settings.idle_reminder_minutes).len()
+                }
             },
             _ => 0,
         }
@@ -201,6 +210,7 @@ impl ClientShellState {
         };
         let section = settings.section;
         let selected = settings.selected;
+        let listed_reminder_minutes = settings.idle_reminder_minutes;
         match section {
             ClientSettingsSection::Theme => {
                 let Some(name) = crate::config::THEME_NAMES.get(selected).copied() else {
@@ -239,6 +249,28 @@ impl ClientShellState {
             ClientSettingsSection::Integrations => self.install_recommended_integrations(outcome),
             // Read-only: the store is shown, not edited.
             ClientSettingsSection::Backups => {}
+            ClientSettingsSection::Reminders => {
+                let Some((_, minutes)) =
+                    super::idle_reminders::reminder_choices(listed_reminder_minutes)
+                        .get(selected)
+                        .cloned()
+                else {
+                    return;
+                };
+                if self.save_settings_edit(
+                    crate::config::ConfigEdit::IdleReminderMinutes(minutes),
+                    outcome,
+                ) {
+                    // The list may have lost its custom row; keep the cursor
+                    // on the value now configured.
+                    let configured = self.config.idle_reminder_minutes;
+                    if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                        settings.idle_reminder_minutes = configured;
+                        settings.selected =
+                            super::idle_reminders::reminder_choice_index(configured);
+                    }
+                }
+            }
         }
     }
 

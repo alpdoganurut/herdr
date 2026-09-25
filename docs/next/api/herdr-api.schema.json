@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "protocol": 23,
+  "protocol": 24,
   "schema_version": 1,
   "schemas": {
     "error_response": {
@@ -1089,6 +1089,10 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "remind": {
+              "description": "Whether the tab is marked for idle reminders (`tab.set_remind`);\nabsent when it is not.",
+              "type": "boolean"
             },
             "tab_id": {
               "type": "string"
@@ -3247,6 +3251,30 @@
           ],
           "type": "object"
         },
+        "PaneReportSubagentParams": {
+          "description": "A Claude Code subagent starting or stopping in a pane's agent\n(`pane.report_subagent`, sent by the Claude hook asset).",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "event": {
+              "$ref": "#/schemas/request/$defs/SubagentEvent"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "subagent_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "agent",
+            "event",
+            "subagent_id"
+          ],
+          "type": "object"
+        },
         "PaneResizeParams": {
           "properties": {
             "amount": {
@@ -4063,6 +4091,13 @@
           ],
           "type": "string"
         },
+        "SubagentEvent": {
+          "enum": [
+            "start",
+            "stop"
+          ],
+          "type": "string"
+        },
         "Subscription": {
           "oneOf": [
             {
@@ -4543,6 +4578,22 @@
           },
           "required": [
             "tab_id"
+          ],
+          "type": "object"
+        },
+        "TabSetRemindParams": {
+          "description": "Mark (`remind: true`) or unmark a tab for idle reminders: clients remind\nabout a marked tab whose agent waits unseen.",
+          "properties": {
+            "remind": {
+              "type": "boolean"
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "remind"
           ],
           "type": "object"
         },
@@ -5673,6 +5724,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabSetColorParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.set_remind",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabSetRemindParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.report_subagent",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneReportSubagentParams"
             }
           },
           "required": [
@@ -6962,6 +7045,12 @@
                 "type": "string"
               },
               "type": "object"
+            },
+            "subagents": {
+              "description": "Claude Code subagents running under this working agent\n(`pane.report_subagent`); absent when none.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
             },
             "tab_id": {
               "type": "string"
@@ -11186,6 +11275,10 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "remind": {
+              "description": "Whether the tab is marked for idle reminders (`tab.set_remind`);\nabsent when it is not.",
+              "type": "boolean"
             },
             "tab_id": {
               "type": "string"

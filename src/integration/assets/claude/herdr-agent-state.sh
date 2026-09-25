@@ -13,7 +13,7 @@ trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
 
 case "$action" in
-  session) ;;
+  session|subagent) ;;
   *) exit 0 ;;
 esac
 
@@ -51,12 +51,48 @@ if hook_input_file:
 if "CURSOR_VERSION" in os.environ or "cursor_version" in hook_input:
     raise SystemExit(0)
 hook_event_name = str(hook_input.get("hook_event_name") or "")
+request_id = f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}"
+
+
+def send(request):
+    try:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(0.5)
+        client.connect(socket_path)
+        client.sendall((json.dumps(request) + "\n").encode())
+        try:
+            client.recv(4096)
+        except Exception:
+            pass
+        client.close()
+    except Exception:
+        pass
+
+
+# Subagents running under the pane's agent (pane.report_subagent). A server
+# without the method answers with an error, which is ignored.
+if action == "subagent":
+    subagent_events = {"SubagentStart": "start", "SubagentStop": "stop"}
+    subagent_id = hook_input.get("agent_id")
+    if hook_event_name not in subagent_events or not isinstance(subagent_id, str) or not subagent_id:
+        raise SystemExit(0)
+    send({
+        "id": request_id,
+        "method": "pane.report_subagent",
+        "params": {
+            "pane_id": pane_id,
+            "agent": "claude",
+            "event": subagent_events[hook_event_name],
+            "subagent_id": subagent_id,
+        },
+    })
+    raise SystemExit(0)
+
 if hook_event_name != "SessionStart":
     raise SystemExit(0)
 is_subagent = bool(hook_input.get("agent_id"))
 if is_subagent:
     raise SystemExit(0)
-request_id = f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}"
 report_seq = time.time_ns()
 session_id = hook_input.get("session_id")
 agent_session_id = session_id if isinstance(session_id, str) and session_id else None
@@ -85,16 +121,5 @@ if agent_session_id:
 else:
     raise SystemExit(0)
 
-try:
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(0.5)
-    client.connect(socket_path)
-    client.sendall((json.dumps(request) + "\n").encode())
-    try:
-        client.recv(4096)
-    except Exception:
-        pass
-    client.close()
-except Exception:
-    pass
+send(request)
 PY

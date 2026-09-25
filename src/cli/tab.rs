@@ -15,6 +15,7 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         "focus" => tab_focus(&args[1..]),
         "rename" => tab_rename(&args[1..]),
         "color" => tab_color(&args[1..]),
+        "remind" => tab_remind(&args[1..]),
         "close" => tab_close(&args[1..]),
         "help" | "--help" | "-h" => {
             print_tab_help();
@@ -188,6 +189,31 @@ fn tab_color(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
+fn tab_remind(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr tab remind <tab_id> <on|off>";
+    let [raw_tab_id, raw_state] = args else {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    let remind = match raw_state.to_ascii_lowercase().as_str() {
+        "on" => true,
+        "off" => false,
+        _ => {
+            eprintln!("expected on or off: {raw_state}");
+            eprintln!("{USAGE}");
+            return Ok(2);
+        }
+    };
+
+    super::print_response(&super::send_request(&crate::api::schema::Request {
+        id: "cli:tab:remind".into(),
+        method: crate::api::schema::Method::TabSetRemind(crate::api::schema::TabSetRemindParams {
+            tab_id: super::normalize_tab_id(raw_tab_id),
+            remind,
+        }),
+    })?)
+}
+
 fn tab_close(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_tab_id) = args.first() else {
         eprintln!("usage: herdr tab close <tab_id>");
@@ -211,5 +237,6 @@ fn print_tab_help() {
     eprintln!("  herdr tab focus <tab_id>");
     eprintln!("  herdr tab rename <tab_id> <label>");
     eprintln!("  herdr tab color <tab_id> <red|orange|yellow|green|cyan|blue|purple|none>");
+    eprintln!("  herdr tab remind <tab_id> <on|off>");
     eprintln!("  herdr tab close <tab_id>");
 }

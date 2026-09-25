@@ -205,6 +205,7 @@ fn mobile_header_and_switcher_render_released_sections_and_stable_targets() {
         state_labels: vec![("blocked".into(), "waiting".into())],
         tokens: Vec::new(),
         focused: true,
+        subagents: 0,
     });
     projected.workspaces[0].agent_status = AgentStatus::Blocked;
     state.set_snapshot(Box::new(projected));
@@ -361,6 +362,7 @@ fn mobile_background_workspace_uses_its_own_active_tab_status() {
         focused: false,
         agent_status: AgentStatus::Idle,
         color: None,
+        remind: false,
     });
     projected.workspaces.push(ClientShellWorkspace {
         workspace_id: "ws_2".into(),
@@ -387,6 +389,7 @@ fn mobile_background_workspace_uses_its_own_active_tab_status() {
             focused: false,
             agent_status: AgentStatus::Idle,
             color: None,
+            remind: false,
         });
     }
     state.set_snapshot(Box::new(projected));

@@ -102,8 +102,8 @@ Raw socket method names use dot notation:
 | Session | `session.snapshot` |
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
-| Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.set_color`, `tab.move`, `tab.close` |
-| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.graphics.info`, `pane.graphics.set`, `pane.graphics.clear`, `pane.graphics.stream`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
+| Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.set_color`, `tab.set_remind`, `tab.move`, `tab.close` |
+| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.graphics.info`, `pane.graphics.set`, `pane.graphics.clear`, `pane.graphics.stream`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_subagent`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.suspend`, `agent.activate`, `agent.restart`, `agent.transcripts`, `agent.view.set`, `agent.view.clear` |
@@ -118,6 +118,8 @@ Raw socket method names use dot notation:
 `agent.transcripts` reports the native transcript backup store (see [Session state](/docs/session-state/)): `store_dir`, whether passes run (`enabled`, the `session.backup_agent_transcripts` flag together with session persistence), `sessions` with a backup and how many of those are `native_missing`, `transcript_bytes` recorded in their metadata, `disk_bytes` for everything below the store, the `last_pass` finished since the server started (`finished_unix`, `duration_ms`, and `updated`/`unchanged`/`skipped`/`failed` counts) when there is one, and `next_pass_in_ms` while passes are scheduled. It reads the store on request and never changes it.
 
 `tab.set_color` tags a tab with a named color: `{ "tab_id": "...", "color": "red" }`, where `color` is one of `red`, `orange`, `yellow`, `green`, `cyan`, `blue`, `purple`, or `null` (or omitted) to clear it. It returns the tab like `tab.rename`; an unknown tab returns `tab_not_found` and an unknown color name `invalid_tab_color`. Tab records (`tab.get`, `tab.list`, tab responses and events) carry the tag as an optional `color` field that is absent when the tab has none; clients should treat a color name they do not know as no color. The color is persisted with the session and follows the tab when `pane.move` moves a tab's only pane into a new tab or workspace (a pane split out of a larger tab starts uncolored). No event is emitted for a color change.
+
+`tab.set_remind` marks a tab for idle reminders: `{ "tab_id": "...", "remind": true }`, or `false` to remove the mark (`remind` is required). It returns the tab like `tab.rename`; an unknown tab returns `tab_not_found`. Tab records carry the mark as an optional `remind: true` that is absent when the tab is unmarked. The mark is persisted with the session and follows the tab when `pane.move` moves a tab's only pane into a new tab or workspace. Clients time the reminders themselves (see `ui.idle_reminder_minutes`); no event is emitted for a mark change.
 
 `agent.wait` is server-owned and event-driven. It pins the resolved pane occupant so a replacement cannot satisfy the wait. `agent.prompt` accepts an optional `wait` object with `until` and `timeout_ms`; this submits the prompt and starts the wait in one request, avoiding a race between separate calls. If the resolved agent is already `blocked`, `agent.prompt` returns `agent_blocked` without sending input or starting the wait.
 
@@ -758,6 +760,8 @@ Session-only official integrations report native session references with `pane.r
 ```
 
 If no native session reference is stored, the field is omitted.
+
+`pane.report_subagent` reports a Claude Code subagent starting or stopping under the pane's agent (the Claude integration's `SubagentStart` and `SubagentStop` hooks send it): `{ "pane_id": "...", "agent": "claude", "event": "start", "subagent_id": "..." }`, with `event` `start` or `stop`. A report for an agent the pane no longer runs is ignored; an empty or overlong `subagent_id` returns `invalid_subagent_id`. Herdr keeps at most 64 running subagents per pane, never persists them, and forgets them when the agent stops working, is suspended, released or replaced. While the agent works, `agent.get`, `agent.list` and agent events carry the count as an optional `subagents` field, absent when zero.
 
 `pane.get`, `pane.list`, `agent.get`, and `agent.list` also expose `foreground_cwd` when Herdr can resolve the cwd of the process currently controlling the pane PTY. The existing `cwd` field remains the pane/workspace cwd used for labels, follow-cwd behavior, and restored session state.
 

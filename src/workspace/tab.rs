@@ -39,6 +39,8 @@ pub struct Tab {
     pub custom_name: Option<String>,
     /// Color tag (`tab.set_color`); persisted, carried by whole-tab moves.
     pub color: Option<crate::api::schema::TabColor>,
+    /// Idle reminder mark (`tab.set_remind`); persisted, carried by whole-tab moves.
+    pub remind: bool,
     pub number: usize,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
@@ -184,6 +186,7 @@ impl Tab {
             Self {
                 custom_name: None,
                 color: None,
+                remind: false,
                 number,
                 root_pane: root_id,
                 layout,
@@ -448,6 +451,7 @@ impl Tab {
         Self {
             custom_name,
             color: None,
+            remind: false,
             number,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),

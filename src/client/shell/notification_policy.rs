@@ -1,7 +1,7 @@
 use super::*;
 
 const MAX_QUEUED_NOTIFICATIONS: usize = 8;
-const COMPLETION_EVIDENCE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+pub(super) const COMPLETION_EVIDENCE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 pub(super) const COMPLETION_RECHECK_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(50);
 
@@ -224,31 +224,10 @@ impl ClientShellState {
         let deadline = now
             .checked_add(std::time::Duration::from_secs(delay))
             .unwrap_or(now);
-        let cleared_visible = event.pane_id.as_deref().is_some_and(|pane_id| {
-            self.visible_notifications.iter().any(|visible| {
-                visible.endpoint_id == *endpoint_id
-                    && visible.event.pane_id.as_deref() == Some(pane_id)
-            })
-        });
-        if let Some(pane_id) = event.pane_id.as_deref() {
-            self.pending_notifications.retain(|pending| {
-                pending.endpoint_id != *endpoint_id
-                    || pending.event.pane_id.as_deref() != Some(pane_id)
-            });
-            self.queued_notifications.retain(|queued| {
-                queued.endpoint_id != *endpoint_id
-                    || queued.event.pane_id.as_deref() != Some(pane_id)
-            });
-            if cleared_visible {
-                self.visible_notifications.retain(|visible| {
-                    visible.endpoint_id != *endpoint_id
-                        || visible.event.pane_id.as_deref() != Some(pane_id)
-                });
-                if self.visible_notifications.is_empty() {
-                    self.promote_queued_notification(now);
-                }
-            }
-        }
+        let cleared_visible = event
+            .pane_id
+            .as_deref()
+            .is_some_and(|pane_id| self.replace_pane_notifications(endpoint_id, pane_id, now));
         // Completion evidence is advisory. A Finished effect is valid only while the
         // client-projected pane remains Done, even when delivery is immediate.
         let validate_state = delay > 0 || event.kind == SemanticNotificationKind::Finished;
@@ -263,11 +242,41 @@ impl ClientShellState {
         (effects, repaint || cleared_visible)
     }
 
+    /// A newer notification for a pane replaces that pane's pending, queued and
+    /// visible ones. Returns whether a visible card was removed.
+    pub(super) fn replace_pane_notifications(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        pane_id: &str,
+        now: std::time::Instant,
+    ) -> bool {
+        let cleared_visible = self.visible_notifications.iter().any(|visible| {
+            visible.endpoint_id == *endpoint_id && visible.event.pane_id.as_deref() == Some(pane_id)
+        });
+        self.pending_notifications.retain(|pending| {
+            pending.endpoint_id != *endpoint_id || pending.event.pane_id.as_deref() != Some(pane_id)
+        });
+        self.queued_notifications.retain(|queued| {
+            queued.endpoint_id != *endpoint_id || queued.event.pane_id.as_deref() != Some(pane_id)
+        });
+        if cleared_visible {
+            self.visible_notifications.retain(|visible| {
+                visible.endpoint_id != *endpoint_id
+                    || visible.event.pane_id.as_deref() != Some(pane_id)
+            });
+            if self.visible_notifications.is_empty() {
+                self.promote_queued_notification(now);
+            }
+        }
+        cleared_visible
+    }
+
     pub(crate) fn tick_notifications(
         &mut self,
         now: std::time::Instant,
     ) -> (Vec<ClientShellNotificationEffect>, bool) {
-        let mut repaint = false;
+        // Due idle reminders join the pending list first, so this pass delivers them.
+        let mut repaint = self.tick_idle_reminders(now);
         if !self.config.toast_sticky
             && self
                 .visible_notifications
@@ -360,7 +369,7 @@ impl ClientShellState {
         (effects, repaint)
     }
 
-    fn notification_target_is_active(
+    pub(super) fn notification_target_is_active(
         &self,
         endpoint_id: &ClientEndpointId,
         event: &SemanticNotification,

@@ -49,6 +49,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.move",
     "tab.rename",
     "tab.set_color",
+    "tab.set_remind",
     "workspace.close",
     "workspace.create",
     "workspace.focus",
@@ -326,6 +327,10 @@ mod tests {
         assert_eq!(
             actual.remove("tab.set_color").as_deref(),
             Some("47beb991c2a5f54fffc12c8bfc0a27c725487f94e3088474e80bc8526ced74c2")
+        );
+        assert_eq!(
+            actual.remove("tab.set_remind").as_deref(),
+            Some("e9c63bb9f29eacf951cfee82469449b61eb3b72ae80d0c0c9a3cb6319aa4bb29")
         );
 
         assert_eq!(

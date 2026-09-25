@@ -175,6 +175,10 @@ pub(crate) fn keybind_help_groups(
                 ),
                 entry(binding_label(&keybinds.restart_agent), "restart agent"),
                 entry(binding_label(&keybinds.cycle_tab_color), "cycle tab color"),
+                entry(
+                    binding_label(&keybinds.toggle_tab_remind),
+                    "toggle tab reminders",
+                ),
                 entry(binding_label(&keybinds.copy_mode), "copy mode"),
                 entry(binding_label(&keybinds.zoom), "zoom pane"),
                 entry(binding_label(&keybinds.resize_mode), "resize mode"),

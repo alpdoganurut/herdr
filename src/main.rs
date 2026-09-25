@@ -178,6 +178,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # toggle_groups_folded = ""         # unbound; "tabs" layout: fold all groups, or expand all once folded
 # restart_agent = ""                # unbound; exits the focused idle agent and relaunches it in place
 # cycle_tab_color = ""              # unbound; cycles the focused tab's color: none, red, ... purple, none
+# toggle_tab_remind = ""            # unbound; marks the focused tab for idle reminders, or unmarks it
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"
@@ -261,6 +262,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Color of the focused tab row's agent glyph in the "tabs" layout, keyed like
 # tab_agent_glyphs; hex or named colors. Keys without a color stay monochrome.
 # tab_agent_glyph_colors = { claude = "#D97757", codex = "#3B82F6" }
+
+# Minutes a tab marked "Remind me" may sit with a finished (unseen) or blocked agent
+# before Herdr reminds you, then again every as many minutes until you focus it.
+# 0 turns reminders off; at most 240.
+# idle_reminder_minutes = 10
 
 # Terminal width at or below which Herdr uses the mobile single-column layout.
 # Increase this for foldables, tablets, or wide phone terminals.

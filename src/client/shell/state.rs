@@ -35,6 +35,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) toast_position: crate::config::ToastHerdrPosition,
     pub(super) toast_sticky: bool,
     pub(super) toast_max_stack: usize,
+    /// `ui.idle_reminder_minutes`, clamped; 0 turns idle reminders off.
+    pub(super) idle_reminder_minutes: u32,
     pub(super) copy_on_select: bool,
     pub(super) clipboard_toast_enabled: bool,
     pub(super) clipboard_toast_position: crate::config::ToastClipboardPosition,
@@ -438,6 +440,7 @@ pub(super) enum ClientSettingsSection {
     Toast,
     Integrations,
     Backups,
+    Reminders,
 }
 
 impl ClientSettingsSection {
@@ -448,6 +451,7 @@ impl ClientSettingsSection {
         Self::Toast,
         Self::Integrations,
         Self::Backups,
+        Self::Reminders,
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -458,6 +462,7 @@ impl ClientSettingsSection {
             Self::Toast => "toasts",
             Self::Integrations => "integrations",
             Self::Backups => "backups",
+            Self::Reminders => "reminders",
         }
     }
 }
@@ -490,6 +495,9 @@ pub(super) struct ClientSettingsOverlay {
     pub(super) installing_integrations: bool,
     pub(super) transcripts: Option<ClientTranscriptStore>,
     pub(super) loading_transcripts: bool,
+    /// `ui.idle_reminder_minutes` as the reminders section lists it, refreshed
+    /// on entering the section and after applying a choice.
+    pub(super) idle_reminder_minutes: u32,
 }
 
 #[derive(Debug)]
@@ -602,6 +610,8 @@ pub(super) enum ClientContextMenuAction {
     RestartAgent,
     /// Tab menu: the swatch row; picking sets the swatch under the cursor.
     Color,
+    /// Tab menu: "Remind me" / "Stop reminding" (`tab.set_remind`).
+    ToggleRemind,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -636,6 +646,8 @@ pub(super) enum ClientContextMenuTarget {
         agent: Option<ClientTabMenuAgent>,
         /// The swatch row: the tab's color when the menu opened and the swatch cursor.
         color: ClientTabMenuColor,
+        /// The tab's idle reminder mark when the menu opened.
+        remind: bool,
     },
     /// A space shown as a tab group in the `tabs` layout.
     Group { workspace_id: String },
@@ -1031,6 +1043,10 @@ pub(crate) struct ClientShellState {
     /// `queued_notifications`); sticky mode keeps every card until it is cleared.
     pub(super) visible_notifications: VecDeque<ClientVisibleNotification>,
     pub(super) queued_notifications: VecDeque<ClientVisibleNotification>,
+    /// Marked tabs waiting in Done/Blocked, keyed by endpoint and tab id
+    /// (`idle_reminders.rs`).
+    pub(super) idle_reminders:
+        HashMap<(ClientEndpointId, String), super::idle_reminders::ClientIdleReminder>,
     pub(super) endpoint_notice_seen: HashSet<ClientEndpointNoticeKey>,
     pub(super) visible_endpoint_notice: Option<ClientVisibleEndpointNotice>,
     pub(super) outer_focused: Option<bool>,
@@ -1197,6 +1213,7 @@ impl ClientShellState {
             pending_notifications: Vec::new(),
             visible_notifications: VecDeque::new(),
             queued_notifications: VecDeque::new(),
+            idle_reminders: HashMap::new(),
             endpoint_notice_seen: HashSet::new(),
             visible_endpoint_notice: None,
             outer_focused: None,
@@ -1967,6 +1984,7 @@ impl ClientShellState {
         self.selection_autoscroll_deadline
             .into_iter()
             .chain(self.selection_repaint_deadline)
+            .chain(self.next_idle_reminder_deadline())
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)

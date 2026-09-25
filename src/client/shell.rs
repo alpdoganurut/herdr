@@ -19,6 +19,7 @@ mod endpoints;
 pub(super) use endpoints::*;
 mod global_menu;
 mod graphics;
+mod idle_reminders;
 mod input;
 mod input_source;
 mod link_hover;

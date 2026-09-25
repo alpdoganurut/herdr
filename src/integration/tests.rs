@@ -972,7 +972,11 @@ fn install_claude_writes_hook_and_updates_settings() {
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
-    assert!(settings["hooks"].get("SubagentStop").is_none());
+    // Fork: the subagent hooks (claude_subagent_hooks), one entry each.
+    assert_eq!(
+        settings["hooks"]["SubagentStop"].as_array().map(Vec::len),
+        (!cfg!(windows)).then_some(1)
+    );
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
@@ -1024,7 +1028,11 @@ fn install_claude_is_idempotent_for_hook_entries() {
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
-    assert!(settings["hooks"].get("SubagentStop").is_none());
+    // Fork: the subagent hooks (claude_subagent_hooks), one entry each.
+    assert_eq!(
+        settings["hooks"]["SubagentStop"].as_array().map(Vec::len),
+        (!cfg!(windows)).then_some(1)
+    );
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
 

@@ -15,13 +15,18 @@ scripts/fork_sync_lib.py
 scripts/test_fork_sync.py
 src/app/agent_suspend.rs
 src/app/agent_transcripts.rs
+src/app/subagents.rs
 src/app/tab_color.rs
+src/app/tab_remind.rs
+src/client/shell/idle_reminders.rs
 src/client/shell/suspended_pane.rs
 src/client/shell/tab_color.rs
 src/client/shell/tab_sidebar.rs
+src/client/shell/tests/idle_reminders.rs
 src/client/shell/tests/settings_backups.rs
 src/client/shell/tests/sticky_notifications.rs
 src/client/shell/tests/tab_sidebar.rs
+src/integration/claude_subagent_hooks.rs
 src/persist/agent_transcripts.rs
 src/server/headless/tests/fork_smoke.rs
 
@@ -39,6 +44,9 @@ src/server/headless/tests/fork_smoke.rs
 | AgentPanelEntry | suspended | false |
 | TerminalState | suspended_agent | None |
 | TerminalState | agent_transcript_paths | std::collections::HashMap::new() |
+| TerminalState | active_subagents | std::collections::HashSet::new() |
+| AgentInfo | subagents | 0 |
+| ClientShellAgent | subagents | 0 |
 | App | backup_agent_transcripts | config.session.backup_agent_transcripts |
 | App | agent_transcript_backup_deadline | None |
 | App | agent_transcript_backup_thread | None |
@@ -48,29 +56,35 @@ src/server/headless/tests/fork_smoke.rs
 | UiConfig | sidebar_layout | crate::config::SidebarLayoutConfig::Spaces |
 | UiConfig | tab_agent_glyphs | std::collections::BTreeMap::new() |
 | UiConfig | tab_agent_glyph_colors | std::collections::BTreeMap::new() |
+| UiConfig | idle_reminder_minutes | 10 |
 | KeysConfig | toggle_agent_suspend | crate::config::BindingConfig::default() |
 | KeysConfig | move_tab_to_group | crate::config::BindingConfig::default() |
 | KeysConfig | toggle_groups_folded | crate::config::BindingConfig::default() |
 | KeysConfig | restart_agent | crate::config::BindingConfig::default() |
 | KeysConfig | cycle_tab_color | crate::config::BindingConfig::default() |
+| KeysConfig | toggle_tab_remind | crate::config::BindingConfig::default() |
 | KeysConfigOverlay | toggle_agent_suspend | None |
 | KeysConfigOverlay | move_tab_to_group | None |
 | KeysConfigOverlay | toggle_groups_folded | None |
 | KeysConfigOverlay | restart_agent | None |
 | KeysConfigOverlay | cycle_tab_color | None |
+| KeysConfigOverlay | toggle_tab_remind | None |
 | Keybinds | toggle_agent_suspend | crate::config::ActionKeybinds::default() |
 | Keybinds | move_tab_to_group | crate::config::ActionKeybinds::default() |
 | Keybinds | toggle_groups_folded | crate::config::ActionKeybinds::default() |
 | Keybinds | restart_agent | crate::config::ActionKeybinds::default() |
 | Keybinds | cycle_tab_color | crate::config::ActionKeybinds::default() |
+| Keybinds | toggle_tab_remind | crate::config::ActionKeybinds::default() |
 | ClientShellConfig | sidebar_layout | crate::config::SidebarLayoutConfig::Spaces |
 | ClientShellConfig | tab_agent_glyphs | std::collections::BTreeMap::new() |
 | ClientShellConfig | tab_agent_glyph_colors | std::collections::BTreeMap::new() |
 | ClientShellConfig | toast_sticky | false |
 | ClientShellConfig | toast_max_stack | 6 |
+| ClientShellConfig | idle_reminder_minutes | 10 |
 | HerdrToastConfig | sticky | false |
 | HerdrToastConfig | max_stack | 6 |
 | ClientShellState | suspended_pane_ids | std::collections::HashSet::new() |
+| ClientShellState | idle_reminders | std::collections::HashMap::new() |
 | ShellHitMap | sidebar_tabs | Vec::new() |
 | ShellHitMap | sidebar_groups | Vec::new() |
 | ShellHitMap | group_toggle_all | Rect::default() |
@@ -81,14 +95,21 @@ src/server/headless/tests/fork_smoke.rs
 | ShellRenderState | sidebar_tab_drop_row | None |
 | ClientSettingsOverlay | transcripts | None |
 | ClientSettingsOverlay | loading_transcripts | false |
+| ClientSettingsOverlay | idle_reminder_minutes | 10 |
 | ClientConfirmCloseOverlay | close_group | true |
 | ClientContextMenuTarget::Tab | agent | None |
 | ClientContextMenuTarget::Tab | color | Default::default() |
+| ClientContextMenuTarget::Tab | remind | false |
 | Tab | color | None |
 | TabSnapshot | color | None |
 | TabInfo | color | None |
 | ClientShellTab | color | None |
+| Tab | remind | false |
+| TabSnapshot | remind | false |
+| TabInfo | remind | false |
+| ClientShellTab | remind | false |
 | PaneMoveRecoveryContext | previous_tab_color | None |
+| PaneMoveRecoveryContext | previous_tab_remind | false |
 
 ## 3. Removed or re-signatured upstream symbols (E0425/E0061 at a new upstream call site = deny)
 app::api_helpers::pane_agent_status(state, seen) -> removed; app::api_helpers::agent_status(state, seen, suspended) or app::api_helpers::terminal_agent_status(terminal, seen)
@@ -99,7 +120,8 @@ app::agent_view::status_name(state, seen) -> status_name(state, seen, suspended)
 client::shell::ClientShellState::activate_tab_context_action(tab_id, workspace_id, action, outcome) -> (tab_id, workspace_id, agent, action, outcome)
 client::shell::ClientShellState.visible_notification: Option<ClientVisibleNotification> -> removed; visible_notifications: VecDeque<ClientVisibleNotification> (timed mode holds at most one card: Some(x) -> push_back(x), .as_ref() -> .front(), .is_none() -> .is_empty(); queued_notifications is unchanged)
 client::shell::ClientShellState::focus_visible_notification(outcome) -> kept as a wrapper over focus_notification_at(index, outcome); the timed toast is index 0, the newest sticky card the last index
-Visibility widened by the fork (upstream renaming or narrowing one breaks fork code): app::agents::DEFAULT_AGENT_START_TIMEOUT, app::agents::available_shell_name, app::api::agents::AGENT_PROMPT_SUBMIT_DELAY, app::terminal_targets::{terminal_targets, terminal_target_candidate}, integration::home_dir
+client::shell::ClientShellState::receive_notification -> kept; its replace-by-pane block moved into replace_pane_notifications(endpoint_id, pane_id, now) -> bool (cleared a visible card), shared with the idle reminder engine
+Visibility widened by the fork (upstream renaming or narrowing one breaks fork code): app::agents::DEFAULT_AGENT_START_TIMEOUT, app::agents::available_shell_name, app::api::agents::AGENT_PROMPT_SUBMIT_DELAY, app::terminal_targets::{terminal_targets, terminal_target_candidate}, integration::home_dir, client::shell::notification_policy::{notification_target_is_active, COMPLETION_EVIDENCE_GRACE} (pub(super))
 
 ## 4. Owned enum variants (append last; E0004 in upstream match = deny)
 AgentStatus::Suspended   [src/api/schema/common.rs, last after Unknown; wire: JSON "suspended" in the socket API, events and the client shell snapshot, any non-human-readable serde codec encodes it as variant index 5; append-closed, deny on conflict]
@@ -107,7 +129,9 @@ Method::AgentSuspend   [src/api/schema.rs, after AgentStart, not last; wire by s
 Method::AgentActivate   [src/api/schema.rs, after AgentSuspend; wire "agent.activate"]
 Method::AgentRestart   [src/api/schema.rs, after AgentActivate; wire "agent.restart"]
 Method::AgentTranscripts   [src/api/schema.rs, after AgentRestart; wire "agent.transcripts"]
-Method::TabSetColor   [src/api/schema.rs, after AgentTranscripts, last of the fork block; wire "tab.set_color"]
+Method::TabSetColor   [src/api/schema.rs, after AgentTranscripts; wire "tab.set_color"]
+Method::TabSetRemind   [src/api/schema.rs, after TabSetColor; wire "tab.set_remind"]
+Method::PaneReportSubagent   [src/api/schema.rs, after TabSetRemind, last of the fork block; wire "pane.report_subagent"]
 ResponseResult::AgentSuspended   [src/api/schema/response.rs, after AgentStarted, not last; wire by tag "agent_suspended"]
 ResponseResult::AgentActivated   [src/api/schema/response.rs; wire "agent_activated"]
 ResponseResult::AgentRestarted   [src/api/schema/response.rs, after AgentActivated; wire "agent_restarted"]
@@ -117,13 +141,17 @@ KeybindAction::MoveTabToGroup   [src/input/keybindings.rs; internal]
 KeybindAction::ToggleGroupsFolded   [src/input/keybindings.rs; internal]
 KeybindAction::RestartAgent   [src/input/keybindings.rs, after ToggleGroupsFolded; internal]
 KeybindAction::CycleTabColor   [src/input/keybindings.rs, after RestartAgent; internal]
-ClientSettingsSection::Backups   [src/client/shell/state.rs, last; UI tab order, ALL keeps it last; internal]
+KeybindAction::ToggleTabRemind   [src/input/keybindings.rs, after CycleTabColor; internal]
+ClientSettingsSection::Backups   [src/client/shell/state.rs, before Reminders; UI tab order; internal]
+ClientSettingsSection::Reminders   [src/client/shell/state.rs, last after Backups; UI tab order, ALL keeps Backups then Reminders last; internal]
 ClientContextMenuAction::SuspendAgent   [src/client/shell/state.rs, last five; internal]
 ClientContextMenuAction::ActivateAgent   [internal]
 ClientContextMenuAction::Ungroup   [internal]
 ClientContextMenuAction::CloseGroup   [internal]
 ClientContextMenuAction::RestartAgent   [src/client/shell/state.rs, after CloseGroup; internal]
-ClientContextMenuAction::Color   [src/client/shell/state.rs, last after RestartAgent; the tab menu's swatch row; internal]
+ClientContextMenuAction::Color   [src/client/shell/state.rs, after RestartAgent; the tab menu's swatch row; internal]
+ClientContextMenuAction::ToggleRemind   [src/client/shell/state.rs, last after Color; the tab menu's "Remind me" / "Stop reminding"; internal]
+ConfigEdit::IdleReminderMinutes   [src/config/write.rs, last; the settings overlay's reminders tab; internal]
 ClientContextMenuTarget::Group   [src/client/shell/state.rs, between Tab and Pane; internal]
 ClientChromeDrag::SidebarTab   [src/client/shell/state.rs, before PaneSplit; internal]
 ClientRenameTarget::MoveTabToGroup   [src/client/shell/state.rs, last; internal]
@@ -135,19 +163,22 @@ agent.suspend, agent.activate, agent.restart, agent.transcripts: fork-defined (M
 agent.restart digest: dc124dcfe9d7fc0fe3d9a85e00548a0263574d3de68ffd16370f2b6ba67ad062 (AgentRestartParams { target }).
 tab.set_color: fork-defined (Method::TabSetColor, api_method_name arm, request_changes_ui, handler in src/app/tab_color.rs, CLI `herdr tab color`). Response: ResponseResult::TabInfo, as tab.rename.
 tab.set_color digest: 47beb991c2a5f54fffc12c8bfc0a27c725487f94e3088474e80bc8526ced74c2 (TabSetColorParams { tab_id, color: Option<TabColor> }, TabColor snake_case with the Unknown fallback).
+tab.set_remind: fork-defined (Method::TabSetRemind, api_method_name arm, request_changes_ui, handler in src/app/tab_remind.rs, CLI `herdr tab remind`). Response: ResponseResult::TabInfo, as tab.rename.
+tab.set_remind digest: e9c63bb9f29eacf951cfee82469449b61eb3b72ae80d0c0c9a3cb6319aa4bb29 (TabSetRemindParams { tab_id, remind: bool }, remind required).
+pane.report_subagent: fork-defined (Method::PaneReportSubagent, api_method_name arm, request_changes_ui, handler in src/app/subagents.rs), sent by the Claude hook asset's `subagent` action; not advertised to the client shell, so no digest. Params PaneReportSubagentParams { pane_id, agent, event: SubagentEvent start|stop, subagent_id }.
 TabColor (src/api/schema/tabs.rs) is fork-owned and closed: its values are part of the tab.set_color digest, so a new color needs a new method name; Unknown stays the serde(other) fallback (JSON snapshot, TabInfo, session.json).
 pane.move: upstream method, advertised to the client shell only by the fork (absent from base CLIENT_SHELL_METHODS).
 CLIENT_SHELL_METHODS (src/server/client_commands.rs): union, sorted; the test advertised_client_shell_methods_are_sorted_unique_and_in_schema enforces it.
-Digest asserts in advertised_client_shell_method_shapes_stay_at_the_v1_contract: the fork appends six `actual.remove(..)` asserts (agent.suspend, agent.activate, pane.move, agent.transcripts, agent.restart, tab.set_color) after upstream's pane.link.resolve assert. Resolve an assert-block conflict as the union of `actual.remove` blocks, upstream first, no method name twice.
+Digest asserts in advertised_client_shell_method_shapes_stay_at_the_v1_contract: the fork appends seven `actual.remove(..)` asserts (agent.suspend, agent.activate, pane.move, agent.transcripts, agent.restart, tab.set_color, tab.set_remind) after upstream's pane.link.resolve assert. Resolve an assert-block conflict as the union of `actual.remove` blocks, upstream first, no method name twice.
 Any digest value change = deny (contract change, never a fixture fix). pane.move's digest covers upstream-owned PaneMoveParams/PaneMoveDestination: an upstream reshape fails it after a clean merge, and that is a deny.
 tests/fixtures/endpoint-*-v1.json and src/protocol/** frozen tests: never edited (the fork has no diff under tests/).
 Upstream adding "pane.move" to CLIENT_SHELL_METHODS, or adding any section 9 identifier = deny (collision).
 
 ## 6. Config keys (cross-checked by scripts/config_reference_check.py)
 ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors, session.backup_agent_transcripts,
-keys.toggle_agent_suspend, keys.move_tab_to_group, keys.toggle_groups_folded, keys.restart_agent, keys.cycle_tab_color,
-ui.toast.herdr.sticky, ui.toast.herdr.max_stack
-Placement in docs/next/website/src/data/config-reference.json: keys.* directly after keys.clear_pane, ui.* directly after ui.sidebar_collapsed_mode (in the order ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors), session.backup_agent_transcripts last in the session group, ui.toast.herdr.sticky and ui.toast.herdr.max_stack directly after ui.toast.herdr.position in the notifications group. The same keys appear as commented defaults in src/main.rs DEFAULT_CONFIG (after clear_pane, sidebar_collapsed_mode, startup_per_agent_delay_ms) and in docs/next/website/src/content/docs/configuration.mdx.
+keys.toggle_agent_suspend, keys.move_tab_to_group, keys.toggle_groups_folded, keys.restart_agent, keys.cycle_tab_color, keys.toggle_tab_remind,
+ui.toast.herdr.sticky, ui.toast.herdr.max_stack, ui.idle_reminder_minutes
+Placement in docs/next/website/src/data/config-reference.json: keys.* directly after keys.clear_pane, ui.* directly after ui.sidebar_collapsed_mode (in the order ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors, ui.idle_reminder_minutes), session.backup_agent_transcripts last in the session group, ui.toast.herdr.sticky and ui.toast.herdr.max_stack directly after ui.toast.herdr.position in the notifications group. The same keys appear as commented defaults in src/main.rs DEFAULT_CONFIG (after clear_pane, sidebar_collapsed_mode, startup_per_agent_delay_ms) and in docs/next/website/src/content/docs/configuration.mdx.
 After any merge touching config-reference.json: python3 -m json.tool on the file, then python3 scripts/config_reference_check.py.
 
 ## 7. Per-file merge rules
@@ -162,42 +193,48 @@ src/server/client_commands.rs  section-5
 src/api/schema/common.rs  deny: AgentStatus is append-closed
 tests/api_ping.rs  deny: the fork's one line is the protocol literal in ping_over_socket_returns_version; it must equal PROTOCOL_VERSION in src/protocol/wire.rs after the sync
 tests/support/mod.rs  deny: the fork's one line is CURRENT_PROTOCOL; it must equal PROTOCOL_VERSION in src/protocol/wire.rs after the sync
-src/protocol/wire.rs  deny: PROTOCOL_VERSION is the fork's value (upstream + 1 for ClientShellTab.color; when upstream bumps, resolve to upstream's new value + 1 and keep the fork comment), the fork's other lines are one inside deserialize_client_shell_agent_status, ClientShellTab.color (serde default, deliberately not skip_serializing_if: the bincode round-trip needs every field) and `color: None` in the client_shell_snapshot_roundtrip literal (section 2)
-src/api/schema.rs  additive: fork Method variants stay directly after AgentStart
+src/protocol/wire.rs  deny: PROTOCOL_VERSION is the fork's value (upstream + 2: ClientShellTab.color, then ClientShellTab.remind with ClientShellAgent.subagents; when upstream bumps, resolve to upstream's new value + 2 and keep the fork comment), the fork's other lines are one inside deserialize_client_shell_agent_status, ClientShellTab.color, ClientShellTab.remind and ClientShellAgent.subagents (serde default, deliberately not skip_serializing_if: the bincode round-trip needs every field) and `color: None` / `remind: false` in the client_shell_snapshot_roundtrip literal (section 2)
+src/api/schema.rs  additive: fork Method variants stay directly after AgentStart; the fork's is_zero stays directly after is_false
 src/api/schema/response.rs  additive: fork ResponseResult variants stay directly after AgentStarted
-src/api/schema/agents.rs  additive: fork params types stay after AgentStartParams
-src/api/schema/tabs.rs  additive: TabInfo.color stays the last field; TabColor and TabSetColorParams stay directly after TabInfo
-src/cli/tab.rs  additive: the fork's `color` arm stays after `rename`, tab_color before tab_close, its help line after the rename line
+src/api/schema/agents.rs  additive: fork params types stay after AgentStartParams; AgentInfo.subagents stays directly after state_change_seq
+src/api/schema/panes.rs  additive: PaneReportSubagentParams and SubagentEvent stay last in the file
+src/integration/mod.rs  additive: `mod claude_subagent_hooks;` directly after `mod claude_settings;`
+src/integration/targets.rs  additive: the claude_subagent_hooks install/uninstall lines stay directly after install_claude_settings / uninstall_claude_settings
+src/integration/assets/claude/herdr-agent-state.sh  deny: the fork's hunks are `subagent` in the action case, the send() helper and the `subagent` branch before the SessionStart filter; re-apply them on upstream's new asset by hand
+src/integration/tests.rs  deny: the fork's lines are the two SubagentStop asserts after install_claude (one entry, the subagent hook; none on Windows)
+src/api/schema/tabs.rs  additive: TabInfo.color then TabInfo.remind stay the last fields; TabColor, TabSetColorParams and TabSetRemindParams stay directly after TabInfo
+src/cli/tab.rs  additive: the fork's `color` then `remind` arms stay after `rename`, tab_color then tab_remind before tab_close, their help lines after the rename line
 src/api/server.rs  additive: fork arms stay after the agent.start arm
 src/api/mod.rs  additive: fork arms stay after Method::AgentStart
-src/config/model.rs  additive: upstream first, fork lines directly after each clear_pane line; HerdrToastConfig sticky/max_stack directly after position (struct, Default, impl HerdrToastConfig after the Default impl), the *_TOAST_MAX_STACK consts directly after MAX_TOAST_DELAY_SECONDS
-src/config.rs  additive: the fork's `.chain(self.ui.toast.herdr.diagnostic())` stays last in Config::collect_diagnostics
+src/config/model.rs  additive: upstream first, fork lines directly after each clear_pane line; HerdrToastConfig sticky/max_stack directly after position (struct, Default, impl HerdrToastConfig after the Default impl), the *_TOAST_MAX_STACK consts directly after MAX_TOAST_DELAY_SECONDS, the *_IDLE_REMINDER_MINUTES consts after them; UiConfig.idle_reminder_minutes directly after tab_agent_glyph_colors (struct and Default), effective_idle_reminder_minutes and idle_reminder_diagnostic last in impl UiConfig
+src/config.rs  additive: the fork's `.chain(self.ui.toast.herdr.diagnostic())` then `.chain(self.ui.idle_reminder_diagnostic())` stay last in Config::collect_diagnostics
+src/config/write.rs  additive: ConfigEdit::IdleReminderMinutes stays last in the enum and in each match; its test first in the tests module
 src/config/keybinds.rs  additive: upstream first, fork lines directly after each clear_pane line
 src/input/keybindings.rs  additive: upstream first, fork lines directly after each ClearPane line
 src/input/keybind_help.rs  additive: upstream first, fork entries directly after the clear pane entry
 src/main.rs  additive: DEFAULT_CONFIG comment lines, upstream first
-src/client/shell/state.rs  additive: upstream first, fork after; ClientSettingsSection::ALL keeps Backups last
+src/client/shell/state.rs  additive: upstream first, fork after; ClientSettingsSection::ALL keeps Backups then Reminders last
 src/client/shell/tests/mod.rs  additive: fork module lines
 src/server/headless/tests/mod.rs  additive: the fork_smoke module line; test literals per section 2
 *  deny: anything that is not a structural additive conflict (zdiff3 base empty, both sides pure insertions)
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
-src/terminal/state.rs  mid-logic: set_detected_state_with_screen_signals_at (suspend reconcile, hook-clear durable session, name kept on exit), clear_full_lifecycle_hook_suppression_for_detected_agent (replacement sessions), set_agent_session_ref_for_session_start (launch-session identity), release_agent_with_mutation, managed_agent_launch_pending, managed_agent_interactive_ready, managed_agent_kind, reconcile_managed_agent_at, clear_agent_name, clear_agent_runtime_identity_after_respawn
+src/terminal/state.rs  mid-logic: set_detected_state_with_screen_signals_at (suspend reconcile, hook-clear durable session, name kept on exit), clear_full_lifecycle_hook_suppression_for_detected_agent (replacement sessions), set_agent_session_ref_for_session_start (launch-session identity), release_agent_with_mutation, managed_agent_launch_pending, managed_agent_interactive_ready, managed_agent_kind, reconcile_managed_agent_at, clear_agent_name, clear_agent_runtime_identity_after_respawn; active_subagents is cleared in recompute_effective_state (before the early return, unless Working/Blocked with the same agent label), release_agent_with_mutation, begin_agent_suspend and clear_agent_runtime_identity_after_respawn
 src/app/actions.rs  mid-logic: expire_agent_metadata_at, handle_app_event (transcript path before session routing), update_terminal_state_with_completion_policy (suspended in the captured tuple, dirty and completion suppression)
 src/app/api.rs  mid-logic: emit_pane_state_update (status computed with suspended on both sides)
 src/app/api/agents.rs  mid-logic: queue_agent_prompt and handle_agent_send_keys refuse suspended panes; any new upstream input method does not
 src/app/api/panes.rs  mid-logic: handle_pane_report_agent and handle_pane_report_agent_session derive transcript_path
 src/app/api_helpers.rs  mid-logic: status mapping moved to workspace::aggregate
-src/app/creation.rs  mid-logic: tab_info (color), pane_info, workspace_info, terminal_agent_session_info
+src/app/creation.rs  mid-logic: tab_info (color, remind), pane_info, workspace_info, terminal_agent_session_info
 src/app/mod.rs  mid-logic: App::new, apply_live_config (session section block restructured)
 src/app/session.rs  mid-logic: save_session_on_shutdown (early return became if/else, backup pass appended)
-src/app/agents.rs  mid-logic: rename refuses suspended; live_runtime_agent split into live_runtime_agent_job
+src/app/agents.rs  mid-logic: rename refuses suspended; live_runtime_agent split into live_runtime_agent_job; agent_info sets subagents from active_subagent_count
 src/app/agent_view.rs  mid-logic: apply_agent_view, validate_field_value, status_name
 src/app/agent_resume.rs  mid-logic: start_pending_agent_resume restores the transcript backup before the resume command
 src/app/runtime.rs  mid-logic: next_headless_loop_deadline_with_git_refresh gains three deadlines (suspend exit, restart resume, transcript backup)
 src/workspace/aggregate.rs  mid-logic: pane_details, aggregate_state, agent_status, agent_status_priority
-src/persist/snapshot.rs  mid-logic: capture_tab agent_session block rewritten to persistable_agent_session; capture_tab copies Tab.color into TabSnapshot.color
-src/persist/restore.rs  mid-logic: restore_tab (resume disabled for suspended panes, handoff exit wait, color restored with Unknown dropped to None), unavailable_restored_terminal, pane_restore_startup, persisted_agent_session_from_snapshot
+src/persist/snapshot.rs  mid-logic: capture_tab agent_session block rewritten to persistable_agent_session; capture_tab copies Tab.color and Tab.remind into TabSnapshot
+src/persist/restore.rs  mid-logic: restore_tab (resume disabled for suspended panes, handoff exit wait, color restored with Unknown dropped to None, remind restored), unavailable_restored_terminal, pane_restore_startup, persisted_agent_session_from_snapshot
 src/server/headless.rs  mid-logic: handle_scheduled_tasks_headless (backup pass, suspend escalation, start_pending_agent_restarts)
 src/server/headless/lifecycle.rs  mid-logic: perform_live_handoff sets suspended_exit_pending
 src/pane.rs  mid-logic: handoff_runtime_state, from_handoff_fd
@@ -209,24 +246,25 @@ src/client/shell/surface_patch.rs  mid-logic: fast_path_blocker else-if for susp
 src/client/shell/composition.rs  mid-logic: compose paints the suspended card and occludes graphics; compose draws the sticky notification stack (render_notification_stack), occludes every card rect, fills hits.notification_toasts, and hands the stack bounds to copy_feedback_offset_for_toast; the context menu branch copies rendered.menu_swatches into hits.context_menu_swatches
 src/client/shell/render.rs  mid-logic: render_shell else-if for the tabs layout
 src/client/shell/config.rs  mid-logic: layout (show_tab_bar), from_config, apply_live_config, reload_client_config (rebalance_notification_cards after a sticky flip)
-src/client/shell/notification_policy.rs  mid-logic: retire_endpoint_notifications, queue_visible_notification (sticky push), promote_queued_notification, focus_visible_notification (split into focus_notification_at), receive_notification (cleared_visible over the card list), tick_notifications (expiry gated on !toast_sticky); notification_validation is reused by sticky_notification_is_stale
+src/client/shell/notification_policy.rs  mid-logic: retire_endpoint_notifications, queue_visible_notification (sticky push), promote_queued_notification, focus_visible_notification (split into focus_notification_at), receive_notification (replace-by-pane moved into replace_pane_notifications), tick_notifications (starts with tick_idle_reminders, whose due reminders it delivers from the pending list; expiry gated on !toast_sticky); notification_validation is reused by sticky_notification_is_stale; notification_target_is_active is the idle reminders' focus test
 src/client/shell/endpoints.rs  mid-logic: cache_endpoint_snapshot_with_surface ends with prune_sticky_notifications
 src/client/shell/machine_diagnostics.rs  mid-logic: handle_machine_badge_event also yields to hits.notification_toasts
-src/client/shell/state.rs  mid-logic: ClientShellState::new initialises visible_notifications
+src/client/shell/state.rs  mid-logic: ClientShellState::new initialises visible_notifications and idle_reminders; timer_delay chains next_idle_reminder_deadline
 src/config.rs  mid-logic: Config::collect_diagnostics chains tab_agent_glyph_color_diagnostics and HerdrToastConfig::diagnostic
 src/client/shell/tests/graphics.rs  depends: assert_graphics_cover is pub(super) for tests/sticky_notifications.rs; its ClientContextMenuTarget::Tab literal carries `color: Default::default()` (section 2)
-src/client/shell/actions.rs  mid-logic: record_binding (topology lock, group keys), endpoint_method_for_action (SwitchTab/NextTab scope, CycleTabColor)
-src/client/shell/context_menu.rs  mid-logic: items (tab menu swatch row `Color` last, after Close, so upstream item indices hold), open_tab_context_menu (captures the tab color into the Tab target), activate_context_menu_item (the swatch row picks before the target dispatch, so no tab focus; the Tab arm ignores `color` with `..`)
+src/client/shell/actions.rs  mid-logic: record_binding (topology lock, group keys), endpoint_method_for_action (SwitchTab/NextTab scope, CycleTabColor, ToggleTabRemind)
+src/client/shell/context_menu.rs  mid-logic: items (tab menu "Remind me" / "Stop reminding" then the swatch row `Color` last, after Close, so upstream item indices hold), open_tab_context_menu (captures the tab color and remind mark into the Tab target), activate_context_menu_item (the swatch row and ToggleRemind act before the target dispatch, so no tab focus; the Tab arm ignores `color` and `remind` with `..`)
 src/client/shell/overlay_input.rs  mid-logic: save_rename_overlay, accept_close_confirmation (close_group now from the overlay); the ContextMenu key block asks route_tab_color_menu_key first (Up/Down re-seat the swatch cursor on entering the row, Left/Right/h/l on the swatch row)
 src/client/shell/overlays.rs  mid-logic: render_context_menu widens a tab menu to the swatch row, draws the swatches in place of the Color item's label (only the cursor swatch highlighted, while the row is) and returns their rects as menu_swatches
 src/client/shell/tabs.rs  mid-logic: render_tab_bar tints unfocused tabs with their color tag (focused tab unchanged)
-src/app/api/panes.rs  mid-logic: handle_pane_move (PaneMoveRecoveryContext.previous_tab_color; a whole-tab move applies it to the NewTab / NewWorkspace tab), recover_failed_pane_move restores it
-src/client/shell/settings.rs  mid-logic: selected_index_for_settings_section, select_settings_section, handle_settings_endpoint_result
-src/client/shell/settings_overlay.rs  mid-logic: render_settings_overlay (show_primary match)
+src/app/api/panes.rs  mid-logic: handle_pane_move (PaneMoveRecoveryContext.previous_tab_color and previous_tab_remind; a whole-tab move applies them to the NewTab / NewWorkspace tab), recover_failed_pane_move restores them
+src/client/shell/settings.rs  mid-logic: selected_index_for_settings_section, select_settings_section (refreshes idle_reminder_minutes), settings_choice_count, apply_settings_choice (Reminders writes ConfigEdit::IdleReminderMinutes), handle_settings_endpoint_result
+src/client/shell/settings_overlay.rs  mid-logic: render_settings_overlay (show_primary match; the section tab strip drops its one-cell gaps when it does not fit the 74-column inner width, as with the integrations badge on; Reminders arm)
 src/client/shell/endpoint_navigation.rs  mid-logic: finish_endpoint_workspace_press early return in the tabs layout
-src/server/client_shell.rs  depends: copies agent_status from app.session_snapshot() into the snapshot agents, tabs and workspaces; ClientShellTab.color comes from the zipped Tab state
-src/integration/assets/claude/herdr-agent-state.sh  depends: forwards Claude's transcript_path as agent_session_path (transcript backup store)
-src/integration/assets/claude/herdr-agent-state.ps1  depends: same as the .sh asset, on Windows
+src/server/client_shell.rs  depends: copies agent_status from app.session_snapshot() into the snapshot agents, tabs and workspaces; ClientShellTab.color and .remind come from the zipped Tab state; ClientShellAgent.subagents from AgentInfo.subagents
+src/integration/assets/claude/herdr-agent-state.sh  depends: forwards Claude's transcript_path as agent_session_path (transcript backup store); the fork's `subagent` action sends pane.report_subagent
+src/integration/assets/claude/herdr-agent-state.ps1  depends: the transcript path as the .sh asset, on Windows; no `subagent` action (install skips the subagent hooks on Windows)
+src/integration/claude_settings.rs  depends: install/uninstall run before the fork's claude_subagent_hooks, which re-parses their output; HOOK_REMOVALS must not remove the `subagent` action
 src/api/schema/panes.rs  depends: PaneMoveParams/PaneMoveDestination behind the fork's pane.move digest; PaneReportAgentSessionParams.agent_session_path
 src/persist/io.rs  depends: session.json load path for suspended_agent and transcript_path
 src/handoff_runtime.rs  depends: HandoffRuntimeState serde carries suspended_exit_pending
@@ -292,15 +330,34 @@ route_tab_color_menu_key
 route_tab_color_swatch_mouse
 previous_tab_color
 invalid_tab_color
+tab.set_remind
+TabSetRemind
+toggle_tab_remind
+ToggleTabRemind
+idle_reminder
+IdleReminder
+previous_tab_remind
+replace_pane_notifications
+pane.report_subagent
+PaneReportSubagent
+SubagentEvent
+subagents:
+active_subagents
+active_subagent_count
+record_subagent
+SUBAGENT_LIMIT
+claude_subagent_hooks
 
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot
 server::headless::tests::fork_smoke::session_restore_keeps_a_suspended_pane_parked
 server::headless::tests::fork_smoke::claude_hook_asset_reports_the_transcript_path_the_backup_store_uses
+server::headless::tests::fork_smoke::claude_subagent_hooks_reach_the_client_shell_snapshot
 client::shell::tests::tab_sidebar::fork_smoke::locked_suspended_pane_emits_no_pane_input
 client::shell::tests::settings_backups::fork_smoke::every_settings_section_fits_the_76_column_popup
 client::shell::tests::sticky_notifications::fork_smoke::three_cards_stack_newest_nearest_the_corner
 client::shell::tests::tab_sidebar::fork_smoke::colored_tab_label_reaches_the_renderer_in_its_color
+client::shell::tests::idle_reminders::fork_smoke::marked_done_tab_reminds_after_the_interval
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 ### Fixed
@@ -311,6 +368,8 @@ client::shell::tests::tab_sidebar::fork_smoke::colored_tab_label_reaches_the_ren
 - `agent.suspend` (and so `herdr agent suspend`, the "Suspend agent" menu item and `keys.toggle_agent_suspend`) refuses a `working` agent with `agent_working`, the same guard `agent.restart` uses, and sends it no input.
 
 ### Added
+- Running Claude Code subagents show on the tab: `herdr integration install claude` adds `SubagentStart` and `SubagentStop` hooks (not on Windows) whose `subagent` action reports each subagent to the new `pane.report_subagent` method, the server keeps the running set per pane (at most 64, never persisted, forgotten when the agent stops working, is suspended, released or replaced), agent records carry an optional `subagents` count while the agent works, and the `tabs` sidebar layout shows `◎` in the working color as a working tab's status icon while its agent has subagents running. Part of protocol 24.
+- Idle reminders for marked tabs: the tab menu's "Remind me" / "Stop reminding" item, `keys.toggle_tab_remind` (unset by default) or `herdr tab remind <tab_id> <on|off>` (`tab.set_remind`) marks a tab, and the `tabs` sidebar layout shows `◷` before a marked row's agent glyph. While a marked tab's agent sits finished and unseen, or blocked, the client reminds you after `ui.idle_reminder_minutes` (default 10, 0 turns reminders off, at most 240 with a config warning) and again every as many minutes until the tab is focused, the agent works again or the mark is removed: one notification per tab ("planner finished 20 min ago", "planner still waiting") that replaces its previous card, follows `ui.toast.delivery` and plays the done or request sound unless sounds are off. The settings overlay's new `reminders` tab picks off, 5, 10, 15, 30 or 60 minutes. The mark persists in session.json, follows a tab moved to another group, and appears as an optional `remind` on tab records; the client wire changed, so the protocol is now 24.
 - Tab color tags: `tab.set_color` (and `herdr tab color <tab_id> <color|none>`) tags a tab with red, orange, yellow, green, cyan, blue or purple (fixed true colors, not theme slots, because 16-color themes such as `terminal` remap the ANSI slots), or clears it. The `tabs` sidebar layout draws the tab's name in its color on focused and unfocused rows (status icon, agent glyph, row highlight and bold unchanged), and the `spaces` tab bar tints unfocused tab names. The tab menu ends with a row of swatches, `∅` plus red, yellow, green and purple (`TabColor::OFFERED`; the other API colors still render): the current color is bracketed, Up/Down reach the row like any item and start on the current color, Left/Right or `h`/`l` move along it, Enter or a click sets the color and closes the menu, and `keys.cycle_tab_color` (unset by default) cycles the focused tab none → red → yellow → green → purple → none. The color persists in session.json, follows a tab moved to another group, and appears as an optional `color` on tab records.
 - `ui.toast.herdr.sticky = true` keeps in-app toasts until they are handled: cards stack from `ui.toast.herdr.position` (newest nearest the corner, per-event positions stack in their own corner), and beyond `ui.toast.herdr.max_stack` cards (default 6, 1 through 20, clamped with a config warning) or half the frame height the older ones fold into a "+N more" line. Left-click focuses a card's pane and removes it, right-click dismisses it, `open_notification_target` focuses the newest card, and a card clears when its tab becomes focused, its pane closes, a needs-input agent is no longer blocked, a finished agent starts working again, a newer notification for the same pane arrives, or its machine's server restarts. Sticky cards only block the retained fast path for pane rows they cover. The default timed toast is unchanged.
 - `ui.sidebar_layout = "tabs"` lists one row per tab across every space, in tab order, with each tab's agent status. Rows focus on click and open the tab menu on right-click; the horizontal tab bar is dropped and `next_tab`/`previous_tab` cycle the whole list. The default `"spaces"` layout is unchanged.

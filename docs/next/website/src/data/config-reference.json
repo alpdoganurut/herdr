@@ -734,6 +734,12 @@
           "description": "Cycle the focused tab's color tag (tab.set_color): none, red, yellow, green, purple, then none again (a color set outside those four restarts at red). Unset by default; for example, cycle_tab_color = \"alt+c\"."
         },
         {
+          "key": "keys.toggle_tab_remind",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Mark the focused tab for idle reminders (tab.set_remind), or remove the mark; the tab menu's \"Remind me\" / \"Stop reminding\" item does the same. Unset by default; for example, toggle_tab_remind = \"alt+m\"."
+        },
+        {
           "key": "keys.copy_mode",
           "type": "keybinding",
           "default": "\"prefix+[\"",
@@ -944,6 +950,12 @@
           "type": "table",
           "default": "{ claude = \"#D97757\", codex = \"#3B82F6\" }",
           "description": "Color of the focused tab row's agent glyph in the \"tabs\" sidebar layout, keyed like ui.tab_agent_glyphs. Values accept hex (\"#rrggbb\", \"#rgb\"), rgb(r,g,b) or named colors. Keys you omit keep their defaults; keys without a color, and invalid values, keep the monochrome glyph. Unfocused rows are always monochrome."
+        },
+        {
+          "key": "ui.idle_reminder_minutes",
+          "type": "integer",
+          "default": "10",
+          "description": "Minutes a tab marked \"Remind me\" (tab.set_remind) may sit with a finished (unseen) or blocked agent before Herdr reminds you, then again every as many minutes until you focus the tab, the agent works again, or the mark is removed. The reminder is a notification for the tab's agent pane that follows ui.toast.delivery, replaces that tab's previous card and plays the done or request sound unless sounds are off. 0 turns reminders off; values above 240 are clamped with a config warning. The settings overlay's reminders tab offers off, 5, 10, 15, 30 and 60 minutes."
         },
         {
           "key": "ui.mobile_width_threshold",

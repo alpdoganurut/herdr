@@ -32,6 +32,10 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Request {
     pub id: String,
@@ -145,6 +149,10 @@ pub enum Method {
     AgentTranscripts(EmptyParams),
     #[serde(rename = "tab.set_color")]
     TabSetColor(TabSetColorParams),
+    #[serde(rename = "tab.set_remind")]
+    TabSetRemind(TabSetRemindParams),
+    #[serde(rename = "pane.report_subagent")]
+    PaneReportSubagent(PaneReportSubagentParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

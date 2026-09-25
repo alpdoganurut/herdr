@@ -51,6 +51,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             focused: true,
             agent_status: AgentStatus::Idle,
             color: None,
+            remind: false,
         }],
         panes: vec![ClientShellPane {
             pane_id: "pane_1".into(),
@@ -253,6 +254,7 @@ mod copy;
 mod endpoint_requests;
 mod endpoints;
 mod graphics;
+mod idle_reminders;
 #[path = "input.rs"]
 mod input_domain;
 mod keybindings_settings;

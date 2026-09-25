@@ -54,6 +54,8 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::AgentActivate(_)
             | Method::AgentRestart(_)
             | Method::TabSetColor(_)
+            | Method::TabSetRemind(_)
+            | Method::PaneReportSubagent(_)
             | Method::AgentPrompt(_)
             | Method::AgentSendKeys(_)
             | Method::PaneSplit(_)

@@ -337,3 +337,127 @@ async fn claude_hook_asset_reports_the_transcript_path_the_backup_store_uses() {
     shutdown_test_runtimes(&mut server);
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Run the shipped Claude hook asset with `action` and the hook JSON `input`
+/// against a stand-in socket and return the request it sent.
+#[cfg(unix)]
+fn run_claude_hook_asset(
+    dir: &std::path::Path,
+    pane_id: &str,
+    action: &str,
+    input: serde_json::Value,
+) -> Request {
+    use std::io::{Read as _, Write as _};
+
+    let asset = dir.join("herdr-agent-state.sh");
+    fs::write(
+        &asset,
+        include_str!("../../../integration/assets/claude/herdr-agent-state.sh"),
+    )
+    .unwrap();
+    let socket_path = dir.join(format!("{action}-{}.sock", input["hook_event_name"]));
+    let _ = fs::remove_file(&socket_path);
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+    let mut child = std::process::Command::new("sh")
+        .arg(&asset)
+        .arg(action)
+        .env("HERDR_ENV", "1")
+        .env("HERDR_SOCKET_PATH", &socket_path)
+        .env("HERDR_PANE_ID", pane_id)
+        .env_remove("CURSOR_VERSION")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("run the claude hook asset");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    listener.set_nonblocking(true).unwrap();
+    let (mut stream, _) = listener
+        .accept()
+        .expect("the hook connected to HERDR_SOCKET_PATH (is python3 on PATH?)");
+    stream.set_nonblocking(false).unwrap();
+    let mut sent = String::new();
+    stream.read_to_string(&mut sent).unwrap();
+    serde_json::from_str(sent.lines().next().expect("one request line")).unwrap()
+}
+
+#[cfg(unix)]
+fn client_subagents(server: &HeadlessServer) -> (u32, AgentStatus) {
+    let snapshot = crate::server::client_shell::snapshot(&server.app, "fork-smoke", 1, None, None);
+    let json = serde_json::to_string(&snapshot).expect("snapshot encodes");
+    let decoded: protocol::ClientShellSnapshot =
+        serde_json::from_str(&json).expect("snapshot decodes");
+    (decoded.agents[0].subagents, decoded.agents[0].agent_status)
+}
+
+/// Claude's SubagentStart / SubagentStop hooks, through the shipped asset's
+/// `subagent` action and `pane.report_subagent`, reach the client shell
+/// snapshot as the agent's running subagent count; the agent going idle
+/// clears it.
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_subagent_hooks_reach_the_client_shell_snapshot() {
+    let dir = std::env::temp_dir().join(format!("hfs-subagents-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let (mut server, _rx) = server_with_claude(Some(SESSION_ID));
+    let terminal_id = root_terminal_id(&server);
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .set_detected_state(Some(Agent::Claude), AgentState::Working);
+    let pane_id = server
+        .app
+        .public_pane_id(0, root_pane(&server))
+        .expect("public pane id");
+    assert_eq!(client_subagents(&server), (0, AgentStatus::Working));
+
+    for (event, expected) in [("SubagentStart", 1), ("SubagentStop", 0)] {
+        let request = run_claude_hook_asset(
+            &dir,
+            &pane_id,
+            "subagent",
+            serde_json::json!({
+                "hook_event_name": event,
+                "session_id": SESSION_ID,
+                "agent_id": "a1b2c3",
+                "agent_type": "general-purpose",
+            }),
+        );
+        let Method::PaneReportSubagent(params) = &request.method else {
+            panic!("unexpected hook request: {request:?}");
+        };
+        assert_eq!(params.subagent_id, "a1b2c3");
+        assert_eq!(params.agent, "claude");
+        let response = api(&mut server, request.method.clone());
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(client_subagents(&server).0, expected, "after {event}");
+    }
+
+    let request = run_claude_hook_asset(
+        &dir,
+        &pane_id,
+        "subagent",
+        serde_json::json!({"hook_event_name": "SubagentStart", "agent_id": "d4e5"}),
+    );
+    api(&mut server, request.method);
+    assert_eq!(client_subagents(&server).0, 1);
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    assert_eq!(client_subagents(&server).0, 0, "an idle agent has none");
+
+    shutdown_test_runtimes(&mut server);
+    let _ = fs::remove_dir_all(&dir);
+}

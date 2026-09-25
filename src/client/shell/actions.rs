@@ -1138,6 +1138,12 @@ impl ClientShellState {
                 let tab_id = focused_tab?;
                 Some(tab_color_cycle_method(snapshot, &tab_id)?)
             }
+            KeybindAction::ToggleTabRemind => {
+                let tab_id = focused_tab?;
+                Some(super::idle_reminders::tab_remind_toggle_method(
+                    snapshot, &tab_id,
+                )?)
+            }
             KeybindAction::EditScrollback => Some(Method::PaneEditScrollback(PaneTarget {
                 pane_id: focused_pane?,
             })),

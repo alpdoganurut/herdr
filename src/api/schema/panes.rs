@@ -772,3 +772,20 @@ pub struct PaneLinkRegion {
     pub start_col: u16,
     pub end_col: u16,
 }
+
+/// A Claude Code subagent starting or stopping in a pane's agent
+/// (`pane.report_subagent`, sent by the Claude hook asset).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneReportSubagentParams {
+    pub pane_id: String,
+    pub agent: String,
+    pub event: SubagentEvent,
+    pub subagent_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentEvent {
+    Start,
+    Stop,
+}

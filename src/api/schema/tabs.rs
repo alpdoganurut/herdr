@@ -48,6 +48,10 @@ pub struct TabInfo {
     /// The tab's color tag; absent when the tab has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<TabColor>,
+    /// Whether the tab is marked for idle reminders (`tab.set_remind`);
+    /// absent when it is not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remind: bool,
 }
 
 /// A named color tag on a tab. Clients map each name to a theme color.
@@ -130,4 +134,12 @@ pub struct TabSetColorParams {
     pub tab_id: String,
     #[serde(default)]
     pub color: Option<TabColor>,
+}
+
+/// Mark (`remind: true`) or unmark a tab for idle reminders: clients remind
+/// about a marked tab whose agent waits unseen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabSetRemindParams {
+    pub tab_id: String,
+    pub remind: bool,
 }

@@ -137,6 +137,7 @@ impl ClientShellConfig {
             toast_position: config.ui.toast.herdr.position,
             toast_sticky: config.ui.toast.herdr.sticky,
             toast_max_stack: config.ui.toast.herdr.effective_max_stack(),
+            idle_reminder_minutes: config.ui.effective_idle_reminder_minutes(),
             copy_on_select: config.ui.copy_on_select,
             clipboard_toast_enabled: config.ui.toast.clipboard.enabled,
             clipboard_toast_position: config.ui.toast.clipboard.position,
@@ -348,6 +349,7 @@ impl ClientShellConfig {
                 self.toast_position = ui.toast.herdr.position;
                 self.toast_sticky = ui.toast.herdr.sticky;
                 self.toast_max_stack = ui.toast.herdr.effective_max_stack();
+                self.idle_reminder_minutes = ui.effective_idle_reminder_minutes();
                 self.copy_on_select = ui.copy_on_select;
                 self.clipboard_toast_enabled = ui.toast.clipboard.enabled;
                 self.clipboard_toast_position = ui.toast.clipboard.position;
