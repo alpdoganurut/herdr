@@ -320,6 +320,9 @@ impl ClientShellState {
                     }
                 }
             }
+            // Fork: final text for every delivery path (notification_format.rs).
+            let mut pending = pending;
+            pending.event = self.format_agent_notification(&pending.endpoint_id, pending.event);
             let target_active =
                 self.notification_target_is_active(&pending.endpoint_id, &pending.event);
             let suppress_external = target_active && self.outer_focused != Some(false);

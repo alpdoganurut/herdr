@@ -85,16 +85,16 @@ impl ClientShellState {
                 }) else {
                     continue;
                 };
-                let group = snapshot
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.workspace_id == tab.workspace_id)
-                    .map(|workspace| workspace.label.clone())
-                    .filter(|label| !label.is_empty());
+                let body = super::notification_format::agent_notification_body(
+                    snapshot,
+                    agent.agent.as_deref(),
+                    Some(agent.pane_id.as_str()),
+                    Some(tab.workspace_id.as_str()),
+                );
                 let event = SemanticNotification {
                     kind,
                     title: String::new(),
-                    body: group,
+                    body,
                     sound: self.config.sound_enabled.then_some(sound),
                     agent: agent.agent.clone(),
                     workspace_id: Some(tab.workspace_id.clone()),

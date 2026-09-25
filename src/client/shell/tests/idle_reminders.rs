@@ -134,7 +134,8 @@ fn no_reminder_before_the_interval_then_one_at_it() {
     assert_eq!(sounds(&effects), [crate::sound::Sound::Done]);
     let card = state.visible_notifications.back().expect("reminder card");
     assert_eq!(card.event.title, "planner finished 10 min ago");
-    assert_eq!(card.event.body.as_deref(), Some("backend"));
+    // "<agent> · <directory>": pane_2 has no pane row, so the space label.
+    assert_eq!(card.event.body.as_deref(), Some("claude · backend"));
     assert_eq!(card.event.kind, SemanticNotificationKind::Finished);
     assert_eq!(card.event.pane_id.as_deref(), Some("pane_2"));
     assert_eq!(card.event.tab_id.as_deref(), Some("tab_2"));
@@ -363,7 +364,7 @@ fn terminal_and_system_delivery_emit_their_effects() {
                 .collect::<Vec<_>>();
         assert_eq!(
             delivered,
-            [("planner finished 10 min ago", Some("backend"))],
+            [("planner finished 10 min ago", Some("claude · backend"))],
             "{delivery:?}"
         );
         assert!(cards(&state).is_empty());
@@ -634,6 +635,23 @@ fn applying_a_reminder_choice_writes_the_config_and_reloads_it() {
         settings_selection(&state),
         (ClientSettingsSection::Reminders, 3)
     );
+}
+
+#[test]
+fn reminder_body_names_the_agent_and_the_pane_directory() {
+    let mut snapshot = waiting_snapshot(AgentStatus::Blocked, true);
+    let mut pane = snapshot.panes[0].clone();
+    pane.pane_id = "pane_2".into();
+    pane.tab_id = "tab_2".into();
+    pane.cwd = Some("/home/me/src/leap-bi-4/".into());
+    snapshot.panes.push(pane);
+    let mut state = reminder_state(10, snapshot);
+    let t0 = Instant::now();
+    state.tick_notifications(t0);
+    state.tick_notifications(t0 + 10 * MINUTE);
+    let card = state.visible_notifications.back().expect("reminder card");
+    assert_eq!(card.event.title, "planner still waiting");
+    assert_eq!(card.event.body.as_deref(), Some("claude · leap-bi-4"));
 }
 
 /// Fork smoke tests: FORK.md section 10 lists them by name and the sync gate
