@@ -41,7 +41,7 @@ impl ClientContextMenuOverlay {
                     Action::ToggleGroup,
                 ),
             ],
-            ClientContextMenuTarget::Tab { agent, .. } => {
+            ClientContextMenuTarget::Tab { agent, remind, .. } => {
                 let mut items = vec![
                     item("New tab", Action::NewTab),
                     item("Rename", Action::Rename),
@@ -59,6 +59,15 @@ impl ClientContextMenuOverlay {
                     None => {}
                 }
                 items.push(item("Close", Action::Close));
+                // After Close, so upstream's item positions hold.
+                items.push(item(
+                    if *remind {
+                        "Stop reminding"
+                    } else {
+                        "Remind me"
+                    },
+                    Action::ToggleRemind,
+                ));
                 // The swatch row, last so upstream's item positions (Close at
                 // 2 without an agent) stay put. The label only names the row;
                 // render_context_menu draws the swatches in its place.
@@ -172,6 +181,7 @@ impl ClientShellState {
                 workspace_id: tab.workspace_id.clone(),
                 agent,
                 color,
+                remind: tab.remind,
             },
             x,
             y,
@@ -235,6 +245,23 @@ impl ClientShellState {
         {
             // Picking a swatch sets the color without focusing the tab.
             self.pick_tab_color_swatch(tab_id.clone(), color.cursor, outcome);
+            outcome.repaint = true;
+            return;
+        }
+        if let (
+            ClientContextMenuAction::ToggleRemind,
+            ClientContextMenuTarget::Tab { tab_id, remind, .. },
+        ) = (action, &menu.target)
+        {
+            // Like the swatch row, no tab focus: focusing the tab would mark
+            // its agent seen and so cancel the reminder being armed.
+            self.push_endpoint_method(
+                crate::api::schema::Method::TabSetRemind(crate::api::schema::TabSetRemindParams {
+                    tab_id: tab_id.clone(),
+                    remind: !*remind,
+                }),
+                outcome,
+            );
             outcome.repaint = true;
             return;
         }

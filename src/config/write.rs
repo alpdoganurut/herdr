@@ -4,6 +4,7 @@ pub(crate) enum ConfigEdit<'a> {
     StatusIndicators(super::StatusIndicatorStyle),
     Sound(bool),
     ToastDelivery(super::ToastDelivery),
+    IdleReminderMinutes(u32),
 }
 
 impl ConfigEdit<'_> {
@@ -13,6 +14,7 @@ impl ConfigEdit<'_> {
             Self::StatusIndicators(_) => "status indicators",
             Self::Sound(_) => "sound setting",
             Self::ToastDelivery(_) => "toast setting",
+            Self::IdleReminderMinutes(_) => "reminder setting",
         }
     }
 
@@ -42,6 +44,12 @@ impl ConfigEdit<'_> {
                 let content = super::upsert_section_value(content, "ui.toast", "delivery", value);
                 super::remove_section_key(&content, "ui.toast", "enabled")
             }
+            Self::IdleReminderMinutes(minutes) => super::upsert_section_value(
+                content,
+                "ui",
+                "idle_reminder_minutes",
+                &minutes.to_string(),
+            ),
         }
     }
 }
@@ -77,6 +85,19 @@ pub(crate) fn write_edit(edit: ConfigEdit<'_>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_reminder_minutes_edit_writes_the_ui_key_and_parses_back() {
+        let content = "[ui]\nsidebar_width = 30\n";
+        let edited = ConfigEdit::IdleReminderMinutes(15).apply(content);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.ui.idle_reminder_minutes, 15);
+        assert_eq!(config.ui.sidebar_width, 30);
+        let edited = ConfigEdit::IdleReminderMinutes(0).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.ui.idle_reminder_minutes, 0);
+        assert_eq!(edited.matches("idle_reminder_minutes").count(), 1);
+    }
 
     #[test]
     fn update_file_at_does_not_move_a_leading_bom_into_the_file() {

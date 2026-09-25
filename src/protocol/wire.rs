@@ -17,8 +17,9 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-/// Fork: 23 = upstream 22 + ClientShellTab.color (bincode needs every field).
-pub const PROTOCOL_VERSION: u32 = 23;
+/// Fork: 24 = upstream 22 + ClientShellTab.color (23) + ClientShellTab.remind
+/// (24); bincode needs every field.
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -1065,6 +1066,10 @@ pub struct ClientShellTab {
     /// codec of `ClientShellSnapshot` needs every field present.
     #[serde(default)]
     pub color: Option<crate::api::schema::TabColor>,
+    /// Idle reminder mark (`tab.set_remind`); an absent key is `false`. Not
+    /// skipped when `false`, for the same bincode reason as `color`.
+    #[serde(default)]
+    pub remind: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2736,6 +2741,7 @@ mod tests {
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
                 color: None,
+                remind: false,
             }],
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),

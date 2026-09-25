@@ -145,6 +145,8 @@ pub enum Method {
     AgentTranscripts(EmptyParams),
     #[serde(rename = "tab.set_color")]
     TabSetColor(TabSetColorParams),
+    #[serde(rename = "tab.set_remind")]
+    TabSetRemind(TabSetRemindParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

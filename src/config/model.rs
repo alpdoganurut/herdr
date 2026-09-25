@@ -13,6 +13,8 @@ pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
 pub const DEFAULT_TOAST_MAX_STACK: u8 = 6;
 pub const MIN_TOAST_MAX_STACK: u8 = 1;
 pub const MAX_TOAST_MAX_STACK: u8 = 20;
+pub const DEFAULT_IDLE_REMINDER_MINUTES: u32 = 10;
+pub const MAX_IDLE_REMINDER_MINUTES: u32 = 240;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -529,6 +531,8 @@ pub struct KeysConfig {
     pub restart_agent: BindingConfig,
     /// Cycle the focused tab's color tag: none, red, orange, yellow, green, cyan, blue, purple, none. Unset by default.
     pub cycle_tab_color: BindingConfig,
+    /// Mark the focused tab for idle reminders, or remove the mark. Unset by default.
+    pub toggle_tab_remind: BindingConfig,
     /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
     pub copy_mode: BindingConfig,
     /// Focus the pane to the left. Default: "prefix+h".
@@ -672,6 +676,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     cycle_tab_color: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_tab_remind: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     copy_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus_pane_left: Option<BindingConfig>,
@@ -787,6 +793,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(toggle_groups_folded);
         apply_field!(restart_agent);
         apply_field!(cycle_tab_color);
+        apply_field!(toggle_tab_remind);
         apply_field!(copy_mode);
         apply_field!(focus_pane_left);
         apply_field!(focus_pane_down);
@@ -897,6 +904,7 @@ impl KeysConfig {
         copy_effective_action_field!(toggle_groups_folded, keybinds.toggle_groups_folded);
         copy_effective_action_field!(restart_agent, keybinds.restart_agent);
         copy_effective_action_field!(cycle_tab_color, keybinds.cycle_tab_color);
+        copy_effective_action_field!(toggle_tab_remind, keybinds.toggle_tab_remind);
         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
         copy_effective_action_field!(focus_pane_left, keybinds.focus_pane_left);
         copy_effective_action_field!(focus_pane_down, keybinds.focus_pane_down);
@@ -1067,6 +1075,10 @@ pub struct UiConfig {
     /// `tab_agent_glyphs`. Values use the theme color syntax. Keys you omit keep their defaults;
     /// keys without a color stay monochrome. Default: claude "#D97757", codex "#3B82F6".
     pub tab_agent_glyph_colors: std::collections::BTreeMap<String, String>,
+    /// Minutes a tab marked for reminders ("Remind me", `tab.set_remind`) may sit with a
+    /// finished (unseen) or blocked agent before Herdr reminds you, and again every as many
+    /// minutes until you focus the tab. 0 turns reminders off; at most 240. Default: 10.
+    pub idle_reminder_minutes: u32,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
@@ -1281,6 +1293,7 @@ impl Default for KeysConfig {
             toggle_groups_folded: BindingConfig::default(),
             restart_agent: BindingConfig::default(),
             cycle_tab_color: BindingConfig::default(),
+            toggle_tab_remind: BindingConfig::default(),
             copy_mode: BindingConfig::one("prefix+["),
             focus_pane_left: BindingConfig::one("prefix+h"),
             focus_pane_down: BindingConfig::one("prefix+j"),
@@ -1329,6 +1342,7 @@ impl Default for UiConfig {
             sidebar_layout: SidebarLayoutConfig::Spaces,
             tab_agent_glyphs: std::collections::BTreeMap::new(),
             tab_agent_glyph_colors: std::collections::BTreeMap::new(),
+            idle_reminder_minutes: DEFAULT_IDLE_REMINDER_MINUTES,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,
@@ -1369,6 +1383,22 @@ impl UiConfig {
 
     pub fn right_click_passthrough_modifiers(&self) -> Option<KeyModifiers> {
         self.right_click_passthrough_modifier.modifiers()
+    }
+
+    /// `idle_reminder_minutes` clamped to 0..=240; out-of-range values are
+    /// reported by [`UiConfig::idle_reminder_diagnostic`].
+    pub fn effective_idle_reminder_minutes(&self) -> u32 {
+        self.idle_reminder_minutes.min(MAX_IDLE_REMINDER_MINUTES)
+    }
+
+    pub fn idle_reminder_diagnostic(&self) -> Option<String> {
+        (self.idle_reminder_minutes > MAX_IDLE_REMINDER_MINUTES).then(|| {
+            format!(
+                "ui.idle_reminder_minutes must be between 0 and {MAX_IDLE_REMINDER_MINUTES} (got {}); using {}",
+                self.idle_reminder_minutes,
+                self.effective_idle_reminder_minutes()
+            )
+        })
     }
 }
 
@@ -2211,6 +2241,26 @@ max_stack = 3
             assert!(diagnostic.contains("ui.toast.herdr.max_stack must be between 1 and 20"));
             assert!(config.collect_diagnostics().contains(&diagnostic));
         }
+    }
+
+    #[test]
+    fn idle_reminder_minutes_parse_default_and_clamp() {
+        let defaults = Config::default();
+        assert_eq!(defaults.ui.effective_idle_reminder_minutes(), 10);
+        assert!(defaults.ui.idle_reminder_diagnostic().is_none());
+
+        for (raw, effective) in [(0, 0), (5, 5), (240, 240)] {
+            let config: Config =
+                toml::from_str(&format!("[ui]\nidle_reminder_minutes = {raw}\n")).unwrap();
+            assert_eq!(config.ui.effective_idle_reminder_minutes(), effective);
+            assert!(config.ui.idle_reminder_diagnostic().is_none());
+        }
+
+        let config: Config = toml::from_str("[ui]\nidle_reminder_minutes = 241\n").unwrap();
+        assert_eq!(config.ui.effective_idle_reminder_minutes(), 240);
+        let diagnostic = config.ui.idle_reminder_diagnostic().expect("out of range");
+        assert!(diagnostic.contains("ui.idle_reminder_minutes must be between 0 and 240"));
+        assert!(config.collect_diagnostics().contains(&diagnostic));
     }
 
     #[test]

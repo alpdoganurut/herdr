@@ -89,6 +89,8 @@ pub struct TabSnapshot {
     pub custom_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<crate::api::schema::TabColor>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remind: bool,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
@@ -177,6 +179,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
         let tab = TabSnapshot {
             custom_name: None,
             color: None,
+            remind: false,
             layout: snap.layout,
             panes: snap.panes,
             zoomed: snap.zoomed,
@@ -405,6 +408,7 @@ fn capture_tab(
     TabSnapshot {
         custom_name: tab.custom_name.clone(),
         color: tab.color,
+        remind: tab.remind,
         layout: capture_node(tab.layout.root()),
         panes,
         zoomed: tab.zoomed,
@@ -842,6 +846,7 @@ mod tests {
                 tabs: vec![TabSnapshot {
                     custom_name: Some("api".to_string()),
                     color: None,
+                    remind: false,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
                         ratio: 0.5,
@@ -1512,6 +1517,7 @@ mod tests {
                 tabs: vec![TabSnapshot {
                     custom_name: None,
                     color: None,
+                    remind: false,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
                         ratio: 0.5,

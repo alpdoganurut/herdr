@@ -414,6 +414,9 @@ fn render_group_header(
         .render(rect, buffer);
 }
 
+/// The monochrome marker on a tab row marked for idle reminders (`tab.set_remind`).
+pub(super) const TAB_REMIND_MARKER: &str = "\u{25F7}"; // ◷
+
 fn render_tab_row(
     buffer: &mut Buffer,
     rect: Rect,
@@ -441,23 +444,43 @@ fn render_tab_row(
     let icon_style = Style::default().fg(status_color(tab.agent_status, palette));
     let icon = status_icon(tab.agent_status, config.status_indicators);
     // " <icon> <label>...<glyph> ": the agent glyph is right-aligned with a one
-    // cell margin and the label gives way to it.
+    // cell margin and the label gives way to it. A tab marked for idle
+    // reminders shows the reminder marker just before the glyph.
     let glyph_width = display_width(glyph) as u16;
     let glyph_cells = if glyph_width > 0 { glyph_width + 2 } else { 0 };
+    // One space before the marker; without a glyph, one margin cell after it.
+    let remind_cells = if tab.remind {
+        display_width(TAB_REMIND_MARKER) as u16 + 1 + u16::from(glyph_cells == 0)
+    } else {
+        0
+    };
     let lead = 1 + display_width(icon) as u16 + 1;
-    let available = rect.width.saturating_sub(lead + glyph_cells) as usize;
+    let available = rect.width.saturating_sub(lead + glyph_cells + remind_cells) as usize;
     let label = crate::ui::truncate_end(&tab.label, available);
     let pad = rect
         .width
-        .saturating_sub(lead + display_width(&label) as u16 + glyph_cells);
+        .saturating_sub(lead + display_width(&label) as u16 + glyph_cells + remind_cells);
     let mut spans = vec![
         Span::raw(" "),
         Span::styled(icon, icon_style),
         Span::raw(" "),
         Span::styled(label, label_style),
     ];
-    if glyph_cells > 0 {
+    if remind_cells > 0 {
         spans.push(Span::raw(" ".repeat(usize::from(pad) + 1)));
+        spans.push(Span::styled(
+            TAB_REMIND_MARKER,
+            Style::default().fg(palette.overlay0),
+        ));
+        spans.push(Span::raw(" "));
+    }
+    if glyph_cells > 0 {
+        let gap = if remind_cells > 0 {
+            0
+        } else {
+            usize::from(pad) + 1
+        };
+        spans.push(Span::raw(" ".repeat(gap)));
         spans.push(Span::styled(
             glyph.to_string(),
             Style::default().fg(glyph_color.unwrap_or(palette.overlay0)),

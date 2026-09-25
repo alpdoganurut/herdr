@@ -1183,6 +1183,7 @@ impl Workspace {
         let tab = Tab {
             custom_name: None,
             color: None,
+            remind: false,
             number: 1,
             root_pane: root_id,
             layout,
@@ -1240,6 +1241,7 @@ impl Workspace {
         let tab = Tab {
             custom_name: name.map(str::to_string),
             color: None,
+            remind: false,
             number: self.next_public_tab_number,
             root_pane: root_id,
             layout,

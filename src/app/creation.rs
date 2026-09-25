@@ -226,6 +226,7 @@ impl App {
             pane_count: tab.panes.len(),
             agent_status,
             color: tab.color,
+            remind: tab.remind,
         })
     }
 

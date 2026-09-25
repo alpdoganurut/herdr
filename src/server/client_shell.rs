@@ -119,6 +119,7 @@ pub(super) fn snapshot_with_completions(
                 zoomed: state.zoomed,
                 agent_status: tab.agent_status,
                 color: state.color,
+                remind: state.remind,
             }
         })
         .collect();

@@ -533,6 +533,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::AgentRestart(_) => "agent.restart",
         Method::AgentTranscripts(_) => "agent.transcripts",
         Method::TabSetColor(_) => "tab.set_color",
+        Method::TabSetRemind(_) => "tab.set_remind",
         Method::AgentPrompt(_) => "agent.prompt",
         Method::AgentWait(_) => "agent.wait",
         Method::PaneSplit(_) => "pane.split",

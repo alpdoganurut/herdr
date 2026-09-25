@@ -270,6 +270,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
                 workspace_id: "ws_1".into(),
                 agent: None,
                 color: Default::default(),
+                remind: false,
             },
             x: 35,
             y: 8,
@@ -287,6 +288,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
             installing_integrations: false,
             transcripts: None,
             loading_transcripts: false,
+            idle_reminder_minutes: 10,
         }),
     ];
     for overlay in overlays {

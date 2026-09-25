@@ -193,12 +193,15 @@ herdr tab get <tab_id>
 herdr tab focus <tab_id>
 herdr tab rename <tab_id> <label>
 herdr tab color <tab_id> <red|orange|yellow|green|cyan|blue|purple|none>
+herdr tab remind <tab_id> <on|off>
 herdr tab close <tab_id>
 ```
 
 A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action. If `confirm_close` is enabled and closing the tab would also close a whole worktree group, `tab close` returns a `confirmation_required` error instead.
 
 `tab color` tags a tab with a named theme color (`tab.set_color`) and prints the tab; `none` clears the tag. The color is stored with the tab, survives server restarts, and follows the tab when it moves to another space. The `tabs` sidebar layout draws the tab's name in the color, and the `spaces` layout's tab bar tints unfocused tab names with it.
+
+`tab remind` marks a tab for idle reminders (`tab.set_remind`) and prints the tab; `off` removes the mark. While a marked tab's agent sits finished and unseen, or blocked, the Herdr client reminds you every `ui.idle_reminder_minutes` until you focus the tab. The mark is stored with the tab, survives server restarts, and follows the tab when it moves to another space.
 
 With `ui.confirm_close` enabled, the TUI asks for confirmation before closing a workspace's last tab from a keybinding or the tab menu. Ordinary CLI/API tab closes remain immediate.
 

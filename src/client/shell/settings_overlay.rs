@@ -70,15 +70,27 @@ pub(super) fn render_settings_overlay(
             .integrations
             .iter()
             .any(|integration| integration.state == crate::api::schema::IntegrationState::Outdated);
+    let section_label = |section: ClientSettingsSection| {
+        if section == ClientSettingsSection::Integrations && integration_badge {
+            format!(" ● {} ", section.label())
+        } else {
+            format!(" {} ", section.label())
+        }
+    };
+    // Tabs sit one cell apart; when that does not fit (the integrations badge
+    // on, with every section shown) they close up, since each label already
+    // carries its own padding.
+    let strip_width = ClientSettingsSection::ALL
+        .iter()
+        .map(|section| usize::from(display_width(&section_label(*section))))
+        .sum::<usize>()
+        + ClientSettingsSection::ALL.len().saturating_sub(1);
+    let tab_gap = u16::from(strip_width <= usize::from(inner.width));
     let mut tab_x = inner.x;
     let mut tab_hits = Vec::new();
     for section in ClientSettingsSection::ALL {
         let badge = *section == ClientSettingsSection::Integrations && integration_badge;
-        let label = if badge {
-            format!(" ● {} ", section.label())
-        } else {
-            format!(" {} ", section.label())
-        };
+        let label = section_label(*section);
         let width = display_width(&label).min(inner.right().saturating_sub(tab_x));
         let rect = Rect::new(tab_x, inner.y + 1, width, 1);
         let active = *section == settings.section;
@@ -106,7 +118,7 @@ pub(super) fn render_settings_overlay(
             );
         }
         tab_hits.push((rect, *section));
-        tab_x = tab_x.saturating_add(width.saturating_add(1));
+        tab_x = tab_x.saturating_add(width.saturating_add(tab_gap));
         if tab_x >= inner.right() {
             break;
         }
@@ -199,6 +211,16 @@ pub(super) fn render_settings_overlay(
         }
         ClientSettingsSection::Backups => {
             render_backups(buffer, content, settings, palette);
+        }
+        ClientSettingsSection::Reminders => {
+            render_reminders(
+                buffer,
+                content,
+                settings.selected,
+                settings.idle_reminder_minutes,
+                palette,
+                &mut choice_hits,
+            );
         }
     }
 
@@ -298,6 +320,57 @@ fn render_choice_section(
         }
         let rect = Rect::new(area.x, y, area.width, 1);
         draw_choice(buffer, rect, choice, index == selected, false, palette);
+        hits.push((rect, index));
+    }
+}
+
+/// Idle reminder interval: one row per choice, without the gap other choice
+/// sections use, so the whole list (and a custom value) fits; the configured
+/// value is checked.
+fn render_reminders(
+    buffer: &mut Buffer,
+    area: Rect,
+    selected: usize,
+    configured: u32,
+    palette: &Palette,
+    hits: &mut Vec<(Rect, usize)>,
+) {
+    put_text(
+        buffer,
+        area.x,
+        area.y,
+        area.width,
+        "idle reminders",
+        Style::default()
+            .fg(palette.text)
+            .bg(palette.panel_bg)
+            .add_modifier(Modifier::BOLD),
+    );
+    put_text(
+        buffer,
+        area.x,
+        area.y + 1,
+        area.width,
+        "remind about tabs marked \"Remind me\" while their agent waits unseen",
+        Style::default().fg(palette.overlay1).bg(palette.panel_bg),
+    );
+    for (index, (label, minutes)) in super::super::idle_reminders::reminder_choices(configured)
+        .iter()
+        .enumerate()
+    {
+        let y = area.y + 3 + index as u16;
+        if y >= area.bottom() {
+            break;
+        }
+        let rect = Rect::new(area.x, y, area.width, 1);
+        draw_choice(
+            buffer,
+            rect,
+            label,
+            index == selected,
+            *minutes == configured,
+            palette,
+        );
         hits.push((rect, index));
     }
 }

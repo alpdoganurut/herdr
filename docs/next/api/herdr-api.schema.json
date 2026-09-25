@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "protocol": 23,
+  "protocol": 24,
   "schema_version": 1,
   "schemas": {
     "error_response": {
@@ -1089,6 +1089,10 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "remind": {
+              "description": "Whether the tab is marked for idle reminders (`tab.set_remind`);\nabsent when it is not.",
+              "type": "boolean"
             },
             "tab_id": {
               "type": "string"
@@ -4546,6 +4550,22 @@
           ],
           "type": "object"
         },
+        "TabSetRemindParams": {
+          "description": "Mark (`remind: true`) or unmark a tab for idle reminders: clients remind\nabout a marked tab whose agent waits unseen.",
+          "properties": {
+            "remind": {
+              "type": "boolean"
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "remind"
+          ],
+          "type": "object"
+        },
         "TabTarget": {
           "properties": {
             "tab_id": {
@@ -5673,6 +5693,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabSetColorParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.set_remind",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabSetRemindParams"
             }
           },
           "required": [
@@ -11186,6 +11222,10 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "remind": {
+              "description": "Whether the tab is marked for idle reminders (`tab.set_remind`);\nabsent when it is not.",
+              "type": "boolean"
             },
             "tab_id": {
               "type": "string"

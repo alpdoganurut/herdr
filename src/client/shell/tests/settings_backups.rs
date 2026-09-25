@@ -5,11 +5,15 @@ fn settings_frame_text(state: &mut ClientShellState) -> String {
     frame_rows(&frame).join("\n")
 }
 
-/// Tab through every section to the last one, `backups`.
+/// Tab through the sections to `backups`.
 fn open_backups_section(state: &mut ClientShellState) -> ClientShellInput {
     state.open_settings_overlay();
     let mut outcome = ClientShellInput::default();
-    for _ in 0..ClientSettingsSection::ALL.len() - 1 {
+    let backups = ClientSettingsSection::ALL
+        .iter()
+        .position(|section| *section == ClientSettingsSection::Backups)
+        .expect("backups section");
+    for _ in 0..backups {
         outcome = state.handle_input_bytes(b"\t");
     }
     outcome
@@ -185,7 +189,8 @@ mod fork_smoke {
 
     /// Section tabs are clipped with `.min()` to the fixed 76-column popup; a
     /// longer upstream label or a new upstream section would silently cut
-    /// `backups` off. Checked with the integrations badge on, the widest row.
+    /// `backups` or `reminders` off. Checked with the integrations badge on,
+    /// the widest row (the tabs close up their one-cell gaps to fit it).
     #[test]
     fn every_settings_section_fits_the_76_column_popup() {
         let mut snapshot = snapshot();
@@ -203,8 +208,11 @@ mod fork_smoke {
             "every section gets a tab, in order"
         );
         assert_eq!(
-            ClientSettingsSection::ALL.last(),
-            Some(&ClientSettingsSection::Backups)
+            &ClientSettingsSection::ALL[ClientSettingsSection::ALL.len() - 2..],
+            [
+                ClientSettingsSection::Backups,
+                ClientSettingsSection::Reminders
+            ]
         );
         let popup_left = tabs[0].0.x;
         for (rect, section) in &tabs {
@@ -225,5 +233,6 @@ mod fork_smoke {
         }
         let row = frame_rows(&frame)[usize::from(tabs[0].0.y)].clone();
         assert!(row.contains(" backups "), "{row}");
+        assert!(row.contains(" reminders "), "{row}");
     }
 }
