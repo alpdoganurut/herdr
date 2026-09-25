@@ -1757,9 +1757,12 @@ fn tab_color_tints_only_the_label_on_focused_and_unfocused_rows() {
     let rows = state.hits.sidebar_tabs.clone();
     let cell = |x: u16, y: u16| &frame.cells[(y * frame.width + x) as usize];
 
-    // Focused row (purple -> mauve): label tinted, still bold on the selected background.
+    // Focused row (purple): label tinted, still bold on the selected background.
     let focused = rows[0].0;
-    let mauve = color_to_u32(palette.mauve);
+    let mauve = color_to_u32(
+        super::super::tab_color::tab_color_fg(crate::api::schema::TabColor::Purple, &palette)
+            .unwrap(),
+    );
     assert!(text_fgs(&frame, focused, "reviewer")
         .iter()
         .all(|fg| *fg == mauve));
@@ -1776,7 +1779,9 @@ fn tab_color_tints_only_the_label_on_focused_and_unfocused_rows() {
 
     // Unfocused row (red): label tinted, glyph stays monochrome.
     let unfocused = rows[1].0;
-    let red = color_to_u32(palette.red);
+    let red = color_to_u32(
+        super::super::tab_color::tab_color_fg(crate::api::schema::TabColor::Red, &palette).unwrap(),
+    );
     assert!(text_fgs(&frame, unfocused, "planner")
         .iter()
         .all(|fg| *fg == red));
@@ -1797,17 +1802,22 @@ fn tab_color_tints_only_the_label_on_focused_and_unfocused_rows() {
 }
 
 #[test]
-fn tab_color_maps_every_name_to_a_theme_slot_and_ignores_unknown() {
+fn tab_color_maps_every_name_to_a_fixed_color_and_ignores_unknown() {
     use crate::api::schema::TabColor;
     let palette = ClientShellConfig::from_config(&tabs_config()).palette;
     let fg = |color| super::super::tab_color::tab_color_fg(color, &palette);
-    assert_eq!(fg(TabColor::Red), Some(palette.red));
-    assert_eq!(fg(TabColor::Orange), Some(palette.peach));
-    assert_eq!(fg(TabColor::Yellow), Some(palette.yellow));
-    assert_eq!(fg(TabColor::Green), Some(palette.green));
-    assert_eq!(fg(TabColor::Cyan), Some(palette.teal));
-    assert_eq!(fg(TabColor::Blue), Some(palette.blue));
-    assert_eq!(fg(TabColor::Purple), Some(palette.mauve));
+    // Fixed true colors, not theme slots: 16-color themes remap the ANSI
+    // slots (Carbonfox's "yellow" is teal), so every color must be distinct
+    // from the others and from the default label colors.
+    let colors = TabColor::ALL.map(|color| fg(color).expect("mapped"));
+    for (i, a) in colors.iter().enumerate() {
+        assert!(matches!(a, ratatui::style::Color::Rgb(..)), "{a:?}");
+        for b in &colors[i + 1..] {
+            assert_ne!(a, b);
+        }
+        assert_ne!(*a, palette.text);
+        assert_ne!(*a, palette.subtext0);
+    }
     assert_eq!(fg(TabColor::Unknown), None);
 
     // A newer server's color name decodes as Unknown and draws uncolored;
@@ -1843,7 +1853,9 @@ fn spaces_layout_tints_unfocused_tab_bar_labels_only() {
             .map(|(rect, _)| *rect)
             .expect("tab bar hit")
     };
-    let red = color_to_u32(palette.red);
+    let red = color_to_u32(
+        super::super::tab_color::tab_color_fg(crate::api::schema::TabColor::Red, palette).unwrap(),
+    );
     assert!(text_fgs(&frame, rect("tab_2"), "planner")
         .iter()
         .all(|fg| *fg == red));
@@ -1938,12 +1950,13 @@ fn tab_menu_ends_with_a_swatch_row_marking_the_current_color() {
         frame.cells[(rect.y * frame.width + rect.x + dx) as usize].clone()
     };
     let palette = state.config.palette.clone();
+    let tag = |color| super::super::tab_color::tab_color_fg(color, &palette).unwrap();
     let expected = [
         palette.overlay0,
-        palette.red,
-        palette.yellow,
-        palette.green,
-        palette.blue,
+        tag(crate::api::schema::TabColor::Red),
+        tag(crate::api::schema::TabColor::Yellow),
+        tag(crate::api::schema::TabColor::Green),
+        tag(crate::api::schema::TabColor::Purple),
     ];
     for (index, color) in expected.into_iter().enumerate() {
         assert_eq!(cell(swatches[index].0, 1).fg, color_to_u32(color));
@@ -1967,16 +1980,19 @@ fn tab_menu_ends_with_a_swatch_row_marking_the_current_color() {
     );
     assert_eq!(bg(3), color_to_u32(palette.panel_bg));
 
-    // A color outside the offered four (tab_1 is purple) starts on none and
-    // brackets nothing.
+    // tab_1 is purple, the last offered color: the cursor starts there and
+    // only that swatch is bracketed.
     open_menu_with_swatches(&mut state, 0);
-    assert_eq!(menu_state(&state).1.cursor, 0);
+    assert_eq!(menu_state(&state).1.cursor, 4);
     let frame = state.compose(106, 20).expect("menu frame");
-    assert!(state
+    let bracketed = state
         .hits
         .context_menu_swatches
         .iter()
-        .all(|(rect, _)| !row_text(&frame, *rect).starts_with('[')));
+        .filter(|(rect, _)| row_text(&frame, *rect).starts_with('['))
+        .map(|(_, index)| *index)
+        .collect::<Vec<_>>();
+    assert_eq!(bracketed, [4]);
 }
 
 #[test]
@@ -1988,14 +2004,14 @@ fn swatch_row_keys_move_along_the_row_and_enter_picks_without_focusing() {
     // Left/right mean nothing on an ordinary row.
     state.handle_raw_events(vec![key(KeyCode::Right), key(KeyCode::Char('l'))]);
     assert_eq!(menu_state(&state), (0, menu_state(&state).1));
-    assert_eq!(menu_state(&state).1.cursor, 0);
+    assert_eq!(menu_state(&state).1.cursor, 4);
 
     state.handle_raw_events((0..8).map(|_| key(KeyCode::Down)).collect());
     assert_eq!(menu_state(&state).0, row, "the swatch row is one row");
     assert_eq!(
         menu_state(&state).1.cursor,
-        0,
-        "purple is not offered: none"
+        4,
+        "starts on the current color (purple)"
     );
     state.handle_raw_events((0..6).map(|_| key(KeyCode::Right)).collect());
     assert_eq!(menu_state(&state).1.cursor, 4, "stops at the last swatch");
@@ -2046,7 +2062,7 @@ fn clicking_a_swatch_sends_tab_set_color_and_closes_the_menu() {
     )]);
     assert_eq!(
         picked_colors(&outcome),
-        [("tab_2".to_string(), Some(TabColor::Blue))]
+        [("tab_2".to_string(), Some(TabColor::Purple))]
     );
     assert!(!endpoint_methods(&outcome)
         .iter()
@@ -2092,7 +2108,7 @@ fn cycle_tab_color_binding_steps_the_focused_tab_and_wraps() {
             Some(TabColor::Red),
             Some(TabColor::Yellow),
             Some(TabColor::Green),
-            Some(TabColor::Blue),
+            Some(TabColor::Purple),
             None,
         ]
     );
@@ -2207,7 +2223,13 @@ mod fork_smoke {
         state.set_pane_surface(wide_surface());
         let frame = state.compose(106, 20).expect("composed frame");
         let row = state.hits.sidebar_tabs[2].0;
-        let green = crate::protocol::color_to_u32(state.config.palette.green);
+        let green = crate::protocol::color_to_u32(
+            super::super::super::tab_color::tab_color_fg(
+                crate::api::schema::TabColor::Green,
+                &state.config.palette,
+            )
+            .unwrap(),
+        );
         let fgs = text_fgs(&frame, row, "notes");
         assert!(fgs.iter().all(|fg| *fg == green), "{fgs:?}");
     }

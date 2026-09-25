@@ -24,20 +24,25 @@ pub(super) fn picker_choices() -> impl Iterator<Item = Option<TabColor>> {
     std::iter::once(None).chain(TabColor::OFFERED.into_iter().map(Some))
 }
 
-/// The theme color a tab color is drawn in. The palette has no orange or
-/// purple slot, so orange uses `peach` and purple uses `mauve`; cyan uses
-/// `teal`. `Unknown` (a newer server's color) draws as no color.
-pub(super) fn tab_color_fg(color: TabColor, palette: &Palette) -> Option<Color> {
-    match color {
-        TabColor::Red => Some(palette.red),
-        TabColor::Orange => Some(palette.peach),
-        TabColor::Yellow => Some(palette.yellow),
-        TabColor::Green => Some(palette.green),
-        TabColor::Cyan => Some(palette.teal),
-        TabColor::Blue => Some(palette.blue),
-        TabColor::Purple => Some(palette.mauve),
-        TabColor::Unknown => None,
-    }
+/// The color a tab color is drawn in. Fixed true colors rather than theme
+/// slots: 16-color themes (including `terminal`, which defers to the host
+/// palette) remap the ANSI slots, so "yellow" can render teal and "blue"
+/// can sit next to the gray of an unfocused label. Hues are spread so that
+/// each reads apart from the others and from default text on dark and light
+/// backgrounds. `Unknown` (a newer server's color) draws as no color. The
+/// palette argument stays so a theme-aware mapping can return later.
+pub(super) fn tab_color_fg(color: TabColor, _palette: &Palette) -> Option<Color> {
+    let (r, g, b) = match color {
+        TabColor::Red => (0xF2, 0x4B, 0x4B),
+        TabColor::Orange => (0xF2, 0x8C, 0x28),
+        TabColor::Yellow => (0xF2, 0xC9, 0x4C),
+        TabColor::Green => (0x3E, 0xCF, 0x6E),
+        TabColor::Cyan => (0x2C, 0xC5, 0xD6),
+        TabColor::Blue => (0x4A, 0x7D, 0xFF),
+        TabColor::Purple => (0xB0, 0x6C, 0xF5),
+        TabColor::Unknown => return None,
+    };
+    Some(Color::Rgb(r, g, b))
 }
 
 /// The label foreground for a tab: its color when it has a known one.

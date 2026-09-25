@@ -149,7 +149,7 @@ fn tab_set_color_request_and_tab_color_round_trip() {
             Some(TabColor::Red),
             Some(TabColor::Yellow),
             Some(TabColor::Green),
-            Some(TabColor::Blue),
+            Some(TabColor::Purple),
             None,
         ]
     );
@@ -158,7 +158,7 @@ fn tab_set_color_request_and_tab_color_round_trip() {
         TabColor::Unknown,
         TabColor::Orange,
         TabColor::Cyan,
-        TabColor::Purple,
+        TabColor::Blue,
     ] {
         assert_eq!(TabColor::cycle_next(Some(outside)), Some(TabColor::Red));
     }
