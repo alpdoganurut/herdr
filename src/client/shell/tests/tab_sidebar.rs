@@ -1853,26 +1853,28 @@ fn spaces_layout_tints_unfocused_tab_bar_labels_only() {
         .all(|fg| *fg == contrast));
 }
 
-fn open_color_picker(state: &mut ClientShellState, row: usize) -> usize {
+/// Open the tab menu on sidebar row `row` and return the swatch row's index,
+/// which must be the last item.
+fn open_menu_with_swatches(state: &mut ClientShellState, row: usize) -> usize {
     let items = tab_menu_items(state, row);
     let color = items
         .iter()
         .position(|item| item.action == ClientContextMenuAction::Color)
-        .expect("color item");
-    assert_eq!(color, items.len() - 1, "Color is the last tab menu item");
-    assert_eq!(items[color].label, "Color");
+        .expect("swatch row");
+    assert_eq!(color, items.len() - 1, "the swatch row ends the tab menu");
     state.compose(106, 20).expect("tab context menu");
-    let menu_row = state.hits.context_menu_rows[color].0;
-    let outcome = state.handle_raw_events(vec![mouse(
-        MouseEventKind::Down(MouseButton::Left),
-        menu_row.x + 1,
-        menu_row.y,
-    )]);
-    assert!(
-        endpoint_methods(&outcome).is_empty(),
-        "opening the picker sends nothing (not even a tab focus)"
-    );
     color
+}
+
+fn menu_state(state: &ClientShellState) -> (usize, ClientTabMenuColor) {
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::Tab { color, .. },
+            highlighted,
+            ..
+        })) => (*highlighted, *color),
+        _ => panic!("tab context menu"),
+    }
 }
 
 fn key(code: crossterm::event::KeyCode) -> RawInputEvent {
@@ -1894,36 +1896,35 @@ fn picked_colors(
 }
 
 #[test]
-fn color_menu_item_opens_a_swatch_row_marking_the_current_color() {
+fn tab_menu_ends_with_a_swatch_row_marking_the_current_color() {
     use crate::api::schema::TabColor;
     use crate::protocol::color_to_u32;
+    use crossterm::event::KeyCode;
     let (mut state, _) = colored_tabs_state(&tabs_config());
-    // tab_2 is red, one of the offered colors.
-    open_color_picker(&mut state, 1);
-    let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_ref() else {
-        panic!("picker overlay");
-    };
-    assert!(matches!(
-        &menu.target,
-        ClientContextMenuTarget::TabColor { tab_id, current: Some(TabColor::Red) }
-            if tab_id == "tab_2"
-    ));
-    assert_eq!(menu.highlighted, 1, "the current color starts highlighted");
-    let labels = menu
-        .items()
-        .iter()
-        .map(|item| item.label)
-        .collect::<Vec<_>>();
-    assert_eq!(labels, ["none", "red", "yellow", "green", "blue"]);
+    // Without an agent Close stays the third item (upstream's close_tab tests).
+    let plain = tab_menu_items(&mut state, 2);
+    assert_eq!(plain[2].action, ClientContextMenuAction::Close);
+    assert_eq!(plain.len(), 4);
 
-    let frame = state.compose(106, 20).expect("picker frame");
-    let swatches = state.hits.context_menu_rows.clone();
-    assert_eq!(swatches.len(), 5);
+    // tab_2 is red, one of the offered colors.
+    let row = open_menu_with_swatches(&mut state, 1);
+    assert_eq!(
+        menu_state(&state).1,
+        ClientTabMenuColor {
+            current: Some(TabColor::Red),
+            cursor: 1
+        }
+    );
+    let frame = state.compose(106, 20).expect("menu frame");
+    let menu_row = state.hits.context_menu_rows[row].0;
+    let swatches = state.hits.context_menu_swatches.clone();
+    assert_eq!(swatches.len(), 5, "none + the four offered colors");
+    assert!(menu_row.width >= 15, "the menu fits the row");
     for (index, (rect, hit)) in swatches.iter().enumerate() {
         assert_eq!(*hit, index);
         assert_eq!((rect.width, rect.height), (3, 1));
-        assert_eq!(rect.y, swatches[0].0.y, "one row");
-        assert_eq!(rect.x, swatches[0].0.x + 3 * index as u16, "side by side");
+        assert_eq!(rect.y, menu_row.y, "inside the last menu row");
+        assert_eq!(rect.x, menu_row.x + 3 * index as u16, "side by side");
     }
     let text = |rect: ratatui::layout::Rect| row_text(&frame, rect);
     assert_eq!(text(swatches[0].0), " \u{2205} ");
@@ -1933,83 +1934,111 @@ fn color_menu_item_opens_a_swatch_row_marking_the_current_color() {
         "current color is bracketed"
     );
     assert_eq!(text(swatches[2].0), " \u{25A0} ");
-    let glyph_fg = |index: usize| {
-        let rect = swatches[index].0;
-        frame.cells[(rect.y * frame.width + rect.x + 1) as usize].fg
+    let cell = |rect: ratatui::layout::Rect, dx: u16| {
+        frame.cells[(rect.y * frame.width + rect.x + dx) as usize].clone()
     };
-    let palette = &state.config.palette;
-    assert_eq!(glyph_fg(0), color_to_u32(palette.overlay0));
-    assert_eq!(glyph_fg(1), color_to_u32(palette.red));
-    assert_eq!(glyph_fg(2), color_to_u32(palette.yellow));
-    assert_eq!(glyph_fg(3), color_to_u32(palette.green));
-    assert_eq!(glyph_fg(4), color_to_u32(palette.blue));
-    // The highlighted swatch wears the menu's highlight background.
-    let highlight_bg = |index: usize| {
-        let rect = swatches[index].0;
+    let palette = state.config.palette.clone();
+    let expected = [
+        palette.overlay0,
+        palette.red,
+        palette.yellow,
+        palette.green,
+        palette.blue,
+    ];
+    for (index, color) in expected.into_iter().enumerate() {
+        assert_eq!(cell(swatches[index].0, 1).fg, color_to_u32(color));
+    }
+    // No swatch is highlighted until the row is.
+    assert!(swatches
+        .iter()
+        .all(|(rect, _)| cell(*rect, 0).bg == color_to_u32(palette.panel_bg)));
+
+    state.handle_raw_events((0..8).map(|_| key(KeyCode::Down)).collect());
+    assert_eq!(menu_state(&state).0, row);
+    let frame = state.compose(106, 20).expect("menu frame");
+    let bg = |index: usize| {
+        let rect = state.hits.context_menu_swatches[index].0;
         frame.cells[(rect.y * frame.width + rect.x) as usize].bg
     };
-    assert_eq!(highlight_bg(1), color_to_u32(palette.accent));
-    assert_eq!(highlight_bg(3), color_to_u32(palette.panel_bg));
+    assert_eq!(
+        bg(1),
+        color_to_u32(palette.accent),
+        "cursor on the current color"
+    );
+    assert_eq!(bg(3), color_to_u32(palette.panel_bg));
 
-    // A color outside the offered four (tab_1 is purple) highlights "none"
-    // and brackets nothing.
-    state.overlay = None;
-    open_color_picker(&mut state, 0);
-    let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_ref() else {
-        panic!("picker overlay");
-    };
-    assert_eq!(menu.highlighted, 0);
-    let frame = state.compose(106, 20).expect("picker frame");
-    let swatches = state.hits.context_menu_rows.clone();
-    assert!(swatches
+    // A color outside the offered four (tab_1 is purple) starts on none and
+    // brackets nothing.
+    open_menu_with_swatches(&mut state, 0);
+    assert_eq!(menu_state(&state).1.cursor, 0);
+    let frame = state.compose(106, 20).expect("menu frame");
+    assert!(state
+        .hits
+        .context_menu_swatches
         .iter()
         .all(|(rect, _)| !row_text(&frame, *rect).starts_with('[')));
 }
 
 #[test]
-fn color_picker_keys_move_along_the_row_and_enter_picks() {
-    use crate::api::schema::TabColor;
+fn swatch_row_keys_move_along_the_row_and_enter_picks_without_focusing() {
+    use crate::api::schema::{Method, TabColor};
     use crossterm::event::KeyCode;
     let (mut state, _) = colored_tabs_state(&tabs_config());
-    open_color_picker(&mut state, 0);
-    let highlighted = |state: &ClientShellState| match state.overlay.as_ref() {
-        Some(ClientShellOverlay::ContextMenu(menu)) => menu.highlighted,
-        _ => panic!("picker overlay"),
-    };
-    assert_eq!(highlighted(&state), 0);
+    let row = open_menu_with_swatches(&mut state, 0);
+    // Left/right mean nothing on an ordinary row.
+    state.handle_raw_events(vec![key(KeyCode::Right), key(KeyCode::Char('l'))]);
+    assert_eq!(menu_state(&state), (0, menu_state(&state).1));
+    assert_eq!(menu_state(&state).1.cursor, 0);
+
+    state.handle_raw_events((0..8).map(|_| key(KeyCode::Down)).collect());
+    assert_eq!(menu_state(&state).0, row, "the swatch row is one row");
+    assert_eq!(
+        menu_state(&state).1.cursor,
+        0,
+        "purple is not offered: none"
+    );
     state.handle_raw_events((0..6).map(|_| key(KeyCode::Right)).collect());
-    assert_eq!(highlighted(&state), 4, "stops at the last swatch");
+    assert_eq!(menu_state(&state).1.cursor, 4, "stops at the last swatch");
     state.handle_raw_events(vec![key(KeyCode::Left), key(KeyCode::Char('h'))]);
-    assert_eq!(highlighted(&state), 2);
+    assert_eq!(menu_state(&state).1.cursor, 2);
     state.handle_raw_events(vec![key(KeyCode::Char('l'))]);
-    assert_eq!(highlighted(&state), 3);
+    assert_eq!(menu_state(&state).1.cursor, 3);
     let outcome = state.handle_raw_events(vec![key(KeyCode::Enter)]);
     assert_eq!(
         picked_colors(&outcome),
         [("tab_1".to_string(), Some(TabColor::Green))]
     );
+    assert!(!endpoint_methods(&outcome)
+        .iter()
+        .any(|method| matches!(method, Method::TabFocus(_))));
     assert!(state.overlay.is_none());
 
+    // Re-entering the row puts the cursor back on the current color.
+    let row = open_menu_with_swatches(&mut state, 1);
+    state.handle_raw_events((0..8).map(|_| key(KeyCode::Down)).collect());
+    state.handle_raw_events(vec![key(KeyCode::Right)]);
+    assert_eq!(menu_state(&state).1.cursor, 2);
+    state.handle_raw_events(vec![key(KeyCode::Up), key(KeyCode::Down)]);
+    assert_eq!(menu_state(&state), (row, menu_state(&state).1));
+    assert_eq!(menu_state(&state).1.cursor, 1, "red again");
+
     // Esc closes without a request.
-    open_color_picker(&mut state, 1);
     let outcome = state.handle_raw_events(vec![key(KeyCode::Esc)]);
     assert!(picked_colors(&outcome).is_empty());
     assert!(state.overlay.is_none());
 }
 
 #[test]
-fn clicking_a_swatch_sends_tab_set_color_at_once() {
-    use crate::api::schema::TabColor;
+fn clicking_a_swatch_sends_tab_set_color_and_closes_the_menu() {
+    use crate::api::schema::{Method, TabColor};
     let (mut state, _) = colored_tabs_state(&tabs_config());
-    open_color_picker(&mut state, 1);
-    state.compose(106, 20).expect("picker frame");
-    let swatch = state.hits.context_menu_rows[4].0;
-    // Hovering highlights; the click on a swatch's edge cell still picks it.
+    let row = open_menu_with_swatches(&mut state, 1);
+    let swatch = state.hits.context_menu_swatches[4].0;
+    // Hovering highlights the row and moves the cursor; a click on a
+    // swatch's edge cell still picks it.
     state.handle_raw_events(vec![mouse(MouseEventKind::Moved, swatch.x, swatch.y)]);
-    assert!(matches!(
-        state.overlay.as_ref(),
-        Some(ClientShellOverlay::ContextMenu(menu)) if menu.highlighted == 4
-    ));
+    assert_eq!(menu_state(&state).0, row);
+    assert_eq!(menu_state(&state).1.cursor, 4);
     let outcome = state.handle_raw_events(vec![mouse(
         MouseEventKind::Down(MouseButton::Left),
         swatch.right() - 1,
@@ -2019,12 +2048,14 @@ fn clicking_a_swatch_sends_tab_set_color_at_once() {
         picked_colors(&outcome),
         [("tab_2".to_string(), Some(TabColor::Blue))]
     );
+    assert!(!endpoint_methods(&outcome)
+        .iter()
+        .any(|method| matches!(method, Method::TabFocus(_))));
     assert!(state.overlay.is_none());
 
     // The none swatch clears.
-    open_color_picker(&mut state, 1);
-    state.compose(106, 20).expect("picker frame");
-    let none = state.hits.context_menu_rows[0].0;
+    open_menu_with_swatches(&mut state, 1);
+    let none = state.hits.context_menu_swatches[0].0;
     let outcome = state.handle_raw_events(vec![mouse(
         MouseEventKind::Down(MouseButton::Left),
         none.x + 1,

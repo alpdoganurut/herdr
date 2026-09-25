@@ -76,11 +76,14 @@ src/server/headless/tests/fork_smoke.rs
 | ShellHitMap | group_toggle_all | Rect::default() |
 | ShellHitMap | group_new | Rect::default() |
 | ShellHitMap | notification_toasts | Vec::new() |
+| ShellHitMap | context_menu_swatches | Vec::new() |
+| OverlayRender | menu_swatches | Vec::new() |
 | ShellRenderState | sidebar_tab_drop_row | None |
 | ClientSettingsOverlay | transcripts | None |
 | ClientSettingsOverlay | loading_transcripts | false |
 | ClientConfirmCloseOverlay | close_group | true |
 | ClientContextMenuTarget::Tab | agent | None |
+| ClientContextMenuTarget::Tab | color | Default::default() |
 | Tab | color | None |
 | TabSnapshot | color | None |
 | TabInfo | color | None |
@@ -120,10 +123,8 @@ ClientContextMenuAction::ActivateAgent   [internal]
 ClientContextMenuAction::Ungroup   [internal]
 ClientContextMenuAction::CloseGroup   [internal]
 ClientContextMenuAction::RestartAgent   [src/client/shell/state.rs, after CloseGroup; internal]
-ClientContextMenuAction::Color   [src/client/shell/state.rs, after RestartAgent; internal]
-ClientContextMenuAction::SetTabColor   [src/client/shell/state.rs, last, carries Option<TabColor>; internal]
+ClientContextMenuAction::Color   [src/client/shell/state.rs, last after RestartAgent; the tab menu's swatch row; internal]
 ClientContextMenuTarget::Group   [src/client/shell/state.rs, between Tab and Pane; internal]
-ClientContextMenuTarget::TabColor   [src/client/shell/state.rs, last after Pane; the tab color picker; internal]
 ClientChromeDrag::SidebarTab   [src/client/shell/state.rs, before PaneSplit; internal]
 ClientRenameTarget::MoveTabToGroup   [src/client/shell/state.rs, last; internal]
 PendingEndpointKind::AgentTranscripts   [src/client/shell/state.rs, after IntegrationInstall; internal]
@@ -203,9 +204,9 @@ src/pane.rs  mid-logic: handoff_runtime_state, from_handoff_fd
 src/protocol/wire.rs  mid-logic: deserialize_client_shell_agent_status
 src/client/shell.rs  mid-logic: status_priority renumbered (Unknown 0 -> 1, Suspended 0), status_icon, status_text, status_color
 src/client/shell/input.rs  mid-logic: push_pane_key and push_focused_pane_event are the only key/text/paste lock points
-src/client/shell/mouse.rs  mid-logic: handle_mouse (sidebar tab drag, group menu, locked-pane gestures, notification card hits: timed left-click keeps the upstream pane_id gate, sticky left focuses / right dismisses / the fold line swallows), push_pane_mouse_event
+src/client/shell/mouse.rs  mid-logic: handle_mouse (sidebar tab drag, group menu, locked-pane gestures, notification card hits: timed left-click keeps the upstream pane_id gate, sticky left focuses / right dismisses / the fold line swallows), push_pane_mouse_event; the ContextMenu block asks route_tab_color_swatch_mouse first (swatch hover/click)
 src/client/shell/surface_patch.rs  mid-logic: fast_path_blocker else-if for suspended panes; the notification arm calls notification_blocks_patch (timed: any card blocks, as upstream; sticky: only patch rows over a drawn card)
-src/client/shell/composition.rs  mid-logic: compose paints the suspended card and occludes graphics; compose draws the sticky notification stack (render_notification_stack), occludes every card rect, fills hits.notification_toasts, and hands the stack bounds to copy_feedback_offset_for_toast
+src/client/shell/composition.rs  mid-logic: compose paints the suspended card and occludes graphics; compose draws the sticky notification stack (render_notification_stack), occludes every card rect, fills hits.notification_toasts, and hands the stack bounds to copy_feedback_offset_for_toast; the context menu branch copies rendered.menu_swatches into hits.context_menu_swatches
 src/client/shell/render.rs  mid-logic: render_shell else-if for the tabs layout
 src/client/shell/config.rs  mid-logic: layout (show_tab_bar), from_config, apply_live_config, reload_client_config (rebalance_notification_cards after a sticky flip)
 src/client/shell/notification_policy.rs  mid-logic: retire_endpoint_notifications, queue_visible_notification (sticky push), promote_queued_notification, focus_visible_notification (split into focus_notification_at), receive_notification (cleared_visible over the card list), tick_notifications (expiry gated on !toast_sticky); notification_validation is reused by sticky_notification_is_stale
@@ -213,11 +214,11 @@ src/client/shell/endpoints.rs  mid-logic: cache_endpoint_snapshot_with_surface e
 src/client/shell/machine_diagnostics.rs  mid-logic: handle_machine_badge_event also yields to hits.notification_toasts
 src/client/shell/state.rs  mid-logic: ClientShellState::new initialises visible_notifications
 src/config.rs  mid-logic: Config::collect_diagnostics chains tab_agent_glyph_color_diagnostics and HerdrToastConfig::diagnostic
-src/client/shell/tests/graphics.rs  depends: assert_graphics_cover is pub(super) for tests/sticky_notifications.rs
+src/client/shell/tests/graphics.rs  depends: assert_graphics_cover is pub(super) for tests/sticky_notifications.rs; its ClientContextMenuTarget::Tab literal carries `color: Default::default()` (section 2)
 src/client/shell/actions.rs  mid-logic: record_binding (topology lock, group keys), endpoint_method_for_action (SwitchTab/NextTab scope, CycleTabColor)
-src/client/shell/context_menu.rs  mid-logic: items (tab menu Color item last, after Close, so upstream item indices hold; TabColor picker items), open_tab_context_menu, activate_context_menu_item (Color opens the picker before the target dispatch, so no tab focus; TabColor arm)
-src/client/shell/overlay_input.rs  mid-logic: save_rename_overlay, accept_close_confirmation (close_group now from the overlay); the ContextMenu key block asks route_tab_color_picker_key first (Left/Right/h/l)
-src/client/shell/overlays.rs  mid-logic: render_context_menu draws the TabColor target as one swatch row (early return) and hands its swatch rects out as menu_rows
+src/client/shell/context_menu.rs  mid-logic: items (tab menu swatch row `Color` last, after Close, so upstream item indices hold), open_tab_context_menu (captures the tab color into the Tab target), activate_context_menu_item (the swatch row picks before the target dispatch, so no tab focus; the Tab arm ignores `color` with `..`)
+src/client/shell/overlay_input.rs  mid-logic: save_rename_overlay, accept_close_confirmation (close_group now from the overlay); the ContextMenu key block asks route_tab_color_menu_key first (Up/Down re-seat the swatch cursor on entering the row, Left/Right/h/l on the swatch row)
+src/client/shell/overlays.rs  mid-logic: render_context_menu widens a tab menu to the swatch row, draws the swatches in place of the Color item's label (only the cursor swatch highlighted, while the row is) and returns their rects as menu_swatches
 src/client/shell/tabs.rs  mid-logic: render_tab_bar tints unfocused tabs with their color tag (focused tab unchanged)
 src/app/api/panes.rs  mid-logic: handle_pane_move (PaneMoveRecoveryContext.previous_tab_color; a whole-tab move applies it to the NewTab / NewWorkspace tab), recover_failed_pane_move restores it
 src/client/shell/settings.rs  mid-logic: selected_index_for_settings_section, select_settings_section, handle_settings_endpoint_result
@@ -284,7 +285,11 @@ TabSetColor
 TabColor
 cycle_tab_color
 CycleTabColor
-SetTabColor
+ClientTabMenuColor
+context_menu_swatches
+menu_swatches
+route_tab_color_menu_key
+route_tab_color_swatch_mouse
 previous_tab_color
 invalid_tab_color
 
@@ -306,7 +311,7 @@ client::shell::tests::tab_sidebar::fork_smoke::colored_tab_label_reaches_the_ren
 - `agent.suspend` (and so `herdr agent suspend`, the "Suspend agent" menu item and `keys.toggle_agent_suspend`) refuses a `working` agent with `agent_working`, the same guard `agent.restart` uses, and sends it no input.
 
 ### Added
-- Tab color tags: `tab.set_color` (and `herdr tab color <tab_id> <color|none>`) tags a tab with red, orange, yellow, green, cyan, blue or purple (theme red, peach, yellow, green, teal, blue, mauve), or clears it. The `tabs` sidebar layout draws the tab's name in its color on focused and unfocused rows (status icon, agent glyph, row highlight and bold unchanged), and the `spaces` tab bar tints unfocused tab names. The tab menu's "Color" item opens a row of four swatches, red, yellow, green and blue (`TabColor::OFFERED`; the other API colors still render) (`∅` clears, the current color is bracketed; arrows or `h`/`l` and Enter, or click), and `keys.cycle_tab_color` (unset by default) cycles the focused tab none → red → yellow → green → blue → none. The color persists in session.json, follows a tab moved to another group, and appears as an optional `color` on tab records.
+- Tab color tags: `tab.set_color` (and `herdr tab color <tab_id> <color|none>`) tags a tab with red, orange, yellow, green, cyan, blue or purple (theme red, peach, yellow, green, teal, blue, mauve), or clears it. The `tabs` sidebar layout draws the tab's name in its color on focused and unfocused rows (status icon, agent glyph, row highlight and bold unchanged), and the `spaces` tab bar tints unfocused tab names. The tab menu ends with a row of swatches, `∅` plus red, yellow, green and blue (`TabColor::OFFERED`; the other API colors still render): the current color is bracketed, Up/Down reach the row like any item and start on the current color, Left/Right or `h`/`l` move along it, Enter or a click sets the color and closes the menu, and `keys.cycle_tab_color` (unset by default) cycles the focused tab none → red → yellow → green → blue → none. The color persists in session.json, follows a tab moved to another group, and appears as an optional `color` on tab records.
 - `ui.toast.herdr.sticky = true` keeps in-app toasts until they are handled: cards stack from `ui.toast.herdr.position` (newest nearest the corner, per-event positions stack in their own corner), and beyond `ui.toast.herdr.max_stack` cards (default 6, 1 through 20, clamped with a config warning) or half the frame height the older ones fold into a "+N more" line. Left-click focuses a card's pane and removes it, right-click dismisses it, `open_notification_target` focuses the newest card, and a card clears when its tab becomes focused, its pane closes, a needs-input agent is no longer blocked, a finished agent starts working again, a newer notification for the same pane arrives, or its machine's server restarts. Sticky cards only block the retained fast path for pane rows they cover. The default timed toast is unchanged.
 - `ui.sidebar_layout = "tabs"` lists one row per tab across every space, in tab order, with each tab's agent status. Rows focus on click and open the tab menu on right-click; the horizontal tab bar is dropped and `next_tab`/`previous_tab` cycle the whole list. The default `"spaces"` layout is unchanged.
 - Park a running Claude Code agent with `herdr agent suspend <target>` (`agent.suspend`): Herdr submits its exit command, keeps the pane's native session reference and agent name, and reports the new `suspended` status. `herdr agent activate <target>` (`agent.activate`) relaunches it in the same pane with the native resume command. Suspended panes survive server restarts as suspended and are never relaunched automatically.

@@ -269,6 +269,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
                 tab_id: "tab_1".into(),
                 workspace_id: "ws_1".into(),
                 agent: None,
+                color: Default::default(),
             },
             x: 35,
             y: 8,
