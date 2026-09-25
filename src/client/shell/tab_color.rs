@@ -18,9 +18,9 @@ const SWATCH_GLYPH: &str = "\u{25A0}"; // ■
 /// sit two cells apart and each hit rectangle is centred on its glyph.
 pub(super) const SWATCH_WIDTH: u16 = 3;
 
-/// The picker's choices in order: none first, then `TabColor::ALL`.
+/// The picker's choices in order: none first, then `TabColor::OFFERED`.
 pub(super) fn picker_choices() -> impl Iterator<Item = Option<TabColor>> {
-    std::iter::once(None).chain(TabColor::ALL.into_iter().map(Some))
+    std::iter::once(None).chain(TabColor::OFFERED.into_iter().map(Some))
 }
 
 /// The theme color a tab color is drawn in. The palette has no orange or

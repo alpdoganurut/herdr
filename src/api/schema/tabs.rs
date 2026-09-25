@@ -79,6 +79,17 @@ impl TabColor {
         TabColor::Purple,
     ];
 
+    /// The colors the picker and the cycle key offer, chosen to stay
+    /// distinct on 16-color terminal themes (where orange and yellow, or
+    /// cyan and green, render alike). Every `ALL` color is still accepted
+    /// by `tab.set_color` and drawn when set.
+    pub const OFFERED: [TabColor; 4] = [
+        TabColor::Red,
+        TabColor::Yellow,
+        TabColor::Green,
+        TabColor::Blue,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             TabColor::Red => "red",
@@ -99,15 +110,16 @@ impl TabColor {
             .find(|color| color.name().eq_ignore_ascii_case(name))
     }
 
-    /// The next step of the cycle none -> red -> ... -> purple -> none. An
-    /// unknown color restarts the cycle at the first color.
+    /// The next step of the cycle none -> red -> yellow -> green -> blue ->
+    /// none over `OFFERED`. A color outside it (set earlier, through the API,
+    /// or unknown) restarts the cycle at the first offered color.
     pub fn cycle_next(current: Option<TabColor>) -> Option<TabColor> {
-        match current {
-            None | Some(TabColor::Unknown) => Some(TabColor::ALL[0]),
-            Some(color) => {
-                let index = TabColor::ALL.iter().position(|c| *c == color)?;
-                TabColor::ALL.get(index + 1).copied()
-            }
+        let Some(color) = current else {
+            return Some(TabColor::OFFERED[0]);
+        };
+        match TabColor::OFFERED.iter().position(|c| *c == color) {
+            Some(index) => TabColor::OFFERED.get(index + 1).copied(),
+            None => Some(TabColor::OFFERED[0]),
         }
     }
 }

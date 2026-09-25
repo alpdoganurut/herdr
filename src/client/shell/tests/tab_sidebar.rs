@@ -1898,29 +1898,27 @@ fn color_menu_item_opens_a_swatch_row_marking_the_current_color() {
     use crate::api::schema::TabColor;
     use crate::protocol::color_to_u32;
     let (mut state, _) = colored_tabs_state(&tabs_config());
-    open_color_picker(&mut state, 0);
+    // tab_2 is red, one of the offered colors.
+    open_color_picker(&mut state, 1);
     let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_ref() else {
         panic!("picker overlay");
     };
     assert!(matches!(
         &menu.target,
-        ClientContextMenuTarget::TabColor { tab_id, current: Some(TabColor::Purple) }
-            if tab_id == "tab_1"
+        ClientContextMenuTarget::TabColor { tab_id, current: Some(TabColor::Red) }
+            if tab_id == "tab_2"
     ));
-    assert_eq!(menu.highlighted, 7, "the current color starts highlighted");
+    assert_eq!(menu.highlighted, 1, "the current color starts highlighted");
     let labels = menu
         .items()
         .iter()
         .map(|item| item.label)
         .collect::<Vec<_>>();
-    assert_eq!(
-        labels,
-        ["none", "red", "orange", "yellow", "green", "cyan", "blue", "purple"]
-    );
+    assert_eq!(labels, ["none", "red", "yellow", "green", "blue"]);
 
     let frame = state.compose(106, 20).expect("picker frame");
     let swatches = state.hits.context_menu_rows.clone();
-    assert_eq!(swatches.len(), 8);
+    assert_eq!(swatches.len(), 5);
     for (index, (rect, hit)) in swatches.iter().enumerate() {
         assert_eq!(*hit, index);
         assert_eq!((rect.width, rect.height), (3, 1));
@@ -1929,12 +1927,12 @@ fn color_menu_item_opens_a_swatch_row_marking_the_current_color() {
     }
     let text = |rect: ratatui::layout::Rect| row_text(&frame, rect);
     assert_eq!(text(swatches[0].0), " \u{2205} ");
-    assert_eq!(text(swatches[1].0), " \u{25A0} ");
     assert_eq!(
-        text(swatches[7].0),
+        text(swatches[1].0),
         "[\u{25A0}]",
         "current color is bracketed"
     );
+    assert_eq!(text(swatches[2].0), " \u{25A0} ");
     let glyph_fg = |index: usize| {
         let rect = swatches[index].0;
         frame.cells[(rect.y * frame.width + rect.x + 1) as usize].fg
@@ -1942,16 +1940,30 @@ fn color_menu_item_opens_a_swatch_row_marking_the_current_color() {
     let palette = &state.config.palette;
     assert_eq!(glyph_fg(0), color_to_u32(palette.overlay0));
     assert_eq!(glyph_fg(1), color_to_u32(palette.red));
-    assert_eq!(glyph_fg(2), color_to_u32(palette.peach));
-    assert_eq!(glyph_fg(5), color_to_u32(palette.teal));
-    assert_eq!(glyph_fg(7), color_to_u32(palette.mauve));
+    assert_eq!(glyph_fg(2), color_to_u32(palette.yellow));
+    assert_eq!(glyph_fg(3), color_to_u32(palette.green));
+    assert_eq!(glyph_fg(4), color_to_u32(palette.blue));
     // The highlighted swatch wears the menu's highlight background.
     let highlight_bg = |index: usize| {
         let rect = swatches[index].0;
         frame.cells[(rect.y * frame.width + rect.x) as usize].bg
     };
-    assert_eq!(highlight_bg(7), color_to_u32(palette.accent));
+    assert_eq!(highlight_bg(1), color_to_u32(palette.accent));
     assert_eq!(highlight_bg(3), color_to_u32(palette.panel_bg));
+
+    // A color outside the offered four (tab_1 is purple) highlights "none"
+    // and brackets nothing.
+    state.overlay = None;
+    open_color_picker(&mut state, 0);
+    let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_ref() else {
+        panic!("picker overlay");
+    };
+    assert_eq!(menu.highlighted, 0);
+    let frame = state.compose(106, 20).expect("picker frame");
+    let swatches = state.hits.context_menu_rows.clone();
+    assert!(swatches
+        .iter()
+        .all(|(rect, _)| !row_text(&frame, *rect).starts_with('[')));
 }
 
 #[test]
@@ -1964,16 +1976,17 @@ fn color_picker_keys_move_along_the_row_and_enter_picks() {
         Some(ClientShellOverlay::ContextMenu(menu)) => menu.highlighted,
         _ => panic!("picker overlay"),
     };
-    state.handle_raw_events(vec![key(KeyCode::Right)]);
-    assert_eq!(highlighted(&state), 7, "stops at the last swatch");
+    assert_eq!(highlighted(&state), 0);
+    state.handle_raw_events((0..6).map(|_| key(KeyCode::Right)).collect());
+    assert_eq!(highlighted(&state), 4, "stops at the last swatch");
     state.handle_raw_events(vec![key(KeyCode::Left), key(KeyCode::Char('h'))]);
-    assert_eq!(highlighted(&state), 5);
+    assert_eq!(highlighted(&state), 2);
     state.handle_raw_events(vec![key(KeyCode::Char('l'))]);
-    assert_eq!(highlighted(&state), 6);
+    assert_eq!(highlighted(&state), 3);
     let outcome = state.handle_raw_events(vec![key(KeyCode::Enter)]);
     assert_eq!(
         picked_colors(&outcome),
-        [("tab_1".to_string(), Some(TabColor::Blue))]
+        [("tab_1".to_string(), Some(TabColor::Green))]
     );
     assert!(state.overlay.is_none());
 
@@ -2004,7 +2017,7 @@ fn clicking_a_swatch_sends_tab_set_color_at_once() {
     )]);
     assert_eq!(
         picked_colors(&outcome),
-        [("tab_2".to_string(), Some(TabColor::Green))]
+        [("tab_2".to_string(), Some(TabColor::Blue))]
     );
     assert!(state.overlay.is_none());
 
@@ -2028,7 +2041,7 @@ fn cycle_tab_color_binding_steps_the_focused_tab_and_wraps() {
     let mut snapshot = two_space_snapshot();
     let mut expected = Vec::new();
     let mut current = None;
-    for _ in 0..8 {
+    for _ in 0..5 {
         snapshot.tabs[0].color = current;
         state.set_snapshot(Box::new(snapshot.clone()));
         let mut outcome = ClientShellInput::default();
@@ -2046,12 +2059,9 @@ fn cycle_tab_color_binding_steps_the_focused_tab_and_wraps() {
         expected,
         [
             Some(TabColor::Red),
-            Some(TabColor::Orange),
             Some(TabColor::Yellow),
             Some(TabColor::Green),
-            Some(TabColor::Cyan),
             Some(TabColor::Blue),
-            Some(TabColor::Purple),
             None,
         ]
     );

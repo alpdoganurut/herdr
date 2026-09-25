@@ -731,7 +731,7 @@
           "key": "keys.cycle_tab_color",
           "type": "keybinding",
           "default": "unset",
-          "description": "Cycle the focused tab's color tag (tab.set_color): none, red, orange, yellow, green, cyan, blue, purple, then none again. Unset by default; for example, cycle_tab_color = \"alt+c\"."
+          "description": "Cycle the focused tab's color tag (tab.set_color): none, red, yellow, green, blue, then none again (a color set outside those four restarts at red). Unset by default; for example, cycle_tab_color = \"alt+c\"."
         },
         {
           "key": "keys.copy_mode",

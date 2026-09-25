@@ -147,19 +147,21 @@ fn tab_set_color_request_and_tab_color_round_trip() {
         [
             None,
             Some(TabColor::Red),
-            Some(TabColor::Orange),
             Some(TabColor::Yellow),
             Some(TabColor::Green),
-            Some(TabColor::Cyan),
             Some(TabColor::Blue),
-            Some(TabColor::Purple),
             None,
         ]
     );
-    assert_eq!(
-        TabColor::cycle_next(Some(TabColor::Unknown)),
-        Some(TabColor::Red)
-    );
+    // Colors outside the offered set (and unknown ones) restart the cycle.
+    for outside in [
+        TabColor::Unknown,
+        TabColor::Orange,
+        TabColor::Cyan,
+        TabColor::Purple,
+    ] {
+        assert_eq!(TabColor::cycle_next(Some(outside)), Some(TabColor::Red));
+    }
 
     let info: TabInfo = serde_json::from_str(
         r#"{"tab_id":"t","workspace_id":"w","number":1,"label":"x","focused":false,"pane_count":1,"agent_status":"idle","color":"teal"}"#,
