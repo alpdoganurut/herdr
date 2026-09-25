@@ -59,8 +59,9 @@ impl ClientContextMenuOverlay {
                     None => {}
                 }
                 items.push(item("Close", Action::Close));
-                // Last, so upstream's item positions (Close at 2 without an
-                // agent) stay put.
+                // The swatch row, last so upstream's item positions (Close at
+                // 2 without an agent) stay put. The label only names the row;
+                // render_context_menu draws the swatches in its place.
                 items.push(item("Color", Action::Color));
                 items
             }
@@ -69,14 +70,6 @@ impl ClientContextMenuOverlay {
                 item("Ungroup", Action::Ungroup),
                 item("Close group", Action::CloseGroup),
             ],
-            ClientContextMenuTarget::TabColor { .. } => super::tab_color::picker_choices()
-                .map(|choice| {
-                    item(
-                        choice.map_or("none", crate::api::schema::TabColor::name),
-                        Action::SetTabColor(choice),
-                    )
-                })
-                .collect(),
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -172,11 +165,13 @@ impl ClientShellState {
                     suspended: agent.agent_status == crate::api::schema::AgentStatus::Suspended,
                 })
         });
+        let color = super::tab_color::tab_menu_color(tab.color);
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
                 workspace_id: tab.workspace_id.clone(),
                 agent,
+                color,
             },
             x,
             y,
@@ -233,12 +228,13 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         };
-        if let (ClientContextMenuAction::Color, ClientContextMenuTarget::Tab { tab_id, .. }) =
-            (action, &menu.target)
+        if let (
+            ClientContextMenuAction::Color,
+            ClientContextMenuTarget::Tab { tab_id, color, .. },
+        ) = (action, &menu.target)
         {
-            // The picker takes the menu's place; picking a color does not
-            // focus the tab.
-            self.open_tab_color_picker(tab_id.clone(), menu.x, menu.y);
+            // Picking a swatch sets the color without focusing the tab.
+            self.pick_tab_color_swatch(tab_id.clone(), color.cursor, outcome);
             outcome.repaint = true;
             return;
         }
@@ -253,10 +249,8 @@ impl ClientShellState {
                 tab_id,
                 workspace_id,
                 agent,
+                ..
             } => self.activate_tab_context_action(tab_id, workspace_id, agent, action, outcome),
-            ClientContextMenuTarget::TabColor { tab_id, .. } => {
-                self.activate_tab_color_choice(tab_id, action, outcome)
-            }
             ClientContextMenuTarget::Pane {
                 pane_id,
                 workspace_id,

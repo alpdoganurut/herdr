@@ -134,6 +134,8 @@ pub(super) struct ShellHitMap {
     pub(super) notification_toasts: Vec<(Rect, Option<usize>)>,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
+    /// The tab menu's swatch row: one hit per swatch, indexed like `tab_color::picker_choices`.
+    pub(super) context_menu_swatches: Vec<(Rect, usize)>,
     pub(super) overlay_primary: Rect,
     pub(super) overlay_clear: Rect,
     pub(super) overlay_cancel: Rect,
@@ -598,10 +600,17 @@ pub(super) enum ClientContextMenuAction {
     Ungroup,
     CloseGroup,
     RestartAgent,
-    /// Tab menu: open the color picker.
+    /// Tab menu: the swatch row; picking sets the swatch under the cursor.
     Color,
-    /// Color picker: set (or clear with `None`) the tab's color.
-    SetTabColor(Option<crate::api::schema::TabColor>),
+}
+
+/// The tab menu's swatch row: the tab's color captured when the menu opened
+/// (bracketed) and the swatch the keyboard cursor sits on (an index into
+/// `tab_color::picker_choices`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ClientTabMenuColor {
+    pub(super) current: Option<crate::api::schema::TabColor>,
+    pub(super) cursor: usize,
 }
 
 /// The agent pane a tab context menu acts on.
@@ -625,6 +634,8 @@ pub(super) enum ClientContextMenuTarget {
         workspace_id: String,
         /// The tab's agent pane, captured when the menu opened, for Suspend/Activate items.
         agent: Option<ClientTabMenuAgent>,
+        /// The swatch row: the tab's color when the menu opened and the swatch cursor.
+        color: ClientTabMenuColor,
     },
     /// A space shown as a tab group in the `tabs` layout.
     Group { workspace_id: String },
@@ -634,11 +645,6 @@ pub(super) enum ClientContextMenuTarget {
         source_pane_id: Option<String>,
         has_manual_label: bool,
         right_click_passthrough: bool,
-    },
-    /// The tab color picker, opened from the tab menu's "Color" item.
-    TabColor {
-        tab_id: String,
-        current: Option<crate::api::schema::TabColor>,
     },
 }
 

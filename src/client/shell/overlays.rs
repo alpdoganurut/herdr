@@ -7,6 +7,8 @@ mod worktree_overlays;
 pub(crate) struct OverlayRender {
     pub(crate) area: Rect,
     pub(crate) menu_rows: Vec<(Rect, usize)>,
+    /// The tab menu's swatch row: one hit per swatch.
+    pub(crate) menu_swatches: Vec<(Rect, usize)>,
     pub(crate) primary: Rect,
     pub(crate) clear: Rect,
     pub(crate) cancel: Rect,
@@ -169,39 +171,25 @@ pub(crate) fn render_context_menu(
 ) -> Option<OverlayRender> {
     let items = menu.items();
     let screen = buffer.area;
-    if let ClientContextMenuTarget::TabColor { current, .. } = &menu.target {
-        // The tab color picker: one row of swatches instead of a list.
-        let (width, height) = super::super::tab_color::picker_size();
-        let width = width.min(screen.width.max(1));
-        let height = height.min(screen.height.max(1));
-        let x = menu
-            .x
-            .min(screen.x.saturating_add(screen.width.saturating_sub(width)));
-        let y = menu.y.min(
-            screen
-                .y
-                .saturating_add(screen.height.saturating_sub(height)),
-        );
-        let rect = Rect::new(x, y, width, height);
-        let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
-        let rows = super::super::tab_color::render_swatches(
-            buffer,
-            inner,
-            *current,
-            menu.highlighted,
-            palette,
-        );
-        return Some(OverlayRender {
-            area: rect,
-            menu_rows: rows,
-            ..OverlayRender::default()
-        });
-    }
+    // The tab menu's swatch row (drawn in place of its label).
+    let swatch_row = match &menu.target {
+        ClientContextMenuTarget::Tab { color, .. } => items
+            .iter()
+            .position(|item| item.action == ClientContextMenuAction::Color)
+            .map(|row| (row, *color)),
+        _ => None,
+    };
+    let mut swatches = Vec::new();
     let max_item_width = items
         .iter()
         .map(|item| display_width(item.label))
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(if swatch_row.is_some() {
+            super::super::tab_color::swatch_row_width()
+        } else {
+            0
+        });
     let width = max_item_width
         .saturating_add(4)
         .max(14)
@@ -227,6 +215,19 @@ pub(crate) fn render_context_menu(
         }
         let row = Rect::new(inner.x, row_y, inner.width, 1);
         let highlighted = index == menu.highlighted;
+        if let Some((_, color)) = swatch_row.filter(|(row, _)| *row == index) {
+            // Only the swatch under the cursor wears the highlight.
+            buffer.set_style(row, Style::default().fg(palette.text).bg(palette.panel_bg));
+            swatches = super::super::tab_color::render_swatches(
+                buffer,
+                row,
+                color.current,
+                highlighted.then_some(color.cursor),
+                palette,
+            );
+            rows.push((row, index));
+            continue;
+        }
         let style = if highlighted {
             Style::default()
                 .fg(panel_contrast_fg(palette))
@@ -242,6 +243,7 @@ pub(crate) fn render_context_menu(
     Some(OverlayRender {
         area: rect,
         menu_rows: rows,
+        menu_swatches: swatches,
         ..OverlayRender::default()
     })
 }

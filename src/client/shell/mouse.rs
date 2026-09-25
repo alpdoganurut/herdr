@@ -1456,6 +1456,9 @@ impl ClientShellState {
             return;
         }
         if matches!(self.overlay, Some(ClientShellOverlay::ContextMenu(_))) {
+            if self.route_tab_color_swatch_mouse(point, mouse.kind, outcome) {
+                return;
+            }
             let row_hit = self
                 .hits
                 .context_menu_rows
