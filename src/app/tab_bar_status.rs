@@ -12,6 +12,10 @@ use tokio::io::AsyncReadExt;
 use super::{state::TabBarStatusSegment, App};
 use crate::config::TabBarRightEntryConfig;
 
+// Fork: `lines` / `ansi` on command entries.
+mod output;
+use output::StatusOutputFormat;
+
 const DATETIME_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_COMMAND_LINE_BYTES: usize = 4096;
 const MAX_STATUS_TEXT_CHARS: usize = 80;
@@ -28,6 +32,7 @@ pub(super) struct TabBarCommandRuntime {
     timeout: Duration,
     next_run_at: std::time::Instant,
     task: Option<StatusCommandTask>,
+    format: StatusOutputFormat,
 }
 
 impl Drop for TabBarCommandRuntime {
@@ -92,6 +97,8 @@ impl App {
                     command,
                     interval_seconds,
                     timeout_seconds,
+                    lines,
+                    ansi,
                 } => {
                     if !crate::platform::status_commands_supported()
                         || command.trim().is_empty()
@@ -113,6 +120,7 @@ impl App {
                         timeout: Duration::from_secs(*timeout_seconds),
                         next_run_at: now,
                         task: None,
+                        format: StatusOutputFormat::new(*lines, *ansi),
                     });
                 }
             }
@@ -156,7 +164,7 @@ impl App {
                 continue;
             }
             runtime.next_run_at = now.checked_add(runtime.interval).unwrap_or(now);
-            runtime.task = Some(spawn_status_command(
+            runtime.task = Some(spawn_status_command_with_format(
                 self.event_tx.clone(),
                 generation,
                 runtime.segment_index,
@@ -164,6 +172,7 @@ impl App {
                 runtime.timeout,
                 environment.clone(),
                 cwd.clone(),
+                runtime.format,
             ));
         }
 
@@ -419,6 +428,7 @@ impl StatusCommandControl {
     }
 }
 
+#[cfg(test)]
 fn spawn_status_command(
     event_tx: tokio::sync::mpsc::Sender<crate::events::AppEvent>,
     generation: u64,
@@ -427,6 +437,29 @@ fn spawn_status_command(
     timeout: Duration,
     environment: Vec<(String, String)>,
     cwd: Option<std::path::PathBuf>,
+) -> StatusCommandTask {
+    spawn_status_command_with_format(
+        event_tx,
+        generation,
+        segment_index,
+        command,
+        timeout,
+        environment,
+        cwd,
+        StatusOutputFormat::UPSTREAM,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // upstream's seven plus the fork's output format
+fn spawn_status_command_with_format(
+    event_tx: tokio::sync::mpsc::Sender<crate::events::AppEvent>,
+    generation: u64,
+    segment_index: usize,
+    command: String,
+    timeout: Duration,
+    environment: Vec<(String, String)>,
+    cwd: Option<std::path::PathBuf>,
+    format: StatusOutputFormat,
 ) -> StatusCommandTask {
     let control = Arc::new(StatusCommandControl {
         terminated: AtomicBool::new(false),
@@ -442,6 +475,7 @@ fn spawn_status_command(
             deadline,
             environment,
             cwd,
+            format,
         )
         .await;
         task_control.terminate();
@@ -466,6 +500,7 @@ async fn run_status_command(
     deadline: tokio::time::Instant,
     environment: Vec<(String, String)>,
     cwd: Option<std::path::PathBuf>,
+    format: StatusOutputFormat,
 ) -> Result<Option<String>, String> {
     if control.is_terminated() || tokio::time::Instant::now() >= deadline {
         return Err(format!("timed out after {}s", timeout.as_secs()));
@@ -498,13 +533,13 @@ async fn run_status_command(
             let Some(stdout) = stdout else {
                 return std::io::Result::Ok(Vec::new());
             };
-            read_last_output_line(stdout).await
+            output::read_status_output_lines(stdout, format).await
         };
         let (status, output) = tokio::join!(child.wait(), read_output);
         let status = status.map_err(|error| error.to_string())?;
         let output = output.map_err(|error| error.to_string())?;
         if status.success() {
-            Ok(command_output_text(&output))
+            Ok(output::status_output_text(&output, format))
         } else {
             Err(format!("exited with {status}"))
         }
@@ -646,6 +681,8 @@ mod tests {
                 command: MULTILINE_COMMAND.into(),
                 interval_seconds: 5,
                 timeout_seconds: 2,
+                lines: 1,
+                ansi: false,
             }],
             " ",
         );
@@ -681,6 +718,8 @@ mod tests {
                 command,
                 interval_seconds: 5,
                 timeout_seconds: 20,
+                lines: 1,
+                ansi: false,
             }],
             " ",
         );
@@ -727,6 +766,8 @@ mod tests {
                 command: MULTILINE_COMMAND.into(),
                 interval_seconds: 5,
                 timeout_seconds: 2,
+                lines: 1,
+                ansi: false,
             }],
             " ",
         );

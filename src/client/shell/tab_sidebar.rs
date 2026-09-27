@@ -18,8 +18,11 @@
 //! new plumbing.
 //!
 //! The horizontal tab bar is hidden in this layout, so its `ui.tab_bar_right`
-//! status segments show as one dim row under the list, above the menu row,
-//! and only while at least one segment has text.
+//! status segments show as dim rows under the list, above the menu row, and
+//! only while at least one segment has text. A command entry with `lines > 1`
+//! sends its lines joined with `\n` and one with `ansi = true` keeps SGR
+//! sequences; the footer draws one row per line (at most
+//! `MAX_STATUS_ROWS`) and parses the SGR into styles.
 
 use ratatui::{
     buffer::Buffer,
@@ -34,8 +37,8 @@ use super::*;
 
 const TOOLBAR_ROWS: u16 = 1;
 const FOOTER_ROWS: u16 = 1;
-/// The `ui.tab_bar_right` status row between the list and the menu row.
-const STATUS_ROWS: u16 = 1;
+/// The most `ui.tab_bar_right` status rows between the list and the menu row.
+const MAX_STATUS_ROWS: usize = crate::config::MAX_TAB_BAR_COMMAND_LINES as usize;
 /// Toolbar glyphs: the fold toggle shows the action it will take.
 pub(super) const FOLD_ALL_LABEL: &str = "\u{23F6}"; // ⏶ black medium up-pointing triangle
 pub(super) const UNFOLD_ALL_LABEL: &str = "\u{23F7}"; // ⏷ black medium down-pointing triangle
@@ -160,16 +163,13 @@ pub(super) fn render_tab_sidebar(
         hits,
     );
 
-    let status_rows = if content.height > TOOLBAR_ROWS + FOOTER_ROWS
-        && snapshot
-            .tab_bar_right
-            .iter()
-            .any(|segment| !segment.text.is_empty())
-    {
-        STATUS_ROWS
-    } else {
-        0
-    };
+    let status_lines = status_footer_lines(snapshot);
+    // Rows left under the toolbar and above the menu row; the status keeps
+    // one of them for the list once it has more than one line.
+    let available = content.height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS);
+    let status_rows = (status_lines.len().min(usize::from(u16::MAX)) as u16)
+        .min(available.saturating_sub(1).max(1))
+        .min(available);
     let body = Rect::new(
         content.x,
         content.y.saturating_add(TOOLBAR_ROWS),
@@ -179,7 +179,13 @@ pub(super) fn render_tab_sidebar(
             .saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS + status_rows),
     );
     if status_rows > 0 {
-        render_tab_status_footer(buffer, content, body.bottom(), snapshot, palette);
+        render_tab_status_footer(
+            buffer,
+            content,
+            body.bottom(),
+            &status_lines[..usize::from(status_rows)],
+            palette,
+        );
     }
     hits.agent_body = body;
     // The space drag machinery reads these as the list bounds.
@@ -364,32 +370,249 @@ pub(super) fn render_tab_sidebar(
     );
 }
 
-/// The tab bar's status segments joined with the configured separator, dim,
-/// with the rows' one-cell margins and truncated from the right with `…`.
-fn render_tab_status_footer(
-    buffer: &mut Buffer,
-    content: Rect,
-    y: u16,
-    snapshot: &ClientShellSnapshot,
-    palette: &Palette,
-) {
-    let joined = snapshot
+/// The footer's lines: the non-empty status segments joined with the
+/// configured separator, split on `\n`, visibly empty lines dropped, at most
+/// `MAX_STATUS_ROWS`. Empty without any status text.
+pub(super) fn status_footer_lines(snapshot: &ClientShellSnapshot) -> Vec<String> {
+    if snapshot
+        .tab_bar_right
+        .iter()
+        .all(|segment| segment.text.is_empty())
+    {
+        return Vec::new();
+    }
+    snapshot
         .tab_bar_right
         .iter()
         .filter(|segment| !segment.text.is_empty())
         .map(|segment| segment.text.as_str())
         .collect::<Vec<_>>()
-        .join(&snapshot.tab_bar_right_separator);
+        .join(&snapshot.tab_bar_right_separator)
+        .split('\n')
+        .filter(|line| !strip_status_escapes(line).trim().is_empty())
+        .take(MAX_STATUS_ROWS)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The status footer, dim, one row per line from `y` down, with the rows'
+/// one-cell margins; SGR styles apply over the dim base and each row is
+/// truncated from the right with `…`.
+fn render_tab_status_footer(
+    buffer: &mut Buffer,
+    content: Rect,
+    y: u16,
+    lines: &[String],
+    palette: &Palette,
+) {
     let width = content.width.saturating_sub(2);
-    let text = crate::ui::truncate_end(&joined, usize::from(width));
-    put_text(
-        buffer,
-        content.x.saturating_add(1),
-        y,
-        width,
-        &text,
-        Style::default().fg(palette.overlay1),
-    );
+    let base = Style::default().fg(palette.overlay1);
+    for (row, line) in lines.iter().enumerate() {
+        let spans = truncate_status_spans(styled_status_spans(line, base), usize::from(width));
+        put_status_spans(
+            buffer,
+            content.x.saturating_add(1),
+            y.saturating_add(row as u16),
+            width,
+            &spans,
+        );
+    }
+}
+
+/// A status segment for the single-line `spaces` tab bar: a segment holding
+/// `\n` or an escape shows only its last line with escapes stripped, so the
+/// upstream bar never draws raw escapes. Other segments pass unchanged.
+pub(super) fn single_line_status_text(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains(['\n', '\x1b']) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let last = text.rsplit('\n').next().unwrap_or_default();
+    std::borrow::Cow::Owned(strip_status_escapes(last))
+}
+
+/// Removes escape sequences: CSI (`ESC [` up to its final byte), and any
+/// other `ESC` with the character after it.
+fn strip_status_escapes(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(character) = chars.next() {
+        if character != '\x1b' {
+            output.push(character);
+            continue;
+        }
+        if chars.next() == Some('[') {
+            for sequence in chars.by_ref() {
+                if ('\x40'..='\x7e').contains(&sequence) {
+                    break;
+                }
+            }
+        }
+    }
+    output
+}
+
+/// Splits one footer line into styled spans. SGR sequences restyle the text
+/// after them over `base`: reset (0 or empty), bold (1), dim (2), normal
+/// intensity (22), foreground 30–37 / 90–97, `38;5;n`, `38;2;r;g;b` and the
+/// default foreground (39). Other parameters and other escapes are dropped.
+fn styled_status_spans(line: &str, base: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut style = base;
+    let mut text = String::new();
+    let mut chars = line.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character != '\x1b' {
+            if !character.is_control() {
+                text.push(character);
+            }
+            continue;
+        }
+        if chars.next_if_eq(&'[').is_none() {
+            chars.next();
+            continue;
+        }
+        let mut params = String::new();
+        let mut final_byte = None;
+        for sequence in chars.by_ref() {
+            if ('\x40'..='\x7e').contains(&sequence) {
+                final_byte = Some(sequence);
+                break;
+            }
+            params.push(sequence);
+        }
+        if final_byte != Some('m') {
+            continue;
+        }
+        let next = apply_sgr(style, base, &params);
+        if next != style && !text.is_empty() {
+            spans.push(Span::styled(std::mem::take(&mut text), style));
+        }
+        style = next;
+    }
+    if !text.is_empty() {
+        spans.push(Span::styled(text, style));
+    }
+    spans
+}
+
+fn apply_sgr(mut style: Style, base: Style, params: &str) -> Style {
+    if !params
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b';')
+    {
+        return style;
+    }
+    let mut codes = params
+        .split(';')
+        .map(|code| code.parse::<u16>().unwrap_or(0));
+    while let Some(code) = codes.next() {
+        style = match code {
+            0 => base,
+            1 => style.add_modifier(Modifier::BOLD),
+            2 => style.add_modifier(Modifier::DIM),
+            22 => style.remove_modifier(Modifier::BOLD | Modifier::DIM),
+            30..=37 => style.fg(basic_color(code - 30, false)),
+            90..=97 => style.fg(basic_color(code - 90, true)),
+            39 => Style {
+                fg: base.fg,
+                ..style
+            },
+            38 | 48 => {
+                // Extended colors; 48 (background) is consumed but ignored.
+                let color = match codes.next() {
+                    Some(5) => codes
+                        .next()
+                        .and_then(|index| u8::try_from(index).ok())
+                        .map(ratatui::style::Color::Indexed),
+                    Some(2) => {
+                        let mut channel =
+                            || codes.next().and_then(|value| u8::try_from(value).ok());
+                        match (channel(), channel(), channel()) {
+                            (Some(r), Some(g), Some(b)) => {
+                                Some(ratatui::style::Color::Rgb(r, g, b))
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => return style,
+                };
+                match color {
+                    Some(color) if code == 38 => style.fg(color),
+                    _ => style,
+                }
+            }
+            _ => style,
+        };
+    }
+    style
+}
+
+fn basic_color(index: u16, bright: bool) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    match (index, bright) {
+        (0, false) => Color::Black,
+        (1, false) => Color::Red,
+        (2, false) => Color::Green,
+        (3, false) => Color::Yellow,
+        (4, false) => Color::Blue,
+        (5, false) => Color::Magenta,
+        (6, false) => Color::Cyan,
+        (7, false) => Color::Gray,
+        (0, true) => Color::DarkGray,
+        (1, true) => Color::LightRed,
+        (2, true) => Color::LightGreen,
+        (3, true) => Color::LightYellow,
+        (4, true) => Color::LightBlue,
+        (5, true) => Color::LightMagenta,
+        (6, true) => Color::LightCyan,
+        _ => Color::White,
+    }
+}
+
+/// Keeps the spans within `width` display cells; when they do not fit the
+/// last kept cell is `…` in the style of the text it replaces.
+fn truncate_status_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let total: usize = spans.iter().map(|span| span.width()).sum();
+    if total <= width {
+        return spans;
+    }
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut budget = width - 1;
+    let mut kept = Vec::new();
+    for span in spans {
+        let span_width = span.width();
+        if span_width <= budget {
+            budget -= span_width;
+            kept.push(span);
+            continue;
+        }
+        let mut text = String::new();
+        for character in span.content.chars() {
+            let character_width = unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
+            if character_width > budget {
+                break;
+            }
+            budget -= character_width;
+            text.push(character);
+        }
+        text.push('…');
+        kept.push(Span::styled(text, span.style));
+        return kept;
+    }
+    kept
+}
+
+fn put_status_spans(buffer: &mut Buffer, x: u16, y: u16, width: u16, spans: &[Span<'_>]) {
+    let mut x = x;
+    let right = x.saturating_add(width);
+    for span in spans {
+        let span_width =
+            (span.width().min(usize::from(u16::MAX)) as u16).min(right.saturating_sub(x));
+        put_text(buffer, x, y, span_width, &span.content, span.style);
+        x = x.saturating_add(span_width);
+    }
 }
 
 /// The fold toggle on the left (absent without foldable groups), `+` on the
