@@ -132,12 +132,15 @@ impl ClientShellConfig {
             agent_panel_sort: config.ui.agent_panel_sort,
             status_indicators: config.ui.status_indicators,
             sound_enabled: config.ui.sound.enabled,
+            sound_files: super::settings_sounds::sound_files(&config.ui.sound),
+            system_sounds_dir: std::path::PathBuf::from(super::settings_sounds::SYSTEM_SOUNDS_DIR),
             toast_delivery: config.ui.toast.delivery,
             toast_delay_seconds: config.ui.toast.delay_seconds,
             toast_position: config.ui.toast.herdr.position,
             toast_sticky: config.ui.toast.herdr.sticky,
             toast_max_stack: config.ui.toast.herdr.effective_max_stack(),
             idle_reminder_minutes: config.ui.effective_idle_reminder_minutes(),
+            daily_reminder_minutes: config.ui.effective_daily_reminder_minutes(),
             copy_on_select: config.ui.copy_on_select,
             clipboard_toast_enabled: config.ui.toast.clipboard.enabled,
             clipboard_toast_position: config.ui.toast.clipboard.position,
@@ -344,12 +347,14 @@ impl ClientShellConfig {
                 self.agent_panel_sort = ui.agent_panel_sort;
                 self.status_indicators = ui.status_indicators;
                 self.sound_enabled = ui.sound.enabled;
+                self.sound_files = super::settings_sounds::sound_files(&ui.sound);
                 self.toast_delivery = ui.toast.delivery;
                 self.toast_delay_seconds = ui.toast.delay_seconds;
                 self.toast_position = ui.toast.herdr.position;
                 self.toast_sticky = ui.toast.herdr.sticky;
                 self.toast_max_stack = ui.toast.herdr.effective_max_stack();
                 self.idle_reminder_minutes = ui.effective_idle_reminder_minutes();
+                self.daily_reminder_minutes = ui.effective_daily_reminder_minutes();
                 self.copy_on_select = ui.copy_on_select;
                 self.clipboard_toast_enabled = ui.toast.clipboard.enabled;
                 self.clipboard_toast_position = ui.toast.clipboard.position;

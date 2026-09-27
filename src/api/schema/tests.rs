@@ -177,7 +177,7 @@ fn tab_set_color_request_and_tab_color_round_trip() {
 }
 
 #[test]
-fn tab_set_remind_request_and_tab_info_mark_round_trip() {
+fn tab_set_remind_request_round_trips() {
     let set = Request {
         id: "remind".into(),
         method: Method::TabSetRemind(TabSetRemindParams {
@@ -187,39 +187,79 @@ fn tab_set_remind_request_and_tab_info_mark_round_trip() {
     };
     let json = serde_json::to_value(&set).unwrap();
     assert_eq!(json["method"], "tab.set_remind");
-    assert_eq!(json["params"]["tab_id"], "w1:t2");
     assert_eq!(json["params"]["remind"], true);
     assert_eq!(serde_json::from_value::<Request>(json).unwrap(), set);
-
-    let parsed: Request = serde_json::from_str(
-        r#"{"id":"r","method":"tab.set_remind","params":{"tab_id":"w1:t2","remind":false}}"#,
-    )
-    .unwrap();
-    assert_eq!(
-        parsed.method,
-        Method::TabSetRemind(TabSetRemindParams {
-            tab_id: "w1:t2".into(),
-            remind: false,
-        })
-    );
     // `remind` is load-bearing: a request without it is rejected.
     assert!(serde_json::from_str::<Request>(
         r#"{"id":"r","method":"tab.set_remind","params":{"tab_id":"w1:t2"}}"#,
     )
     .is_err());
+}
 
-    let info: TabInfo = serde_json::from_str(
-        r#"{"tab_id":"t","workspace_id":"w","number":1,"label":"x","focused":false,"pane_count":1,"agent_status":"idle","remind":true}"#,
+#[test]
+fn tab_set_reminder_request_and_tab_reminder_fields_round_trip() {
+    let set = Request {
+        id: "reminder".into(),
+        method: Method::TabSetReminder(TabSetReminderParams {
+            tab_id: "w1:t2".into(),
+            important: Some(true),
+            every: Some(TabRemindEvery::Daily),
+        }),
+    };
+    let json = serde_json::to_value(&set).unwrap();
+    assert_eq!(json["method"], "tab.set_reminder");
+    assert_eq!(json["params"]["important"], true);
+    assert_eq!(json["params"]["every"], "daily");
+    assert_eq!(serde_json::from_value::<Request>(json).unwrap(), set);
+
+    // Either field alone; both names of every interval and `off`.
+    let parsed: Request = serde_json::from_str(
+        r#"{"id":"r","method":"tab.set_reminder","params":{"tab_id":"t","every":"off"}}"#,
     )
     .unwrap();
-    assert!(info.remind);
-    assert_eq!(serde_json::to_value(&info).unwrap()["remind"], true);
+    assert_eq!(
+        parsed.method,
+        Method::TabSetReminder(TabSetReminderParams {
+            tab_id: "t".into(),
+            important: None,
+            every: Some(TabRemindEvery::Off),
+        })
+    );
+    for interval in TabRemindInterval::ALL {
+        let json = serde_json::to_value(interval).unwrap();
+        assert_eq!(json, interval.name());
+        assert_eq!(
+            serde_json::from_value::<TabRemindInterval>(json.clone()).unwrap(),
+            interval
+        );
+        let every = serde_json::from_value::<TabRemindEvery>(json).unwrap();
+        assert_eq!(every.interval(), Some(interval));
+        assert_eq!(TabRemindEvery::from_name(interval.name()), Some(every));
+    }
+    // The request side is closed; the record side falls back to Unknown.
+    assert!(serde_json::from_str::<Request>(
+        r#"{"id":"r","method":"tab.set_reminder","params":{"tab_id":"t","every":"2h"}}"#,
+    )
+    .is_err());
+    assert_eq!(
+        serde_json::from_str::<TabRemindInterval>(r#""2h""#).unwrap(),
+        TabRemindInterval::Unknown
+    );
+
+    let info: TabInfo = serde_json::from_str(
+        r#"{"tab_id":"t","workspace_id":"w","number":1,"label":"x","focused":false,"pane_count":1,"agent_status":"idle","important":true,"remind_every":"6h"}"#,
+    )
+    .unwrap();
+    assert!(info.important);
+    assert_eq!(info.remind_every, Some(TabRemindInterval::H6));
     let info: TabInfo = serde_json::from_str(
         r#"{"tab_id":"t","workspace_id":"w","number":1,"label":"x","focused":false,"pane_count":1,"agent_status":"idle"}"#,
     )
     .unwrap();
-    assert!(!info.remind);
-    assert!(serde_json::to_value(&info).unwrap().get("remind").is_none());
+    assert!(!info.important);
+    let json = serde_json::to_value(&info).unwrap();
+    assert!(json.get("important").is_none());
+    assert!(json.get("remind_every").is_none());
 }
 
 #[test]
@@ -1118,7 +1158,8 @@ fn worktree_request_and_response_round_trip() {
                 pane_count: 1,
                 agent_status: AgentStatus::Unknown,
                 color: None,
-                remind: false,
+                important: false,
+                remind_every: None,
             },
             root_pane: PaneInfo {
                 pane_id: "w_1-1".into(),
@@ -1549,7 +1590,8 @@ fn create_response_round_trips_with_root_pane() {
                 pane_count: 1,
                 agent_status: AgentStatus::Unknown,
                 color: None,
-                remind: false,
+                important: false,
+                remind_every: None,
             },
             root_pane: PaneInfo {
                 pane_id: "w_1-3".into(),

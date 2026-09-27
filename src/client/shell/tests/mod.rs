@@ -51,7 +51,8 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             focused: true,
             agent_status: AgentStatus::Idle,
             color: None,
-            remind: false,
+            important: false,
+            remind_every: None,
         }],
         panes: vec![ClientShellPane {
             pane_id: "pane_1".into(),

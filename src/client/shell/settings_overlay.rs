@@ -37,6 +37,7 @@ pub(super) fn render_settings_overlay(
     buffer: &mut Buffer,
     settings: &ClientSettingsOverlay,
     integration_updates_available: bool,
+    config: &ClientShellConfig,
     palette: &Palette,
 ) -> Option<OverlayRender> {
     let integration_height = 14u16
@@ -183,16 +184,7 @@ pub(super) fn render_settings_overlay(
             );
         }
         ClientSettingsSection::Sound => {
-            render_choice_section(
-                buffer,
-                content,
-                "sound alerts",
-                "play sounds when agents change state in background",
-                &["on", "off"],
-                settings.selected,
-                palette,
-                &mut choice_hits,
-            );
+            render_sound_section(buffer, content, settings, config, palette, &mut choice_hits);
         }
         ClientSettingsSection::Toast => {
             render_choice_section(
@@ -324,6 +316,106 @@ fn render_choice_section(
     }
 }
 
+/// The sound section: on/off and one row per sound, or an open picker
+/// (scrolled like the theme list, the configured sound checked).
+fn render_sound_section(
+    buffer: &mut Buffer,
+    area: Rect,
+    settings: &ClientSettingsOverlay,
+    config: &ClientShellConfig,
+    palette: &Palette,
+    hits: &mut Vec<(Rect, usize)>,
+) {
+    use super::super::settings_sounds::{SoundTarget, ON_OFF_ROWS};
+    let title = Style::default()
+        .fg(palette.text)
+        .bg(palette.panel_bg)
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(palette.overlay1).bg(palette.panel_bg);
+    if let Some(picker) = settings.sound_picker.as_ref() {
+        put_text(
+            buffer,
+            area.x,
+            area.y,
+            area.width,
+            &format!("{} sound", picker.target.label()),
+            title,
+        );
+        put_text(
+            buffer,
+            area.x,
+            area.y + 1,
+            area.width,
+            "moving plays the sound; ↵ keeps it, esc goes back",
+            dim,
+        );
+        let list = Rect::new(
+            area.x,
+            area.y + 3,
+            area.width,
+            area.height.saturating_sub(3),
+        );
+        let configured = config.sound_files[SoundTarget::ALL
+            .iter()
+            .position(|target| *target == picker.target)
+            .unwrap_or(0)]
+        .clone();
+        let visible = usize::from(list.height);
+        let scroll = settings.selected.saturating_sub(visible.saturating_sub(1));
+        for (row, (index, choice)) in picker
+            .choices
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible)
+            .enumerate()
+        {
+            let rect = Rect::new(list.x, list.y + row as u16, list.width, 1);
+            draw_choice(
+                buffer,
+                rect,
+                &choice.label,
+                index == settings.selected,
+                choice.path == configured,
+                palette,
+            );
+            hits.push((rect, index));
+        }
+        return;
+    }
+    put_text(buffer, area.x, area.y, area.width, "sound alerts", title);
+    put_text(
+        buffer,
+        area.x,
+        area.y + 1,
+        area.width,
+        "play sounds when agents change state in background; ↵ on a sound picks it",
+        dim,
+    );
+    let rows = ["on".to_string(), "off".to_string()].into_iter().chain(
+        SoundTarget::ALL
+            .iter()
+            .map(|target| config.sound_row_label(*target)),
+    );
+    for (index, label) in rows.enumerate() {
+        let y = area.y + 3 + index as u16 * 2;
+        if y >= area.bottom() {
+            break;
+        }
+        let rect = Rect::new(area.x, y, area.width, 1);
+        let current = index < ON_OFF_ROWS && (index == 0) == config.sound_enabled;
+        draw_choice(
+            buffer,
+            rect,
+            &label,
+            index == settings.selected,
+            current,
+            palette,
+        );
+        hits.push((rect, index));
+    }
+}
+
 /// Idle reminder interval: one row per choice, without the gap other choice
 /// sections use, so the whole list (and a custom value) fits; the configured
 /// value is checked.
@@ -351,7 +443,7 @@ fn render_reminders(
         area.x,
         area.y + 1,
         area.width,
-        "remind about tabs marked \"Remind me\" while their agent waits unseen",
+        "how often to remind about an important tab whose agent waits unseen",
         Style::default().fg(palette.overlay1).bg(palette.panel_bg),
     );
     for (index, (label, minutes)) in super::super::idle_reminders::reminder_choices(configured)

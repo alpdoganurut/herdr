@@ -1138,9 +1138,9 @@ impl ClientShellState {
                 let tab_id = focused_tab?;
                 Some(tab_color_cycle_method(snapshot, &tab_id)?)
             }
-            KeybindAction::ToggleTabRemind => {
+            KeybindAction::ToggleTabImportant => {
                 let tab_id = focused_tab?;
-                Some(super::idle_reminders::tab_remind_toggle_method(
+                Some(super::idle_reminders::tab_important_toggle_method(
                     snapshot, &tab_id,
                 )?)
             }

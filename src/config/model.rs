@@ -15,6 +15,7 @@ pub const MIN_TOAST_MAX_STACK: u8 = 1;
 pub const MAX_TOAST_MAX_STACK: u8 = 20;
 pub const DEFAULT_IDLE_REMINDER_MINUTES: u32 = 10;
 pub const MAX_IDLE_REMINDER_MINUTES: u32 = 240;
+pub const DEFAULT_DAILY_REMINDER_TIME: &str = "09:30";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -531,8 +532,9 @@ pub struct KeysConfig {
     pub restart_agent: BindingConfig,
     /// Cycle the focused tab's color tag: none, red, orange, yellow, green, cyan, blue, purple, none. Unset by default.
     pub cycle_tab_color: BindingConfig,
-    /// Mark the focused tab for idle reminders, or remove the mark. Unset by default.
-    pub toggle_tab_remind: BindingConfig,
+    /// Mark the focused tab important (reminders while its agent waits), or unmark it.
+    /// The older name `toggle_tab_remind` is accepted. Unset by default.
+    pub toggle_tab_important: BindingConfig,
     /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
     pub copy_mode: BindingConfig,
     /// Focus the pane to the left. Default: "prefix+h".
@@ -675,8 +677,8 @@ pub(crate) struct KeysConfigOverlay {
     restart_agent: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cycle_tab_color: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    toggle_tab_remind: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none", alias = "toggle_tab_remind")]
+    toggle_tab_important: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     copy_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -793,7 +795,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(toggle_groups_folded);
         apply_field!(restart_agent);
         apply_field!(cycle_tab_color);
-        apply_field!(toggle_tab_remind);
+        apply_field!(toggle_tab_important);
         apply_field!(copy_mode);
         apply_field!(focus_pane_left);
         apply_field!(focus_pane_down);
@@ -904,7 +906,7 @@ impl KeysConfig {
         copy_effective_action_field!(toggle_groups_folded, keybinds.toggle_groups_folded);
         copy_effective_action_field!(restart_agent, keybinds.restart_agent);
         copy_effective_action_field!(cycle_tab_color, keybinds.cycle_tab_color);
-        copy_effective_action_field!(toggle_tab_remind, keybinds.toggle_tab_remind);
+        copy_effective_action_field!(toggle_tab_important, keybinds.toggle_tab_important);
         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
         copy_effective_action_field!(focus_pane_left, keybinds.focus_pane_left);
         copy_effective_action_field!(focus_pane_down, keybinds.focus_pane_down);
@@ -1075,10 +1077,13 @@ pub struct UiConfig {
     /// `tab_agent_glyphs`. Values use the theme color syntax. Keys you omit keep their defaults;
     /// keys without a color stay monochrome. Default: claude "#D97757", codex "#3B82F6".
     pub tab_agent_glyph_colors: std::collections::BTreeMap<String, String>,
-    /// Minutes a tab marked for reminders ("Remind me", `tab.set_remind`) may sit with a
-    /// finished (unseen) or blocked agent before Herdr reminds you, and again every as many
-    /// minutes until you focus the tab. 0 turns reminders off; at most 240. Default: 10.
+    /// Minutes an important tab's (`tab.set_reminder`) agent may sit finished (unseen)
+    /// or blocked before Herdr reminds you, and again every as many minutes until you
+    /// focus the tab. 0 turns these reminders off; at most 240. Default: 10.
     pub idle_reminder_minutes: u32,
+    /// Local time of day ("HH:MM", 24-hour) a tab's daily reminder
+    /// (`tab.set_reminder` every = daily) fires. Default: "09:30".
+    pub daily_reminder_time: String,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
@@ -1293,7 +1298,7 @@ impl Default for KeysConfig {
             toggle_groups_folded: BindingConfig::default(),
             restart_agent: BindingConfig::default(),
             cycle_tab_color: BindingConfig::default(),
-            toggle_tab_remind: BindingConfig::default(),
+            toggle_tab_important: BindingConfig::default(),
             copy_mode: BindingConfig::one("prefix+["),
             focus_pane_left: BindingConfig::one("prefix+h"),
             focus_pane_down: BindingConfig::one("prefix+j"),
@@ -1343,6 +1348,7 @@ impl Default for UiConfig {
             tab_agent_glyphs: std::collections::BTreeMap::new(),
             tab_agent_glyph_colors: std::collections::BTreeMap::new(),
             idle_reminder_minutes: DEFAULT_IDLE_REMINDER_MINUTES,
+            daily_reminder_time: DEFAULT_DAILY_REMINDER_TIME.into(),
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,
@@ -1391,6 +1397,25 @@ impl UiConfig {
         self.idle_reminder_minutes.min(MAX_IDLE_REMINDER_MINUTES)
     }
 
+    /// `daily_reminder_time` as minutes past midnight, or 09:30 when it is not
+    /// a valid "HH:MM" (reported by [`UiConfig::daily_reminder_diagnostic`]).
+    pub fn effective_daily_reminder_minutes(&self) -> u32 {
+        parse_time_of_day(&self.daily_reminder_time)
+            .or_else(|| parse_time_of_day(DEFAULT_DAILY_REMINDER_TIME))
+            .unwrap_or(9 * 60 + 30)
+    }
+
+    pub fn daily_reminder_diagnostic(&self) -> Option<String> {
+        parse_time_of_day(&self.daily_reminder_time)
+            .is_none()
+            .then(|| {
+                format!(
+                    "ui.daily_reminder_time must be a 24-hour time like \"09:30\" (got {:?}); using {DEFAULT_DAILY_REMINDER_TIME}",
+                    self.daily_reminder_time
+                )
+            })
+    }
+
     pub fn idle_reminder_diagnostic(&self) -> Option<String> {
         (self.idle_reminder_minutes > MAX_IDLE_REMINDER_MINUTES).then(|| {
             format!(
@@ -1400,6 +1425,17 @@ impl UiConfig {
             )
         })
     }
+}
+
+/// "HH:MM" (24-hour, one or two hour digits) as minutes past midnight.
+fn parse_time_of_day(value: &str) -> Option<u32> {
+    let (hours, minutes) = value.trim().split_once(':')?;
+    if hours.is_empty() || hours.len() > 2 || minutes.len() != 2 {
+        return None;
+    }
+    let hours: u32 = hours.parse().ok()?;
+    let minutes: u32 = minutes.parse().ok()?;
+    (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
 }
 
 impl Default for ToastConfig {
@@ -2239,6 +2275,35 @@ max_stack = 3
             assert_eq!(config.ui.toast.herdr.effective_max_stack(), clamped);
             let diagnostic = config.ui.toast.herdr.diagnostic().expect("out of range");
             assert!(diagnostic.contains("ui.toast.herdr.max_stack must be between 1 and 20"));
+            assert!(config.collect_diagnostics().contains(&diagnostic));
+        }
+    }
+
+    #[test]
+    fn daily_reminder_time_parses_and_falls_back_with_a_diagnostic() {
+        let defaults = Config::default();
+        assert_eq!(defaults.ui.effective_daily_reminder_minutes(), 9 * 60 + 30);
+        assert!(defaults.ui.daily_reminder_diagnostic().is_none());
+        for (raw, minutes) in [("18:05", 18 * 60 + 5), ("7:00", 7 * 60), ("00:00", 0)] {
+            let config: Config =
+                toml::from_str(&format!("[ui]\ndaily_reminder_time = \"{raw}\"\n")).unwrap();
+            assert_eq!(
+                config.ui.effective_daily_reminder_minutes(),
+                minutes,
+                "{raw}"
+            );
+            assert!(config.ui.daily_reminder_diagnostic().is_none());
+        }
+        for raw in ["24:00", "9:3", "noon", "09:60", ""] {
+            let config: Config =
+                toml::from_str(&format!("[ui]\ndaily_reminder_time = \"{raw}\"\n")).unwrap();
+            assert_eq!(
+                config.ui.effective_daily_reminder_minutes(),
+                9 * 60 + 30,
+                "{raw}"
+            );
+            let diagnostic = config.ui.daily_reminder_diagnostic().expect("invalid");
+            assert!(diagnostic.contains("ui.daily_reminder_time"));
             assert!(config.collect_diagnostics().contains(&diagnostic));
         }
     }

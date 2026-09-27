@@ -13,7 +13,8 @@ fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
         focused: false,
         agent_status: AgentStatus::Idle,
         color: None,
-        remind: false,
+        important: false,
+        remind_every: None,
     }));
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot));
@@ -74,7 +75,8 @@ fn focused_last_overflow_tab_shows_its_full_label() {
             focused: index == 7,
             agent_status: AgentStatus::Idle,
             color: None,
-            remind: false,
+            important: false,
+            remind_every: None,
         })
         .collect();
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));

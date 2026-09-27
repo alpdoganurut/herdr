@@ -41,7 +41,9 @@ impl ClientContextMenuOverlay {
                     Action::ToggleGroup,
                 ),
             ],
-            ClientContextMenuTarget::Tab { agent, remind, .. } => {
+            ClientContextMenuTarget::Tab {
+                agent, important, ..
+            } => {
                 let mut items = vec![
                     item("New tab", Action::NewTab),
                     item("Rename", Action::Rename),
@@ -59,15 +61,19 @@ impl ClientContextMenuOverlay {
                     None => {}
                 }
                 items.push(item("Close", Action::Close));
-                // After Close, so upstream's item positions hold.
+                // After Close, so upstream's item positions hold: the
+                // important toggle, then the two selector rows, whose labels
+                // only name them (render_context_menu draws the options).
                 items.push(item(
-                    if *remind {
-                        "Stop reminding"
+                    if *important {
+                        "\u{2713} important"
                     } else {
-                        "Remind me"
+                        "  important"
                     },
-                    Action::ToggleRemind,
+                    Action::Important,
                 ));
+                items.push(item("remind", Action::RemindTop));
+                items.push(item("", Action::RemindBottom));
                 // The swatch row, last so upstream's item positions (Close at
                 // 2 without an agent) stay put. The label only names the row;
                 // render_context_menu draws the swatches in its place.
@@ -181,7 +187,8 @@ impl ClientShellState {
                 workspace_id: tab.workspace_id.clone(),
                 agent,
                 color,
-                remind: tab.remind,
+                important: tab.important,
+                remind: super::tab_remind_menu::tab_menu_remind(tab.remind_every),
             },
             x,
             y,
@@ -248,22 +255,37 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         }
-        if let (
-            ClientContextMenuAction::ToggleRemind,
-            ClientContextMenuTarget::Tab { tab_id, remind, .. },
-        ) = (action, &menu.target)
-        {
-            // Like the swatch row, no tab focus: focusing the tab would mark
-            // its agent seen and so cancel the reminder being armed.
-            self.push_endpoint_method(
-                crate::api::schema::Method::TabSetRemind(crate::api::schema::TabSetRemindParams {
-                    tab_id: tab_id.clone(),
-                    remind: !*remind,
-                }),
-                outcome,
-            );
-            outcome.repaint = true;
-            return;
+        match (action, &menu.target) {
+            // Like the swatch row, these do not focus the tab: focusing would
+            // mark its agent seen and cancel the reminder being armed.
+            (
+                ClientContextMenuAction::Important,
+                ClientContextMenuTarget::Tab {
+                    tab_id, important, ..
+                },
+            ) => {
+                self.push_endpoint_method(
+                    crate::api::schema::Method::TabSetReminder(
+                        crate::api::schema::TabSetReminderParams {
+                            tab_id: tab_id.clone(),
+                            important: Some(!*important),
+                            every: None,
+                        },
+                    ),
+                    outcome,
+                );
+                outcome.repaint = true;
+                return;
+            }
+            (
+                ClientContextMenuAction::RemindTop | ClientContextMenuAction::RemindBottom,
+                ClientContextMenuTarget::Tab { tab_id, remind, .. },
+            ) => {
+                self.pick_tab_remind_option(tab_id.clone(), *remind, outcome);
+                outcome.repaint = true;
+                return;
+            }
+            _ => {}
         }
         match menu.target {
             ClientContextMenuTarget::Workspace { workspace_id, .. } => {

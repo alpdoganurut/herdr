@@ -19,6 +19,10 @@ pub struct SoundConfig {
     /// Optional mp3 file path for "request" notifications.
     /// Relative paths are resolved from the config file's directory.
     pub request_path: Option<PathBuf>,
+    /// Fork: optional sound file for idle reminders; without it a reminder
+    /// plays the "done" or "request" sound it reminds about.
+    /// Relative paths are resolved from the config file's directory.
+    pub reminder_path: Option<PathBuf>,
     pub agents: AgentSoundOverrides,
 }
 
@@ -71,6 +75,13 @@ impl SoundConfig {
         let path = match sound {
             crate::sound::Sound::Done => self.done_path.as_ref().or(self.path.as_ref()),
             crate::sound::Sound::Request => self.request_path.as_ref().or(self.path.as_ref()),
+            crate::sound::Sound::Reminder(_) => {
+                return self
+                    .reminder_path
+                    .as_ref()
+                    .map(|path| resolve_config_relative_path(path))
+                    .or_else(|| self.path_for(sound.base()));
+            }
         }?;
 
         Some(resolve_config_relative_path(path))
@@ -82,6 +93,7 @@ impl SoundConfig {
             ("ui.sound.path", self.path.as_ref()),
             ("ui.sound.done_path", self.done_path.as_ref()),
             ("ui.sound.request_path", self.request_path.as_ref()),
+            ("ui.sound.reminder_path", self.reminder_path.as_ref()),
         ] {
             let Some(path) = path else {
                 continue;
@@ -91,7 +103,7 @@ impl SoundConfig {
             if resolved
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .is_none_or(|ext: &str| !ext.eq_ignore_ascii_case("mp3"))
+                .is_none_or(|ext: &str| !supported_sound_extension(ext))
             {
                 diagnostics.push(format!(
                     "unsupported sound file format: {field} = {} resolves to {}; expected an mp3 file; using default sound",
@@ -117,6 +129,17 @@ impl SoundConfig {
         }
         diagnostics
     }
+}
+
+/// Fork: mp3 everywhere; on macOS also aiff (the system sounds in
+/// /System/Library/Sounds), aif, caf and m4a, which `afplay` plays.
+fn supported_sound_extension(ext: &str) -> bool {
+    const MACOS_EXTRA: [&str; 4] = ["aiff", "aif", "caf", "m4a"];
+    ext.eq_ignore_ascii_case("mp3")
+        || (cfg!(target_os = "macos")
+            && MACOS_EXTRA
+                .iter()
+                .any(|extra| ext.eq_ignore_ascii_case(extra)))
 }
 
 impl AgentSoundOverrides {
@@ -158,6 +181,7 @@ impl Default for SoundConfig {
             path: None,
             done_path: None,
             request_path: None,
+            reminder_path: None,
             agents: AgentSoundOverrides::default(),
         }
     }
@@ -259,6 +283,66 @@ done_path = "sounds/done.mp3"
             config.ui.sound.path_for(crate::sound::Sound::Request),
             Some(config_root.join("sounds/all.mp3"))
         );
+    }
+
+    #[test]
+    fn reminder_sound_uses_its_path_or_the_sound_it_reminds_about() {
+        use crate::sound::{ReminderBase, Sound};
+        let config: Config = toml::from_str(
+            r#"
+[ui.sound]
+done_path = "sounds/done.mp3"
+request_path = "sounds/request.mp3"
+"#,
+        )
+        .unwrap();
+        let config_root = config_path().parent().unwrap().to_path_buf();
+        assert_eq!(
+            config
+                .ui
+                .sound
+                .path_for(Sound::Reminder(ReminderBase::Done)),
+            Some(config_root.join("sounds/done.mp3"))
+        );
+        assert_eq!(
+            config
+                .ui
+                .sound
+                .path_for(Sound::Reminder(ReminderBase::Request)),
+            Some(config_root.join("sounds/request.mp3"))
+        );
+        assert_eq!(
+            Config::default()
+                .ui
+                .sound
+                .path_for(Sound::Reminder(ReminderBase::Done)),
+            None,
+            "the built-in done sound"
+        );
+        assert_eq!(
+            Sound::Reminder(ReminderBase::Request).base(),
+            Sound::Request
+        );
+
+        let config: Config = toml::from_str(
+            r#"
+[ui.sound]
+request_path = "sounds/request.mp3"
+reminder_path = "/System/Library/Sounds/Glass.aiff"
+"#,
+        )
+        .unwrap();
+        for base in [ReminderBase::Done, ReminderBase::Request] {
+            assert_eq!(
+                config.ui.sound.path_for(Sound::Reminder(base)),
+                Some(PathBuf::from("/System/Library/Sounds/Glass.aiff"))
+            );
+        }
+        // An aiff system sound is not an unsupported format on macOS.
+        let unsupported = config.collect_diagnostics().into_iter().any(|diag| {
+            diag.contains("ui.sound.reminder_path") && diag.contains("expected an mp3")
+        });
+        assert_eq!(unsupported, !cfg!(target_os = "macos"));
     }
 
     #[test]

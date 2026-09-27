@@ -89,8 +89,14 @@ pub struct TabSnapshot {
     pub custom_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<crate::api::schema::TabColor>,
+    /// The older name of `important`: read from files that predate it, and
+    /// written alongside it so an older build still restores the mark.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub remind: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub important: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remind_every: Option<crate::api::schema::TabRemindInterval>,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
@@ -180,6 +186,8 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             custom_name: None,
             color: None,
             remind: false,
+            important: false,
+            remind_every: None,
             layout: snap.layout,
             panes: snap.panes,
             zoomed: snap.zoomed,
@@ -408,7 +416,9 @@ fn capture_tab(
     TabSnapshot {
         custom_name: tab.custom_name.clone(),
         color: tab.color,
-        remind: tab.remind,
+        remind: tab.important,
+        important: tab.important,
+        remind_every: tab.remind_every,
         layout: capture_node(tab.layout.root()),
         panes,
         zoomed: tab.zoomed,
@@ -847,6 +857,8 @@ mod tests {
                     custom_name: Some("api".to_string()),
                     color: None,
                     remind: false,
+                    important: false,
+                    remind_every: None,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
                         ratio: 0.5,
@@ -1518,6 +1530,8 @@ mod tests {
                     custom_name: None,
                     color: None,
                     remind: false,
+                    important: false,
+                    remind_every: None,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
                         ratio: 0.5,

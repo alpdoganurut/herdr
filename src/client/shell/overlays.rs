@@ -9,6 +9,8 @@ pub(crate) struct OverlayRender {
     pub(crate) menu_rows: Vec<(Rect, usize)>,
     /// The tab menu's swatch row: one hit per swatch.
     pub(crate) menu_swatches: Vec<(Rect, usize)>,
+    /// The tab menu's reminder row: one hit per option.
+    pub(crate) menu_remind_options: Vec<(Rect, usize)>,
     pub(crate) primary: Rect,
     pub(crate) clear: Rect,
     pub(crate) cancel: Rect,
@@ -42,6 +44,7 @@ pub(crate) fn render_client_overlay(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     k: &LiveKeybindConfig,
+    c: &ClientShellConfig,
     p: &Palette,
 ) -> Option<OverlayRender> {
     if !matches!(
@@ -70,7 +73,7 @@ pub(crate) fn render_client_overlay(
             render_navigator_overlay(b, v, endpoints, active_endpoint_id, p)
         }
         ClientShellOverlay::Settings(v) => {
-            settings_overlay::render_settings_overlay(b, v, s.integration_updates_available, p)
+            settings_overlay::render_settings_overlay(b, v, s.integration_updates_available, c, p)
         }
         ClientShellOverlay::WorktreeCreate(v) => {
             worktree_overlays::render_worktree_create_overlay(b, v, p)
@@ -179,7 +182,16 @@ pub(crate) fn render_context_menu(
             .map(|row| (row, *color)),
         _ => None,
     };
+    // The reminder selector's two rows (drawn in place of their labels).
+    let remind_rows = match &menu.target {
+        ClientContextMenuTarget::Tab { remind, .. } => items
+            .iter()
+            .position(|item| item.action == ClientContextMenuAction::RemindTop)
+            .map(|row| (row, *remind)),
+        _ => None,
+    };
     let mut swatches = Vec::new();
+    let mut remind_options = Vec::new();
     let max_item_width = items
         .iter()
         .map(|item| display_width(item.label))
@@ -187,6 +199,11 @@ pub(crate) fn render_context_menu(
         .unwrap_or(0)
         .max(if swatch_row.is_some() {
             super::super::tab_color::swatch_row_width()
+        } else {
+            0
+        })
+        .max(if remind_rows.is_some() {
+            super::super::tab_remind_menu::remind_row_width()
         } else {
             0
         });
@@ -228,6 +245,21 @@ pub(crate) fn render_context_menu(
             rows.push((row, index));
             continue;
         }
+        if let Some((top, remind)) =
+            remind_rows.filter(|(top, _)| index == *top || index == *top + 1)
+        {
+            // Only the option under the cursor wears the highlight.
+            remind_options.extend(super::super::tab_remind_menu::render_remind_row(
+                buffer,
+                row,
+                index - top,
+                remind,
+                highlighted.then_some(remind.cursor),
+                palette,
+            ));
+            rows.push((row, index));
+            continue;
+        }
         let style = if highlighted {
             Style::default()
                 .fg(panel_contrast_fg(palette))
@@ -244,6 +276,7 @@ pub(crate) fn render_context_menu(
         area: rect,
         menu_rows: rows,
         menu_swatches: swatches,
+        menu_remind_options: remind_options,
         ..OverlayRender::default()
     })
 }

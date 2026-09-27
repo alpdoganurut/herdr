@@ -45,6 +45,7 @@ impl ClientShellState {
             transcripts: None,
             loading_transcripts: false,
             idle_reminder_minutes: self.config.idle_reminder_minutes,
+            sound_picker: None,
         }));
     }
 
@@ -89,6 +90,7 @@ impl ClientShellState {
             settings.section = section;
             settings.selected = selected;
             settings.idle_reminder_minutes = idle_reminder_minutes;
+            settings.sound_picker = None;
         }
         if request_integrations {
             self.queue_integration_list(outcome, true);
@@ -113,10 +115,12 @@ impl ClientShellState {
     }
 
     fn settings_choice_count(&self) -> usize {
+        let sound_rows = self.sound_section_rows();
         match self.overlay.as_ref() {
             Some(ClientShellOverlay::Settings(settings)) => match settings.section {
                 ClientSettingsSection::Theme => crate::config::THEME_NAMES.len(),
-                ClientSettingsSection::Indicators | ClientSettingsSection::Sound => 2,
+                ClientSettingsSection::Indicators => 2,
+                ClientSettingsSection::Sound => sound_rows,
                 ClientSettingsSection::Toast => 4,
                 ClientSettingsSection::Integrations => settings.integrations.len(),
                 ClientSettingsSection::Backups => 0,
@@ -182,7 +186,7 @@ impl ClientShellState {
         self.config.palette = settings.original_palette;
     }
 
-    fn save_settings_edit(
+    pub(super) fn save_settings_edit(
         &mut self,
         edit: crate::config::ConfigEdit<'_>,
         outcome: &mut ClientShellInput,
@@ -231,9 +235,7 @@ impl ClientShellState {
                     outcome,
                 );
             }
-            ClientSettingsSection::Sound => {
-                self.save_settings_edit(crate::config::ConfigEdit::Sound(selected == 0), outcome);
-            }
+            ClientSettingsSection::Sound => self.apply_sound_choice(selected, outcome),
             ClientSettingsSection::Toast => {
                 let delivery = match selected {
                     0 => crate::config::ToastDelivery::Off,
@@ -457,6 +459,10 @@ impl ClientShellState {
             return false;
         }
         let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
+        if code == KeyCode::Esc && self.close_sound_picker() {
+            outcome.repaint = true;
+            return true;
+        }
         if code == KeyCode::Esc {
             if !matches!(
                 self.overlay,
@@ -484,11 +490,13 @@ impl ClientShellState {
         }
         if matches!(code, KeyCode::Up | KeyCode::Char('k')) && modifiers.is_empty() {
             self.move_settings_selection(-1);
+            self.preview_sound_choice(outcome);
             outcome.repaint = true;
             return true;
         }
         if matches!(code, KeyCode::Down | KeyCode::Char('j')) && modifiers.is_empty() {
             self.move_settings_selection(1);
+            self.preview_sound_choice(outcome);
             outcome.repaint = true;
             return true;
         }

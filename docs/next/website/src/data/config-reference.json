@@ -734,10 +734,10 @@
           "description": "Cycle the focused tab's color tag (tab.set_color): none, red, yellow, green, purple, then none again (a color set outside those four restarts at red). Unset by default; for example, cycle_tab_color = \"alt+c\"."
         },
         {
-          "key": "keys.toggle_tab_remind",
+          "key": "keys.toggle_tab_important",
           "type": "keybinding",
           "default": "unset",
-          "description": "Mark the focused tab for idle reminders (tab.set_remind), or remove the mark; the tab menu's \"Remind me\" / \"Stop reminding\" item does the same. Unset by default; for example, toggle_tab_remind = \"alt+m\"."
+          "description": "Mark the focused tab important (tab.set_reminder), or unmark it; the tab menu's \"important\" item does the same. The older name toggle_tab_remind is accepted. Unset by default; for example, toggle_tab_important = \"alt+m\"."
         },
         {
           "key": "keys.copy_mode",
@@ -955,7 +955,13 @@
           "key": "ui.idle_reminder_minutes",
           "type": "integer",
           "default": "10",
-          "description": "Minutes a tab marked \"Remind me\" (tab.set_remind) may sit with a finished (unseen) or blocked agent before Herdr reminds you, then again every as many minutes until you focus the tab, the agent works again, or the mark is removed. The reminder is a notification for the tab's agent pane that follows ui.toast.delivery, replaces that tab's previous card and plays the done or request sound unless sounds are off. 0 turns reminders off; values above 240 are clamped with a config warning. The settings overlay's reminders tab offers off, 5, 10, 15, 30 and 60 minutes."
+          "description": "Minutes an important tab's agent (the tab menu's \"important\" item, tab.set_reminder) may sit finished (unseen) or blocked before Herdr reminds you, then again every as many minutes until you focus the tab, the agent works again, or the tab is unmarked. The reminder is a notification for the tab's agent pane that follows ui.toast.delivery, replaces that tab's previous card and plays ui.sound.reminder_path (else the done or request sound) unless sounds are off. 0 turns these reminders off; values above 240 are clamped with a config warning. The settings overlay's reminders tab offers off, 5, 10, 15, 30 and 60 minutes. Scheduled reminders (the tab menu's \"remind\" selector) are not affected."
+        },
+        {
+          "key": "ui.daily_reminder_time",
+          "type": "string",
+          "default": "\"09:30\"",
+          "description": "Local time of day (24-hour \"HH:MM\") a tab's daily reminder (the tab menu's remind selector, tab.set_reminder every = daily) fires. A daily reminder missed while no client was attached fires once when a client next sees the tab that day. An invalid value reports a config warning and uses 09:30."
         },
         {
           "key": "ui.mobile_width_threshold",
@@ -1251,6 +1257,12 @@
           "type": "path",
           "default": "unset",
           "description": "Optional mp3 file path for \"request\" notifications. Relative paths are resolved from the config file's directory."
+        },
+        {
+          "key": "ui.sound.reminder_path",
+          "type": "path",
+          "default": "unset",
+          "description": "Optional sound file for idle reminders (ui.idle_reminder_minutes). Unset, a reminder plays the \"done\" or \"request\" sound it reminds about. Relative paths are resolved from the config file's directory; on macOS aiff (such as /System/Library/Sounds) and caf, aif and m4a play too. The settings overlay's sound tab picks it, and done_path and request_path, from the macOS system sounds."
         },
         {
           "key": "ui.sound.agents.pi",

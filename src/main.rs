@@ -178,7 +178,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # toggle_groups_folded = ""         # unbound; "tabs" layout: fold all groups, or expand all once folded
 # restart_agent = ""                # unbound; exits the focused idle agent and relaunches it in place
 # cycle_tab_color = ""              # unbound; cycles the focused tab's color: none, red, ... purple, none
-# toggle_tab_remind = ""            # unbound; marks the focused tab for idle reminders, or unmarks it
+# toggle_tab_important = ""         # unbound; marks the focused tab important, or unmarks it
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"
@@ -263,10 +263,13 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # tab_agent_glyphs; hex or named colors. Keys without a color stay monochrome.
 # tab_agent_glyph_colors = { claude = "#D97757", codex = "#3B82F6" }
 
-# Minutes a tab marked "Remind me" may sit with a finished (unseen) or blocked agent
-# before Herdr reminds you, then again every as many minutes until you focus it.
-# 0 turns reminders off; at most 240.
+# Minutes an important tab's agent may sit finished (unseen) or blocked before Herdr
+# reminds you, then again every as many minutes until you focus the tab.
+# 0 turns these reminders off; at most 240.
 # idle_reminder_minutes = 10
+
+# Local time of day (24-hour "HH:MM") a tab's daily reminder fires.
+# daily_reminder_time = "09:30"
 
 # Terminal width at or below which Herdr uses the mobile single-column layout.
 # Increase this for foldables, tablets, or wide phone terminals.
@@ -408,6 +411,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # path = "sounds/notification.mp3"   # one mp3 file for all sound notifications
 # done_path = "sounds/done.mp3"      # overrides only finished notifications
 # request_path = "sounds/request.mp3" # overrides only needs-attention notifications
+# reminder_path = "/System/Library/Sounds/Glass.aiff" # idle reminders; unset plays the done/request sound
 
 # Per-agent overrides: default | on | off
 # By default, droid is muted.

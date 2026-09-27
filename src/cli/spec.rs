@@ -306,13 +306,25 @@ fn tab_command() -> Command {
                 ),
         )
         .subcommand(
-            Command::new("remind")
-                .about("Mark or unmark a tab for idle reminders")
-                .override_usage("herdr tab remind <TAB_ID> <on|off>")
+            Command::new("important")
+                .about("Mark or unmark a tab as important")
+                .override_usage("herdr tab important <TAB_ID> <on|off>")
                 .arg(required("tab_id", "TAB_ID"))
                 .arg(required("state", "STATE").value_parser(["on", "off"]))
                 .after_help(
-                    "Marks the tab for idle reminders (tab.set_remind); `off` removes the mark. While a marked tab's agent sits finished (unseen) or blocked, the client reminds you every ui.idle_reminder_minutes until you focus the tab. The mark is stored with the tab, persists across server restarts and follows the tab when it moves to another space.",
+                    "Marks the tab important (tab.set_reminder); `off` removes the mark. While an important tab's agent sits finished (unseen) or blocked, the client reminds you every ui.idle_reminder_minutes until you focus the tab. The mark is stored with the tab, persists across server restarts and follows the tab when it moves to another space.",
+                ),
+        )
+        .subcommand(
+            Command::new("remind")
+                .about("Set or clear a tab's scheduled reminder")
+                .override_usage("herdr tab remind <TAB_ID> <off|5m|10m|30m|1h|6h|daily>")
+                .arg(required("tab_id", "TAB_ID"))
+                .arg(required("every", "EVERY").value_parser([
+                    "off", "5m", "10m", "30m", "1h", "6h", "daily",
+                ]))
+                .after_help(
+                    "Sets the tab's scheduled reminder (tab.set_reminder); `off` clears it. The client reminds you about the tab every interval, whatever its agent is doing, or daily at ui.daily_reminder_time; a reminder due while the tab is focused is skipped. The interval is stored with the tab, persists across server restarts and follows the tab when it moves to another space.",
                 ),
         )
         .subcommand(id_command("close", "tab_id", "Close a tab"))
@@ -1415,18 +1427,26 @@ mod tests {
     #[test]
     fn spec_models_tab_remind_values() {
         let cmd = super::command();
-        let remind = command_path(&cmd, &["tab", "remind"]);
-        let values: Vec<String> = remind
-            .get_arguments()
-            .find(|arg| arg.get_id() == "state")
-            .expect("tab remind takes a STATE argument")
-            .get_value_parser()
-            .possible_values()
-            .into_iter()
-            .flatten()
-            .map(|value| value.get_name().to_string())
-            .collect();
-        assert_eq!(values, ["on", "off"]);
+        let values = |path: &[&str], id: &str| -> Vec<String> {
+            command_path(&cmd, path)
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .expect("argument")
+                .get_value_parser()
+                .possible_values()
+                .into_iter()
+                .flatten()
+                .map(|value| value.get_name().to_string())
+                .collect()
+        };
+        let mut expected = vec!["off".to_string()];
+        expected.extend(
+            crate::api::schema::TabRemindInterval::ALL
+                .iter()
+                .map(|interval| interval.name().to_string()),
+        );
+        assert_eq!(values(&["tab", "remind"], "every"), expected);
+        assert_eq!(values(&["tab", "important"], "state"), ["on", "off"]);
     }
 
     #[test]

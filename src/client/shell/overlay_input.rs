@@ -623,7 +623,7 @@ impl ClientShellState {
         }
 
         if matches!(self.overlay, Some(ClientShellOverlay::ContextMenu(_))) {
-            if self.route_tab_color_menu_key(key.code) {
+            if self.route_tab_remind_menu_key(key.code) || self.route_tab_color_menu_key(key.code) {
                 outcome.repaint = true;
                 return;
             }

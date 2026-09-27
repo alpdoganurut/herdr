@@ -1898,7 +1898,9 @@ impl AppState {
         let known_agent = change.known_agent.or(change.previous_known_agent);
         let kind = client_notification_kind.unwrap_or(match sound {
             Some(crate::sound::Sound::Request) => ToastKind::NeedsAttention,
-            Some(crate::sound::Sound::Done) | None => ToastKind::Finished,
+            Some(crate::sound::Sound::Done | crate::sound::Sound::Reminder(_)) | None => {
+                ToastKind::Finished
+            }
         });
         let workspace_id = self.workspaces[ws_idx].id.clone();
 

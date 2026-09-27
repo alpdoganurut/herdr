@@ -129,6 +129,7 @@ impl Config {
             ))
             .chain(self.ui.toast.herdr.diagnostic())
             .chain(self.ui.idle_reminder_diagnostic())
+            .chain(self.ui.daily_reminder_diagnostic())
             .collect()
     }
 

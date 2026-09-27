@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "protocol": 24,
+  "protocol": 25,
   "schema_version": 1,
   "schemas": {
     "error_response": {
@@ -1077,6 +1077,10 @@
             "focused": {
               "type": "boolean"
             },
+            "important": {
+              "description": "Marked important (`tab.set_reminder`, `tab.set_remind`): clients remind\nwhile its agent sits finished (unseen) or blocked. Absent when not.",
+              "type": "boolean"
+            },
             "label": {
               "type": "string"
             },
@@ -1090,9 +1094,16 @@
               "minimum": 0,
               "type": "integer"
             },
-            "remind": {
-              "description": "Whether the tab is marked for idle reminders (`tab.set_remind`);\nabsent when it is not.",
-              "type": "boolean"
+            "remind_every": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/TabRemindInterval"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The tab's scheduled reminder (`tab.set_reminder`); absent when off."
             },
             "tab_id": {
               "type": "string"
@@ -1111,6 +1122,19 @@
             "agent_status"
           ],
           "type": "object"
+        },
+        "TabRemindInterval": {
+          "description": "How often clients remind about a tab regardless of its agent: every 5, 10\nor 30 minutes, every 1 or 6 hours, or daily at `ui.daily_reminder_time`.\n`Unknown` is the fallback for an interval this build does not know; it is\nnever stored.",
+          "enum": [
+            "5m",
+            "10m",
+            "30m",
+            "1h",
+            "6h",
+            "daily",
+            "Unknown"
+          ],
+          "type": "string"
         },
         "WorkspaceInfo": {
           "properties": {
@@ -4543,6 +4567,19 @@
           ],
           "type": "object"
         },
+        "TabRemindEvery": {
+          "description": "A scheduled reminder as set through `tab.set_reminder`: off or an\ninterval. Closed: an unknown name rejects the request.",
+          "enum": [
+            "off",
+            "5m",
+            "10m",
+            "30m",
+            "1h",
+            "6h",
+            "daily"
+          ],
+          "type": "string"
+        },
         "TabRenameParams": {
           "properties": {
             "label": {
@@ -4582,7 +4619,7 @@
           "type": "object"
         },
         "TabSetRemindParams": {
-          "description": "Mark (`remind: true`) or unmark a tab for idle reminders: clients remind\nabout a marked tab whose agent waits unseen.",
+          "description": "Mark (`remind: true`) or unmark a tab as important: clients remind about\nan important tab whose agent waits unseen. The boolean form of\n`tab.set_reminder`'s `important`.",
           "properties": {
             "remind": {
               "type": "boolean"
@@ -4594,6 +4631,34 @@
           "required": [
             "tab_id",
             "remind"
+          ],
+          "type": "object"
+        },
+        "TabSetReminderParams": {
+          "description": "Change a tab's reminders: `important` and/or the scheduled reminder\n`every`. An absent field leaves that reminder as it is.",
+          "properties": {
+            "every": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/TabRemindEvery"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "important": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id"
           ],
           "type": "object"
         },
@@ -5740,6 +5805,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabSetRemindParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.set_reminder",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabSetReminderParams"
             }
           },
           "required": [
@@ -11263,6 +11344,10 @@
             "focused": {
               "type": "boolean"
             },
+            "important": {
+              "description": "Marked important (`tab.set_reminder`, `tab.set_remind`): clients remind\nwhile its agent sits finished (unseen) or blocked. Absent when not.",
+              "type": "boolean"
+            },
             "label": {
               "type": "string"
             },
@@ -11276,9 +11361,16 @@
               "minimum": 0,
               "type": "integer"
             },
-            "remind": {
-              "description": "Whether the tab is marked for idle reminders (`tab.set_remind`);\nabsent when it is not.",
-              "type": "boolean"
+            "remind_every": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TabRemindInterval"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The tab's scheduled reminder (`tab.set_reminder`); absent when off."
             },
             "tab_id": {
               "type": "string"
@@ -11297,6 +11389,19 @@
             "agent_status"
           ],
           "type": "object"
+        },
+        "TabRemindInterval": {
+          "description": "How often clients remind about a tab regardless of its agent: every 5, 10\nor 30 minutes, every 1 or 6 hours, or daily at `ui.daily_reminder_time`.\n`Unknown` is the fallback for an interval this build does not know; it is\nnever stored.",
+          "enum": [
+            "5m",
+            "10m",
+            "30m",
+            "1h",
+            "6h",
+            "daily",
+            "Unknown"
+          ],
+          "type": "string"
         },
         "WorkspaceInfo": {
           "properties": {

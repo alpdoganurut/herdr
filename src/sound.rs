@@ -34,6 +34,51 @@ pub enum Sound {
     Done,
     /// Agent needs input (transitioned to Blocked).
     Request,
+    /// Fork: an idle reminder (`ui.sound.reminder_path`). Without that path
+    /// it plays the sound of the kind it reminds about.
+    Reminder(ReminderBase),
+}
+
+/// The notification sound a reminder stands in for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReminderBase {
+    Done,
+    Request,
+}
+
+impl Sound {
+    /// The built-in sound (and fallback path) behind this sound.
+    pub fn base(self) -> Sound {
+        match self {
+            Sound::Reminder(ReminderBase::Done) => Sound::Done,
+            Sound::Reminder(ReminderBase::Request) => Sound::Request,
+            sound => sound,
+        }
+    }
+}
+
+/// Fork: play `path`, or the built-in `fallback` sound when it is `None`
+/// (the settings overlay's sound picker preview). Honours the same
+/// environment switches as `play`.
+pub fn preview(path: Option<PathBuf>, fallback: Sound) {
+    if sound_playback_disabled_by_env() {
+        return;
+    }
+    std::thread::spawn(move || {
+        if let Some(path) = path {
+            if let Err(err) = play_file(&path) {
+                warn!(path = %path.display(), err = %err, "sound preview failed");
+            }
+            return;
+        }
+        let data = match fallback.base() {
+            Sound::Request => SOUND_REQUEST,
+            _ => SOUND_DONE,
+        };
+        if let Err(err) = play_bytes(data) {
+            warn!(err = %err, "sound preview failed");
+        }
+    });
 }
 
 /// Play a notification sound in a background thread.
@@ -54,9 +99,9 @@ pub fn play(sound: Sound, config: &crate::config::SoundConfig) {
             }
         }
 
-        let data = match sound {
-            Sound::Done => SOUND_DONE,
+        let data = match sound.base() {
             Sound::Request => SOUND_REQUEST,
+            _ => SOUND_DONE,
         };
 
         if let Err(err) = play_bytes(data) {
