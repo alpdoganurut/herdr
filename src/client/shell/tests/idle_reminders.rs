@@ -1287,6 +1287,42 @@ fn sound_picker_without_the_system_sounds_offers_only_default() {
     assert_eq!(choices[0].path, None);
 }
 
+#[test]
+fn reminder_cards_carry_which_reminder_raised_them() {
+    use super::super::idle_reminders::ClientReminderKind;
+    let reminder_of =
+        |state: &ClientShellState| state.visible_notifications.back().expect("card").reminder;
+    let t0 = Instant::now();
+    let mut state = reminder_state(10, waiting_snapshot(AgentStatus::Blocked, true));
+    state.tick_notifications(t0);
+    state.tick_notifications(t0 + 10 * MINUTE);
+    assert_eq!(reminder_of(&state), Some(ClientReminderKind::Important));
+
+    let mut state = seen_state(scheduled_snapshot(TabRemindInterval::M5));
+    state.tick_notifications(t0);
+    state.tick_notifications(t0 + 5 * MINUTE);
+    assert_eq!(reminder_of(&state), Some(ClientReminderKind::Scheduled));
+
+    // A server notification is not a reminder.
+    let mut state = seen_state(waiting_snapshot(AgentStatus::Blocked, false));
+    state.receive_notification(
+        &ClientEndpointId::Local,
+        SemanticNotification {
+            kind: SemanticNotificationKind::NeedsAttention,
+            title: "claude needs attention".into(),
+            body: None,
+            sound: None,
+            agent: Some("claude".into()),
+            workspace_id: Some("ws_1".into()),
+            tab_id: Some("tab_2".into()),
+            pane_id: Some("pane_2".into()),
+            position: None,
+        },
+        t0,
+    );
+    assert_eq!(reminder_of(&state), None);
+}
+
 /// Fork smoke tests: FORK.md section 10 lists them by name and the sync gate
 /// runs them with `-E 'test(fork_smoke)'`.
 mod fork_smoke {

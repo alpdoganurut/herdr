@@ -98,7 +98,8 @@ src/server/headless/tests/fork_smoke.rs
 | ClientShellState | scheduled_reminders | std::collections::HashMap::new() |
 | ClientShellState | reminder_epochs | std::collections::HashMap::new() |
 | ClientShellState | reminder_local_time | None |
-| ClientPendingNotification | reminder | false |
+| ClientPendingNotification | reminder | None |
+| ClientVisibleNotification | reminder | None |
 | ShellHitMap | sidebar_tabs | Vec::new() |
 | ShellHitMap | sidebar_groups | Vec::new() |
 | ShellHitMap | group_toggle_all | Rect::default() |
@@ -265,6 +266,7 @@ src/server/headless/tests/mod.rs  additive: the fork_smoke module line; test lit
 *  deny: anything that is not a structural additive conflict (zdiff3 base empty, both sides pure insertions)
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
+src/client/shell/notifications.rs  mid-logic: render_visible_notification and render_mobile_notification_banner swap the drawn `●` for notification_glyph (reminder marker, `✓` finished, `×` needs attention) via put_notification_glyph after the upstream render; render_notification_card and render_mobile_notice_banner are unchanged
 src/terminal/state.rs  mid-logic: set_detected_state_with_screen_signals_at (suspend reconcile, hook-clear durable session, name kept on exit), clear_full_lifecycle_hook_suppression_for_detected_agent (replacement sessions), set_agent_session_ref_for_session_start (launch-session identity), release_agent_with_mutation, managed_agent_launch_pending, managed_agent_interactive_ready, managed_agent_kind, reconcile_managed_agent_at, clear_agent_name, clear_agent_runtime_identity_after_respawn; active_subagents is cleared in recompute_effective_state (before the early return, unless Working/Blocked with the same agent label), release_agent_with_mutation, begin_agent_suspend and clear_agent_runtime_identity_after_respawn
 src/app/actions.rs  mid-logic: expire_agent_metadata_at, handle_app_event (transcript path before session routing), update_terminal_state_with_completion_policy (suspended in the captured tuple, dirty and completion suppression)
 src/app/api.rs  mid-logic: emit_pane_state_update (status computed with suspended on both sides)
@@ -402,6 +404,9 @@ daily_reminder_time
 reminder_path
 ReminderBase
 PreviewSound
+ClientReminderKind
+notification_glyph
+put_notification_glyph
 SoundFile
 settings_sounds
 tab_remind_menu
@@ -448,6 +453,7 @@ client::shell::tests::tab_sidebar::fork_smoke::colored_multi_line_status_reaches
 - Suspend refuses agents that are blocked on a prompt, prompts and send-keys refuse suspended panes, activation waits for the observed exit, a failed process probe retries instead of ending the exit wait, and dropping a suspended record emits a status event. The tabs-layout input lock now also covers mouse gestures and selections on a suspended pane, the card occludes graphics, and `ui.tab_agent_glyphs` honours an `other` override.
 
 ### Changed
+- In-app notification cards and the mobile banner show the notification's own glyph where the `●` was, in the same color: `✓` for a finished agent, `×` for one that needs attention, `★` for an important-tab reminder and `◷` for a scheduled one (the reminder engine tags its cards; nothing is read from the title). Update and custom notices keep `●`.
 - In the `tabs` sidebar layout, agent notifications name the tab instead of the agent and drop the space number: "level plan finished" with the body "claude · leap-bi-4" (agent, then the basename of the pane's directory, else the space's name) instead of "claude finished" / "leap-bi-4 · 1 · level plan". The client rewrites them once as they leave its pending list, so in-app cards, the mobile banner and terminal/system notifications agree; idle reminder bodies use the same "agent · directory" form in both layouts. A tab the client cannot resolve and the `spaces` layout keep the server's text.
 - `agent.suspend` (and so `herdr agent suspend`, the "Suspend agent" menu item and `keys.toggle_agent_suspend`) refuses a `working` agent with `agent_working`, the same guard `agent.restart` uses, and sends it no input.
 

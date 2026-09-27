@@ -556,6 +556,7 @@ fn config_diagnostic_offsets_only_the_pane_rows_it_overlaps() {
                 position: Some(crate::config::ToastHerdrPosition::TopRight),
             },
             deadline: std::time::Instant::now(),
+            reminder: None,
         });
 
     state.compose(106, 20).expect("one-line frame");

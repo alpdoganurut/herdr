@@ -33,6 +33,23 @@ use crate::api::schema::{AgentStatus, TabRemindInterval};
 /// than an interval being set just now.
 const REMINDER_STARTUP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Which reminder raised a notification: its card shows that reminder's
+/// marker (`★` / `◷`) in place of the dot, and it plays `Sound::Reminder`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClientReminderKind {
+    Important,
+    Scheduled,
+}
+
+impl ClientReminderKind {
+    pub(super) fn glyph(self) -> &'static str {
+        match self {
+            ClientReminderKind::Important => super::tab_sidebar::TAB_IMPORTANT_MARKER,
+            ClientReminderKind::Scheduled => super::tab_sidebar::TAB_REMIND_MARKER,
+        }
+    }
+}
+
 /// What a fired reminder was about; the lit marker's color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ClientReminderLit {
@@ -346,7 +363,7 @@ impl ClientShellState {
             };
             event.title = title;
             reminder.lit = Some(lit);
-            due.push((tab.key.0, event, true));
+            due.push((tab.key.0, event, ClientReminderKind::Important));
         }
         self.queue_reminders(due, now)
     }
@@ -437,7 +454,7 @@ impl ClientShellState {
             reminder.lit = true;
             let mut event = tab.event;
             event.title = format!("{} reminder", tab.label);
-            due.push((tab.key.0, event, false));
+            due.push((tab.key.0, event, ClientReminderKind::Scheduled));
         }
         let mut repaint = false;
         for (endpoint_id, pane_id) in removed_cards {
@@ -446,15 +463,15 @@ impl ClientShellState {
         self.queue_reminders(due, now) || repaint
     }
 
-    /// Queue due reminders (`validate`: check the agent still holds the
-    /// status the reminder is about), each replacing its pane's cards.
+    /// Queue due reminders, each replacing its pane's cards. Important ones
+    /// check the agent still holds the status they are about.
     fn queue_reminders(
         &mut self,
-        due: Vec<(ClientEndpointId, SemanticNotification, bool)>,
+        due: Vec<(ClientEndpointId, SemanticNotification, ClientReminderKind)>,
         now: std::time::Instant,
     ) -> bool {
         let mut repaint = false;
-        for (endpoint_id, event, validate_state) in due {
+        for (endpoint_id, event, kind) in due {
             if let Some(pane_id) = event.pane_id.as_deref() {
                 repaint |= self.replace_pane_notifications(&endpoint_id, pane_id, now);
             }
@@ -463,8 +480,8 @@ impl ClientShellState {
                 event,
                 deadline: now,
                 expires_at: now.checked_add(COMPLETION_EVIDENCE_GRACE).unwrap_or(now),
-                validate_state,
-                reminder: true,
+                validate_state: kind == ClientReminderKind::Important,
+                reminder: Some(kind),
             });
         }
         repaint
