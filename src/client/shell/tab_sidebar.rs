@@ -469,7 +469,7 @@ fn reminder_markers(
 }
 
 /// The status icon of a working tab whose agent has subagents running.
-pub(super) const TAB_SUBAGENTS_ICON: &str = "\u{25CE}"; // ◎
+pub(super) const TAB_SUBAGENTS_ICON: &str = "\u{26AD}"; // ⚭ (two interlocking rings)
 
 /// The row marker of an important tab (`tab.set_reminder` important).
 pub(super) const TAB_IMPORTANT_MARKER: &str = "\u{2605}"; // ★
