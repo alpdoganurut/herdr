@@ -362,7 +362,8 @@ fn mobile_background_workspace_uses_its_own_active_tab_status() {
         focused: false,
         agent_status: AgentStatus::Idle,
         color: None,
-        remind: false,
+        important: false,
+        remind_every: None,
     });
     projected.workspaces.push(ClientShellWorkspace {
         workspace_id: "ws_2".into(),
@@ -389,7 +390,8 @@ fn mobile_background_workspace_uses_its_own_active_tab_status() {
             focused: false,
             agent_status: AgentStatus::Idle,
             color: None,
-            remind: false,
+            important: false,
+            remind_every: None,
         });
     }
     state.set_snapshot(Box::new(projected));

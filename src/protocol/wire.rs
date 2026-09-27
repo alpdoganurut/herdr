@@ -17,9 +17,10 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-/// Fork: 24 = upstream 22 + ClientShellTab.color (23) + ClientShellTab.remind
-/// and ClientShellAgent.subagents (24); bincode needs every field.
-pub const PROTOCOL_VERSION: u32 = 24;
+/// Fork: 25 = upstream 22 + ClientShellTab.color (23) + ClientShellTab.remind
+/// and ClientShellAgent.subagents (24) + ClientShellTab.important and
+/// remind_every replacing remind (25); bincode needs every field.
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -1066,10 +1067,15 @@ pub struct ClientShellTab {
     /// codec of `ClientShellSnapshot` needs every field present.
     #[serde(default)]
     pub color: Option<crate::api::schema::TabColor>,
-    /// Idle reminder mark (`tab.set_remind`); an absent key is `false`. Not
+    /// Marked important (`tab.set_reminder`); an absent key is `false`. Not
     /// skipped when `false`, for the same bincode reason as `color`.
     #[serde(default)]
-    pub remind: bool,
+    pub important: bool,
+    /// Scheduled reminder (`tab.set_reminder`), None = off; an unknown
+    /// interval decodes as `TabRemindInterval::Unknown`, an absent key as
+    /// `None`. Not skipped when `None`, for the same bincode reason.
+    #[serde(default)]
+    pub remind_every: Option<crate::api::schema::TabRemindInterval>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2746,7 +2752,8 @@ mod tests {
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
                 color: None,
-                remind: false,
+                important: false,
+                remind_every: None,
             }],
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),

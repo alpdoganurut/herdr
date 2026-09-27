@@ -235,6 +235,11 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) active_endpoint_id: &'a ClientEndpointId,
     pub(super) collapsed_endpoints: &'a HashSet<ClientEndpointId>,
     pub(super) collapsed_groups: &'a HashSet<String>,
+    /// Reminder clocks, for the `tabs` layout's lit `★` / `◷` markers.
+    pub(super) idle_reminders:
+        &'a HashMap<(ClientEndpointId, String), super::idle_reminders::ClientIdleReminder>,
+    pub(super) scheduled_reminders:
+        &'a HashMap<(ClientEndpointId, String), super::idle_reminders::ClientScheduledReminder>,
     pub(super) remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) workspace_scroll: &'a mut usize,
     pub(super) agent_scroll: &'a mut usize,

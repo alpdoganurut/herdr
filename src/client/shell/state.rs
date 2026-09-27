@@ -30,13 +30,20 @@ pub(crate) struct ClientShellConfig {
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
+    /// `ui.sound.done_path`, `request_path` and `reminder_path`, indexed by
+    /// `settings_sounds::SoundTarget`, for the settings overlay's pickers.
+    pub(super) sound_files: [Option<std::path::PathBuf>; 3],
+    /// Where the settings overlay's sound pickers look for sounds.
+    pub(super) system_sounds_dir: std::path::PathBuf,
     pub(super) toast_delivery: crate::config::ToastDelivery,
     pub(super) toast_delay_seconds: u64,
     pub(super) toast_position: crate::config::ToastHerdrPosition,
     pub(super) toast_sticky: bool,
     pub(super) toast_max_stack: usize,
-    /// `ui.idle_reminder_minutes`, clamped; 0 turns idle reminders off.
+    /// `ui.idle_reminder_minutes`, clamped; 0 turns important reminders off.
     pub(super) idle_reminder_minutes: u32,
+    /// `ui.daily_reminder_time` as minutes past local midnight.
+    pub(super) daily_reminder_minutes: u32,
     pub(super) copy_on_select: bool,
     pub(super) clipboard_toast_enabled: bool,
     pub(super) clipboard_toast_position: crate::config::ToastClipboardPosition,
@@ -138,6 +145,9 @@ pub(super) struct ShellHitMap {
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
     /// The tab menu's swatch row: one hit per swatch, indexed like `tab_color::picker_choices`.
     pub(super) context_menu_swatches: Vec<(Rect, usize)>,
+    /// The tab menu's reminder selector: one hit per option, indexed like
+    /// `TabRemindInterval::ALL`.
+    pub(super) context_menu_remind_options: Vec<(Rect, usize)>,
     pub(super) overlay_primary: Rect,
     pub(super) overlay_clear: Rect,
     pub(super) overlay_cancel: Rect,
@@ -298,6 +308,12 @@ pub(crate) enum ClientShellAction {
     },
     ReplayMouse(Vec<crossterm::event::MouseEvent>),
     Keybind(crate::input::KeybindAction),
+    /// Fork: play a sound once (the settings overlay's sound picker): `path`,
+    /// or the built-in `fallback` when it is `None`.
+    PreviewSound {
+        path: Option<std::path::PathBuf>,
+        fallback: crate::sound::Sound,
+    },
 }
 
 #[derive(Default)]
@@ -498,6 +514,8 @@ pub(super) struct ClientSettingsOverlay {
     /// `ui.idle_reminder_minutes` as the reminders section lists it, refreshed
     /// on entering the section and after applying a choice.
     pub(super) idle_reminder_minutes: u32,
+    /// The sound section's open picker, if any.
+    pub(super) sound_picker: Option<super::settings_sounds::ClientSoundPicker>,
 }
 
 #[derive(Debug)]
@@ -610,8 +628,12 @@ pub(super) enum ClientContextMenuAction {
     RestartAgent,
     /// Tab menu: the swatch row; picking sets the swatch under the cursor.
     Color,
-    /// Tab menu: "Remind me" / "Stop reminding" (`tab.set_remind`).
-    ToggleRemind,
+    /// Tab menu: toggle the tab's `important` reminder.
+    Important,
+    /// Tab menu: the scheduled reminder selector's first row (5m 10m 30m).
+    RemindTop,
+    /// Tab menu: the selector's second row (1h 6h daily).
+    RemindBottom,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -620,6 +642,16 @@ pub(super) enum ClientContextMenuAction {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct ClientTabMenuColor {
     pub(super) current: Option<crate::api::schema::TabColor>,
+    pub(super) cursor: usize,
+}
+
+/// The tab menu's scheduled reminder selector: the tab's interval captured
+/// when the menu opened (bracketed) and the option the keyboard cursor sits
+/// on (an index into `TabRemindInterval::ALL`; 0-2 on the first row, 3-5 on
+/// the second).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ClientTabMenuRemind {
+    pub(super) current: Option<crate::api::schema::TabRemindInterval>,
     pub(super) cursor: usize,
 }
 
@@ -646,8 +678,11 @@ pub(super) enum ClientContextMenuTarget {
         agent: Option<ClientTabMenuAgent>,
         /// The swatch row: the tab's color when the menu opened and the swatch cursor.
         color: ClientTabMenuColor,
-        /// The tab's idle reminder mark when the menu opened.
-        remind: bool,
+        /// Whether the tab was important when the menu opened.
+        important: bool,
+        /// The reminder selector: the tab's interval when the menu opened and
+        /// the cursor.
+        remind: ClientTabMenuRemind,
     },
     /// A space shown as a tab group in the `tabs` layout.
     Group { workspace_id: String },
@@ -842,6 +877,8 @@ pub(super) struct ClientPendingNotification {
     pub(super) deadline: std::time::Instant,
     pub(super) expires_at: std::time::Instant,
     pub(super) validate_state: bool,
+    /// Fork: an idle reminder, which plays `Sound::Reminder`.
+    pub(super) reminder: bool,
 }
 
 pub(super) struct ClientVisibleNotification {
@@ -1043,10 +1080,17 @@ pub(crate) struct ClientShellState {
     /// `queued_notifications`); sticky mode keeps every card until it is cleared.
     pub(super) visible_notifications: VecDeque<ClientVisibleNotification>,
     pub(super) queued_notifications: VecDeque<ClientVisibleNotification>,
-    /// Marked tabs waiting in Done/Blocked, keyed by endpoint and tab id
+    /// Important tabs waiting in Done/Blocked, keyed by endpoint and tab id
     /// (`idle_reminders.rs`).
     pub(super) idle_reminders:
         HashMap<(ClientEndpointId, String), super::idle_reminders::ClientIdleReminder>,
+    /// Tabs with a scheduled reminder, keyed like `idle_reminders`.
+    pub(super) scheduled_reminders:
+        HashMap<(ClientEndpointId, String), super::idle_reminders::ClientScheduledReminder>,
+    /// When each endpoint's snapshot was first seen, for scheduled reminders.
+    pub(super) reminder_epochs: HashMap<ClientEndpointId, std::time::Instant>,
+    /// Test override of the local wall clock daily reminders go by.
+    pub(super) reminder_local_time: Option<time::PrimitiveDateTime>,
     pub(super) endpoint_notice_seen: HashSet<ClientEndpointNoticeKey>,
     pub(super) visible_endpoint_notice: Option<ClientVisibleEndpointNotice>,
     pub(super) outer_focused: Option<bool>,
@@ -1214,6 +1258,9 @@ impl ClientShellState {
             visible_notifications: VecDeque::new(),
             queued_notifications: VecDeque::new(),
             idle_reminders: HashMap::new(),
+            scheduled_reminders: HashMap::new(),
+            reminder_epochs: HashMap::new(),
+            reminder_local_time: None,
             endpoint_notice_seen: HashSet::new(),
             visible_endpoint_notice: None,
             outer_focused: None,

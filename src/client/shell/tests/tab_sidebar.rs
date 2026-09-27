@@ -27,7 +27,8 @@ fn tab(
         focused,
         agent_status: status,
         color: None,
-        remind: false,
+        important: false,
+        remind_every: None,
     }
 }
 
@@ -1918,8 +1919,10 @@ fn tab_menu_ends_with_a_swatch_row_marking_the_current_color() {
     // Without an agent Close stays the third item (upstream's close_tab tests).
     let plain = tab_menu_items(&mut state, 2);
     assert_eq!(plain[2].action, ClientContextMenuAction::Close);
-    assert_eq!(plain[3].action, ClientContextMenuAction::ToggleRemind);
-    assert_eq!(plain.len(), 5);
+    assert_eq!(plain[3].action, ClientContextMenuAction::Important);
+    assert_eq!(plain[4].action, ClientContextMenuAction::RemindTop);
+    assert_eq!(plain[5].action, ClientContextMenuAction::RemindBottom);
+    assert_eq!(plain.len(), 7);
 
     // tab_2 is red, one of the offered colors.
     let row = open_menu_with_swatches(&mut state, 1);

@@ -810,7 +810,11 @@ fn restore_tab(
                 color: snap
                     .color
                     .filter(|color| *color != crate::api::schema::TabColor::Unknown),
-                remind: snap.remind,
+                important: snap.important || snap.remind,
+                // An interval this build does not know restores as off.
+                remind_every: snap
+                    .remind_every
+                    .filter(|every| *every != crate::api::schema::TabRemindInterval::Unknown),
                 number,
                 root_pane,
                 layout,
@@ -1430,9 +1434,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tab_remind_marks_round_trip_through_session_json_and_restore() {
+    async fn tab_reminders_round_trip_through_session_json_and_restore() {
+        use crate::api::schema::TabRemindInterval;
         let cwd = std::env::current_dir().unwrap();
-        let tab = |remind: Option<bool>| {
+        let tab = |fields: serde_json::Value| {
             let mut tab = serde_json::json!({
                 "custom_name": null,
                 "layout": {"Pane": 0},
@@ -1441,34 +1446,34 @@ mod tests {
                 "focused": 0,
                 "root_pane": 0,
             });
-            if let Some(remind) = remind {
-                tab["remind"] = remind.into();
+            for (key, value) in fields.as_object().unwrap() {
+                tab[key] = value.clone();
             }
             tab
         };
-        // An old session file has no remind key.
+        // An old file has `remind: true` (restores as important) or nothing;
+        // a newer build may have written an interval this build does not know.
         let json = serde_json::json!({
             "version": super::super::snapshot::SNAPSHOT_VERSION,
             "workspaces": [{
                 "id": "workspace",
                 "identity_cwd": cwd,
-                "tabs": [tab(Some(true)), tab(None), tab(Some(false))],
+                "tabs": [
+                    tab(serde_json::json!({"remind": true})),
+                    tab(serde_json::json!({})),
+                    tab(serde_json::json!({"important": true, "remind_every": "daily"})),
+                    tab(serde_json::json!({"remind_every": "30m"})),
+                    tab(serde_json::json!({"remind_every": "2h"})),
+                ],
             }],
             "active": 0,
             "selected": 0,
         });
         let snapshot: SessionSnapshot = serde_json::from_value(json).unwrap();
-        let marks: Vec<_> = snapshot.workspaces[0]
-            .tabs
-            .iter()
-            .map(|tab| tab.remind)
-            .collect();
-        assert_eq!(marks, [true, false, false]);
-        // Written only when true.
-        let written = serde_json::to_value(&snapshot).unwrap();
-        assert_eq!(written["workspaces"][0]["tabs"][0]["remind"], true);
-        assert!(written["workspaces"][0]["tabs"][1].get("remind").is_none());
-        assert!(written["workspaces"][0]["tabs"][2].get("remind").is_none());
+        assert_eq!(
+            snapshot.workspaces[0].tabs[4].remind_every,
+            Some(TabRemindInterval::Unknown)
+        );
 
         let (events, _event_rx) = mpsc::channel(4);
         let (workspaces, terminals, runtimes) = restore(
@@ -1486,15 +1491,38 @@ mod tests {
         );
         let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
 
-        let marks: Vec<_> = workspaces[0].tabs.iter().map(|tab| tab.remind).collect();
-        assert_eq!(marks, [true, false, false]);
-        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
-        let captured: Vec<_> = captured.workspaces[0]
+        let expected = [
+            (true, None),
+            (false, None),
+            (true, Some(TabRemindInterval::Daily)),
+            (false, Some(TabRemindInterval::M30)),
+            (false, None),
+        ];
+        let restored: Vec<_> = workspaces[0]
             .tabs
             .iter()
-            .map(|tab| tab.remind)
+            .map(|tab| (tab.important, tab.remind_every))
             .collect();
-        assert_eq!(captured, [true, false, false]);
+        assert_eq!(restored, expected);
+        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let captured_fields: Vec<_> = captured.workspaces[0]
+            .tabs
+            .iter()
+            .map(|tab| (tab.important, tab.remind_every))
+            .collect();
+        assert_eq!(captured_fields, expected);
+        // Written with `remind` too when important (an older build reads it),
+        // nothing when both are off.
+        let written = serde_json::to_value(&captured).unwrap();
+        let tabs = &written["workspaces"][0]["tabs"];
+        assert_eq!(tabs[2]["important"], true);
+        assert_eq!(tabs[2]["remind"], true);
+        assert_eq!(tabs[2]["remind_every"], "daily");
+        assert_eq!(tabs[3]["remind_every"], "30m");
+        assert!(tabs[3].get("remind").is_none());
+        for key in ["remind", "important", "remind_every"] {
+            assert!(tabs[1].get(key).is_none(), "{key}");
+        }
     }
 
     #[tokio::test]
@@ -1522,6 +1550,8 @@ mod tests {
                     custom_name: None,
                     color: None,
                     remind: false,
+                    important: false,
+                    remind_every: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -1707,6 +1737,8 @@ mod tests {
                     custom_name: None,
                     color: None,
                     remind: false,
+                    important: false,
+                    remind_every: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -1791,6 +1823,8 @@ mod tests {
                     custom_name: None,
                     color: None,
                     remind: false,
+                    important: false,
+                    remind_every: None,
                     layout: LayoutSnapshot::Split {
                         direction: super::super::snapshot::DirectionSnapshot::Horizontal,
                         ratio: 0.5,
@@ -1908,6 +1942,8 @@ mod tests {
                         custom_name: None,
                         color: None,
                         remind: false,
+                        important: false,
+                        remind_every: None,
                         layout: LayoutSnapshot::Pane(10),
                         panes: HashMap::from([pane_snap("10")]),
                         zoomed: false,
@@ -1918,6 +1954,8 @@ mod tests {
                         custom_name: None,
                         color: None,
                         remind: false,
+                        important: false,
+                        remind_every: None,
                         layout: LayoutSnapshot::Pane(11),
                         panes: HashMap::from([pane_snap("11")]),
                         zoomed: false,
@@ -1928,6 +1966,8 @@ mod tests {
                         custom_name: None,
                         color: None,
                         remind: false,
+                        important: false,
+                        remind_every: None,
                         layout: LayoutSnapshot::Pane(12),
                         panes: HashMap::from([pane_snap("12")]),
                         zoomed: false,
@@ -1938,6 +1978,8 @@ mod tests {
                         custom_name: None,
                         color: None,
                         remind: false,
+                        important: false,
+                        remind_every: None,
                         layout: LayoutSnapshot::Pane(13),
                         panes: HashMap::from([(13, final_pane)]),
                         zoomed: false,
@@ -1998,6 +2040,8 @@ mod tests {
                 custom_name: None,
                 color: None,
                 remind: false,
+                important: false,
+                remind_every: None,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
                     ratio: 0.5,
@@ -2039,6 +2083,8 @@ mod tests {
                     custom_name: None,
                     color: None,
                     remind: false,
+                    important: false,
+                    remind_every: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -2496,6 +2542,8 @@ mod tests {
                     custom_name: None,
                     color: None,
                     remind: false,
+                    important: false,
+                    remind_every: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes,
                     zoomed: false,

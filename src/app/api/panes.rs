@@ -976,7 +976,10 @@ impl App {
                 .custom_name
                 .clone(),
             previous_tab_color: self.state.workspaces[source_ws_idx].tabs[source_tab_idx].color,
-            previous_tab_remind: self.state.workspaces[source_ws_idx].tabs[source_tab_idx].remind,
+            previous_tab_important: self.state.workspaces[source_ws_idx].tabs[source_tab_idx]
+                .important,
+            previous_tab_remind_every: self.state.workspaces[source_ws_idx].tabs[source_tab_idx]
+                .remind_every,
             previous_worktree_space: self.state.workspaces[source_ws_idx].worktree_space.clone(),
             identity_cwd: self.state.workspaces[source_ws_idx].identity_cwd.clone(),
         };
@@ -1143,9 +1146,12 @@ impl App {
         let carried_tab_color = recovery_context
             .previous_tab_color
             .filter(|_| source_removed_tab_id.is_some());
-        // The idle reminder mark travels the same way.
-        let carried_tab_remind =
-            recovery_context.previous_tab_remind && source_removed_tab_id.is_some();
+        // The reminders travel the same way.
+        let carried_tab_important =
+            recovery_context.previous_tab_important && source_removed_tab_id.is_some();
+        let carried_tab_remind_every = recovery_context
+            .previous_tab_remind_every
+            .filter(|_| source_removed_tab_id.is_some());
         let source_workspace_empty = taken.workspace_empty;
         let moved = taken.moved;
         let cross_workspace = match &resolved {
@@ -1248,7 +1254,8 @@ impl App {
                     .get_mut(target_tab_idx)
                 {
                     tab.color = carried_tab_color;
-                    tab.remind = carried_tab_remind;
+                    tab.important = carried_tab_important;
+                    tab.remind_every = carried_tab_remind_every;
                 }
                 created_tab = true;
                 (target_ws_idx, target_tab_idx, moved_pane_id)
@@ -1272,7 +1279,8 @@ impl App {
                 );
                 if let Some(tab) = workspace.tabs.first_mut() {
                     tab.color = carried_tab_color;
-                    tab.remind = carried_tab_remind;
+                    tab.important = carried_tab_important;
+                    tab.remind_every = carried_tab_remind_every;
                 }
                 self.state.workspaces.push(workspace);
                 let target_ws_idx = self.state.workspaces.len() - 1;
@@ -1395,7 +1403,8 @@ impl App {
             );
             if let Some(tab) = self.state.workspaces[ws_idx].tabs.get_mut(tab_idx) {
                 tab.color = context.previous_tab_color;
-                tab.remind = context.previous_tab_remind;
+                tab.important = context.previous_tab_important;
+                tab.remind_every = context.previous_tab_remind_every;
             }
         } else {
             let mut workspace = crate::workspace::Workspace::from_existing_pane(
@@ -1411,7 +1420,8 @@ impl App {
             workspace.worktree_space = context.previous_worktree_space;
             if let Some(tab) = workspace.tabs.first_mut() {
                 tab.color = context.previous_tab_color;
-                tab.remind = context.previous_tab_remind;
+                tab.important = context.previous_tab_important;
+                tab.remind_every = context.previous_tab_remind_every;
             }
             let insert_idx = context.source_ws_idx.min(self.state.workspaces.len());
             if let Some(active) = self.state.active {
@@ -2187,7 +2197,8 @@ struct PaneMoveRecoveryContext {
     previous_workspace_label: Option<String>,
     previous_tab_label: Option<String>,
     previous_tab_color: Option<crate::api::schema::TabColor>,
-    previous_tab_remind: bool,
+    previous_tab_important: bool,
+    previous_tab_remind_every: Option<crate::api::schema::TabRemindInterval>,
     previous_worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
     identity_cwd: std::path::PathBuf,
 }
@@ -3746,7 +3757,8 @@ mod tests {
             previous_workspace_label: app.state.workspaces[0].custom_name.clone(),
             previous_tab_label: app.state.workspaces[0].tabs[0].custom_name.clone(),
             previous_tab_color: None,
-            previous_tab_remind: false,
+            previous_tab_important: false,
+            previous_tab_remind_every: None,
             previous_worktree_space: app.state.workspaces[0].worktree_space.clone(),
             identity_cwd: app.state.workspaces[0].identity_cwd.clone(),
         };

@@ -15,6 +15,7 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         "focus" => tab_focus(&args[1..]),
         "rename" => tab_rename(&args[1..]),
         "color" => tab_color(&args[1..]),
+        "important" => tab_important(&args[1..]),
         "remind" => tab_remind(&args[1..]),
         "close" => tab_close(&args[1..]),
         "help" | "--help" | "-h" => {
@@ -189,13 +190,13 @@ fn tab_color(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
-fn tab_remind(args: &[String]) -> std::io::Result<i32> {
-    const USAGE: &str = "usage: herdr tab remind <tab_id> <on|off>";
+fn tab_important(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr tab important <tab_id> <on|off>";
     let [raw_tab_id, raw_state] = args else {
         eprintln!("{USAGE}");
         return Ok(2);
     };
-    let remind = match raw_state.to_ascii_lowercase().as_str() {
+    let important = match raw_state.to_ascii_lowercase().as_str() {
         "on" => true,
         "off" => false,
         _ => {
@@ -204,12 +205,36 @@ fn tab_remind(args: &[String]) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    send_reminder(raw_tab_id, Some(important), None, "cli:tab:important")
+}
 
-    super::print_response(&super::send_request(&crate::api::schema::Request {
-        id: "cli:tab:remind".into(),
-        method: crate::api::schema::Method::TabSetRemind(crate::api::schema::TabSetRemindParams {
+fn tab_remind(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr tab remind <tab_id> <off|5m|10m|30m|1h|6h|daily>";
+    let [raw_tab_id, raw_every] = args else {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    let Some(every) = crate::api::schema::TabRemindEvery::from_name(raw_every) else {
+        eprintln!("expected off, 5m, 10m, 30m, 1h, 6h or daily: {raw_every}");
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    send_reminder(raw_tab_id, None, Some(every), "cli:tab:remind")
+}
+
+fn send_reminder(
+    raw_tab_id: &str,
+    important: Option<bool>,
+    every: Option<crate::api::schema::TabRemindEvery>,
+    id: &str,
+) -> std::io::Result<i32> {
+    use crate::api::schema::{Method, Request, TabSetReminderParams};
+    super::print_response(&super::send_request(&Request {
+        id: id.into(),
+        method: Method::TabSetReminder(TabSetReminderParams {
             tab_id: super::normalize_tab_id(raw_tab_id),
-            remind,
+            important,
+            every,
         }),
     })?)
 }
@@ -237,6 +262,28 @@ fn print_tab_help() {
     eprintln!("  herdr tab focus <tab_id>");
     eprintln!("  herdr tab rename <tab_id> <label>");
     eprintln!("  herdr tab color <tab_id> <red|orange|yellow|green|cyan|blue|purple|none>");
-    eprintln!("  herdr tab remind <tab_id> <on|off>");
+    eprintln!("  herdr tab important <tab_id> <on|off>");
+    eprintln!("  herdr tab remind <tab_id> <off|5m|10m|30m|1h|6h|daily>");
     eprintln!("  herdr tab close <tab_id>");
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::api::schema::TabRemindEvery;
+
+    #[test]
+    fn remind_intervals_parse_by_name() {
+        for (raw, every) in [
+            ("off", TabRemindEvery::Off),
+            ("5m", TabRemindEvery::M5),
+            ("10M", TabRemindEvery::M10),
+            ("30m", TabRemindEvery::M30),
+            ("1h", TabRemindEvery::H1),
+            ("6h", TabRemindEvery::H6),
+            ("Daily", TabRemindEvery::Daily),
+        ] {
+            assert_eq!(TabRemindEvery::from_name(raw), Some(every), "{raw}");
+        }
+        assert_eq!(TabRemindEvery::from_name("2h"), None);
+    }
 }

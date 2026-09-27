@@ -100,6 +100,8 @@ fn sound_notify_message(sound: crate::sound::Sound) -> &'static str {
     match sound {
         crate::sound::Sound::Done => "agent done",
         crate::sound::Sound::Request => "agent attention",
+        // Reminders are client-only; the server never sends one.
+        crate::sound::Sound::Reminder(_) => sound_notify_message(sound.base()),
     }
 }
 

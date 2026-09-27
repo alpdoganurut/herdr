@@ -48,6 +48,9 @@ pub(super) fn dispatch_client_shell_actions(
                 }
             }
             shell::ClientShellAction::ReplayMouse(events) => replay_mouse.extend(events),
+            shell::ClientShellAction::PreviewSound { path, fallback } => {
+                crate::sound::preview(path, fallback);
+            }
             shell::ClientShellAction::Keybind(action) => {
                 debug!(
                     ?action,

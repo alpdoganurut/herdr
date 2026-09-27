@@ -151,6 +151,8 @@ pub enum Method {
     TabSetColor(TabSetColorParams),
     #[serde(rename = "tab.set_remind")]
     TabSetRemind(TabSetRemindParams),
+    #[serde(rename = "tab.set_reminder")]
+    TabSetReminder(TabSetReminderParams),
     #[serde(rename = "pane.report_subagent")]
     PaneReportSubagent(PaneReportSubagentParams),
     #[serde(rename = "agent.prompt")]

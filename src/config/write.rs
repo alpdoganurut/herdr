@@ -5,6 +5,11 @@ pub(crate) enum ConfigEdit<'a> {
     Sound(bool),
     ToastDelivery(super::ToastDelivery),
     IdleReminderMinutes(u32),
+    /// Fork: set (`Some`) or remove (`None`) a `[ui.sound]` file key.
+    SoundFile {
+        key: &'static str,
+        path: Option<&'a str>,
+    },
 }
 
 impl ConfigEdit<'_> {
@@ -15,6 +20,7 @@ impl ConfigEdit<'_> {
             Self::Sound(_) => "sound setting",
             Self::ToastDelivery(_) => "toast setting",
             Self::IdleReminderMinutes(_) => "reminder setting",
+            Self::SoundFile { .. } => "sound setting",
         }
     }
 
@@ -50,6 +56,18 @@ impl ConfigEdit<'_> {
                 "idle_reminder_minutes",
                 &minutes.to_string(),
             ),
+            Self::SoundFile {
+                key,
+                path: Some(path),
+            } => super::upsert_section_value(
+                content,
+                "ui.sound",
+                key,
+                &toml::Value::String(path.to_owned()).to_string(),
+            ),
+            Self::SoundFile { key, path: None } => {
+                super::remove_section_key(content, "ui.sound", key)
+            }
         }
     }
 }
@@ -85,6 +103,30 @@ pub(crate) fn write_edit(edit: ConfigEdit<'_>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sound_file_edit_writes_and_removes_the_sound_key() {
+        let content = "[ui.sound]\nenabled = true\n";
+        let edited = ConfigEdit::SoundFile {
+            key: "reminder_path",
+            path: Some("/System/Library/Sounds/Glass.aiff"),
+        }
+        .apply(content);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(
+            config.ui.sound.reminder_path.as_deref(),
+            Some(std::path::Path::new("/System/Library/Sounds/Glass.aiff"))
+        );
+        assert!(config.ui.sound.enabled);
+        let edited = ConfigEdit::SoundFile {
+            key: "reminder_path",
+            path: None,
+        }
+        .apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.ui.sound.reminder_path, None);
+        assert!(!edited.contains("reminder_path"));
+    }
 
     #[test]
     fn idle_reminder_minutes_edit_writes_the_ui_key_and_parses_back() {
