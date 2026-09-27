@@ -2171,6 +2171,180 @@ fn working_tab_with_subagents_shows_the_subagent_icon() {
     }
 }
 
+fn status_segment(text: &str) -> crate::protocol::ClientShellTabStatusSegment {
+    crate::protocol::ClientShellTabStatusSegment {
+        text: text.into(),
+        accent: false,
+    }
+}
+
+/// A two-space snapshot whose tab bar status reads `host · 12:00`.
+fn status_snapshot() -> ClientShellSnapshot {
+    let mut snapshot = two_space_snapshot();
+    snapshot.tab_bar_right = vec![status_segment("host"), status_segment("12:00")];
+    snapshot.tab_bar_right_separator = " · ".into();
+    snapshot
+}
+
+fn composed(config: &Config, snapshot: ClientShellSnapshot) -> (ClientShellState, FrameData) {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(wide_surface());
+    let frame = state.compose(106, 20).expect("composed frame");
+    (state, frame)
+}
+
+/// The status row sits directly under the list body.
+fn status_row(state: &ClientShellState, frame: &FrameData) -> String {
+    let body = state.hits.agent_body;
+    row_text(
+        frame,
+        ratatui::layout::Rect::new(body.x, body.bottom(), body.width, 1),
+    )
+}
+
+#[test]
+fn tabs_sidebar_footer_shows_the_tab_bar_status_with_its_separator() {
+    let (plain, _) = composed(&tabs_config(), two_space_snapshot());
+    let (state, frame) = composed(&tabs_config(), status_snapshot());
+    let footer = status_row(&state, &frame);
+    assert_eq!(footer.trim_end(), " host · 12:00", "{footer:?}");
+    assert_eq!(
+        state.hits.agent_body.height + 1,
+        plain.hits.agent_body.height,
+        "the footer takes one row off the list"
+    );
+    let cell = frame.cells
+        [(state.hits.agent_body.bottom() * frame.width + state.hits.agent_body.x + 1) as usize]
+        .clone();
+    assert_eq!(
+        cell.fg,
+        crate::protocol::color_to_u32(state.config.palette.overlay1),
+        "dim secondary text"
+    );
+    assert_eq!(
+        frame_rows(&frame)
+            .iter()
+            .filter(|row| row.contains("host"))
+            .count(),
+        1,
+        "only the footer shows the status in the tabs layout"
+    );
+
+    // A same-width status update repaints the footer.
+    let mut state = state;
+    let mut replacement = status_snapshot();
+    replacement.revision = 2;
+    replacement.tab_bar_right[1].text = "12:01".into();
+    let mut surface = wide_surface();
+    surface.projection_revision = 2;
+    state.set_snapshot(Box::new(replacement));
+    state.set_pane_surface(surface);
+    let frame = state.compose(106, 20).expect("updated frame");
+    assert_eq!(status_row(&state, &frame).trim_end(), " host · 12:01");
+}
+
+#[test]
+fn tabs_sidebar_without_status_segments_keeps_the_full_list_height() {
+    let (state, frame) = composed(&tabs_config(), two_space_snapshot());
+    // 20 rows: one toolbar row and one menu row around the list.
+    assert_eq!(state.hits.agent_body.height, 18);
+    assert_eq!(state.hits.agent_body.bottom(), 19);
+    let menu_row = status_row(&state, &frame);
+    assert!(
+        menu_row.trim_start().starts_with("men"),
+        "the row under the list is the menu row: {menu_row:?}"
+    );
+
+    // Segments without text do not open the footer either.
+    let mut empty = two_space_snapshot();
+    empty.tab_bar_right = vec![status_segment("")];
+    empty.tab_bar_right_separator = " · ".into();
+    let (state, _) = composed(&tabs_config(), empty);
+    assert_eq!(state.hits.agent_body.height, 18);
+}
+
+#[test]
+fn tabs_sidebar_footer_truncates_long_status_with_an_ellipsis() {
+    let mut snapshot = status_snapshot();
+    snapshot.tab_bar_right[1] = status_segment(&"x".repeat(200));
+    let (state, frame) = composed(&tabs_config(), snapshot);
+    let body = state.hits.agent_body;
+    let footer = status_row(&state, &frame);
+    assert!(footer.starts_with(" host · xxx"), "{footer:?}");
+    assert_eq!(
+        footer.chars().nth(usize::from(body.width) - 2),
+        Some('…'),
+        "{footer:?}"
+    );
+    assert_eq!(
+        footer.chars().last(),
+        Some(' '),
+        "one-cell right margin: {footer:?}"
+    );
+}
+
+#[test]
+fn tabs_sidebar_footer_never_hides_the_last_tab() {
+    let mut snapshot = status_snapshot();
+    snapshot.tabs = (1..=40)
+        .map(|number| {
+            tab(
+                &format!("tab_{number}"),
+                "ws_1",
+                number,
+                &format!("t{number}"),
+                number == 1,
+                AgentStatus::Idle,
+            )
+        })
+        .collect();
+    // No group header after the bucket: tab_40 is the list's last row.
+    snapshot.workspaces.truncate(1);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(wide_surface());
+    state.compose(106, 20).expect("first frame");
+    let body = state.hits.agent_body;
+    assert_eq!(body.height, 17, "toolbar, footer and menu rows");
+    assert!(state.hits.agent_max_scroll > 0);
+
+    // Scroll to the end: the last tab is the list's last visible row.
+    state.agent_scroll = usize::MAX;
+    let frame = state.compose(106, 20).expect("scrolled frame");
+    let (last_rect, last_id) = state
+        .hits
+        .sidebar_tabs
+        .last()
+        .expect("visible rows")
+        .clone();
+    assert_eq!(last_id, "tab_40");
+    assert_eq!(last_rect.y, body.bottom() - 1);
+    assert!(row_text(&frame, last_rect).contains("t40"));
+    assert!(state
+        .hits
+        .sidebar_tabs
+        .iter()
+        .all(|(rect, _)| rect.bottom() <= body.bottom()));
+    assert_eq!(state.hits.sidebar_tabs.len(), usize::from(body.height));
+    assert_eq!(status_row(&state, &frame).trim_end(), " host · 12:00");
+}
+
+#[test]
+fn spaces_layout_keeps_the_status_in_the_tab_bar() {
+    let (state, frame) = composed(&Config::default(), status_snapshot());
+    let rows = frame_rows(&frame);
+    assert!(rows[0].contains("host · 12:00"), "{:?}", rows[0]);
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.contains("host · 12:00"))
+            .count(),
+        1,
+        "only the tab bar shows it"
+    );
+    assert!(state.hits.sidebar_tabs.is_empty());
+}
+
 /// Fork smoke tests: FORK.md section 10 lists them by name and the sync gate
 /// runs them with `-E 'test(fork_smoke)'`.
 mod fork_smoke {
@@ -2283,5 +2457,14 @@ mod fork_smoke {
         );
         let fgs = text_fgs(&frame, row, "notes");
         assert!(fgs.iter().all(|fg| *fg == green), "{fgs:?}");
+    }
+
+    /// The tab bar's status segments reach the tabs-layout footer. An
+    /// upstream change to how the snapshot carries `ui.tab_bar_right` would
+    /// silently empty the footer without any merge conflict.
+    #[test]
+    fn tab_bar_status_reaches_the_tabs_sidebar_footer() {
+        let (state, frame) = composed(&tabs_config(), status_snapshot());
+        assert_eq!(status_row(&state, &frame).trim_end(), " host · 12:00");
     }
 }

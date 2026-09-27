@@ -16,6 +16,10 @@
 //! agent panel's scroll state and hit rectangles (`agent_body`,
 //! `agent_scrollbar`, `agent_scroll`) so wheel and scrollbar handling need no
 //! new plumbing.
+//!
+//! The horizontal tab bar is hidden in this layout, so its `ui.tab_bar_right`
+//! status segments show as one dim row under the list, above the menu row,
+//! and only while at least one segment has text.
 
 use ratatui::{
     buffer::Buffer,
@@ -30,6 +34,8 @@ use super::*;
 
 const TOOLBAR_ROWS: u16 = 1;
 const FOOTER_ROWS: u16 = 1;
+/// The `ui.tab_bar_right` status row between the list and the menu row.
+const STATUS_ROWS: u16 = 1;
 /// Toolbar glyphs: the fold toggle shows the action it will take.
 pub(super) const FOLD_ALL_LABEL: &str = "\u{23F6}"; // ⏶ black medium up-pointing triangle
 pub(super) const UNFOLD_ALL_LABEL: &str = "\u{23F7}"; // ⏷ black medium down-pointing triangle
@@ -154,12 +160,27 @@ pub(super) fn render_tab_sidebar(
         hits,
     );
 
+    let status_rows = if content.height > TOOLBAR_ROWS + FOOTER_ROWS
+        && snapshot
+            .tab_bar_right
+            .iter()
+            .any(|segment| !segment.text.is_empty())
+    {
+        STATUS_ROWS
+    } else {
+        0
+    };
     let body = Rect::new(
         content.x,
         content.y.saturating_add(TOOLBAR_ROWS),
         content.width,
-        content.height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS),
+        content
+            .height
+            .saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS + status_rows),
     );
+    if status_rows > 0 {
+        render_tab_status_footer(buffer, content, body.bottom(), snapshot, palette);
+    }
     hits.agent_body = body;
     // The space drag machinery reads these as the list bounds.
     hits.workspace_body = body;
@@ -340,6 +361,34 @@ pub(super) fn render_tab_sidebar(
         hits.sidebar_toggle.width,
         "«",
         Style::default().fg(palette.overlay0),
+    );
+}
+
+/// The tab bar's status segments joined with the configured separator, dim,
+/// with the rows' one-cell margins and truncated from the right with `…`.
+fn render_tab_status_footer(
+    buffer: &mut Buffer,
+    content: Rect,
+    y: u16,
+    snapshot: &ClientShellSnapshot,
+    palette: &Palette,
+) {
+    let joined = snapshot
+        .tab_bar_right
+        .iter()
+        .filter(|segment| !segment.text.is_empty())
+        .map(|segment| segment.text.as_str())
+        .collect::<Vec<_>>()
+        .join(&snapshot.tab_bar_right_separator);
+    let width = content.width.saturating_sub(2);
+    let text = crate::ui::truncate_end(&joined, usize::from(width));
+    put_text(
+        buffer,
+        content.x.saturating_add(1),
+        y,
+        width,
+        &text,
+        Style::default().fg(palette.overlay1),
     );
 }
 
