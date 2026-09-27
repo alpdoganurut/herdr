@@ -1568,6 +1568,8 @@ impl ClientShellState {
                             || left.zoomed != right.zoomed
                     })
                 || render::tab_bar_status_width(current) != render::tab_bar_status_width(&snapshot)
+                || tab_sidebar::status_footer_lines(current).len()
+                    != tab_sidebar::status_footer_lines(&snapshot).len()
         });
         if self
             .snapshot

@@ -2345,6 +2345,209 @@ fn spaces_layout_keeps_the_status_in_the_tab_bar() {
     assert!(state.hits.sidebar_tabs.is_empty());
 }
 
+/// A status whose command entry keeps three lines with SGR colors, after a
+/// plain `host` segment: `host · <truecolor>ok` / `<256>warn` / `<basic>err`.
+fn multi_line_status_snapshot() -> ClientShellSnapshot {
+    let mut snapshot = two_space_snapshot();
+    snapshot.tab_bar_right = vec![
+        status_segment("host"),
+        status_segment(
+            "\x1b[1;38;2;10;20;30mok\x1b[0m\n\x1b[38;5;208mwarn\x1b[39m plain\n\x1b[2;31merr\x1b[22m norm",
+        ),
+    ];
+    snapshot.tab_bar_right_separator = " · ".into();
+    snapshot
+}
+
+/// The footer rows from the list's bottom edge down.
+fn status_rows(state: &ClientShellState, frame: &FrameData, count: u16) -> Vec<String> {
+    let body = state.hits.agent_body;
+    (0..count)
+        .map(|row| {
+            row_text(
+                frame,
+                ratatui::layout::Rect::new(body.x, body.bottom() + row, body.width, 1),
+            )
+        })
+        .collect()
+}
+
+fn cell_at(
+    frame: &FrameData,
+    area: ratatui::layout::Rect,
+    needle: &str,
+) -> crate::protocol::CellData {
+    let (x, y) = cell_symbol_position(frame, area, needle);
+    frame.cells[(y * frame.width + x) as usize].clone()
+}
+
+#[test]
+fn tabs_sidebar_footer_draws_one_row_per_status_line_in_its_sgr_styles() {
+    use ratatui::style::{Color, Modifier};
+    let (plain, _) = composed(&tabs_config(), two_space_snapshot());
+    let (state, frame) = composed(&tabs_config(), multi_line_status_snapshot());
+    let body = state.hits.agent_body;
+    assert_eq!(body.height + 3, plain.hits.agent_body.height);
+    let rows = status_rows(&state, &frame, 4);
+    assert_eq!(rows[0].trim_end(), " host · ok", "{rows:?}");
+    assert_eq!(rows[1].trim_end(), " warn plain", "{rows:?}");
+    assert_eq!(rows[2].trim_end(), " err norm", "{rows:?}");
+    assert!(rows[3].trim_start().starts_with("men"), "{rows:?}");
+    assert!(
+        frame_rows(&frame)
+            .iter()
+            .all(|row| !row.contains('\x1b') && !row.contains("[3")),
+        "no raw escapes reach the frame"
+    );
+
+    let footer = ratatui::layout::Rect::new(body.x, body.bottom(), body.width, 3);
+    let dim = crate::protocol::color_to_u32(state.config.palette.overlay1);
+    let host = cell_at(&frame, footer, "host");
+    assert_eq!(host.fg, dim, "unstyled text keeps the footer's dim style");
+    let ok = cell_at(&frame, footer, "ok");
+    assert_eq!(ok.fg, crate::protocol::color_to_u32(Color::Rgb(10, 20, 30)));
+    assert_eq!(ok.modifier & Modifier::BOLD.bits(), Modifier::BOLD.bits());
+    let warn = cell_at(&frame, footer, "warn");
+    assert_eq!(warn.fg, crate::protocol::color_to_u32(Color::Indexed(208)));
+    assert_eq!(
+        warn.modifier & Modifier::BOLD.bits(),
+        0,
+        "each row starts unstyled"
+    );
+    assert_eq!(
+        cell_at(&frame, footer, "plain").fg,
+        dim,
+        "39 restores the dim fg"
+    );
+    let err = cell_at(&frame, footer, "err");
+    assert_eq!(err.fg, crate::protocol::color_to_u32(Color::Red));
+    assert_eq!(err.modifier & Modifier::DIM.bits(), Modifier::DIM.bits());
+    let norm = cell_at(&frame, footer, "norm");
+    assert_eq!(norm.fg, crate::protocol::color_to_u32(Color::Red));
+    assert_eq!(norm.modifier & (Modifier::DIM | Modifier::BOLD).bits(), 0);
+}
+
+#[test]
+fn tabs_sidebar_footer_truncates_each_styled_row_with_an_ellipsis() {
+    let mut snapshot = two_space_snapshot();
+    snapshot.tab_bar_right = vec![status_segment(&format!(
+        "short\n\x1b[32m{}\x1b[0m{}",
+        "g".repeat(5),
+        "x".repeat(200)
+    ))];
+    let (state, frame) = composed(&tabs_config(), snapshot);
+    let body = state.hits.agent_body;
+    let rows = status_rows(&state, &frame, 2);
+    assert_eq!(rows[0].trim_end(), " short");
+    assert_eq!(
+        rows[1].chars().nth(usize::from(body.width) - 2),
+        Some('…'),
+        "{:?}",
+        rows[1]
+    );
+    assert_eq!(rows[1].chars().last(), Some(' '), "one-cell right margin");
+    assert!(rows[1].starts_with(&format!(" {}x", "g".repeat(5))));
+    let footer = ratatui::layout::Rect::new(body.x, body.bottom(), body.width, 2);
+    assert_eq!(
+        cell_at(&frame, footer, "ggg").fg,
+        crate::protocol::color_to_u32(ratatui::style::Color::Green)
+    );
+    assert_eq!(
+        cell_at(&frame, footer, "…").fg,
+        crate::protocol::color_to_u32(state.config.palette.overlay1),
+        "the ellipsis takes the style of the text it cuts"
+    );
+}
+
+#[test]
+fn tabs_sidebar_footer_skips_empty_lines_and_caps_at_four_rows() {
+    let mut snapshot = two_space_snapshot();
+    snapshot.tab_bar_right = vec![status_segment("a\n\n\x1b[31m\x1b[0m\n  \nb")];
+    let (plain, _) = composed(&tabs_config(), two_space_snapshot());
+    let (state, frame) = composed(&tabs_config(), snapshot);
+    assert_eq!(
+        state.hits.agent_body.height + 2,
+        plain.hits.agent_body.height
+    );
+    let rows = status_rows(&state, &frame, 2);
+    assert_eq!(rows[0].trim_end(), " a");
+    assert_eq!(rows[1].trim_end(), " b");
+
+    let mut snapshot = two_space_snapshot();
+    snapshot.tab_bar_right = vec![status_segment("1\n2\n3\n4"), status_segment("5\n6")];
+    let (state, frame) = composed(&tabs_config(), snapshot);
+    assert_eq!(
+        state.hits.agent_body.height + 4,
+        plain.hits.agent_body.height
+    );
+    let rows = status_rows(&state, &frame, 4);
+    assert_eq!(
+        rows.iter().map(|row| row.trim()).collect::<Vec<_>>(),
+        vec!["1", "2", "3", "4 5"]
+    );
+}
+
+#[test]
+fn tabs_sidebar_multi_line_footer_never_hides_the_last_tab() {
+    let mut snapshot = multi_line_status_snapshot();
+    snapshot.tabs = (1..=40)
+        .map(|number| {
+            tab(
+                &format!("tab_{number}"),
+                "ws_1",
+                number,
+                &format!("t{number}"),
+                number == 1,
+                AgentStatus::Idle,
+            )
+        })
+        .collect();
+    snapshot.workspaces.truncate(1);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(wide_surface());
+    state.compose(106, 20).expect("first frame");
+    let body = state.hits.agent_body;
+    assert_eq!(
+        body.height, 15,
+        "toolbar, three footer rows and the menu row"
+    );
+
+    state.agent_scroll = usize::MAX;
+    let frame = state.compose(106, 20).expect("scrolled frame");
+    let (last_rect, last_id) = state
+        .hits
+        .sidebar_tabs
+        .last()
+        .expect("visible rows")
+        .clone();
+    assert_eq!(last_id, "tab_40");
+    assert_eq!(last_rect.y, body.bottom() - 1);
+    assert!(row_text(&frame, last_rect).contains("t40"));
+    assert_eq!(state.hits.sidebar_tabs.len(), usize::from(body.height));
+    assert_eq!(status_rows(&state, &frame, 1)[0].trim_end(), " host · ok");
+}
+
+#[test]
+fn spaces_tab_bar_shows_a_multi_line_segment_as_its_last_line_without_escapes() {
+    let (_, frame) = composed(&Config::default(), multi_line_status_snapshot());
+    let rows = frame_rows(&frame);
+    assert!(rows[0].contains("host · err norm"), "{:?}", rows[0]);
+    assert!(
+        rows.iter()
+            .all(|row| !row.contains('\x1b') && !row.contains("warn") && !row.contains("[2")),
+        "{rows:?}"
+    );
+    assert_eq!(
+        super::super::tab_sidebar::single_line_status_text("plain"),
+        std::borrow::Cow::Borrowed("plain")
+    );
+    assert_eq!(
+        super::super::tab_sidebar::single_line_status_text("\x1b[31mred\x1b[0m"),
+        "red"
+    );
+}
+
 /// Fork smoke tests: FORK.md section 10 lists them by name and the sync gate
 /// runs them with `-E 'test(fork_smoke)'`.
 mod fork_smoke {
@@ -2466,5 +2669,27 @@ mod fork_smoke {
     fn tab_bar_status_reaches_the_tabs_sidebar_footer() {
         let (state, frame) = composed(&tabs_config(), status_snapshot());
         assert_eq!(status_row(&state, &frame).trim_end(), " host · 12:00");
+    }
+
+    /// A command entry's multi-line SGR output (`lines`, `ansi`) travels as
+    /// one `\n`-joined segment string; the footer must split it into rows and
+    /// color them. An upstream change to the segment text path (sanitizing,
+    /// joining or drawing it) would flatten or drop the color silently.
+    #[test]
+    fn colored_multi_line_status_reaches_the_footer_in_color() {
+        let (state, frame) = composed(&tabs_config(), multi_line_status_snapshot());
+        let body = state.hits.agent_body;
+        let footer = ratatui::layout::Rect::new(body.x, body.bottom(), body.width, 3);
+        assert_eq!(
+            status_rows(&state, &frame, 3)
+                .iter()
+                .map(|row| row.trim_end())
+                .collect::<Vec<_>>(),
+            vec![" host · ok", " warn plain", " err norm"]
+        );
+        assert_eq!(
+            cell_at(&frame, footer, "warn").fg,
+            crate::protocol::color_to_u32(ratatui::style::Color::Indexed(208))
+        );
     }
 }

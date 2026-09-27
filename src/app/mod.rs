@@ -1118,6 +1118,8 @@ mod tests {
                 command: "status".into(),
                 interval_seconds: 5,
                 timeout_seconds: 2,
+                lines: 1,
+                ansi: false,
             }],
             " ",
         );
