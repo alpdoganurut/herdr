@@ -877,14 +877,17 @@ pub(super) struct ClientPendingNotification {
     pub(super) deadline: std::time::Instant,
     pub(super) expires_at: std::time::Instant,
     pub(super) validate_state: bool,
-    /// Fork: an idle reminder, which plays `Sound::Reminder`.
-    pub(super) reminder: bool,
+    /// Fork: the reminder that raised it, if any; plays `Sound::Reminder`.
+    pub(super) reminder: Option<super::idle_reminders::ClientReminderKind>,
 }
 
 pub(super) struct ClientVisibleNotification {
     pub(super) endpoint_id: ClientEndpointId,
     pub(super) event: SemanticNotification,
     pub(super) deadline: std::time::Instant,
+    /// Fork: the reminder that raised it, if any; its card shows the
+    /// reminder's marker instead of the dot.
+    pub(super) reminder: Option<super::idle_reminders::ClientReminderKind>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

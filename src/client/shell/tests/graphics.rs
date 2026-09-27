@@ -130,6 +130,7 @@ fn notifications_and_clipboard_feedback_only_cover_their_drawn_corners() {
                         position: Some(position),
                     },
                     deadline: std::time::Instant::now(),
+                    reminder: None,
                 });
             state.compose(cols, rows).unwrap();
             let rect = state.hits.notification_toast;

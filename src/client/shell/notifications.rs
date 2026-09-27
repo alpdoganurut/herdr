@@ -93,7 +93,7 @@ pub(super) fn render_mobile_notification_banner(
             palette.accent
         }
     };
-    render_mobile_notice_banner(
+    let rect = render_mobile_notice_banner(
         buffer,
         area,
         &title,
@@ -101,7 +101,42 @@ pub(super) fn render_mobile_notification_banner(
         dot_color,
         offset_for_warning,
         palette,
-    )
+    );
+    // Fork: the dot is the second cell of the banner.
+    put_notification_glyph(buffer, rect, rect.x.saturating_add(1), rect.y, notification);
+    rect
+}
+
+/// Fork: the one-cell glyph a card shows in place of its `●`: the reminder's
+/// marker (`★` important, `◷` scheduled), `✓` for a finished agent, `×` for
+/// one that needs attention; `None` keeps the dot (updates, custom notices).
+pub(super) fn notification_glyph(notification: &ClientVisibleNotification) -> Option<&'static str> {
+    if let Some(reminder) = notification.reminder {
+        return Some(reminder.glyph());
+    }
+    match notification.event.kind {
+        SemanticNotificationKind::Finished => Some("\u{2713}"),
+        SemanticNotificationKind::NeedsAttention => Some("\u{00D7}"),
+        SemanticNotificationKind::UpdateInstalled | SemanticNotificationKind::Custom => None,
+    }
+}
+
+/// Fork: swap the dot drawn at (`x`, `y`) inside `rect` for the card's glyph,
+/// keeping the dot's style (so its color).
+fn put_notification_glyph(
+    buffer: &mut Buffer,
+    rect: Rect,
+    x: u16,
+    y: u16,
+    notification: &ClientVisibleNotification,
+) {
+    let Some(glyph) = notification_glyph(notification) else {
+        return;
+    };
+    let inside = x < rect.right() && y < rect.bottom() && buffer.area.contains((x, y).into());
+    if inside && buffer[(x, y)].symbol() == "\u{25CF}" {
+        buffer[(x, y)].set_symbol(glyph);
+    }
 }
 
 pub(super) fn render_notification_card(
@@ -193,7 +228,7 @@ pub(super) fn render_visible_notification(
             palette.accent
         }
     };
-    render_notification_card(
+    let rect = render_notification_card(
         buffer,
         area,
         &event.title,
@@ -202,7 +237,16 @@ pub(super) fn render_visible_notification(
         top_offset,
         dot_color,
         palette,
-    )
+    );
+    // Fork: the dot is the first cell inside the card's border.
+    put_notification_glyph(
+        buffer,
+        rect,
+        rect.x.saturating_add(1),
+        rect.y.saturating_add(1),
+        notification,
+    );
+    rect
 }
 
 fn notification_corner(position: crate::config::ToastHerdrPosition) -> usize {
@@ -335,6 +379,126 @@ mod tests {
                 position: None,
             },
             deadline: std::time::Instant::now(),
+            reminder: None,
+        }
+    }
+
+    /// The glyph cell of a card drawn by `render_visible_notification`, and of
+    /// the mobile banner: (symbol, fg).
+    fn drawn_glyphs(
+        notification: &ClientVisibleNotification,
+    ) -> [(String, ratatui::style::Color); 2] {
+        let palette = crate::app::client_palette_from_config(&Config::default());
+        let area = Rect::new(0, 0, 60, 12);
+        let mut buffer = Buffer::empty(area);
+        let rect = render_visible_notification(
+            &mut buffer,
+            area,
+            notification,
+            crate::config::ToastHerdrPosition::TopLeft,
+            0,
+            &palette,
+        );
+        let card = &buffer[(rect.x + 1, rect.y + 1)];
+        let card = (card.symbol().to_string(), card.fg);
+        let mut buffer = Buffer::empty(area);
+        let rect =
+            render_mobile_notification_banner(&mut buffer, area, notification, false, &palette);
+        let banner = &buffer[(rect.x + 1, rect.y)];
+        [card, (banner.symbol().to_string(), banner.fg)]
+    }
+
+    #[test]
+    fn each_notification_kind_shows_its_glyph_in_its_color() {
+        use super::super::idle_reminders::ClientReminderKind;
+        let palette = crate::app::client_palette_from_config(&Config::default());
+        let card = |kind, reminder| {
+            let mut card = notification();
+            card.event.kind = kind;
+            card.event.title = "planner".into();
+            card.event.body = Some("claude · backend".into());
+            card.reminder = reminder;
+            card
+        };
+        for (kind, reminder, glyph, color) in [
+            (
+                SemanticNotificationKind::Finished,
+                None,
+                "\u{2713}",
+                palette.blue,
+            ),
+            (
+                SemanticNotificationKind::NeedsAttention,
+                None,
+                "\u{00D7}",
+                palette.red,
+            ),
+            (
+                SemanticNotificationKind::Finished,
+                Some(ClientReminderKind::Important),
+                "\u{2605}",
+                palette.blue,
+            ),
+            (
+                SemanticNotificationKind::NeedsAttention,
+                Some(ClientReminderKind::Important),
+                "\u{2605}",
+                palette.red,
+            ),
+            (
+                SemanticNotificationKind::Custom,
+                Some(ClientReminderKind::Scheduled),
+                "\u{25F7}",
+                palette.accent,
+            ),
+            (
+                SemanticNotificationKind::Custom,
+                None,
+                "\u{25CF}",
+                palette.accent,
+            ),
+            (
+                SemanticNotificationKind::UpdateInstalled,
+                None,
+                "\u{25CF}",
+                palette.accent,
+            ),
+        ] {
+            let drawn = drawn_glyphs(&card(kind, reminder));
+            for (symbol, fg) in drawn {
+                assert_eq!(
+                    (symbol.as_str(), fg),
+                    (glyph, color),
+                    "{kind:?} {reminder:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_glyph_keeps_the_card_width() {
+        use super::super::idle_reminders::ClientReminderKind;
+        let palette = crate::app::client_palette_from_config(&Config::default());
+        let area = Rect::new(0, 0, 60, 12);
+        let width = |reminder| {
+            let mut card = notification();
+            card.event.kind = SemanticNotificationKind::Finished;
+            card.event.title = "planner finished 10 min ago".into();
+            card.reminder = reminder;
+            let mut buffer = Buffer::empty(area);
+            render_visible_notification(
+                &mut buffer,
+                area,
+                &card,
+                crate::config::ToastHerdrPosition::TopLeft,
+                0,
+                &palette,
+            )
+            .width
+        };
+        assert_eq!(width(None), width(Some(ClientReminderKind::Important)));
+        for glyph in ["\u{2713}", "\u{00D7}", "\u{2605}", "\u{25F7}"] {
+            assert_eq!(unicode_width::UnicodeWidthStr::width(glyph), 1, "{glyph}");
         }
     }
 
@@ -384,6 +548,7 @@ mod tests {
                     position: None,
                 },
                 deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+                reminder: None,
             });
         let mut outcome = ClientShellInput::default();
 

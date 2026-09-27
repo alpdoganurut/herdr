@@ -356,6 +356,7 @@ fn retiring_an_endpoint_drops_only_its_cards() {
                 endpoint_id,
                 event: custom(title),
                 deadline: std::time::Instant::now(),
+                reminder: None,
             });
     }
 

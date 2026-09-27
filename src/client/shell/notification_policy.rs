@@ -237,7 +237,7 @@ impl ClientShellState {
             deadline,
             expires_at: now.checked_add(COMPLETION_EVIDENCE_GRACE).unwrap_or(now),
             validate_state,
-            reminder: false,
+            reminder: None,
         });
         let (effects, repaint) = self.tick_notifications(now);
         (effects, repaint || cleared_visible)
@@ -332,7 +332,7 @@ impl ClientShellState {
                     pending.event.kind == SemanticNotificationKind::Finished && suppress_external;
                 if !suppress_sound {
                     use crate::sound::{ReminderBase, Sound};
-                    let sound = match (sound, pending.reminder) {
+                    let sound = match (sound, pending.reminder.is_some()) {
                         (SemanticNotificationSound::Done, false) => Sound::Done,
                         (SemanticNotificationSound::Request, false) => Sound::Request,
                         (SemanticNotificationSound::Done, true) => {
@@ -357,6 +357,7 @@ impl ClientShellState {
                             endpoint_id: pending.endpoint_id,
                             event: pending.event,
                             deadline: now,
+                            reminder: pending.reminder,
                         },
                         now,
                     );
