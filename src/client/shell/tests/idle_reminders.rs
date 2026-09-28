@@ -727,7 +727,7 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
             ClientContextMenuAction::Color
         ]
     );
-    assert_eq!(items[close + 1].label, "\u{2713} important");
+    assert_eq!(items[close + 1].label, "Important \u{2713}");
     assert_eq!(
         menu_remind(&state).1,
         ClientTabMenuRemind {
@@ -750,9 +750,22 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
         assert_eq!(options[column].0.x, options[column + 3].0.x);
     }
 
+    let on_width = state.hits.context_menu_rows[0].0.width;
+    let important_row = state.hits.context_menu_rows[close + 1].0;
+    assert!(
+        row_text(&frame, important_row).starts_with("Important \u{2713} "),
+        "label, one space, the check: {:?}",
+        row_text(&frame, important_row)
+    );
+
     let mut state = tabs_state(waiting_snapshot(AgentStatus::Done, false));
     let items = open_tab_menu(&mut state, 1);
-    assert!(items.iter().any(|item| item.label == "  important"));
+    assert!(items.iter().any(|item| item.label == "Important"));
+    state.compose(106, 20).expect("menu frame");
+    assert_eq!(
+        state.hits.context_menu_rows[0].0.width, on_width,
+        "the check does not widen the menu"
+    );
 }
 
 #[test]
@@ -1041,8 +1054,8 @@ fn reminders_section_lists_every_choice_and_checks_the_configured_one() {
     }
     assert_eq!(
         state.hits.settings_choices.len(),
-        6,
-        "every choice is drawn"
+        7,
+        "every choice is drawn, then the daily time row"
     );
 
     // A configured value outside the list shows first, as custom.
@@ -1057,7 +1070,11 @@ fn reminders_section_lists_every_choice_and_checks_the_configured_one() {
     let text = frame_rows(&frame).join("\n");
     assert!(text.contains("custom: 45 min ✓"), "{text}");
     assert!(text.contains("60 min"), "{text}");
-    assert_eq!(state.hits.settings_choices.len(), 7);
+    assert_eq!(state.hits.settings_choices.len(), 8);
+    assert!(
+        text.contains("daily at 09:30"),
+        "the daily row still fits: {text}"
+    );
 }
 
 #[test]
@@ -1321,6 +1338,175 @@ fn reminder_cards_carry_which_reminder_raised_them() {
         t0,
     );
     assert_eq!(reminder_of(&state), None);
+}
+
+#[test]
+fn changing_the_daily_time_moves_the_next_firing_without_firing_now() {
+    let t0 = Instant::now();
+    let mut state = seen_state(scheduled_snapshot(TabRemindInterval::Daily));
+    // Seen at 10:00: today's 09:30 fires once.
+    state.reminder_local_time = Some(local(27, 10, 0));
+    assert_eq!(sounds(&state.tick_notifications(t0).0).len(), 1);
+
+    // Moved to 15:00 at 12:00: still ahead today, so it fires at 15:00.
+    state.config.daily_reminder_minutes = 15 * 60;
+    state.reminder_local_time = Some(local(27, 12, 0));
+    assert!(state.tick_notifications(t0 + MINUTE).0.is_empty());
+    state.reminder_local_time = Some(local(27, 14, 59));
+    assert!(state.tick_notifications(t0 + 2 * MINUTE).0.is_empty());
+    state.reminder_local_time = Some(local(27, 15, 0));
+    assert_eq!(
+        sounds(&state.tick_notifications(t0 + 3 * MINUTE).0).len(),
+        1
+    );
+
+    // Moved to 08:00 at 16:00: already past, so nothing until tomorrow 08:00.
+    state.config.daily_reminder_minutes = 8 * 60;
+    state.reminder_local_time = Some(local(27, 16, 0));
+    assert!(state.tick_notifications(t0 + 4 * MINUTE).0.is_empty());
+    state.reminder_local_time = Some(local(27, 23, 0));
+    assert!(state.tick_notifications(t0 + 5 * MINUTE).0.is_empty());
+    state.reminder_local_time = Some(local(28, 7, 59));
+    assert!(state.tick_notifications(t0 + 6 * MINUTE).0.is_empty());
+    state.reminder_local_time = Some(local(28, 8, 0));
+    assert_eq!(
+        sounds(&state.tick_notifications(t0 + 7 * MINUTE).0).len(),
+        1
+    );
+
+    // Moved earlier than now before today's fired: no immediate firing.
+    state.config.daily_reminder_minutes = 20 * 60;
+    state.reminder_local_time = Some(local(28, 12, 0));
+    assert!(state.tick_notifications(t0 + 8 * MINUTE).0.is_empty());
+    state.config.daily_reminder_minutes = 11 * 60;
+    state.reminder_local_time = Some(local(29, 9, 0));
+    state.tick_notifications(t0 + 9 * MINUTE);
+    state.config.daily_reminder_minutes = 8 * 60;
+    assert!(state.tick_notifications(t0 + 10 * MINUTE).0.is_empty());
+}
+
+fn daily_picker(state: &ClientShellState) -> Option<Vec<(String, u32)>> {
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::Settings(settings)) => settings.daily_time_picker.clone(),
+        _ => None,
+    }
+}
+
+fn reminders_state(daily_minutes: u32) -> ClientShellState {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.daily_reminder_minutes = daily_minutes;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    open_reminders_section(&mut state);
+    state
+}
+
+#[test]
+fn reminders_section_shows_the_daily_time_row_and_its_picker() {
+    let mut state = reminders_state(9 * 60 + 30);
+    let frame = state.compose(106, 30).expect("settings frame");
+    assert!(frame_rows(&frame).join("\n").contains("daily at 09:30"));
+    // Six intervals, then the daily row.
+    assert_eq!(state.hits.settings_choices.len(), 7);
+    for _ in 0..4 {
+        state.handle_input_bytes(b"j");
+    }
+    assert_eq!(
+        settings_selection(&state),
+        (ClientSettingsSection::Reminders, 6)
+    );
+    state.handle_input_bytes(b"\r");
+    let picker = daily_picker(&state).expect("picker open");
+    assert_eq!(picker.len(), 48);
+    assert_eq!(picker[0], ("00:00".to_string(), 0));
+    assert_eq!(picker[19], ("09:30".to_string(), 570));
+    assert_eq!(picker[47], ("23:30".to_string(), 23 * 60 + 30));
+    assert!(picker
+        .iter()
+        .all(|(label, _)| label.len() == 5 && label.as_bytes()[2] == b':'));
+    assert_eq!(settings_selection(&state).1, 19, "the configured time");
+    let frame = state.compose(106, 30).expect("picker frame");
+    let text = frame_rows(&frame).join("\n");
+    assert!(text.contains("09:30 ✓"), "{text}");
+    assert!(text.contains("daily reminder time"), "{text}");
+
+    // Esc goes back to the rows, on the daily row, settings still open.
+    state.handle_raw_events(vec![key(crossterm::event::KeyCode::Esc)]);
+    assert!(daily_picker(&state).is_none());
+    assert_eq!(
+        settings_selection(&state),
+        (ClientSettingsSection::Reminders, 6)
+    );
+}
+
+#[test]
+fn a_daily_time_off_the_grid_shows_first_as_custom() {
+    let mut state = reminders_state(9 * 60 + 45);
+    let frame = state.compose(106, 30).expect("settings frame");
+    assert!(frame_rows(&frame).join("\n").contains("daily at 09:45"));
+    let row = state.hits.settings_choices.len() - 1;
+    state.select_settings_choice(row);
+    state.handle_input_bytes(b"\r");
+    let picker = daily_picker(&state).expect("picker open");
+    assert_eq!(picker.len(), 49);
+    assert_eq!(picker[0], ("custom: 09:45".to_string(), 585));
+    assert_eq!(settings_selection(&state).1, 0);
+    let frame = state.compose(106, 30).expect("picker frame");
+    assert!(frame_rows(&frame).join("\n").contains("custom: 09:45 ✓"));
+}
+
+#[test]
+fn picking_a_daily_time_writes_the_key_and_reloads_it() {
+    let _guard = crate::config::test_config_env_lock().lock().unwrap();
+    let dir = unique_dir("daily-time");
+    let path = dir.join("config.toml");
+    std::fs::write(&path, "[ui]\nidle_reminder_minutes = 10\n").unwrap();
+    std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+    let mut state = reminders_state(9 * 60 + 30);
+    state.compose(106, 30).expect("settings frame");
+    let row = state.hits.settings_choices.len() - 1;
+    // A click on the daily row opens the picker at once.
+    let (rect, _) = state.hits.settings_choices[row];
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: rect.x + 2,
+        row: rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(daily_picker(&state).is_some());
+    // Esc does not write.
+    state.handle_raw_events(vec![key(crossterm::event::KeyCode::Esc)]);
+    assert!(!std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("daily_reminder_time"));
+    // Reopen on 09:30, four steps down to 11:30, Enter writes it.
+    state.handle_input_bytes(b"\r");
+    for _ in 0..4 {
+        state.handle_input_bytes(b"j");
+    }
+    state.handle_input_bytes(b"\r");
+    let written = std::fs::read_to_string(&path).unwrap();
+    std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        written.contains("daily_reminder_time = \"11:30\""),
+        "{written}"
+    );
+    let parsed: Config = toml::from_str(&written).unwrap();
+    assert_eq!(parsed.ui.idle_reminder_minutes, 10);
+    assert_eq!(
+        state.config.daily_reminder_minutes,
+        11 * 60 + 30,
+        "live reload"
+    );
+    assert!(daily_picker(&state).is_none());
+    assert_eq!(
+        settings_selection(&state),
+        (ClientSettingsSection::Reminders, 6)
+    );
 }
 
 /// Fork smoke tests: FORK.md section 10 lists them by name and the sync gate

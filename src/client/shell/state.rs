@@ -516,6 +516,8 @@ pub(super) struct ClientSettingsOverlay {
     pub(super) idle_reminder_minutes: u32,
     /// The sound section's open picker, if any.
     pub(super) sound_picker: Option<super::settings_sounds::ClientSoundPicker>,
+    /// The reminders section's open daily time picker, if any.
+    pub(super) daily_time_picker: Option<Vec<super::settings_daily_time::ClientDailyTimeChoice>>,
 }
 
 #[derive(Debug)]
@@ -1094,6 +1096,9 @@ pub(crate) struct ClientShellState {
     pub(super) reminder_epochs: HashMap<ClientEndpointId, std::time::Instant>,
     /// Test override of the local wall clock daily reminders go by.
     pub(super) reminder_local_time: Option<time::PrimitiveDateTime>,
+    /// The daily reminder time the scheduled reminders last went by, to
+    /// recompute their next firing when `ui.daily_reminder_time` changes.
+    pub(super) reminder_daily_minutes: Option<u32>,
     pub(super) endpoint_notice_seen: HashSet<ClientEndpointNoticeKey>,
     pub(super) visible_endpoint_notice: Option<ClientVisibleEndpointNotice>,
     pub(super) outer_focused: Option<bool>,
@@ -1264,6 +1269,7 @@ impl ClientShellState {
             scheduled_reminders: HashMap::new(),
             reminder_epochs: HashMap::new(),
             reminder_local_time: None,
+            reminder_daily_minutes: None,
             endpoint_notice_seen: HashSet::new(),
             visible_endpoint_notice: None,
             outer_focused: None,

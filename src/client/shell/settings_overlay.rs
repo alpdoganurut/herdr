@@ -205,14 +205,7 @@ pub(super) fn render_settings_overlay(
             render_backups(buffer, content, settings, palette);
         }
         ClientSettingsSection::Reminders => {
-            render_reminders(
-                buffer,
-                content,
-                settings.selected,
-                settings.idle_reminder_minutes,
-                palette,
-                &mut choice_hits,
-            );
+            render_reminders(buffer, content, settings, config, palette, &mut choice_hits);
         }
     }
 
@@ -422,11 +415,62 @@ fn render_sound_section(
 fn render_reminders(
     buffer: &mut Buffer,
     area: Rect,
-    selected: usize,
-    configured: u32,
+    settings: &ClientSettingsOverlay,
+    config: &ClientShellConfig,
     palette: &Palette,
     hits: &mut Vec<(Rect, usize)>,
 ) {
+    let selected = settings.selected;
+    let configured = settings.idle_reminder_minutes;
+    let daily = config.daily_reminder_minutes;
+    if let Some(choices) = settings.daily_time_picker.as_ref() {
+        put_text(
+            buffer,
+            area.x,
+            area.y,
+            area.width,
+            "daily reminder time",
+            Style::default()
+                .fg(palette.text)
+                .bg(palette.panel_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+        put_text(
+            buffer,
+            area.x,
+            area.y + 1,
+            area.width,
+            "when a tab's daily reminder fires (24-hour); ↵ keeps it, esc goes back",
+            Style::default().fg(palette.overlay1).bg(palette.panel_bg),
+        );
+        let list = Rect::new(
+            area.x,
+            area.y + 3,
+            area.width,
+            area.height.saturating_sub(3),
+        );
+        let visible = usize::from(list.height);
+        let scroll = selected.saturating_sub(visible.saturating_sub(1));
+        for (row, (index, (label, minutes))) in choices
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible)
+            .enumerate()
+        {
+            let rect = Rect::new(list.x, list.y + row as u16, list.width, 1);
+            draw_choice(
+                buffer,
+                rect,
+                label,
+                index == selected,
+                *minutes == daily,
+                palette,
+            );
+            hits.push((rect, index));
+        }
+        return;
+    }
     put_text(
         buffer,
         area.x,
@@ -464,6 +508,21 @@ fn render_reminders(
             palette,
         );
         hits.push((rect, index));
+    }
+    // The daily time, one blank row below the choices.
+    let row = super::super::idle_reminders::reminder_choices(configured).len();
+    let y = area.y + 4 + row as u16;
+    if y < area.bottom() {
+        let rect = Rect::new(area.x, y, area.width, 1);
+        draw_choice(
+            buffer,
+            rect,
+            &super::super::settings_daily_time::daily_time_row_label(daily),
+            row == selected,
+            false,
+            palette,
+        );
+        hits.push((rect, row));
     }
 }
 

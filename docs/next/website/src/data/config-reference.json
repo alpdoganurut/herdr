@@ -737,7 +737,7 @@
           "key": "keys.toggle_tab_important",
           "type": "keybinding",
           "default": "unset",
-          "description": "Mark the focused tab important (tab.set_reminder), or unmark it; the tab menu's \"important\" item does the same. The older name toggle_tab_remind is accepted. Unset by default; for example, toggle_tab_important = \"alt+m\"."
+          "description": "Mark the focused tab important (tab.set_reminder), or unmark it; the tab menu's \"Important\" item does the same. The older name toggle_tab_remind is accepted. Unset by default; for example, toggle_tab_important = \"alt+m\"."
         },
         {
           "key": "keys.copy_mode",
@@ -955,13 +955,13 @@
           "key": "ui.idle_reminder_minutes",
           "type": "integer",
           "default": "10",
-          "description": "Minutes an important tab's agent (the tab menu's \"important\" item, tab.set_reminder) may sit finished (unseen) or blocked before Herdr reminds you, then again every as many minutes until you focus the tab, the agent works again, or the tab is unmarked. The reminder is a notification for the tab's agent pane that follows ui.toast.delivery, replaces that tab's previous card and plays ui.sound.reminder_path (else the done or request sound) unless sounds are off. 0 turns these reminders off; values above 240 are clamped with a config warning. The settings overlay's reminders tab offers off, 5, 10, 15, 30 and 60 minutes. Scheduled reminders (the tab menu's \"remind\" selector) are not affected."
+          "description": "Minutes an important tab's agent (the tab menu's \"Important\" item, tab.set_reminder) may sit finished (unseen) or blocked before Herdr reminds you, then again every as many minutes until you focus the tab, the agent works again, or the tab is unmarked. The reminder is a notification for the tab's agent pane that follows ui.toast.delivery, replaces that tab's previous card and plays ui.sound.reminder_path (else the done or request sound) unless sounds are off. 0 turns these reminders off; values above 240 are clamped with a config warning. The settings overlay's reminders tab offers off, 5, 10, 15, 30 and 60 minutes. Scheduled reminders (the tab menu's \"remind\" selector) are not affected."
         },
         {
           "key": "ui.daily_reminder_time",
           "type": "string",
           "default": "\"09:30\"",
-          "description": "Local time of day (24-hour \"HH:MM\") a tab's daily reminder (the tab menu's remind selector, tab.set_reminder every = daily) fires. A daily reminder missed while no client was attached fires once when a client next sees the tab that day. An invalid value reports a config warning and uses 09:30."
+          "description": "Local time of day (24-hour \"HH:MM\") a tab's daily reminder (the tab menu's remind selector, tab.set_reminder every = daily) fires. The settings overlay's reminders tab edits it too: its \"daily at HH:MM\" row opens a list of times in 30-minute steps (a configured time off that grid shows first as custom). A new time applies at once: if it is still ahead today the reminder fires today, otherwise tomorrow, and the change itself never fires one. A daily reminder missed while no client was attached fires once when a client next sees the tab that day. An invalid value reports a config warning and uses 09:30."
         },
         {
           "key": "ui.mobile_width_threshold",

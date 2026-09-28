@@ -10,6 +10,13 @@ pub(crate) enum ConfigEdit<'a> {
         key: &'static str,
         path: Option<&'a str>,
     },
+    /// Fork: `ui.daily_reminder_time`, as minutes past midnight.
+    DailyReminderTime(u32),
+}
+
+/// Fork: minutes past midnight as a 24-hour "HH:MM".
+pub(crate) fn format_time_of_day(minutes: u32) -> String {
+    format!("{:02}:{:02}", (minutes / 60) % 24, minutes % 60)
 }
 
 impl ConfigEdit<'_> {
@@ -20,6 +27,7 @@ impl ConfigEdit<'_> {
             Self::Sound(_) => "sound setting",
             Self::ToastDelivery(_) => "toast setting",
             Self::IdleReminderMinutes(_) => "reminder setting",
+            Self::DailyReminderTime(_) => "daily reminder time",
             Self::SoundFile { .. } => "sound setting",
         }
     }
@@ -68,6 +76,12 @@ impl ConfigEdit<'_> {
             Self::SoundFile { key, path: None } => {
                 super::remove_section_key(content, "ui.sound", key)
             }
+            Self::DailyReminderTime(minutes) => super::upsert_section_value(
+                content,
+                "ui",
+                "daily_reminder_time",
+                &toml::Value::String(format_time_of_day(minutes)).to_string(),
+            ),
         }
     }
 }
@@ -126,6 +140,23 @@ mod tests {
         let config: crate::config::Config = toml::from_str(&edited).unwrap();
         assert_eq!(config.ui.sound.reminder_path, None);
         assert!(!edited.contains("reminder_path"));
+    }
+
+    #[test]
+    fn daily_reminder_time_edit_writes_a_quoted_24_hour_time() {
+        let content = "[ui]\nidle_reminder_minutes = 10\n";
+        let edited = ConfigEdit::DailyReminderTime(18 * 60 + 30).apply(content);
+        assert!(
+            edited.contains("daily_reminder_time = \"18:30\""),
+            "{edited}"
+        );
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.ui.daily_reminder_time, "18:30");
+        assert_eq!(config.ui.idle_reminder_minutes, 10);
+        let edited = ConfigEdit::DailyReminderTime(5).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.ui.daily_reminder_time, "00:05");
+        assert_eq!(edited.matches("daily_reminder_time").count(), 1);
     }
 
     #[test]
