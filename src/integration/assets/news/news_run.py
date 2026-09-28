@@ -211,8 +211,11 @@ def run_agent(run_dir, prompt, model, resume=None):
     if model: cmd += ["--model", model]
     if resume: cmd += ["--resume", resume]
     log = open(os.path.join(run_dir, "stream.jsonl"), "a")
+    # The editor runs without herdr's pane identity: the shared Claude hook would otherwise claim the
+    # pane's agent session as herdr:claude and herdr would drop this runner's own herdr:news reports.
+    env = {k: v for k, v in os.environ.items() if k not in ("HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID")}
     proc = subprocess.Popen(cmd, cwd=run_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            start_new_session=True, text=True, bufsize=1)
+                            start_new_session=True, text=True, bufsize=1, env=env)
     deadline = time.time() + WATCHDOG_S
     result, session, timed_out, reads = None, resume, False, 0
     try:

@@ -673,15 +673,16 @@ impl App {
         {
             ready = ready || self.news.assume_shell_ready;
         }
-        let Some(run) = self.news.run.as_mut() else {
-            return;
-        };
-        let NewsPhase::Starting { give_up_at, .. } = run.phase else {
-            return;
+        let (trigger, give_up_at) = match self.news.run.as_ref() {
+            Some(run) => match run.phase {
+                NewsPhase::Starting { give_up_at, .. } => (run.trigger, give_up_at),
+                NewsPhase::Running { .. } => return,
+            },
+            None => return,
         };
         if ready {
+            self.clear_stale_news_identity(pane);
             let home = self.news.home.clone().unwrap_or_default();
-            let trigger = run.trigger;
             let mut command = run_command(&home, trigger, self.news.model.as_deref());
             command.push('\r');
             match self.news_pane_bytes(pane, Bytes::from(command)) {
@@ -712,6 +713,38 @@ impl App {
                 give_up_at,
             };
         }
+    }
+
+    /// The News pane is at a shell prompt, so whatever agent identity it
+    /// still carries (a session claimed by an earlier run's hooks, a stale
+    /// hook authority) is over; a leftover owner would make the server drop
+    /// the runner's own `herdr:news` reports as a conflicting source.
+    fn clear_stale_news_identity(&mut self, pane: &NewsPane) {
+        let Some(terminal_id) = self
+            .state
+            .workspaces
+            .get(pane.ws_idx)
+            .and_then(|ws| ws.tabs.get(pane.tab_idx))
+            .and_then(|tab| tab.terminal_id(pane.pane_id))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
+            return;
+        };
+        if terminal.persistable_agent_session().is_none() && !terminal.is_agent_terminal() {
+            return;
+        }
+        tracing::info!(
+            event = "news.run",
+            outcome = "identity_cleared",
+            terminal = %terminal_id,
+            "clearing the News pane's stale agent identity before the run"
+        );
+        terminal.clear_agent_runtime_identity_after_respawn();
+        self.state.mark_session_dirty();
+        self.schedule_session_save();
     }
 
     /// The run in flight: launch when starting, poll the run log when
@@ -1183,6 +1216,39 @@ mod tests {
         assert!(app.news.run.is_none());
         assert_eq!(app.news.consecutive_failures, 1);
         assert!(!app.state.workspaces[0].tabs[0].important);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn a_stale_session_on_the_news_pane_is_cleared_when_the_command_is_typed() {
+        let home = temp_home("stale");
+        let mut app = news_app(Some(home.clone()), false);
+        app.news.assume_shell_ready = true;
+        app.state.workspaces[0].tabs[0].set_custom_name(NEWS_TAB_LABEL.into());
+        app.news.tab_id = app.public_tab_id(0, 0);
+        let tab = &app.state.workspaces[0].tabs[0];
+        let terminal_id = tab.terminal_id(tab.root_pane).unwrap().clone();
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("stale").unwrap(),
+            transcript_path: None,
+        });
+        assert!(terminal.persistable_agent_session().is_some());
+
+        let info = app
+            .start_news_run(NewsTrigger::Manual, Instant::now())
+            .unwrap();
+        assert_eq!(info.phase, "running");
+        assert!(
+            app.state.terminals[&terminal_id]
+                .persistable_agent_session()
+                .is_none(),
+            "the earlier owner no longer blocks the runner's reports"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
