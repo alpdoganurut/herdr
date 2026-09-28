@@ -33,6 +33,7 @@ mod preferences;
 mod render;
 mod scroll;
 mod settings;
+mod settings_closed;
 mod settings_sounds;
 mod state;
 mod surface_patch;

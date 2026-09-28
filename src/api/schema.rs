@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod agents;
+pub mod closed_sessions;
 pub mod commands;
 pub mod common;
 pub mod events;
@@ -15,6 +16,7 @@ pub mod workspaces;
 pub mod worktrees;
 
 pub use agents::*;
+pub use closed_sessions::*;
 pub use commands::*;
 pub use common::*;
 pub use events::*;
@@ -155,6 +157,12 @@ pub enum Method {
     TabSetReminder(TabSetReminderParams),
     #[serde(rename = "pane.report_subagent")]
     PaneReportSubagent(PaneReportSubagentParams),
+    #[serde(rename = "session.closed_list")]
+    SessionClosedList(EmptyParams),
+    #[serde(rename = "session.closed_reopen")]
+    SessionClosedReopen(ClosedSessionTarget),
+    #[serde(rename = "session.closed_remove")]
+    SessionClosedRemove(ClosedSessionTarget),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

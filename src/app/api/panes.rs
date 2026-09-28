@@ -1941,6 +1941,11 @@ impl App {
         }
         let workspace_snapshot = self.workspace_info(ws_idx);
         let terminal_id = self.state.terminal_id_for_pane(ws_idx, pane_id);
+        let closed_sessions = if self.state.close_pane_would_close_workspace(ws_idx, pane_id) {
+            self.closed_session_entries_for_workspaces(&self.state.workspace_close_indices(ws_idx))
+        } else {
+            self.closed_session_entries_for_pane(ws_idx, pane_id)
+        };
         let should_close_workspace = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return Err(pane_not_found(id, &target.pane_id));
@@ -1948,6 +1953,7 @@ impl App {
             ws.close_pane(pane_id)
         };
         self.state.remove_plugin_pane_records([pane_id]);
+        self.record_closed_sessions(closed_sessions);
         if should_close_workspace {
             self.state.selected = ws_idx;
             self.state.close_selected_workspace();

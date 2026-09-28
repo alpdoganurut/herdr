@@ -461,3 +461,104 @@ async fn claude_subagent_hooks_reach_the_client_shell_snapshot() {
     shutdown_test_runtimes(&mut server);
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Closing a tab that hosts a Claude Code agent records its session, the
+/// record reaches `session.closed_list`, and `session.closed_reopen` opens a
+/// tab in the same space with the same label that types the native resume
+/// command for the same session into its new shell and keeps the session on
+/// the pane; the record is gone afterwards. Runs against a private config
+/// directory (nextest gives each test its own process).
+#[cfg(unix)]
+#[tokio::test]
+async fn closed_agent_tab_reopens_from_the_list_with_the_same_session() {
+    use crate::api::schema::{ClosedSessionTarget, EmptyParams, TabTarget};
+
+    let dir = std::env::temp_dir().join(format!("herdr-fork-smoke-closed-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("project")).unwrap();
+    std::env::set_var("HOME", dir.join("home"));
+    std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
+    std::env::remove_var(crate::session::SESSION_ENV_VAR);
+    assert!(crate::persist::closed_sessions::store_path().starts_with(&dir));
+
+    let (mut server, _rx) = server_with_claude(Some(SESSION_ID));
+    server.app.policy.persist_session = true;
+    server.app.state.default_shell = "/bin/cat".into();
+    server.app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
+    server.app.state.workspaces[0].tabs[0].custom_name = Some("review".into());
+    server.app.state.workspaces[0].test_add_tab(Some("other"));
+    server.app.state.ensure_test_terminals();
+    let root_terminal = root_terminal_id(&server);
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&root_terminal)
+        .unwrap()
+        .cwd = dir.join("project");
+
+    let tab_id = server.app.public_tab_id(0, 0).unwrap();
+    let closed = api(&mut server, Method::TabClose(TabTarget { tab_id }));
+    assert_eq!(closed["result"]["type"], "ok", "{closed}");
+
+    let listed = api(
+        &mut server,
+        Method::SessionClosedList(EmptyParams::default()),
+    );
+    let sessions = listed["result"]["sessions"].as_array().expect("a list");
+    assert_eq!(sessions.len(), 1, "{listed}");
+    assert_eq!(sessions[0]["session_id"], SESSION_ID);
+    assert_eq!(sessions[0]["label"], "review");
+    let id = sessions[0]["id"].as_str().unwrap().to_string();
+
+    let reopened = api(
+        &mut server,
+        Method::SessionClosedReopen(ClosedSessionTarget { id }),
+    );
+    assert_eq!(reopened["result"]["type"], "tab_created", "{reopened}");
+    assert_eq!(reopened["result"]["tab"]["label"], "review");
+    assert_eq!(
+        reopened["result"]["tab"]["workspace_id"],
+        server.app.public_workspace_id(0)
+    );
+
+    let workspace = &server.app.state.workspaces[0];
+    let tab = &workspace.tabs[workspace.active_tab];
+    let terminal_id = tab.terminal_id(tab.root_pane).unwrap().clone();
+    let session = server.app.state.terminals[&terminal_id]
+        .persistable_agent_session()
+        .expect("the reopened pane holds the session");
+    assert_eq!(session.session_ref.value, SESSION_ID);
+    assert_eq!(session.agent, "claude");
+
+    let resume = format!("claude --resume {SESSION_ID}");
+    let runtime = server
+        .app
+        .terminal_runtimes
+        .get(&terminal_id)
+        .expect("the reopened tab runs a shell");
+    for _ in 0..80 {
+        if runtime
+            .snapshot_history()
+            .is_some_and(|text| text.contains(&resume))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        runtime
+            .snapshot_history()
+            .is_some_and(|text| text.contains(&resume)),
+        "the native resume command reaches the new shell"
+    );
+
+    let after = api(
+        &mut server,
+        Method::SessionClosedList(EmptyParams::default()),
+    );
+    assert_eq!(after["result"]["sessions"], serde_json::json!([]));
+
+    shutdown_test_runtimes(&mut server);
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -13,14 +13,18 @@ FORK.md
 scripts/fork_sync.sh
 scripts/fork_sync_lib.py
 scripts/test_fork_sync.py
+src/api/schema/closed_sessions.rs
 src/app/agent_suspend.rs
 src/app/agent_transcripts.rs
+src/app/closed_sessions.rs
 src/app/subagents.rs
 src/app/tab_bar_status/output.rs
 src/app/tab_color.rs
 src/app/tab_remind.rs
+src/cli/tab_closed.rs
 src/client/shell/idle_reminders.rs
 src/client/shell/notification_format.rs
+src/client/shell/settings_closed.rs
 src/client/shell/settings_sounds.rs
 src/client/shell/suspended_pane.rs
 src/client/shell/tab_color.rs
@@ -29,10 +33,12 @@ src/client/shell/tab_sidebar.rs
 src/client/shell/tests/idle_reminders.rs
 src/client/shell/tests/notification_format.rs
 src/client/shell/tests/settings_backups.rs
+src/client/shell/tests/settings_closed.rs
 src/client/shell/tests/sticky_notifications.rs
 src/client/shell/tests/tab_sidebar.rs
 src/integration/claude_subagent_hooks.rs
 src/persist/agent_transcripts.rs
+src/persist/closed_sessions.rs
 src/server/headless/tests/fork_smoke.rs
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
@@ -114,6 +120,7 @@ src/server/headless/tests/fork_smoke.rs
 | ShellRenderState | scheduled_reminders | &self.scheduled_reminders |
 | ClientSettingsOverlay | transcripts | None |
 | ClientSettingsOverlay | loading_transcripts | false |
+| ClientSettingsOverlay | closed | Box::default() |
 | ClientSettingsOverlay | idle_reminder_minutes | 10 |
 | ClientSettingsOverlay | sound_picker | None |
 | ClientConfirmCloseOverlay | close_group | true |
@@ -153,7 +160,7 @@ client::shell::overlays::render_client_overlay(b, o, s, endpoints, active_endpoi
 client::shell::settings::save_settings_edit -> pub(super) (settings_sounds.rs calls it)
 app::tab_bar_status::spawn_status_command(7 args) -> #[cfg(test)] wrapper passing StatusOutputFormat::UPSTREAM; production code calls spawn_status_command_with_format(.., format: StatusOutputFormat) (a new upstream non-test call site = E0425: switch it to the _with_format form)
 client::shell::ClientShellState::receive_notification -> kept; its replace-by-pane block moved into replace_pane_notifications(endpoint_id, pane_id, now) -> bool (cleared a visible card), shared with the idle reminder engine
-Visibility widened by the fork (upstream renaming or narrowing one breaks fork code): app::agents::DEFAULT_AGENT_START_TIMEOUT, app::agents::available_shell_name, app::api::agents::AGENT_PROMPT_SUBMIT_DELAY, app::terminal_targets::{terminal_targets, terminal_target_candidate}, integration::home_dir, client::shell::notification_policy::{notification_target_is_active, COMPLETION_EVIDENCE_GRACE} (pub(super))
+Visibility widened by the fork (upstream renaming or narrowing one breaks fork code): app::agents::DEFAULT_AGENT_START_TIMEOUT, app::agents::available_shell_name, app::api::agents::AGENT_PROMPT_SUBMIT_DELAY, app::terminal_targets::{terminal_targets, terminal_target_candidate}, integration::home_dir, client::shell::notification_policy::{notification_target_is_active, COMPLETION_EVIDENCE_GRACE} (pub(super)), app::agent_resume::shell_command_from_argv (pub(super); the closed-session reopen types it)
 
 ## 4. Owned enum variants (append last; E0004 in upstream match = deny)
 AgentStatus::Suspended   [src/api/schema/common.rs, last after Unknown; wire: JSON "suspended" in the socket API, events and the client shell snapshot, any non-human-readable serde codec encodes it as variant index 5; append-closed, deny on conflict]
@@ -164,7 +171,10 @@ Method::AgentTranscripts   [src/api/schema.rs, after AgentRestart; wire "agent.t
 Method::TabSetColor   [src/api/schema.rs, after AgentTranscripts; wire "tab.set_color"]
 Method::TabSetRemind   [src/api/schema.rs, after TabSetColor; wire "tab.set_remind"]
 Method::TabSetReminder   [src/api/schema.rs, after TabSetRemind; wire "tab.set_reminder"]
-Method::PaneReportSubagent   [src/api/schema.rs, after TabSetReminder, last of the fork block; wire "pane.report_subagent"]
+Method::PaneReportSubagent   [src/api/schema.rs, after TabSetReminder; wire "pane.report_subagent"]
+Method::SessionClosedList   [src/api/schema.rs, after PaneReportSubagent; wire "session.closed_list"]
+Method::SessionClosedReopen   [src/api/schema.rs, after SessionClosedList; wire "session.closed_reopen"]
+Method::SessionClosedRemove   [src/api/schema.rs, after SessionClosedReopen, last of the fork block; wire "session.closed_remove"]
 TabRemindInterval   [src/api/schema/tabs.rs, fork-owned enum after TabSetRemindParams; wire "5m" "10m" "30m" "1h" "6h" "daily", Unknown the serde(other) fallback; JSON records, session.json and the bincode client snapshot (variant index), append-closed]
 TabRemindEvery   [src/api/schema/tabs.rs, fork-owned closed enum, "off" plus the intervals; part of the tab.set_reminder digest, so a new interval needs a new method name]
 crate::sound::Sound::Reminder   [src/sound.rs, last after Request, with ReminderBase { Done, Request }; client-only (never on the wire); the server's sound_notify_message and app/actions.rs client_notification_kind match it]
@@ -173,6 +183,7 @@ ResponseResult::AgentSuspended   [src/api/schema/response.rs, after AgentStarted
 ResponseResult::AgentActivated   [src/api/schema/response.rs; wire "agent_activated"]
 ResponseResult::AgentRestarted   [src/api/schema/response.rs, after AgentActivated; wire "agent_restarted"]
 ResponseResult::AgentTranscripts   [src/api/schema/response.rs; wire "agent_transcripts"]
+ResponseResult::SessionClosedList   [src/api/schema/response.rs, after AgentTranscripts; wire "session_closed_list"]
 KeybindAction::ToggleAgentSuspend   [src/input/keybindings.rs, after ClearPane; internal]
 KeybindAction::MoveTabToGroup   [src/input/keybindings.rs; internal]
 KeybindAction::ToggleGroupsFolded   [src/input/keybindings.rs; internal]
@@ -180,7 +191,8 @@ KeybindAction::RestartAgent   [src/input/keybindings.rs, after ToggleGroupsFolde
 KeybindAction::CycleTabColor   [src/input/keybindings.rs, after RestartAgent; internal]
 KeybindAction::ToggleTabImportant   [src/input/keybindings.rs, after CycleTabColor; internal]
 ClientSettingsSection::Backups   [src/client/shell/state.rs, before Reminders; UI tab order; internal]
-ClientSettingsSection::Reminders   [src/client/shell/state.rs, last after Backups; UI tab order, ALL keeps Backups then Reminders last; internal]
+ClientSettingsSection::Reminders   [src/client/shell/state.rs, after Backups; UI tab order, ALL keeps Backups, Reminders then ClosedSessions last; internal]
+ClientSettingsSection::ClosedSessions   [src/client/shell/state.rs, last after Reminders; the `closed` tab; internal]
 ClientContextMenuAction::SuspendAgent   [src/client/shell/state.rs, last five; internal]
 ClientContextMenuAction::ActivateAgent   [internal]
 ClientContextMenuAction::Ungroup   [internal]
@@ -196,6 +208,9 @@ ClientContextMenuTarget::Group   [src/client/shell/state.rs, between Tab and Pan
 ClientChromeDrag::SidebarTab   [src/client/shell/state.rs, before PaneSplit; internal]
 ClientRenameTarget::MoveTabToGroup   [src/client/shell/state.rs, last; internal]
 PendingEndpointKind::AgentTranscripts   [src/client/shell/state.rs, after IntegrationInstall; internal]
+PendingEndpointKind::SessionClosedList   [src/client/shell/state.rs, after AgentTranscripts; internal]
+PendingEndpointKind::SessionClosedReopen   [src/client/shell/state.rs, after SessionClosedList; internal]
+PendingEndpointKind::SessionClosedRemove   [src/client/shell/state.rs, after SessionClosedReopen; internal]
 AgentRenameError::Suspended   [src/app/agents.rs, after PendingLaunch; internal, surfaces as error code agent_suspended]
 
 ## 5. Owned API methods and digests
@@ -209,9 +224,13 @@ tab.set_reminder: fork-defined (Method::TabSetReminder, api_method_name arm, req
 tab.set_reminder digest: 597627419b2ba06f50d220dd1ea4218fbb2204ba3452bbc25897cdc417da5b1e (TabSetReminderParams { tab_id, important: Option<bool>, every: Option<TabRemindEvery> }).
 pane.report_subagent: fork-defined (Method::PaneReportSubagent, api_method_name arm, request_changes_ui, handler in src/app/subagents.rs), sent by the Claude hook asset's `subagent` action; not advertised to the client shell, so no digest. Params PaneReportSubagentParams { pane_id, agent, event: SubagentEvent start|stop, subagent_id }.
 TabColor (src/api/schema/tabs.rs) is fork-owned and closed: its values are part of the tab.set_color digest, so a new color needs a new method name; Unknown stays the serde(other) fallback (JSON snapshot, TabInfo, session.json).
+session.closed_list, session.closed_reopen, session.closed_remove: fork-defined (Method::SessionClosedList/Reopen/Remove, api_method_name arms, request_changes_ui for closed_reopen only, handlers in src/app/closed_sessions.rs, CLI `herdr tab closed|reopen` in src/cli/tab_closed.rs). Responses: closed_list ResponseResult::SessionClosedList { sessions: Vec<ClosedSessionInfo> } (a response type, so not digest-covered), closed_reopen upstream's ResponseResult::TabCreated as tab.create, closed_remove Ok. Errors closed_session_not_found, closed_session_not_resumable, closed_sessions_unavailable, closed_session_reopen_failed.
+session.closed_list digest: 36061ddc74238ec4cbe0e9b01e685d417718a12f09ebac9334b7c1fc754c22cd (EmptyParams).
+session.closed_reopen digest: f18fab7830a2e3c6e915def7f93b9afb48f406bc78001cecd0a17f188291306d (ClosedSessionTarget { id }).
+session.closed_remove digest: 9583e60d3393fbbcec1a209e4ce7b227ce38d429b0d0f1e9dac1ac2bb3befbdb (ClosedSessionTarget { id }).
 pane.move: upstream method, advertised to the client shell only by the fork (absent from base CLIENT_SHELL_METHODS).
 CLIENT_SHELL_METHODS (src/server/client_commands.rs): union, sorted; the test advertised_client_shell_methods_are_sorted_unique_and_in_schema enforces it.
-Digest asserts in advertised_client_shell_method_shapes_stay_at_the_v1_contract: the fork appends eight `actual.remove(..)` asserts (agent.suspend, agent.activate, pane.move, agent.transcripts, agent.restart, tab.set_color, tab.set_remind, tab.set_reminder) after upstream's pane.link.resolve assert. Resolve an assert-block conflict as the union of `actual.remove` blocks, upstream first, no method name twice.
+Digest asserts in advertised_client_shell_method_shapes_stay_at_the_v1_contract: the fork appends eleven `actual.remove(..)` asserts (agent.suspend, agent.activate, pane.move, agent.transcripts, agent.restart, tab.set_color, tab.set_remind, tab.set_reminder, session.closed_list, session.closed_remove, session.closed_reopen) after upstream's pane.link.resolve assert. Resolve an assert-block conflict as the union of `actual.remove` blocks, upstream first, no method name twice.
 Any digest value change = deny (contract change, never a fixture fix). pane.move's digest covers upstream-owned PaneMoveParams/PaneMoveDestination: an upstream reshape fails it after a clean merge, and that is a deny.
 tests/fixtures/endpoint-*-v1.json and src/protocol/** frozen tests: never edited (the fork has no diff under tests/).
 Upstream adding "pane.move" to CLIENT_SHELL_METHODS, or adding any section 9 identifier = deny (collision).
@@ -237,7 +256,11 @@ src/api/schema/common.rs  deny: AgentStatus is append-closed
 tests/api_ping.rs  deny: the fork's one line is the protocol literal in ping_over_socket_returns_version; it must equal PROTOCOL_VERSION in src/protocol/wire.rs after the sync
 tests/support/mod.rs  deny: the fork's one line is CURRENT_PROTOCOL; it must equal PROTOCOL_VERSION in src/protocol/wire.rs after the sync
 src/protocol/wire.rs  deny: PROTOCOL_VERSION is the fork's value (upstream + 3: ClientShellTab.color (23), ClientShellTab.remind with ClientShellAgent.subagents (24), ClientShellTab.important and remind_every replacing remind (25); when upstream bumps, resolve to upstream's new value + 3 and keep the fork comment), the fork's other lines are one inside deserialize_client_shell_agent_status, ClientShellTab.color, .important, .remind_every and ClientShellAgent.subagents (serde default, deliberately not skip_serializing_if: the bincode round-trip needs every field) and `color: None` / `important: false` / `remind_every: None` in the client_shell_snapshot_roundtrip literal (section 2)
-src/api/schema.rs  additive: fork Method variants stay directly after AgentStart; the fork's is_zero stays directly after is_false
+src/api/schema.rs  additive: fork Method variants stay directly after AgentStart; the fork's is_zero stays directly after is_false; `pub mod closed_sessions;` and `pub use closed_sessions::*;` directly after the agents lines
+src/persist.rs  additive: `pub mod closed_sessions;` directly after `pub mod agent_transcripts;`, the closed-sessions line last in the module doc
+src/app/mod.rs  additive: `mod closed_sessions;` directly after `mod agents;`
+src/cli.rs  additive: `mod tab_closed;` directly after `mod tab;`
+src/client/shell.rs  additive: `mod settings_closed;` directly after `mod settings;`
 src/api/schema/response.rs  additive: fork ResponseResult variants stay directly after AgentStarted
 src/api/schema/agents.rs  additive: fork params types stay after AgentStartParams; AgentInfo.subagents stays directly after state_change_seq
 src/api/schema/panes.rs  additive: PaneReportSubagentParams and SubagentEvent stay last in the file
@@ -246,9 +269,10 @@ src/integration/targets.rs  additive: the claude_subagent_hooks install/uninstal
 src/integration/assets/claude/herdr-agent-state.sh  deny: the fork's hunks are `subagent` in the action case, the send() helper and the `subagent` branch before the SessionStart filter; re-apply them on upstream's new asset by hand
 src/integration/tests.rs  deny: the fork's lines are the two SubagentStop asserts after install_claude (one entry, the subagent hook; none on Windows)
 src/api/schema/tabs.rs  additive: TabInfo.color, .important, .remind_every stay the last fields; TabColor, TabSetColorParams, TabSetRemindParams, TabRemindInterval, TabRemindEvery and TabSetReminderParams stay after TabInfo
-src/cli/tab.rs  additive: the fork's `color`, `important` and `remind` arms stay after `rename`, tab_color, tab_important, tab_remind and send_reminder before tab_close, their help lines after the rename line; the fork's tests module stays last
+src/cli/tab.rs  additive: the fork's `color`, `important`, `remind`, `closed` and `reopen` arms stay after `rename` (closed and reopen call src/cli/tab_closed.rs), tab_color, tab_important, tab_remind and send_reminder before tab_close, their help lines after the rename line; the fork's tests module stays last
+src/cli/spec.rs  additive: the fork's `closed` and `reopen` subcommands directly before the tab `close` subcommand; spec_models_tab_closed_and_reopen directly before spec_models_tab_remind_values
 src/api/server.rs  additive: fork arms stay after the agent.start arm
-src/api/mod.rs  additive: fork arms stay after Method::AgentStart
+src/api/mod.rs  additive: fork arms stay after Method::AgentStart (Method::SessionClosedReopen directly after PaneReportSubagent)
 src/config/model.rs  additive: upstream first, fork lines directly after each clear_pane line; HerdrToastConfig sticky/max_stack directly after position (struct, Default, impl HerdrToastConfig after the Default impl), the *_TOAST_MAX_STACK consts directly after MAX_TOAST_DELAY_SECONDS, the *_IDLE_REMINDER_MINUTES consts after them; UiConfig.idle_reminder_minutes and daily_reminder_time directly after tab_agent_glyph_colors (struct and Default), effective_idle_reminder_minutes, effective_daily_reminder_minutes, daily_reminder_diagnostic and idle_reminder_diagnostic last in impl UiConfig, parse_time_of_day directly before impl Default for ToastConfig; KeysConfigOverlay.toggle_tab_important carries `alias = "toggle_tab_remind"`
 src/config/tab_bar.rs  additive: MAX_TAB_BAR_COMMAND_LINES directly after MAX_TAB_BAR_RIGHT_ENTRIES, default_command_lines and effective_tab_bar_command_lines after default_command_timeout_seconds, Command.lines and .ansi the last fields of the variant, the lines clamp diagnostic first in tab_bar_right_diagnostics' Command arm (which binds `lines, ansi: _`), the fork test last in the tests module
 src/app/tab_bar_status.rs  deny: the fork's hunks are `mod output; use output::StatusOutputFormat;` after the imports, TabBarCommandRuntime.format (last field), `lines, ansi` in configure_tab_bar_status' Command arm and `format: StatusOutputFormat::new(*lines, *ansi)`, spawn_status_command_with_format in handle_tab_bar_status_tasks, spawn_status_command turned into a #[cfg(test)] wrapper, run_status_command's `format` parameter and its two calls into output::, and `lines: 1, ansi: false` in three test literals; re-apply them on upstream's new file by hand
@@ -260,7 +284,7 @@ src/config/keybinds.rs  additive: upstream first, fork lines directly after each
 src/input/keybindings.rs  additive: upstream first, fork lines directly after each ClearPane line
 src/input/keybind_help.rs  additive: upstream first, fork entries directly after the clear pane entry
 src/main.rs  additive: DEFAULT_CONFIG comment lines, upstream first
-src/client/shell/state.rs  additive: upstream first, fork after; ClientSettingsSection::ALL keeps Backups then Reminders last
+src/client/shell/state.rs  additive: upstream first, fork after; ClientSettingsSection::ALL keeps Backups, Reminders then ClosedSessions last; ClientSettingsOverlay.closed sits between transcripts and loading_transcripts
 src/client/shell/tests/mod.rs  additive: fork module lines
 src/server/headless/tests/mod.rs  additive: the fork_smoke module line; test literals per section 2
 *  deny: anything that is not a structural additive conflict (zdiff3 base empty, both sides pure insertions)
@@ -309,9 +333,14 @@ src/client/shell/context_menu.rs  mid-logic: items (after Close, so upstream ite
 src/client/shell/overlay_input.rs  mid-logic: save_rename_overlay, accept_close_confirmation (close_group now from the overlay); the ContextMenu key block asks route_tab_remind_menu_key, then route_tab_color_menu_key first (Up/Down move between and re-seat the selector and swatch cursors, Left/Right/h/l on either row)
 src/client/shell/overlays.rs  mid-logic: render_context_menu widens a tab menu to the swatch row and the reminder selector, draws the swatches and the selector's options in place of their items' labels (only the cursor one highlighted, while its row is) and returns their rects as menu_swatches / menu_remind_options; render_client_overlay passes the config to the settings overlay
 src/client/shell/tabs.rs  mid-logic: render_tab_bar tints unfocused tabs with their color tag (focused tab unchanged)
+src/app/api/tabs.rs  mid-logic: handle_tab_close captures closed_session_entries_for_workspaces (last tab) or closed_session_entries_for_tab before the close and calls record_closed_sessions after it, in both branches; a new upstream close path records nothing
+src/app/api/panes.rs  mid-logic: close_pane captures closed_session_entries_for_workspaces (the pane closes its space) or closed_session_entries_for_pane before ws.close_pane and records after remove_plugin_pane_records; handle_pane_move records nothing (a moved tab is not closed)
+src/app/api/workspaces.rs  mid-logic: handle_workspace_close captures closed_session_entries_for_workspaces(close_indices) before close_selected_workspace and records after shutdown_detached_terminal_runtimes
 src/app/api/panes.rs  mid-logic: handle_pane_move (PaneMoveRecoveryContext.previous_tab_color, previous_tab_important and previous_tab_remind_every; a whole-tab move applies them to the NewTab / NewWorkspace tab), recover_failed_pane_move restores them
-src/client/shell/settings.rs  mid-logic: selected_index_for_settings_section, select_settings_section (refreshes idle_reminder_minutes, closes a sound picker), settings_choice_count (Sound counts sound_section_rows), apply_settings_choice (Sound goes to apply_sound_choice, Reminders writes ConfigEdit::IdleReminderMinutes), route_settings_key (Esc closes an open sound picker first; Up/Down preview its sound), handle_settings_endpoint_result
-src/client/shell/settings_overlay.rs  mid-logic: render_settings_overlay (show_primary match; the section tab strip drops its one-cell gaps when it does not fit the 74-column inner width, as with the integrations badge on; Sound renders render_sound_section (rows or the open picker); Reminders arm)
+src/client/shell/settings.rs  mid-logic: selected_index_for_settings_section, select_settings_section (refreshes idle_reminder_minutes, closes a sound picker, requests session.closed_list on entering `closed`), settings_choice_count (Sound counts sound_section_rows, ClosedSessions the filtered rows), apply_settings_choice (Sound goes to apply_sound_choice, Reminders writes ConfigEdit::IdleReminderMinutes, ClosedSessions reopens), route_settings_key (Esc closes an open sound picker first, then route_closed_sessions_key takes filter text, Backspace, Delete / `d` and Esc on a non-empty filter; Up/Down preview its sound), handle_settings_endpoint_result
+src/client/shell/settings_overlay.rs  mid-logic: render_settings_overlay (show_primary match, ClosedSessions shows ` ↵ reopen ` while rows are listed; the section tab strip drops its one-cell gaps when it does not fit the 74-column inner width, and then drops each label's padding (settings_tab_label) and keeps the gaps, which with eight sections is always; Sound renders render_sound_section (rows or the open picker); Reminders arm; ClosedSessions renders settings_closed::render_closed_sessions)
+src/client/shell/actions.rs  mid-logic: push_endpoint_method_with_kind treats SessionClosedReopen as focus-changing; handle_endpoint_result sends the SessionClosed* kinds to handle_closed_sessions_endpoint_result
+src/client/shell/worktrees.rs  mid-logic: the exhaustive PendingEndpointKind error arm lists the SessionClosed* kinds
 src/client/shell/endpoint_navigation.rs  mid-logic: finish_endpoint_workspace_press early return in the tabs layout
 src/protocol/wire.rs  depends: ClientShellSnapshot.tab_bar_right and tab_bar_right_separator feed the tabs sidebar footer (status_footer_lines and render_tab_status_footer in src/client/shell/tab_sidebar.rs), which joins the segment texts with the separator, splits on `\n` (a command entry's `lines`), parses kept SGR (`ansi`) and truncates each row with `…`; ClientShellTabStatusSegment.text stays a plain String, so multi-line and SGR text needs no wire change
 src/app/tab_bar_status.rs  mid-logic: configure_tab_bar_status (Command arm reads lines/ansi into TabBarCommandRuntime.format), handle_tab_bar_status_tasks (spawns with the format), spawn_status_command (test-only wrapper), run_status_command (reads through output::read_status_output_lines and builds the text with output::status_output_text, which hand off to upstream's read_last_output_line and command_output_text for the defaults); output.rs reuses command_output_text, read_last_output_line, is_unicode_format_control, MAX_COMMAND_LINE_BYTES and MAX_STATUS_TEXT_CHARS and mirrors strip_terminal_control_sequences (an upstream change to that state machine must be mirrored in strip_control_sequences_keeping_sgr)
@@ -433,6 +462,23 @@ read_status_output_lines
 strip_control_sequences_keeping_sgr
 status_footer_lines
 single_line_status_text
+session.closed_list
+session.closed_reopen
+session.closed_remove
+SessionClosedList
+SessionClosedReopen
+SessionClosedRemove
+ClosedSessionInfo
+ClosedSessionTarget
+ClosedSessions
+ClientClosedSessions
+closed_sessions
+closed-sessions.json
+closed_session_not_found
+closed_session_not_resumable
+compact_closed_age
+settings_closed
+tab_closed::
 
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot
@@ -446,6 +492,7 @@ client::shell::tests::tab_sidebar::fork_smoke::colored_tab_label_reaches_the_ren
 client::shell::tests::idle_reminders::fork_smoke::marked_done_tab_reminds_after_the_interval
 client::shell::tests::tab_sidebar::fork_smoke::tab_bar_status_reaches_the_tabs_sidebar_footer
 client::shell::tests::tab_sidebar::fork_smoke::colored_multi_line_status_reaches_the_footer_in_color
+server::headless::tests::fork_smoke::closed_agent_tab_reopens_from_the_list_with_the_same_session
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 ### Fixed
@@ -458,6 +505,7 @@ client::shell::tests::tab_sidebar::fork_smoke::colored_multi_line_status_reaches
 - `agent.suspend` (and so `herdr agent suspend`, the "Suspend agent" menu item and `keys.toggle_agent_suspend`) refuses a `working` agent with `agent_working`, the same guard `agent.restart` uses, and sends it no input.
 
 ### Added
+- Recently closed agent sessions: closing a tab, pane or space whose pane holds a live or suspended agent session (not a plain shell, not a tab moved to another group, not at server shutdown) records one entry per session in `closed-sessions.json` next to `session.json` (newest 100: agent and session reference, tab label, color and reminders, group, directory, close time). `herdr tab closed [--json]` lists them numbered, `herdr tab reopen <n|id|session-id-prefix>` reopens one, and the settings overlay's new `closed` tab lists `label · group · dir · 2h ago` with type-to-filter, Enter to reopen and Delete (or `d`) to remove. Reopening opens a tab in the original group (the first space when it is gone) with the same label, color and reminders, puts a deleted transcript back from the backup store, and types the native resume command; the entry is then removed. New socket methods `session.closed_list`, `session.closed_reopen`, `session.closed_remove`; no protocol change. The settings tab strip drops the labels' padding to fit the eighth tab.
 - `ui.tab_bar_right` command entries accept `lines` (1–4, default 1, clamped with a config warning) to keep the last non-empty output lines, joined with `\n` in the segment, and `ansi` (default false) to keep SGR color and weight sequences (`ESC [ digits;… m`) while every other escape and control character is still stripped. The `tabs` sidebar footer draws one row per line (at most four in total, the list shrinks to match and scrolling still reaches the last tab), styles reset (0), bold (1), dim (2), normal intensity (22), foreground 30–37 / 90–97, `38;5;n`, `38;2;r;g;b` and the default foreground (39) over its dim base, and truncates each row with `…`. The `spaces` tab bar shows only a segment's last line without escapes. No wire change: the segment stays a string and the protocol is unchanged; with the defaults the text is byte-for-byte upstream's.
 - In the `tabs` sidebar layout, where the horizontal tab bar is hidden, the `ui.tab_bar_right` status area (command, hostname, datetime and text entries) shows as a one-line dim footer under the tab list, joined with `ui.tab_bar_right_separator` and truncated with `…` when too wide. It takes one row off the list only while some status text exists; scrolling still reaches the last tab. The `spaces` layout is unchanged.
 - Running Claude Code subagents show on the tab: `herdr integration install claude` adds `SubagentStart` and `SubagentStop` hooks (not on Windows) whose `subagent` action reports each subagent to the new `pane.report_subagent` method, the server keeps the running set per pane (at most 64, never persisted, forgotten when the agent stops working, is suspended, released or replaced), agent records carry an optional `subagents` count while the agent works, and the `tabs` sidebar layout shows `⚭` in the working color as a working tab's status icon while its agent has subagents running. Part of protocol 24.

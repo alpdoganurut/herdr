@@ -1825,6 +1825,18 @@
           ],
           "type": "object"
         },
+        "ClosedSessionTarget": {
+          "description": "A closed session by its record id.",
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
         "CommandInvokeParams": {
           "properties": {
             "command_id": {
@@ -5848,6 +5860,54 @@
         {
           "properties": {
             "method": {
+              "const": "session.closed_list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "session.closed_reopen",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ClosedSessionTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "session.closed_remove",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ClosedSessionTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -7347,6 +7407,97 @@
             "no_foreground_client"
           ],
           "type": "string"
+        },
+        "ClosedSessionInfo": {
+          "description": "One closed agent session, newest first in `session.closed_list`.",
+          "properties": {
+            "agent": {
+              "description": "The agent (for example `claude`).",
+              "type": "string"
+            },
+            "closed_at": {
+              "description": "When the tab was closed, in seconds since the Unix epoch.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "color": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TabColor"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cwd": {
+              "description": "The pane's working directory.",
+              "type": "string"
+            },
+            "id": {
+              "description": "Stable id of the record: the close time and the session id.",
+              "type": "string"
+            },
+            "important": {
+              "default": false,
+              "type": "boolean"
+            },
+            "label": {
+              "description": "The tab's custom label, when it had one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "remind_every": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TabRemindInterval"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "session_id": {
+              "description": "The agent's native session id (or path, for path references).",
+              "type": "string"
+            },
+            "session_ref_kind": {
+              "$ref": "#/schemas/success_response/$defs/AgentSessionRefKind"
+            },
+            "source": {
+              "description": "Who reported the session (for example `herdr:claude`).",
+              "type": "string"
+            },
+            "space_id": {
+              "description": "The space (workspace) the tab was in.",
+              "type": "string"
+            },
+            "space_name": {
+              "type": "string"
+            },
+            "transcript_path": {
+              "description": "Where the agent kept the native transcript, when it was known.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "source",
+            "agent",
+            "session_ref_kind",
+            "session_id",
+            "space_id",
+            "space_name",
+            "cwd",
+            "closed_at"
+          ],
+          "type": "object"
         },
         "ConfigReloadStatus": {
           "enum": [
@@ -10148,6 +10299,25 @@
                 "native_missing",
                 "transcript_bytes",
                 "disk_bytes"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "sessions": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ClosedSessionInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "session_closed_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "sessions"
               ],
               "type": "object"
             },

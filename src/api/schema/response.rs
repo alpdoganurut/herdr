@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::agents::{AgentInfo, AgentTranscriptBackupPass};
+use super::closed_sessions::ClosedSessionInfo;
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
 use super::events::EventEnvelope;
 use super::integrations::{
@@ -123,6 +124,9 @@ pub enum ResponseResult {
         last_pass: Option<AgentTranscriptBackupPass>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_pass_in_ms: Option<u64>,
+    },
+    SessionClosedList {
+        sessions: Vec<ClosedSessionInfo>,
     },
     AgentPrompted {
         agent: AgentInfo,

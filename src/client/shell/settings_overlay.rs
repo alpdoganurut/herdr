@@ -71,22 +71,30 @@ pub(super) fn render_settings_overlay(
             .integrations
             .iter()
             .any(|integration| integration.state == crate::api::schema::IntegrationState::Outdated);
-    let section_label = |section: ClientSettingsSection| {
-        if section == ClientSettingsSection::Integrations && integration_badge {
-            format!(" ● {} ", section.label())
-        } else {
-            format!(" {} ", section.label())
-        }
-    };
     // Tabs sit one cell apart; when that does not fit (the integrations badge
     // on, with every section shown) they close up, since each label already
-    // carries its own padding.
-    let strip_width = ClientSettingsSection::ALL
+    // carries its own padding; when even that does not fit they drop the
+    // padding and keep the gap.
+    let padded_width = ClientSettingsSection::ALL
         .iter()
-        .map(|section| usize::from(display_width(&section_label(*section))))
-        .sum::<usize>()
-        + ClientSettingsSection::ALL.len().saturating_sub(1);
-    let tab_gap = u16::from(strip_width <= usize::from(inner.width));
+        .map(|section| {
+            usize::from(display_width(&settings_tab_label(
+                *section,
+                integration_badge,
+                true,
+            )))
+        })
+        .sum::<usize>();
+    let gaps = ClientSettingsSection::ALL.len().saturating_sub(1);
+    let (padded, tab_gap) = if padded_width + gaps <= usize::from(inner.width) {
+        (true, 1)
+    } else if padded_width <= usize::from(inner.width) {
+        (true, 0)
+    } else {
+        (false, 1)
+    };
+    let section_label =
+        |section: ClientSettingsSection| settings_tab_label(section, integration_badge, padded);
     let mut tab_x = inner.x;
     let mut tab_hits = Vec::new();
     for section in ClientSettingsSection::ALL {
@@ -106,11 +114,12 @@ pub(super) fn render_settings_overlay(
         buffer.set_style(rect, style);
         put_text(buffer, rect.x, rect.y, rect.width, &label, style);
         if badge && !active {
+            let badge_offset = u16::from(padded);
             put_text(
                 buffer,
-                rect.x.saturating_add(1),
+                rect.x.saturating_add(badge_offset),
                 rect.y,
-                rect.width.saturating_sub(1).min(2),
+                rect.width.saturating_sub(badge_offset).min(2),
                 "● ",
                 Style::default()
                     .fg(palette.accent)
@@ -198,6 +207,15 @@ pub(super) fn render_settings_overlay(
                 &mut choice_hits,
             );
         }
+        ClientSettingsSection::ClosedSessions => {
+            super::super::settings_closed::render_closed_sessions(
+                buffer,
+                content,
+                settings,
+                palette,
+                &mut choice_hits,
+            );
+        }
         ClientSettingsSection::Integrations => {
             render_integrations(buffer, content, settings, palette);
         }
@@ -221,6 +239,9 @@ pub(super) fn render_settings_overlay(
         .iter()
         .any(super::super::settings::integration_needs_install);
     let show_primary = match settings.section {
+        ClientSettingsSection::ClosedSessions => {
+            !super::super::settings_closed::filtered_closed_sessions(settings).is_empty()
+        }
         ClientSettingsSection::Integrations => installable,
         ClientSettingsSection::Backups => false,
         _ => true,
@@ -232,10 +253,10 @@ pub(super) fn render_settings_overlay(
         button(
             buffer,
             primary,
-            if settings.section == ClientSettingsSection::Integrations {
-                " ↵ install "
-            } else {
-                " ↵ apply "
+            match settings.section {
+                ClientSettingsSection::ClosedSessions => " ↵ reopen ",
+                ClientSettingsSection::Integrations => " ↵ install ",
+                _ => " ↵ apply ",
             },
             Style::default()
                 .fg(contrast(palette))
@@ -273,6 +294,21 @@ pub(super) fn render_settings_overlay(
         settings_choices: choice_hits,
         ..OverlayRender::default()
     })
+}
+
+/// A section's tab label: padded with a space on each side unless the strip
+/// is too narrow; integrations carries the update badge.
+fn settings_tab_label(section: ClientSettingsSection, badge: bool, padded: bool) -> String {
+    let label = if section == ClientSettingsSection::Integrations && badge {
+        format!("● {}", section.label())
+    } else {
+        section.label().to_string()
+    };
+    if padded {
+        format!(" {label} ")
+    } else {
+        label
+    }
 }
 
 fn render_choice_section(

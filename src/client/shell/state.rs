@@ -457,6 +457,7 @@ pub(super) enum ClientSettingsSection {
     Integrations,
     Backups,
     Reminders,
+    ClosedSessions,
 }
 
 impl ClientSettingsSection {
@@ -468,6 +469,7 @@ impl ClientSettingsSection {
         Self::Integrations,
         Self::Backups,
         Self::Reminders,
+        Self::ClosedSessions,
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -479,6 +481,7 @@ impl ClientSettingsSection {
             Self::Integrations => "integrations",
             Self::Backups => "backups",
             Self::Reminders => "reminders",
+            Self::ClosedSessions => "closed",
         }
     }
 }
@@ -510,6 +513,9 @@ pub(super) struct ClientSettingsOverlay {
     pub(super) loading_integrations: bool,
     pub(super) installing_integrations: bool,
     pub(super) transcripts: Option<ClientTranscriptStore>,
+    /// The closed section's list and filter (boxed: the overlay enum stays
+    /// small).
+    pub(super) closed: Box<super::settings_closed::ClientClosedSessions>,
     pub(super) loading_transcripts: bool,
     /// `ui.idle_reminder_minutes` as the reminders section lists it, refreshed
     /// on entering the section and after applying a choice.
@@ -774,6 +780,9 @@ pub(super) enum PendingEndpointKind {
     IntegrationList,
     IntegrationInstall,
     AgentTranscripts,
+    SessionClosedList,
+    SessionClosedReopen,
+    SessionClosedRemove,
     PrepareWorktreeCreate {
         workspace_id: String,
     },

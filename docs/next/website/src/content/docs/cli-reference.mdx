@@ -195,6 +195,8 @@ herdr tab rename <tab_id> <label>
 herdr tab color <tab_id> <red|orange|yellow|green|cyan|blue|purple|none>
 herdr tab important <tab_id> <on|off>
 herdr tab remind <tab_id> <off|5m|10m|30m|1h|6h|daily>
+herdr tab closed [--json]
+herdr tab reopen <n|id|session-id-prefix>
 herdr tab close <tab_id>
 ```
 
@@ -203,6 +205,8 @@ A tab is another terminal layout inside a workspace. Without `--workspace`, `tab
 `tab color` tags a tab with a named theme color (`tab.set_color`) and prints the tab; `none` clears the tag. The color is stored with the tab, survives server restarts, and follows the tab when it moves to another space. The `tabs` sidebar layout draws the tab's name in the color, and the `spaces` layout's tab bar tints unfocused tab names with it.
 
 `tab important` marks a tab important (`tab.set_reminder`) and prints the tab; `off` removes the mark. While an important tab's agent sits finished and unseen, or blocked, the Herdr client reminds you every `ui.idle_reminder_minutes` until you focus the tab. `tab remind` sets the tab's scheduled reminder: every 5, 10 or 30 minutes, every 1 or 6 hours, or daily at `ui.daily_reminder_time`, whatever its agent is doing; `off` clears it. Both are stored with the tab, survive server restarts, and follow the tab when it moves to another space.
+
+`tab closed` lists the agent sessions of recently closed tabs, newest first (`session.closed_list`): a number, the tab label (else the agent), the group, the directory's name and how long ago it closed; `--json` prints the full records. `tab reopen` takes that number, a record id, or a unique prefix of the session id, and reopens the session (`session.closed_reopen`) in a new tab in its original group with the same label, color and reminders, running the agent's native resume command, then prints the new tab. See [Session state](/docs/session-state/) for what is recorded.
 
 With `ui.confirm_close` enabled, the TUI asks for confirmation before closing a workspace's last tab from a keybinding or the tab menu. Ordinary CLI/API tab closes remain immediate.
 

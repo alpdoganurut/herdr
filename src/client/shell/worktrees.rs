@@ -534,6 +534,9 @@ impl ClientShellState {
                 | PendingEndpointKind::IntegrationList
                 | PendingEndpointKind::IntegrationInstall
                 | PendingEndpointKind::AgentTranscripts
+                | PendingEndpointKind::SessionClosedList
+                | PendingEndpointKind::SessionClosedReopen
+                | PendingEndpointKind::SessionClosedRemove
                 | PendingEndpointKind::SelectionCopy
                 | PendingEndpointKind::PaneScroll { .. }
                 | PendingEndpointKind::WordSelection { .. }

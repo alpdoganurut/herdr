@@ -289,6 +289,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
             loading_integrations: false,
             installing_integrations: false,
             transcripts: None,
+            closed: Box::default(),
             loading_transcripts: false,
             idle_reminder_minutes: 10,
             sound_picker: None,

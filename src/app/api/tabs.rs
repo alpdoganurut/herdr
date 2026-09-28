@@ -241,10 +241,13 @@ impl App {
                 );
             }
             let workspace = self.workspace_info(ws_idx);
+            let closed_sessions = self
+                .closed_session_entries_for_workspaces(&self.state.workspace_close_indices(ws_idx));
             self.state.selected = ws_idx;
             self.state.close_selected_workspace();
             self.state.remove_plugin_pane_records(pane_ids);
             self.shutdown_detached_terminal_runtimes();
+            self.record_closed_sessions(closed_sessions);
             self.emit_event(EventEnvelope {
                 event: EventKind::TabClosed,
                 data: EventData::TabClosed {
@@ -262,6 +265,7 @@ impl App {
             return encode_success(id, ResponseResult::Ok {});
         }
 
+        let closed_sessions = self.closed_session_entries_for_tab(ws_idx, tab_idx);
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return tab_not_found(id, &target.tab_id);
         };
@@ -275,6 +279,7 @@ impl App {
         self.state.remove_plugin_pane_records(pane_ids);
         self.state.remove_unattached_terminal_ids(terminal_ids);
         self.shutdown_detached_terminal_runtimes();
+        self.record_closed_sessions(closed_sessions);
         self.schedule_session_save();
         self.emit_event(EventEnvelope {
             event: EventKind::TabClosed,
