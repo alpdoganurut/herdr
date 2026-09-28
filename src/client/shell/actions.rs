@@ -388,6 +388,7 @@ impl ClientShellState {
             crate::api::schema::Method::WorkspaceCreate(params) => params.focus,
             crate::api::schema::Method::TabCreate(params) => params.focus,
             crate::api::schema::Method::PaneSplit(params) => params.focus,
+            crate::api::schema::Method::SessionClosedReopen(_) => true,
             _ => false,
         };
         if changes_focus {
@@ -844,6 +845,11 @@ impl ClientShellState {
             | PendingEndpointKind::IntegrationInstall
             | PendingEndpointKind::AgentTranscripts) => {
                 return self.handle_settings_endpoint_result(kind, result);
+            }
+            kind @ (PendingEndpointKind::SessionClosedList
+            | PendingEndpointKind::SessionClosedReopen
+            | PendingEndpointKind::SessionClosedRemove) => {
+                return self.handle_closed_sessions_endpoint_result(kind, result);
             }
             kind => {
                 let mut outcome = ClientShellInput::default();

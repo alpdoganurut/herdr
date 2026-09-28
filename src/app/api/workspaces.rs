@@ -336,9 +336,11 @@ impl App {
                 )
             })
             .collect::<Vec<_>>();
+        let closed_sessions = self.closed_session_entries_for_workspaces(&close_indices);
         self.state.selected = index;
         self.state.close_selected_workspace();
         self.shutdown_detached_terminal_runtimes();
+        self.record_closed_sessions(closed_sessions);
         for (workspace_id, workspace) in closed_workspaces {
             self.emit_event(EventEnvelope {
                 event: EventKind::WorkspaceClosed,

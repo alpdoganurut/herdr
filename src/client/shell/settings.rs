@@ -43,6 +43,7 @@ impl ClientShellState {
             loading_integrations: false,
             installing_integrations: false,
             transcripts: None,
+            closed: Box::default(),
             loading_transcripts: false,
             idle_reminder_minutes: self.config.idle_reminder_minutes,
             sound_picker: None,
@@ -56,7 +57,9 @@ impl ClientShellState {
             ClientSettingsSection::Indicators => indicator_index(self.config.status_indicators),
             ClientSettingsSection::Sound => usize::from(!self.config.sound_enabled),
             ClientSettingsSection::Toast => toast_index(self.config.toast_delivery),
-            ClientSettingsSection::Integrations | ClientSettingsSection::Backups => 0,
+            ClientSettingsSection::Integrations
+            | ClientSettingsSection::Backups
+            | ClientSettingsSection::ClosedSessions => 0,
             ClientSettingsSection::Reminders => {
                 super::idle_reminders::reminder_choice_index(self.config.idle_reminder_minutes)
             }
@@ -86,6 +89,11 @@ impl ClientShellState {
                     ..
                 }))
             );
+        let request_closed_sessions = matches!(section, ClientSettingsSection::ClosedSessions)
+            && matches!(
+                &self.overlay,
+                Some(ClientShellOverlay::Settings(settings)) if !settings.closed.loading
+            );
         let idle_reminder_minutes = self.config.idle_reminder_minutes;
         if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
             settings.section = section;
@@ -99,6 +107,9 @@ impl ClientShellState {
         }
         if request_transcripts {
             self.queue_agent_transcripts(outcome);
+        }
+        if request_closed_sessions {
+            self.queue_closed_sessions(outcome);
         }
         outcome.repaint = true;
     }
@@ -125,6 +136,9 @@ impl ClientShellState {
                 ClientSettingsSection::Indicators => 2,
                 ClientSettingsSection::Sound => sound_rows,
                 ClientSettingsSection::Toast => 4,
+                ClientSettingsSection::ClosedSessions => {
+                    super::settings_closed::filtered_closed_sessions(settings).len()
+                }
                 ClientSettingsSection::Integrations => settings.integrations.len(),
                 ClientSettingsSection::Backups => 0,
                 ClientSettingsSection::Reminders => reminders_rows,
@@ -249,6 +263,7 @@ impl ClientShellState {
                     outcome,
                 );
             }
+            ClientSettingsSection::ClosedSessions => self.reopen_selected_closed_session(outcome),
             ClientSettingsSection::Integrations => self.install_recommended_integrations(outcome),
             // Read-only: the store is shown, not edited.
             ClientSettingsSection::Backups => {}
@@ -465,6 +480,9 @@ impl ClientShellState {
         let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
         if code == KeyCode::Esc && (self.close_sound_picker() || self.close_daily_time_picker()) {
             outcome.repaint = true;
+            return true;
+        }
+        if self.route_closed_sessions_key(code, modifiers, outcome) {
             return true;
         }
         if code == KeyCode::Esc {

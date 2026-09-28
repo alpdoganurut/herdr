@@ -1113,6 +1113,13 @@ impl App {
             Method::PaneReportSubagent(params) => {
                 return self.handle_pane_report_subagent(request.id, params)
             }
+            Method::SessionClosedList(_) => return self.handle_session_closed_list(request.id),
+            Method::SessionClosedReopen(params) => {
+                return self.handle_session_closed_reopen(request.id, params)
+            }
+            Method::SessionClosedRemove(params) => {
+                return self.handle_session_closed_remove(request.id, params)
+            }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

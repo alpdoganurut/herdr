@@ -327,6 +327,24 @@ fn tab_command() -> Command {
                     "Sets the tab's scheduled reminder (tab.set_reminder); `off` clears it. The client reminds you about the tab every interval, whatever its agent is doing, or daily at ui.daily_reminder_time; a reminder due while the tab is focused is skipped. The interval is stored with the tab, persists across server restarts and follows the tab when it moves to another space.",
                 ),
         )
+        .subcommand(
+            Command::new("closed")
+                .about("List recently closed agent sessions")
+                .override_usage("herdr tab closed [--json]")
+                .arg(json_flag())
+                .after_help(
+                    "Lists the agent sessions of recently closed tabs, newest first (session.closed_list): number, tab label (else the agent), group, directory and how long ago it closed. Closing a tab, pane or space that holds a live or suspended agent session records it; plain shells, tabs moved to another group and server shutdowns do not. The server keeps the newest 100 in closed-sessions.json next to session.json.",
+                ),
+        )
+        .subcommand(
+            Command::new("reopen")
+                .about("Reopen a recently closed agent session")
+                .override_usage("herdr tab reopen <N|ID|SESSION_ID_PREFIX>")
+                .arg(required("session", "N|ID|SESSION_ID_PREFIX"))
+                .after_help(
+                    "Reopens a session from `herdr tab closed` by its number, its record id or a unique prefix of its session id (session.closed_reopen): a new tab in the original group (the first space when that group is gone) with the tab's label, color and reminders, in the pane's directory, running the agent's native resume command. A deleted native transcript is put back from the transcript backup store first. The record is removed once the tab is open.",
+                ),
+        )
         .subcommand(id_command("close", "tab_id", "Close a tab"))
 }
 
@@ -1422,6 +1440,17 @@ mod tests {
             .collect();
         expected.push("none".into());
         assert_eq!(values, expected);
+    }
+
+    #[test]
+    fn spec_models_tab_closed_and_reopen() {
+        let cmd = super::command();
+        let closed = command_path(&cmd, &["tab", "closed"]);
+        assert!(has_option(closed, "json"));
+        let reopen = command_path(&cmd, &["tab", "reopen"]);
+        assert!(reopen
+            .get_arguments()
+            .any(|arg| arg.get_id() == "session" && arg.is_required_set()));
     }
 
     #[test]

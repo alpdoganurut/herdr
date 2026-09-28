@@ -265,6 +265,7 @@ mod mouse_selection;
 mod notification_format;
 mod popup_focus_projection;
 mod settings_backups;
+mod settings_closed;
 mod startup_overlays;
 mod sticky_notifications;
 mod tab_sidebar;

@@ -189,8 +189,9 @@ mod fork_smoke {
 
     /// Section tabs are clipped with `.min()` to the fixed 76-column popup; a
     /// longer upstream label or a new upstream section would silently cut
-    /// `backups` or `reminders` off. Checked with the integrations badge on,
-    /// the widest row (the tabs close up their one-cell gaps to fit it).
+    /// `backups`, `reminders` or `closed` off. Checked with the integrations
+    /// badge on, the widest row (the tabs close up their one-cell gaps, then
+    /// drop their padding, to fit it). Every tab uses the same form.
     #[test]
     fn every_settings_section_fits_the_76_column_popup() {
         let mut snapshot = snapshot();
@@ -208,18 +209,28 @@ mod fork_smoke {
             "every section gets a tab, in order"
         );
         assert_eq!(
-            &ClientSettingsSection::ALL[ClientSettingsSection::ALL.len() - 2..],
+            &ClientSettingsSection::ALL[ClientSettingsSection::ALL.len() - 3..],
             [
                 ClientSettingsSection::Backups,
-                ClientSettingsSection::Reminders
+                ClientSettingsSection::Reminders,
+                ClientSettingsSection::ClosedSessions
             ]
         );
         let popup_left = tabs[0].0.x;
-        for (rect, section) in &tabs {
-            let label = if *section == ClientSettingsSection::Integrations {
-                format!(" ● {} ", section.label())
+        let label = |section: ClientSettingsSection| {
+            if section == ClientSettingsSection::Integrations {
+                format!("● {}", section.label())
             } else {
-                format!(" {} ", section.label())
+                section.label().to_string()
+            }
+        };
+        let padded = tabs[0].0.width
+            == crate::client::shell::render::display_width(&format!(" {} ", label(tabs[0].1)));
+        for (rect, section) in &tabs {
+            let label = if padded {
+                format!(" {} ", label(*section))
+            } else {
+                label(*section)
             };
             assert_eq!(
                 rect.width,
@@ -233,6 +244,7 @@ mod fork_smoke {
         }
         let row = frame_rows(&frame)[usize::from(tabs[0].0.y)].clone();
         assert!(row.contains(" backups "), "{row}");
-        assert!(row.contains(" reminders "), "{row}");
+        assert!(row.contains("reminders "), "{row}");
+        assert!(row.contains(" closed"), "{row}");
     }
 }

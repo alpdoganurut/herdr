@@ -43,6 +43,9 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "product_announcement.dismiss",
     "release_notes.dismiss",
     "server.reload_config",
+    "session.closed_list",
+    "session.closed_remove",
+    "session.closed_reopen",
     "tab.close",
     "tab.create",
     "tab.focus",
@@ -336,6 +339,18 @@ mod tests {
         assert_eq!(
             actual.remove("tab.set_reminder").as_deref(),
             Some("597627419b2ba06f50d220dd1ea4218fbb2204ba3452bbc25897cdc417da5b1e")
+        );
+        assert_eq!(
+            actual.remove("session.closed_list").as_deref(),
+            Some("36061ddc74238ec4cbe0e9b01e685d417718a12f09ebac9334b7c1fc754c22cd")
+        );
+        assert_eq!(
+            actual.remove("session.closed_remove").as_deref(),
+            Some("9583e60d3393fbbcec1a209e4ce7b227ce38d429b0d0f1e9dac1ac2bb3befbdb")
+        );
+        assert_eq!(
+            actual.remove("session.closed_reopen").as_deref(),
+            Some("f18fab7830a2e3c6e915def7f93b9afb48f406bc78001cecd0a17f188291306d")
         );
 
         assert_eq!(

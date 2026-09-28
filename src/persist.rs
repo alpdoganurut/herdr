@@ -4,8 +4,10 @@
 //! Optional pane screen history is stored separately at `session-history.json`.
 //! Installed plugins are persisted separately at `plugins.json`.
 //! Native agent transcript backups live under `agent-transcripts/`.
+//! Recently closed agent sessions are recorded in `closed-sessions.json`.
 
 pub mod agent_transcripts;
+pub mod closed_sessions;
 mod io;
 pub mod plugin_registry;
 mod restore;

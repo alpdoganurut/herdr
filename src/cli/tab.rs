@@ -17,6 +17,8 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         "color" => tab_color(&args[1..]),
         "important" => tab_important(&args[1..]),
         "remind" => tab_remind(&args[1..]),
+        "closed" => super::tab_closed::tab_closed(&args[1..]),
+        "reopen" => super::tab_closed::tab_reopen(&args[1..]),
         "close" => tab_close(&args[1..]),
         "help" | "--help" | "-h" => {
             print_tab_help();
@@ -264,6 +266,8 @@ fn print_tab_help() {
     eprintln!("  herdr tab color <tab_id> <red|orange|yellow|green|cyan|blue|purple|none>");
     eprintln!("  herdr tab important <tab_id> <on|off>");
     eprintln!("  herdr tab remind <tab_id> <off|5m|10m|30m|1h|6h|daily>");
+    eprintln!("  herdr tab closed [--json]");
+    eprintln!("  herdr tab reopen <n|id|session-id-prefix>");
     eprintln!("  herdr tab close <tab_id>");
 }
 
