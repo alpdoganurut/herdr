@@ -1533,6 +1533,36 @@
       ]
     },
     {
+      "id": "news",
+      "title": "News",
+      "keys": [
+        {
+          "key": "news.enabled",
+          "type": "boolean",
+          "default": "false",
+          "description": "Run the AI news desk on a schedule: the server starts the bundled runner in a `News` tab every `news.interval_hours`, outside `news.quiet_hours`. Off by default; `herdr news run` starts a run by hand either way."
+        },
+        {
+          "key": "news.interval_hours",
+          "type": "integer",
+          "default": "6",
+          "description": "Hours between scheduled news runs, 1 through 168 (clamped with a config warning). A manual run restarts the interval."
+        },
+        {
+          "key": "news.quiet_hours",
+          "type": "string",
+          "default": "\"00:00-08:00\"",
+          "description": "Local wall-clock window `HH:MM-HH:MM` during which a due scheduled run waits; it starts when the window ends. May wrap past midnight. An empty string disables quiet hours; an invalid value reports a config warning and disables them."
+        },
+        {
+          "key": "news.model",
+          "type": "string",
+          "default": "unset",
+          "description": "Model name handed to the news runner (`claude -p --model`). Unset uses the runner's default."
+        }
+      ]
+    },
+    {
       "id": "worktrees",
       "title": "Worktrees",
       "keys": [

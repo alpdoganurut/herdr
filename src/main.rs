@@ -429,6 +429,17 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # before a resume if the agent has deleted its own. Herdr never deletes backups.
 # backup_agent_transcripts = true
 
+[news]
+# Run the AI news desk on a schedule in a News tab (fork feature). Off by default;
+# `herdr news run` starts a run by hand either way.
+# enabled = false
+# Hours between scheduled runs (1 through 168).
+# interval_hours = 6
+# Local window HH:MM-HH:MM in which a due run waits; empty disables it.
+# quiet_hours = "00:00-08:00"
+# Model handed to the runner (`claude -p --model`); unset uses the runner's default.
+# model = "opus"
+
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.
 # When true (default), herdr runs remote ssh through a generated config that
