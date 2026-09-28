@@ -1318,7 +1318,10 @@ fn reminder_cards_carry_which_reminder_raised_them() {
     let mut state = seen_state(scheduled_snapshot(TabRemindInterval::M5));
     state.tick_notifications(t0);
     state.tick_notifications(t0 + 5 * MINUTE);
-    assert_eq!(reminder_of(&state), Some(ClientReminderKind::Scheduled));
+    assert_eq!(
+        reminder_of(&state),
+        Some(ClientReminderKind::Scheduled(TabRemindInterval::M5))
+    );
 
     // A server notification is not a reminder.
     let mut state = seen_state(waiting_snapshot(AgentStatus::Blocked, false));
@@ -1338,6 +1341,29 @@ fn reminder_cards_carry_which_reminder_raised_them() {
         t0,
     );
     assert_eq!(reminder_of(&state), None);
+}
+
+#[test]
+fn scheduled_reminder_markers_follow_the_interval() {
+    use super::super::idle_reminders::ClientReminderKind;
+    use super::super::tab_sidebar::remind_marker;
+    for (every, glyph) in [
+        (TabRemindInterval::M5, "\u{25F7}"),
+        (TabRemindInterval::M10, "\u{25F7}"),
+        (TabRemindInterval::M30, "\u{25F7}"),
+        (TabRemindInterval::H1, "\u{25D1}"),
+        (TabRemindInterval::H6, "\u{25D1}"),
+        (TabRemindInterval::Daily, "\u{263C}"),
+        (TabRemindInterval::Unknown, "\u{25F7}"),
+    ] {
+        assert_eq!(remind_marker(every), glyph, "{every:?}");
+        assert_eq!(
+            ClientReminderKind::Scheduled(every).glyph(),
+            glyph,
+            "{every:?}"
+        );
+        assert_eq!(unicode_width::UnicodeWidthStr::width(glyph), 1, "{glyph}");
+    }
 }
 
 #[test]

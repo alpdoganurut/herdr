@@ -701,7 +701,7 @@ fn render_group_header(
 }
 
 /// A tab row's reminder markers, in order: `★` when the tab is important,
-/// `◷` when it has a scheduled reminder. Each is overlay0, or the fired
+/// the interval's marker (`remind_marker`) when it has a scheduled reminder. Each is overlay0, or the fired
 /// reminder's color while it is lit.
 fn reminder_markers(
     tab: &crate::protocol::ClientShellTab,
@@ -720,16 +720,16 @@ fn reminder_markers(
             lit.map_or(palette.overlay0, |lit| lit.color(palette)),
         ));
     }
-    if tab
+    if let Some(every) = tab
         .remind_every
-        .is_some_and(|every| every != crate::api::schema::TabRemindInterval::Unknown)
+        .filter(|every| *every != crate::api::schema::TabRemindInterval::Unknown)
     {
         let lit = state
             .scheduled_reminders
             .get(&key)
             .is_some_and(|reminder| reminder.lit);
         markers.push((
-            TAB_REMIND_MARKER,
+            remind_marker(every),
             if lit {
                 super::idle_reminders::ClientReminderLit::Scheduled.color(palette)
             } else {
@@ -758,8 +758,28 @@ pub(super) const TAB_SUBAGENTS_ICON: &str = "\u{26AD}"; // ⚭ (two interlocking
 /// The row marker of an important tab (`tab.set_reminder` important).
 pub(super) const TAB_IMPORTANT_MARKER: &str = "\u{2605}"; // ★
 
-/// The row marker of a tab with a scheduled reminder (`tab.set_reminder` every).
+/// The row marker of a tab with a minutes-scale scheduled reminder
+/// (`tab.set_reminder` every 5m, 10m or 30m), and of an unknown interval.
 pub(super) const TAB_REMIND_MARKER: &str = "\u{25F7}"; // ◷
+/// The row marker of an hours-scale scheduled reminder (1h, 6h).
+pub(super) const TAB_REMIND_HOURS_MARKER: &str = "\u{25D1}"; // ◑
+/// The row marker of a daily scheduled reminder.
+pub(super) const TAB_REMIND_DAILY_MARKER: &str = "\u{263C}"; // ☼
+
+/// The marker for a scheduled reminder's interval, on the tab row and on its
+/// notification card. Only glyphs that render full-size in common terminal
+/// fonts: minutes `◷`, hours `◑`, daily `☼`.
+pub(super) fn remind_marker(every: crate::api::schema::TabRemindInterval) -> &'static str {
+    use crate::api::schema::TabRemindInterval;
+    match every {
+        TabRemindInterval::H1 | TabRemindInterval::H6 => TAB_REMIND_HOURS_MARKER,
+        TabRemindInterval::Daily => TAB_REMIND_DAILY_MARKER,
+        TabRemindInterval::M5
+        | TabRemindInterval::M10
+        | TabRemindInterval::M30
+        | TabRemindInterval::Unknown => TAB_REMIND_MARKER,
+    }
+}
 
 fn render_tab_row(
     buffer: &mut Buffer,
