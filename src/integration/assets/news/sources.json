@@ -1,0 +1,328 @@
+[
+ {
+  "id": "anthropic_sitemap",
+  "name": "Anthropic (sitemap: /news /research /engineering)",
+  "url": "https://www.anthropic.com/sitemap.xml",
+  "type": "sitemap",
+  "bucket": "labs",
+  "max_items": 8,
+  "include": "/(news|research|engineering)/"
+ },
+ {
+  "id": "openai_news",
+  "name": "OpenAI news",
+  "url": "https://openai.com/news/rss.xml",
+  "type": "rss",
+  "bucket": "labs",
+  "max_items": 8
+ },
+ {
+  "id": "deepmind",
+  "name": "Google DeepMind blog",
+  "url": "https://deepmind.google/blog/rss.xml",
+  "type": "rss",
+  "bucket": "labs",
+  "max_items": 6
+ },
+ {
+  "id": "google_ai_blog",
+  "name": "Google blog: AI",
+  "url": "https://blog.google/technology/ai/rss/",
+  "type": "rss",
+  "bucket": "labs",
+  "max_items": 6
+ },
+ {
+  "id": "gemini_blog",
+  "name": "Google blog: Gemini",
+  "url": "https://blog.google/products/gemini/rss/",
+  "type": "rss",
+  "bucket": "labs",
+  "max_items": 6
+ },
+ {
+  "id": "meta_newsroom",
+  "name": "Meta newsroom",
+  "url": "https://about.fb.com/news/feed/",
+  "type": "rss",
+  "bucket": "labs",
+  "max_items": 6
+ },
+ {
+  "id": "mistral_sitemap0",
+  "name": "Mistral (sitemap: /news)",
+  "url": "https://mistral.ai/sitemap-0.xml",
+  "type": "sitemap",
+  "bucket": "labs",
+  "max_items": 6,
+  "include": "^https://mistral\\.ai/news/[^/]+/?$"
+ },
+ {
+  "id": "hf_blog",
+  "name": "Hugging Face blog",
+  "url": "https://huggingface.co/blog/feed.xml",
+  "type": "rss",
+  "bucket": "labs",
+  "max_items": 6
+ },
+ {
+  "id": "olsh_claude",
+  "name": "Claude blog (third-party scrape)",
+  "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_claude.xml",
+  "type": "rss",
+  "bucket": "labs",
+  "max_items": 5
+ },
+ {
+  "id": "ms_source",
+  "name": "Microsoft Source",
+  "url": "https://news.microsoft.com/source/feed/",
+  "type": "rss",
+  "bucket": "labs",
+  "max_items": 5
+ },
+ {
+  "id": "hf_trending",
+  "name": "HF trending models",
+  "url": "https://huggingface.co/api/models?sort=trendingScore&direction=-1&limit=20",
+  "type": "json",
+  "bucket": "labs",
+  "max_items": 15
+ },
+ {
+  "id": "hf_qwen",
+  "name": "HF new models: Qwen",
+  "url": "https://huggingface.co/api/models?author=Qwen&sort=createdAt&direction=-1&limit=10",
+  "type": "json",
+  "bucket": "labs",
+  "max_items": 5
+ },
+ {
+  "id": "nvidia_newsroom",
+  "name": "NVIDIA newsroom",
+  "url": "https://nvidianews.nvidia.com/releases.xml",
+  "type": "rss",
+  "bucket": "infra",
+  "max_items": 6
+ },
+ {
+  "id": "olsh_aisi",
+  "name": "UK AI Security Institute (third-party scrape)",
+  "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_aisi.xml",
+  "type": "rss",
+  "bucket": "policy",
+  "max_items": 5
+ },
+ {
+  "id": "gh_claude_code_tags",
+  "name": "Claude Code tags",
+  "url": "https://github.com/anthropics/claude-code/tags.atom",
+  "type": "atom",
+  "bucket": "tooling",
+  "max_items": 5,
+  "exclude": "nightly|preview|-\\d+$"
+ },
+ {
+  "id": "gh_codex_tags",
+  "name": "Codex CLI tags",
+  "url": "https://github.com/openai/codex/tags.atom",
+  "type": "atom",
+  "bucket": "tooling",
+  "max_items": 8,
+  "exclude": "alpha"
+ },
+ {
+  "id": "gh_gemini_cli",
+  "name": "Gemini CLI releases",
+  "url": "https://github.com/google-gemini/gemini-cli/releases.atom",
+  "type": "atom",
+  "bucket": "tooling",
+  "max_items": 5,
+  "exclude": "nightly|preview|-\\d+$"
+ },
+ {
+  "id": "gh_copilot_cli",
+  "name": "Copilot CLI releases",
+  "url": "https://github.com/github/copilot-cli/releases.atom",
+  "type": "atom",
+  "bucket": "tooling",
+  "max_items": 5,
+  "exclude": "nightly|preview|-\\d+$"
+ },
+ {
+  "id": "cursor_changelog_rss",
+  "name": "Cursor changelog",
+  "url": "https://cursor.com/changelog/rss.xml",
+  "type": "rss",
+  "bucket": "tooling",
+  "max_items": 5
+ },
+ {
+  "id": "github_changelog",
+  "name": "GitHub changelog",
+  "url": "https://github.blog/changelog/feed/",
+  "type": "rss",
+  "bucket": "tooling",
+  "max_items": 8
+ },
+ {
+  "id": "simonw_everything",
+  "name": "Simon Willison",
+  "url": "https://simonwillison.net/atom/everything/",
+  "type": "atom",
+  "bucket": "newsletter",
+  "max_items": 15
+ },
+ {
+  "id": "importai_api",
+  "name": "Import AI",
+  "url": "https://importai.substack.com/api/v1/archive?sort=new&limit=10",
+  "type": "substack_api",
+  "bucket": "newsletter",
+  "max_items": 3
+ },
+ {
+  "id": "zvi_api",
+  "name": "Zvi Mowshowitz",
+  "url": "https://thezvi.substack.com/api/v1/archive?sort=new&limit=10",
+  "type": "substack_api",
+  "bucket": "newsletter",
+  "max_items": 5
+ },
+ {
+  "id": "latentspace_api",
+  "name": "Latent Space + AINews",
+  "url": "https://www.latent.space/api/v1/archive?sort=new&limit=10",
+  "type": "substack_api",
+  "bucket": "newsletter",
+  "max_items": 6
+ },
+ {
+  "id": "interconnects_api",
+  "name": "Interconnects",
+  "url": "https://www.interconnects.ai/api/v1/archive?sort=new&limit=10",
+  "type": "substack_api",
+  "bucket": "newsletter",
+  "max_items": 4
+ },
+ {
+  "id": "semianalysis_api",
+  "name": "SemiAnalysis (headlines)",
+  "url": "https://newsletter.semianalysis.com/api/v1/archive?sort=new&limit=10",
+  "type": "substack_api",
+  "bucket": "newsletter",
+  "max_items": 5
+ },
+ {
+  "id": "techcrunch_ai",
+  "name": "TechCrunch AI",
+  "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
+  "type": "rss",
+  "bucket": "press",
+  "max_items": 15
+ },
+ {
+  "id": "verge_ai",
+  "name": "The Verge AI",
+  "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+  "type": "atom",
+  "bucket": "press",
+  "max_items": 10
+ },
+ {
+  "id": "ars_ai",
+  "name": "Ars Technica AI",
+  "url": "https://arstechnica.com/ai/feed/",
+  "type": "rss",
+  "bucket": "press",
+  "max_items": 10
+ },
+ {
+  "id": "theinformation",
+  "name": "The Information",
+  "url": "https://www.theinformation.com/feed",
+  "type": "atom",
+  "bucket": "press",
+  "max_items": 15
+ },
+ {
+  "id": "decoder",
+  "name": "The Decoder",
+  "url": "https://the-decoder.com/feed/",
+  "type": "rss",
+  "bucket": "press",
+  "max_items": 10
+ },
+ {
+  "id": "techmeme",
+  "name": "Techmeme",
+  "url": "https://www.techmeme.com/feed.xml",
+  "type": "rss",
+  "bucket": "press",
+  "max_items": 15
+ },
+ {
+  "id": "hf_daily_papers",
+  "name": "HF Daily Papers",
+  "url": "https://huggingface.co/api/daily_papers?limit=30",
+  "type": "json",
+  "bucket": "research",
+  "max_items": 20
+ },
+ {
+  "id": "hn_front",
+  "name": "HN front page",
+  "url": "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=50",
+  "type": "hn_algolia",
+  "bucket": "community",
+  "max_items": 30
+ },
+ {
+  "id": "hn_q_models",
+  "name": "HN: models/labs (24h, >50 pts)",
+  "url": "https://hn.algolia.com/api/v1/search_by_date?tags=story&query=AI%20LLM%20LLMs%20GPT%20OpenAI%20Anthropic%20Claude%20Opus%20Sonnet%20Gemini%20DeepSeek%20Qwen%20Llama%20Mistral%20Grok&optionalWords=AI%20LLM%20LLMs%20GPT%20OpenAI%20Anthropic%20Claude%20Opus%20Sonnet%20Gemini%20DeepSeek%20Qwen%20Llama%20Mistral%20Grok&restrictSearchableAttributes=title&typoTolerance=false&numericFilters=points%3E50,created_at_i%3E{since_24h}&hitsPerPage=40",
+  "type": "hn_algolia",
+  "bucket": "community",
+  "max_items": 20
+ },
+ {
+  "id": "hn_q_agents",
+  "name": "HN: agents/coding (48h, >30 pts)",
+  "url": "https://hn.algolia.com/api/v1/search_by_date?tags=story&query=agent%20agents%20agentic%20Codex%20Cursor%20MCP%20Copilot%20coding&optionalWords=agent%20agents%20agentic%20Codex%20Cursor%20MCP%20Copilot%20coding&restrictSearchableAttributes=title&typoTolerance=false&numericFilters=points%3E30,created_at_i%3E{since_48h}&hitsPerPage=40",
+  "type": "hn_algolia",
+  "bucket": "community",
+  "max_items": 20
+ },
+ {
+  "id": "lobsters_ai",
+  "name": "Lobsters ai",
+  "url": "https://lobste.rs/t/ai.rss",
+  "type": "rss",
+  "bucket": "community",
+  "max_items": 10
+ },
+ {
+  "id": "gn_ai_regulation",
+  "name": "Google News: \"AI regulation\"",
+  "url": "https://news.google.com/rss/search?q=%22AI+regulation%22+when:1d&hl=en-US&gl=US&ceid=US:en",
+  "type": "gnews",
+  "bucket": "gnews",
+  "max_items": 15
+ },
+ {
+  "id": "gn_ai_chips",
+  "name": "Google News: \"AI chips\"",
+  "url": "https://news.google.com/rss/search?q=%22AI+chips%22+when:1d&hl=en-US&gl=US&ceid=US:en",
+  "type": "gnews",
+  "bucket": "gnews",
+  "max_items": 15
+ },
+ {
+  "id": "gn_ai_funding",
+  "name": "Google News: \"AI startup\" raises",
+  "url": "https://news.google.com/rss/search?q=%22AI+startup%22+raises+when:1d&hl=en-US&gl=US&ceid=US:en",
+  "type": "gnews",
+  "bucket": "gnews",
+  "max_items": 15
+ }
+]

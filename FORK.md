@@ -37,6 +37,12 @@ src/client/shell/tests/settings_backups.rs
 src/client/shell/tests/settings_closed.rs
 src/client/shell/tests/sticky_notifications.rs
 src/client/shell/tests/tab_sidebar.rs
+src/integration/assets/news/anchors.py
+src/integration/assets/news/news_run.py
+src/integration/assets/news/sources.json
+src/integration/assets/news/system.md
+src/integration/assets/news/topic.md
+src/integration/assets/news/viewer.py
 src/integration/claude_subagent_hooks.rs
 src/persist/agent_transcripts.rs
 src/persist/closed_sessions.rs
