@@ -14,13 +14,16 @@ scripts/fork_sync.sh
 scripts/fork_sync_lib.py
 scripts/test_fork_sync.py
 src/api/schema/closed_sessions.rs
+src/api/schema/news.rs
 src/app/agent_suspend.rs
 src/app/agent_transcripts.rs
 src/app/closed_sessions.rs
+src/app/news.rs
 src/app/subagents.rs
 src/app/tab_bar_status/output.rs
 src/app/tab_color.rs
 src/app/tab_remind.rs
+src/cli/news.rs
 src/cli/tab_closed.rs
 src/client/shell/idle_reminders.rs
 src/client/shell/notification_format.rs
@@ -37,6 +40,7 @@ src/client/shell/tests/settings_backups.rs
 src/client/shell/tests/settings_closed.rs
 src/client/shell/tests/sticky_notifications.rs
 src/client/shell/tests/tab_sidebar.rs
+src/config/news.rs
 src/integration/assets/news/anchors.py
 src/integration/assets/news/news_run.py
 src/integration/assets/news/sources.json
@@ -44,8 +48,10 @@ src/integration/assets/news/system.md
 src/integration/assets/news/topic.md
 src/integration/assets/news/viewer.py
 src/integration/claude_subagent_hooks.rs
+src/integration/news_assets.rs
 src/persist/agent_transcripts.rs
 src/persist/closed_sessions.rs
+src/persist/news.rs
 src/server/headless/tests/fork_smoke.rs
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
@@ -72,6 +78,8 @@ src/server/headless/tests/fork_smoke.rs
 | App | agent_transcript_backup_thread | None |
 | App | agent_transcript_backup_last | None |
 | App | agent_transcript_backup_pending | std::collections::BTreeMap::new() |
+| App | news | news::NewsState::new(&config.news, policy.persist_session, Instant::now()) |
+| Config | news | crate::config::NewsConfig::default() |
 | SessionConfig | backup_agent_transcripts | true |
 | UiConfig | sidebar_layout | crate::config::SidebarLayoutConfig::Spaces |
 | UiConfig | tab_agent_glyphs | std::collections::BTreeMap::new() |
@@ -185,7 +193,9 @@ Method::TabSetReminder   [src/api/schema.rs, after TabSetRemind; wire "tab.set_r
 Method::PaneReportSubagent   [src/api/schema.rs, after TabSetReminder; wire "pane.report_subagent"]
 Method::SessionClosedList   [src/api/schema.rs, after PaneReportSubagent; wire "session.closed_list"]
 Method::SessionClosedReopen   [src/api/schema.rs, after SessionClosedList; wire "session.closed_reopen"]
-Method::SessionClosedRemove   [src/api/schema.rs, after SessionClosedReopen, last of the fork block; wire "session.closed_remove"]
+Method::SessionClosedRemove   [src/api/schema.rs, after SessionClosedReopen; wire "session.closed_remove"]
+Method::NewsRun   [src/api/schema.rs, after SessionClosedRemove; wire "news.run"]
+Method::NewsStatus   [src/api/schema.rs, after NewsRun, last of the fork block; wire "news.status"]
 TabRemindInterval   [src/api/schema/tabs.rs, fork-owned enum after TabSetRemindParams; wire "5m" "10m" "30m" "1h" "6h" "daily", Unknown the serde(other) fallback; JSON records, session.json and the bincode client snapshot (variant index), append-closed]
 TabRemindEvery   [src/api/schema/tabs.rs, fork-owned closed enum, "off" plus the intervals; part of the tab.set_reminder digest, so a new interval needs a new method name]
 crate::sound::Sound::Reminder   [src/sound.rs, last after Request, with ReminderBase { Done, Request }; client-only (never on the wire); the server's sound_notify_message and app/actions.rs client_notification_kind match it]
@@ -195,6 +205,7 @@ ResponseResult::AgentActivated   [src/api/schema/response.rs; wire "agent_activa
 ResponseResult::AgentRestarted   [src/api/schema/response.rs, after AgentActivated; wire "agent_restarted"]
 ResponseResult::AgentTranscripts   [src/api/schema/response.rs; wire "agent_transcripts"]
 ResponseResult::SessionClosedList   [src/api/schema/response.rs, after AgentTranscripts; wire "session_closed_list"]
+ResponseResult::NewsStatus   [src/api/schema/response.rs, after SessionClosedList, last of the fork block; wire "news_status"]
 KeybindAction::ToggleAgentSuspend   [src/input/keybindings.rs, after ClearPane; internal]
 KeybindAction::MoveTabToGroup   [src/input/keybindings.rs; internal]
 KeybindAction::ToggleGroupsFolded   [src/input/keybindings.rs; internal]
@@ -242,6 +253,7 @@ session.closed_list, session.closed_reopen, session.closed_remove: fork-defined 
 session.closed_list digest: 36061ddc74238ec4cbe0e9b01e685d417718a12f09ebac9334b7c1fc754c22cd (EmptyParams).
 session.closed_reopen digest: f18fab7830a2e3c6e915def7f93b9afb48f406bc78001cecd0a17f188291306d (ClosedSessionTarget { id }).
 session.closed_remove digest: 9583e60d3393fbbcec1a209e4ce7b227ce38d429b0d0f1e9dac1ac2bb3befbdb (ClosedSessionTarget { id }).
+news.run, news.status: fork-defined (Method::NewsRun/NewsStatus, api_method_name arms, request_changes_ui for news.run only (it may open the News tab), handlers in src/app/news.rs, CLI `herdr news run|status|log [n]` in src/cli/news.rs). Both take EmptyParams and answer ResponseResult::NewsStatus { status: NewsStatusInfo } (a response type, so not digest-covered); news.run starts a run first and refuses with news_run_in_flight while one lasts, news_unavailable without a persisted session, news_run_failed when the runner install or the tab fails. Not advertised to the client shell (absent from CLIENT_SHELL_METHODS), so no digest.
 pane.move: upstream method, advertised to the client shell only by the fork (absent from base CLIENT_SHELL_METHODS).
 CLIENT_SHELL_METHODS (src/server/client_commands.rs): union, sorted; the test advertised_client_shell_methods_are_sorted_unique_and_in_schema enforces it.
 Digest asserts in advertised_client_shell_method_shapes_stay_at_the_v1_contract: the fork appends eleven `actual.remove(..)` asserts (agent.suspend, agent.activate, pane.move, agent.transcripts, agent.restart, tab.set_color, tab.set_remind, tab.set_reminder, session.closed_list, session.closed_remove, session.closed_reopen) after upstream's pane.link.resolve assert. Resolve an assert-block conflict as the union of `actual.remove` blocks, upstream first, no method name twice.
@@ -252,9 +264,11 @@ Upstream adding "pane.move" to CLIENT_SHELL_METHODS, or adding any section 9 ide
 ## 6. Config keys (cross-checked by scripts/config_reference_check.py)
 ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors, session.backup_agent_transcripts,
 keys.toggle_agent_suspend, keys.move_tab_to_group, keys.toggle_groups_folded, keys.restart_agent, keys.cycle_tab_color, keys.toggle_tab_important,
-ui.toast.herdr.sticky, ui.toast.herdr.max_stack, ui.idle_reminder_minutes, ui.daily_reminder_time, ui.sound.reminder_path
+ui.toast.herdr.sticky, ui.toast.herdr.max_stack, ui.idle_reminder_minutes, ui.daily_reminder_time, ui.sound.reminder_path,
+news.enabled, news.interval_hours, news.quiet_hours, news.model
 ui.tab_bar_right command entry fields `lines` (u8, default 1, clamped to 1..=4 with a config warning) and `ansi` (bool, default false) are not separate keys: they are documented in the ui.tab_bar_right entry's description in config-reference.json (appended after upstream's sentences) and in configuration.mdx in the paragraph plus example directly after upstream's "Separators appear only between visible entries" paragraph.
 Placement in docs/next/website/src/data/config-reference.json: keys.* directly after keys.clear_pane, ui.* directly after ui.sidebar_collapsed_mode (in the order ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors, ui.idle_reminder_minutes, ui.daily_reminder_time), ui.sound.reminder_path directly after ui.sound.request_path, session.backup_agent_transcripts last in the session group, ui.toast.herdr.sticky and ui.toast.herdr.max_stack directly after ui.toast.herdr.position in the notifications group. The same keys appear as commented defaults in src/main.rs DEFAULT_CONFIG (after clear_pane, sidebar_collapsed_mode, startup_per_agent_delay_ms) and in docs/next/website/src/content/docs/configuration.mdx.
+The news.* keys form their own group (id `news`, title News) directly after the session group in config-reference.json and a `[news]` block directly after the `[session]` block in DEFAULT_CONFIG; they are not in configuration.mdx (fork-only feature, no release docs).
 After any merge touching config-reference.json: python3 -m json.tool on the file, then python3 scripts/config_reference_check.py.
 
 ## 7. Per-file merge rules
@@ -270,34 +284,34 @@ src/api/schema/common.rs  deny: AgentStatus is append-closed
 tests/api_ping.rs  deny: the fork's one line is the protocol literal in ping_over_socket_returns_version; it must equal PROTOCOL_VERSION in src/protocol/wire.rs after the sync
 tests/support/mod.rs  deny: the fork's one line is CURRENT_PROTOCOL; it must equal PROTOCOL_VERSION in src/protocol/wire.rs after the sync
 src/protocol/wire.rs  deny: PROTOCOL_VERSION is the fork's value (upstream + 3: ClientShellTab.color (23), ClientShellTab.remind with ClientShellAgent.subagents (24), ClientShellTab.important and remind_every replacing remind (25); when upstream bumps, resolve to upstream's new value + 3 and keep the fork comment), the fork's other lines are one inside deserialize_client_shell_agent_status, ClientShellTab.color, .important, .remind_every and ClientShellAgent.subagents (serde default, deliberately not skip_serializing_if: the bincode round-trip needs every field) and `color: None` / `important: false` / `remind_every: None` in the client_shell_snapshot_roundtrip literal (section 2)
-src/api/schema.rs  additive: fork Method variants stay directly after AgentStart; the fork's is_zero stays directly after is_false; `pub mod closed_sessions;` and `pub use closed_sessions::*;` directly after the agents lines
-src/persist.rs  additive: `pub mod closed_sessions;` directly after `pub mod agent_transcripts;`, the closed-sessions line last in the module doc
-src/app/mod.rs  additive: `mod closed_sessions;` directly after `mod agents;`
-src/cli.rs  additive: `mod tab_closed;` directly after `mod tab;`
+src/api/schema.rs  additive: fork Method variants stay directly after AgentStart (NewsRun and NewsStatus close the block); the fork's is_zero stays directly after is_false; `pub mod closed_sessions;` and `pub use closed_sessions::*;` directly after the agents lines, `pub mod news;` and `pub use news::*;` directly after them
+src/persist.rs  additive: `pub mod closed_sessions;` directly after `pub mod agent_transcripts;`, `pub mod news;` directly after it; the closed-sessions and news lines last in the module doc
+src/app/mod.rs  additive: `mod closed_sessions;` directly after `mod agents;`, `mod news;` directly after it
+src/cli.rs  additive: `mod tab_closed;` directly after `mod tab;`, `mod news;` directly after it; the `news` arm directly after the `session` arm in maybe_run
 src/client/shell.rs  additive: `mod settings_closed;` directly after `mod settings;`
-src/api/schema/response.rs  additive: fork ResponseResult variants stay directly after AgentStarted
+src/api/schema/response.rs  additive: fork ResponseResult variants stay directly after AgentStarted (NewsStatus closes the block); `use super::news::NewsStatusInfo;` directly after the closed_sessions use
 src/api/schema/agents.rs  additive: fork params types stay after AgentStartParams; AgentInfo.subagents stays directly after state_change_seq
 src/api/schema/panes.rs  additive: PaneReportSubagentParams and SubagentEvent stay last in the file
-src/integration/mod.rs  additive: `mod claude_subagent_hooks;` directly after `mod claude_settings;`
+src/integration/mod.rs  additive: `mod claude_subagent_hooks;` directly after `mod claude_settings;`, `pub(crate) mod news_assets;` directly after it
 src/integration/targets.rs  additive: the claude_subagent_hooks install/uninstall lines stay directly after install_claude_settings / uninstall_claude_settings
 src/integration/assets/claude/herdr-agent-state.sh  deny: the fork's hunks are `subagent|stop` in the action case, the send() helper, and the `subagent` (agent_type filter) and `stop` (background_tasks snapshot) branches before the SessionStart filter, plus HERDR_INTEGRATION_VERSION=11 (upstream 10 + 1; upstream bumping it = resolve to upstream + 1 in the .sh, the .ps1 and CLAUDE_INTEGRATION_VERSION); re-apply them on upstream's new asset by hand
 src/integration/tests.rs  deny: the fork's lines are the two SubagentStop asserts after install_claude (one entry, the subagent hook; none on Windows), the three Stop asserts (one entry, the stop hook; none on Windows) and the expected Claude integration version 11 in the two status tests
 src/api/schema/tabs.rs  additive: TabInfo.color, .important, .remind_every stay the last fields; TabColor, TabSetColorParams, TabSetRemindParams, TabRemindInterval, TabRemindEvery and TabSetReminderParams stay after TabInfo
 src/cli/tab.rs  additive: the fork's `color`, `important`, `remind`, `closed` and `reopen` arms stay after `rename` (closed and reopen call src/cli/tab_closed.rs), tab_color, tab_important, tab_remind and send_reminder before tab_close, their help lines after the rename line; the fork's tests module stays last
-src/cli/spec.rs  additive: the fork's `closed` and `reopen` subcommands directly before the tab `close` subcommand; spec_models_tab_closed_and_reopen directly before spec_models_tab_remind_values
+src/cli/spec.rs  additive: the fork's `closed` and `reopen` subcommands directly before the tab `close` subcommand; `.subcommand(news_command())` directly after session_command() in command(), fn news_command directly before fn session_command; spec_models_tab_closed_and_reopen then spec_models_news_run_status_and_log directly before spec_models_tab_remind_values
 src/api/server.rs  additive: fork arms stay after the agent.start arm
-src/api/mod.rs  additive: fork arms stay after Method::AgentStart (Method::SessionClosedReopen directly after PaneReportSubagent)
-src/config/model.rs  additive: upstream first, fork lines directly after each clear_pane line; HerdrToastConfig sticky/max_stack directly after position (struct, Default, impl HerdrToastConfig after the Default impl), the *_TOAST_MAX_STACK consts directly after MAX_TOAST_DELAY_SECONDS, the *_IDLE_REMINDER_MINUTES consts after them; UiConfig.idle_reminder_minutes and daily_reminder_time directly after tab_agent_glyph_colors (struct and Default), effective_idle_reminder_minutes, effective_daily_reminder_minutes, daily_reminder_diagnostic and idle_reminder_diagnostic last in impl UiConfig, parse_time_of_day directly before impl Default for ToastConfig; KeysConfigOverlay.toggle_tab_important carries `alias = "toggle_tab_remind"`
+src/api/mod.rs  additive: fork arms stay after Method::AgentStart (Method::SessionClosedReopen directly after PaneReportSubagent, Method::NewsRun directly after it)
+src/config/model.rs  additive: upstream first, fork lines directly after each clear_pane line; Config.news the last field (NewsConfig in the super import); HerdrToastConfig sticky/max_stack directly after position (struct, Default, impl HerdrToastConfig after the Default impl), the *_TOAST_MAX_STACK consts directly after MAX_TOAST_DELAY_SECONDS, the *_IDLE_REMINDER_MINUTES consts after them; UiConfig.idle_reminder_minutes and daily_reminder_time directly after tab_agent_glyph_colors (struct and Default), effective_idle_reminder_minutes, effective_daily_reminder_minutes, daily_reminder_diagnostic and idle_reminder_diagnostic last in impl UiConfig, parse_time_of_day directly before impl Default for ToastConfig; KeysConfigOverlay.toggle_tab_important carries `alias = "toggle_tab_remind"`
 src/config/tab_bar.rs  additive: MAX_TAB_BAR_COMMAND_LINES directly after MAX_TAB_BAR_RIGHT_ENTRIES, default_command_lines and effective_tab_bar_command_lines after default_command_timeout_seconds, Command.lines and .ansi the last fields of the variant, the lines clamp diagnostic first in tab_bar_right_diagnostics' Command arm (which binds `lines, ansi: _`), the fork test last in the tests module
 src/app/tab_bar_status.rs  deny: the fork's hunks are `mod output; use output::StatusOutputFormat;` after the imports, TabBarCommandRuntime.format (last field), `lines, ansi` in configure_tab_bar_status' Command arm and `format: StatusOutputFormat::new(*lines, *ansi)`, spawn_status_command_with_format in handle_tab_bar_status_tasks, spawn_status_command turned into a #[cfg(test)] wrapper, run_status_command's `format` parameter and its two calls into output::, and `lines: 1, ansi: false` in three test literals; re-apply them on upstream's new file by hand
-src/config.rs  additive: `tab_bar::{effective_tab_bar_command_lines, MAX_TAB_BAR_COMMAND_LINES},` in the pub(crate) use block directly after the tab_bar group; the fork's `.chain(self.ui.toast.herdr.diagnostic())` then `.chain(self.ui.idle_reminder_diagnostic())` then `.chain(self.ui.daily_reminder_diagnostic())` stay last in Config::collect_diagnostics
+src/config.rs  additive: `mod news;` directly after `mod model;`, `news::{NewsConfig, QuietHours},` in the pub use block directly before the sound line; `tab_bar::{effective_tab_bar_command_lines, MAX_TAB_BAR_COMMAND_LINES},` in the pub(crate) use block directly after the tab_bar group; the fork's `.chain(self.ui.toast.herdr.diagnostic())` then `.chain(self.ui.idle_reminder_diagnostic())` then `.chain(self.ui.daily_reminder_diagnostic())` then `.chain(self.news.diagnostics())` stay last in Config::collect_diagnostics
 src/config/write.rs  additive: ConfigEdit::IdleReminderMinutes, SoundFile, DailyReminderTime stay last in the enum and in each match (format_time_of_day directly after the enum, re-exported from src/config.rs); their tests first in the tests module
 src/sound.rs  additive: Sound::Reminder, ReminderBase, Sound::base and preview directly after the Sound enum; play()'s built-in match goes through base()
 src/config/sound.rs  additive: SoundConfig.reminder_path after request_path (struct, Default, path_for arm, diagnostics list); supported_sound_extension directly before impl AgentSoundOverrides; its test before missing_sound_file_produces_diagnostic
 src/config/keybinds.rs  additive: upstream first, fork lines directly after each clear_pane line
 src/input/keybindings.rs  additive: upstream first, fork lines directly after each ClearPane line
 src/input/keybind_help.rs  additive: upstream first, fork entries directly after the clear pane entry
-src/main.rs  additive: DEFAULT_CONFIG comment lines, upstream first
+src/main.rs  additive: DEFAULT_CONFIG comment lines, upstream first; the `[news]` block directly after the `[session]` block
 src/client/shell/state.rs  additive: upstream first, fork after; ClientSettingsSection::ALL keeps Backups, Reminders then ClosedSessions last; ClientSettingsOverlay.closed sits between transcripts and loading_transcripts
 src/client/shell/tests/mod.rs  additive: fork module lines
 src/server/headless/tests/mod.rs  additive: the fork_smoke module line; test literals per section 2
@@ -308,21 +322,22 @@ src/client/shell/notifications.rs  mid-logic: render_visible_notification and re
 src/terminal/state.rs  mid-logic: set_detected_state_with_screen_signals_at (suspend reconcile, hook-clear durable session, name kept on exit), clear_full_lifecycle_hook_suppression_for_detected_agent (replacement sessions), set_agent_session_ref_for_session_start (launch-session identity), release_agent_with_mutation, managed_agent_launch_pending, managed_agent_interactive_ready, managed_agent_kind, reconcile_managed_agent_at, clear_agent_name, clear_agent_runtime_identity_after_respawn; active_subagents (with subagent_snapshot_seen) is forgotten in recompute_effective_state on an agent label change (before the early return; before the first snapshot an Idle state also clears the set, the older Claude rule), release_agent_with_mutation, begin_agent_suspend and clear_agent_runtime_identity_after_respawn; a turn end and an Unknown with the same label keep it; replace_subagents takes the Stop snapshot; active_subagent_count is len() in any state, 0 while suspended
 src/app/actions.rs  mid-logic: expire_agent_metadata_at, handle_app_event (transcript path before session routing), update_terminal_state_with_completion_policy (suspended in the captured tuple, dirty and completion suppression; clear_subagents when mutation.session_ref_changed)
 src/app/agent_suspend.rs  mid-logic: suspend_resolved_agent refuses with SubagentsRunning after the Working check (no input written)
-src/app/api.rs  mid-logic: emit_pane_state_update (status computed with suspended on both sides)
+src/app/api.rs  mid-logic: emit_pane_state_update (status computed with suspended on both sides); handle_api_request dispatches Method::NewsRun / NewsStatus directly after the SessionClosedRemove arm
+src/detect/mod.rs  mid-logic: full_lifecycle_hook_authority lists ("herdr:news", "claude") last, so the news runner's pane.report_agent reports keep authority after an earlier claude exit in the pane
 src/app/api/agents.rs  mid-logic: queue_agent_prompt and handle_agent_send_keys refuse suspended panes; any new upstream input method does not
 src/app/api/panes.rs  mid-logic: handle_pane_report_agent and handle_pane_report_agent_session derive transcript_path
 src/app/api_helpers.rs  mid-logic: status mapping moved to workspace::aggregate
 src/app/creation.rs  mid-logic: tab_info (color, important, remind_every), pane_info, workspace_info, terminal_agent_session_info
-src/app/mod.rs  mid-logic: App::new, apply_live_config (session section block restructured)
+src/app/mod.rs  mid-logic: App::new (news field from NewsState::new), apply_live_config (session section block restructured; a `news` section block directly before the graphics check applies NewsState::apply_config)
 src/app/session.rs  mid-logic: save_session_on_shutdown (early return became if/else, backup pass appended)
 src/app/agents.rs  mid-logic: rename refuses suspended; live_runtime_agent split into live_runtime_agent_job; agent_info sets subagents from active_subagent_count
 src/app/agent_view.rs  mid-logic: apply_agent_view, validate_field_value, status_name
 src/app/agent_resume.rs  mid-logic: start_pending_agent_resume restores the transcript backup before the resume command
-src/app/runtime.rs  mid-logic: next_headless_loop_deadline_with_git_refresh gains three deadlines (suspend exit, restart resume, transcript backup)
+src/app/runtime.rs  mid-logic: next_headless_loop_deadline_with_git_refresh gains four deadlines (suspend exit, restart resume, transcript backup, next_news_deadline directly after next_tab_bar_status_deadline)
 src/workspace/aggregate.rs  mid-logic: pane_details, aggregate_state, agent_status, agent_status_priority
 src/persist/snapshot.rs  mid-logic: capture_tab agent_session block rewritten to persistable_agent_session; capture_tab copies Tab.color, important (also as the legacy `remind`) and remind_every into TabSnapshot
 src/persist/restore.rs  mid-logic: restore_tab (resume disabled for suspended panes, handoff exit wait, color restored with Unknown dropped to None, important from important or the legacy remind, remind_every with Unknown dropped), unavailable_restored_terminal, pane_restore_startup, persisted_agent_session_from_snapshot
-src/server/headless.rs  mid-logic: handle_scheduled_tasks_headless (backup pass, suspend escalation, start_pending_agent_restarts)
+src/server/headless.rs  mid-logic: handle_scheduled_tasks_headless (backup pass, suspend escalation, start_pending_agent_restarts, handle_news_tasks directly after handle_tab_bar_status_tasks)
 src/server/headless/lifecycle.rs  mid-logic: perform_live_handoff sets suspended_exit_pending
 src/pane.rs  mid-logic: handoff_runtime_state, from_handoff_fd
 src/protocol/wire.rs  mid-logic: deserialize_client_shell_agent_status
@@ -510,6 +525,19 @@ SUBAGENT_HOOKS
 remind_marker
 TAB_REMIND_HOURS_MARKER
 TAB_REMIND_DAILY_MARKER
+news
+NewsState
+NewsConfig
+NewsRun
+NewsStatus
+news.run
+news.status
+news.json
+herdr:news
+news_assets
+handle_news_tasks
+next_news_deadline
+quiet_hours
 
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot
@@ -524,6 +552,7 @@ client::shell::tests::idle_reminders::fork_smoke::marked_done_tab_reminds_after_
 client::shell::tests::tab_sidebar::fork_smoke::tab_bar_status_reaches_the_tabs_sidebar_footer
 client::shell::tests::tab_sidebar::fork_smoke::colored_multi_line_status_reaches_the_footer_in_color
 server::headless::tests::fork_smoke::closed_agent_tab_reopens_from_the_list_with_the_same_session
+server::headless::tests::fork_smoke::news_status_and_run_reach_the_news_tab
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 ### Fixed
@@ -539,6 +568,7 @@ server::headless::tests::fork_smoke::closed_agent_tab_reopens_from_the_list_with
 - `agent.suspend` (and so `herdr agent suspend`, the "Suspend agent" menu item and `keys.toggle_agent_suspend`) refuses a `working` agent with `agent_working`, the same guard `agent.restart` uses, and sends it no input.
 
 ### Added
+- AI news desk, phase 2 (server-owned runs): `herdr news run` (`news.run`) installs the bundled runner (`news_run.py`, `anchors.py`, `viewer.py`, `system.md`, `topic.md`, `sources.json`, embedded in the binary) under `<session data dir>/news/bin/`, keeps one `News` tab in the first space (created unfocused, reused while it keeps its label), quits the page viewer with `q` when it is showing, and types `python3 <home>/bin/news_run.py --home <home> --trigger manual|scheduled [--model M]` into its shell; a run is in flight until `runs/index.jsonl` gains its record (polled every 5 s) or a 65-minute watchdog interrupts it (Ctrl-C, agent released, a `timeout` record), and a finished run that changed the page marks the tab important. `[news] enabled = true` (default false) schedules runs every `interval_hours` (default 6) outside `quiet_hours` (default `00:00-08:00` local, deferred to their end, missed slots collapsed to one run, a manual run restarts the interval); `model` is handed to the runner. `herdr news status [--json]` prints the schedule, home, tab, next run, run in flight and the last five runs (`news.status`), `herdr news log [N] [--json]` the newest runs from the run log. The schedule, tab and run in flight persist in `news.json` next to `session.json`; the runner's `herdr:news` reports keep hook authority for `claude` in the pane. No wire change.
 - Recently closed agent sessions: closing a tab, pane or space whose pane holds a live or suspended agent session (not a plain shell, not a tab moved to another group, not at server shutdown) records one entry per session in `closed-sessions.json` next to `session.json` (newest 100: agent and session reference, tab label, color and reminders, group, directory, close time). `herdr tab closed [--json]` lists them numbered, `herdr tab reopen <n|id|session-id-prefix>` reopens one, and the settings overlay's new `closed` tab lists `label · group · dir · 2h ago` with type-to-filter, Enter to reopen and Delete (or `d`) to remove. Reopening opens a tab in the original group (the first space when it is gone) with the same label, color and reminders, puts a deleted transcript back from the backup store, and types the native resume command; the entry is then removed. New socket methods `session.closed_list`, `session.closed_reopen`, `session.closed_remove`; no protocol change. The settings tab strip drops the labels' padding to fit the eighth tab.
 - `ui.tab_bar_right` command entries accept `lines` (1–4, default 1, clamped with a config warning) to keep the last non-empty output lines, joined with `\n` in the segment, and `ansi` (default false) to keep SGR color and weight sequences (`ESC [ digits;… m`) while every other escape and control character is still stripped. The `tabs` sidebar footer draws one row per line (at most four in total, the list shrinks to match and scrolling still reaches the last tab), styles reset (0), bold (1), dim (2), normal intensity (22), foreground 30–37 / 90–97, `38;5;n`, `38;2;r;g;b` and the default foreground (39) over its dim base, and truncates each row with `…`. The `spaces` tab bar shows only a segment's last line without escapes. No wire change: the segment stays a string and the protocol is unchanged; with the defaults the text is byte-for-byte upstream's.
 - In the `tabs` sidebar layout, where the horizontal tab bar is hidden, the `ui.tab_bar_right` status area (command, hostname, datetime and text entries) shows as a one-line dim footer under the tab list, joined with `ui.tab_bar_right_separator` and truncated with `…` when too wide. It takes one row off the list only while some status text exists; scrolling still reaches the last tab. The `spaces` layout is unchanged.
