@@ -1120,6 +1120,8 @@ impl App {
             Method::SessionClosedRemove(params) => {
                 return self.handle_session_closed_remove(request.id, params)
             }
+            Method::NewsRun(_) => return self.handle_news_run(request.id),
+            Method::NewsStatus(_) => return self.handle_news_status(request.id),
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

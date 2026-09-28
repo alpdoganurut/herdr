@@ -6,6 +6,7 @@ mod config_edit;
 mod config_file;
 mod env;
 mod file_ops;
+pub(crate) mod news_assets;
 mod opencode_config;
 mod registry;
 mod targets;

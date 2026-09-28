@@ -7,6 +7,7 @@ use super::events::EventEnvelope;
 use super::integrations::{
     IntegrationInstallResult, IntegrationTarget, IntegrationUninstallResult,
 };
+use super::news::NewsStatusInfo;
 use super::panes::{
     LayoutDescription, PaneEdgesResult, PaneFocusDirectionResult, PaneInfo, PaneLayoutSnapshot,
     PaneMoveResult, PaneNeighborResult, PaneProcessInfo, PaneReadResult, PaneResizeResult,
@@ -127,6 +128,9 @@ pub enum ResponseResult {
     },
     SessionClosedList {
         sessions: Vec<ClosedSessionInfo>,
+    },
+    NewsStatus {
+        status: NewsStatusInfo,
     },
     AgentPrompted {
         agent: AgentInfo,

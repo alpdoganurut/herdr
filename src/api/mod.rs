@@ -58,6 +58,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::TabSetReminder(_)
             | Method::PaneReportSubagent(_)
             | Method::SessionClosedReopen(_)
+            | Method::NewsRun(_)
             | Method::AgentPrompt(_)
             | Method::AgentSendKeys(_)
             | Method::PaneSplit(_)

@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 mod io;
 mod keybinds;
 mod model;
+mod news;
 mod sidebar;
 mod sound;
 mod tab_bar;
@@ -29,6 +30,7 @@ pub use self::{
         StatusIndicatorStyle, TabBarPositionConfig, ToastClipboardPosition, ToastConfig,
         ToastDelivery, ToastHerdrPosition, UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
     },
+    news::{NewsConfig, QuietHours},
     sidebar::{
         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenStyle,
         SpaceSidebarToken, SpacesSidebarConfig,
@@ -131,6 +133,7 @@ impl Config {
             .chain(self.ui.toast.herdr.diagnostic())
             .chain(self.ui.idle_reminder_diagnostic())
             .chain(self.ui.daily_reminder_diagnostic())
+            .chain(self.news.diagnostics())
             .collect()
     }
 

@@ -163,6 +163,7 @@ impl App {
             self.session_save_deadline,
             self.agent_transcript_backup_deadline,
             self.next_tab_bar_status_deadline(),
+            self.next_news_deadline(now),
             render_deadline,
         ]
         .into_iter()

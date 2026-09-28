@@ -146,7 +146,10 @@ mod tests {
         let config = NewsConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.effective_interval_hours(), 6);
-        assert_eq!(config.quiet_hours(), Some(QuietHours { start: 0, end: 480 }));
+        assert_eq!(
+            config.quiet_hours(),
+            Some(QuietHours { start: 0, end: 480 })
+        );
         assert!(config.model.is_none());
         assert!(config.diagnostics().is_empty());
     }

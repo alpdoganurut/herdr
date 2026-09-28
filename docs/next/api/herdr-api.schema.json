@@ -5925,6 +5925,38 @@
         {
           "properties": {
             "method": {
+              "const": "news.run",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "news.status",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -8506,6 +8538,195 @@
             }
           ]
         },
+        "NewsRunInfo": {
+          "description": "The run in flight.",
+          "properties": {
+            "phase": {
+              "description": "`starting` (waiting for the pane's shell prompt) or `running`.",
+              "type": "string"
+            },
+            "started_at": {
+              "description": "Seconds since the Unix epoch.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "trigger": {
+              "description": "`manual` or `scheduled`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "started_at",
+            "trigger",
+            "phase"
+          ],
+          "type": "object"
+        },
+        "NewsRunRecord": {
+          "description": "One news run as recorded in `runs/index.jsonl`, newest first in\n[`NewsStatusInfo::recent`].",
+          "properties": {
+            "changed": {
+              "default": false,
+              "description": "The editor's decision that the page changed (only meaningful on `ok`).",
+              "type": "boolean"
+            },
+            "cost_usd": {
+              "default": 0.0,
+              "format": "double",
+              "type": "number"
+            },
+            "edition": {
+              "description": "The edition the run published, on `ok`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "ended": {
+              "description": "When the run ended, same form; absent for a record written without one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "errors": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "outcome": {
+              "description": "`ok`, `invalid`, `timeout`, `failed` or `dry-run`.",
+              "type": "string"
+            },
+            "run": {
+              "description": "The runner's per-run directory name under `runs/` (local stamp).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "seconds": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "started": {
+              "description": "When the run started, ISO 8601 UTC (`YYYY-MM-DDTHH:MM:SS+00:00`).",
+              "type": "string"
+            },
+            "summary": {
+              "description": "The editor's one-line summary of the run, when it gave one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "trigger": {
+              "description": "`manual` or `scheduled`.",
+              "type": "string"
+            },
+            "turns": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "started",
+            "trigger",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        "NewsStatusInfo": {
+          "description": "`news.status` (and the reply to `news.run`).",
+          "properties": {
+            "consecutive_failures": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "enabled": {
+              "description": "Whether scheduled runs are on (`news.enabled`).",
+              "type": "boolean"
+            },
+            "home": {
+              "description": "The news home directory (`<session data dir>/news`).",
+              "type": "string"
+            },
+            "interval_hours": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "next_run_at": {
+              "description": "The next scheduled run, seconds since the Unix epoch; absent while\nscheduling is off or the server has no news home.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "quiet_hours": {
+              "description": "The configured quiet window, `HH:MM-HH:MM`, or empty.",
+              "type": "string"
+            },
+            "recent": {
+              "default": [],
+              "description": "Recent runs, newest first (at most 50).",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/NewsRunRecord"
+              },
+              "type": "array"
+            },
+            "run": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/NewsRunInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tab_id": {
+              "description": "The News tab and its pane, once created.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "enabled",
+            "interval_hours",
+            "quiet_hours",
+            "home",
+            "consecutive_failures"
+          ],
+          "type": "object"
+        },
         "NotificationShowReason": {
           "enum": [
             "shown",
@@ -10335,6 +10556,22 @@
               "required": [
                 "type",
                 "sessions"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "status": {
+                  "$ref": "#/schemas/success_response/$defs/NewsStatusInfo"
+                },
+                "type": {
+                  "const": "news_status",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "status"
               ],
               "type": "object"
             },

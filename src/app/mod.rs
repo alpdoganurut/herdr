@@ -12,6 +12,7 @@ pub(crate) mod agent_view;
 pub(crate) use agent_suspend::SUSPEND_GRACEFUL_EXIT_GRACE;
 mod agents;
 mod closed_sessions;
+mod news;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
 #[cfg(test)]
@@ -156,6 +157,8 @@ pub struct App {
     pub(crate) backup_agent_transcripts: bool,
     /// Next periodic transcript backup pass.
     pub(crate) agent_transcript_backup_deadline: Option<Instant>,
+    /// The AI news desk: schedule, tab and run in flight (`news.*`).
+    pub(crate) news: news::NewsState,
     agent_transcript_backup_thread:
         Option<std::thread::JoinHandle<agent_transcripts::AgentTranscriptBackupPass>>,
     /// The most recent finished backup pass, for `agent.transcripts`.
@@ -639,6 +642,7 @@ impl App {
             agent_transcript_backup_deadline: policy
                 .persist_session
                 .then_some(Instant::now() + agent_transcripts::AGENT_TRANSCRIPT_BACKUP_INTERVAL),
+            news: news::NewsState::new(&config.news, policy.persist_session, Instant::now()),
             agent_transcript_backup_thread: None,
             agent_transcript_backup_last: None,
             agent_transcript_backup_pending: std::collections::BTreeMap::new(),
@@ -905,6 +909,10 @@ impl App {
                         .into(),
                 );
             }
+        }
+
+        if !invalid_section("news") {
+            self.news.apply_config(&config.news);
         }
 
         let graphics_config_valid = !invalid_section("terminal")

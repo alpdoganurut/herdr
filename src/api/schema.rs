@@ -6,6 +6,7 @@ pub mod commands;
 pub mod common;
 pub mod events;
 pub mod integrations;
+pub mod news;
 pub mod panes;
 pub mod plugins;
 pub mod response;
@@ -21,6 +22,7 @@ pub use commands::*;
 pub use common::*;
 pub use events::*;
 pub use integrations::*;
+pub use news::*;
 pub use panes::*;
 pub use plugins::*;
 pub use response::*;
@@ -163,6 +165,10 @@ pub enum Method {
     SessionClosedReopen(ClosedSessionTarget),
     #[serde(rename = "session.closed_remove")]
     SessionClosedRemove(ClosedSessionTarget),
+    #[serde(rename = "news.run")]
+    NewsRun(EmptyParams),
+    #[serde(rename = "news.status")]
+    NewsStatus(EmptyParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

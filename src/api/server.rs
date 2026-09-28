@@ -539,6 +539,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::SessionClosedList(_) => "session.closed_list",
         Method::SessionClosedReopen(_) => "session.closed_reopen",
         Method::SessionClosedRemove(_) => "session.closed_remove",
+        Method::NewsRun(_) => "news.run",
+        Method::NewsStatus(_) => "news.status",
         Method::AgentPrompt(_) => "agent.prompt",
         Method::AgentWait(_) => "agent.wait",
         Method::PaneSplit(_) => "pane.split",
