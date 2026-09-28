@@ -780,7 +780,13 @@ pub struct PaneReportSubagentParams {
     pub pane_id: String,
     pub agent: String,
     pub event: SubagentEvent,
+    /// The subagent a `start` or `stop` is about; unused by `snapshot`.
+    #[serde(default)]
     pub subagent_id: String,
+    /// `snapshot`: every subagent still running (from the main agent's Stop
+    /// hook); replaces the pane's set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagent_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -788,4 +794,6 @@ pub struct PaneReportSubagentParams {
 pub enum SubagentEvent {
     Start,
     Stop,
+    /// The authoritative running set, sent at every main turn end.
+    Snapshot,
 }

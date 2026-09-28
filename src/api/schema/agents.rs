@@ -256,8 +256,9 @@ pub struct AgentInfo {
     pub interactive_ready: bool,
     #[serde(default)]
     pub state_change_seq: u64,
-    /// Claude Code subagents running under this working agent
-    /// (`pane.report_subagent`); absent when none.
+    /// Claude Code subagents running under this agent (`pane.report_subagent`),
+    /// background ones included, whatever its status; absent when none or
+    /// while suspended.
     #[serde(default, skip_serializing_if = "super::is_zero")]
     pub subagents: u32,
     /// The current idle transition completed work, independently of who has viewed it.

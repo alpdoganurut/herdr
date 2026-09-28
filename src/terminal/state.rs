@@ -272,9 +272,16 @@ pub struct TerminalState {
     /// path survives whichever record ends up persisted for the session.
     agent_transcript_paths: HashMap<String, PathBuf>,
     /// Claude Code subagents reported running (`pane.report_subagent`), by
-    /// subagent id. Runtime only: never persisted or handed off, cleared when
-    /// the agent stops working, is suspended, released or replaced.
+    /// subagent id, including background ones that outlive the main turn.
+    /// Runtime only: never persisted or handed off; cleared when the agent is
+    /// replaced (label change, exit, respawn, session change), suspended or
+    /// released. A turn end does not clear it: the Stop hook's snapshot
+    /// replaces it instead.
     active_subagents: std::collections::HashSet<String>,
+    /// Whether this agent has sent a subagent snapshot (a Claude Code that
+    /// reports `background_tasks` on Stop). Until then an idle agent drops
+    /// its set, since nothing else would heal a missed SubagentStop.
+    subagent_snapshot_seen: bool,
 }
 
 /// Most subagents a pane tracks; further starts are ignored until some stop.
@@ -322,6 +329,7 @@ impl TerminalState {
             restore_error: None,
             agent_transcript_paths: HashMap::new(),
             active_subagents: std::collections::HashSet::new(),
+            subagent_snapshot_seen: false,
         }
     }
 
@@ -2084,7 +2092,7 @@ impl TerminalState {
         if !preserve_foreign_persisted_session {
             self.persisted_agent_session = None;
         }
-        self.clear_subagents();
+        self.forget_subagents();
         let current_session = self.current_session_identity_for_persistence();
         Some(TerminalStateMutation {
             effective_state_change: self.recompute_effective_state(
@@ -2397,7 +2405,7 @@ impl TerminalState {
         self.suppressed_full_lifecycle_hook_reports.clear();
         self.stale_full_lifecycle_hook_sessions.clear();
         self.state = AgentState::Unknown;
-        self.clear_subagents();
+        self.forget_subagents();
         self.last_agent_state_change_seq = None;
         self.last_agent_completion_seq = None;
         self.launch_argv = None;
@@ -2450,7 +2458,7 @@ impl TerminalState {
         session: crate::agent_resume::PersistedAgentSession,
         exit_deadline: Instant,
     ) {
-        self.clear_subagents();
+        self.forget_subagents();
         self.suspended_agent = Some(SuspendedAgent {
             agent: session.agent.clone(),
             name: self.agent_name.clone(),
@@ -2736,11 +2744,14 @@ impl TerminalState {
 
         let presentation = self.effective_presentation_for_state_at(state, now);
         self.clear_expiry_pending_for_hidden_metadata();
-        // Subagents only run under a working (or momentarily blocked) agent;
-        // an idle, gone or replaced agent has none left.
-        if !matches!(state, AgentState::Working | AgentState::Blocked)
-            || previous_agent_label != agent_label
-        {
+        // Background subagents outlive the main turn, so a turn end keeps
+        // them (the Stop hook's snapshot corrects the set) and so does a
+        // transient Unknown with the same label. A replaced or gone agent has
+        // none left. A Claude Code without snapshots keeps the old rule: idle
+        // drops them, since nothing else would heal a missed SubagentStop.
+        if previous_agent_label != agent_label {
+            self.forget_subagents();
+        } else if state == AgentState::Idle && !self.subagent_snapshot_seen {
             self.clear_subagents();
         }
 
@@ -2781,16 +2792,44 @@ impl TerminalState {
         changed
     }
 
-    /// Subagents running under this agent while it works; 0 otherwise.
-    pub fn active_subagent_count(&self) -> u32 {
-        if self.state == AgentState::Working {
-            u32::try_from(self.active_subagents.len()).unwrap_or(u32::MAX)
-        } else {
-            0
+    /// Replace the set with a snapshot of every running subagent (the main
+    /// agent's Stop hook). Ids beyond `SUBAGENT_LIMIT` are dropped. Returns
+    /// whether the set changed.
+    pub fn replace_subagents<'a>(
+        &mut self,
+        subagent_ids: impl IntoIterator<Item = &'a str>,
+    ) -> bool {
+        self.subagent_snapshot_seen = true;
+        let next: std::collections::HashSet<String> = subagent_ids
+            .into_iter()
+            .take(SUBAGENT_LIMIT)
+            .map(str::to_owned)
+            .collect();
+        if next == self.active_subagents {
+            return false;
         }
+        self.active_subagents = next;
+        self.revision = self.revision.saturating_add(1);
+        true
     }
 
-    fn clear_subagents(&mut self) {
+    /// Subagents running under this agent, whatever its turn is doing; 0
+    /// while it is suspended.
+    pub fn active_subagent_count(&self) -> u32 {
+        if self.suspended_agent.is_some() {
+            return 0;
+        }
+        u32::try_from(self.active_subagents.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Forget the subagents of an agent that went away (or a new
+    /// conversation): the set, and whether it sent snapshots.
+    pub(crate) fn forget_subagents(&mut self) {
+        self.subagent_snapshot_seen = false;
+        self.clear_subagents();
+    }
+
+    pub(crate) fn clear_subagents(&mut self) {
         if !self.active_subagents.is_empty() {
             self.active_subagents.clear();
             self.revision = self.revision.saturating_add(1);

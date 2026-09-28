@@ -3288,14 +3288,22 @@
               "type": "string"
             },
             "subagent_id": {
+              "default": "",
+              "description": "The subagent a `start` or `stop` is about; unused by `snapshot`.",
               "type": "string"
+            },
+            "subagent_ids": {
+              "description": "`snapshot`: every subagent still running (from the main agent's Stop\nhook); replaces the pane's set.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           "required": [
             "pane_id",
             "agent",
-            "event",
-            "subagent_id"
+            "event"
           ],
           "type": "object"
         },
@@ -4116,11 +4124,20 @@
           "type": "string"
         },
         "SubagentEvent": {
-          "enum": [
-            "start",
-            "stop"
-          ],
-          "type": "string"
+          "oneOf": [
+            {
+              "enum": [
+                "start",
+                "stop"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "snapshot",
+              "description": "The authoritative running set, sent at every main turn end.",
+              "type": "string"
+            }
+          ]
         },
         "Subscription": {
           "oneOf": [
@@ -7128,7 +7145,7 @@
               "type": "object"
             },
             "subagents": {
-              "description": "Claude Code subagents running under this working agent\n(`pane.report_subagent`); absent when none.",
+              "description": "Claude Code subagents running under this agent (`pane.report_subagent`),\nbackground ones included, whatever its status; absent when none or\nwhile suspended.",
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
