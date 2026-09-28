@@ -6,7 +6,7 @@
 //! tab in the first space, and types
 //! `python3 <home>/bin/news_run.py --home <home> --trigger <manual|scheduled>`
 //! into that tab's shell, so the run is visible and interruptible like any
-//! agent pane. The runner reports itself to the pane as a `claude` agent
+//! agent pane. The runner reports itself to the pane as the `news` agent
 //! (source `herdr:news`), publishes an edition, appends a line to
 //! `<home>/runs/index.jsonl` and execs the page viewer.
 //!
@@ -35,8 +35,12 @@ use crate::persist::news as store;
 
 /// The News tab's label.
 pub(crate) const NEWS_TAB_LABEL: &str = "News";
-/// The source the runner reports with (`pane.report_agent`).
+/// The source and agent label the runner reports with (`pane.report_agent`):
+/// a plain hook source with a label no screen manifest owns, so herdr applies
+/// its state without seeing a process (a `claude` label would stay with
+/// screen detection, which never sees the `claude -p` child).
 pub(crate) const NEWS_HOOK_SOURCE: &str = "herdr:news";
+pub(crate) const NEWS_AGENT_LABEL: &str = "news";
 /// How often the run log is polled while a run is in flight.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// A run still in flight after this long is recorded `timeout` and
@@ -716,9 +720,12 @@ impl App {
     }
 
     /// The News pane is at a shell prompt, so whatever agent identity it
-    /// still carries (a session claimed by an earlier run's hooks, a stale
-    /// hook authority) is over; a leftover owner would make the server drop
-    /// the runner's own `herdr:news` reports as a conflicting source.
+    /// still carries is over: a session or hook authority claimed by an
+    /// interactive `claude` run there earlier (a different owner makes the
+    /// server drop the runner's reports), and the recent-exit marker that
+    /// makes it drop plain hook reports for claude after a claude process
+    /// left the pane. The runner reports as `herdr:news` and needs a clean
+    /// pane.
     fn clear_stale_news_identity(&mut self, pane: &NewsPane) {
         let Some(terminal_id) = self
             .state
@@ -733,9 +740,6 @@ impl App {
         let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
             return;
         };
-        if terminal.persistable_agent_session().is_none() && !terminal.is_agent_terminal() {
-            return;
-        }
         tracing::info!(
             event = "news.run",
             outcome = "identity_cleared",
@@ -844,8 +848,8 @@ impl App {
             self.handle_internal_event(crate::events::AppEvent::HookAgentReleased {
                 pane_id: pane.pane_id,
                 source: NEWS_HOOK_SOURCE.into(),
-                agent_label: "claude".into(),
-                known_agent: Some(crate::detect::Agent::Claude),
+                agent_label: NEWS_AGENT_LABEL.into(),
+                known_agent: None,
                 seq: None,
             });
         }

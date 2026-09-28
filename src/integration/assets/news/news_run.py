@@ -41,19 +41,26 @@ class Herdr:
     """Reports this run to the herdr server that owns the pane, so herdr shows it as a working agent.
 
     Uses the pane's HERDR_SOCKET_PATH / HERDR_PANE_ID. A no-op outside herdr. Never raises.
+    Reports as its own hook source and agent (herdr:news, agent "news"): herdr applies hook state for
+    an agent label no screen manifest owns without needing to see a process, whereas a "claude" label
+    stays with screen detection (which never sees a `claude -p` child) and the Claude integration's
+    own source only carries session identity. No session id is reported, so herdr never persists (or
+    resumes on restart) the editor session; the editor itself runs without the pane identity (see
+    run_agent), so this runner is the pane's only reporter and no other owner can make herdr drop it.
     """
     SOURCE = "herdr:news"
+    AGENT = "news"
 
     def __init__(self):
         self.sock = os.environ.get("HERDR_SOCKET_PATH")
         self.pane = os.environ.get("HERDR_PANE_ID")
-        self.seq = int(time.time() * 1000)
+        self.seq = 0
         self.last = 0.0
 
     def call(self, method, params):
         if not (self.sock and self.pane): return
         import socket
-        self.seq += 1
+        self.seq = max(self.seq + 1, int(time.time() * 1000))  # per-source sequence: strictly increasing
         req = {"id": "news:%d" % self.seq, "method": method,
                "params": dict(params, pane_id=self.pane, source=self.SOURCE, seq=self.seq)}
         try:
@@ -67,20 +74,15 @@ class Herdr:
     def state(self, state, message=None, throttle=0.0):
         if throttle and time.time() - self.last < throttle: return
         self.last = time.time()
-        p = {"agent": "claude", "state": state}
+        p = {"agent": self.AGENT, "state": state}
         if message: p["message"] = message[:120]
         self.call("pane.report_agent", p)
 
-    def session(self, session_id, cwd):
-        path = os.path.expanduser("~/.claude/projects/%s/%s.jsonl" % (re.sub(r"[^A-Za-z0-9]", "-", cwd), session_id))
-        self.call("pane.report_agent_session", {"agent": "claude", "agent_session_id": session_id,
-                                                "agent_session_path": path, "session_start_source": "startup"})
-
     def title(self, text):
-        self.call("pane.report_metadata", {"agent": "claude", "title": text[:60]})
+        self.call("pane.report_metadata", {"agent": self.AGENT, "title": text[:60]})
 
     def release(self):
-        self.call("pane.release_agent", {"agent": "claude"})
+        self.call("pane.release_agent", {"agent": self.AGENT})
 
 HERDR = Herdr()
 
@@ -237,7 +239,7 @@ def run_agent(run_dir, prompt, model, resume=None):
             t = e.get("type")
             if t == "system" and e.get("subtype") == "init":
                 session = e.get("session_id"); say("editor started (%s, session %s)" % (e.get("model"), session[:8]), "1")
-                HERDR.session(session, run_dir); HERDR.state("working", "news editor started")
+                HERDR.state("working", "news editor started")
             elif t == "assistant":
                 for part in e.get("message", {}).get("content", []):
                     if part.get("type") == "tool_use":

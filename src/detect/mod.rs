@@ -333,9 +333,6 @@ pub(crate) fn full_lifecycle_hook_authority(source: &str, agent_label: &str) -> 
             | ("herdr:opencode", "opencode")
             | ("herdr:kilo", "kilo")
             | ("herdr:kimi", "kimi")
-            // The fork's news runner reports as claude from a `claude -p` run
-            // (no screen manifest match while the page viewer draws).
-            | ("herdr:news", "claude")
     )
 }
 
