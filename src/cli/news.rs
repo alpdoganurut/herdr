@@ -170,7 +170,8 @@ impl LocalClock {
             .map(|local| {
                 let utc = time::OffsetDateTime::now_utc();
                 let utc = time::PrimitiveDateTime::new(utc.date(), utc.time());
-                (local - utc).whole_seconds()
+                // Whole minutes: the two clocks are read a fraction apart.
+                ((local - utc).whole_seconds() + 30).div_euclid(60) * 60
             })
             .unwrap_or(0);
         Self {
