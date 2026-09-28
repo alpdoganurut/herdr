@@ -66,9 +66,9 @@ impl ClientContextMenuOverlay {
                 // only name them (render_context_menu draws the options).
                 items.push(item(
                     if *important {
-                        "\u{2713} important"
+                        "Important \u{2713}"
                     } else {
-                        "  important"
+                        "Important"
                     },
                     Action::Important,
                 ));

@@ -727,7 +727,7 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
             ClientContextMenuAction::Color
         ]
     );
-    assert_eq!(items[close + 1].label, "\u{2713} important");
+    assert_eq!(items[close + 1].label, "Important \u{2713}");
     assert_eq!(
         menu_remind(&state).1,
         ClientTabMenuRemind {
@@ -750,9 +750,22 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
         assert_eq!(options[column].0.x, options[column + 3].0.x);
     }
 
+    let on_width = state.hits.context_menu_rows[0].0.width;
+    let important_row = state.hits.context_menu_rows[close + 1].0;
+    assert!(
+        row_text(&frame, important_row).starts_with("Important \u{2713} "),
+        "label, one space, the check: {:?}",
+        row_text(&frame, important_row)
+    );
+
     let mut state = tabs_state(waiting_snapshot(AgentStatus::Done, false));
     let items = open_tab_menu(&mut state, 1);
-    assert!(items.iter().any(|item| item.label == "  important"));
+    assert!(items.iter().any(|item| item.label == "Important"));
+    state.compose(106, 20).expect("menu frame");
+    assert_eq!(
+        state.hits.context_menu_rows[0].0.width, on_width,
+        "the check does not widen the menu"
+    );
 }
 
 #[test]
