@@ -1592,7 +1592,7 @@ impl ClientShellState {
                             ..
                         }))
                     );
-                    if immediate {
+                    if immediate || self.reminders_click_applies() {
                         self.apply_settings_choice(outcome);
                     }
                     outcome.repaint = true;

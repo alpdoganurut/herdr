@@ -292,6 +292,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
             loading_transcripts: false,
             idle_reminder_minutes: 10,
             sound_picker: None,
+            daily_time_picker: None,
         }),
     ];
     for overlay in overlays {

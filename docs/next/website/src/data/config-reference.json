@@ -961,7 +961,7 @@
           "key": "ui.daily_reminder_time",
           "type": "string",
           "default": "\"09:30\"",
-          "description": "Local time of day (24-hour \"HH:MM\") a tab's daily reminder (the tab menu's remind selector, tab.set_reminder every = daily) fires. A daily reminder missed while no client was attached fires once when a client next sees the tab that day. An invalid value reports a config warning and uses 09:30."
+          "description": "Local time of day (24-hour \"HH:MM\") a tab's daily reminder (the tab menu's remind selector, tab.set_reminder every = daily) fires. The settings overlay's reminders tab edits it too: its \"daily at HH:MM\" row opens a list of times in 30-minute steps (a configured time off that grid shows first as custom). A new time applies at once: if it is still ahead today the reminder fires today, otherwise tomorrow, and the change itself never fires one. A daily reminder missed while no client was attached fires once when a client next sees the tab that day. An invalid value reports a config warning and uses 09:30."
         },
         {
           "key": "ui.mobile_width_threshold",

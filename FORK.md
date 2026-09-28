@@ -21,6 +21,7 @@ src/app/tab_color.rs
 src/app/tab_remind.rs
 src/client/shell/idle_reminders.rs
 src/client/shell/notification_format.rs
+src/client/shell/settings_daily_time.rs
 src/client/shell/settings_sounds.rs
 src/client/shell/suspended_pane.rs
 src/client/shell/tab_color.rs
@@ -98,6 +99,7 @@ src/server/headless/tests/fork_smoke.rs
 | ClientShellState | scheduled_reminders | std::collections::HashMap::new() |
 | ClientShellState | reminder_epochs | std::collections::HashMap::new() |
 | ClientShellState | reminder_local_time | None |
+| ClientShellState | reminder_daily_minutes | None |
 | ClientPendingNotification | reminder | None |
 | ClientVisibleNotification | reminder | None |
 | ShellHitMap | sidebar_tabs | Vec::new() |
@@ -116,6 +118,7 @@ src/server/headless/tests/fork_smoke.rs
 | ClientSettingsOverlay | loading_transcripts | false |
 | ClientSettingsOverlay | idle_reminder_minutes | 10 |
 | ClientSettingsOverlay | sound_picker | None |
+| ClientSettingsOverlay | daily_time_picker | None |
 | ClientConfirmCloseOverlay | close_group | true |
 | ClientContextMenuTarget::Tab | agent | None |
 | ClientContextMenuTarget::Tab | color | Default::default() |
@@ -191,7 +194,8 @@ ClientContextMenuAction::Important   [src/client/shell/state.rs, after Color; th
 ClientContextMenuAction::RemindTop   [src/client/shell/state.rs, after Important; the reminder selector's first row; internal]
 ClientContextMenuAction::RemindBottom   [src/client/shell/state.rs, last after RemindTop; the selector's second row; internal]
 ConfigEdit::IdleReminderMinutes   [src/config/write.rs, after ToastDelivery; the settings overlay's reminders tab; internal]
-ConfigEdit::SoundFile   [src/config/write.rs, last; the settings sound pickers ([ui.sound] done_path / request_path / reminder_path); internal]
+ConfigEdit::DailyReminderTime   [src/config/write.rs, last after SoundFile; the reminders tab's daily time picker, written as a quoted "HH:MM"; internal]
+ConfigEdit::SoundFile   [src/config/write.rs, after IdleReminderMinutes; the settings sound pickers ([ui.sound] done_path / request_path / reminder_path); internal]
 ClientContextMenuTarget::Group   [src/client/shell/state.rs, between Tab and Pane; internal]
 ClientChromeDrag::SidebarTab   [src/client/shell/state.rs, before PaneSplit; internal]
 ClientRenameTarget::MoveTabToGroup   [src/client/shell/state.rs, last; internal]
@@ -253,7 +257,7 @@ src/config/model.rs  additive: upstream first, fork lines directly after each cl
 src/config/tab_bar.rs  additive: MAX_TAB_BAR_COMMAND_LINES directly after MAX_TAB_BAR_RIGHT_ENTRIES, default_command_lines and effective_tab_bar_command_lines after default_command_timeout_seconds, Command.lines and .ansi the last fields of the variant, the lines clamp diagnostic first in tab_bar_right_diagnostics' Command arm (which binds `lines, ansi: _`), the fork test last in the tests module
 src/app/tab_bar_status.rs  deny: the fork's hunks are `mod output; use output::StatusOutputFormat;` after the imports, TabBarCommandRuntime.format (last field), `lines, ansi` in configure_tab_bar_status' Command arm and `format: StatusOutputFormat::new(*lines, *ansi)`, spawn_status_command_with_format in handle_tab_bar_status_tasks, spawn_status_command turned into a #[cfg(test)] wrapper, run_status_command's `format` parameter and its two calls into output::, and `lines: 1, ansi: false` in three test literals; re-apply them on upstream's new file by hand
 src/config.rs  additive: `tab_bar::{effective_tab_bar_command_lines, MAX_TAB_BAR_COMMAND_LINES},` in the pub(crate) use block directly after the tab_bar group; the fork's `.chain(self.ui.toast.herdr.diagnostic())` then `.chain(self.ui.idle_reminder_diagnostic())` then `.chain(self.ui.daily_reminder_diagnostic())` stay last in Config::collect_diagnostics
-src/config/write.rs  additive: ConfigEdit::IdleReminderMinutes then SoundFile stay last in the enum and in each match; their tests first in the tests module
+src/config/write.rs  additive: ConfigEdit::IdleReminderMinutes, SoundFile, DailyReminderTime stay last in the enum and in each match (format_time_of_day directly after the enum, re-exported from src/config.rs); their tests first in the tests module
 src/sound.rs  additive: Sound::Reminder, ReminderBase, Sound::base and preview directly after the Sound enum; play()'s built-in match goes through base()
 src/config/sound.rs  additive: SoundConfig.reminder_path after request_path (struct, Default, path_for arm, diagnostics list); supported_sound_extension directly before impl AgentSoundOverrides; its test before missing_sound_file_produces_diagnostic
 src/config/keybinds.rs  additive: upstream first, fork lines directly after each clear_pane line
@@ -293,7 +297,7 @@ src/config/sound.rs  mid-logic: SoundConfig::diagnostics accepts supported_sound
 src/server/headless.rs  mid-logic: sound_notify_message gains a Sound::Reminder arm (never sent)
 src/app/actions.rs  mid-logic: the client notification kind match treats Sound::Reminder like Done
 src/client/shell_runtime.rs  mid-logic: the action loop plays ClientShellAction::PreviewSound
-src/client/shell/mouse.rs  mid-logic: handle_mouse (sidebar tab drag, group menu, locked-pane gestures, notification card hits: timed left-click keeps the upstream pane_id gate, sticky left focuses / right dismisses / the fold line swallows), push_pane_mouse_event; the ContextMenu block asks route_tab_color_swatch_mouse, then route_tab_remind_option_mouse first (swatch / reminder option hover and click)
+src/client/shell/mouse.rs  mid-logic: handle_mouse (sidebar tab drag, group menu, locked-pane gestures, notification card hits: timed left-click keeps the upstream pane_id gate, sticky left focuses / right dismisses / the fold line swallows), push_pane_mouse_event; the ContextMenu block asks route_tab_color_swatch_mouse, then route_tab_remind_option_mouse first (swatch / reminder option hover and click); a settings choice click also applies at once when reminders_click_applies (the reminders tab's daily time row and picker)
 src/client/shell/surface_patch.rs  mid-logic: fast_path_blocker else-if for suspended panes; the notification arm calls notification_blocks_patch (timed: any card blocks, as upstream; sticky: only patch rows over a drawn card)
 src/client/shell/composition.rs  mid-logic: compose paints the suspended card and occludes graphics; compose draws the sticky notification stack (render_notification_stack), occludes every card rect, fills hits.notification_toasts, and hands the stack bounds to copy_feedback_offset_for_toast; the context menu branch copies rendered.menu_swatches and menu_remind_options into the hit map; both ShellRenderState literals pass idle_reminders and scheduled_reminders; render_client_overlay gets &self.config
 src/client/shell/render.rs  mid-logic: render_shell else-if for the tabs layout
@@ -310,8 +314,8 @@ src/client/shell/overlay_input.rs  mid-logic: save_rename_overlay, accept_close_
 src/client/shell/overlays.rs  mid-logic: render_context_menu widens a tab menu to the swatch row and the reminder selector, draws the swatches and the selector's options in place of their items' labels (only the cursor one highlighted, while its row is) and returns their rects as menu_swatches / menu_remind_options; render_client_overlay passes the config to the settings overlay
 src/client/shell/tabs.rs  mid-logic: render_tab_bar tints unfocused tabs with their color tag (focused tab unchanged)
 src/app/api/panes.rs  mid-logic: handle_pane_move (PaneMoveRecoveryContext.previous_tab_color, previous_tab_important and previous_tab_remind_every; a whole-tab move applies them to the NewTab / NewWorkspace tab), recover_failed_pane_move restores them
-src/client/shell/settings.rs  mid-logic: selected_index_for_settings_section, select_settings_section (refreshes idle_reminder_minutes, closes a sound picker), settings_choice_count (Sound counts sound_section_rows), apply_settings_choice (Sound goes to apply_sound_choice, Reminders writes ConfigEdit::IdleReminderMinutes), route_settings_key (Esc closes an open sound picker first; Up/Down preview its sound), handle_settings_endpoint_result
-src/client/shell/settings_overlay.rs  mid-logic: render_settings_overlay (show_primary match; the section tab strip drops its one-cell gaps when it does not fit the 74-column inner width, as with the integrations badge on; Sound renders render_sound_section (rows or the open picker); Reminders arm)
+src/client/shell/settings.rs  mid-logic: selected_index_for_settings_section, select_settings_section (refreshes idle_reminder_minutes, closes a sound picker), settings_choice_count (Sound counts sound_section_rows), apply_settings_choice (Sound goes to apply_sound_choice, Reminders asks apply_daily_time_choice first, then writes ConfigEdit::IdleReminderMinutes), settings_choice_count (Reminders counts reminders_section_rows), select_settings_section also closes a daily time picker, route_settings_key (Esc closes an open sound or daily time picker first; Up/Down preview its sound), handle_settings_endpoint_result
+src/client/shell/settings_overlay.rs  mid-logic: render_settings_overlay (show_primary match; the section tab strip drops its one-cell gaps when it does not fit the 74-column inner width, as with the integrations badge on; Sound renders render_sound_section (rows or the open picker); Reminders arm: render_reminders draws the daily time row below the intervals, or the open daily time picker)
 src/client/shell/endpoint_navigation.rs  mid-logic: finish_endpoint_workspace_press early return in the tabs layout
 src/protocol/wire.rs  depends: ClientShellSnapshot.tab_bar_right and tab_bar_right_separator feed the tabs sidebar footer (status_footer_lines and render_tab_status_footer in src/client/shell/tab_sidebar.rs), which joins the segment texts with the separator, splits on `\n` (a command entry's `lines`), parses kept SGR (`ansi`) and truncates each row with `…`; ClientShellTabStatusSegment.text stays a plain String, so multi-line and SGR text needs no wire change
 src/app/tab_bar_status.rs  mid-logic: configure_tab_bar_status (Command arm reads lines/ansi into TabBarCommandRuntime.format), handle_tab_bar_status_tasks (spawns with the format), spawn_status_command (test-only wrapper), run_status_command (reads through output::read_status_output_lines and builds the text with output::status_output_text, which hand off to upstream's read_last_output_line and command_output_text for the defaults); output.rs reuses command_output_text, read_last_output_line, is_unicode_format_control, MAX_COMMAND_LINE_BYTES and MAX_STATUS_TEXT_CHARS and mirrors strip_terminal_control_sequences (an upstream change to that state machine must be mirrored in strip_control_sequences_keeping_sgr)
@@ -407,6 +411,11 @@ PreviewSound
 ClientReminderKind
 notification_glyph
 put_notification_glyph
+DailyReminderTime
+daily_time_picker
+settings_daily_time
+reminder_daily_minutes
+format_time_of_day
 SoundFile
 settings_sounds
 tab_remind_menu
@@ -453,6 +462,7 @@ client::shell::tests::tab_sidebar::fork_smoke::colored_multi_line_status_reaches
 - Suspend refuses agents that are blocked on a prompt, prompts and send-keys refuse suspended panes, activation waits for the observed exit, a failed process probe retries instead of ending the exit wait, and dropping a suspended record emits a status event. The tabs-layout input lock now also covers mouse gestures and selections on a suspended pane, the card occludes graphics, and `ui.tab_agent_glyphs` honours an `other` override.
 
 ### Changed
+- The settings overlay's `reminders` tab edits `ui.daily_reminder_time`: a `daily at HH:MM` row below the intervals opens a list of 24-hour times in 30-minute steps (a configured time off the grid shows first as `custom: HH:MM`), Enter writes it and Esc goes back. The running client applies it at once: a new time still ahead today fires today, one already past waits for tomorrow, and the change itself never fires a reminder.
 - In-app notification cards and the mobile banner show the notification's own glyph where the `●` was, in the same color: `✓` for a finished agent, `×` for one that needs attention, `★` for an important-tab reminder and `◷` for a scheduled one (the reminder engine tags its cards; nothing is read from the title). Update and custom notices keep `●`.
 - In the `tabs` sidebar layout, agent notifications name the tab instead of the agent and drop the space number: "level plan finished" with the body "claude · leap-bi-4" (agent, then the basename of the pane's directory, else the space's name) instead of "claude finished" / "leap-bi-4 · 1 · level plan". The client rewrites them once as they leave its pending list, so in-app cards, the mobile banner and terminal/system notifications agree; idle reminder bodies use the same "agent · directory" form in both layouts. A tab the client cannot resolve and the `spaces` layout keep the server's text.
 - `agent.suspend` (and so `herdr agent suspend`, the "Suspend agent" menu item and `keys.toggle_agent_suspend`) refuses a `working` agent with `agent_working`, the same guard `agent.restart` uses, and sends it no input.

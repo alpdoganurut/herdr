@@ -46,6 +46,7 @@ impl ClientShellState {
             loading_transcripts: false,
             idle_reminder_minutes: self.config.idle_reminder_minutes,
             sound_picker: None,
+            daily_time_picker: None,
         }));
     }
 
@@ -91,6 +92,7 @@ impl ClientShellState {
             settings.selected = selected;
             settings.idle_reminder_minutes = idle_reminder_minutes;
             settings.sound_picker = None;
+            settings.daily_time_picker = None;
         }
         if request_integrations {
             self.queue_integration_list(outcome, true);
@@ -116,6 +118,7 @@ impl ClientShellState {
 
     fn settings_choice_count(&self) -> usize {
         let sound_rows = self.sound_section_rows();
+        let reminders_rows = self.reminders_section_rows();
         match self.overlay.as_ref() {
             Some(ClientShellOverlay::Settings(settings)) => match settings.section {
                 ClientSettingsSection::Theme => crate::config::THEME_NAMES.len(),
@@ -124,9 +127,7 @@ impl ClientShellState {
                 ClientSettingsSection::Toast => 4,
                 ClientSettingsSection::Integrations => settings.integrations.len(),
                 ClientSettingsSection::Backups => 0,
-                ClientSettingsSection::Reminders => {
-                    super::idle_reminders::reminder_choices(settings.idle_reminder_minutes).len()
-                }
+                ClientSettingsSection::Reminders => reminders_rows,
             },
             _ => 0,
         }
@@ -252,6 +253,9 @@ impl ClientShellState {
             // Read-only: the store is shown, not edited.
             ClientSettingsSection::Backups => {}
             ClientSettingsSection::Reminders => {
+                if self.apply_daily_time_choice(selected, outcome) {
+                    return;
+                }
                 let Some((_, minutes)) =
                     super::idle_reminders::reminder_choices(listed_reminder_minutes)
                         .get(selected)
@@ -459,7 +463,7 @@ impl ClientShellState {
             return false;
         }
         let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
-        if code == KeyCode::Esc && self.close_sound_picker() {
+        if code == KeyCode::Esc && (self.close_sound_picker() || self.close_daily_time_picker()) {
             outcome.repaint = true;
             return true;
         }

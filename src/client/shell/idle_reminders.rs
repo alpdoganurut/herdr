@@ -393,6 +393,22 @@ impl ClientShellState {
                 let minutes = u32::from(local.hour()) * 60 + u32::from(local.minute());
                 (local.date(), minutes >= target)
             });
+        // A new daily time moves each daily reminder's next firing: to today
+        // when the new time is still ahead, else to tomorrow. The change
+        // itself never fires one.
+        let target = self.config.daily_reminder_minutes;
+        if let (Some(previous), Some((today, past))) = (self.reminder_daily_minutes, daily) {
+            if previous != target {
+                for reminder in self.scheduled_reminders.values_mut() {
+                    if reminder.every == TabRemindInterval::Daily {
+                        reminder.last_daily = past.then_some(today);
+                    }
+                }
+            }
+        }
+        if daily.is_some() || self.reminder_daily_minutes.is_none() {
+            self.reminder_daily_minutes = Some(target);
+        }
 
         // Tabs that lost the reminder (or went away) take their card along.
         let mut removed_cards = Vec::new();

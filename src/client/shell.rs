@@ -33,6 +33,7 @@ mod preferences;
 mod render;
 mod scroll;
 mod settings;
+mod settings_daily_time;
 mod settings_sounds;
 mod state;
 mod surface_patch;
