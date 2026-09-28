@@ -38,14 +38,15 @@ const REMINDER_STARTUP_GRACE: std::time::Duration = std::time::Duration::from_se
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ClientReminderKind {
     Important,
-    Scheduled,
+    /// A scheduled reminder, with its interval (the card shows its marker).
+    Scheduled(TabRemindInterval),
 }
 
 impl ClientReminderKind {
     pub(super) fn glyph(self) -> &'static str {
         match self {
             ClientReminderKind::Important => super::tab_sidebar::TAB_IMPORTANT_MARKER,
-            ClientReminderKind::Scheduled => super::tab_sidebar::TAB_REMIND_MARKER,
+            ClientReminderKind::Scheduled(every) => super::tab_sidebar::remind_marker(every),
         }
     }
 }
@@ -470,7 +471,7 @@ impl ClientShellState {
             reminder.lit = true;
             let mut event = tab.event;
             event.title = format!("{} reminder", tab.label);
-            due.push((tab.key.0, event, ClientReminderKind::Scheduled));
+            due.push((tab.key.0, event, ClientReminderKind::Scheduled(tab.every)));
         }
         let mut repaint = false;
         for (endpoint_id, pane_id) in removed_cards {

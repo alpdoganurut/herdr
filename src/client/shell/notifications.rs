@@ -447,7 +447,9 @@ mod tests {
             ),
             (
                 SemanticNotificationKind::Custom,
-                Some(ClientReminderKind::Scheduled),
+                Some(ClientReminderKind::Scheduled(
+                    crate::api::schema::TabRemindInterval::M5,
+                )),
                 "\u{25F7}",
                 palette.accent,
             ),
@@ -497,7 +499,9 @@ mod tests {
             .width
         };
         assert_eq!(width(None), width(Some(ClientReminderKind::Important)));
-        for glyph in ["\u{2713}", "\u{00D7}", "\u{2605}", "\u{25F7}"] {
+        for glyph in [
+            "\u{2713}", "\u{00D7}", "\u{2605}", "\u{25F7}", "\u{25D1}", "\u{263C}",
+        ] {
             assert_eq!(unicode_width::UnicodeWidthStr::width(glyph), 1, "{glyph}");
         }
     }
