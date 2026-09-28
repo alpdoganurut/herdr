@@ -637,3 +637,127 @@ async fn closed_agent_tab_reopens_from_the_list_with_the_same_session() {
     shutdown_test_runtimes(&mut server);
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// `news.status` answers on a plain server (scheduling off, nothing in
+/// flight, no history) and `news.run` opens the `News` tab in the first
+/// space without focusing it, types the bundled runner's command into its
+/// shell, and reports the run in flight; a second `news.run` is refused
+/// while it lasts. Runs against a private news home (the tab's shell is
+/// `/bin/cat`, so nothing actually runs).
+#[cfg(unix)]
+#[tokio::test]
+async fn news_status_and_run_reach_the_news_tab() {
+    use crate::api::schema::EmptyParams;
+
+    let dir = std::env::temp_dir().join(format!("herdr-fork-smoke-news-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    let (mut server, _rx) = server_with_claude(None);
+    server.app.state.default_shell = "/bin/cat".into();
+    server.app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
+    server.app.state.workspaces[0].tabs[0].custom_name = Some("work".into());
+
+    let status = api(&mut server, Method::NewsStatus(EmptyParams::default()));
+    assert_eq!(status["result"]["type"], "news_status", "{status}");
+    assert_eq!(status["result"]["status"]["enabled"], false);
+    assert!(status["result"]["status"].get("run").is_none());
+    assert_eq!(status["result"]["status"]["recent"], serde_json::json!([]));
+
+    let refused = api(&mut server, Method::NewsRun(EmptyParams::default()));
+    assert_eq!(refused["error"]["code"], "news_unavailable", "{refused}");
+
+    server.app.news.home = Some(dir.join("news"));
+    let started = api(&mut server, Method::NewsRun(EmptyParams::default()));
+    assert_eq!(started["result"]["type"], "news_status", "{started}");
+    let run = &started["result"]["status"]["run"];
+    assert_eq!(run["trigger"], "manual");
+    assert_eq!(
+        run["phase"], "starting",
+        "cat is not a shell prompt, so the pane gets `q` first: {started}"
+    );
+    let tab_id = started["result"]["status"]["tab_id"]
+        .as_str()
+        .expect("the News tab id")
+        .to_string();
+
+    let workspace = &server.app.state.workspaces[0];
+    assert_eq!(workspace.tabs.len(), 2);
+    assert_eq!(workspace.tabs[1].custom_name.as_deref(), Some("News"));
+    assert_eq!(workspace.active_tab, 0, "the News tab is not focused");
+    assert_eq!(
+        server.app.public_tab_id(0, 1).as_deref(),
+        Some(tab_id.as_str())
+    );
+    let tab = &workspace.tabs[1];
+    let terminal_id = tab.terminal_id(tab.root_pane).unwrap().clone();
+    assert!(
+        crate::integration::news_assets::runner_path(&dir.join("news")).is_file(),
+        "the runner is installed under the home"
+    );
+
+    let runtime = server
+        .app
+        .terminal_runtimes
+        .get(&terminal_id)
+        .expect("the News tab runs a shell");
+    for _ in 0..80 {
+        if runtime
+            .snapshot_history()
+            .is_some_and(|text| text.contains('q'))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        runtime
+            .snapshot_history()
+            .is_some_and(|text| text.trim() == "q"),
+        "the viewer quit key reaches the busy pane"
+    );
+
+    // The prompt is back: the next scheduler pass types the command.
+    server.app.news.assume_shell_ready = true;
+    assert!(server
+        .app
+        .handle_news_tasks(std::time::Instant::now() + Duration::from_secs(1)));
+    let status = api(&mut server, Method::NewsStatus(EmptyParams::default()));
+    assert_eq!(
+        status["result"]["status"]["run"]["phase"], "running",
+        "{status}"
+    );
+
+    let command = "--trigger manual";
+    let runtime = server
+        .app
+        .terminal_runtimes
+        .get(&terminal_id)
+        .expect("the News tab runs a shell");
+    for _ in 0..80 {
+        if runtime
+            .snapshot_history()
+            .is_some_and(|text| text.contains(command))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let history = runtime.snapshot_history().unwrap_or_default();
+    assert!(
+        history.contains("news_run.py"),
+        "the runner command reaches the shell: {history}"
+    );
+    assert!(history.contains(command), "{history}");
+
+    let again = api(&mut server, Method::NewsRun(EmptyParams::default()));
+    assert_eq!(again["error"]["code"], "news_run_in_flight", "{again}");
+    assert_eq!(
+        server.app.state.workspaces[0].tabs.len(),
+        2,
+        "no second tab"
+    );
+
+    shutdown_test_runtimes(&mut server);
+    let _ = fs::remove_dir_all(&dir);
+}

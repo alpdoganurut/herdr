@@ -45,6 +45,7 @@ pub(super) fn command() -> Command {
         .subcommand(pane_command())
         .subcommand(terminal_command())
         .subcommand(session_command())
+        .subcommand(news_command())
         .subcommand(integration_command())
         .subcommand(plugin_command());
     configure_help(command, 0)
@@ -823,6 +824,38 @@ fn terminal_command() -> Command {
         )
 }
 
+fn news_command() -> Command {
+    Command::new("news")
+        .about("Run and inspect the AI news desk")
+        .subcommand(
+            Command::new("run")
+                .about("Start a news run now")
+                .override_usage("herdr news run")
+                .long_about(
+                    "Starts one run of the bundled news runner in the News tab of the first space (news.run): the tab is created when missing, the page viewer is quit when showing, and `python3 <home>/bin/news_run.py --home <home> --trigger manual` is typed into its shell. Refused while a run is in flight. Works whether or not [news] enabled is set; enabled only turns on the schedule.",
+                ),
+        )
+        .subcommand(
+            Command::new("status")
+                .about("Show the news schedule, the run in flight and the last runs")
+                .override_usage("herdr news status [--json]")
+                .arg(json_flag())
+                .long_about(
+                    "Prints whether scheduled runs are on, the interval and quiet hours, the news home, the News tab, the next scheduled run, the run in flight and the last five runs with their outcome, duration, cost, turns and edition (news.status).",
+                ),
+        )
+        .subcommand(
+            Command::new("log")
+                .about("Show the last news runs from the run log")
+                .override_usage("herdr news log [N] [--json]")
+                .arg(Arg::new("count").value_name("N").required(false))
+                .arg(json_flag())
+                .long_about(
+                    "Prints the newest N runs (default 10) from <home>/runs/index.jsonl, newest first, with the editor's summary and any validation errors.",
+                ),
+        )
+}
+
 fn session_command() -> Command {
     Command::new("session")
         .about("Manage named persistent sessions")
@@ -1451,6 +1484,21 @@ mod tests {
         assert!(reopen
             .get_arguments()
             .any(|arg| arg.get_id() == "session" && arg.is_required_set()));
+    }
+
+    #[test]
+    fn spec_models_news_run_status_and_log() {
+        let cmd = super::command();
+        assert!(command_path(&cmd, &["news", "run"])
+            .get_arguments()
+            .next()
+            .is_none());
+        assert!(has_option(command_path(&cmd, &["news", "status"]), "json"));
+        let log = command_path(&cmd, &["news", "log"]);
+        assert!(has_option(log, "json"));
+        assert!(log
+            .get_arguments()
+            .any(|arg| arg.get_id() == "count" && !arg.is_required_set()));
     }
 
     #[test]

@@ -27,6 +27,7 @@ mod api;
 mod completion;
 mod integration;
 mod machine;
+mod news;
 mod notification;
 mod pane;
 mod plugin;
@@ -131,6 +132,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "plugin" => plugin::run_plugin_command(&args[2..])?,
         "integration" => integration::run_integration_command(&args[2..])?,
         "session" => run_session_command(&args[2..])?,
+        "news" => news::run_news_command(&args[2..])?,
         _ => return Ok(CommandOutcome::NotCli),
     };
 
