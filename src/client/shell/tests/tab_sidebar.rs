@@ -2171,6 +2171,110 @@ fn working_tab_with_subagents_shows_the_subagent_icon() {
     }
 }
 
+#[test]
+fn subagents_show_on_idle_and_finished_agents_in_their_status_color() {
+    use crate::config::StatusIndicatorStyle;
+    use crate::protocol::color_to_u32;
+    let icon = super::super::tab_sidebar::TAB_SUBAGENTS_ICON;
+    for style in [StatusIndicatorStyle::Dots, StatusIndicatorStyle::Symbols] {
+        // tab_1 working, tab_2 finished (watched working first), tab_3 idle,
+        // all with background subagents; tab_4 blocked, tab_5 suspended and
+        // tab_6 unknown, also with subagents; tab_7 idle without.
+        let statuses = [
+            AgentStatus::Working,
+            AgentStatus::Done,
+            AgentStatus::Idle,
+            AgentStatus::Blocked,
+            AgentStatus::Suspended,
+            AgentStatus::Unknown,
+            AgentStatus::Idle,
+        ];
+        let build = |first_pass: bool| {
+            let mut snapshot = two_space_snapshot();
+            snapshot.tabs.clear();
+            snapshot.agents.clear();
+            for (index, status) in statuses.iter().enumerate() {
+                let tab_id = format!("tab_{}", index + 1);
+                let pane_id = format!("pane_{}", index + 1);
+                snapshot.tabs.push(tab(
+                    &tab_id,
+                    "ws_1",
+                    index + 1,
+                    &format!("t{index}"),
+                    index == 0,
+                    *status,
+                ));
+                let status = if first_pass && *status == AgentStatus::Done {
+                    AgentStatus::Working
+                } else {
+                    *status
+                };
+                let mut agent = agent(&pane_id, &tab_id, status);
+                agent.state_change_seq = if first_pass { 1 } else { 2 };
+                agent.subagents = if index == 6 { 0 } else { 2 };
+                snapshot.agents.push(agent);
+            }
+            snapshot
+        };
+        let mut config = tabs_config();
+        config.ui.status_indicators = style;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(build(true)));
+        state.set_snapshot(Box::new(build(false)));
+        state.set_pane_surface(surface());
+        let palette = state.config.palette.clone();
+        let frame = state.compose(106, 24).expect("composed frame");
+        let cell = |row: usize| {
+            let (rect, _) = state.hits.sidebar_tabs[row];
+            let cell = &frame.cells[(rect.y * frame.width + rect.x + 1) as usize];
+            (cell.symbol.clone(), cell.fg)
+        };
+        let ring = |color| (icon.to_string(), color_to_u32(color));
+        assert_eq!(cell(0), ring(palette.yellow), "{style:?}: working");
+        assert_eq!(cell(1), ring(palette.teal), "{style:?}: finished");
+        assert_eq!(cell(2), ring(palette.green), "{style:?}: idle");
+        for (row, what) in [
+            (3, "blocked"),
+            (4, "suspended"),
+            (5, "unknown"),
+            (6, "none"),
+        ] {
+            assert_ne!(cell(row).0, icon, "{style:?}: {what} keeps its icon");
+        }
+        if style == StatusIndicatorStyle::Symbols {
+            assert_eq!(cell(3).0, "\u{00D7}", "blocked keeps ×");
+        }
+    }
+}
+
+#[test]
+fn a_multi_pane_tab_sums_its_agents_subagents() {
+    let mut snapshot = two_space_snapshot();
+    let mut idle = agent("pane_1", "tab_1", AgentStatus::Idle);
+    idle.subagents = 2;
+    snapshot.agents = vec![idle, agent("pane_1b", "tab_1", AgentStatus::Idle)];
+    snapshot.tabs[0].agent_status = AgentStatus::Idle;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot.clone()));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let (rect, _) = state.hits.sidebar_tabs[0];
+    assert_eq!(
+        frame.cells[(rect.y * frame.width + rect.x + 1) as usize].symbol,
+        super::super::tab_sidebar::TAB_SUBAGENTS_ICON,
+        "one agent's background subagents mark the whole tab"
+    );
+    // A blocked agent in the tab outranks them.
+    snapshot.agents[1].agent_status = AgentStatus::Blocked;
+    snapshot.tabs[0].agent_status = AgentStatus::Blocked;
+    state.set_snapshot(Box::new(snapshot));
+    let frame = state.compose(106, 20).expect("composed frame");
+    assert_ne!(
+        frame.cells[(rect.y * frame.width + rect.x + 1) as usize].symbol,
+        super::super::tab_sidebar::TAB_SUBAGENTS_ICON
+    );
+}
+
 fn status_segment(text: &str) -> crate::protocol::ClientShellTabStatusSegment {
     crate::protocol::ClientShellTabStatusSegment {
         text: text.into(),

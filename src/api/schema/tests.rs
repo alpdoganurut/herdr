@@ -271,6 +271,7 @@ fn pane_report_subagent_request_round_trips() {
             agent: "claude".into(),
             event: SubagentEvent::Start,
             subagent_id: "a1b2".into(),
+            subagent_ids: Vec::new(),
         }),
     };
     let json = serde_json::to_value(&report).unwrap();
@@ -288,6 +289,17 @@ fn pane_report_subagent_request_round_trips() {
             ..
         })
     ));
+    // A snapshot needs no subagent_id and carries the running set.
+    let snapshot: Request = serde_json::from_str(
+        r#"{"id":"s","method":"pane.report_subagent","params":{"pane_id":"p_1","agent":"claude","event":"snapshot","subagent_ids":["a","b"]}}"#,
+    )
+    .unwrap();
+    let Method::PaneReportSubagent(params) = &snapshot.method else {
+        panic!("{snapshot:?}");
+    };
+    assert_eq!(params.event, SubagentEvent::Snapshot);
+    assert_eq!(params.subagent_id, "");
+    assert_eq!(params.subagent_ids, ["a", "b"]);
 }
 
 #[test]

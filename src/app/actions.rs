@@ -1705,6 +1705,11 @@ impl AppState {
             if completion_reset {
                 terminal.last_agent_completion_seq = None;
             }
+            // Fork: a new conversation (/clear, resume of another session)
+            // has none of the old one's subagents.
+            if mutation.session_ref_changed {
+                terminal.clear_subagents();
+            }
             let managed_changed = terminal.reconcile_managed_agent_at(now, false);
             let suppress_acquisition_completion = terminal.finish_agent_process_acquisition();
             let agent_name_changed = terminal.agent_name != previous_agent_name;

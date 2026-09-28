@@ -202,7 +202,7 @@ pub(super) fn render_tab_sidebar(
             agent.tab_id.as_str(),
             agent.agent.as_deref().unwrap_or("other"),
         );
-        if agent.subagents > 0 && agent.agent_status == crate::api::schema::AgentStatus::Working {
+        if agent.subagents > 0 && shows_subagents(agent.agent_status) {
             let count = tab_subagents.entry(agent.tab_id.as_str()).or_default();
             *count = count.saturating_add(agent.subagents);
         }
@@ -740,7 +740,19 @@ fn reminder_markers(
     markers
 }
 
-/// The status icon of a working tab whose agent has subagents running.
+/// Whether a status gives way to the subagent icon while subagents run: a
+/// working, idle or finished agent (background agents outlive the turn).
+/// Blocked keeps its icon (needing you outranks), and suspended or unknown
+/// agents have none.
+fn shows_subagents(status: crate::api::schema::AgentStatus) -> bool {
+    use crate::api::schema::AgentStatus;
+    matches!(
+        status,
+        AgentStatus::Working | AgentStatus::Idle | AgentStatus::Done
+    )
+}
+
+/// The status icon of a tab whose agent has subagents running.
 pub(super) const TAB_SUBAGENTS_ICON: &str = "\u{26AD}"; // ⚭ (two interlocking rings)
 
 /// The row marker of an important tab (`tab.set_reminder` important).
@@ -776,9 +788,10 @@ fn render_tab_row(
         Style::default().fg(tag_fg.unwrap_or(palette.subtext0))
     };
     let icon_style = Style::default().fg(status_color(tab.agent_status, palette));
-    // A working agent with Claude Code subagents running shows the subagent
-    // icon in the working color, in either indicator style.
-    let icon = if tab.agent_status == crate::api::schema::AgentStatus::Working && subagents > 0 {
+    // An agent with Claude Code subagents running (in the background too)
+    // shows the subagent icon in its status color, in either indicator style:
+    // yellow working, green idle, teal finished.
+    let icon = if shows_subagents(tab.agent_status) && subagents > 0 {
         TAB_SUBAGENTS_ICON
     } else {
         status_icon(tab.agent_status, config.status_indicators)

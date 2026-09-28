@@ -3,7 +3,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=10
+# HERDR_INTEGRATION_VERSION=11
 
 set -eu
 
@@ -13,7 +13,7 @@ trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
 
 case "$action" in
-  session|subagent) ;;
+  session|subagent|stop) ;;
   *) exit 0 ;;
 esac
 
@@ -76,6 +76,11 @@ if action == "subagent":
     subagent_id = hook_input.get("agent_id")
     if hook_event_name not in subagent_events or not isinstance(subagent_id, str) or not subagent_id:
         raise SystemExit(0)
+    # Claude's internal helper agents carry no agent_type; they are not work
+    # the user started.
+    agent_type = hook_input.get("agent_type")
+    if not isinstance(agent_type, str) or not agent_type:
+        raise SystemExit(0)
     send({
         "id": request_id,
         "method": "pane.report_subagent",
@@ -84,6 +89,36 @@ if action == "subagent":
             "agent": "claude",
             "event": subagent_events[hook_event_name],
             "subagent_id": subagent_id,
+        },
+    })
+    raise SystemExit(0)
+
+# The main agent's turn ended (Stop): report every subagent still running
+# from Claude's background_tasks, background ones included, which replaces
+# the pane's set. A Claude Code without the field reports nothing. Never
+# from SubagentStop, where the subagent's own entry is still running.
+if action == "stop":
+    background_tasks = hook_input.get("background_tasks")
+    if hook_event_name != "Stop" or hook_input.get("agent_id") or not isinstance(background_tasks, list):
+        raise SystemExit(0)
+    subagent_ids = []
+    for task in background_tasks:
+        if not isinstance(task, dict) or task.get("type") != "subagent":
+            continue
+        task_id = task.get("id")
+        agent_type = task.get("agent_type")
+        if isinstance(task_id, str) and task_id and isinstance(agent_type, str) and agent_type:
+            subagent_ids.append(task_id)
+        if len(subagent_ids) >= 64:
+            break
+    send({
+        "id": request_id,
+        "method": "pane.report_subagent",
+        "params": {
+            "pane_id": pane_id,
+            "agent": "claude",
+            "event": "snapshot",
+            "subagent_ids": subagent_ids,
         },
     })
     raise SystemExit(0)

@@ -46,6 +46,11 @@ pub(super) enum AgentSuspendError {
     Blocked(String),
     /// Mid-turn: the exit input would interrupt the agent's work.
     Working(String),
+    /// Background subagents are running: the exit would stop them.
+    SubagentsRunning {
+        target: String,
+        count: u32,
+    },
     AlreadySuspended(String),
     NotSuspendable {
         target: String,
@@ -156,6 +161,15 @@ impl App {
         // A working agent would lose its turn; wait for it to go idle.
         if terminal.state == crate::detect::AgentState::Working {
             return Err(AgentSuspendError::Working(target.to_string()));
+        }
+        // Exiting stops the agent's background subagents and loses their
+        // work; wait until the count reaches zero (no override).
+        let subagents = terminal.active_subagent_count();
+        if subagents > 0 {
+            return Err(AgentSuspendError::SubagentsRunning {
+                target: target.to_string(),
+                count: subagents,
+            });
         }
         let Some(expected_agent) = terminal.effective_known_agent() else {
             return Err(AgentSuspendError::NotRunning(target.to_string()));
@@ -694,6 +708,17 @@ impl App {
                 code: "agent_working".into(),
                 message: format!("agent {target} is working; wait for idle or blocked-free state"),
             },
+            AgentSuspendError::SubagentsRunning { target, count } => {
+                crate::api::schema::ErrorBody {
+                    code: "agent_subagents_running".into(),
+                    message: format!(
+                        "agent {target} has {count} subagent{} running; suspending would stop {}. Wait for {} to finish",
+                        if count == 1 { "" } else { "s" },
+                        if count == 1 { "it" } else { "them" },
+                        if count == 1 { "it" } else { "them" },
+                    ),
+                }
+            }
             AgentSuspendError::AlreadySuspended(target) => crate::api::schema::ErrorBody {
                 code: "agent_already_suspended".into(),
                 message: format!("agent {target} is already suspended"),
@@ -1488,6 +1513,65 @@ mod tests {
             .get_mut(&terminal_id)
             .unwrap()
             .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert_eq!(
+            suspend(&mut app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        assert_eq!(
+            next_input(&mut rx).await,
+            bytes::Bytes::from_static(b"/exit")
+        );
+    }
+
+    #[tokio::test]
+    async fn suspend_and_restart_refuse_while_subagents_run_without_writing() {
+        let mut app = test_app();
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        {
+            let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+            terminal.replace_subagents(["bg-1", "bg-2"]);
+        }
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+
+        let response = suspend(&mut app, "reviewer");
+        assert_eq!(
+            response["error"]["code"], "agent_subagents_running",
+            "{response}"
+        );
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("has 2 subagents running"));
+        let response = restart(&mut app, "reviewer");
+        assert_eq!(
+            response["error"]["code"], "agent_subagents_running",
+            "restart inherits the suspend guard: {response}"
+        );
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
+        assert!(
+            tokio::time::timeout(
+                super::super::api::AGENT_PROMPT_SUBMIT_DELAY + Duration::from_millis(100),
+                rx.recv()
+            )
+            .await
+            .is_err(),
+            "a refused suspend or restart wrote or scheduled terminal input"
+        );
+
+        // Once the last one reports back, the agent suspends normally.
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .replace_subagents([]);
         assert_eq!(
             suspend(&mut app, "reviewer")["result"]["type"],
             "agent_suspended"

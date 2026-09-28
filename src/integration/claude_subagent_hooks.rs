@@ -1,10 +1,12 @@
-//! Claude Code `SubagentStart` / `SubagentStop` hooks for the fork's subagent
-//! count (`pane.report_subagent`).
+//! Claude Code `SubagentStart` / `SubagentStop` / `Stop` hooks for the fork's
+//! subagent count (`pane.report_subagent`).
 //!
 //! Applied after the upstream settings edit (`claude_settings`), so that
 //! module stays as upstream wrote it: `install` adds one entry per event that
-//! runs the Claude hook asset with the `subagent` action, `uninstall` removes
-//! the asset's `subagent` commands again. User hooks and formatting outside
+//! runs the Claude hook asset with that event's action (`subagent` for the
+//! subagent events, `stop` for the main agent's Stop, whose
+//! `background_tasks` snapshot the running set), `uninstall` removes the
+//! asset's commands for those actions again. User hooks and formatting outside
 //! the touched arrays are kept; the result is re-parsed and must equal the
 //! intended settings value, as the upstream edit does.
 
@@ -18,24 +20,26 @@ use serde_json::{json as serde_json_value, Map, Value};
 use super::command::hook_command;
 use super::config_edit::{hook_command_variants, is_matching_command_hook};
 
-/// The hook events that report subagents.
-pub(crate) const SUBAGENT_HOOK_EVENTS: [&str; 2] = ["SubagentStart", "SubagentStop"];
-/// The asset action the subagent hooks run.
-pub(crate) const SUBAGENT_HOOK_ACTION: &str = "subagent";
+/// The hook events that report subagents, each with the asset action it runs.
+pub(crate) const SUBAGENT_HOOKS: [(&str, &str); 3] = [
+    ("SubagentStart", "subagent"),
+    ("SubagentStop", "subagent"),
+    ("Stop", "stop"),
+];
 const SUBAGENT_HOOK_TIMEOUT: u64 = 10;
 
-fn canonical_value(hook_path: &Path) -> Value {
+fn canonical_value(hook_path: &Path, action: &str) -> Value {
     serde_json_value!({
         "hooks": [{
             "type": "command",
-            "command": hook_command(hook_path, Some(SUBAGENT_HOOK_ACTION)),
+            "command": hook_command(hook_path, Some(action)),
             "timeout": SUBAGENT_HOOK_TIMEOUT,
         }],
     })
 }
 
-fn canonical_input(hook_path: &Path) -> CstInputValue {
-    let command = hook_command(hook_path, Some(SUBAGENT_HOOK_ACTION));
+fn canonical_input(hook_path: &Path, action: &str) -> CstInputValue {
+    let command = hook_command(hook_path, Some(action));
     json!({
         hooks: [{
             "type": "command",
@@ -117,10 +121,9 @@ fn verify(updated: String, settings_path: &Path, desired: &Value) -> io::Result<
     Ok(updated)
 }
 
-/// Add a `SubagentStart` and a `SubagentStop` entry running the asset's
-/// `subagent` action, unless the event already runs it.
+/// Add an entry per `SUBAGENT_HOOKS` event running the asset with its
+/// action, unless the event already runs it.
 pub(crate) fn install(content: &str, settings_path: &Path, hook_path: &Path) -> io::Result<String> {
-    let commands = hook_command_variants(hook_path, Some(SUBAGENT_HOOK_ACTION));
     let original = parse_value(content, settings_path)?;
     let mut desired = original.clone();
     let root = desired
@@ -131,11 +134,17 @@ pub(crate) fn install(content: &str, settings_path: &Path, hook_path: &Path) -> 
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
         .ok_or_else(|| not_an_object(settings_path, "settings hooks"))?;
-    let missing: Vec<&str> = SUBAGENT_HOOK_EVENTS
+    let missing: Vec<(&str, &str)> = SUBAGENT_HOOKS
         .into_iter()
-        .filter(|event| !event_has_subagent_hook(hooks, event, &commands))
+        .filter(|(event, action)| {
+            !event_has_subagent_hook(
+                hooks,
+                event,
+                &hook_command_variants(hook_path, Some(action)),
+            )
+        })
         .collect();
-    for event in &missing {
+    for (event, action) in &missing {
         let entries = hooks
             .entry(event.to_string())
             .or_insert_with(|| Value::Array(Vec::new()))
@@ -143,7 +152,7 @@ pub(crate) fn install(content: &str, settings_path: &Path, hook_path: &Path) -> 
             .ok_or_else(|| {
                 io::Error::other(format!("hook entries for {event} must be an array"))
             })?;
-        entries.push(canonical_value(hook_path));
+        entries.push(canonical_value(hook_path, action));
     }
     if desired == original {
         return Ok(content.to_string());
@@ -163,7 +172,7 @@ pub(crate) fn install(content: &str, settings_path: &Path, hook_path: &Path) -> 
             .object_value()
             .ok_or_else(|| io::Error::other("failed to create claude settings hooks object"))?,
     };
-    for event in missing {
+    for (event, action) in missing {
         match hooks_object.get(event) {
             Some(property) => {
                 property
@@ -171,12 +180,12 @@ pub(crate) fn install(content: &str, settings_path: &Path, hook_path: &Path) -> 
                     .ok_or_else(|| {
                         io::Error::other(format!("hook entries for {event} must be an array"))
                     })?
-                    .append(canonical_input(hook_path));
+                    .append(canonical_input(hook_path, action));
             }
             None => {
                 hooks_object.append(
                     event,
-                    CstInputValue::Array(vec![canonical_input(hook_path)]),
+                    CstInputValue::Array(vec![canonical_input(hook_path, action)]),
                 );
             }
         }
@@ -184,14 +193,13 @@ pub(crate) fn install(content: &str, settings_path: &Path, hook_path: &Path) -> 
     verify(cst.to_string(), settings_path, &desired)
 }
 
-/// Remove the asset's `subagent` commands from `SubagentStart` and
-/// `SubagentStop`, dropping groups and events they leave empty.
+/// Remove the asset's commands for each `SUBAGENT_HOOKS` event, dropping
+/// groups and events they leave empty. Other hooks on those events stay.
 pub(crate) fn uninstall(
     content: &str,
     settings_path: &Path,
     hook_path: &Path,
 ) -> io::Result<String> {
-    let commands = hook_command_variants(hook_path, Some(SUBAGENT_HOOK_ACTION));
     let original = parse_value(content, settings_path)?;
     let mut desired = original.clone();
     let Some(hooks) = desired
@@ -201,7 +209,8 @@ pub(crate) fn uninstall(
     else {
         return Ok(content.to_string());
     };
-    for event in SUBAGENT_HOOK_EVENTS {
+    for (event, action) in SUBAGENT_HOOKS {
+        let commands = hook_command_variants(hook_path, Some(action));
         let Some(entries) = hooks.get_mut(event).and_then(Value::as_array_mut) else {
             continue;
         };
@@ -235,7 +244,8 @@ pub(crate) fn uninstall(
     else {
         return Ok(content.to_string());
     };
-    for event in SUBAGENT_HOOK_EVENTS {
+    for (event, action) in SUBAGENT_HOOKS {
+        let commands = hook_command_variants(hook_path, Some(action));
         let Some(property) = hooks_object.get(event) else {
             continue;
         };
@@ -296,14 +306,16 @@ mod tests {
     }
 
     #[test]
-    fn install_adds_both_events_once_and_keeps_user_hooks() {
+    fn install_adds_each_event_once_and_keeps_user_hooks() {
         let (settings_path, hook_path) = paths();
-        let command = hook_command(hook_path, Some(SUBAGENT_HOOK_ACTION));
+        let subagent = hook_command(hook_path, Some("subagent"));
+        let stop = hook_command(hook_path, Some("stop"));
         let input = concat!(
             "{\n",
             "  \"permissions\": {\"allow\": [\"Read\"]},\n",
             "  \"hooks\": {\n",
-            "    \"SubagentStop\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"echo keep\"}]}]\n",
+            "    \"SubagentStop\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"echo keep\"}]}],\n",
+            "    \"Stop\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"~/.claude/hooks/zellij-activity.sh stop\"}]}]\n",
             "  }\n",
             "}\n",
         );
@@ -312,28 +324,40 @@ mod tests {
         let settings: Value = serde_json::from_str(&installed).unwrap();
         assert_eq!(
             subagent_commands(&settings, "SubagentStart"),
-            std::slice::from_ref(&command)
+            std::slice::from_ref(&subagent)
         );
         assert_eq!(
             subagent_commands(&settings, "SubagentStop"),
-            ["echo keep".to_string(), command.clone()]
+            ["echo keep".to_string(), subagent.clone()]
         );
-        assert!(command.ends_with(" subagent"), "{command}");
-        assert!(installed.contains("\"permissions\": {\"allow\": [\"Read\"]}"));
         assert_eq!(
-            settings["hooks"]["SubagentStart"][0]["hooks"][0]["timeout"],
-            10
+            subagent_commands(&settings, "Stop"),
+            [
+                "~/.claude/hooks/zellij-activity.sh stop".to_string(),
+                stop.clone()
+            ],
+            "beside the user's own Stop hook"
         );
+        assert!(subagent.ends_with(" subagent"), "{subagent}");
+        assert!(stop.ends_with(" stop"), "{stop}");
+        assert!(installed.contains("\"permissions\": {\"allow\": [\"Read\"]}"));
+        assert_eq!(settings["hooks"]["Stop"][1]["hooks"][0]["timeout"], 10);
 
         assert_eq!(
             install(&installed, settings_path, hook_path).unwrap(),
-            installed
+            installed,
+            "idempotent"
         );
 
         let removed = uninstall(&installed, settings_path, hook_path).unwrap();
         let settings: Value = serde_json::from_str(&removed).unwrap();
         assert!(settings["hooks"].get("SubagentStart").is_none());
         assert_eq!(subagent_commands(&settings, "SubagentStop"), ["echo keep"]);
+        assert_eq!(
+            subagent_commands(&settings, "Stop"),
+            ["~/.claude/hooks/zellij-activity.sh stop"],
+            "only herdr's Stop hook goes"
+        );
         assert_eq!(
             uninstall(&removed, settings_path, hook_path).unwrap(),
             removed
@@ -345,10 +369,10 @@ mod tests {
         let (settings_path, hook_path) = paths();
         let installed = install("{}", settings_path, hook_path).unwrap();
         let settings: Value = serde_json::from_str(&installed).unwrap();
-        for event in SUBAGENT_HOOK_EVENTS {
+        for (event, action) in SUBAGENT_HOOKS {
             assert_eq!(
                 settings["hooks"][event],
-                Value::Array(vec![canonical_value(hook_path)])
+                Value::Array(vec![canonical_value(hook_path, action)])
             );
         }
         for input in [
