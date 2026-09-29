@@ -140,13 +140,13 @@ def fmt_time(iso):
 
 # 3-row half-block capitals for the drop cap.
 FONT = {
-    "A": ["▄▀▀▄", "█▀▀█", "▀  ▀"], "B": ["█▀▀▄", "█▀▀▄", "▀▀▀ "], "C": ["▄▀▀▀", "█   ", "▀▀▀▀"],
+    "A": ["▄▀▀▄", "█▀▀█", "▀  ▀"], "B": ["█▀▀▄", "█▀▀▄", "▀▀▀ "], "C": ["▄▀▀▀", "█   ", " ▀▀▀"],
     "D": ["█▀▀▄", "█  █", "▀▀▀ "], "E": ["█▀▀▀", "█▀▀ ", "▀▀▀▀"], "F": ["█▀▀▀", "█▀▀ ", "▀   "],
-    "G": ["▄▀▀▀", "█ ▀█", "▀▀▀▀"], "H": ["█  █", "█▀▀█", "▀  ▀"], "I": ["▀█▀", " █ ", "▀▀▀"],
+    "G": ["▄▀▀▀", "█ ▀█", " ▀▀▀"], "H": ["█  █", "█▀▀█", "▀  ▀"], "I": ["▀█▀", " █ ", "▀▀▀"],
     "J": [" ▀█▀", "  █ ", "▀▀  "], "K": ["█ ▄▀", "█▀▄ ", "▀  ▀"], "L": ["█   ", "█   ", "▀▀▀▀"],
-    "M": ["█▄ ▄█", "█ ▀ █", "▀   ▀"], "N": ["█▄  █", "█ ▀▄█", "▀   ▀"], "O": ["▄▀▀▄", "█  █", "▀▀▀▀"],
-    "P": ["█▀▀▄", "█▀▀▀", "▀   "], "Q": ["▄▀▀▄", "█  █", "▀▀▀▄"], "R": ["█▀▀▄", "█▀▀▄", "▀  ▀"],
-    "S": ["▄▀▀▀", "▀▀▀▄", "▀▀▀ "], "T": ["▀█▀", " █ ", " ▀ "], "U": ["█  █", "█  █", "▀▀▀▀"],
+    "M": ["█▄ ▄█", "█ ▀ █", "▀   ▀"], "N": ["█▄  █", "█ ▀▄█", "▀   ▀"], "O": ["▄▀▀▄", "█  █", " ▀▀ "],
+    "P": ["█▀▀▄", "█▀▀▀", "▀   "], "Q": ["▄▀▀▄", "█  █", " ▀▀▄"], "R": ["█▀▀▄", "█▀▀▄", "▀  ▀"],
+    "S": ["▄▀▀▀", " ▀▀▄", "▀▀▀ "], "T": ["▀█▀", " █ ", " ▀ "], "U": ["█  █", "█  █", " ▀▀ "],
     "V": ["█   █", "▀▄ ▄▀", "  ▀  "], "W": ["█   █", "█ ▄ █", "▀▀▀▀▀"], "X": ["▀▄ ▄▀", " ▄▀▄ ", "▀   ▀"],
     "Y": ["▀▄ ▄▀", "  █  ", "  ▀  "], "Z": ["▀▀▀█", " ▄▀ ", "▀▀▀▀"],
 }
@@ -252,7 +252,7 @@ def story_block(item, g, sel, idx, lead=False, sec=-1):
         meta = src + (", " + t if src and t else t)
         if meta: rows.append(("  ", [seg("— " + meta, sgr("dim", italic=True))], None))
     else:
-        notes = [[seg(l, sgr("note", italic=True))] for l in wrap_plain(src, MW)] if src else []
+        notes = [[seg(margin_name(src, MW), sgr("note", italic=True))]] if src else []
         if t: notes.append([seg(t, sgr("dim"))])
         while len(rows) < len(notes): rows.append(("  ", [], None))
         if notes:
@@ -260,6 +260,14 @@ def story_block(item, g, sel, idx, lead=False, sec=-1):
             rows[0] = (r0[0], r0[1], notes)
     rows.append(("  ", [], None))                        # breathing room after the story
     return block(rows, heads, sec=sec)
+
+def margin_name(src, w):
+    """A source name for the margin: one line. Drop a trailing '(via …)'-style note, then cut with …"""
+    if width(src) > w:
+        src = re.sub(r"\s*\([^)]*\)\s*$", "", src).strip() or src
+    if width(src) > w:
+        src = cut_cells(src, max(1, w - 1)).rstrip() + "…"
+    return src
 
 def section_block(title, n, g, first):
     T = g["T"]
@@ -296,18 +304,14 @@ def title_rows(page, tw):
     orn = len(rows)
     add(ornament(tw, 1.0))
     add([])
-    since = [s for s in (page.get("since_last_run") or []) if s]
+    since = [" ".join(s.split()) for s in (page.get("since_last_run") or []) if s and s.strip()]
     if since:
         nw = min(tw, 64)
-        text = "To the reader:  " + "  ".join(since)
-        lines = wrap_plain(text, nw)
-        for i, l in enumerate(lines):
-            if i == 0:
-                lab = "To the reader:"
-                r = [seg(lab, sgr("gold", italic=True)), seg(l[len(lab):], sgr("body", italic=True))]
-            else:
-                r = [seg(l, sgr("body", italic=True))]
-            rows.append(center(pad(r, nw), tw))
+        rows.append(center(pad([seg("To the reader", sgr("gold", italic=True))], nw), tw))
+        for entry in since:
+            for i, l in enumerate(wrap_plain(entry, nw - 2)):
+                lead = "– " if i == 0 else "  "
+                rows.append(center(pad([seg(lead, sgr("gold")), seg(l, sgr("body", italic=True))], nw), tw))
         add([])
     return rows, orn
 
