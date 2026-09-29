@@ -137,6 +137,22 @@ fn the_news_row_is_pulled_on_attach_and_pins_the_tab_out_of_the_list() {
         tick(&mut state).actions.is_empty(),
         "nothing changed: no second pull"
     );
+    let mut later = ClientShellInput::default();
+    state.tick_news(
+        std::time::Instant::now() + super::super::news::NEWS_REFRESH_INTERVAL,
+        &mut later,
+    );
+    assert!(
+        matches!(&endpoint_requests(&later)[..], [(_, Method::NewsGet(_))]),
+        "a minute later the record is pulled again (changes made from a shell)"
+    );
+    let (_, _) = state.handle_endpoint_result(
+        "boot-1",
+        &endpoint_requests(&later)[0].0,
+        Ok(ResponseResult::NewsGet {
+            news: info(Some("tab_2")),
+        }),
+    );
     let frame = state.compose(106, 20).expect("composed frame");
     assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_3"]);
     let row = state.hits.news_row;

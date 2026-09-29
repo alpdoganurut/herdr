@@ -3,8 +3,10 @@
 //!
 //! Everything shown comes from `news.get`, pulled on the tick after the
 //! first snapshot of a connection, whenever the tab set or the News tab's
-//! status or mark changes in the snapshot, and after every `news.*` reply.
-//! Nothing is pulled from a server that does not advertise `news.get`.
+//! status or mark changes in the snapshot, after every `news.*` reply, and
+//! otherwise once a minute (a `herdr news enable` from a shell changes no
+//! snapshot). Nothing is pulled from a server that does not advertise
+//! `news.get`.
 //!
 //! The row (`news_row`) exists only while `news.get` named a tab and the
 //! active snapshot still lists it: a state glyph, `News`, and a short
@@ -14,6 +16,9 @@
 
 use super::*;
 use crate::api::schema::{EmptyParams, Method, NewsGetInfo, NewsOpenParams, NewsSetEnabledParams};
+
+/// How often the record is pulled without a visible reason.
+pub(super) const NEWS_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Client-only news state for the active endpoint.
 #[derive(Debug, Default)]
@@ -28,6 +33,8 @@ pub(crate) struct ClientNewsState {
     pub(super) pulled_for: Option<NewsSnapshotSignature>,
     /// The `running Xm` minute drawn last, to repaint on the next minute.
     pub(super) drawn_running_minutes: Option<u64>,
+    /// When the last pull was sent, for the periodic refresh.
+    pub(super) last_pull: Option<std::time::Instant>,
 }
 
 /// What of the snapshot decides a fresh `news.get`: the connection, the
@@ -195,7 +202,6 @@ impl ClientShellState {
     /// The tick: pull `news.get` when due, and repaint a `running Xm` row
     /// on the next minute.
     pub(crate) fn tick_news(&mut self, now: std::time::Instant, outcome: &mut ClientShellInput) {
-        let _ = now;
         let Some(signature) = self.news_snapshot_signature() else {
             return;
         };
@@ -210,8 +216,12 @@ impl ClientShellState {
             outcome.repaint = true;
         }
         let stale = self.news.pulled_for.as_ref() != Some(&signature);
-        if (stale || self.news.refresh_due) && !self.news.loading {
-            self.queue_news_get(signature, outcome);
+        let periodic = self
+            .news
+            .last_pull
+            .is_some_and(|last| now.duration_since(last) >= NEWS_REFRESH_INTERVAL);
+        if (stale || self.news.refresh_due || periodic) && !self.news.loading {
+            self.queue_news_get(signature, now, outcome);
         }
         let running_minutes = self.news.info.as_ref().and_then(|info| {
             info.run
@@ -235,9 +245,15 @@ impl ClientShellState {
 
     /// `news.get`, remembered for `signature`; silently skipped on an
     /// endpoint that does not advertise it or is offline.
-    fn queue_news_get(&mut self, signature: NewsSnapshotSignature, outcome: &mut ClientShellInput) {
+    fn queue_news_get(
+        &mut self,
+        signature: NewsSnapshotSignature,
+        now: std::time::Instant,
+        outcome: &mut ClientShellInput,
+    ) {
         self.news.refresh_due = false;
         self.news.pulled_for = Some(signature);
+        self.news.last_pull = Some(now);
         let method = Method::NewsGet(EmptyParams::default());
         if !self.supports_endpoint_method(&method)
             || !self.endpoint_is_online(&self.active_endpoint_id)
@@ -262,7 +278,7 @@ impl ClientShellState {
             return;
         }
         if let Some(signature) = self.news_snapshot_signature() {
-            self.queue_news_get(signature, outcome);
+            self.queue_news_get(signature, std::time::Instant::now(), outcome);
         }
     }
 
