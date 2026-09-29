@@ -39,7 +39,10 @@ def clean(s):
 
 
 def fetch(url, cache):
-    """GET with gzip and conditional headers. Returns (status, body or None)."""
+    """GET with gzip and conditional headers. Returns (status, body or None). https only: the
+    source list can be rewritten by the editor agent, so file:// and internal hosts are refused."""
+    if not url.startswith("https://"):
+        raise ValueError("refusing a non-https source URL")
     headers = {"User-Agent": UA, "Accept-Encoding": "gzip", "Accept": "*/*"}
     c = cache.get(url, {})
     if c.get("etag"):
@@ -168,7 +171,12 @@ def main(argv=None):
             cache = json.load(open(a.cache))
         except ValueError:
             cache = {}
+    fetched = {fill_url(s["url"], now) for s in sources if isinstance(s, dict) and isinstance(s.get("url"), str)}
     res = run(sources, since, now, cache)
+    # Only this run's URLs stay cached: templated URLs ({since_24h}) differ every run and would
+    # otherwise pile up, items and all.
+    for key in [k for k in cache if k not in fetched]:
+        del cache[key]
     items = sorted((i for _, _, got in res for i in got), key=lambda i: i["date"], reverse=True)
     doc = {"fetched": now.isoformat(), "since": since.isoformat(),
            "log": {sid: meta for sid, meta, _ in res}, "items": items}
