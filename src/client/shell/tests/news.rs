@@ -411,6 +411,29 @@ fn the_row_focuses_on_click_and_its_menu_runs_opens_and_pauses() {
 }
 
 #[test]
+fn the_open_news_binding_requests_news_open_in_either_layout() {
+    use crate::input::{KeybindAction, KeybindMatch};
+    for config in [tabs_config(), Config::default()] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(snapshot()));
+        state.set_pane_surface(surface());
+        let mut outcome = ClientShellInput::default();
+        state.record_binding(KeybindMatch::Action(KeybindAction::OpenNews), &mut outcome);
+        let requests = endpoint_requests(&outcome);
+        assert!(
+            matches!(&requests[..], [(_, Method::NewsOpen(params))] if params.edition.is_none()),
+            "{requests:?}"
+        );
+    }
+    let bound: Config = toml::from_str("[keys]\nopen_news = \"alt+n\"").unwrap();
+    assert!(!bound
+        .live_keybinds_with_diagnostics()
+        .map(|(keybinds, _)| keybinds.keybinds.open_news.bindings.is_empty())
+        .unwrap_or(true));
+    assert!(!Config::default().keys.open_news.has_values());
+}
+
+#[test]
 fn the_spaces_layout_keeps_the_news_tab_in_its_list() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(news_snapshot()));

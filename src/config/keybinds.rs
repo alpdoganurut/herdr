@@ -354,6 +354,7 @@ pub struct Keybinds {
     pub restart_agent: ActionKeybinds,
     pub cycle_tab_color: ActionKeybinds,
     pub toggle_tab_important: ActionKeybinds,
+    pub open_news: ActionKeybinds,
     pub copy_mode: ActionKeybinds,
     pub focus_pane_left: ActionKeybinds,
     pub focus_pane_down: ActionKeybinds,
@@ -529,6 +530,7 @@ impl Config {
             restart_agent: empty_action!(),
             cycle_tab_color: empty_action!(),
             toggle_tab_important: empty_action!(),
+            open_news: empty_action!(),
             copy_mode: empty_action!(),
             focus_pane_left: empty_action!(),
             focus_pane_down: empty_action!(),
@@ -683,6 +685,7 @@ impl Config {
             apply_action!(keybinds.restart_agent, restart_agent, source);
             apply_action!(keybinds.cycle_tab_color, cycle_tab_color, source);
             apply_action!(keybinds.toggle_tab_important, toggle_tab_important, source);
+            apply_action!(keybinds.open_news, open_news, source);
             apply_action!(keybinds.copy_mode, copy_mode, source);
             apply_action!(keybinds.focus_pane_left, focus_pane_left, source);
             apply_action!(keybinds.focus_pane_down, focus_pane_down, source);

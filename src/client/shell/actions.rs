@@ -1157,6 +1157,9 @@ impl ClientShellState {
                     snapshot, &tab_id,
                 )?)
             }
+            KeybindAction::OpenNews => Some(Method::NewsOpen(
+                crate::api::schema::NewsOpenParams::default(),
+            )),
             KeybindAction::EditScrollback => Some(Method::PaneEditScrollback(PaneTarget {
                 pane_id: focused_pane?,
             })),

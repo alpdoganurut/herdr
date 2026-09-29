@@ -179,6 +179,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # restart_agent = ""                # unbound; exits the focused idle agent and relaunches it in place
 # cycle_tab_color = ""              # unbound; cycles the focused tab's color: none, red, ... purple, none
 # toggle_tab_important = ""         # unbound; marks the focused tab important, or unmarks it
+# open_news = ""                    # unbound; focuses the News tab, creating it with the page viewer when gone
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"
