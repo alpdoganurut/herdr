@@ -1,22 +1,26 @@
 //! The settings overlay's `news` section (fork): the AI news desk's schedule
 //! and state, from `news.get`.
 //!
-//! Four rows act on Enter or a click: `scheduled runs: on|off` toggles
-//! `news.enabled` on the active server (`news.set_enabled`, so a remote
-//! server's own config changes), `every N h` and `quiet hours …` open a
-//! picker in place of the rows (`3 / 6 / 12 / 24 h`; `off` and four windows,
-//! a configured value off the list first), and `run now` starts a run
-//! (`news.run`). Below them the model, the last run and the next run are
-//! shown. The interval and quiet-hours rows persist like the other settings
-//! (`ConfigEdit` on the local config + `server.reload_config`), then the
-//! section pulls `news.get` again.
+//! The rows act on Enter or a click: `scheduled runs: on|off` toggles
+//! `news.enabled` on the active server (`news.set_enabled`), one row per
+//! scheduled time (`08:00`, …) opens the fork's time picker (the daily
+//! reminder's 30-minute grid, `settings_daily_time`) to change it and
+//! Delete or Backspace removes it, `add time` opens the same picker for a
+//! new one, `quiet hours …` picks the window in which a notification waits
+//! (it no longer affects the schedule) and `run now` starts a run
+//! (`news.run`). Every change to the times goes to the active server as
+//! `news.set_times` with the whole sorted list, so a remote server's own
+//! config changes; its reply refreshes the section. The quiet-hours row
+//! persists like the other settings (`ConfigEdit` on the local config +
+//! `server.reload_config`), then the section pulls `news.get` again. Below
+//! the rows the model, the last run and the next run are shown.
 
 use super::render::put_text;
+use super::settings_daily_time::{daily_time_choices, ClientDailyTimeChoice};
 use super::*;
 use crate::api::schema::NewsGetInfo;
+use crossterm::event::KeyModifiers;
 
-/// The interval picker's hours.
-pub(super) const INTERVAL_CHOICES: &[u32] = &[3, 6, 12, 24];
 /// The quiet-hours picker's windows; the empty one is `off`.
 pub(super) const QUIET_CHOICES: &[&str] = &[
     "",
@@ -27,15 +31,58 @@ pub(super) const QUIET_CHOICES: &[&str] = &[
 ];
 
 const ROW_ENABLED: usize = 0;
-const ROW_INTERVAL: usize = 1;
-const ROW_QUIET: usize = 2;
-const ROW_RUN: usize = 3;
-const ROWS: usize = 4;
+/// The first time row; one row per scheduled time follows.
+const ROW_FIRST_TIME: usize = 1;
+/// Rows after the time rows: `add time`, `quiet hours`, `run now`.
+const TAIL_ROWS: usize = 3;
+/// Where the `add time` picker's cursor starts.
+const ADD_TIME_DEFAULT: u32 = 12 * 60;
+
+/// The section's row positions for a record with `times` scheduled times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NewsRows {
+    times: usize,
+}
+
+impl NewsRows {
+    fn of(info: &NewsGetInfo) -> Self {
+        Self {
+            times: info.times.len(),
+        }
+    }
+
+    fn add(self) -> usize {
+        ROW_FIRST_TIME + self.times
+    }
+
+    fn quiet(self) -> usize {
+        self.add() + 1
+    }
+
+    fn run(self) -> usize {
+        self.add() + 2
+    }
+
+    fn count(self) -> usize {
+        self.add() + TAIL_ROWS
+    }
+
+    /// The index into the times list of a time row.
+    fn time_index(self, row: usize) -> Option<usize> {
+        (ROW_FIRST_TIME..self.add())
+            .contains(&row)
+            .then(|| row - ROW_FIRST_TIME)
+    }
+}
 
 /// A picker open in place of the section's rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ClientNewsPicker {
-    Interval(Vec<u32>),
+    /// The time picker: for the time at `editing` in the list, or a new one.
+    Time {
+        editing: Option<usize>,
+        choices: Vec<ClientDailyTimeChoice>,
+    },
     QuietHours(Vec<String>),
 }
 
@@ -46,17 +93,6 @@ pub(super) struct ClientNewsSettings {
     pub(super) info: Option<NewsGetInfo>,
     pub(super) loading: bool,
     pub(super) picker: Option<ClientNewsPicker>,
-}
-
-/// The interval picker's rows: the configured value first when it is off
-/// the list.
-pub(super) fn interval_choices(configured: u32) -> Vec<u32> {
-    let mut choices = Vec::with_capacity(INTERVAL_CHOICES.len() + 1);
-    if !INTERVAL_CHOICES.contains(&configured) {
-        choices.push(configured);
-    }
-    choices.extend_from_slice(INTERVAL_CHOICES);
-    choices
 }
 
 /// The quiet-hours picker's rows: the configured window first when it is
@@ -77,6 +113,25 @@ pub(super) fn quiet_label(window: &str) -> &str {
         "off"
     } else {
         window.trim()
+    }
+}
+
+/// The list to send after replacing (`editing`) or appending a time:
+/// sorted, `HH:MM`, without duplicates. An entry the client cannot parse
+/// is kept as it came (the server validates).
+pub(super) fn times_with(times: &[String], editing: Option<usize>, minutes: u32) -> Vec<String> {
+    let time = crate::config::format_hhmm(u16::try_from(minutes % (24 * 60)).unwrap_or(0));
+    let mut times = times.to_vec();
+    match editing {
+        Some(index) if index < times.len() => times[index] = time,
+        _ => times.push(time),
+    }
+    match crate::config::normalize_times(times.iter().map(String::as_str)) {
+        Ok(minutes) => minutes
+            .into_iter()
+            .map(crate::config::format_hhmm)
+            .collect(),
+        Err(_) => times,
     }
 }
 
@@ -103,18 +158,21 @@ impl ClientShellState {
     }
 
     /// Rows in the news section: the picker's while one is open, else the
-    /// four action rows (none without a record).
+    /// toggle, one per time, `add time`, `quiet hours` and `run now` (none
+    /// without a record).
     pub(super) fn news_section_rows(&self) -> usize {
         match self.news_settings() {
             Some(ClientNewsSettings {
-                picker: Some(ClientNewsPicker::Interval(choices)),
+                picker: Some(ClientNewsPicker::Time { choices, .. }),
                 ..
             }) => choices.len(),
             Some(ClientNewsSettings {
                 picker: Some(ClientNewsPicker::QuietHours(choices)),
                 ..
             }) => choices.len(),
-            Some(ClientNewsSettings { info: Some(_), .. }) => ROWS,
+            Some(ClientNewsSettings {
+                info: Some(info), ..
+            }) => NewsRows::of(info).count(),
             _ => 0,
         }
     }
@@ -131,12 +189,20 @@ impl ClientShellState {
         self.pull_news_now(outcome);
     }
 
-    /// A `news.get` reply (or its failure) reaches the open section.
+    /// A `news.get` reply (or its failure) reaches the open section. The
+    /// cursor stays within the rows (a removed time shortens the list).
     pub(super) fn sync_news_settings(&mut self) {
         let info = self.news.info.clone();
-        if let Some(news) = self.news_settings_mut() {
-            news.info = info;
-            news.loading = false;
+        let rows = info.as_ref().map(|info| NewsRows::of(info).count());
+        let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() else {
+            return;
+        };
+        settings.news.info = info;
+        settings.news.loading = false;
+        if settings.section == ClientSettingsSection::News && settings.news.picker.is_none() {
+            if let Some(rows) = rows {
+                settings.selected = settings.selected.min(rows.saturating_sub(1));
+            }
         }
     }
 
@@ -145,22 +211,21 @@ impl ClientShellState {
         let Some(news) = self.news_settings() else {
             return;
         };
-        // The pickers write the local config file (no server method for the
-        // interval or quiet hours yet); a remote server keeps its own.
+        let Some(info) = news.info.clone() else {
+            return;
+        };
         match news.picker.clone() {
-            Some(ClientNewsPicker::Interval(choices)) => {
-                if let Some(hours) = choices.get(selected).copied() {
-                    if self.save_settings_edit(
-                        crate::config::ConfigEdit::NewsIntervalHours(hours),
-                        outcome,
-                    ) {
-                        self.close_news_picker();
-                        self.pull_news_now(outcome);
-                    }
+            Some(ClientNewsPicker::Time { editing, choices }) => {
+                if let Some((_, minutes)) = choices.get(selected).cloned() {
+                    let times = times_with(&info.times, editing, minutes);
+                    self.close_news_picker();
+                    self.send_news_times(times, outcome);
                 }
                 return;
             }
             Some(ClientNewsPicker::QuietHours(choices)) => {
+                // Quiet hours only hold notifications; no server method, so
+                // the local config file is written like the other settings.
                 if let Some(window) = choices.get(selected) {
                     if self.save_settings_edit(
                         crate::config::ConfigEdit::NewsQuietHours(window),
@@ -174,58 +239,112 @@ impl ClientShellState {
             }
             None => {}
         }
-        let Some(info) = news.info.clone() else {
-            return;
-        };
-        match selected {
-            ROW_ENABLED => {
-                // The active server writes its own config and reloads it;
-                // its reply refreshes the section.
-                self.push_endpoint_method_with_kind(
-                    crate::api::schema::Method::NewsSetEnabled(
-                        crate::api::schema::NewsSetEnabledParams {
-                            enabled: !info.enabled,
-                        },
-                    ),
-                    PendingEndpointKind::NewsSetEnabled,
-                    outcome,
-                );
-                outcome.repaint = true;
+        let rows = NewsRows::of(&info);
+        if selected == ROW_ENABLED {
+            // The active server writes its own config and reloads it; its
+            // reply refreshes the section.
+            self.push_endpoint_method_with_kind(
+                crate::api::schema::Method::NewsSetEnabled(
+                    crate::api::schema::NewsSetEnabledParams {
+                        enabled: !info.enabled,
+                    },
+                ),
+                PendingEndpointKind::NewsSetEnabled,
+                outcome,
+            );
+            outcome.repaint = true;
+        } else if let Some(index) = rows.time_index(selected) {
+            let configured = info
+                .times
+                .get(index)
+                .and_then(|time| crate::config::parse_hhmm(time).ok())
+                .map_or(ADD_TIME_DEFAULT, u32::from);
+            self.open_news_time_picker(Some(index), configured, outcome);
+        } else if selected == rows.add() {
+            self.open_news_time_picker(None, ADD_TIME_DEFAULT, outcome);
+        } else if selected == rows.quiet() {
+            let choices = quiet_choices(&info.quiet_hours);
+            let cursor = choices
+                .iter()
+                .position(|window| window == info.quiet_hours.trim())
+                .unwrap_or(0);
+            if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                settings.news.picker = Some(ClientNewsPicker::QuietHours(choices));
+                settings.selected = cursor;
             }
-            ROW_INTERVAL => {
-                let choices = interval_choices(info.interval_hours);
-                let cursor = choices
-                    .iter()
-                    .position(|hours| *hours == info.interval_hours)
-                    .unwrap_or(0);
-                if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
-                    settings.news.picker = Some(ClientNewsPicker::Interval(choices));
-                    settings.selected = cursor;
-                }
-                outcome.repaint = true;
-            }
-            ROW_QUIET => {
-                let choices = quiet_choices(&info.quiet_hours);
-                let cursor = choices
-                    .iter()
-                    .position(|window| window == info.quiet_hours.trim())
-                    .unwrap_or(0);
-                if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
-                    settings.news.picker = Some(ClientNewsPicker::QuietHours(choices));
-                    settings.selected = cursor;
-                }
-                outcome.repaint = true;
-            }
-            ROW_RUN => {
-                self.push_endpoint_method_with_kind(
-                    crate::api::schema::Method::NewsRun(crate::api::schema::EmptyParams::default()),
-                    PendingEndpointKind::NewsRun,
-                    outcome,
-                );
-                outcome.repaint = true;
-            }
-            _ => {}
+            outcome.repaint = true;
+        } else if selected == rows.run() {
+            self.push_endpoint_method_with_kind(
+                crate::api::schema::Method::NewsRun(crate::api::schema::EmptyParams::default()),
+                PendingEndpointKind::NewsRun,
+                outcome,
+            );
+            outcome.repaint = true;
         }
+    }
+
+    /// Open the time picker for the time at `editing` (or a new one), the
+    /// cursor on `configured` (minutes past midnight).
+    fn open_news_time_picker(
+        &mut self,
+        editing: Option<usize>,
+        configured: u32,
+        outcome: &mut ClientShellInput,
+    ) {
+        let choices = daily_time_choices(configured);
+        let cursor = choices
+            .iter()
+            .position(|(_, minutes)| *minutes == configured)
+            .unwrap_or(0);
+        if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+            settings.news.picker = Some(ClientNewsPicker::Time { editing, choices });
+            settings.selected = cursor;
+        }
+        outcome.repaint = true;
+    }
+
+    /// Send the whole list to the active server (`news.set_times`).
+    fn send_news_times(&mut self, times: Vec<String>, outcome: &mut ClientShellInput) {
+        self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::NewsSetTimes(crate::api::schema::NewsSetTimesParams {
+                times,
+            }),
+            PendingEndpointKind::NewsSetTimes,
+            outcome,
+        );
+        outcome.repaint = true;
+    }
+
+    /// The section's own keys, ahead of the overlay's: Delete or Backspace
+    /// on a time row removes that time. Everything else falls through.
+    pub(super) fn route_news_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        if !matches!(code, KeyCode::Delete | KeyCode::Backspace) || !modifiers.is_empty() {
+            return false;
+        }
+        let (info, selected) = match self.overlay.as_ref() {
+            Some(ClientShellOverlay::Settings(settings))
+                if settings.section == ClientSettingsSection::News
+                    && settings.news.picker.is_none() =>
+            {
+                match settings.news.info.as_ref() {
+                    Some(info) => (info.clone(), settings.selected),
+                    None => return false,
+                }
+            }
+            _ => return false,
+        };
+        let Some(index) = NewsRows::of(&info).time_index(selected) else {
+            return false;
+        };
+        let mut times = info.times.clone();
+        times.remove(index);
+        self.send_news_times(times, outcome);
+        true
     }
 
     /// Leave an open picker for the section's rows, the cursor back on the
@@ -237,9 +356,20 @@ impl ClientShellState {
         let Some(picker) = settings.news.picker.take() else {
             return false;
         };
+        let rows = NewsRows {
+            times: settings
+                .news
+                .info
+                .as_ref()
+                .map_or(0, |info| info.times.len()),
+        };
         settings.selected = match picker {
-            ClientNewsPicker::Interval(_) => ROW_INTERVAL,
-            ClientNewsPicker::QuietHours(_) => ROW_QUIET,
+            ClientNewsPicker::Time {
+                editing: Some(index),
+                ..
+            } => ROW_FIRST_TIME + index,
+            ClientNewsPicker::Time { editing: None, .. } => rows.add(),
+            ClientNewsPicker::QuietHours(_) => rows.quiet(),
         };
         true
     }
@@ -323,8 +453,8 @@ pub(super) fn last_run_text(info: &NewsGetInfo) -> String {
     text
 }
 
-/// The next run, one line: the time, `off` while paused, or the run in
-/// flight.
+/// The next run, one line: the time, `off` while paused, `none` without
+/// times, or the run in flight.
 pub(super) fn next_run_text(info: &NewsGetInfo, now: u64) -> String {
     if let Some(run) = info.run.as_ref() {
         return format!(
@@ -336,6 +466,9 @@ pub(super) fn next_run_text(info: &NewsGetInfo, now: u64) -> String {
     if !info.enabled {
         return "off (scheduling paused)".into();
     }
+    if info.times.is_empty() {
+        return "none (no times)".into();
+    }
     match info.next_run_at {
         Some(at) if at <= now => "due now".into(),
         Some(at) => super::news::local_hhmm(at),
@@ -343,7 +476,8 @@ pub(super) fn next_run_text(info: &NewsGetInfo, now: u64) -> String {
     }
 }
 
-/// The section: a title, the four rows (or the open picker), then the facts.
+/// The section: a title, the rows (or the open picker), then the facts
+/// (next run, last run, model, failures).
 pub(super) fn render_news_section(
     buffer: &mut Buffer,
     area: Rect,
@@ -359,24 +493,27 @@ pub(super) fn render_news_section(
     let news = &settings.news;
     if let Some(picker) = news.picker.as_ref() {
         let (title, help, rows): (&str, &str, Vec<(String, bool)>) = match picker {
-            ClientNewsPicker::Interval(choices) => (
-                "run every",
-                "hours between scheduled news runs; ↵ keeps it, esc goes back",
-                choices
-                    .iter()
-                    .map(|hours| {
-                        (
-                            format!("{hours} h"),
-                            news.info
-                                .as_ref()
-                                .is_some_and(|info| info.interval_hours == *hours),
-                        )
-                    })
-                    .collect(),
-            ),
+            ClientNewsPicker::Time { editing, choices } => {
+                let current = editing
+                    .and_then(|index| news.info.as_ref()?.times.get(index))
+                    .and_then(|time| crate::config::parse_hhmm(time).ok())
+                    .map(u32::from);
+                (
+                    if editing.is_some() {
+                        "run at"
+                    } else {
+                        "add a time"
+                    },
+                    "local time of a scheduled run; ↵ keeps it, esc goes back",
+                    choices
+                        .iter()
+                        .map(|(label, minutes)| (label.clone(), current == Some(*minutes)))
+                        .collect(),
+                )
+            }
             ClientNewsPicker::QuietHours(choices) => (
                 "quiet hours",
-                "local window in which a due run waits; ↵ keeps it, esc goes back",
+                "local window in which a news notification waits; ↵ keeps it, esc goes back",
                 choices
                     .iter()
                     .map(|window| {
@@ -392,12 +529,23 @@ pub(super) fn render_news_section(
         };
         put_text(buffer, area.x, area.y, area.width, title, title_style);
         put_text(buffer, area.x, area.y + 1, area.width, help, dim);
-        for (index, (label, current)) in rows.iter().enumerate() {
-            let y = area.y + 3 + index as u16;
-            if y >= area.bottom() {
-                break;
-            }
-            let rect = Rect::new(area.x, y, area.width, 1);
+        // The time picker has 48 rows: scroll so the cursor stays visible.
+        let list = Rect::new(
+            area.x,
+            area.y + 3,
+            area.width,
+            area.height.saturating_sub(3),
+        );
+        let visible = usize::from(list.height);
+        let scroll = settings.selected.saturating_sub(visible.saturating_sub(1));
+        for (row, (index, (label, current))) in rows
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible)
+            .enumerate()
+        {
+            let rect = Rect::new(list.x, list.y + row as u16, list.width, 1);
             draw_row(
                 buffer,
                 rect,
@@ -417,7 +565,7 @@ pub(super) fn render_news_section(
         area.x,
         area.y + 1,
         area.width,
-        "scheduled AI news runs in the News tab; ↵ toggles, picks or runs",
+        "AI news runs in the News tab; ↵ toggles, picks, runs; del removes a time",
         dim,
     );
     let Some(info) = news.info.as_ref() else {
@@ -429,15 +577,18 @@ pub(super) fn render_news_section(
         put_text(buffer, area.x, area.y + 3, area.width, message, dim);
         return;
     };
-    let rows = [
-        format!(
-            "scheduled runs: {}",
-            if info.enabled { "on" } else { "off" }
-        ),
-        format!("every {} h", info.interval_hours),
-        format!("quiet hours {}", quiet_label(&info.quiet_hours)),
-        "run now".to_owned(),
-    ];
+    let mut rows = Vec::with_capacity(NewsRows::of(info).count());
+    rows.push(format!(
+        "scheduled runs: {}",
+        if info.enabled { "on" } else { "off" }
+    ));
+    rows.extend(info.times.iter().cloned());
+    rows.push("add time".to_owned());
+    rows.push(format!(
+        "quiet hours {} (notifications)",
+        quiet_label(&info.quiet_hours)
+    ));
+    rows.push("run now".to_owned());
     for (index, label) in rows.iter().enumerate() {
         let y = area.y + 3 + index as u16;
         if y >= area.bottom() {
@@ -454,14 +605,16 @@ pub(super) fn render_news_section(
         );
         hits.push((rect, index));
     }
-    let facts_y = area.y + 3 + ROWS as u16 + 1;
+    // Straight under the rows, the next run first: a short popup with many
+    // times cuts the facts from the bottom.
+    let facts_y = area.y + 3 + rows.len() as u16;
     let now = unix_now();
     draw_fact(
         buffer,
         area,
         facts_y,
-        "model",
-        info.model.as_deref().unwrap_or("default"),
+        "next run",
+        &next_run_text(info, now),
         palette,
     );
     draw_fact(
@@ -476,8 +629,8 @@ pub(super) fn render_news_section(
         buffer,
         area,
         facts_y + 2,
-        "next run",
-        &next_run_text(info, now),
+        "model",
+        info.model.as_deref().unwrap_or("default"),
         palette,
     );
     if info.consecutive_failures > 0 {

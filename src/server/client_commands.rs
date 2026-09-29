@@ -26,6 +26,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "news.open",
     "news.run",
     "news.set_enabled",
+    "news.set_times",
     "pane.clear",
     "pane.close",
     "pane.copy_motion",
@@ -371,6 +372,10 @@ mod tests {
         assert_eq!(
             actual.remove("news.set_enabled").as_deref(),
             Some("1246ec256f7160ad56a4bc171faceb2e68649e592628021b0f821624c87b2d74")
+        );
+        assert_eq!(
+            actual.remove("news.set_times").as_deref(),
+            Some("7962b61c93c83ef9e9cdd0b42a433ae171891fc11b1df42a5120417d9cb9d805")
         );
 
         assert_eq!(

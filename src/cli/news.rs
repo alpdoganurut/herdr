@@ -1,14 +1,16 @@
 //! `herdr news run | status | log [n] | open [--edition N] | history [--days N]
-//! | enable | disable` (fork): the AI news desk (`news.run`, `news.status`,
-//! `news.open`, `news.history`, `news.set_enabled`).
+//! | enable | disable | times [HH:MM ...|--clear]` (fork): the AI news desk
+//! (`news.run`, `news.status`, `news.open`, `news.history`,
+//! `news.set_enabled`, `news.set_times`).
 
 use crate::api::schema::{
     EmptyParams, Method, NewsEditionInfo, NewsGetInfo, NewsHistoryParams, NewsOpenParams,
-    NewsRunRecord, NewsSetEnabledParams, NewsStatusInfo, Request,
+    NewsRunRecord, NewsSetEnabledParams, NewsSetTimesParams, NewsStatusInfo, Request,
 };
 use crate::persist::news::iso_to_unix;
 
-const USAGE: &str = "usage: herdr news <run|status [--json]|log [N] [--json]|open [--edition N]|history [--days N] [--json]|enable|disable>";
+const USAGE: &str = "usage: herdr news <run|status [--json]|log [N] [--json]|open [--edition N]|history [--days N] [--json]|enable|disable|times [HH:MM ...|--clear]>";
+const TIMES_USAGE: &str = "usage: herdr news times [HH:MM ...] [--clear]";
 const STATUS_USAGE: &str = "usage: herdr news status [--json]";
 const LOG_USAGE: &str = "usage: herdr news log [N] [--json]";
 const OPEN_USAGE: &str = "usage: herdr news open [--edition N]";
@@ -26,6 +28,7 @@ pub(super) fn run_news_command(args: &[String]) -> std::io::Result<i32> {
         Some("history") => news_history(&args[1..]),
         Some("enable") => news_set_enabled(&args[1..], true),
         Some("disable") => news_set_enabled(&args[1..], false),
+        Some("times") => news_times(&args[1..]),
         Some("help" | "--help" | "-h") => {
             eprintln!("{USAGE}");
             Ok(0)
@@ -313,6 +316,73 @@ fn news_set_enabled(args: &[String], enabled: bool) -> std::io::Result<i32> {
     Ok(0)
 }
 
+/// `herdr news times`: list the scheduled times with the next one marked;
+/// with times, set them; `--clear` empties the list.
+fn news_times(args: &[String]) -> std::io::Result<i32> {
+    let mut clear = false;
+    let mut times = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--clear" => clear = true,
+            "help" | "--help" | "-h" => {
+                eprintln!("{TIMES_USAGE}");
+                return Ok(0);
+            }
+            other if other.starts_with('-') => {
+                eprintln!("{TIMES_USAGE}");
+                return Ok(2);
+            }
+            other => times.push(other.to_string()),
+        }
+    }
+    if clear && !times.is_empty() {
+        eprintln!("{TIMES_USAGE}");
+        return Ok(2);
+    }
+    let (request_id, method) = if clear || !times.is_empty() {
+        if let Err(err) = crate::config::normalize_times(times.iter().map(String::as_str)) {
+            eprintln!("{err}; expected HH:MM");
+            return Ok(2);
+        }
+        (
+            "cli:news:set_times",
+            Method::NewsSetTimes(NewsSetTimesParams { times }),
+        )
+    } else {
+        ("cli:news:times", Method::NewsGet(EmptyParams::default()))
+    };
+    let news = match fetch_get(request_id, method)? {
+        Ok(news) => news,
+        Err(response) => return super::print_response(&response),
+    };
+    print!("{}", format_times(&news, &LocalClock::now()));
+    Ok(0)
+}
+
+/// The times, one per line, the next scheduled one marked with how far off
+/// it is; a line first when scheduling is off or the list is empty.
+fn format_times(news: &NewsGetInfo, clock: &LocalClock) -> String {
+    let mut out = String::new();
+    if news.times.is_empty() {
+        out.push_str("no scheduled times (no scheduled run starts)\n");
+        return out;
+    }
+    if !news.enabled {
+        out.push_str("scheduled runs are off (`herdr news enable` turns them on)\n");
+    }
+    let next = news.next_run_at.map(|at| (clock.format_hhmm(at), at));
+    for time in &news.times {
+        out.push_str(time);
+        if let Some((hhmm, at)) = next.as_ref() {
+            if hhmm == time {
+                out.push_str(&format!("  next ({})", format_until(clock.now, *at)));
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// One `history` line: `  3  2026-09-29 09:15  manual     30 stories  changed`.
 fn format_edition(edition: &NewsEditionInfo, clock: &LocalClock) -> String {
     let mut line = format!(
@@ -369,6 +439,14 @@ impl LocalClock {
             date.hour(),
             date.minute()
         )
+    }
+
+    /// `HH:MM` local.
+    fn format_hhmm(&self, unix: u64) -> String {
+        let shifted = i64::try_from(unix).unwrap_or(0) + self.offset_seconds;
+        let date = time::OffsetDateTime::from_unix_timestamp(shifted)
+            .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+        format!("{:02}:{:02}", date.hour(), date.minute())
     }
 
     fn format_iso(&self, iso: &str) -> String {
@@ -432,13 +510,17 @@ fn format_record(record: &NewsRunRecord, clock: &LocalClock, with_details: bool)
 fn format_status(status: &NewsStatusInfo, clock: &LocalClock, runs: usize) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "news: {}, every {} h, quiet {}{}\n",
+        "news: {}, times {}, quiet {}{}\n",
         if status.enabled {
             "enabled"
         } else {
             "disabled (scheduled runs off)"
         },
-        status.interval_hours,
+        if status.times.is_empty() {
+            "none".to_string()
+        } else {
+            status.times.join(" ")
+        },
         if status.quiet_hours.is_empty() {
             "off"
         } else {
@@ -566,7 +648,7 @@ mod tests {
     fn status_lists_the_schedule_the_run_and_the_last_runs() {
         let status = NewsStatusInfo {
             enabled: true,
-            interval_hours: 6,
+            times: vec!["08:00".into(), "13:00".into(), "19:00".into()],
             quiet_hours: "00:00-08:00".into(),
             model: Some("opus".into()),
             home: "/tmp/news".into(),
@@ -607,7 +689,7 @@ mod tests {
         let text = format_status(&status, &utc(), STATUS_RUNS);
         assert_eq!(
             text,
-            "news: enabled, every 6 h, quiet 00:00-08:00, model opus\n\
+            "news: enabled, times 08:00 13:00 19:00, quiet 00:00-08:00, model opus\n\
              home: /tmp/news\n\
              tab: w_1:t_3\n\
              next run: 2027-01-15 10:00 (in 2h 00m)\n\
@@ -638,11 +720,57 @@ mod tests {
             recent: Vec::new(),
             quiet_hours: String::new(),
             home: String::new(),
+            times: Vec::new(),
             ..status
         };
         assert_eq!(
             format_status(&idle, &utc(), STATUS_RUNS),
-            "news: disabled (scheduled runs off), every 6 h, quiet off\nnext run: none\ncurrent: none\nrecent runs: none\n"
+            "news: disabled (scheduled runs off), times none, quiet off\nnext run: none\ncurrent: none\nrecent runs: none\n"
         );
+    }
+
+    fn get_info(times: &[&str], enabled: bool, next_run_at: Option<u64>) -> NewsGetInfo {
+        NewsGetInfo {
+            enabled,
+            times: times.iter().map(|time| (*time).to_string()).collect(),
+            quiet_hours: String::new(),
+            model: None,
+            tab_id: None,
+            pane_id: None,
+            next_run_at,
+            run: None,
+            last_run: None,
+            unread: false,
+            consecutive_failures: 0,
+            pending_notifications: 0,
+        }
+    }
+
+    #[test]
+    fn times_are_listed_with_the_next_one_marked() {
+        // 1_800_000_000 is 2027-01-15 08:00:00 UTC.
+        let clock = utc();
+        let next = clock.now + 5 * 3600;
+        assert_eq!(
+            format_times(
+                &get_info(&["08:00", "13:00", "19:00"], true, Some(next)),
+                &clock
+            ),
+            "08:00\n13:00  next (in 5h 00m)\n19:00\n"
+        );
+        assert_eq!(
+            format_times(&get_info(&["08:00"], true, Some(clock.now)), &clock),
+            "08:00  next (due now)\n",
+            "a slot owed now is reported at its own time"
+        );
+        assert_eq!(
+            format_times(&get_info(&["08:00", "19:00"], false, None), &clock),
+            "scheduled runs are off (`herdr news enable` turns them on)\n08:00\n19:00\n"
+        );
+        assert_eq!(
+            format_times(&get_info(&[], true, None), &clock),
+            "no scheduled times (no scheduled run starts)\n"
+        );
+        assert_eq!(clock.format_hhmm(next), "13:00");
     }
 }

@@ -806,6 +806,7 @@ pub(super) enum PendingEndpointKind {
     NewsRun,
     NewsOpen,
     NewsSetEnabled,
+    NewsSetTimes,
     PrepareWorktreeCreate {
         workspace_id: String,
     },

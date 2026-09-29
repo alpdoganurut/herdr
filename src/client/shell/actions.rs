@@ -855,7 +855,8 @@ impl ClientShellState {
             kind @ (PendingEndpointKind::NewsGet
             | PendingEndpointKind::NewsRun
             | PendingEndpointKind::NewsOpen
-            | PendingEndpointKind::NewsSetEnabled) => {
+            | PendingEndpointKind::NewsSetEnabled
+            | PendingEndpointKind::NewsSetTimes) => {
                 return self.handle_news_endpoint_result(kind, result);
             }
             kind => {

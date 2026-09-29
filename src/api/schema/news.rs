@@ -1,6 +1,6 @@
 //! The AI news desk (fork): what `news.status` reports and `news.run` returns,
 //! what `news.get` gives the client shell, `news.history`'s editions and the
-//! parameters of `news.open` and `news.set_enabled`.
+//! parameters of `news.open`, `news.set_enabled` and `news.set_times`.
 //!
 //! Records mirror the lines the bundled runner appends to
 //! `<home>/runs/index.jsonl`; the server reads them back, it never
@@ -135,8 +135,12 @@ pub struct NewsEditionInfo {
 pub struct NewsGetInfo {
     /// Whether scheduled runs are on (`news.enabled`).
     pub enabled: bool,
-    pub interval_hours: u32,
-    /// The configured quiet window, `HH:MM-HH:MM`, or empty.
+    /// The scheduled local times, `HH:MM`, sorted (`news.times`); empty
+    /// means no scheduled runs.
+    #[serde(default)]
+    pub times: Vec<String>,
+    /// The configured quiet window, `HH:MM-HH:MM`, or empty; a notification
+    /// due inside it waits for its end.
     pub quiet_hours: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -184,6 +188,14 @@ pub struct NewsSetEnabledParams {
     pub enabled: bool,
 }
 
+/// `news.set_times`: the local times of the scheduled runs (written to the
+/// config as `news.times`, sorted and without duplicates). Every entry must
+/// be `HH:MM`; an empty list means no scheduled runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct NewsSetTimesParams {
+    pub times: Vec<String>,
+}
+
 /// The run in flight.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NewsRunInfo {
@@ -202,8 +214,12 @@ pub struct NewsRunInfo {
 pub struct NewsStatusInfo {
     /// Whether scheduled runs are on (`news.enabled`).
     pub enabled: bool,
-    pub interval_hours: u32,
-    /// The configured quiet window, `HH:MM-HH:MM`, or empty.
+    /// The scheduled local times, `HH:MM`, sorted (`news.times`); empty
+    /// means no scheduled runs.
+    #[serde(default)]
+    pub times: Vec<String>,
+    /// The configured quiet window, `HH:MM-HH:MM`, or empty; a notification
+    /// due inside it waits for its end.
     pub quiet_hours: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -252,6 +268,12 @@ mod tests {
                 Method::NewsSetEnabled(NewsSetEnabledParams { enabled: true }),
                 "news.set_enabled",
             ),
+            (
+                Method::NewsSetTimes(NewsSetTimesParams {
+                    times: vec!["08:00".into(), "19:00".into()],
+                }),
+                "news.set_times",
+            ),
         ] {
             let request = Request {
                 id: "req".into(),
@@ -268,7 +290,7 @@ mod tests {
     fn status_response_round_trips_with_optional_fields_absent() {
         let status = NewsStatusInfo {
             enabled: true,
-            interval_hours: 6,
+            times: vec!["08:00".into(), "13:00".into(), "19:00".into()],
             quiet_hours: "00:00-08:00".into(),
             model: None,
             home: "/tmp/news".into(),
@@ -307,12 +329,13 @@ mod tests {
         );
 
         let minimal = serde_json::json!({
-            "enabled": false, "interval_hours": 6, "quiet_hours": "", "home": "/x",
+            "enabled": false, "quiet_hours": "", "home": "/x",
             "consecutive_failures": 2
         });
         let decoded: NewsStatusInfo = serde_json::from_value(minimal).unwrap();
         assert!(decoded.recent.is_empty());
         assert!(decoded.run.is_none());
+        assert!(decoded.times.is_empty(), "an older server sends no times");
     }
 
     #[test]
@@ -340,7 +363,7 @@ mod tests {
 
         let info = NewsGetInfo {
             enabled: false,
-            interval_hours: 6,
+            times: vec!["08:00".into()],
             quiet_hours: String::new(),
             model: None,
             tab_id: Some("w_1:t_2".into()),
@@ -383,6 +406,9 @@ mod tests {
 
         let open: NewsOpenParams = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(open, NewsOpenParams::default());
+        let times: NewsSetTimesParams =
+            serde_json::from_value(serde_json::json!({"times": []})).unwrap();
+        assert!(times.times.is_empty());
         let notify: NewsNotifyInfo =
             serde_json::from_value(serde_json::json!({"title": "t"})).unwrap();
         assert_eq!(notify.urgency, "low");

@@ -497,6 +497,9 @@ impl ClientShellState {
         if self.route_closed_sessions_key(code, modifiers, outcome) {
             return true;
         }
+        if self.route_news_key(code, modifiers, outcome) {
+            return true;
+        }
         if code == KeyCode::Esc {
             if !matches!(
                 self.overlay,

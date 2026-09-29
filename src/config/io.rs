@@ -915,7 +915,7 @@ resume_agents_on_restore = true
             r#"
 [news]
 enabled = true
-interval_hours = 3
+times = ["09:00", "18:30"]
 quiet_hours = "23:00-07:00"
 model = "opus"
 "#,
@@ -923,7 +923,8 @@ model = "opus"
         .unwrap();
 
         assert!(loaded.config.news.enabled);
-        assert_eq!(loaded.config.news.interval_hours, 3);
+        assert_eq!(loaded.config.news.times, ["09:00", "18:30"]);
+        assert_eq!(loaded.config.news.times(), [9 * 60, 18 * 60 + 30]);
         assert_eq!(loaded.config.news.quiet_hours, "23:00-07:00");
         assert_eq!(loaded.config.news.model.as_deref(), Some("opus"));
         assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);

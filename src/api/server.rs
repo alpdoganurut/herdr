@@ -545,6 +545,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::NewsHistory(_) => "news.history",
         Method::NewsOpen(_) => "news.open",
         Method::NewsSetEnabled(_) => "news.set_enabled",
+        Method::NewsSetTimes(_) => "news.set_times",
         Method::AgentPrompt(_) => "agent.prompt",
         Method::AgentWait(_) => "agent.wait",
         Method::PaneSplit(_) => "pane.split",

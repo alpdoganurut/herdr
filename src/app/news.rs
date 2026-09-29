@@ -11,8 +11,13 @@
 //! `<home>/runs/index.jsonl` and execs the page viewer.
 //!
 //! Scheduling runs in the headless loop next to the tab-bar status tasks:
-//! every `news.interval_hours`, deferred to the end of `news.quiet_hours`,
-//! missed slots collapsed to one run, and only while `news.enabled`. A run
+//! at each local time in `news.times`, only while `news.enabled`. The
+//! schedule remembers when the last run (any trigger) started: a slot is
+//! owed while it is the latest one reached today and no run has started
+//! since it, so a slot missed while the server was down runs once on return
+//! when it was earlier today, several missed slots collapse to one run, and
+//! a manual run leaves the schedule alone (`schedule_action`). Quiet hours
+//! only hold notifications. A run
 //! is in flight from its start until the run log gains a record started at
 //! or after it (polled every five seconds). The runner gets one budget for
 //! the whole run on its command line (`--deadline-min`, [`RUN_BUDGET_MIN`]);
@@ -28,7 +33,8 @@
 //! The client shell reads `news.get` (the pinned row, the settings section);
 //! `news.open` focuses the News tab, creating it with the page viewer when
 //! it is gone, or shows a past edition; `news.history` lists the editions;
-//! `news.set_enabled` writes `news.enabled` to the config and reloads it.
+//! `news.set_enabled` writes `news.enabled` to the config and reloads it,
+//! `news.set_times` does the same for `news.times`.
 //! Focusing the News tab clears its important mark here, on the scheduler
 //! pass, so it works from any client.
 //!
@@ -53,9 +59,9 @@ use super::api::responses::{encode_error, encode_success};
 use super::App;
 use crate::api::schema::{
     NewsGetInfo, NewsHistoryParams, NewsOpenParams, NewsRunInfo, NewsRunRecord,
-    NewsSetEnabledParams, NewsStatusInfo, ResponseResult,
+    NewsSetEnabledParams, NewsSetTimesParams, NewsStatusInfo, ResponseResult,
 };
-use crate::config::{NewsConfig, QuietHours};
+use crate::config::{format_hhmm, normalize_times, NewsConfig, QuietHours};
 use crate::persist::news as store;
 
 /// The News tab's label.
@@ -266,7 +272,8 @@ impl NewsRun {
 }
 
 /// Why a news request was refused: a run did not start, `news.open` did
-/// not open, `news.set_enabled` could not write.
+/// not open, `news.set_enabled` or `news.set_times` could not write,
+/// `news.set_times` got a time that is not `HH:MM`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NewsError {
     /// No news home: the session is not persisted.
@@ -277,8 +284,11 @@ pub(crate) enum NewsError {
     Failed(String),
     /// `news.open --edition`: no such edition.
     NoEdition(u32),
-    /// `news.set_enabled`: the config file could not be written.
+    /// `news.set_enabled`, `news.set_times`: the config file could not be
+    /// written.
     ConfigWrite(String),
+    /// `news.set_times`: an entry is not a time of day.
+    InvalidTime(String),
 }
 
 impl NewsError {
@@ -289,6 +299,7 @@ impl NewsError {
             Self::Failed(_) => "news_run_failed",
             Self::NoEdition(_) => "news_edition_not_found",
             Self::ConfigWrite(_) => "news_config_write_failed",
+            Self::InvalidTime(_) => "news_invalid_time",
         }
     }
 
@@ -299,6 +310,7 @@ impl NewsError {
             }
             Self::InFlight => "a news run is already in flight".into(),
             Self::Failed(message) | Self::ConfigWrite(message) => message.clone(),
+            Self::InvalidTime(err) => format!("{err}; expected HH:MM"),
             Self::NoEdition(edition) => format!("edition {edition} does not exist"),
         }
     }
@@ -309,8 +321,6 @@ impl NewsError {
 pub(crate) enum ScheduleAction {
     Wait,
     Run,
-    /// Quiet hours: the run waits until this time (seconds since the epoch).
-    Defer(u64),
 }
 
 /// The local wall clock, as far as the schedule needs it.
@@ -320,6 +330,8 @@ pub(crate) struct LocalClock {
     pub(crate) second: u8,
 }
 
+const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+
 impl LocalClock {
     fn now() -> Option<Self> {
         let local = crate::platform::local_datetime()?;
@@ -328,33 +340,84 @@ impl LocalClock {
             second: local.second(),
         })
     }
+
+    /// Seconds since local midnight.
+    fn since_midnight(self) -> u64 {
+        u64::from(self.minute_of_day) * 60 + u64::from(self.second)
+    }
+
+    /// Today's slot at `minute_of_day` (local), in seconds since the epoch,
+    /// given `now` in the same seconds. (On the day of a DST change the
+    /// slots before the change are off by the shift; the schedule is
+    /// re-evaluated on every tick, so nothing is lost.)
+    fn slot_today(self, now: u64, minute_of_day: u16) -> u64 {
+        now.saturating_sub(self.since_midnight()) + u64::from(minute_of_day) * 60
+    }
 }
 
-/// Whether a due run starts now, waits, or is deferred past quiet hours.
-/// A never-scheduled run (`next_run_at` unset) is due at once; a slot in
-/// the past by any amount is one run, not several. Without a local clock
-/// quiet hours cannot be evaluated and the run starts.
+/// The slot the schedule owes now: the latest listed time already reached
+/// today, unless a run (any trigger) started at or after it. Earlier slots
+/// today are folded into it (several missed slots are one run); yesterday's
+/// are never owed. `times` are minutes since local midnight, sorted.
+pub(crate) fn due_slot(
+    times: &[u16],
+    now: u64,
+    local: LocalClock,
+    last_started_at: Option<u64>,
+) -> Option<u64> {
+    let latest = times
+        .iter()
+        .map(|minute| local.slot_today(now, *minute))
+        .filter(|slot| *slot <= now)
+        .max()?;
+    last_started_at
+        .is_none_or(|started| started < latest)
+        .then_some(latest)
+}
+
+/// The first listed time after `now`: later today, else the first one
+/// tomorrow. `None` without times.
+pub(crate) fn upcoming_slot(times: &[u16], now: u64, local: LocalClock) -> Option<u64> {
+    let first = *times.first()?;
+    times
+        .iter()
+        .map(|minute| local.slot_today(now, *minute))
+        .find(|slot| *slot > now)
+        .or_else(|| Some(local.slot_today(now, first) + SECONDS_PER_DAY))
+}
+
+/// The next scheduled run as reported: the slot owed now (in the past:
+/// "due now"), else the upcoming one.
+pub(crate) fn next_run_at(
+    times: &[u16],
+    now: u64,
+    local: LocalClock,
+    last_started_at: Option<u64>,
+) -> Option<u64> {
+    due_slot(times, now, local, last_started_at).or_else(|| upcoming_slot(times, now, local))
+}
+
+/// Whether a scheduled run starts now. Nothing starts while scheduling is
+/// off, a run is in flight, the list is empty or there is no local clock
+/// (the slots cannot be placed).
 pub(crate) fn schedule_action(
     enabled: bool,
-    next_run_at: Option<u64>,
+    times: &[u16],
     run_in_flight: bool,
     now: u64,
     local: Option<LocalClock>,
-    quiet: Option<QuietHours>,
+    last_started_at: Option<u64>,
 ) -> ScheduleAction {
     if !enabled || run_in_flight {
         return ScheduleAction::Wait;
     }
-    if now < next_run_at.unwrap_or(now) {
+    let Some(local) = local else {
         return ScheduleAction::Wait;
+    };
+    match due_slot(times, now, local, last_started_at) {
+        Some(_) => ScheduleAction::Run,
+        None => ScheduleAction::Wait,
     }
-    if let (Some(local), Some(quiet)) = (local, quiet) {
-        if quiet.contains(local.minute_of_day) {
-            let wait = u64::from(quiet.minutes_until_end(local.minute_of_day)) * 60;
-            return ScheduleAction::Defer(now + wait.saturating_sub(u64::from(local.second)));
-        }
-    }
-    ScheduleAction::Run
 }
 
 /// The record of the run started at `started` among records appended to
@@ -448,7 +511,9 @@ pub(crate) fn viewer_command(home: &Path, edition: Option<u32>) -> String {
 #[derive(Debug)]
 pub(crate) struct NewsState {
     pub(crate) enabled: bool,
-    pub(crate) interval: Duration,
+    /// The scheduled times, minutes since local midnight, sorted.
+    pub(crate) times: Vec<u16>,
+    /// Quiet hours hold notifications only; the schedule ignores them.
     pub(crate) quiet: Option<QuietHours>,
     pub(crate) quiet_text: String,
     pub(crate) model: Option<String>,
@@ -457,7 +522,10 @@ pub(crate) struct NewsState {
     pub(crate) home: Option<PathBuf>,
     /// `news.json`; `None` keeps everything in memory (tests).
     pub(crate) store: Option<PathBuf>,
-    pub(crate) next_run_at: Option<u64>,
+    /// When the last run started, any trigger: the schedule's memory (a
+    /// slot at or before it is done). A failed scheduled start counts too,
+    /// so the slot is not retried every tick.
+    pub(crate) last_started_at: Option<u64>,
     pub(crate) tab_id: Option<String>,
     pub(crate) pane_id: Option<String>,
     pub(crate) run: Option<NewsRun>,
@@ -500,21 +568,32 @@ impl NewsState {
         state.store = store;
         if let Some(store_path) = state.store.as_deref() {
             state.load_record(store::load(store_path), now);
+            state.seed_schedule_memory(unix_now());
         }
         state
+    }
+
+    /// A record without `last_started_at` (written before the fixed-time
+    /// schedule, or a desk that never ran): the schedule starts from the
+    /// next slot rather than owing a slot it has no memory of.
+    fn seed_schedule_memory(&mut self, now_unix: u64) {
+        if self.last_started_at.is_none() {
+            self.last_started_at = Some(now_unix);
+            self.persist();
+        }
     }
 
     /// State with nothing on disk but `home` (tests).
     pub(crate) fn in_memory(config: &NewsConfig, home: Option<PathBuf>) -> Self {
         let mut state = Self {
             enabled: false,
-            interval: Duration::from_secs(u64::from(config.effective_interval_hours()) * 3600),
+            times: Vec::new(),
             quiet: None,
             quiet_text: String::new(),
             model: None,
             home,
             store: None,
-            next_run_at: None,
+            last_started_at: None,
             tab_id: None,
             pane_id: None,
             run: None,
@@ -537,7 +616,7 @@ impl NewsState {
 
     pub(crate) fn apply_config(&mut self, config: &NewsConfig) {
         self.enabled = config.enabled;
-        self.interval = Duration::from_secs(u64::from(config.effective_interval_hours()) * 3600);
+        self.times = config.times();
         self.quiet = config.quiet_hours();
         self.quiet_text = config.quiet_hours.trim().to_string();
         self.model = config
@@ -549,7 +628,7 @@ impl NewsState {
     }
 
     fn load_record(&mut self, record: store::NewsRecord, now: Instant) {
-        self.next_run_at = record.next_run_at;
+        self.last_started_at = record.last_started_at;
         self.tab_id = record.tab_id;
         self.pane_id = record.pane_id;
         self.consecutive_failures = record.consecutive_failures;
@@ -566,7 +645,7 @@ impl NewsState {
 
     fn record(&self) -> store::NewsRecord {
         store::NewsRecord {
-            next_run_at: self.next_run_at,
+            last_started_at: self.last_started_at,
             tab_id: self.tab_id.clone(),
             pane_id: self.pane_id.clone(),
             run: self.run.as_ref().map(NewsRun::persisted),
@@ -641,18 +720,38 @@ impl NewsState {
     pub(crate) fn schedule_action(&self, now: u64, local: Option<LocalClock>) -> ScheduleAction {
         schedule_action(
             self.enabled,
-            self.next_run_at,
+            &self.times,
             self.run.is_some(),
             now,
             local,
-            self.quiet,
+            self.last_started_at,
         )
+    }
+
+    /// The next scheduled run as `news.status` and `news.get` report it:
+    /// the slot owed now, else the upcoming one; `None` while scheduling is
+    /// off, without a news home, without times or without a local clock.
+    pub(crate) fn next_run_at(&self, now: u64, local: Option<LocalClock>) -> Option<u64> {
+        if !self.enabled || self.home.is_none() {
+            return None;
+        }
+        next_run_at(&self.times, now, local?, self.last_started_at)
+    }
+
+    /// The scheduled times as text, `HH:MM`.
+    pub(crate) fn times_text(&self) -> Vec<String> {
+        self.times.iter().copied().map(format_hhmm).collect()
     }
 
     /// The next instant the scheduler needs a tick: the run in flight (or
     /// the schedule), a pending viewer command, a notification held by the
     /// rate limit or waiting for quiet hours to end.
-    pub(crate) fn next_deadline(&self, now: Instant, now_unix: u64) -> Option<Instant> {
+    pub(crate) fn next_deadline(
+        &self,
+        now: Instant,
+        now_unix: u64,
+        local: Option<LocalClock>,
+    ) -> Option<Instant> {
         let mut deadlines = Vec::with_capacity(4);
         if let Some(pending) = &self.pending_command {
             deadlines.push(pending.next_check);
@@ -682,8 +781,7 @@ impl NewsState {
                     second_interrupt,
                 } => second_interrupt.map_or(next_poll, |second| second.min(next_poll)),
             });
-        } else if self.enabled && self.home.is_some() {
-            let next = self.next_run_at.unwrap_or(now_unix);
+        } else if let Some(next) = self.next_run_at(now_unix, local) {
             deadlines.push(now + Duration::from_secs(next.saturating_sub(now_unix)));
         }
         deadlines.into_iter().min()
@@ -697,9 +795,10 @@ impl NewsState {
     }
 
     pub(crate) fn status(&self) -> NewsStatusInfo {
+        let (local, _day) = self.local_now();
         NewsStatusInfo {
             enabled: self.enabled,
-            interval_hours: u32::try_from(self.interval.as_secs() / 3600).unwrap_or(u32::MAX),
+            times: self.times_text(),
             quiet_hours: self.quiet_text.clone(),
             model: self.model.clone(),
             home: self
@@ -707,8 +806,7 @@ impl NewsState {
                 .as_ref()
                 .map(|home| home.display().to_string())
                 .unwrap_or_default(),
-            next_run_at: (self.enabled && self.home.is_some())
-                .then(|| self.next_run_at.unwrap_or_else(unix_now)),
+            next_run_at: self.next_run_at(unix_now(), local),
             tab_id: self.tab_id.clone(),
             pane_id: self.pane_id.clone(),
             run: self.run.as_ref().map(NewsRun::info),
@@ -849,6 +947,22 @@ impl App {
         }
     }
 
+    pub(super) fn handle_news_set_times(
+        &mut self,
+        id: String,
+        params: NewsSetTimesParams,
+    ) -> String {
+        match self.set_news_times(&params.times) {
+            Ok(()) => encode_success(
+                id,
+                ResponseResult::NewsGet {
+                    news: self.news_get_info(),
+                },
+            ),
+            Err(err) => encode_error(id, err.code(), err.message()),
+        }
+    }
+
     /// `news.get`: the schedule, the tab (only while it exists), the run in
     /// flight, the last run and the unread mark.
     pub(crate) fn news_get_info(&self) -> NewsGetInfo {
@@ -860,9 +974,10 @@ impl App {
                 .and_then(|ws| ws.tabs.get(pane.tab_idx))
                 .is_some_and(|tab| tab.important)
         });
+        let (local, _day) = self.news.local_now();
         NewsGetInfo {
             enabled: self.news.enabled,
-            interval_hours: u32::try_from(self.news.interval.as_secs() / 3600).unwrap_or(u32::MAX),
+            times: self.news.times_text(),
             quiet_hours: self.news.quiet_text.clone(),
             model: self.news.model.clone(),
             tab_id: pane
@@ -871,8 +986,7 @@ impl App {
             pane_id: pane
                 .as_ref()
                 .and_then(|pane| self.public_pane_id(pane.ws_idx, pane.pane_id)),
-            next_run_at: (self.news.enabled && self.news.home.is_some())
-                .then(|| self.news.next_run_at.unwrap_or_else(unix_now)),
+            next_run_at: self.news.next_run_at(unix_now(), local),
             run: self.news.run.as_ref().map(NewsRun::info),
             last_run: self.news.last_run().map(|record| record.last_run()),
             unread,
@@ -915,6 +1029,35 @@ impl App {
             "news scheduling changed"
         );
         self.news.persist();
+        Ok(())
+    }
+
+    /// `news.set_times`: validate the times, write their canonical form
+    /// (sorted, `HH:MM`, no duplicates) to `news.times` in the config file
+    /// and reload it. The schedule follows at once: `next_run_at` is derived
+    /// from the list and the last run's start, never stored.
+    pub(crate) fn set_news_times(&mut self, times: &[String]) -> Result<(), NewsError> {
+        let minutes =
+            normalize_times(times.iter().map(String::as_str)).map_err(NewsError::InvalidTime)?;
+        let texts: Vec<String> = minutes.iter().copied().map(format_hhmm).collect();
+        crate::config::write_edit(crate::config::ConfigEdit::NewsTimes(&texts))
+            .map_err(NewsError::ConfigWrite)?;
+        let report = self.reload_config();
+        if self.news.times != minutes {
+            tracing::warn!(
+                event = "news.set_times",
+                outcome = "applied_directly",
+                status = ?report.status,
+                "config reload did not apply news.times; applying it in memory"
+            );
+            self.news.times = minutes;
+        }
+        tracing::info!(
+            event = "news.set_times",
+            outcome = "ok",
+            times = %texts.join(" "),
+            "news schedule changed"
+        );
         Ok(())
     }
 
@@ -1060,7 +1203,8 @@ impl App {
 
     /// The scheduler's contribution to the headless loop deadline.
     pub(crate) fn next_news_deadline(&self, now: Instant) -> Option<Instant> {
-        self.news.next_deadline(now, unix_now())
+        let (local, _day) = self.news.local_now();
+        self.news.next_deadline(now, unix_now(), local)
     }
 
     /// One scheduler pass: clear the unread mark of a focused News tab,
@@ -1076,21 +1220,9 @@ impl App {
             return self.drive_news_run(now) || changed;
         }
         self.drive_news_pending_command(now);
-        match self.news.schedule_action(unix_now(), LocalClock::now()) {
+        let (local, _day) = self.news.local_now();
+        match self.news.schedule_action(unix_now(), local) {
             ScheduleAction::Wait => changed,
-            ScheduleAction::Defer(until) => {
-                if self.news.next_run_at != Some(until) {
-                    tracing::info!(
-                        event = "news.schedule",
-                        outcome = "deferred",
-                        until,
-                        "news run deferred past quiet hours"
-                    );
-                    self.news.next_run_at = Some(until);
-                    self.news.persist();
-                }
-                changed
-            }
             ScheduleAction::Run => match self.start_news_run(NewsTrigger::Scheduled, now) {
                 Ok(_) => true,
                 Err(err) => {
@@ -1099,10 +1231,11 @@ impl App {
                         outcome = "start_failed",
                         code = err.code(),
                         err = %err.message(),
-                        "scheduled news run did not start"
+                        "scheduled news run did not start; the slot counts as attempted"
                     );
-                    // Try again next interval rather than every tick.
-                    self.news.next_run_at = Some(unix_now() + self.news.interval.as_secs());
+                    // The attempt stands for the slot: the next listed time
+                    // tries again, not every tick.
+                    self.news.last_started_at = Some(unix_now());
                     self.news.persist();
                     changed
                 }
@@ -1144,7 +1277,9 @@ impl App {
                 give_up_at: now + START_TIMEOUT,
             },
         });
-        self.news.next_run_at = Some(started_at + self.news.interval.as_secs());
+        // Any run stands for the slots reached so far today; the listed
+        // times themselves never move.
+        self.news.last_started_at = Some(started_at);
         tracing::info!(
             event = "news.run",
             outcome = "started",
@@ -1324,7 +1459,8 @@ impl App {
         if ready {
             self.clear_stale_news_identity(pane);
             let home = self.news.home.clone().unwrap_or_default();
-            let next = self.news.enabled.then_some(self.news.next_run_at).flatten();
+            let (local, _day) = self.news.local_now();
+            let next = self.news.next_run_at(unix_now(), local);
             let mut command = String::from(KILL_LINE);
             command.push_str(&run_command(
                 &home,
@@ -1763,14 +1899,6 @@ mod tests {
     use super::*;
     use crate::config::Config;
 
-    fn quiet(text: &str) -> Option<QuietHours> {
-        NewsConfig {
-            quiet_hours: text.into(),
-            ..NewsConfig::default()
-        }
-        .quiet_hours()
-    }
-
     fn clock(hour: u16, minute: u16, second: u8) -> Option<LocalClock> {
         Some(LocalClock {
             minute_of_day: hour * 60 + minute,
@@ -1779,78 +1907,210 @@ mod tests {
     }
 
     const NOW: u64 = 1_800_000_000;
+    /// The default times, minutes since local midnight.
+    const TIMES: &[u16] = &[8 * 60, 13 * 60, 19 * 60];
+    /// Local midnight when the fixed clock reads noon at `NOW`.
+    const MIDNIGHT: u64 = NOW - 12 * 3600;
+
+    /// `NOW` shifted to the fixed clock's `hour`, on the same local day.
+    fn at(hour: u64, minute: u64) -> u64 {
+        MIDNIGHT + hour * 3600 + minute * 60
+    }
 
     #[test]
-    fn schedule_runs_when_due_and_waits_before() {
-        let night = quiet("00:00-08:00");
-        let noon = clock(12, 0, 0);
+    fn the_next_slot_is_later_today_else_the_first_tomorrow() {
+        let noon = clock(12, 0, 0).unwrap();
+        assert_eq!(upcoming_slot(TIMES, NOW, noon), Some(at(13, 0)));
         assert_eq!(
-            schedule_action(true, Some(NOW + 1), false, NOW, noon, night),
-            ScheduleAction::Wait
+            next_run_at(TIMES, NOW, noon, Some(at(8, 1))),
+            Some(at(13, 0)),
+            "the 08:00 slot ran; 13:00 is next"
+        );
+        let evening = clock(20, 0, 0).unwrap();
+        assert_eq!(
+            upcoming_slot(TIMES, at(20, 0), evening),
+            Some(at(8, 0) + 86_400),
+            "past the last time: the first one tomorrow"
         );
         assert_eq!(
-            schedule_action(true, Some(NOW), false, NOW, noon, night),
-            ScheduleAction::Run
+            next_run_at(TIMES, at(20, 0), evening, Some(at(19, 0))),
+            Some(at(8, 0) + 86_400)
+        );
+        let one_pm = clock(13, 0, 0).unwrap();
+        assert_eq!(
+            next_run_at(TIMES, at(13, 0), one_pm, Some(at(12, 59))),
+            Some(at(13, 0)),
+            "at the slot itself it is due"
+        );
+        assert_eq!(upcoming_slot(&[], NOW, noon), None);
+        assert_eq!(
+            next_run_at(&[], NOW, noon, None),
+            None,
+            "an empty list waits"
         );
         assert_eq!(
-            schedule_action(true, None, false, NOW, noon, night),
-            ScheduleAction::Run,
-            "a never-scheduled desk runs at once"
-        );
-        assert_eq!(
-            schedule_action(true, Some(NOW - 5 * 86_400), false, NOW, noon, night),
-            ScheduleAction::Run,
-            "missed slots collapse to one run"
-        );
-        assert_eq!(
-            schedule_action(true, Some(NOW), false, NOW, None, night),
-            ScheduleAction::Run,
-            "no local clock: quiet hours cannot be evaluated"
+            next_run_at(
+                &[7 * 60 + 30],
+                at(23, 59) + 59,
+                clock(23, 59, 59).unwrap(),
+                Some(at(7, 30))
+            ),
+            Some(at(7, 30) + 86_400)
         );
     }
 
     #[test]
-    fn schedule_is_inert_while_disabled_or_in_flight() {
-        let noon = clock(12, 0, 0);
+    fn a_slot_reached_today_runs_once_unless_a_run_started_since_it() {
+        let two_pm = clock(14, 0, 0);
         assert_eq!(
-            schedule_action(false, Some(NOW - 10), false, NOW, noon, None),
-            ScheduleAction::Wait
+            schedule_action(true, TIMES, false, at(14, 0), two_pm, Some(at(8, 1))),
+            ScheduleAction::Run,
+            "13:00 was missed (the server was off) and nothing ran since"
         );
         assert_eq!(
-            schedule_action(false, None, false, NOW, noon, None),
-            ScheduleAction::Wait
+            due_slot(TIMES, at(14, 0), two_pm.unwrap(), Some(at(8, 1))),
+            Some(at(13, 0))
         );
         assert_eq!(
-            schedule_action(true, Some(NOW - 10), true, NOW, noon, None),
-            ScheduleAction::Wait
+            schedule_action(true, TIMES, false, at(14, 0), two_pm, Some(at(13, 0) + 5)),
+            ScheduleAction::Wait,
+            "a run started since the slot: nothing owed"
+        );
+        assert_eq!(
+            schedule_action(true, TIMES, false, at(14, 0), two_pm, Some(at(12, 30))),
+            ScheduleAction::Run,
+            "a manual run before the slot does not stand for it"
+        );
+        assert_eq!(
+            due_slot(TIMES, at(14, 0), two_pm.unwrap(), Some(at(8, 0) - 86_400)),
+            Some(at(13, 0)),
+            "08:00 and 13:00 both missed: one run, for the latest"
+        );
+        assert_eq!(
+            due_slot(TIMES, at(14, 0), two_pm.unwrap(), None),
+            Some(at(13, 0)),
+            "no memory at all: today's latest slot"
+        );
+        let seven_am = clock(7, 0, 0);
+        assert_eq!(
+            schedule_action(
+                true,
+                TIMES,
+                false,
+                at(7, 0),
+                seven_am,
+                Some(at(8, 0) - 86_400)
+            ),
+            ScheduleAction::Wait,
+            "yesterday's 19:00 was missed but is not today's"
+        );
+        assert_eq!(
+            next_run_at(TIMES, at(7, 0), seven_am.unwrap(), None),
+            Some(at(8, 0))
+        );
+        assert_eq!(
+            schedule_action(
+                true,
+                TIMES,
+                false,
+                at(13, 0),
+                clock(13, 0, 0),
+                Some(at(12, 59))
+            ),
+            ScheduleAction::Run,
+            "the slot itself"
+        );
+        assert_eq!(
+            schedule_action(
+                true,
+                TIMES,
+                false,
+                at(12, 59),
+                clock(12, 59, 59),
+                Some(at(8, 0))
+            ),
+            ScheduleAction::Wait,
+            "a second before"
         );
     }
 
     #[test]
-    fn quiet_hours_defer_a_due_run_to_their_end() {
-        let night = quiet("00:00-08:00");
+    fn schedule_is_inert_while_disabled_in_flight_empty_or_without_a_clock() {
+        let two_pm = clock(14, 0, 0);
         assert_eq!(
-            schedule_action(true, Some(NOW - 60), false, NOW, clock(3, 30, 15), night),
-            ScheduleAction::Defer(NOW + (4 * 60 + 30) * 60 - 15)
+            schedule_action(false, TIMES, false, at(14, 0), two_pm, None),
+            ScheduleAction::Wait,
+            "disabled waits"
         );
         assert_eq!(
-            schedule_action(true, Some(NOW), false, NOW, clock(7, 59, 59), night),
-            ScheduleAction::Defer(NOW + 1)
+            schedule_action(true, TIMES, true, at(14, 0), two_pm, None),
+            ScheduleAction::Wait,
+            "in flight waits"
         );
         assert_eq!(
-            schedule_action(true, Some(NOW), false, NOW, clock(8, 0, 0), night),
-            ScheduleAction::Run
-        );
-        let wrapped = quiet("22:00-06:00");
-        assert_eq!(
-            schedule_action(true, Some(NOW), false, NOW, clock(23, 0, 0), wrapped),
-            ScheduleAction::Defer(NOW + 7 * 3600)
+            schedule_action(true, &[], false, at(14, 0), two_pm, None),
+            ScheduleAction::Wait,
+            "an empty list waits"
         );
         assert_eq!(
-            schedule_action(true, Some(NOW), false, NOW, clock(3, 0, 0), None),
-            ScheduleAction::Run,
-            "no quiet hours"
+            schedule_action(true, TIMES, false, at(14, 0), None, None),
+            ScheduleAction::Wait,
+            "no local clock: the slots cannot be placed"
         );
+    }
+
+    #[test]
+    fn a_record_without_schedule_memory_starts_from_the_next_slot() {
+        let dir = temp_home("seed");
+        let store_path = dir.join(store::FILE_NAME);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &store_path,
+            "{\"version\":1,\"next_run_at\":1790692288,\"consecutive_failures\":0}",
+        )
+        .unwrap();
+        let mut state = NewsState::in_memory(&NewsConfig::default(), Some(dir.clone()));
+        state.store = Some(store_path.clone());
+        state.load_record(store::load(&store_path), Instant::now());
+        assert_eq!(state.last_started_at, None, "the old file has no memory");
+        state.seed_schedule_memory(at(14, 0));
+        assert_eq!(state.last_started_at, Some(at(14, 0)));
+        assert_eq!(
+            store::load(&store_path).last_started_at,
+            Some(at(14, 0)),
+            "the seed is written, so a second boot keeps it"
+        );
+        assert_eq!(
+            state.schedule_action(at(14, 0), clock(14, 0, 0)),
+            ScheduleAction::Wait,
+            "scheduling is off in the default config"
+        );
+        state.enabled = true;
+        assert_eq!(
+            state.schedule_action(at(14, 0), clock(14, 0, 0)),
+            ScheduleAction::Wait,
+            "13:00 is not owed: the desk has no memory of it"
+        );
+        assert_eq!(
+            state.next_run_at(at(14, 0), clock(14, 0, 0)),
+            Some(at(19, 0))
+        );
+        let mut kept = NewsState::in_memory(&NewsConfig::default(), Some(dir.clone()));
+        kept.store = Some(store_path.clone());
+        kept.load_record(
+            store::NewsRecord {
+                last_started_at: Some(at(8, 1)),
+                ..store::NewsRecord::default()
+            },
+            Instant::now(),
+        );
+        kept.seed_schedule_memory(at(14, 0));
+        assert_eq!(
+            kept.last_started_at,
+            Some(at(8, 1)),
+            "a record with memory keeps it"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn record(started: &str, outcome: &str) -> NewsRunRecord {
@@ -1979,6 +2239,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// A manual run leaves the listed times alone (the next run stays the
+    /// next listed time); a scheduled run stands for its slot, so the run
+    /// after it is the following listed time.
+    #[tokio::test]
+    async fn a_manual_run_does_not_move_the_schedule_but_a_scheduled_run_takes_its_slot() {
+        let home = temp_home("manual-run");
+        let mut app = news_app(Some(home.clone()), true);
+        app.news.assume_shell_ready = true;
+        let noon = clock(12, 0, 0);
+        app.news.local_override = Some((noon.unwrap(), "2026-09-29"));
+        app.news.last_started_at = Some(unix_now() - 60);
+        let before = app.news.next_run_at(unix_now(), noon).expect("13:00");
+        assert!(before.abs_diff(unix_now() + 3600) <= 2, "{before}");
+        assert_eq!(
+            app.news.schedule_action(unix_now(), noon),
+            ScheduleAction::Wait,
+            "nothing is owed at noon"
+        );
+        app.start_news_run(NewsTrigger::Manual, Instant::now())
+            .expect("manual run");
+        let started = app.news.last_started_at.expect("remembered");
+        assert!(started.abs_diff(unix_now()) <= 2);
+        let after = app.news.next_run_at(unix_now(), noon).expect("still 13:00");
+        assert!(
+            after.abs_diff(before) <= 2,
+            "the next run is still the 13:00 slot: {before} -> {after}"
+        );
+
+        // The manual run is over; at 14:00 the 13:00 slot has passed since
+        // the last start, so the scheduler runs it and 19:00 follows.
+        app.news.run = None;
+        let two_pm = clock(14, 0, 0);
+        app.news.local_override = Some((two_pm.unwrap(), "2026-09-29"));
+        // Two hours ago on the 14:00 clock is 12:00, before the slot.
+        app.news.last_started_at = Some(unix_now() - 2 * 3600);
+        assert_eq!(
+            app.news.schedule_action(unix_now(), two_pm),
+            ScheduleAction::Run
+        );
+        assert!(app.handle_news_tasks(Instant::now()));
+        let run = app.news.run.as_ref().expect("a scheduled run started");
+        assert_eq!(run.trigger, NewsTrigger::Scheduled);
+        let next = app.news.next_run_at(unix_now(), two_pm).expect("19:00");
+        assert!(
+            next.abs_diff(unix_now() + 5 * 3600) <= 2,
+            "the following slot: {next}"
+        );
+        assert_eq!(
+            app.news.schedule_action(unix_now(), two_pm),
+            ScheduleAction::Wait,
+            "in flight"
+        );
+        app.news.run = None;
+        assert_eq!(
+            app.news.schedule_action(unix_now(), two_pm),
+            ScheduleAction::Wait,
+            "the slot is done; nothing runs again before 19:00"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn status_reports_the_schedule_the_run_and_the_history() {
         let home = temp_home("status");
@@ -1989,7 +2310,10 @@ mod tests {
         )
         .unwrap();
         let mut app = news_app(Some(home.clone()), true);
-        app.news.next_run_at = Some(NOW);
+        // Noon on the fixed clock: 13:00 is an hour away from whatever the
+        // real clock says.
+        app.news.local_override = Some((clock(12, 0, 0).unwrap(), "2026-09-29"));
+        app.news.last_started_at = Some(unix_now() - 60);
         app.news.consecutive_failures = 1;
         app.news.run = Some(in_flight(NOW - 60, Instant::now()));
         let response = request(
@@ -1999,10 +2323,17 @@ mod tests {
         let status = &response["result"]["status"];
         assert_eq!(response["result"]["type"], "news_status");
         assert_eq!(status["enabled"], true);
-        assert_eq!(status["interval_hours"], 6);
+        assert_eq!(
+            status["times"],
+            serde_json::json!(["08:00", "13:00", "19:00"])
+        );
         assert_eq!(status["quiet_hours"], "00:00-08:00");
         assert_eq!(status["home"], home.display().to_string());
-        assert_eq!(status["next_run_at"], NOW);
+        let next = status["next_run_at"].as_u64().expect("next_run_at");
+        assert!(
+            next.abs_diff(unix_now() + 3600) <= 2,
+            "next run is the 13:00 slot: {next}"
+        );
         assert_eq!(status["run"]["phase"], "running");
         assert_eq!(status["run"]["trigger"], "manual");
         assert_eq!(status["consecutive_failures"], 1);
@@ -2120,7 +2451,7 @@ mod tests {
         );
         assert_eq!(run.info().phase, "stopping");
         assert_eq!(
-            app.news.next_deadline(now + WATCHDOG, NOW),
+            app.news.next_deadline(now + WATCHDOG, NOW, None),
             Some(now + WATCHDOG + POLL_INTERVAL),
             "the watchdog itself is not a deadline any more"
         );
@@ -2168,7 +2499,7 @@ mod tests {
             }
         );
         assert_eq!(
-            app.news.next_deadline(fired, NOW),
+            app.news.next_deadline(fired, NOW, None),
             Some(fired + INTERRUPT_GAP),
             "the loop wakes for the second Ctrl-C"
         );
@@ -2240,18 +2571,18 @@ mod tests {
         let home = temp_home("retry-deadline");
         let mut app = news_app(Some(home.clone()), false);
         let now = Instant::now();
-        assert_eq!(app.news.next_deadline(now, NOW), None);
+        assert_eq!(app.news.next_deadline(now, NOW, None), None);
         app.news.notify_retry_at = Some(now - Duration::from_secs(1));
         assert_eq!(
-            app.news.next_deadline(now, NOW),
+            app.news.next_deadline(now, NOW, None),
             None,
             "a past retry would spin the loop"
         );
         app.news.notify_retry_at = Some(now);
-        assert_eq!(app.news.next_deadline(now, NOW), None);
+        assert_eq!(app.news.next_deadline(now, NOW, None), None);
         app.news.notify_retry_at = Some(now + Duration::from_secs(1));
         assert_eq!(
-            app.news.next_deadline(now, NOW),
+            app.news.next_deadline(now, NOW, None),
             Some(now + Duration::from_secs(1))
         );
         let _ = std::fs::remove_dir_all(&home);
@@ -2262,18 +2593,29 @@ mod tests {
         let home = temp_home("deadline");
         let mut app = news_app(Some(home.clone()), true);
         let now = Instant::now();
-        app.news.next_run_at = Some(NOW + 600);
+        let noon = clock(12, 0, 0);
+        app.news.last_started_at = Some(NOW - 60);
         assert_eq!(
-            app.news.next_deadline(now, NOW),
-            Some(now + Duration::from_secs(600))
+            app.news.next_deadline(now, NOW, noon),
+            Some(now + Duration::from_secs(3600)),
+            "the 13:00 slot"
         );
         assert_eq!(
-            app.news.next_deadline(now, NOW + 1_000),
+            app.news
+                .next_deadline(now, at(13, 0) + 1_000, clock(13, 16, 40)),
             Some(now),
-            "a slot in the past is due now"
+            "a slot in the past without a run since is due now"
         );
+        assert_eq!(
+            app.news.next_deadline(now, NOW, None),
+            None,
+            "no local clock: no slot to wake for"
+        );
+        app.news.times.clear();
+        assert_eq!(app.news.next_deadline(now, NOW, noon), None, "no times");
+        app.news.times = TIMES.to_vec();
         app.news.run = Some(in_flight(NOW, now));
-        assert_eq!(app.news.next_deadline(now, NOW), Some(now));
+        assert_eq!(app.news.next_deadline(now, NOW, noon), Some(now));
         let mut stopping = in_flight(NOW, now - WATCHDOG);
         stopping.phase = NewsPhase::Stopping {
             next_poll: now + POLL_INTERVAL,
@@ -2281,15 +2623,15 @@ mod tests {
         };
         app.news.run = Some(stopping);
         assert_eq!(
-            app.news.next_deadline(now, NOW),
+            app.news.next_deadline(now, NOW, noon),
             Some(now + INTERRUPT_GAP),
             "stopping: the second Ctrl-C, not the past watchdog"
         );
         app.news.run = None;
         app.news.enabled = false;
-        assert_eq!(app.news.next_deadline(now, NOW), None);
+        assert_eq!(app.news.next_deadline(now, NOW, noon), None);
         let disabled_home = news_app(None, true);
-        assert_eq!(disabled_home.news.next_deadline(now, NOW), None);
+        assert_eq!(disabled_home.news.next_deadline(now, NOW, noon), None);
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -2630,7 +2972,7 @@ mod tests {
         assert!(pending.quit_sent);
         assert_eq!(pending.next_check, now + START_RETRY);
         assert_eq!(
-            app.news.next_deadline(now, NOW),
+            app.news.next_deadline(now, NOW, None),
             Some(now + START_RETRY),
             "the loop wakes for the probe"
         );
@@ -2675,7 +3017,7 @@ mod tests {
     fn set_enabled_writes_the_config_and_applies_it() {
         let dir = temp_home("set-enabled");
         let path = dir.join("config.toml");
-        std::fs::write(&path, "[news]\nenabled = false\ninterval_hours = 3\n").unwrap();
+        std::fs::write(&path, "[news]\nenabled = false\ntimes = [\"09:00\"]\n").unwrap();
         std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
         let mut app = news_app(Some(dir.join("news")), false);
         let response = request(
@@ -2690,7 +3032,7 @@ mod tests {
         let written: crate::config::Config =
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(written.news.enabled);
-        assert_eq!(written.news.interval_hours, 3, "other keys are kept");
+        assert_eq!(written.news.times, ["09:00"], "other keys are kept");
 
         let response = request(
             &mut app,
@@ -2700,6 +3042,58 @@ mod tests {
         );
         assert_eq!(response["result"]["news"]["enabled"], false);
         assert!(!app.news.enabled);
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_times_writes_the_canonical_list_and_applies_it() {
+        let dir = temp_home("set-times");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[news]\nenabled = true\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+        let mut app = news_app(Some(dir.join("news")), true);
+        app.news.local_override = Some((clock(12, 0, 0).unwrap(), "2026-09-29"));
+        app.news.last_started_at = Some(unix_now() - 60);
+        let set = |app: &mut App, times: &[&str]| {
+            request(
+                app,
+                crate::api::schema::Method::NewsSetTimes(crate::api::schema::NewsSetTimesParams {
+                    times: times.iter().map(|time| (*time).to_string()).collect(),
+                }),
+            )
+        };
+        let response = set(&mut app, &["19:00", "8:00", "19:00", "14:30"]);
+        assert_eq!(response["result"]["type"], "news_get", "{response}");
+        assert_eq!(
+            response["result"]["news"]["times"],
+            serde_json::json!(["08:00", "14:30", "19:00"]),
+            "sorted, zero-padded, without duplicates"
+        );
+        assert_eq!(app.news.times, [8 * 60, 14 * 60 + 30, 19 * 60]);
+        let written: crate::config::Config =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written.news.times, ["08:00", "14:30", "19:00"]);
+        assert!(written.news.enabled, "other keys are kept");
+        let next = response["result"]["news"]["next_run_at"]
+            .as_u64()
+            .expect("next_run_at");
+        assert!(
+            next.abs_diff(unix_now() + 2 * 3600 + 30 * 60) <= 2,
+            "the next run follows the new list at once: {next}"
+        );
+
+        let response = set(&mut app, &["08:00", "25:00"]);
+        assert_eq!(response["error"]["code"], "news_invalid_time", "{response}");
+        assert_eq!(app.news.times, [8 * 60, 14 * 60 + 30, 19 * 60], "unchanged");
+
+        let response = set(&mut app, &[]);
+        assert_eq!(response["result"]["news"]["times"], serde_json::json!([]));
+        assert!(
+            response["result"]["news"].get("next_run_at").is_none(),
+            "no times, no next run: {response}"
+        );
+        assert!(app.news.times.is_empty());
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2838,8 +3232,9 @@ mod tests {
         assert_eq!(app.news.notify.pending.len(), 1);
         assert!(app.news.notify.pending[0].high);
 
-        // Delivery is the server's; the deadline follows what is queued.
-        assert!(app.news.next_deadline(now, NOW).is_some());
+        // Delivery is the server's; a queued notification is due at once,
+        // so the loop's deadline is the schedule's (a slot owed at noon).
+        assert!(app.news.next_deadline(now, NOW, clock(12, 0, 0)).is_some());
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -2966,7 +3361,7 @@ mod tests {
         );
         let deadline = app
             .news
-            .next_deadline(now, now_unix)
+            .next_deadline(now, now_unix, None)
             .expect("the loop wakes for the end of quiet hours, even with scheduling off");
         let wait = deadline.saturating_duration_since(now).as_secs();
         assert!(wait.abs_diff((4 * 60 + 30) * 60 - 15) <= 2, "{wait}");
@@ -3039,7 +3434,7 @@ mod tests {
         store::save(
             &store_path,
             &store::NewsRecord {
-                next_run_at: Some(NOW + 5),
+                last_started_at: Some(NOW),
                 tab_id: Some("w_1:t_1".into()),
                 pane_id: None,
                 run: Some(store::PersistedNewsRun {
@@ -3076,6 +3471,7 @@ mod tests {
         assert_eq!(run.watch_from, now);
         assert_eq!(run.phase, NewsPhase::Running { next_poll: now });
         assert_eq!(state.consecutive_failures, 3);
+        assert_eq!(state.last_started_at, Some(NOW));
         assert_eq!(state.tab_id.as_deref(), Some("w_1:t_1"));
         assert_eq!(state.notify.delivered, 2);
         assert!(state.notify.failure_alerted);

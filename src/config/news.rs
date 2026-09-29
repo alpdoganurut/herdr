@@ -5,11 +5,10 @@
 
 use serde::Deserialize;
 
-/// Hours between scheduled runs when `interval_hours` is unset.
-pub const DEFAULT_NEWS_INTERVAL_HOURS: u32 = 6;
-/// `interval_hours` is clamped to `1..=MAX_NEWS_INTERVAL_HOURS` with a diagnostic.
-pub const MAX_NEWS_INTERVAL_HOURS: u32 = 24 * 7;
-/// The local window in which no scheduled run starts, when `quiet_hours` is unset.
+/// The local times of the scheduled runs when `times` is unset.
+pub const DEFAULT_NEWS_TIMES: &[&str] = &["08:00", "13:00", "19:00"];
+/// The local window in which a news notification waits, when `quiet_hours`
+/// is unset.
 pub const DEFAULT_NEWS_QUIET_HOURS: &str = "00:00-08:00";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -17,32 +16,61 @@ pub const DEFAULT_NEWS_QUIET_HOURS: &str = "00:00-08:00";
 pub struct NewsConfig {
     /// Run the news desk on a schedule (the server's headless loop). Default: false.
     pub enabled: bool,
-    /// Hours between scheduled runs. Default: 6 (1 through 168).
-    pub interval_hours: u32,
-    /// Local wall-clock window `HH:MM-HH:MM` during which a due scheduled run
-    /// waits (it starts when the window ends). Default: `00:00-08:00`. An
-    /// empty string disables quiet hours.
+    /// Local times of day (`HH:MM`, 24-hour) at which a scheduled run
+    /// starts. Default: `08:00`, `13:00`, `19:00`. An invalid entry is
+    /// dropped with a diagnostic, duplicates collapse and the list is kept
+    /// sorted ([`Self::times`]). Empty: no scheduled runs.
+    pub times: Vec<String>,
+    /// Local wall-clock window `HH:MM-HH:MM` during which a news
+    /// notification waits (it goes out when the window ends). Scheduling
+    /// ignores it. Default: `00:00-08:00`. An empty string disables it.
     pub quiet_hours: String,
     /// Model name handed to the runner (`claude -p --model`). Unset: the
     /// runner's default.
     pub model: Option<String>,
+    /// Retired: `interval_hours` was replaced by `times`. Read only to
+    /// report it ([`Self::diagnostics`]); its value is ignored.
+    #[serde(rename = "interval_hours")]
+    pub(crate) retired_interval_hours: Option<Retired>,
+}
+
+/// A retired key: only its presence is kept, whatever its value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Retired;
+
+impl<'de> Deserialize<'de> for Retired {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        serde::de::IgnoredAny::deserialize(deserializer).map(|_| Retired)
+    }
 }
 
 impl Default for NewsConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            interval_hours: DEFAULT_NEWS_INTERVAL_HOURS,
+            times: DEFAULT_NEWS_TIMES
+                .iter()
+                .map(|time| (*time).to_owned())
+                .collect(),
             quiet_hours: DEFAULT_NEWS_QUIET_HOURS.into(),
             model: None,
+            retired_interval_hours: None,
         }
     }
 }
 
 impl NewsConfig {
-    /// The interval as configured, clamped to the accepted range.
-    pub fn effective_interval_hours(&self) -> u32 {
-        self.interval_hours.clamp(1, MAX_NEWS_INTERVAL_HOURS)
+    /// The scheduled times in minutes since local midnight: the valid
+    /// entries, sorted, without duplicates.
+    pub fn times(&self) -> Vec<u16> {
+        let mut times: Vec<u16> = self
+            .times
+            .iter()
+            .filter_map(|time| parse_hhmm(time).ok())
+            .collect();
+        times.sort_unstable();
+        times.dedup();
+        times
     }
 
     /// The quiet window, or `None` when unset or invalid (an invalid value is
@@ -53,13 +81,18 @@ impl NewsConfig {
 
     pub fn diagnostics(&self) -> Vec<String> {
         let mut diagnostics = Vec::new();
-        if self.interval_hours != self.effective_interval_hours() {
-            diagnostics.push(format!(
-                "news.interval_hours = {} is out of range; using {} (allowed 1 through {})",
-                self.interval_hours,
-                self.effective_interval_hours(),
-                MAX_NEWS_INTERVAL_HOURS
-            ));
+        if self.retired_interval_hours.is_some() {
+            diagnostics.push(
+                "news.interval_hours is no longer used (replaced by news.times); remove it"
+                    .to_string(),
+            );
+        }
+        for time in &self.times {
+            if let Err(err) = parse_hhmm(time) {
+                diagnostics.push(format!(
+                    "news.times entry {time:?} is invalid ({err}); expected HH:MM; dropped"
+                ));
+            }
         }
         if let Err(err) = parse_quiet_hours(&self.quiet_hours) {
             diagnostics.push(format!(
@@ -103,10 +136,17 @@ impl QuietHours {
     }
 }
 
-fn parse_minute_of_day(text: &str) -> Result<u16, String> {
+/// Parse a 24-hour `HH:MM` (one or two hour digits, two minute digits,
+/// surrounding whitespace ignored) to minutes since midnight.
+pub fn parse_hhmm(text: &str) -> Result<u16, String> {
+    let text = text.trim();
     let (hours, minutes) = text
         .split_once(':')
         .ok_or_else(|| format!("{text:?} is not HH:MM"))?;
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    if hours.len() > 2 || minutes.len() != 2 || !digits(hours) || !digits(minutes) {
+        return Err(format!("{text:?} is not HH:MM"));
+    }
     let hours: u16 = hours
         .parse()
         .map_err(|_| format!("{hours:?} is not an hour"))?;
@@ -119,6 +159,24 @@ fn parse_minute_of_day(text: &str) -> Result<u16, String> {
     Ok(hours * 60 + minutes)
 }
 
+/// Minutes since midnight as `HH:MM`.
+pub fn format_hhmm(minute_of_day: u16) -> String {
+    let minute = minute_of_day % MINUTES_PER_DAY;
+    format!("{:02}:{:02}", minute / 60, minute % 60)
+}
+
+/// The canonical form of a list of times: every entry parsed (the first
+/// invalid one is the error), sorted, without duplicates.
+pub fn normalize_times<'a>(texts: impl IntoIterator<Item = &'a str>) -> Result<Vec<u16>, String> {
+    let mut times = texts
+        .into_iter()
+        .map(parse_hhmm)
+        .collect::<Result<Vec<u16>, String>>()?;
+    times.sort_unstable();
+    times.dedup();
+    Ok(times)
+}
+
 /// Parse `HH:MM-HH:MM`. Empty (after trimming) is `Ok(None)`: no quiet
 /// hours. Equal start and end is a full-day window and is rejected.
 pub fn parse_quiet_hours(text: &str) -> Result<Option<QuietHours>, String> {
@@ -129,8 +187,8 @@ pub fn parse_quiet_hours(text: &str) -> Result<Option<QuietHours>, String> {
     let (start, end) = text
         .split_once('-')
         .ok_or_else(|| "missing the '-' between start and end".to_string())?;
-    let start = parse_minute_of_day(start.trim())?;
-    let end = parse_minute_of_day(end.trim())?;
+    let start = parse_hhmm(start)?;
+    let end = parse_hhmm(end)?;
     if start == end {
         return Err("start and end are the same time".into());
     }
@@ -142,16 +200,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_are_off_six_hours_and_the_night() {
+    fn defaults_are_off_three_times_a_day_and_the_night() {
         let config = NewsConfig::default();
         assert!(!config.enabled);
-        assert_eq!(config.effective_interval_hours(), 6);
+        assert_eq!(config.times, ["08:00", "13:00", "19:00"]);
+        assert_eq!(config.times(), [8 * 60, 13 * 60, 19 * 60]);
         assert_eq!(
             config.quiet_hours(),
             Some(QuietHours { start: 0, end: 480 })
         );
         assert!(config.model.is_none());
         assert!(config.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn times_parse_format_and_normalize() {
+        assert_eq!(parse_hhmm("08:00"), Ok(480));
+        assert_eq!(parse_hhmm(" 8:05 "), Ok(485));
+        assert_eq!(parse_hhmm("23:59"), Ok(23 * 60 + 59));
+        for invalid in [
+            "", "8", "08:0", "24:00", "12:60", "+8:00", "a:b", "08:00:00", "08-00",
+        ] {
+            assert!(parse_hhmm(invalid).is_err(), "{invalid:?} parses");
+        }
+        assert_eq!(format_hhmm(0), "00:00");
+        assert_eq!(format_hhmm(485), "08:05");
+        assert_eq!(format_hhmm(23 * 60 + 59), "23:59");
+        assert_eq!(
+            normalize_times(["19:00", "8:00", "13:00", "08:00"]),
+            Ok(vec![480, 780, 1140])
+        );
+        assert_eq!(normalize_times([]), Ok(Vec::new()));
+        assert!(normalize_times(["08:00", "nope"]).is_err());
+    }
+
+    #[test]
+    fn invalid_times_are_dropped_duplicates_collapse_and_the_list_is_sorted() {
+        let config = NewsConfig {
+            times: vec![
+                "19:00".into(),
+                "25:00".into(),
+                "08:00".into(),
+                "8:00".into(),
+                "".into(),
+                "13:00".into(),
+            ],
+            ..NewsConfig::default()
+        };
+        assert_eq!(config.times(), [480, 780, 1140]);
+        let diagnostics = config.diagnostics();
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+        assert!(diagnostics[0].contains("news.times entry \"25:00\""));
+        assert!(diagnostics[1].contains("news.times entry \"\""));
+
+        let empty = NewsConfig {
+            times: Vec::new(),
+            ..NewsConfig::default()
+        };
+        assert!(empty.times().is_empty());
+        assert!(empty.diagnostics().is_empty());
     }
 
     #[test]
@@ -179,33 +286,49 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_values_are_clamped_with_diagnostics() {
+    fn invalid_quiet_hours_are_off_with_a_diagnostic() {
         let config = NewsConfig {
-            interval_hours: 0,
             quiet_hours: "nope".into(),
             ..NewsConfig::default()
         };
-        assert_eq!(config.effective_interval_hours(), 1);
         assert_eq!(config.quiet_hours(), None);
         let diagnostics = config.diagnostics();
-        assert_eq!(diagnostics.len(), 2);
-        assert!(diagnostics[0].contains("news.interval_hours = 0"));
-        assert!(diagnostics[1].contains("news.quiet_hours"));
-
-        let config = NewsConfig {
-            interval_hours: 1_000,
-            ..NewsConfig::default()
-        };
-        assert_eq!(config.effective_interval_hours(), MAX_NEWS_INTERVAL_HOURS);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].contains("news.quiet_hours"));
     }
 
     #[test]
     fn section_deserializes_from_toml() {
         let config: NewsConfig =
-            toml::from_str("enabled = true\ninterval_hours = 3\nmodel = \"opus\"\n").unwrap();
+            toml::from_str("enabled = true\ntimes = [\"9:00\", \"21:30\"]\nmodel = \"opus\"\n")
+                .unwrap();
         assert!(config.enabled);
-        assert_eq!(config.interval_hours, 3);
+        assert_eq!(config.times, ["9:00", "21:30"]);
+        assert_eq!(config.times(), [9 * 60, 21 * 60 + 30]);
         assert_eq!(config.model.as_deref(), Some("opus"));
         assert_eq!(config.quiet_hours, DEFAULT_NEWS_QUIET_HOURS);
+        assert!(config.diagnostics().is_empty());
+
+        let unsorted: NewsConfig =
+            toml::from_str("times = [\"19:00\", \"08:00\", \"19:00\", \"bad\"]\n").unwrap();
+        assert_eq!(unsorted.times(), [480, 1140]);
+        assert_eq!(unsorted.diagnostics().len(), 1);
+
+        let empty: NewsConfig = toml::from_str("times = []\n").unwrap();
+        assert!(empty.times().is_empty());
+    }
+
+    #[test]
+    fn the_retired_interval_key_is_a_diagnostic_not_an_error() {
+        let config: NewsConfig = toml::from_str("enabled = true\ninterval_hours = 3\n").unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.times(), [480, 780, 1140], "the default times apply");
+        let diagnostics = config.diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].contains("news.interval_hours"));
+        assert!(diagnostics[0].contains("replaced by news.times"));
+
+        let odd: NewsConfig = toml::from_str("interval_hours = \"six\"\n").unwrap();
+        assert_eq!(odd.diagnostics().len(), 1, "any value is only reported");
     }
 }

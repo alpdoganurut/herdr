@@ -1128,6 +1128,7 @@ impl App {
             Method::NewsSetEnabled(params) => {
                 return self.handle_news_set_enabled(request.id, params)
             }
+            Method::NewsSetTimes(params) => return self.handle_news_set_times(request.id, params),
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

@@ -541,6 +541,7 @@ impl ClientShellState {
                 | PendingEndpointKind::NewsRun
                 | PendingEndpointKind::NewsOpen
                 | PendingEndpointKind::NewsSetEnabled
+                | PendingEndpointKind::NewsSetTimes
                 | PendingEndpointKind::SelectionCopy
                 | PendingEndpointKind::PaneScroll { .. }
                 | PendingEndpointKind::WordSelection { .. }

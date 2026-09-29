@@ -177,6 +177,8 @@ pub enum Method {
     NewsOpen(NewsOpenParams),
     #[serde(rename = "news.set_enabled")]
     NewsSetEnabled(NewsSetEnabledParams),
+    #[serde(rename = "news.set_times")]
+    NewsSetTimes(NewsSetTimesParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

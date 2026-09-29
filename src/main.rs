@@ -434,9 +434,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Run the AI news desk on a schedule in a News tab (fork feature). Off by default;
 # `herdr news run` starts a run by hand either way.
 # enabled = false
-# Hours between scheduled runs (1 through 168).
-# interval_hours = 6
-# Local window HH:MM-HH:MM in which a due run waits; empty disables it.
+# Local times (HH:MM, 24-hour) of the scheduled runs; an empty list schedules none.
+# times = ["08:00", "13:00", "19:00"]
+# Local window HH:MM-HH:MM in which a news notification waits; empty disables it.
 # quiet_hours = "00:00-08:00"
 # Model handed to the runner (`claude -p --model`); unset uses the runner's default.
 # model = "opus"

@@ -841,7 +841,7 @@ fn news_command() -> Command {
                 .override_usage("herdr news status [--json]")
                 .arg(json_flag())
                 .long_about(
-                    "Prints whether scheduled runs are on, the interval and quiet hours, the news home, the News tab, the next scheduled run, the run in flight and the last five runs with their outcome, duration, cost, turns and edition (news.status).",
+                    "Prints whether scheduled runs are on, the scheduled times and quiet hours, the news home, the News tab, the next scheduled run, the run in flight and the last five runs with their outcome, duration, cost, turns and edition (news.status).",
                 ),
         )
         .subcommand(
@@ -876,6 +876,21 @@ fn news_command() -> Command {
                 .arg(json_flag())
                 .long_about(
                     "Lists every edition from <home>/editions/index.json, oldest first (news.history): number, local time, trigger, story count and whether the page changed. --days N keeps the last N local days.",
+                ),
+        )
+        .subcommand(
+            Command::new("times")
+                .about("Show or set the local times of the scheduled runs")
+                .override_usage("herdr news times [HH:MM ...] [--clear]")
+                .arg(
+                    Arg::new("times")
+                        .value_name("HH:MM")
+                        .num_args(0..)
+                        .required(false),
+                )
+                .arg(Arg::new("clear").long("clear").action(ArgAction::SetTrue))
+                .long_about(
+                    "Without arguments lists news.times with the next run marked (news.get). With times, writes them to news.times in the config file, sorted and without duplicates, and reloads it (news.set_times); --clear empties the list, so no scheduled run starts while `enabled` stays as it is. Each time is a local 24-hour HH:MM.",
                 ),
         )
         .subcommand(
@@ -1554,6 +1569,16 @@ mod tests {
                 .next()
                 .is_none());
         }
+    }
+
+    #[test]
+    fn spec_models_news_times() {
+        let cmd = super::command();
+        let times = command_path(&cmd, &["news", "times"]);
+        assert!(has_option(times, "clear"));
+        assert!(times
+            .get_arguments()
+            .any(|arg| arg.get_id() == "times" && !arg.is_required_set()));
     }
 
     #[test]

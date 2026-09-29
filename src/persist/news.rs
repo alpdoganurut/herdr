@@ -1,10 +1,10 @@
 //! The AI news desk's server-side record (fork).
 //!
 //! `news.json` next to `session.json` keeps what the server must remember
-//! across restarts: the next scheduled run, the News tab and pane, a run in
-//! flight (so a restarted server keeps watching it), the failure counter and
-//! the notification ledger (today's count, the pending notifications, the
-//! failure alert flag).
+//! across restarts: when the last run started (the schedule's memory), the
+//! News tab and pane, a run in flight (so a restarted server keeps watching
+//! it), the failure counter and the notification ledger (today's count, the
+//! pending notifications, the failure alert flag).
 //! Run history is not copied here: it is read back from the runner's
 //! `<home>/runs/index.jsonl`, the newest [`MAX_HISTORY`] lines.
 //!
@@ -188,9 +188,11 @@ pub struct NewsNotifyRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NewsRecord {
-    /// The next scheduled run, seconds since the Unix epoch.
+    /// When the last run started, any trigger, seconds since the Unix epoch:
+    /// a scheduled slot earlier than this is done. Absent in a file written
+    /// before the fixed-time schedule (or never run).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_run_at: Option<u64>,
+    pub last_started_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tab_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -211,7 +213,7 @@ struct StoreFileOut<'a> {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct StoreFileIn {
-    next_run_at: Option<u64>,
+    last_started_at: Option<u64>,
     tab_id: Option<String>,
     pane_id: Option<String>,
     run: Option<serde_json::Value>,
@@ -289,7 +291,7 @@ pub fn load(path: &Path) -> NewsRecord {
         })
         .unwrap_or_default();
     NewsRecord {
-        next_run_at: file.next_run_at,
+        last_started_at: file.last_started_at,
         tab_id: file.tab_id,
         pane_id: file.pane_id,
         run,
@@ -514,7 +516,7 @@ mod tests {
 
     fn record() -> NewsRecord {
         NewsRecord {
-            next_run_at: Some(1_800_000_000),
+            last_started_at: Some(1_799_990_000),
             tab_id: Some("w_1:t_3".into()),
             pane_id: Some("w_1:p_4".into()),
             run: Some(PersistedNewsRun {

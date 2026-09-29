@@ -2513,6 +2513,21 @@
           ],
           "type": "object"
         },
+        "NewsSetTimesParams": {
+          "description": "`news.set_times`: the local times of the scheduled runs (written to the\nconfig as `news.times`, sorted and without duplicates). Every entry must\nbe `HH:MM`; an empty list means no scheduled runs.",
+          "properties": {
+            "times": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "times"
+          ],
+          "type": "object"
+        },
         "NotificationShowParams": {
           "properties": {
             "body": {
@@ -6061,6 +6076,22 @@
         {
           "properties": {
             "method": {
+              "const": "news.set_times",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/NewsSetTimesParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -8698,11 +8729,6 @@
               "description": "Whether scheduled runs are on (`news.enabled`).",
               "type": "boolean"
             },
-            "interval_hours": {
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
             "last_run": {
               "anyOf": [
                 {
@@ -8743,7 +8769,7 @@
               "type": "integer"
             },
             "quiet_hours": {
-              "description": "The configured quiet window, `HH:MM-HH:MM`, or empty.",
+              "description": "The configured quiet window, `HH:MM-HH:MM`, or empty; a notification\ndue inside it waits for its end.",
               "type": "string"
             },
             "run": {
@@ -8764,6 +8790,14 @@
                 "null"
               ]
             },
+            "times": {
+              "default": [],
+              "description": "The scheduled local times, `HH:MM`, sorted (`news.times`); empty\nmeans no scheduled runs.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "unread": {
               "description": "The News tab is marked important: a run changed the page and the tab\nhas not been focused since.",
               "type": "boolean"
@@ -8771,7 +8805,6 @@
           },
           "required": [
             "enabled",
-            "interval_hours",
             "quiet_hours",
             "unread",
             "consecutive_failures"
@@ -8993,11 +9026,6 @@
               "description": "The news home directory (`<session data dir>/news`).",
               "type": "string"
             },
-            "interval_hours": {
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
             "model": {
               "type": [
                 "string",
@@ -9027,7 +9055,7 @@
               "type": "integer"
             },
             "quiet_hours": {
-              "description": "The configured quiet window, `HH:MM-HH:MM`, or empty.",
+              "description": "The configured quiet window, `HH:MM-HH:MM`, or empty; a notification\ndue inside it waits for its end.",
               "type": "string"
             },
             "recent": {
@@ -9054,11 +9082,18 @@
                 "string",
                 "null"
               ]
+            },
+            "times": {
+              "default": [],
+              "description": "The scheduled local times, `HH:MM`, sorted (`news.times`); empty\nmeans no scheduled runs.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           "required": [
             "enabled",
-            "interval_hours",
             "quiet_hours",
             "home",
             "consecutive_failures"

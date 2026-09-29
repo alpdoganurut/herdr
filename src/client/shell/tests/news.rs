@@ -42,7 +42,7 @@ fn news_snapshot() -> ClientShellSnapshot {
 fn info(tab_id: Option<&str>) -> NewsGetInfo {
     NewsGetInfo {
         enabled: true,
-        interval_hours: 6,
+        times: vec!["08:00".into(), "13:00".into(), "19:00".into()],
         quiet_hours: "00:00-08:00".into(),
         model: None,
         tab_id: tab_id.map(str::to_string),
@@ -491,6 +491,33 @@ fn open_news_section(state: &mut ClientShellState) -> ClientShellInput {
     outcome
 }
 
+/// The reply to a `news.set_times` (or `news.set_enabled`) request: the same
+/// record with the given times.
+fn reply_times(state: &mut ClientShellState, request_id: &str, times: &[&str]) {
+    let mut record = info(Some("tab_2"));
+    record.times = times.iter().map(|time| (*time).to_string()).collect();
+    state.handle_endpoint_result(
+        "boot-1",
+        request_id,
+        Ok(ResponseResult::NewsGet { news: record }),
+    );
+}
+
+fn set_times_request(outcome: &ClientShellInput) -> (String, Vec<String>) {
+    let requests = endpoint_requests(outcome);
+    match &requests[..] {
+        [(id, Method::NewsSetTimes(params))] => (id.clone(), params.times.clone()),
+        other => panic!("expected one news.set_times, got {other:?}"),
+    }
+}
+
+fn selected_row(state: &ClientShellState) -> usize {
+    match &state.overlay {
+        Some(ClientShellOverlay::Settings(settings)) => settings.selected,
+        _ => panic!("settings overlay"),
+    }
+}
+
 #[test]
 fn the_news_settings_section_shows_the_desk_and_edits_the_config() {
     let dir = std::env::temp_dir().join(format!("herdr-news-settings-{}", std::process::id()));
@@ -536,8 +563,11 @@ fn the_news_settings_section_shows_the_desk_and_edits_the_config() {
     let text = settings_frame_text(&mut state);
     for expected in [
         "scheduled runs: on",
-        "every 6 h",
-        "quiet hours 00:00-08:00",
+        "08:00",
+        "13:00",
+        "19:00",
+        "add time",
+        "quiet hours 00:00-08:00 (notifications)",
         "run now",
         "model",
         "opus",
@@ -579,48 +609,110 @@ fn the_news_settings_section_shows_the_desk_and_edits_the_config() {
         "the reply refreshes the row: {text}"
     );
 
-    // Row 1: the interval picker; Esc leaves it unsaved, Enter writes.
+    // Row 1 (08:00): Enter opens the time picker on the time; Esc leaves it
+    // alone, Enter on another time sends the whole sorted list.
     state.handle_input_bytes(b"\x1b[B");
     state.handle_input_bytes(b"\r");
     let text = settings_frame_text(&mut state);
-    assert!(text.contains("run every"), "{text}");
-    assert!(text.contains("6 h ✓"), "{text}");
+    assert!(text.contains("run at"), "{text}");
+    assert!(text.contains("08:00 ✓"), "{text}");
     state.handle_input_bytes(b"\x1b");
     let text = settings_frame_text(&mut state);
     assert!(
         text.contains("news desk"),
         "esc returns to the rows: {text}"
     );
-    assert!(matches!(
-        state.overlay,
-        Some(ClientShellOverlay::Settings(ClientSettingsOverlay {
-            selected: 1,
-            ..
-        }))
-    ));
-    assert_eq!(written().news.interval_hours, 6, "nothing written");
+    assert_eq!(selected_row(&state), 1);
     state.handle_input_bytes(b"\r");
     state.handle_input_bytes(b"\x1b[B");
     let outcome = state.handle_input_bytes(b"\r");
-    assert!(endpoint_requests(&outcome)
-        .iter()
-        .any(|(_, method)| matches!(method, Method::ServerReloadConfig(_))));
-    assert_eq!(written().news.interval_hours, 12);
+    let (request_id, times) = set_times_request(&outcome);
+    assert_eq!(times, ["08:30", "13:00", "19:00"]);
+    assert_eq!(
+        written().news.times,
+        ["08:00", "13:00", "19:00"],
+        "the local config is untouched: the server owns the times"
+    );
+    assert!(
+        settings_frame_text(&mut state).contains("news desk"),
+        "the picker closed"
+    );
+    assert_eq!(selected_row(&state), 1);
+    reply_times(&mut state, &request_id, &["08:30", "13:00", "19:00"]);
     let text = settings_frame_text(&mut state);
-    assert!(text.contains("news desk"), "the picker closed: {text}");
+    // (`00:00-08:00` in the quiet-hours row is not a time row.)
+    assert!(
+        text.contains("08:30") && !text.contains("  08:00 "),
+        "{text}"
+    );
 
-    // Row 2: quiet hours off.
+    // The `add time` row (after the three times) opens the picker at 12:00;
+    // Enter appends and the list comes back sorted.
+    for _ in 0..3 {
+        state.handle_input_bytes(b"\x1b[B");
+    }
+    assert_eq!(selected_row(&state), 4);
+    state.handle_input_bytes(b"\r");
+    let text = settings_frame_text(&mut state);
+    assert!(text.contains("add a time"), "{text}");
+    assert!(
+        text.contains("▸ 12:00"),
+        "the cursor starts at noon: {text}"
+    );
+    let outcome = state.handle_input_bytes(b"\r");
+    let (request_id, times) = set_times_request(&outcome);
+    assert_eq!(times, ["08:30", "12:00", "13:00", "19:00"]);
+    reply_times(
+        &mut state,
+        &request_id,
+        &["08:30", "12:00", "13:00", "19:00"],
+    );
+    let text = settings_frame_text(&mut state);
+    assert!(text.contains("12:00"), "{text}");
+
+    // Delete on a time row removes it; Backspace too.
+    state.handle_input_bytes(b"\x1b[A");
+    assert_eq!(selected_row(&state), 3, "the 13:00 row");
+    let outcome = state.handle_input_bytes(b"\x1b[3~");
+    let (request_id, times) = set_times_request(&outcome);
+    assert_eq!(times, ["08:30", "12:00", "19:00"]);
+    reply_times(&mut state, &request_id, &["08:30", "12:00", "19:00"]);
+    let text = settings_frame_text(&mut state);
+    assert!(!text.contains("13:00"), "{text}");
+    assert_eq!(selected_row(&state), 3, "now the 19:00 row");
+    let outcome = state.handle_input_bytes(b"\x7f");
+    let (request_id, times) = set_times_request(&outcome);
+    assert_eq!(times, ["08:30", "12:00"]);
+    reply_times(&mut state, &request_id, &["08:30", "12:00"]);
+    assert_eq!(
+        selected_row(&state),
+        3,
+        "the add row, clamped into the list"
+    );
+    let text = settings_frame_text(&mut state);
+    assert!(text.contains("▸ add time"), "{text}");
+    assert!(
+        endpoint_requests(&state.handle_input_bytes(b"\x1b[3~")).is_empty(),
+        "Delete does nothing off a time row"
+    );
+
+    // Quiet hours (after `add time`): the picker writes the local config.
     state.handle_input_bytes(b"\x1b[B");
     state.handle_input_bytes(b"\r");
     let text = settings_frame_text(&mut state);
     assert!(text.contains("quiet hours"), "{text}");
+    assert!(text.contains("notification waits"), "{text}");
     assert!(text.contains("off"), "{text}");
     assert!(text.contains("00:00-08:00 ✓"), "{text}");
     state.handle_input_bytes(b"\x1b[A");
-    state.handle_input_bytes(b"\r");
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(endpoint_requests(&outcome)
+        .iter()
+        .any(|(_, method)| matches!(method, Method::ServerReloadConfig(_))));
     assert_eq!(written().news.quiet_hours, "");
+    assert_eq!(selected_row(&state), 4, "back on the quiet-hours row");
 
-    // Row 3: run now.
+    // Run now, the last row.
     state.handle_input_bytes(b"\x1b[B");
     let outcome = state.handle_input_bytes(b"\r");
     assert!(matches!(

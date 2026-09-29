@@ -30,7 +30,7 @@ pub use self::{
         StatusIndicatorStyle, TabBarPositionConfig, ToastClipboardPosition, ToastConfig,
         ToastDelivery, ToastHerdrPosition, UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
     },
-    news::{NewsConfig, QuietHours},
+    news::{format_hhmm, normalize_times, parse_hhmm, NewsConfig, QuietHours},
     sidebar::{
         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenStyle,
         SpaceSidebarToken, SpacesSidebarConfig,
