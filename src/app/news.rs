@@ -75,8 +75,9 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const INTERRUPTED_AFTER_POLLS: u8 = 2;
 /// Ctrl-C.
 const INTERRUPT: &[u8] = b"\x03";
-/// Quits the page viewer.
-const VIEWER_QUIT: &[u8] = b"q";
+/// Quits the page viewer. The viewer runs pinned (`--pinned`): it ignores
+/// `q`, Esc and Ctrl-C, and only this private sequence (CSI 9999 ~) ends it.
+const VIEWER_QUIT: &[u8] = b"\x1b[9999~";
 /// Run notifications per local day; a high-urgency one may pass it once.
 pub(crate) const DAILY_NOTIFY_CAP: u8 = 2;
 /// Failed runs in a row that raise the failure alert.
@@ -372,7 +373,7 @@ pub(crate) fn run_command(
 ) -> String {
     let home = home.display().to_string();
     let mut command = format!(
-        "python3 {} --home {} --trigger {}",
+        "python3 {} --home {} --trigger {} --pinned",
         shell_quote(
             &crate::integration::news_assets::runner_path(Path::new(&home))
                 .display()
@@ -398,7 +399,7 @@ pub(crate) fn viewer_command(home: &Path, edition: Option<u32>) -> String {
         .join(crate::integration::news_assets::BIN_DIR)
         .join(VIEWER);
     let mut command = format!(
-        "python3 {} {}",
+        "python3 {} {} --pinned",
         shell_quote(&viewer.display().to_string()),
         shell_quote(&store::page_path(home).display().to_string())
     );
@@ -1725,15 +1726,15 @@ mod tests {
         let home = Path::new("/tmp/it's news");
         assert_eq!(
             run_command(home, NewsTrigger::Manual, None, None),
-            "python3 '/tmp/it'\\''s news/bin/news_run.py' --home '/tmp/it'\\''s news' --trigger manual"
+            "python3 '/tmp/it'\\''s news/bin/news_run.py' --home '/tmp/it'\\''s news' --trigger manual --pinned"
         );
         assert_eq!(
             run_command(Path::new("/n"), NewsTrigger::Scheduled, Some(" opus "), Some(1_790_000_000)),
-            "python3 '/n/bin/news_run.py' --home '/n' --trigger scheduled --model 'opus' --next-run 2026-09-21T14:13:20+00:00"
+            "python3 '/n/bin/news_run.py' --home '/n' --trigger scheduled --pinned --model 'opus' --next-run 2026-09-21T14:13:20+00:00"
         );
         assert_eq!(
             run_command(Path::new("/n"), NewsTrigger::Scheduled, Some("  "), None),
-            "python3 '/n/bin/news_run.py' --home '/n' --trigger scheduled"
+            "python3 '/n/bin/news_run.py' --home '/n' --trigger scheduled --pinned"
         );
     }
 
@@ -2298,7 +2299,11 @@ mod tests {
             quit_sent: false,
         });
         app.handle_news_tasks(now);
-        assert_eq!(rx.try_recv().unwrap().as_ref(), b"q", "the viewer is quit");
+        assert_eq!(
+            rx.try_recv().unwrap().as_ref(),
+            b"\x1b[9999~",
+            "the pinned viewer is quit with herdr's private sequence"
+        );
         let pending = app.news.pending_command.clone().expect("still pending");
         assert!(pending.quit_sent);
         assert_eq!(pending.next_check, now + START_RETRY);

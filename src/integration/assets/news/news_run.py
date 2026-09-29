@@ -305,7 +305,8 @@ def view(home, a):
     """Replace this process with the page viewer (interactive runs only)."""
     page = os.path.join(home, "page.json")
     if a.no_view or not sys.stdout.isatty() or not os.path.exists(page): return
-    os.execvp(sys.executable, [sys.executable, os.path.join(ASSETS, "viewer.py"), page])
+    args = [sys.executable, os.path.join(ASSETS, "viewer.py"), page] + (["--pinned"] if a.pinned else [])
+    os.execvp(sys.executable, args)
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
@@ -313,9 +314,14 @@ def main(argv=None):
     ap.add_argument("--trigger", default="manual", choices=["manual", "scheduled"])
     ap.add_argument("--model")
     ap.add_argument("--next-run", help="ISO time of the next scheduled run, shown on the page")
+    ap.add_argument("--pinned", action="store_true",
+                    help="running in herdr's News tab: ignore Ctrl-C/Ctrl-Z and pin the viewer")
     ap.add_argument("--dry-run", action="store_true", help="prepare inputs and fetch anchors only")
     ap.add_argument("--no-view", action="store_true")
     a = ap.parse_args(argv)
+    if a.pinned:
+        for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGTSTP):
+            signal.signal(sig, signal.SIG_IGN)
     home = os.path.abspath(os.path.expanduser(a.home))
     os.makedirs(home, exist_ok=True)
     seed(home)

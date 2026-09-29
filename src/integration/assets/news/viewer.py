@@ -10,7 +10,8 @@ Everything else is quiet: a title page with fleurons, a rust drop cap on the
 lead, justified body text, ornamental section rules, a manicule (☞) pointing at
 the selected story, and a folio line at the bottom (theme, edition, leaf).
 
-Editions: editions/index.json beside page.json. [ ] step days, { } step runs, l latest.
+Editions: editions/index.json beside page.json. Left/right step days, up/down step editions,
+l jumps to the latest; j/k, the mouse wheel, space/b and PgUp/PgDn scroll.
 
 Usage: python3 almanac.py page.json            interactive
        python3 almanac.py page.json --dump W   print the page at width W
@@ -27,7 +28,9 @@ def parse_args(argv):
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a == "--edition":
+        if a == "--pinned":
+            os.environ["ALMANAC_PINNED"] = "1"
+        elif a == "--edition":
             i += 1
             if i < len(argv): os.environ["ALMANAC_EDITION"] = argv[i]
         elif a == "--theme":
@@ -482,7 +485,7 @@ def chrome(page, off, H, W, nrows, secs):
     leaf = min(leaves, off // max(1, H) + 1)
     hl = history_label()
     folio = "%s  ·  %sleaf %d of %d  " % (THEME[0], (hl + "  ·  ") if hl else "", leaf, leaves)
-    keys = "j/k scroll · tab select · enter open · [ ] day · { } run · t theme · q quit" if W >= 96 else "j/k · tab · enter · [ ] { } · t · q"
+    keys = "j/k scroll · ←/→ day · ↑/↓ edition · tab select · enter open · t theme" + ("" if PINNED else " · q quit") if W >= 96 else "j/k · ←→ day · ↑↓ ed · tab · enter · t" + ("" if PINNED else " · q")
     keys = cut_cells("  " + keys, max(0, W - width(folio) - 1))
     foot = "\x1b[%d;1H" % (H + 1) + sgr() + "\x1b[2K" + sgr("dim") + keys + " " * max(0, W - width(keys) - width(folio)) + folio + sgr()
     return head, foot
@@ -505,7 +508,12 @@ def tokens(buf):
         if buf[i] == "\x1b" and i + 1 < len(buf) and buf[i + 1] in "[O":
             j = i + 2
             while j < len(buf) and not ("@" <= buf[j] <= "~"): j += 1
-            out.append(buf[i:j + 1]); i = j + 1
+            tok = buf[i:j + 1]; i = j + 1
+            if tok.startswith("\x1b[<"):          # SGR mouse report: keep only the wheel
+                button = tok[3:].split(";", 1)[0]
+                if button in ("64", "65"): out.append("\x1b[<" + button)
+                continue
+            out.append(tok)
         else:
             out.append(buf[i]); i += 1
     return out
@@ -541,13 +549,21 @@ def history_label():
     eds, i = HIST["eds"], HIST["cur"]
     if not eds or i < 0: return ""
     e = eds[i]
-    try: at = datetime.fromisoformat(e["at"]).strftime("%a %-d %b %H:%M")
+    try: at = datetime.fromisoformat(e["at"]).astimezone().strftime("%a %-d %b %H:%M")
     except Exception: at = e.get("at", "")
     tag = "" if i == len(eds) - 1 else "  (l: latest)"
     return "%s  ·  %s of %s%s" % (at, roman(e["edition"]), roman(eds[-1]["edition"]), tag)
 
+# herdr ends a pinned viewer with this sequence (CSI 9999 ~), which no key produces.
+HERDR_QUIT = "\x1b[9999~"
+UP, DOWN = ("\x1b[A", "\x1bOA"), ("\x1b[B", "\x1bOB")
+RIGHT, LEFT = ("\x1b[C", "\x1bOC"), ("\x1b[D", "\x1bOD")
+PINNED = False
+
 def main():
+    global PINNED
     path, dump_w = parse_args(sys.argv[1:])
+    PINNED = os.environ.get("ALMANAC_PINNED") == "1"
     THEME_FILE[0] = os.path.join(os.path.dirname(os.path.abspath(path)), "viewer-theme")
     set_theme(os.environ.get("ALMANAC_THEME") or saved_theme() or THEME_ORDER[0])
     try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -568,7 +584,13 @@ def main():
     signal.set_wakeup_fd(wp)
     signal.signal(signal.SIGWINCH, lambda *_: None)
     tty.setcbreak(fd)
-    sys.stdout.write("\x1b[?1049h\x1b[?25l"); sys.stdout.flush()
+    if PINNED:
+        # Pinned in herdr's News tab: Ctrl-C, Ctrl-Z and Ctrl-\ arrive as plain bytes and do
+        # nothing; only herdr's private quit sequence ends the viewer.
+        attrs = termios.tcgetattr(fd)
+        attrs[3] &= ~(termios.ISIG | termios.IEXTEN)
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h"); sys.stdout.flush()
     watch = os.path.join(HIST["dir"], "index.json") if HIST["eds"] else path
     mtime = os.path.getmtime(watch)
     off, sel, intro = 0, -1, True
@@ -612,20 +634,21 @@ def main():
             buf = os.read(fd, 64).decode(errors="ignore")
             quit_ = False
             for k in tokens(buf):
-                if k == "q": quit_ = True; break
-                elif k in ("j", "\x1b[B", "\x1bOB"): off += 1
-                elif k in ("k", "\x1b[A", "\x1bOA"): off -= 1
+                if k == HERDR_QUIT or (k == "q" and not PINNED): quit_ = True; break
+                elif k in ("j", "\x1b[<65"): off += 1 if k == "j" else 3
+                elif k in ("k", "\x1b[<64"): off -= 1 if k == "k" else 3
                 elif k in (" ", "\x1b[6~"): off += max(1, H - 2)
                 elif k in ("b", "\x1b[5~"): off -= max(1, H - 2)
                 elif k == "t":
                     i = THEME_ORDER.index(THEME[0])
                     set_theme(THEME_ORDER[(i + 1) % len(THEME_ORDER)]); save_theme(THEME[0])
-                elif k in ("[", "]", "{", "}", "l") and HIST["eds"]:
+                elif (k in LEFT + RIGHT + UP + DOWN or k == "l") and HIST["eds"]:
+                    # left/right: previous/next day; up/down: previous/next edition; l: latest
                     i = HIST["cur"]
-                    if k == "[": j = step_day(i, -1)
-                    elif k == "]": j = step_day(i, 1)
-                    elif k == "{": j = max(0, i - 1)
-                    elif k == "}": j = min(len(HIST["eds"]) - 1, i + 1)
+                    if k in LEFT: j = step_day(i, -1)
+                    elif k in RIGHT: j = step_day(i, 1)
+                    elif k in UP: j = max(0, i - 1)
+                    elif k in DOWN: j = min(len(HIST["eds"]) - 1, i + 1)
                     else: j = len(HIST["eds"]) - 1
                     if j != i:
                         try: page = edition_page(j); HIST["cur"] = j; off, sel = 0, -1
@@ -646,7 +669,7 @@ def main():
                 off = max(0, min(off, maxoff))
             if quit_: break
     finally:
-        sys.stdout.write("\x1b[0m\x1b[?25h\x1b[?1049l"); sys.stdout.flush()
+        sys.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[0m\x1b[?25h\x1b[?1049l"); sys.stdout.flush()
         try: signal.set_wakeup_fd(-1)
         except Exception: pass
         termios.tcsetattr(fd, termios.TCSADRAIN, old)

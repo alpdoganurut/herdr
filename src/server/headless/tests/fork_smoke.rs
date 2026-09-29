@@ -701,21 +701,9 @@ async fn news_status_and_run_reach_the_news_tab() {
         .terminal_runtimes
         .get(&terminal_id)
         .expect("the News tab runs a shell");
-    for _ in 0..80 {
-        if runtime
-            .snapshot_history()
-            .is_some_and(|text| text.contains('q'))
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert!(
-        runtime
-            .snapshot_history()
-            .is_some_and(|text| text.trim() == "q"),
-        "the viewer quit key reaches the busy pane"
-    );
+    // The quit sequence (CSI 9999 ~) renders as nothing, so the busy pane's
+    // screen cannot show it; app::news::tests checks the bytes themselves.
+    let _ = runtime;
 
     // The prompt is back: the next scheduler pass types the command.
     server.app.news.assume_shell_ready = true;
