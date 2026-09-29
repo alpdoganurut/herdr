@@ -254,6 +254,18 @@ impl ClientShellState {
         self.news.refresh_due = true;
     }
 
+    /// Pull `news.get` now (the settings section); while one is in flight,
+    /// on the next tick.
+    pub(super) fn pull_news_now(&mut self, outcome: &mut ClientShellInput) {
+        if self.news.loading {
+            self.news.refresh_due = true;
+            return;
+        }
+        if let Some(signature) = self.news_snapshot_signature() {
+            self.queue_news_get(signature, outcome);
+        }
+    }
+
     /// Right-click on the row: Run now, Open, Pause/Resume schedule.
     pub(super) fn open_news_context_menu(&mut self, x: u16, y: u16) {
         if self.news_row().is_none() {
@@ -324,6 +336,7 @@ impl ClientShellState {
                 // tracks: seat it on the current snapshot so learning the
                 // tab is not itself a change.
                 self.news.pulled_for = self.news_snapshot_signature();
+                self.sync_news_settings();
                 (true, Vec::new())
             }
             _ => {

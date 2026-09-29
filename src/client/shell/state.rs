@@ -460,6 +460,7 @@ pub(super) enum ClientSettingsSection {
     Backups,
     Reminders,
     ClosedSessions,
+    News,
 }
 
 impl ClientSettingsSection {
@@ -472,6 +473,7 @@ impl ClientSettingsSection {
         Self::Backups,
         Self::Reminders,
         Self::ClosedSessions,
+        Self::News,
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -484,6 +486,7 @@ impl ClientSettingsSection {
             Self::Backups => "backups",
             Self::Reminders => "reminders",
             Self::ClosedSessions => "closed",
+            Self::News => "news",
         }
     }
 }
@@ -526,6 +529,9 @@ pub(super) struct ClientSettingsOverlay {
     pub(super) sound_picker: Option<super::settings_sounds::ClientSoundPicker>,
     /// The reminders section's open daily time picker, if any.
     pub(super) daily_time_picker: Option<Vec<super::settings_daily_time::ClientDailyTimeChoice>>,
+    /// The news section's record and picker (boxed: the overlay enum stays
+    /// small).
+    pub(super) news: Box<super::settings_news::ClientNewsSettings>,
 }
 
 #[derive(Debug)]

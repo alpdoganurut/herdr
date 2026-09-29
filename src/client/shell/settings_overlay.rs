@@ -225,6 +225,15 @@ pub(super) fn render_settings_overlay(
         ClientSettingsSection::Reminders => {
             render_reminders(buffer, content, settings, config, palette, &mut choice_hits);
         }
+        ClientSettingsSection::News => {
+            super::super::settings_news::render_news_section(
+                buffer,
+                content,
+                settings,
+                palette,
+                &mut choice_hits,
+            );
+        }
     }
 
     let installable = settings
@@ -237,6 +246,7 @@ pub(super) fn render_settings_overlay(
         }
         ClientSettingsSection::Integrations => installable,
         ClientSettingsSection::Backups => false,
+        ClientSettingsSection::News => settings.news.info.is_some(),
         _ => true,
     };
     let labels = if show_primary { vec![10, 12] } else { vec![12] };

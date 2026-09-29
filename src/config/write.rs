@@ -14,6 +14,10 @@ pub(crate) enum ConfigEdit<'a> {
     DailyReminderTime(u32),
     /// Fork: `news.enabled` (scheduled news runs on or off).
     NewsEnabled(bool),
+    /// Fork: `news.interval_hours`.
+    NewsIntervalHours(u32),
+    /// Fork: `news.quiet_hours`, `HH:MM-HH:MM` or empty for none.
+    NewsQuietHours(&'a str),
 }
 
 /// Fork: minutes past midnight as a 24-hour "HH:MM".
@@ -31,7 +35,9 @@ impl ConfigEdit<'_> {
             Self::IdleReminderMinutes(_) => "reminder setting",
             Self::DailyReminderTime(_) => "daily reminder time",
             Self::SoundFile { .. } => "sound setting",
-            Self::NewsEnabled(_) => "news setting",
+            Self::NewsEnabled(_) | Self::NewsIntervalHours(_) | Self::NewsQuietHours(_) => {
+                "news setting"
+            }
         }
     }
 
@@ -88,6 +94,15 @@ impl ConfigEdit<'_> {
             Self::NewsEnabled(enabled) => {
                 super::upsert_section_bool(content, "news", "enabled", enabled)
             }
+            Self::NewsIntervalHours(hours) => {
+                super::upsert_section_value(content, "news", "interval_hours", &hours.to_string())
+            }
+            Self::NewsQuietHours(window) => super::upsert_section_value(
+                content,
+                "news",
+                "quiet_hours",
+                &toml::Value::String(window.trim().to_owned()).to_string(),
+            ),
         }
     }
 }
@@ -136,6 +151,17 @@ mod tests {
         let edited = ConfigEdit::NewsEnabled(false).apply(&edited);
         let config: crate::config::Config = toml::from_str(&edited).unwrap();
         assert!(!config.news.enabled);
+        assert_eq!(edited.matches("[news]").count(), 1);
+
+        let edited = ConfigEdit::NewsIntervalHours(12).apply(&edited);
+        let edited = ConfigEdit::NewsQuietHours(" 22:00-08:00 ").apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.news.interval_hours, 12);
+        assert_eq!(config.news.quiet_hours, "22:00-08:00");
+        let edited = ConfigEdit::NewsQuietHours("").apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(config.news.quiet_hours.is_empty());
+        assert_eq!(config.news.quiet_hours(), None);
         assert_eq!(edited.matches("[news]").count(), 1);
     }
 

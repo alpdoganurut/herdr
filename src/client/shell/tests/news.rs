@@ -433,6 +433,155 @@ fn the_open_news_binding_requests_news_open_in_either_layout() {
     assert!(!Config::default().keys.open_news.has_values());
 }
 
+fn settings_frame_text(state: &mut ClientShellState) -> String {
+    let frame = state.compose(106, 30).expect("settings frame");
+    frame_rows(&frame).join("\n")
+}
+
+/// Tab through the sections to `news`; returns the last press's outcome.
+fn open_news_section(state: &mut ClientShellState) -> ClientShellInput {
+    state.open_settings_overlay();
+    let index = ClientSettingsSection::ALL
+        .iter()
+        .position(|section| *section == ClientSettingsSection::News)
+        .expect("news section");
+    let mut outcome = ClientShellInput::default();
+    for _ in 0..index {
+        outcome = state.handle_input_bytes(b"\t");
+    }
+    outcome
+}
+
+#[test]
+fn the_news_settings_section_shows_the_desk_and_edits_the_config() {
+    let dir = std::env::temp_dir().join(format!("herdr-news-settings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, "[news]\nenabled = false\n").unwrap();
+    std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+    let written = || -> crate::config::Config {
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+    };
+
+    let mut state = tabs_state(news_snapshot());
+    state.compose(106, 30).expect("composed frame");
+    let outcome = open_news_section(&mut state);
+    let requests = endpoint_requests(&outcome);
+    let [(request_id, Method::NewsGet(_))] = &requests[..] else {
+        panic!("entering the section pulls news.get, got {requests:?}");
+    };
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Settings(ClientSettingsOverlay {
+            section: ClientSettingsSection::News,
+            ..
+        }))
+    ));
+    let text = settings_frame_text(&mut state);
+    assert!(text.contains("news desk"), "{text}");
+    assert!(text.contains("loading news status"), "{text}");
+    assert!(
+        !text.contains("↵ apply"),
+        "no primary button before the record"
+    );
+
+    let mut record = info(Some("tab_2"));
+    record.model = Some("opus".into());
+    let (repaint, _) = state.handle_endpoint_result(
+        "boot-1",
+        request_id,
+        Ok(ResponseResult::NewsGet { news: record }),
+    );
+    assert!(repaint);
+    let text = settings_frame_text(&mut state);
+    for expected in [
+        "scheduled runs: on",
+        "every 6 h",
+        "quiet hours 00:00-08:00",
+        "run now",
+        "model",
+        "opus",
+        "last run",
+        "ok · edition 3 · changed",
+        "next run",
+        "↵ apply",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?} in\n{text}");
+    }
+    assert!(
+        text.contains(&super::super::news::local_hhmm(1_800_000_000)),
+        "the next run's local time: {text}"
+    );
+
+    // Row 0: the toggle writes news.enabled, reloads the server and pulls again.
+    let outcome = state.handle_input_bytes(b"\r");
+    let methods = endpoint_requests(&outcome)
+        .into_iter()
+        .map(|(_, method)| method)
+        .collect::<Vec<_>>();
+    assert!(
+        matches!(
+            &methods[..],
+            [Method::ServerReloadConfig(_), Method::NewsGet(_)]
+        ),
+        "{methods:?}"
+    );
+    assert!(!written().news.enabled, "on -> off");
+
+    // Row 1: the interval picker; Esc leaves it unsaved, Enter writes.
+    state.handle_input_bytes(b"\x1b[B");
+    state.handle_input_bytes(b"\r");
+    let text = settings_frame_text(&mut state);
+    assert!(text.contains("run every"), "{text}");
+    assert!(text.contains("6 h ✓"), "{text}");
+    state.handle_input_bytes(b"\x1b");
+    let text = settings_frame_text(&mut state);
+    assert!(
+        text.contains("news desk"),
+        "esc returns to the rows: {text}"
+    );
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Settings(ClientSettingsOverlay {
+            selected: 1,
+            ..
+        }))
+    ));
+    assert_eq!(written().news.interval_hours, 6, "nothing written");
+    state.handle_input_bytes(b"\r");
+    state.handle_input_bytes(b"\x1b[B");
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(endpoint_requests(&outcome)
+        .iter()
+        .any(|(_, method)| matches!(method, Method::ServerReloadConfig(_))));
+    assert_eq!(written().news.interval_hours, 12);
+    let text = settings_frame_text(&mut state);
+    assert!(text.contains("news desk"), "the picker closed: {text}");
+
+    // Row 2: quiet hours off.
+    state.handle_input_bytes(b"\x1b[B");
+    state.handle_input_bytes(b"\r");
+    let text = settings_frame_text(&mut state);
+    assert!(text.contains("quiet hours"), "{text}");
+    assert!(text.contains("off"), "{text}");
+    assert!(text.contains("00:00-08:00 ✓"), "{text}");
+    state.handle_input_bytes(b"\x1b[A");
+    state.handle_input_bytes(b"\r");
+    assert_eq!(written().news.quiet_hours, "");
+
+    // Row 3: run now.
+    state.handle_input_bytes(b"\x1b[B");
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(matches!(
+        &endpoint_requests(&outcome)[..],
+        [(_, Method::NewsRun(_))]
+    ));
+
+    std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_spaces_layout_keeps_the_news_tab_in_its_list() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));

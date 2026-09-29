@@ -209,11 +209,12 @@ mod fork_smoke {
             "every section gets a tab, in order"
         );
         assert_eq!(
-            &ClientSettingsSection::ALL[ClientSettingsSection::ALL.len() - 3..],
+            &ClientSettingsSection::ALL[ClientSettingsSection::ALL.len() - 4..],
             [
                 ClientSettingsSection::Backups,
                 ClientSettingsSection::Reminders,
-                ClientSettingsSection::ClosedSessions
+                ClientSettingsSection::ClosedSessions,
+                ClientSettingsSection::News
             ]
         );
         let popup_left = tabs[0].0.x;

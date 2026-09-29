@@ -294,6 +294,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
             idle_reminder_minutes: 10,
             sound_picker: None,
             daily_time_picker: None,
+            news: Box::default(),
         }),
     ];
     for overlay in overlays {

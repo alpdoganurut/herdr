@@ -36,6 +36,7 @@ mod scroll;
 mod settings;
 mod settings_closed;
 mod settings_daily_time;
+mod settings_news;
 mod settings_sounds;
 mod state;
 mod surface_patch;

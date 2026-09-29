@@ -48,6 +48,7 @@ impl ClientShellState {
             idle_reminder_minutes: self.config.idle_reminder_minutes,
             sound_picker: None,
             daily_time_picker: None,
+            news: Box::default(),
         }));
     }
 
@@ -59,7 +60,8 @@ impl ClientShellState {
             ClientSettingsSection::Toast => toast_index(self.config.toast_delivery),
             ClientSettingsSection::Integrations
             | ClientSettingsSection::Backups
-            | ClientSettingsSection::ClosedSessions => 0,
+            | ClientSettingsSection::ClosedSessions
+            | ClientSettingsSection::News => 0,
             ClientSettingsSection::Reminders => {
                 super::idle_reminders::reminder_choice_index(self.config.idle_reminder_minutes)
             }
@@ -111,6 +113,9 @@ impl ClientShellState {
         if request_closed_sessions {
             self.queue_closed_sessions(outcome);
         }
+        if section == ClientSettingsSection::News {
+            self.enter_news_section(outcome);
+        }
         outcome.repaint = true;
     }
 
@@ -130,6 +135,7 @@ impl ClientShellState {
     fn settings_choice_count(&self) -> usize {
         let sound_rows = self.sound_section_rows();
         let reminders_rows = self.reminders_section_rows();
+        let news_rows = self.news_section_rows();
         match self.overlay.as_ref() {
             Some(ClientShellOverlay::Settings(settings)) => match settings.section {
                 ClientSettingsSection::Theme => crate::config::THEME_NAMES.len(),
@@ -142,6 +148,7 @@ impl ClientShellState {
                 ClientSettingsSection::Integrations => settings.integrations.len(),
                 ClientSettingsSection::Backups => 0,
                 ClientSettingsSection::Reminders => reminders_rows,
+                ClientSettingsSection::News => news_rows,
             },
             _ => 0,
         }
@@ -264,6 +271,7 @@ impl ClientShellState {
                 );
             }
             ClientSettingsSection::ClosedSessions => self.reopen_selected_closed_session(outcome),
+            ClientSettingsSection::News => self.apply_news_choice(selected, outcome),
             ClientSettingsSection::Integrations => self.install_recommended_integrations(outcome),
             // Read-only: the store is shown, not edited.
             ClientSettingsSection::Backups => {}
@@ -478,7 +486,11 @@ impl ClientShellState {
             return false;
         }
         let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
-        if code == KeyCode::Esc && (self.close_sound_picker() || self.close_daily_time_picker()) {
+        if code == KeyCode::Esc
+            && (self.close_sound_picker()
+                || self.close_daily_time_picker()
+                || self.close_news_picker())
+        {
             outcome.repaint = true;
             return true;
         }
