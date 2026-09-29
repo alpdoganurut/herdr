@@ -361,7 +361,12 @@ fn shell_quote(text: &str) -> String {
 }
 
 /// The command typed into the News pane.
-pub(crate) fn run_command(home: &Path, trigger: NewsTrigger, model: Option<&str>) -> String {
+pub(crate) fn run_command(
+    home: &Path,
+    trigger: NewsTrigger,
+    model: Option<&str>,
+    next_run_at: Option<u64>,
+) -> String {
     let home = home.display().to_string();
     let mut command = format!(
         "python3 {} --home {} --trigger {}",
@@ -376,6 +381,10 @@ pub(crate) fn run_command(home: &Path, trigger: NewsTrigger, model: Option<&str>
     if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
         command.push_str(" --model ");
         command.push_str(&shell_quote(model));
+    }
+    if let Some(next) = next_run_at {
+        command.push_str(" --next-run ");
+        command.push_str(&iso_utc(next));
     }
     command
 }
@@ -1202,7 +1211,8 @@ impl App {
         if ready {
             self.clear_stale_news_identity(pane);
             let home = self.news.home.clone().unwrap_or_default();
-            let mut command = run_command(&home, trigger, self.news.model.as_deref());
+            let next = self.news.enabled.then_some(self.news.next_run_at).flatten();
+            let mut command = run_command(&home, trigger, self.news.model.as_deref(), next);
             command.push('\r');
             match self.news_pane_bytes(pane, Bytes::from(command)) {
                 Ok(()) => {
@@ -1600,15 +1610,15 @@ mod tests {
     fn the_command_quotes_the_home_and_adds_the_model() {
         let home = Path::new("/tmp/it's news");
         assert_eq!(
-            run_command(home, NewsTrigger::Manual, None),
+            run_command(home, NewsTrigger::Manual, None, None),
             "python3 '/tmp/it'\\''s news/bin/news_run.py' --home '/tmp/it'\\''s news' --trigger manual"
         );
         assert_eq!(
-            run_command(Path::new("/n"), NewsTrigger::Scheduled, Some(" opus ")),
-            "python3 '/n/bin/news_run.py' --home '/n' --trigger scheduled --model 'opus'"
+            run_command(Path::new("/n"), NewsTrigger::Scheduled, Some(" opus "), Some(1_790_000_000)),
+            "python3 '/n/bin/news_run.py' --home '/n' --trigger scheduled --model 'opus' --next-run 2026-09-21T14:13:20+00:00"
         );
         assert_eq!(
-            run_command(Path::new("/n"), NewsTrigger::Scheduled, Some("  ")),
+            run_command(Path::new("/n"), NewsTrigger::Scheduled, Some("  "), None),
             "python3 '/n/bin/news_run.py' --home '/n' --trigger scheduled"
         );
     }

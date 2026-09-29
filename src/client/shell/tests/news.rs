@@ -167,10 +167,23 @@ fn the_news_row_is_pulled_on_attach_and_pins_the_tab_out_of_the_list() {
     let text = row_text(&frame, row);
     assert!(text.contains("News"), "{text:?}");
     assert!(
-        text.contains(&super::super::news::local_hhmm(1_790_000_300)),
-        "idle rows show the last run's time: {text:?}"
+        text.contains(&format!(
+            "next {}",
+            super::super::news::local_hhmm(1_800_000_000)
+        )),
+        "scheduled rows show the next run's time: {text:?}"
     );
     assert!(text.trim_start().starts_with('○'), "{text:?}");
+}
+
+#[test]
+fn ago_is_compact() {
+    use super::super::news::ago;
+    assert_eq!(ago(1000, 1030), "now");
+    assert_eq!(ago(1000, 1000 + 17 * 60), "17m");
+    assert_eq!(ago(1000, 1000 + 3 * 3600 + 5), "3h");
+    assert_eq!(ago(1000, 1000 + 2 * 86_400), "2d");
+    assert_eq!(ago(2000, 1000), "now", "a clock skew never goes negative");
 }
 
 #[test]
@@ -230,11 +243,20 @@ fn the_row_shows_running_unread_failed_and_paused_in_that_order() {
 
     let mut paused = info(Some("tab_2"));
     paused.enabled = false;
+    state.news.info = Some(paused.clone());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let text = row_text(&frame, state.hits.news_row);
+    assert!(
+        text.contains("d ago"),
+        "paused rows say how long ago the last run was: {text:?}"
+    );
+    assert!(text.trim_start().starts_with('◌'), "{text:?}");
+
+    paused.last_run = None;
     state.news.info = Some(paused);
     let frame = state.compose(106, 20).expect("composed frame");
     let text = row_text(&frame, state.hits.news_row);
-    assert!(text.contains("paused"), "{text:?}");
-    assert!(text.trim_start().starts_with('◌'), "{text:?}");
+    assert!(text.contains("paused"), "no run yet: {text:?}");
 }
 
 #[test]

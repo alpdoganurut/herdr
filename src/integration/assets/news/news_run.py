@@ -265,14 +265,14 @@ def since_lines(page, prev):
     new = {i["url"] for s in page.get("sections", []) for i in s["items"]} | {page["lead"]["url"]}
     return ["%d new stories, %d dropped." % (len(new - old), len(old - new))]
 
-def publish(home, run_dir, page, decision, trigger, anchors_doc, started):
+def publish(home, run_dir, page, decision, trigger, anchors_doc, started, next_run=None):
     idx = editions_index(home)
     n = (idx["editions"][-1]["edition"] if idx["editions"] else 0) + 1
     at = now_utc()
     prev = read_json(os.path.join(home, "page.json"), None)
     items = [page["lead"]] + [i for s in page["sections"] for i in s["items"]]
     page.update({"version": 1, "edition": n, "updated": iso(at), "trigger": trigger, "stub": False,
-                 "next_run": None,
+                 "next_run": next_run,
                  "stats": {"anchor_items": len(anchors_doc.get("items", [])),
                            "sources": len(anchors_doc.get("log", {})),
                            "read": sum(1 for i in items if i.get("read"))}})
@@ -302,6 +302,7 @@ def main(argv=None):
     ap.add_argument("--home", required=True)
     ap.add_argument("--trigger", default="manual", choices=["manual", "scheduled"])
     ap.add_argument("--model")
+    ap.add_argument("--next-run", help="ISO time of the next scheduled run, shown on the page")
     ap.add_argument("--dry-run", action="store_true", help="prepare inputs and fetch anchors only")
     ap.add_argument("--no-view", action="store_true")
     a = ap.parse_args(argv)
@@ -384,7 +385,7 @@ def main(argv=None):
     page = read_json(os.path.join(run_dir, "out", "page.json"), None)
     decision = read_json(os.path.join(run_dir, "out", "decision.json"), {})
     record["decision"] = decision
-    record["edition"] = publish(home, run_dir, page, decision, a.trigger, anchors_doc, started)
+    record["edition"] = publish(home, run_dir, page, decision, a.trigger, anchors_doc, started, a.next_run)
     code = finish("ok", 0)
     if not a.no_view and sys.stdout.isatty():
         viewer = os.path.join(ASSETS, "viewer.py")

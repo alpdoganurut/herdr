@@ -148,14 +148,33 @@ pub(crate) fn news_row_state(
         return (NewsRowState::Failed, "failed".into());
     }
     if !info.enabled {
-        return (NewsRowState::Paused, "paused".into());
+        // Paused: say how long ago the last page was written, if ever.
+        return match info.last_run.as_ref() {
+            Some(last) => (
+                NewsRowState::Paused,
+                format!("{} ago", ago(last.ended_at.unwrap_or(last.started_at), now)),
+            ),
+            None => (NewsRowState::Paused, "paused".into()),
+        };
     }
-    let time = info
-        .last_run
-        .as_ref()
-        .map(|last| local_hhmm(last.ended_at.unwrap_or(last.started_at)))
-        .unwrap_or_else(|| "—".into());
-    (NewsRowState::Idle, time)
+    // Scheduled: the useful fact is when the next page comes.
+    let status = match info.next_run_at {
+        Some(next) if next > now => format!("next {}", local_hhmm(next)),
+        Some(_) => "due".into(),
+        None => "—".into(),
+    };
+    (NewsRowState::Idle, status)
+}
+
+/// A compact age: `now`, `12m`, `3h`, `2d`.
+pub(super) fn ago(then: u64, now: u64) -> String {
+    let secs = now.saturating_sub(then);
+    match secs {
+        0..=59 => "now".into(),
+        60..=3599 => format!("{}m", secs / 60),
+        3600..=86_399 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86_400),
+    }
 }
 
 impl ClientShellState {
