@@ -301,6 +301,18 @@ def publish(home, run_dir, page, decision, trigger, anchors_doc, started, next_r
     return n
 
 # ------------------------------------------------------------------ main
+CONFIRM_S = 3.0
+_last_interrupt = [0.0]
+
+def confirm_interrupt(signum, frame):
+    """SIGINT handler for pinned runs: the second Ctrl-C within CONFIRM_S stops the run."""
+    now = time.time()
+    if now - _last_interrupt[0] <= CONFIRM_S:
+        raise KeyboardInterrupt
+    _last_interrupt[0] = now
+    sys.stdout.write("\n")
+    say("press Ctrl-C again within %d s to stop this run" % CONFIRM_S, "33")
+
 def view(home, a):
     """Replace this process with the page viewer (interactive runs only)."""
     page = os.path.join(home, "page.json")
@@ -320,8 +332,11 @@ def main(argv=None):
     ap.add_argument("--no-view", action="store_true")
     a = ap.parse_args(argv)
     if a.pinned:
-        for sig in (signal.SIGINT, signal.SIGQUIT, signal.SIGTSTP):
+        # Pinned in herdr's News tab: Ctrl-Z and Ctrl-\ do nothing, and one stray Ctrl-C
+        # does not end the run; a second one within 3 s stops it (recorded "interrupted").
+        for sig in (signal.SIGQUIT, signal.SIGTSTP):
             signal.signal(sig, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, confirm_interrupt)
     home = os.path.abspath(os.path.expanduser(a.home))
     os.makedirs(home, exist_ok=True)
     seed(home)
