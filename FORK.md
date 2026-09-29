@@ -190,7 +190,7 @@ client::shell::overlays::render_client_overlay(b, o, s, endpoints, active_endpoi
 client::shell::settings::save_settings_edit -> pub(super) (settings_sounds.rs calls it)
 app::tab_bar_status::spawn_status_command(7 args) -> #[cfg(test)] wrapper passing StatusOutputFormat::UPSTREAM; production code calls spawn_status_command_with_format(.., format: StatusOutputFormat) (a new upstream non-test call site = E0425: switch it to the _with_format form)
 client::shell::ClientShellState::receive_notification -> kept; its replace-by-pane block moved into replace_pane_notifications(endpoint_id, pane_id, now) -> bool (cleared a visible card), shared with the idle reminder engine
-Visibility widened by the fork (upstream renaming or narrowing one breaks fork code): app::agents::DEFAULT_AGENT_START_TIMEOUT, app::agents::available_shell_name, app::api::agents::AGENT_PROMPT_SUBMIT_DELAY, app::terminal_targets::{terminal_targets, terminal_target_candidate}, integration::home_dir, client::shell::notification_policy::{notification_target_is_active, COMPLETION_EVIDENCE_GRACE} (pub(super)), app::agent_resume::shell_command_from_argv (pub(super); the closed-session reopen types it)
+Visibility widened by the fork (upstream renaming or narrowing one breaks fork code): app::agents::DEFAULT_AGENT_START_TIMEOUT, app::agents::available_shell_name, app::api::agents::AGENT_PROMPT_SUBMIT_DELAY, app::terminal_targets::{terminal_targets, terminal_target_candidate}, integration::home_dir, client::shell::notification_policy::{notification_target_is_active, COMPLETION_EVIDENCE_GRACE} (pub(super)), app::agent_resume::shell_command_from_argv (pub(super); the closed-session reopen types it), app::api::sanitized_notification_text (pub(super); app::news sanitizes the editor's notification text with it)
 
 ## 4. Owned enum variants (append last; E0004 in upstream match = deny)
 AgentStatus::Suspended   [src/api/schema/common.rs, last after Unknown; wire: JSON "suspended" in the socket API, events and the client shell snapshot, any non-human-readable serde codec encodes it as variant index 5; append-closed, deny on conflict]
@@ -248,7 +248,7 @@ ClientContextMenuAction::NewsOpen   [src/client/shell/state.rs, after NewsRun; t
 ClientContextMenuAction::NewsToggleSchedule   [src/client/shell/state.rs, last after NewsOpen; the News row menu's Pause / Resume schedule; internal]
 ConfigEdit::IdleReminderMinutes   [src/config/write.rs, after ToastDelivery; the settings overlay's reminders tab; internal]
 ConfigEdit::DailyReminderTime   [src/config/write.rs, after SoundFile; the reminders tab's daily time picker, written as a quoted "HH:MM"; internal]
-ConfigEdit::NewsEnabled   [src/config/write.rs, after DailyReminderTime; `news.enabled`, written by news.set_enabled on the server and by the settings news tab; internal]
+ConfigEdit::NewsEnabled   [src/config/write.rs, after DailyReminderTime; `news.enabled`, written by news.set_enabled on the server (the settings news tab's toggle goes through that method); internal]
 ConfigEdit::NewsIntervalHours   [src/config/write.rs, after NewsEnabled; `news.interval_hours`, the news tab's interval picker; internal]
 ConfigEdit::NewsQuietHours   [src/config/write.rs, last after NewsIntervalHours; `news.quiet_hours` as a quoted window or "" for off, the news tab's quiet-hours picker; internal]
 ConfigEdit::SoundFile   [src/config/write.rs, after IdleReminderMinutes; the settings sound pickers ([ui.sound] done_path / request_path / reminder_path); internal]
@@ -420,6 +420,9 @@ src/integration/claude_settings.rs  depends: install/uninstall run before the fo
 src/api/schema/panes.rs  depends: PaneMoveParams/PaneMoveDestination behind the fork's pane.move digest; PaneReportAgentSessionParams.agent_session_path
 src/persist/io.rs  depends: session.json load path for suspended_agent and transcript_path
 src/handoff_runtime.rs  depends: HandoffRuntimeState serde carries suspended_exit_pending
+src/platform/unix_common.rs  mid-logic: signal_process_group (kill -SIG -pgid; the news watchdog's SIGTERM to the News pane's foreground job), re-exported by macos.rs and linux.rs in their `pub(crate) use super::unix_common` list
+src/platform/windows.rs  mid-logic: signal_process_group no-op directly before process_exists
+src/platform/fallback.rs  mid-logic: signal_process_group stub directly before process_exists
 
 ## 9. Identifier watch-list (any hit in the incoming upstream diff = deny "upstream collision")
 agent.suspend
@@ -602,6 +605,9 @@ news_assets
 handle_news_tasks
 next_news_deadline
 quiet_hours
+signal_process_group
+NewsError
+RUN_BUDGET_MIN
 
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot
@@ -621,6 +627,7 @@ server::headless::tests::fork_smoke::news_notification_waits_for_a_client_shell_
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 ### Fixed
+- AI news desk, audit fixes: the runner takes SIGTERM and SIGHUP as its interrupt (the editor's process group killed, `interrupted` recorded) and has one budget for the whole run (`--deadline-min`, 60 by default, passed by the server, whose watchdog is that plus 10 min); the server's watchdog sends SIGTERM to the News pane's foreground process group (two Ctrl-C a second apart when it finds none) and keeps the run in flight until the runner's record or the shell prompt, then records `timeout`; a run whose News tab was closed is recorded `interrupted` instead of waiting for the watchdog; the notification retry deadline no longer spins the loop without a client; malformed editor output is a validation error (or a `crashed` record), control characters are rejected by the runner and stripped by the viewer, URLs must be plain https (sources too; `anchors.py` refuses other schemes), notification text is sanitized when queued, and the daily cap is charged at delivery; the settings toggle uses `news.set_enabled` on the active server; `herdr news log` uses the server's history on a remote target; the viewer always restores the terminal, keeps a split escape sequence between reads, and shows story times with their day (`yesterday 14:05`, `Sun 14:05`, `27 Sep`); commands typed into the News pane start with kill-line; `http-cache.json` keeps only this run's sources; the run log is read from the saved offset or its tail; `NewsStartError` is `NewsError`.
 - Tab groups: moves refuse multi-pane tabs and the bucket's last tab instead of tearing a tab apart or silently demoting a group; a jittered click on a tab row still focuses it; cross-group drop indicators sit where the tab will land; the focused group's header click and the fold toggle agree with what is drawn; the move-to-group prompt ignores the current group, treats the bucket's name as "ungroup", skips linked worktrees and matches exact names first; group keys are inert outside the `tabs` layout. Transcript store: reported paths are restricted to `<id>.jsonl` under a `projects` directory, restores never replace a native file, shrinking transcripts keep the previous copy, session.json is written before the shutdown backup pass, a stale reported path falls back to the glob, and stale temp files are cleaned.
 - Suspend refuses agents that are blocked on a prompt, prompts and send-keys refuse suspended panes, activation waits for the observed exit, a failed process probe retries instead of ending the exit wait, and dropping a suspended record emits a status event. The tabs-layout input lock now also covers mouse gestures and selections on a suspended pane, the card occludes graphics, and `ui.tab_agent_glyphs` honours an `other` override.
 

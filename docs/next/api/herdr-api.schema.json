@@ -8862,7 +8862,7 @@
           "description": "The run in flight.",
           "properties": {
             "phase": {
-              "description": "`starting` (waiting for the pane's shell prompt) or `running`.",
+              "description": "`starting` (waiting for the pane's shell prompt), `running`, or\n`stopping` (the watchdog signalled the runner; its record or the\npane's prompt ends the run).",
               "type": "string"
             },
             "started_at": {

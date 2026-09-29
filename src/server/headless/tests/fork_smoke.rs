@@ -870,5 +870,167 @@ async fn news_notification_waits_for_a_client_shell_and_reaches_it_on_attach() {
     assert!(shell_control
         .recv_timeout(Duration::from_millis(200))
         .is_ok());
+
+    // A retry deadline left behind when the last client shell goes is
+    // cleared by the next flush: nothing to retry for, nothing to wake for.
+    server.app.news.notify_retry_at = Some(now);
+    server.clients.clear();
+    server
+        .app
+        .news
+        .notify
+        .pending
+        .push(crate::persist::news::PendingNewsNotify {
+            kind: "failures".into(),
+            title: "News runs failing".into(),
+            body: None,
+            high: false,
+            deliver_after: 0,
+            queued_at: started,
+        });
+    assert!(!server.flush_news_notifications(now + Duration::from_secs(2)));
+    assert!(
+        server.app.news.notify_retry_at.is_none(),
+        "no client shell: the retry deadline is dropped"
+    );
+    assert_eq!(
+        server.app.news.notify.pending.len(),
+        1,
+        "the notification waits"
+    );
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// The daily cap (two run notifications a day, a high-urgency one past it
+/// once) is charged when a notification goes out, not when a run queues
+/// it: a queued one replaced before delivery costs nothing, a dropped one
+/// does not hold up the alert behind it.
+#[cfg(unix)]
+#[tokio::test]
+async fn news_daily_cap_is_charged_at_delivery() {
+    let (mut server, _rx) = server_with_claude(None);
+    server.app.news.local_override = Some((
+        crate::app::news::LocalClock {
+            minute_of_day: 12 * 60,
+            second: 0,
+        },
+        "2026-09-29",
+    ));
+    let (shell_tx, shell_control, _shell_frames) = test_client_writer();
+    server.clients.insert(
+        1,
+        ClientConnection::new_with_mode(
+            ClientConnectionMode::ClientShell,
+            (80, 24),
+            crate::kitty_graphics::HostCellSize::default(),
+            1,
+            RenderEncoding::SemanticFrame,
+            Some(shell_tx),
+        ),
+    );
+    let now = std::time::Instant::now();
+    let pending = |kind: &str, title: &str, high: bool| crate::persist::news::PendingNewsNotify {
+        kind: kind.into(),
+        title: title.into(),
+        body: None,
+        high,
+        deliver_after: 0,
+        queued_at: 1_800_000_000,
+    };
+    let title_of = |bytes: Vec<u8>| match read_server_message(bytes) {
+        ServerMessage::SemanticNotification(notification) => notification.title,
+        other => panic!("expected a notification, got {other:?}"),
+    };
+    let second = Duration::from_secs(1);
+
+    // Queued and replaced: the ledger is untouched until a delivery.
+    server
+        .app
+        .news
+        .notify
+        .pending
+        .push(pending("run", "News: first", false));
+    server.app.news.notify.pending.clear();
+    server
+        .app
+        .news
+        .notify
+        .pending
+        .push(pending("run", "News: one", false));
+    assert_eq!(server.app.news.notify.delivered, 0);
+    assert!(server.flush_news_notifications(now));
+    assert_eq!(
+        title_of(shell_control.recv_timeout(second).unwrap()),
+        "News: one"
+    );
+    assert_eq!(server.app.news.notify.day, "2026-09-29");
+    assert_eq!(server.app.news.notify.delivered, 1);
+
+    server
+        .app
+        .news
+        .notify
+        .pending
+        .push(pending("run", "News: two", false));
+    assert!(server.flush_news_notifications(now + second));
+    assert_eq!(
+        title_of(shell_control.recv_timeout(second).unwrap()),
+        "News: two"
+    );
+    assert_eq!(server.app.news.notify.delivered, 2);
+
+    // The third is dropped at delivery, and the alert queued behind it goes
+    // out in the same flush.
+    server
+        .app
+        .news
+        .notify
+        .pending
+        .push(pending("run", "News: three", false));
+    server
+        .app
+        .news
+        .notify
+        .pending
+        .push(pending("failures", "News runs failing", false));
+    assert!(server.flush_news_notifications(now + 2 * second));
+    assert_eq!(
+        title_of(shell_control.recv_timeout(second).unwrap()),
+        "News runs failing"
+    );
+    assert!(
+        server.app.news.notify.pending.is_empty(),
+        "the dropped one is gone"
+    );
+    assert_eq!(
+        server.app.news.notify.delivered, 2,
+        "a dropped one is not charged"
+    );
+
+    // A high one passes the cap once, then nothing.
+    server
+        .app
+        .news
+        .notify
+        .pending
+        .push(pending("run", "News: urgent", true));
+    assert!(server.flush_news_notifications(now + 3 * second));
+    assert_eq!(
+        title_of(shell_control.recv_timeout(second).unwrap()),
+        "News: urgent"
+    );
+    assert_eq!(server.app.news.notify.delivered, 3);
+    assert!(server.app.news.notify.high_extra_used);
+    server
+        .app
+        .news
+        .notify
+        .pending
+        .push(pending("run", "News: urgent 2", true));
+    assert!(!server.flush_news_notifications(now + 4 * second));
+    assert!(server.app.news.notify.pending.is_empty());
+    assert!(shell_control
+        .recv_timeout(Duration::from_millis(100))
+        .is_err());
+    assert_eq!(server.app.news.notify.delivered, 3);
 }

@@ -14,10 +14,16 @@
 //! every `news.interval_hours`, deferred to the end of `news.quiet_hours`,
 //! missed slots collapsed to one run, and only while `news.enabled`. A run
 //! is in flight from its start until the run log gains a record started at
-//! or after it (polled every five seconds) or the 65-minute watchdog fires
-//! (Ctrl-C to the pane, a `timeout` record). A finished run that changed the
-//! page marks the News tab important (the fork's `tab.set_reminder` state),
-//! so it shows as unread.
+//! or after it (polled every five seconds). The runner gets one budget for
+//! the whole run on its command line (`--deadline-min`, [`RUN_BUDGET_MIN`]);
+//! the server's watchdog is that budget plus a margin ([`WATCHDOG`]): past
+//! it the News pane's foreground process group gets SIGTERM (the runner
+//! turns it into its interrupt path and writes `interrupted`), or, when no
+//! process can be found, two Ctrl-C a second apart; the run then stays in
+//! flight until the runner's record appears or the pane is back at its shell
+//! prompt, when a `timeout` record is written. A finished run that changed
+//! the page marks the News tab important (the fork's `tab.set_reminder`
+//! state), so it shows as unread.
 //!
 //! The client shell reads `news.get` (the pinned row, the settings section);
 //! `news.open` focuses the News tab, creating it with the page viewer when
@@ -62,9 +68,18 @@ pub(crate) const NEWS_HOOK_SOURCE: &str = "herdr:news";
 pub(crate) const NEWS_AGENT_LABEL: &str = "news";
 /// How often the run log is polled while a run is in flight.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
-/// A run still in flight after this long is recorded `timeout` and
-/// interrupted (the runner's own hang watchdog is 60 minutes).
-const WATCHDOG: Duration = Duration::from_secs(65 * 60);
+/// Minutes the runner may spend on the whole run (anchors, the editor and
+/// its fix-up call together): passed as `--deadline-min`.
+pub(crate) const RUN_BUDGET_MIN: u64 = 60;
+/// A run still in flight after the runner's budget plus this margin is
+/// interrupted by the server and recorded `timeout`.
+const WATCHDOG_MARGIN: Duration = Duration::from_secs(10 * 60);
+/// The server's watchdog: the runner's budget plus [`WATCHDOG_MARGIN`].
+const WATCHDOG: Duration = Duration::from_secs(RUN_BUDGET_MIN * 60 + WATCHDOG_MARGIN.as_secs());
+/// The gap between the two Ctrl-C the watchdog falls back to when it finds
+/// no process to signal (two in one write coalesce into one SIGINT; the
+/// pinned runner needs two within three seconds).
+const INTERRUPT_GAP: Duration = Duration::from_secs(1);
 /// How often a starting run re-probes the pane for its shell prompt.
 const START_RETRY: Duration = Duration::from_millis(500);
 /// How long a starting run waits for the shell prompt (after `q` to the
@@ -75,6 +90,9 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const INTERRUPTED_AFTER_POLLS: u8 = 2;
 /// Ctrl-C.
 const INTERRUPT: &[u8] = b"\x03";
+/// Kill-line: typed before every command so half-typed input on the
+/// pane's prompt line does not end up in front of it.
+const KILL_LINE: &str = "\x15";
 /// Quits the page viewer. The viewer runs pinned (`--pinned`): it ignores
 /// `q`, Esc and Ctrl-C, and only this private sequence (CSI 9999 ~) ends it.
 const VIEWER_QUIT: &[u8] = b"\x1b[9999~";
@@ -82,8 +100,13 @@ const VIEWER_QUIT: &[u8] = b"\x1b[9999~";
 pub(crate) const DAILY_NOTIFY_CAP: u8 = 2;
 /// Failed runs in a row that raise the failure alert.
 pub(crate) const FAILURE_ALERT_AFTER: u32 = 3;
-const PENDING_RUN: &str = "run";
+pub(crate) const PENDING_RUN: &str = "run";
 const PENDING_FAILURES: &str = "failures";
+/// Notification text limits, as `notification.show` applies them.
+const NOTIFY_TITLE_CHARS: usize = 80;
+/// Run notifications are titled `News: <the editor's title>`.
+const NEWS_TITLE_PREFIX: &str = "News: ";
+const NOTIFY_BODY_CHARS: usize = 240;
 
 /// The policy's answer for a run notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +117,9 @@ pub(crate) enum NotifyDecision {
 
 /// Whether a run notification goes out today, charging the ledger: the
 /// counters start over on a new local `day`; the first
-/// [`DAILY_NOTIFY_CAP`] are delivered, then a `high` one once more.
+/// [`DAILY_NOTIFY_CAP`] are delivered, then a `high` one once more. Asked
+/// at delivery (the server's news_notify), not when a run queues one, so a
+/// queued notification replaced before it went out uses no slot.
 pub(crate) fn notify_decision(
     ledger: &mut store::NewsNotifyRecord,
     day: &str,
@@ -184,6 +209,14 @@ pub(crate) enum NewsPhase {
     },
     /// The command was typed; the run log is polled.
     Running { next_poll: Instant },
+    /// The watchdog fired and the runner was signalled; the run log is
+    /// still polled for the runner's own record, and the pane for its
+    /// shell prompt. `second_interrupt` is the Ctrl-C fallback's second
+    /// write, still to be sent.
+    Stopping {
+        next_poll: Instant,
+        second_interrupt: Option<Instant>,
+    },
 }
 
 impl NewsPhase {
@@ -191,6 +224,7 @@ impl NewsPhase {
         match self {
             Self::Starting { .. } => "starting",
             Self::Running { .. } => "running",
+            Self::Stopping { .. } => "stopping",
         }
     }
 }
@@ -231,9 +265,10 @@ impl NewsRun {
     }
 }
 
-/// Why a run did not start (or `news.open` did not open).
+/// Why a news request was refused: a run did not start, `news.open` did
+/// not open, `news.set_enabled` could not write.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum NewsStartError {
+pub(crate) enum NewsError {
     /// No news home: the session is not persisted.
     Unavailable,
     /// A run is already in flight.
@@ -246,7 +281,7 @@ pub(crate) enum NewsStartError {
     ConfigWrite(String),
 }
 
-impl NewsStartError {
+impl NewsError {
     fn code(&self) -> &'static str {
         match self {
             Self::Unavailable => "news_unavailable",
@@ -373,7 +408,7 @@ pub(crate) fn run_command(
 ) -> String {
     let home = home.display().to_string();
     let mut command = format!(
-        "python3 {} --home {} --trigger {} --pinned",
+        "python3 {} --home {} --trigger {} --deadline-min {RUN_BUDGET_MIN} --pinned",
         shell_quote(
             &crate::integration::news_assets::runner_path(Path::new(&home))
                 .display()
@@ -542,7 +577,7 @@ impl NewsState {
 
     /// The local clock and day the schedule and the notification policy go
     /// by (overridable in tests).
-    fn local_now(&self) -> (Option<LocalClock>, String) {
+    pub(crate) fn local_now(&self) -> (Option<LocalClock>, String) {
         #[cfg(test)]
         if let Some((clock, day)) = self.local_override {
             return (Some(clock), day.to_string());
@@ -622,7 +657,7 @@ impl NewsState {
         if let Some(pending) = &self.pending_command {
             deadlines.push(pending.next_check);
         }
-        if let Some(retry) = self.notify_retry_at {
+        if let Some(retry) = self.notify_retry_at.filter(|retry| *retry > now) {
             deadlines.push(retry);
         }
         if let Some(after) = self
@@ -640,6 +675,12 @@ impl NewsState {
             deadlines.push(match run.phase {
                 NewsPhase::Starting { next_check, .. } => next_check.min(watchdog),
                 NewsPhase::Running { next_poll } => next_poll.min(watchdog),
+                // Past the watchdog: the polls and the second Ctrl-C, never
+                // the watchdog itself again.
+                NewsPhase::Stopping {
+                    next_poll,
+                    second_interrupt,
+                } => second_interrupt.map_or(next_poll, |second| second.min(next_poll)),
             });
         } else if self.enabled && self.home.is_some() {
             let next = self.next_run_at.unwrap_or(now_unix);
@@ -699,10 +740,16 @@ impl NewsState {
                 .first()
                 .cloned()
                 .unwrap_or_else(|| record.outcome.clone());
+            // The error text is the runner's (or the editor's): sanitized
+            // like `notification.show` sanitizes its input.
+            let body = super::api::sanitized_notification_text(
+                &format!("{} in a row · {error}", self.consecutive_failures),
+                NOTIFY_BODY_CHARS,
+            );
             self.queue_notification(store::PendingNewsNotify {
                 kind: PENDING_FAILURES.into(),
                 title: "News runs failing".into(),
-                body: Some(format!("{} in a row · {error}", self.consecutive_failures)),
+                body,
                 high: false,
                 deliver_after: quiet_end.unwrap_or(0),
                 queued_at: now_unix,
@@ -751,7 +798,7 @@ impl App {
 
     pub(super) fn handle_news_history(&mut self, id: String, params: NewsHistoryParams) -> String {
         let Some(home) = self.news.home.as_deref() else {
-            let err = NewsStartError::Unavailable;
+            let err = NewsError::Unavailable;
             return encode_error(id, err.code(), err.message());
         };
         let mut editions = store::read_editions(home);
@@ -846,9 +893,9 @@ impl App {
 
     /// `news.set_enabled`: write `news.enabled` to the config file and reload
     /// it, so the file stays the truth and the running server follows.
-    pub(crate) fn set_news_enabled(&mut self, enabled: bool) -> Result<(), NewsStartError> {
+    pub(crate) fn set_news_enabled(&mut self, enabled: bool) -> Result<(), NewsError> {
         crate::config::write_edit(crate::config::ConfigEdit::NewsEnabled(enabled))
-            .map_err(NewsStartError::ConfigWrite)?;
+            .map_err(NewsError::ConfigWrite)?;
         let report = self.reload_config();
         if self.news.enabled != enabled {
             // The reload kept an invalid file's previous sections; the
@@ -879,22 +926,20 @@ impl App {
         &mut self,
         edition: Option<u32>,
         now: Instant,
-    ) -> Result<(), NewsStartError> {
+    ) -> Result<(), NewsError> {
         if edition.is_some() && self.news.run.is_some() {
-            return Err(NewsStartError::InFlight);
+            return Err(NewsError::InFlight);
         }
-        let home = self.news.home.clone().ok_or(NewsStartError::Unavailable)?;
+        let home = self.news.home.clone().ok_or(NewsError::Unavailable)?;
         if let Some(edition) = edition {
             if !store::read_editions(&home)
                 .iter()
                 .any(|entry| entry.edition == edition)
             {
-                return Err(NewsStartError::NoEdition(edition));
+                return Err(NewsError::NoEdition(edition));
             }
         }
-        let (pane, created) = self
-            .ensure_news_tab(&home)
-            .map_err(NewsStartError::Failed)?;
+        let (pane, created) = self.ensure_news_tab(&home).map_err(NewsError::Failed)?;
         self.state.switch_workspace_tab(pane.ws_idx, pane.tab_idx);
         self.schedule_session_save();
         let show_viewer = edition.is_some()
@@ -903,7 +948,7 @@ impl App {
             std::fs::create_dir_all(&home)
                 .and_then(|()| crate::integration::news_assets::install(&home))
                 .map_err(|err| {
-                    NewsStartError::Failed(format!(
+                    NewsError::Failed(format!(
                         "failed to install the news viewer under {}: {err}",
                         home.display()
                     ))
@@ -944,7 +989,8 @@ impl App {
         let ready = self.news_pane_at_shell(&pane);
         if ready {
             self.news.pending_command = None;
-            let mut command = pending.command;
+            let mut command = String::from(KILL_LINE);
+            command.push_str(&pending.command);
             command.push('\r');
             if let Err(err) = self.news_pane_bytes(&pane, Bytes::from(command)) {
                 tracing::warn!(
@@ -1024,14 +1070,14 @@ impl App {
     pub(crate) fn handle_news_tasks(&mut self, now: Instant) -> bool {
         let unread_cleared = self.clear_news_unread_when_focused();
         let restored = self.show_page_when_news_focused(now);
-        let unread_cleared = unread_cleared || restored;
+        let changed = unread_cleared || restored;
         if self.news.run.is_some() {
             self.news.pending_command = None;
-            return self.drive_news_run(now) || unread_cleared;
+            return self.drive_news_run(now) || changed;
         }
         self.drive_news_pending_command(now);
         match self.news.schedule_action(unix_now(), LocalClock::now()) {
-            ScheduleAction::Wait => unread_cleared,
+            ScheduleAction::Wait => changed,
             ScheduleAction::Defer(until) => {
                 if self.news.next_run_at != Some(until) {
                     tracing::info!(
@@ -1043,7 +1089,7 @@ impl App {
                     self.news.next_run_at = Some(until);
                     self.news.persist();
                 }
-                unread_cleared
+                changed
             }
             ScheduleAction::Run => match self.start_news_run(NewsTrigger::Scheduled, now) {
                 Ok(_) => true,
@@ -1058,7 +1104,7 @@ impl App {
                     // Try again next interval rather than every tick.
                     self.news.next_run_at = Some(unix_now() + self.news.interval.as_secs());
                     self.news.persist();
-                    unread_cleared
+                    changed
                 }
             },
         }
@@ -1070,22 +1116,20 @@ impl App {
         &mut self,
         trigger: NewsTrigger,
         now: Instant,
-    ) -> Result<NewsRunInfo, NewsStartError> {
+    ) -> Result<NewsRunInfo, NewsError> {
         if self.news.run.is_some() {
-            return Err(NewsStartError::InFlight);
+            return Err(NewsError::InFlight);
         }
-        let home = self.news.home.clone().ok_or(NewsStartError::Unavailable)?;
+        let home = self.news.home.clone().ok_or(NewsError::Unavailable)?;
         std::fs::create_dir_all(&home)
             .and_then(|()| crate::integration::news_assets::install(&home))
             .map_err(|err| {
-                NewsStartError::Failed(format!(
+                NewsError::Failed(format!(
                     "failed to install the news runner under {}: {err}",
                     home.display()
                 ))
             })?;
-        let (pane, _) = self
-            .ensure_news_tab(&home)
-            .map_err(NewsStartError::Failed)?;
+        let (pane, _) = self.ensure_news_tab(&home).map_err(NewsError::Failed)?;
         // A run takes the pane: a viewer waiting for the prompt is dropped.
         self.news.pending_command = None;
         let started_at = unix_now();
@@ -1108,7 +1152,7 @@ impl App {
             tab_id = self.news.tab_id.as_deref().unwrap_or(""),
             "news run started"
         );
-        self.launch_news_run(&pane, now, true);
+        self.launch_news_run(&pane, now);
         self.news.persist();
         Ok(self
             .news
@@ -1266,13 +1310,14 @@ impl App {
     }
 
     /// Type the command when the pane is at a shell prompt; otherwise send
-    /// `q` (once, on the first attempt) and keep the run in `Starting`.
-    fn launch_news_run(&mut self, pane: &NewsPane, now: Instant, first: bool) {
+    /// the viewer's quit sequence (on every attempt: a split or lost one
+    /// must not cost the start) and keep the run in `Starting`.
+    fn launch_news_run(&mut self, pane: &NewsPane, now: Instant) {
         let ready = self.news_pane_at_shell(pane);
         let (trigger, give_up_at) = match self.news.run.as_ref() {
             Some(run) => match run.phase {
                 NewsPhase::Starting { give_up_at, .. } => (run.trigger, give_up_at),
-                NewsPhase::Running { .. } => return,
+                NewsPhase::Running { .. } | NewsPhase::Stopping { .. } => return,
             },
             None => return,
         };
@@ -1280,7 +1325,13 @@ impl App {
             self.clear_stale_news_identity(pane);
             let home = self.news.home.clone().unwrap_or_default();
             let next = self.news.enabled.then_some(self.news.next_run_at).flatten();
-            let mut command = run_command(&home, trigger, self.news.model.as_deref(), next);
+            let mut command = String::from(KILL_LINE);
+            command.push_str(&run_command(
+                &home,
+                trigger,
+                self.news.model.as_deref(),
+                next,
+            ));
             command.push('\r');
             match self.news_pane_bytes(pane, Bytes::from(command)) {
                 Ok(()) => {
@@ -1298,11 +1349,9 @@ impl App {
             self.fail_news_run("the News pane never returned to a shell prompt".into());
             return;
         }
-        if first {
-            if let Err(err) = self.news_pane_bytes(pane, Bytes::from_static(VIEWER_QUIT)) {
-                self.fail_news_run(format!("could not reach the News pane: {err}"));
-                return;
-            }
+        if let Err(err) = self.news_pane_bytes(pane, Bytes::from_static(VIEWER_QUIT)) {
+            self.fail_news_run(format!("could not reach the News pane: {err}"));
+            return;
         }
         if let Some(run) = self.news.run.as_mut() {
             run.phase = NewsPhase::Starting {
@@ -1345,65 +1394,39 @@ impl App {
     }
 
     /// The run in flight: launch when starting, poll the run log when
-    /// running, time out past the watchdog.
+    /// running, time out past the watchdog; a stopping run keeps polling
+    /// for the runner's record or the pane's prompt (and sends the
+    /// fallback's second Ctrl-C).
     fn drive_news_run(&mut self, now: Instant) -> bool {
         let Some(run) = self.news.run.clone() else {
             return false;
         };
-        if now >= run.watch_from + WATCHDOG {
-            self.time_out_news_run();
-            return true;
-        }
         let pane = self.existing_news_pane();
         match run.phase {
             NewsPhase::Starting { next_check, .. } => {
+                if now >= run.watch_from + WATCHDOG {
+                    self.time_out_news_run(now);
+                    return true;
+                }
                 if now < next_check {
                     return false;
                 }
                 match pane {
-                    Some(pane) => self.launch_news_run(&pane, now, false),
+                    Some(pane) => self.launch_news_run(&pane, now),
                     None => self.fail_news_run("the News tab is gone".into()),
                 }
                 self.news.persist();
                 true
             }
             NewsPhase::Running { next_poll } => {
+                if now >= run.watch_from + WATCHDOG {
+                    self.time_out_news_run(now);
+                    return true;
+                }
                 if now < next_poll {
                     return false;
                 }
-                let Some(home) = self.news.home.clone() else {
-                    return false;
-                };
-                let records = match store::read_index_after(&home, run.index_len) {
-                    Ok(records) => records,
-                    Err(err) => {
-                        tracing::warn!(
-                            event = "news.watch",
-                            outcome = "read_error",
-                            err = %err,
-                            "failed to read the news run log"
-                        );
-                        Vec::new()
-                    }
-                };
-                if let Some(record) = completed_record(&records, &run.started).cloned() {
-                    self.news.shell_polls = 0;
-                    self.complete_news_run(record);
-                    return true;
-                }
-                // The runner writes its record before it exits; a pane back at
-                // its shell with no record means the run was interrupted.
-                let at_shell = pane
-                    .as_ref()
-                    .is_some_and(|pane| self.news_pane_at_shell(pane));
-                self.news.shell_polls = if at_shell {
-                    self.news.shell_polls.saturating_add(1)
-                } else {
-                    0
-                };
-                if self.news.shell_polls >= INTERRUPTED_AFTER_POLLS {
-                    self.news.shell_polls = 0;
-                    self.interrupt_news_run();
+                if self.poll_news_run(&run, pane.as_ref()) {
                     return true;
                 }
                 if let Some(run) = self.news.run.as_mut() {
@@ -1413,7 +1436,89 @@ impl App {
                 }
                 false
             }
+            NewsPhase::Stopping {
+                next_poll,
+                second_interrupt,
+            } => {
+                let mut changed = false;
+                let mut second_interrupt = second_interrupt;
+                if second_interrupt.is_some_and(|due| now >= due) {
+                    second_interrupt = None;
+                    changed = true;
+                    if let Some(pane) = pane.as_ref() {
+                        if let Err(err) = self.news_pane_bytes(pane, Bytes::from_static(INTERRUPT))
+                        {
+                            tracing::warn!(
+                                event = "news.run",
+                                outcome = "interrupt_failed",
+                                err = %err,
+                                "could not send the second Ctrl-C to the news run"
+                            );
+                        }
+                    }
+                }
+                let mut next_poll = next_poll;
+                if now >= next_poll {
+                    if self.poll_news_run(&run, pane.as_ref()) {
+                        return true;
+                    }
+                    next_poll = now + POLL_INTERVAL;
+                }
+                if let Some(run) = self.news.run.as_mut() {
+                    run.phase = NewsPhase::Stopping {
+                        next_poll,
+                        second_interrupt,
+                    };
+                }
+                changed
+            }
         }
+    }
+
+    /// One poll of the run log for the run in flight. Its record completes
+    /// it. The runner writes its record before it exits, so a pane back at
+    /// its shell prompt with no record means the runner is gone: after
+    /// [`INTERRUPTED_AFTER_POLLS`] such polls in a row the run ends as
+    /// `interrupted`, or as `timeout` when the watchdog had stopped it. A
+    /// missing pane counts as at the shell (nothing runs there). Returns
+    /// whether the run ended.
+    fn poll_news_run(&mut self, run: &NewsRun, pane: Option<&NewsPane>) -> bool {
+        let Some(home) = self.news.home.clone() else {
+            return false;
+        };
+        let records = match store::read_index_after(&home, run.index_len) {
+            Ok(records) => records,
+            Err(err) => {
+                tracing::warn!(
+                    event = "news.watch",
+                    outcome = "read_error",
+                    err = %err,
+                    "failed to read the news run log"
+                );
+                Vec::new()
+            }
+        };
+        if let Some(record) = completed_record(&records, &run.started).cloned() {
+            self.news.shell_polls = 0;
+            self.complete_news_run(record);
+            return true;
+        }
+        let at_shell = pane.is_none_or(|pane| self.news_pane_at_shell(pane));
+        self.news.shell_polls = if at_shell {
+            self.news.shell_polls.saturating_add(1)
+        } else {
+            0
+        };
+        if self.news.shell_polls >= INTERRUPTED_AFTER_POLLS {
+            self.news.shell_polls = 0;
+            if matches!(run.phase, NewsPhase::Stopping { .. }) {
+                self.finish_news_run_timeout();
+            } else {
+                self.interrupt_news_run();
+            }
+            return true;
+        }
+        false
     }
 
     /// A run that never got going: recorded `failed` in the run log.
@@ -1463,9 +1568,77 @@ impl App {
         self.news.was_focused = false;
     }
 
-    /// The watchdog: Ctrl-C to the pane, the agent released, a `timeout`
-    /// record.
-    fn time_out_news_run(&mut self) {
+    /// The watchdog: the runner is told to stop and the run goes
+    /// `Stopping`. SIGTERM to the News pane's foreground process group (the
+    /// runner's handler takes its interrupt path: the editor's group is
+    /// killed, `interrupted` is recorded, the page comes back); when no
+    /// process can be found, Ctrl-C now and once more after
+    /// [`INTERRUPT_GAP`] on a later pass (the pinned runner wants two). The
+    /// run then ends with the runner's record, or with a `timeout` record
+    /// once the pane is back at its prompt ([`Self::poll_news_run`]).
+    fn time_out_news_run(&mut self, now: Instant) {
+        let Some(run) = self.news.run.clone() else {
+            return;
+        };
+        let pane = self.existing_news_pane();
+        let pgid = pane
+            .as_ref()
+            .and_then(|pane| self.news_pane_foreground_pgid(pane));
+        let mut second_interrupt = None;
+        let method = match (pgid, pane.as_ref()) {
+            (Some(pgid), _) => {
+                crate::platform::signal_process_group(pgid, crate::platform::Signal::Terminate);
+                "sigterm"
+            }
+            (None, Some(pane)) => match self.news_pane_bytes(pane, Bytes::from_static(INTERRUPT)) {
+                Ok(()) => {
+                    second_interrupt = Some(now + INTERRUPT_GAP);
+                    "ctrl_c"
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        event = "news.run",
+                        outcome = "interrupt_failed",
+                        err = %err,
+                        "could not interrupt the news run"
+                    );
+                    "none"
+                }
+            },
+            (None, None) => "none",
+        };
+        tracing::warn!(
+            event = "news.run",
+            outcome = "watchdog",
+            trigger = run.trigger.name(),
+            method,
+            pgid = pgid.unwrap_or(0),
+            "news run exceeded the watchdog; stopping it"
+        );
+        if let Some(run) = self.news.run.as_mut() {
+            run.phase = NewsPhase::Stopping {
+                next_poll: now + POLL_INTERVAL,
+                second_interrupt,
+            };
+        }
+        self.news.shell_polls = 0;
+        self.news.persist();
+    }
+
+    /// The News pane's foreground process group while something other than
+    /// its shell runs there (the runner's job); `None` at a prompt, so the
+    /// shell itself is never signalled.
+    fn news_pane_foreground_pgid(&self, pane: &NewsPane) -> Option<u32> {
+        if self.news_pane_at_shell(pane) {
+            return None;
+        }
+        let runtime = self.lookup_runtime_sender(pane.ws_idx, pane.pane_id)?;
+        crate::detect::foreground_process_group_id(runtime.child_pid()?)
+    }
+
+    /// A stopped run whose runner never wrote its record: the agent
+    /// released, a `timeout` record, and the page shown again.
+    fn finish_news_run_timeout(&mut self) {
         let Some(run) = self.news.run.clone() else {
             return;
         };
@@ -1473,18 +1646,9 @@ impl App {
             event = "news.run",
             outcome = "timeout",
             trigger = run.trigger.name(),
-            "news run exceeded the watchdog; interrupting it"
+            "news runner stopped without a result"
         );
         if let Some(pane) = self.existing_news_pane() {
-            if let Err(err) = self.news_pane_bytes(&pane, Bytes::from_static(INTERRUPT)) {
-                tracing::warn!(
-                    event = "news.run",
-                    outcome = "interrupt_failed",
-                    err = %err,
-                    "could not interrupt the news run"
-                );
-            }
-            // The runner cannot release its agent report after Ctrl-C.
             self.handle_internal_event(crate::events::AppEvent::HookAgentReleased {
                 pane_id: pane.pane_id,
                 source: NEWS_HOOK_SOURCE.into(),
@@ -1499,6 +1663,7 @@ impl App {
             format!("no result after {} minutes", WATCHDOG.as_secs() / 60),
         );
         self.complete_news_run(record);
+        self.news.was_focused = false;
     }
 
     fn server_news_record(&self, run: &NewsRun, outcome: &str, error: String) -> NewsRunRecord {
@@ -1526,7 +1691,8 @@ impl App {
     }
 
     /// Account for the finished run, mark the tab when the page changed,
-    /// and queue the editor's notification when the policy allows.
+    /// and queue the editor's notification (its text sanitized like
+    /// `notification.show` input; the daily cap is applied at delivery).
     fn complete_news_run(&mut self, record: NewsRunRecord) {
         tracing::info!(
             event = "news.run",
@@ -1539,38 +1705,33 @@ impl App {
             "news run finished"
         );
         let now_unix = unix_now();
-        let (local, day) = self.news.local_now();
+        let (local, _day) = self.news.local_now();
         let quiet_end = self.news.quiet_end_unix(now_unix, local);
         self.news.finish(&record, now_unix, quiet_end);
         if record.outcome == "ok" && record.changed {
             self.mark_news_tab_important();
             if let Some(notify) = record.notify.as_ref() {
-                let high = notify.urgency == "high";
-                match notify_decision(&mut self.news.notify, &day, high) {
-                    NotifyDecision::Deliver => {
-                        self.news.queue_notification(store::PendingNewsNotify {
-                            kind: PENDING_RUN.into(),
-                            title: format!("News: {}", notify.title.trim()),
-                            body: notify
-                                .body
-                                .as_deref()
-                                .map(str::trim)
-                                .filter(|body| !body.is_empty())
-                                .map(str::to_string),
-                            high,
-                            deliver_after: quiet_end.unwrap_or(0),
-                            queued_at: now_unix,
-                        });
-                    }
-                    NotifyDecision::Drop(reason) => {
-                        tracing::info!(
-                            event = "news.notify",
-                            outcome = "dropped",
-                            reason,
-                            title = %notify.title,
-                            "news notification dropped by policy"
-                        );
-                    }
+                let title = super::api::sanitized_notification_text(
+                    &notify.title,
+                    NOTIFY_TITLE_CHARS - NEWS_TITLE_PREFIX.len(),
+                );
+                match title {
+                    Some(title) => self.news.queue_notification(store::PendingNewsNotify {
+                        kind: PENDING_RUN.into(),
+                        title: format!("{NEWS_TITLE_PREFIX}{title}"),
+                        body: notify.body.as_deref().and_then(|body| {
+                            super::api::sanitized_notification_text(body, NOTIFY_BODY_CHARS)
+                        }),
+                        high: notify.urgency == "high",
+                        deliver_after: quiet_end.unwrap_or(0),
+                        queued_at: now_unix,
+                    }),
+                    None => tracing::info!(
+                        event = "news.notify",
+                        outcome = "dropped",
+                        reason = "empty title",
+                        "news notification dropped: nothing left of the title once sanitized"
+                    ),
                 }
             }
         }
@@ -1726,15 +1887,15 @@ mod tests {
         let home = Path::new("/tmp/it's news");
         assert_eq!(
             run_command(home, NewsTrigger::Manual, None, None),
-            "python3 '/tmp/it'\\''s news/bin/news_run.py' --home '/tmp/it'\\''s news' --trigger manual --pinned"
+            "python3 '/tmp/it'\\''s news/bin/news_run.py' --home '/tmp/it'\\''s news' --trigger manual --deadline-min 60 --pinned"
         );
         assert_eq!(
             run_command(Path::new("/n"), NewsTrigger::Scheduled, Some(" opus "), Some(1_790_000_000)),
-            "python3 '/n/bin/news_run.py' --home '/n' --trigger scheduled --pinned --model 'opus' --next-run 2026-09-21T14:13:20+00:00"
+            "python3 '/n/bin/news_run.py' --home '/n' --trigger scheduled --deadline-min 60 --pinned --model 'opus' --next-run 2026-09-21T14:13:20+00:00"
         );
         assert_eq!(
             run_command(Path::new("/n"), NewsTrigger::Scheduled, Some("  "), None),
-            "python3 '/n/bin/news_run.py' --home '/n' --trigger scheduled --pinned"
+            "python3 '/n/bin/news_run.py' --home '/n' --trigger scheduled --deadline-min 60 --pinned"
         );
     }
 
@@ -1799,7 +1960,7 @@ mod tests {
         app.news.run = Some(in_flight(NOW, now));
         assert_eq!(
             app.start_news_run(NewsTrigger::Scheduled, now),
-            Err(NewsStartError::InFlight)
+            Err(NewsError::InFlight)
         );
         let response = request(
             &mut app,
@@ -1936,13 +2097,163 @@ mod tests {
         let mut app = news_app(Some(home.clone()), true);
         let now = Instant::now();
         app.news.run = Some(in_flight(NOW, now));
+        assert_eq!(
+            WATCHDOG,
+            Duration::from_secs(70 * 60),
+            "the budget plus 10 min"
+        );
+        // Past the watchdog the run goes stopping (no pane: nothing to
+        // signal) and stays in flight; the missing pane then counts as a
+        // shell prompt, and the second such poll records the timeout.
         assert!(app.handle_news_tasks(now + WATCHDOG));
+        let run = app.news.run.as_ref().expect("still in flight");
+        assert!(
+            matches!(
+                run.phase,
+                NewsPhase::Stopping {
+                    second_interrupt: None,
+                    ..
+                }
+            ),
+            "{:?}",
+            run.phase
+        );
+        assert_eq!(run.info().phase, "stopping");
+        assert_eq!(
+            app.news.next_deadline(now + WATCHDOG, NOW),
+            Some(now + WATCHDOG + POLL_INTERVAL),
+            "the watchdog itself is not a deadline any more"
+        );
+        assert!(!app.handle_news_tasks(now + WATCHDOG + Duration::from_secs(1)));
+        assert!(!app.handle_news_tasks(now + WATCHDOG + POLL_INTERVAL));
+        assert!(
+            app.news.run.is_some(),
+            "one poll at the (missing) shell is not enough"
+        );
+        assert!(app.handle_news_tasks(now + WATCHDOG + 2 * POLL_INTERVAL));
         assert!(app.news.run.is_none());
         assert_eq!(app.news.consecutive_failures, 1);
         let history = store::read_history(&home, 10);
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].outcome, "timeout");
         assert_eq!(history[0].started, iso_utc(NOW));
+        assert_eq!(history[0].errors, ["no result after 70 minutes"]);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn the_watchdog_falls_back_to_two_ctrl_c_a_second_apart_and_waits_for_the_runner() {
+        let home = temp_home("watchdog-ctrl-c");
+        let mut app = news_app(Some(home.clone()), true);
+        std::fs::create_dir_all(home.join("runs")).unwrap();
+        let mut rx = news_tab_with_input(&mut app);
+        // The test runtime has no child pid, so no process group is found
+        // and the watchdog falls back to Ctrl-C; the pane is busy (the
+        // runner) throughout.
+        app.news.assume_shell_busy = true;
+        let now = Instant::now();
+        app.news.run = Some(in_flight(NOW, now));
+        assert!(!app.handle_news_tasks(now));
+        assert_eq!(typed(&mut rx), "");
+
+        let fired = now + WATCHDOG;
+        assert!(app.handle_news_tasks(fired));
+        assert_eq!(typed(&mut rx), "\x03", "one Ctrl-C in its own write");
+        let run = app.news.run.clone().expect("the run stays in flight");
+        assert_eq!(
+            run.phase,
+            NewsPhase::Stopping {
+                next_poll: fired + POLL_INTERVAL,
+                second_interrupt: Some(fired + INTERRUPT_GAP),
+            }
+        );
+        assert_eq!(
+            app.news.next_deadline(fired, NOW),
+            Some(fired + INTERRUPT_GAP),
+            "the loop wakes for the second Ctrl-C"
+        );
+        assert!(!app.handle_news_tasks(fired + Duration::from_millis(500)));
+        assert_eq!(typed(&mut rx), "", "not before the gap");
+        assert!(app.handle_news_tasks(fired + INTERRUPT_GAP));
+        assert_eq!(
+            typed(&mut rx),
+            "\x03",
+            "the second Ctrl-C, a separate write"
+        );
+        assert!(app.news.run.is_some());
+        assert!(!app.handle_news_tasks(fired + 2 * INTERRUPT_GAP));
+        assert_eq!(typed(&mut rx), "", "no third one");
+
+        // The runner took the interrupt and wrote its own record: that is
+        // the run's outcome, not a server timeout.
+        store::append_index_record(&home, &record(&iso_utc(NOW + 1), "interrupted")).unwrap();
+        assert!(app.handle_news_tasks(fired + POLL_INTERVAL));
+        assert!(app.news.run.is_none());
+        let history = store::read_history(&home, 10);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].outcome, "interrupted");
+
+        // No record but the pane back at its prompt: two polls, then the
+        // server's timeout record.
+        let mut run = in_flight(NOW + 100, now);
+        run.index_len = store::index_len(&home);
+        app.news.run = Some(run);
+        assert!(app.handle_news_tasks(fired));
+        assert_eq!(typed(&mut rx), "\x03");
+        assert!(app.handle_news_tasks(fired + INTERRUPT_GAP));
+        assert_eq!(typed(&mut rx), "\x03");
+        app.news.assume_shell_busy = false;
+        app.news.assume_shell_ready = true;
+        assert!(!app.handle_news_tasks(fired + POLL_INTERVAL));
+        assert!(app.news.run.is_some());
+        assert!(app.handle_news_tasks(fired + 2 * POLL_INTERVAL));
+        assert!(app.news.run.is_none());
+        let history = store::read_history(&home, 10);
+        assert_eq!(history[0].outcome, "timeout");
+        assert_eq!(history[0].started, iso_utc(NOW + 100));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_run_whose_news_tab_is_gone_is_recorded_interrupted() {
+        let home = temp_home("gone-tab");
+        let mut app = news_app(Some(home.clone()), true);
+        app.news.tab_id = Some("w_9:t_9".into());
+        let now = Instant::now();
+        app.news.run = Some(in_flight(NOW, now));
+        assert!(!app.handle_news_tasks(now));
+        assert!(
+            app.news.run.is_some(),
+            "one poll without the tab is not enough"
+        );
+        assert!(app.handle_news_tasks(now + POLL_INTERVAL));
+        assert!(app.news.run.is_none(), "the second ends the run");
+        let history = store::read_history(&home, 10);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].outcome, "interrupted");
+        assert_eq!(app.news.consecutive_failures, 1);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_past_notify_retry_is_not_a_deadline() {
+        let home = temp_home("retry-deadline");
+        let mut app = news_app(Some(home.clone()), false);
+        let now = Instant::now();
+        assert_eq!(app.news.next_deadline(now, NOW), None);
+        app.news.notify_retry_at = Some(now - Duration::from_secs(1));
+        assert_eq!(
+            app.news.next_deadline(now, NOW),
+            None,
+            "a past retry would spin the loop"
+        );
+        app.news.notify_retry_at = Some(now);
+        assert_eq!(app.news.next_deadline(now, NOW), None);
+        app.news.notify_retry_at = Some(now + Duration::from_secs(1));
+        assert_eq!(
+            app.news.next_deadline(now, NOW),
+            Some(now + Duration::from_secs(1))
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -1963,6 +2274,17 @@ mod tests {
         );
         app.news.run = Some(in_flight(NOW, now));
         assert_eq!(app.news.next_deadline(now, NOW), Some(now));
+        let mut stopping = in_flight(NOW, now - WATCHDOG);
+        stopping.phase = NewsPhase::Stopping {
+            next_poll: now + POLL_INTERVAL,
+            second_interrupt: Some(now + INTERRUPT_GAP),
+        };
+        app.news.run = Some(stopping);
+        assert_eq!(
+            app.news.next_deadline(now, NOW),
+            Some(now + INTERRUPT_GAP),
+            "stopping: the second Ctrl-C, not the past watchdog"
+        );
         app.news.run = None;
         app.news.enabled = false;
         assert_eq!(app.news.next_deadline(now, NOW), None);
@@ -2317,7 +2639,11 @@ mod tests {
         // The prompt is back.
         app.news.assume_shell_busy = false;
         app.handle_news_tasks(now + 2 * START_RETRY);
-        assert_eq!(rx.try_recv().unwrap().as_ref(), b"echo hi\r");
+        assert_eq!(
+            rx.try_recv().unwrap().as_ref(),
+            b"\x15echo hi\r",
+            "kill-line first, so a half-typed prompt line is not prepended"
+        );
         assert!(app.news.pending_command.is_none());
 
         // Never a prompt: given up after the start timeout.
@@ -2449,7 +2775,7 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_run_with_a_notify_request_queues_one_notification_under_the_daily_cap() {
+    fn a_changed_run_with_a_notify_request_queues_one_notification_without_charging_the_cap() {
         let home = temp_home("notify");
         std::fs::create_dir_all(home.join("runs")).unwrap();
         let mut app = news_app(Some(home.clone()), true);
@@ -2484,10 +2810,13 @@ mod tests {
         assert_eq!(app.news.due_notification_index(NOW), Some(0));
         assert_eq!(app.news.status().pending_notifications, 1);
         assert_eq!(app.news_get_info().pending_notifications, 1);
-        assert_eq!(app.news.notify.day, "2026-09-29");
-        assert_eq!(app.news.notify.delivered, 1);
+        assert_eq!(
+            app.news.notify.delivered, 0,
+            "the cap is charged at delivery"
+        );
 
-        // The second replaces the undelivered first (one queued per kind).
+        // The second replaces the undelivered first (one queued per kind)
+        // and still no slot is used: the replaced one never went out.
         complete(
             &mut app,
             &home,
@@ -2496,17 +2825,10 @@ mod tests {
         );
         assert_eq!(app.news.notify.pending.len(), 1);
         assert_eq!(app.news.notify.pending[0].title, "News: GPT-6");
-        assert_eq!(app.news.notify.delivered, 2);
+        assert_eq!(app.news.notify.delivered, 0);
+        assert!(app.news.notify.day.is_empty());
 
-        // The third is dropped, a high one passes once, then nothing.
-        app.news.notify.pending.clear();
-        complete(
-            &mut app,
-            &home,
-            &notify_record(NOW + 40, "Third", "low"),
-            now,
-        );
-        assert!(app.news.notify.pending.is_empty());
+        // A high one is queued as such; the server decides at delivery.
         complete(
             &mut app,
             &home,
@@ -2515,17 +2837,109 @@ mod tests {
         );
         assert_eq!(app.news.notify.pending.len(), 1);
         assert!(app.news.notify.pending[0].high);
+
+        // Delivery is the server's; the deadline follows what is queued.
+        assert!(app.news.next_deadline(now, NOW).is_some());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn notification_text_is_sanitized_when_queued() {
+        let home = temp_home("notify-sanitize");
+        std::fs::create_dir_all(home.join("runs")).unwrap();
+        let mut app = news_app(Some(home.clone()), false);
+        app.news.local_override = Some((clock(12, 0, 0).unwrap(), "2026-09-29"));
+        let now = Instant::now();
+
+        let long = "x".repeat(300);
+        let mut record = notify_record(
+            NOW,
+            &format!("A\x07 title\n\twith\x1b[31m ctl {long}"),
+            "low",
+        );
+        record.notify.as_mut().unwrap().body = Some(format!("body\x1b]8;;evil\x07 {long}"));
+        complete(&mut app, &home, &record, now);
+        let pending = app.news.notify.pending[0].clone();
+        assert!(
+            pending.title.starts_with("News: A title with[31m ctl xxx"),
+            "{}",
+            pending.title
+        );
+        assert_eq!(pending.title.chars().count(), 80);
+        let body = pending.body.expect("a body");
+        assert!(body.starts_with("body]8;;evil xxx"), "{body}");
+        assert_eq!(body.chars().count(), 240);
+        assert!(!body.chars().any(char::is_control));
+
+        // Nothing left of the title once sanitized: no notification.
         app.news.notify.pending.clear();
         complete(
             &mut app,
             &home,
-            &notify_record(NOW + 60, "Urgent 2", "high"),
+            &notify_record(NOW + 10, "\x07\x1b \t", "high"),
             now,
         );
-        assert!(app.news.notify.pending.is_empty());
+        assert!(
+            app.news.notify.pending.is_empty(),
+            "an empty title is dropped"
+        );
 
-        // Delivery is the server's; the deadline follows what is queued.
-        assert!(app.news.next_deadline(now, NOW).is_some());
+        // The failure alert's body carries runner text: sanitized too.
+        let failed = |n: u64| NewsRunRecord {
+            started: iso_utc(NOW + 100 + n),
+            trigger: "scheduled".into(),
+            outcome: "invalid".into(),
+            errors: vec![format!("boom\x1b[2J\x07 {long}")],
+            ..NewsRunRecord::default()
+        };
+        for n in 0..3 {
+            complete(&mut app, &home, &failed(n), now);
+        }
+        let alert = app
+            .news
+            .notify
+            .pending
+            .iter()
+            .find(|p| p.kind == "failures")
+            .unwrap();
+        let body = alert.body.clone().unwrap();
+        assert!(body.starts_with("3 in a row · boom[2J xxx"), "{body}");
+        assert_eq!(body.chars().count(), 240);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn a_starting_run_resends_the_viewer_quit_on_every_retry_and_types_after_kill_line() {
+        let home = temp_home("start-retry");
+        let mut app = news_app(Some(home.clone()), false);
+        let mut rx = news_tab_with_input(&mut app);
+        app.news.assume_shell_busy = true;
+        let now = Instant::now();
+        app.start_news_run(NewsTrigger::Manual, now).unwrap();
+        assert_eq!(
+            typed(&mut rx),
+            "\x1b[9999~",
+            "busy pane: the viewer is quit"
+        );
+        assert!(app.handle_news_tasks(now + START_RETRY));
+        assert_eq!(
+            typed(&mut rx),
+            "\x1b[9999~",
+            "still busy: quit again (a split or lost sequence must not cost the start)"
+        );
+        app.news.assume_shell_busy = false;
+        app.news.assume_shell_ready = true;
+        assert!(app.handle_news_tasks(now + 2 * START_RETRY));
+        let input = typed(&mut rx);
+        assert!(input.starts_with("\x15python3 "), "{input:?}");
+        assert!(
+            input.contains("--deadline-min 60 --pinned") && input.ends_with('\r'),
+            "{input:?}"
+        );
+        assert!(matches!(
+            app.news.run.as_ref().unwrap().phase,
+            NewsPhase::Running { .. }
+        ));
         let _ = std::fs::remove_dir_all(&home);
     }
 

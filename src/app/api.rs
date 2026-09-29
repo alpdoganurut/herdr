@@ -1363,7 +1363,7 @@ impl App {
     }
 }
 
-fn sanitized_notification_text(value: &str, max_chars: usize) -> Option<String> {
+pub(super) fn sanitized_notification_text(value: &str, max_chars: usize) -> Option<String> {
     let mut sanitized = String::new();
     let mut previous_space = false;
     for ch in value.chars() {

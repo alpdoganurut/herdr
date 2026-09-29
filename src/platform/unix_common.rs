@@ -8,6 +8,25 @@ pub(crate) fn classify_child_exit(status: &portable_pty::ExitStatus) -> super::C
     }
 }
 
+/// Signal a whole process group (the pane's foreground job), as `kill -SIG
+/// -pgid` does. Nothing for a zero id or a group that is already gone.
+pub(crate) fn signal_process_group(process_group_id: u32, signal: super::Signal) {
+    let Ok(pgid) = i32::try_from(process_group_id) else {
+        return;
+    };
+    if pgid <= 0 {
+        return;
+    }
+    let sig = match signal {
+        super::Signal::Hangup => libc::SIGHUP,
+        super::Signal::Terminate => libc::SIGTERM,
+        super::Signal::Kill => libc::SIGKILL,
+    };
+    unsafe {
+        libc::kill(-pgid, sig);
+    }
+}
+
 pub(crate) fn read_fd(fd: std::os::fd::RawFd, data: &mut [u8]) -> std::io::Result<usize> {
     let result = unsafe { libc::read(fd, data.as_mut_ptr().cast(), data.len()) };
     if result < 0 {

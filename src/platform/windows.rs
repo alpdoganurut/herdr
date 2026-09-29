@@ -2247,6 +2247,9 @@ pub fn signal_processes(pids: &[u32], signal: Signal) {
     }
 }
 
+/// No POSIX process groups: signalling one is a no-op here.
+pub fn signal_process_group(_process_group_id: u32, _signal: Signal) {}
+
 pub fn process_exists(pid: u32) -> bool {
     let Some(process) = ProcessHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) else {
         return false;

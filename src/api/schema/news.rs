@@ -191,7 +191,9 @@ pub struct NewsRunInfo {
     pub started_at: u64,
     /// `manual` or `scheduled`.
     pub trigger: String,
-    /// `starting` (waiting for the pane's shell prompt) or `running`.
+    /// `starting` (waiting for the pane's shell prompt), `running`, or
+    /// `stopping` (the watchdog signalled the runner; its record or the
+    /// pane's prompt ends the run).
     pub phase: String,
 }
 
