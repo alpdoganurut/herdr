@@ -2300,6 +2300,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// A scheduled start that fails (here: the runner cannot be installed
+    /// because the home sits under a regular file) stands for its slot, so
+    /// the scheduler does not retry every tick; the next listed time tries
+    /// again.
+    #[test]
+    fn a_failed_scheduled_start_counts_as_the_slots_attempt() {
+        let dir = temp_home("start-fails");
+        std::fs::create_dir_all(&dir).unwrap();
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let mut app = news_app(Some(blocker.join("news")), true);
+        let two_pm = clock(14, 0, 0);
+        app.news.local_override = Some((two_pm.unwrap(), "2026-09-29"));
+        app.news.last_started_at = Some(unix_now() - 2 * 3600);
+        assert_eq!(
+            app.news.schedule_action(unix_now(), two_pm),
+            ScheduleAction::Run,
+            "13:00 is owed at 14:00"
+        );
+        assert!(!app.handle_news_tasks(Instant::now()), "nothing started");
+        assert!(app.news.run.is_none());
+        let attempted = app.news.last_started_at.expect("the attempt is remembered");
+        assert!(attempted.abs_diff(unix_now()) <= 2, "{attempted}");
+        assert_eq!(
+            app.news.schedule_action(unix_now(), two_pm),
+            ScheduleAction::Wait,
+            "not retried on the next tick"
+        );
+        let next = app.news.next_run_at(unix_now(), two_pm).expect("19:00");
+        assert!(next.abs_diff(unix_now() + 5 * 3600) <= 2, "{next}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn status_reports_the_schedule_the_run_and_the_history() {
         let home = temp_home("status");

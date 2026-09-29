@@ -316,40 +316,56 @@ fn news_set_enabled(args: &[String], enabled: bool) -> std::io::Result<i32> {
     Ok(0)
 }
 
-/// `herdr news times`: list the scheduled times with the next one marked;
-/// with times, set them; `--clear` empties the list.
-fn news_times(args: &[String]) -> std::io::Result<i32> {
+/// What `herdr news times` was asked to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TimesArgs {
+    Help,
+    /// No arguments: list the times.
+    Show,
+    /// Times to set (empty for `--clear`), each already checked as `HH:MM`.
+    Set(Vec<String>),
+}
+
+/// Parse the `times` arguments; the error is the message to print (exit 2).
+fn parse_times_args(args: &[String]) -> Result<TimesArgs, String> {
     let mut clear = false;
     let mut times = Vec::new();
     for arg in args {
         match arg.as_str() {
             "--clear" => clear = true,
-            "help" | "--help" | "-h" => {
-                eprintln!("{TIMES_USAGE}");
-                return Ok(0);
-            }
-            other if other.starts_with('-') => {
-                eprintln!("{TIMES_USAGE}");
-                return Ok(2);
-            }
+            "help" | "--help" | "-h" => return Ok(TimesArgs::Help),
+            other if other.starts_with('-') => return Err(TIMES_USAGE.into()),
             other => times.push(other.to_string()),
         }
     }
     if clear && !times.is_empty() {
-        eprintln!("{TIMES_USAGE}");
-        return Ok(2);
+        return Err(TIMES_USAGE.into());
     }
-    let (request_id, method) = if clear || !times.is_empty() {
-        if let Err(err) = crate::config::normalize_times(times.iter().map(String::as_str)) {
-            eprintln!("{err}; expected HH:MM");
+    if !clear && times.is_empty() {
+        return Ok(TimesArgs::Show);
+    }
+    crate::config::normalize_times(times.iter().map(String::as_str))
+        .map_err(|err| format!("{err}; expected HH:MM"))?;
+    Ok(TimesArgs::Set(times))
+}
+
+/// `herdr news times`: list the scheduled times with the next one marked;
+/// with times, set them; `--clear` empties the list.
+fn news_times(args: &[String]) -> std::io::Result<i32> {
+    let (request_id, method) = match parse_times_args(args) {
+        Ok(TimesArgs::Help) => {
+            eprintln!("{TIMES_USAGE}");
+            return Ok(0);
+        }
+        Err(message) => {
+            eprintln!("{message}");
             return Ok(2);
         }
-        (
+        Ok(TimesArgs::Show) => ("cli:news:times", Method::NewsGet(EmptyParams::default())),
+        Ok(TimesArgs::Set(times)) => (
             "cli:news:set_times",
             Method::NewsSetTimes(NewsSetTimesParams { times }),
-        )
-    } else {
-        ("cli:news:times", Method::NewsGet(EmptyParams::default()))
+        ),
     };
     let news = match fetch_get(request_id, method)? {
         Ok(news) => news,
@@ -744,6 +760,35 @@ mod tests {
             consecutive_failures: 0,
             pending_notifications: 0,
         }
+    }
+
+    #[test]
+    fn times_arguments_show_set_clear_or_refuse() {
+        let args = |list: &[&str]| -> Vec<String> { list.iter().map(|s| s.to_string()).collect() };
+        assert_eq!(parse_times_args(&args(&[])), Ok(TimesArgs::Show));
+        assert_eq!(parse_times_args(&args(&["--help"])), Ok(TimesArgs::Help));
+        assert_eq!(
+            parse_times_args(&args(&["19:00", "8:00"])),
+            Ok(TimesArgs::Set(args(&["19:00", "8:00"]))),
+            "sent as given; the server sorts and pads"
+        );
+        assert_eq!(
+            parse_times_args(&args(&["--clear"])),
+            Ok(TimesArgs::Set(Vec::new()))
+        );
+        assert_eq!(
+            parse_times_args(&args(&["--clear", "08:00"])),
+            Err(TIMES_USAGE.to_string())
+        );
+        assert_eq!(
+            parse_times_args(&args(&["--json"])),
+            Err(TIMES_USAGE.to_string())
+        );
+        let invalid = parse_times_args(&args(&["08:00", "8:0"])).unwrap_err();
+        assert!(
+            invalid.contains("8:0") && invalid.ends_with("expected HH:MM"),
+            "{invalid}"
+        );
     }
 
     #[test]
