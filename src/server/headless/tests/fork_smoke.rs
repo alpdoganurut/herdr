@@ -761,3 +761,126 @@ async fn news_status_and_run_reach_the_news_tab() {
     shutdown_test_runtimes(&mut server);
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A finished run's `decision.notify` becomes a `SemanticNotification` of
+/// kind Custom, sent through the same client-shell path as
+/// `notification.show`, carrying the News pane so a click focuses it. With
+/// no client shell it waits in the queue and goes out when one attaches
+/// (the flush at the end of the client-connected block); the rate limit
+/// holds it for a second at most.
+#[cfg(unix)]
+#[tokio::test]
+async fn news_notification_waits_for_a_client_shell_and_reaches_it_on_attach() {
+    let dir = std::env::temp_dir().join(format!(
+        "herdr-fork-smoke-news-notify-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("news/runs")).unwrap();
+    let home = dir.join("news");
+
+    let (mut server, _rx) = server_with_claude(None);
+    server.app.news.home = Some(home.clone());
+    server.app.state.workspaces[0].tabs[0].set_custom_name("News".into());
+    server.app.news.tab_id = server.app.public_tab_id(0, 0);
+    let news_pane = server.app.public_pane_id(0, root_pane(&server)).unwrap();
+
+    // A run in flight, then its record with the editor's request.
+    let now = std::time::Instant::now();
+    let started = 1_800_000_000;
+    server.app.news.run = Some(crate::app::news::NewsRun {
+        started_at: started,
+        started: crate::app::news::iso_utc(started),
+        trigger: crate::app::news::NewsTrigger::Scheduled,
+        index_len: 0,
+        watch_from: now,
+        phase: crate::app::news::NewsPhase::Running { next_poll: now },
+    });
+    fs::write(
+        crate::persist::news::index_path(&home),
+        format!(
+            "{{\"started\":\"{}\",\"trigger\":\"scheduled\",\"outcome\":\"ok\",\"edition\":2,\"decision\":{{\"changed\":true,\"notify\":{{\"title\":\"Sonnet 5.5\",\"body\":\"Out now.\",\"urgency\":\"high\"}}}}}}\n",
+            crate::app::news::iso_utc(started + 5)
+        ),
+    )
+    .unwrap();
+    assert!(server.app.handle_news_tasks(now + Duration::from_secs(5)));
+    assert!(server.app.news.run.is_none());
+    assert_eq!(server.app.news.notify.pending.len(), 1);
+    assert!(
+        !server.flush_news_notifications(now),
+        "no client shell: the notification waits"
+    );
+    assert_eq!(server.app.news.notify.pending.len(), 1);
+
+    // A client shell attaches.
+    let (shell_tx, shell_control, _shell_frames) = test_client_writer();
+    server.clients.insert(
+        1,
+        ClientConnection::new_with_mode(
+            ClientConnectionMode::ClientShell,
+            (80, 24),
+            crate::kitty_graphics::HostCellSize::default(),
+            1,
+            RenderEncoding::SemanticFrame,
+            Some(shell_tx),
+        ),
+    );
+    assert!(server.flush_news_notifications(now));
+    let message = read_server_message(
+        shell_control
+            .recv_timeout(Duration::from_millis(200))
+            .expect("the notification reaches the shell"),
+    );
+    let ServerMessage::SemanticNotification(notification) = message else {
+        panic!("expected a semantic notification, got {message:?}");
+    };
+    assert_eq!(
+        notification.kind,
+        protocol::SemanticNotificationKind::Custom
+    );
+    assert_eq!(notification.title, "News: Sonnet 5.5");
+    assert_eq!(notification.body.as_deref(), Some("Out now."));
+    assert_eq!(
+        notification.sound,
+        Some(protocol::SemanticNotificationSound::Done)
+    );
+    assert_eq!(notification.pane_id.as_deref(), Some(news_pane.as_str()));
+    assert_eq!(
+        notification.tab_id,
+        server.app.public_tab_id(0, 0),
+        "the card focuses the News tab"
+    );
+    assert!(server.app.news.notify.pending.is_empty());
+
+    // Within a second of a delivery the rate limit holds the next one.
+    server
+        .app
+        .news
+        .notify
+        .pending
+        .push(crate::persist::news::PendingNewsNotify {
+            kind: "failures".into(),
+            title: "News runs failing".into(),
+            body: None,
+            high: false,
+            deliver_after: 0,
+            queued_at: started,
+        });
+    assert!(!server.flush_news_notifications(now));
+    assert_eq!(
+        server.app.news.notify_retry_at,
+        Some(now + Duration::from_secs(1))
+    );
+    assert_eq!(
+        server.app.next_news_deadline(now),
+        Some(now + Duration::from_secs(1)),
+        "the loop wakes for the retry"
+    );
+    assert!(server.flush_news_notifications(now + Duration::from_secs(1)));
+    assert!(server.app.news.notify_retry_at.is_none());
+    assert!(shell_control
+        .recv_timeout(Duration::from_millis(200))
+        .is_ok());
+    let _ = fs::remove_dir_all(&dir);
+}

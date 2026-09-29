@@ -26,6 +26,15 @@
 //! Focusing the News tab clears its important mark here, on the scheduler
 //! pass, so it works from any client.
 //!
+//! Notifications: a finished run that changed the page and asked for one
+//! (`decision.notify`) queues at most one notification, two per local day
+//! ([`DAILY_NOTIFY_CAP`]), a high-urgency one past the cap once a day, and a
+//! run during quiet hours waits for their end; the third failed run in a row
+//! queues one "News runs failing" alert until a success. The queue lives in
+//! `news.json`; the headless server delivers it
+//! ([`crate::server::headless`]'s news_notify) while a client shell is
+//! connected, else when one attaches.
+//!
 //! Everything the server must remember survives in `news.json` next to
 //! `session.json` ([`crate::persist::news`]).
 
@@ -65,6 +74,62 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const INTERRUPT: &[u8] = b"\x03";
 /// Quits the page viewer.
 const VIEWER_QUIT: &[u8] = b"q";
+/// Run notifications per local day; a high-urgency one may pass it once.
+pub(crate) const DAILY_NOTIFY_CAP: u8 = 2;
+/// Failed runs in a row that raise the failure alert.
+pub(crate) const FAILURE_ALERT_AFTER: u32 = 3;
+const PENDING_RUN: &str = "run";
+const PENDING_FAILURES: &str = "failures";
+
+/// The policy's answer for a run notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotifyDecision {
+    Deliver,
+    Drop(&'static str),
+}
+
+/// Whether a run notification goes out today, charging the ledger: the
+/// counters start over on a new local `day`; the first
+/// [`DAILY_NOTIFY_CAP`] are delivered, then a `high` one once more.
+pub(crate) fn notify_decision(
+    ledger: &mut store::NewsNotifyRecord,
+    day: &str,
+    high: bool,
+) -> NotifyDecision {
+    if ledger.day != day {
+        ledger.day = day.to_string();
+        ledger.delivered = 0;
+        ledger.high_extra_used = false;
+    }
+    if ledger.delivered < DAILY_NOTIFY_CAP {
+        ledger.delivered = ledger.delivered.saturating_add(1);
+        return NotifyDecision::Deliver;
+    }
+    if high && !ledger.high_extra_used {
+        ledger.high_extra_used = true;
+        ledger.delivered = ledger.delivered.saturating_add(1);
+        return NotifyDecision::Deliver;
+    }
+    NotifyDecision::Drop(if high {
+        "the day's high-urgency extra is used"
+    } else {
+        "the daily cap is reached"
+    })
+}
+
+/// The local day, `YYYY-MM-DD` (empty without a local clock).
+fn local_day_now() -> String {
+    crate::platform::local_datetime()
+        .map(|local| {
+            format!(
+                "{:04}-{:02}-{:02}",
+                local.year(),
+                u8::from(local.month()),
+                local.day()
+            )
+        })
+        .unwrap_or_default()
+}
 /// The page viewer asset, under the home's `bin/`.
 const VIEWER: &str = "viewer.py";
 
@@ -283,7 +348,7 @@ pub(crate) fn iso_utc(unix: u64) -> String {
     )
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|age| age.as_secs())
@@ -351,6 +416,13 @@ pub(crate) struct NewsState {
     pub(crate) consecutive_failures: u32,
     /// A viewer command waiting for the pane's shell prompt (`news.open`).
     pub(crate) pending_command: Option<PendingPaneCommand>,
+    /// The notification ledger and queue (persisted).
+    pub(crate) notify: store::NewsNotifyRecord,
+    /// A delivery held back by the notification rate limit tries again then.
+    pub(crate) notify_retry_at: Option<Instant>,
+    /// Tests: the local clock and day the policy goes by.
+    #[cfg(test)]
+    pub(crate) local_override: Option<(LocalClock, &'static str)>,
     /// Tests: treat the pane as at a shell prompt without probing its
     /// foreground process (test shells are `cat`, never a shell).
     #[cfg(test)]
@@ -394,6 +466,10 @@ impl NewsState {
             run: None,
             consecutive_failures: 0,
             pending_command: None,
+            notify: store::NewsNotifyRecord::default(),
+            notify_retry_at: None,
+            #[cfg(test)]
+            local_override: None,
             #[cfg(test)]
             assume_shell_ready: false,
             #[cfg(test)]
@@ -421,6 +497,7 @@ impl NewsState {
         self.tab_id = record.tab_id;
         self.pane_id = record.pane_id;
         self.consecutive_failures = record.consecutive_failures;
+        self.notify = record.notify;
         self.run = record.run.map(|run| NewsRun {
             started_at: run.started_at,
             started: run.started,
@@ -438,7 +515,54 @@ impl NewsState {
             pane_id: self.pane_id.clone(),
             run: self.run.as_ref().map(NewsRun::persisted),
             consecutive_failures: self.consecutive_failures,
+            notify: self.notify.clone(),
         }
+    }
+
+    /// The local clock and day the schedule and the notification policy go
+    /// by (overridable in tests).
+    fn local_now(&self) -> (Option<LocalClock>, String) {
+        #[cfg(test)]
+        if let Some((clock, day)) = self.local_override {
+            return (Some(clock), day.to_string());
+        }
+        (LocalClock::now(), local_day_now())
+    }
+
+    /// When quiet hours end, when `local` is inside them (seconds since the
+    /// epoch, from `now_unix`).
+    fn quiet_end_unix(&self, now_unix: u64, local: Option<LocalClock>) -> Option<u64> {
+        let (local, quiet) = (local?, self.quiet?);
+        quiet.contains(local.minute_of_day).then(|| {
+            let wait = u64::from(quiet.minutes_until_end(local.minute_of_day)) * 60;
+            now_unix + wait.saturating_sub(u64::from(local.second))
+        })
+    }
+
+    /// Queue a notification, replacing a queued one of the same kind.
+    fn queue_notification(&mut self, pending: store::PendingNewsNotify) {
+        let replaced = self.notify.pending.len();
+        self.notify
+            .pending
+            .retain(|queued| queued.kind != pending.kind);
+        tracing::info!(
+            event = "news.notify",
+            outcome = "queued",
+            kind = %pending.kind,
+            title = %pending.title,
+            deliver_after = pending.deliver_after,
+            replaced = replaced != self.notify.pending.len(),
+            "news notification queued"
+        );
+        self.notify.pending.push(pending);
+    }
+
+    /// The first queued notification that may go out now.
+    pub(crate) fn due_notification_index(&self, now_unix: u64) -> Option<usize> {
+        self.notify
+            .pending
+            .iter()
+            .position(|pending| pending.deliver_after <= now_unix)
     }
 
     /// Write `news.json` (when there is one). Errors are logged, never
@@ -469,25 +593,38 @@ impl NewsState {
         )
     }
 
-    /// The next instant the scheduler needs a tick.
+    /// The next instant the scheduler needs a tick: the run in flight (or
+    /// the schedule), a pending viewer command, a notification held by the
+    /// rate limit or waiting for quiet hours to end.
     pub(crate) fn next_deadline(&self, now: Instant, now_unix: u64) -> Option<Instant> {
-        let pending = self
-            .pending_command
-            .as_ref()
-            .map(|pending| pending.next_check);
+        let mut deadlines = Vec::with_capacity(4);
+        if let Some(pending) = &self.pending_command {
+            deadlines.push(pending.next_check);
+        }
+        if let Some(retry) = self.notify_retry_at {
+            deadlines.push(retry);
+        }
+        if let Some(after) = self
+            .notify
+            .pending
+            .iter()
+            .map(|pending| pending.deliver_after)
+            .filter(|after| *after > now_unix)
+            .min()
+        {
+            deadlines.push(now + Duration::from_secs(after - now_unix));
+        }
         if let Some(run) = &self.run {
             let watchdog = run.watch_from + WATCHDOG;
-            return Some(match run.phase {
+            deadlines.push(match run.phase {
                 NewsPhase::Starting { next_check, .. } => next_check.min(watchdog),
                 NewsPhase::Running { next_poll } => next_poll.min(watchdog),
             });
+        } else if self.enabled && self.home.is_some() {
+            let next = self.next_run_at.unwrap_or(now_unix);
+            deadlines.push(now + Duration::from_secs(next.saturating_sub(now_unix)));
         }
-        if !self.enabled || self.home.is_none() {
-            return pending;
-        }
-        let next = self.next_run_at.unwrap_or(now_unix);
-        let scheduled = now + Duration::from_secs(next.saturating_sub(now_unix));
-        Some(pending.map_or(scheduled, |pending| pending.min(scheduled)))
+        deadlines.into_iter().min()
     }
 
     /// The last finished run, from the run log.
@@ -514,6 +651,7 @@ impl NewsState {
             pane_id: self.pane_id.clone(),
             run: self.run.as_ref().map(NewsRun::info),
             consecutive_failures: self.consecutive_failures,
+            pending_notifications: self.notify.pending.len() as u32,
             recent: self
                 .home
                 .as_deref()
@@ -522,13 +660,32 @@ impl NewsState {
         }
     }
 
-    /// Account for a finished run: the failure counter and the schedule.
-    fn finish(&mut self, record: &NewsRunRecord) {
+    /// Account for a finished run: the failure counter, and the failure
+    /// alert once the streak reaches [`FAILURE_ALERT_AFTER`] (queued for the
+    /// end of quiet hours, `quiet_end`, when inside them).
+    fn finish(&mut self, record: &NewsRunRecord, now_unix: u64, quiet_end: Option<u64>) {
         self.run = None;
         if record.succeeded() {
             self.consecutive_failures = 0;
-        } else {
-            self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+            self.notify.failure_alerted = false;
+            return;
+        }
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        if self.consecutive_failures >= FAILURE_ALERT_AFTER && !self.notify.failure_alerted {
+            self.notify.failure_alerted = true;
+            let error = record
+                .errors
+                .first()
+                .cloned()
+                .unwrap_or_else(|| record.outcome.clone());
+            self.queue_notification(store::PendingNewsNotify {
+                kind: PENDING_FAILURES.into(),
+                title: "News runs failing".into(),
+                body: Some(format!("{} in a row · {error}", self.consecutive_failures)),
+                high: false,
+                deliver_after: quiet_end.unwrap_or(0),
+                queued_at: now_unix,
+            });
         }
     }
 }
@@ -652,7 +809,18 @@ impl App {
             last_run: self.news.last_run().map(|record| record.last_run()),
             unread,
             consecutive_failures: self.news.consecutive_failures,
+            pending_notifications: self.news.notify.pending.len() as u32,
         }
+    }
+
+    /// The News tab as a notification target: its space, tab and pane ids.
+    pub(crate) fn news_notification_target(&self) -> Option<(String, String, String)> {
+        let pane = self.existing_news_pane()?;
+        Some((
+            self.public_workspace_id(pane.ws_idx),
+            self.public_tab_id(pane.ws_idx, pane.tab_idx)?,
+            self.public_pane_id(pane.ws_idx, pane.pane_id)?,
+        ))
     }
 
     /// `news.set_enabled`: write `news.enabled` to the config file and reload
@@ -1232,7 +1400,8 @@ impl App {
         record
     }
 
-    /// Account for the finished run and mark the tab when the page changed.
+    /// Account for the finished run, mark the tab when the page changed,
+    /// and queue the editor's notification when the policy allows.
     fn complete_news_run(&mut self, record: NewsRunRecord) {
         tracing::info!(
             event = "news.run",
@@ -1241,11 +1410,44 @@ impl App {
             cost_usd = record.cost_usd,
             turns = record.turns,
             changed = record.changed,
+            notify = record.notify.is_some(),
             "news run finished"
         );
-        self.news.finish(&record);
+        let now_unix = unix_now();
+        let (local, day) = self.news.local_now();
+        let quiet_end = self.news.quiet_end_unix(now_unix, local);
+        self.news.finish(&record, now_unix, quiet_end);
         if record.outcome == "ok" && record.changed {
             self.mark_news_tab_important();
+            if let Some(notify) = record.notify.as_ref() {
+                let high = notify.urgency == "high";
+                match notify_decision(&mut self.news.notify, &day, high) {
+                    NotifyDecision::Deliver => {
+                        self.news.queue_notification(store::PendingNewsNotify {
+                            kind: PENDING_RUN.into(),
+                            title: format!("News: {}", notify.title.trim()),
+                            body: notify
+                                .body
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|body| !body.is_empty())
+                                .map(str::to_string),
+                            high,
+                            deliver_after: quiet_end.unwrap_or(0),
+                            queued_at: now_unix,
+                        });
+                    }
+                    NotifyDecision::Drop(reason) => {
+                        tracing::info!(
+                            event = "news.notify",
+                            outcome = "dropped",
+                            reason,
+                            title = %notify.title,
+                            "news notification dropped by policy"
+                        );
+                    }
+                }
+            }
         }
         self.news.persist();
     }
@@ -1940,6 +2142,246 @@ mod tests {
     }
 
     #[test]
+    fn notify_policy_allows_two_a_day_and_one_high_urgency_extra() {
+        let mut ledger = store::NewsNotifyRecord::default();
+        let day = "2026-09-29";
+        assert_eq!(
+            notify_decision(&mut ledger, day, false),
+            NotifyDecision::Deliver
+        );
+        assert_eq!(
+            notify_decision(&mut ledger, day, false),
+            NotifyDecision::Deliver
+        );
+        assert!(matches!(
+            notify_decision(&mut ledger, day, false),
+            NotifyDecision::Drop(_)
+        ));
+        assert_eq!(
+            notify_decision(&mut ledger, day, true),
+            NotifyDecision::Deliver,
+            "high urgency passes the cap once"
+        );
+        assert!(matches!(
+            notify_decision(&mut ledger, day, true),
+            NotifyDecision::Drop(_)
+        ));
+        assert_eq!(ledger.delivered, 3);
+        assert_eq!(
+            notify_decision(&mut ledger, "2026-09-30", false),
+            NotifyDecision::Deliver,
+            "a new day starts over"
+        );
+        assert_eq!(ledger.delivered, 1);
+        assert!(!ledger.high_extra_used);
+        // A high one counts against the plain cap first.
+        let mut fresh = store::NewsNotifyRecord::default();
+        notify_decision(&mut fresh, day, true);
+        assert!(!fresh.high_extra_used);
+    }
+
+    fn notify_record(started: u64, title: &str, urgency: &str) -> NewsRunRecord {
+        NewsRunRecord {
+            started: iso_utc(started),
+            ended: Some(iso_utc(started + 300)),
+            trigger: "scheduled".into(),
+            outcome: "ok".into(),
+            edition: Some(2),
+            changed: true,
+            notify: Some(crate::api::schema::NewsNotifyInfo {
+                title: title.into(),
+                body: Some(" Out now. ".into()),
+                urgency: urgency.into(),
+            }),
+            ..NewsRunRecord::default()
+        }
+    }
+
+    /// Complete a run in flight with `record` through the watcher.
+    fn complete(app: &mut App, home: &Path, record: &NewsRunRecord, now: Instant) {
+        let mut run = in_flight(iso_to_unix_or_zero(&record.started), now);
+        run.index_len = store::index_len(home);
+        app.news.run = Some(run);
+        store::append_index_record(home, record).unwrap();
+        assert!(app.handle_news_tasks(now + POLL_INTERVAL));
+        assert!(app.news.run.is_none());
+    }
+
+    fn iso_to_unix_or_zero(iso: &str) -> u64 {
+        store::iso_to_unix(iso).unwrap_or(0)
+    }
+
+    #[test]
+    fn a_changed_run_with_a_notify_request_queues_one_notification_under_the_daily_cap() {
+        let home = temp_home("notify");
+        std::fs::create_dir_all(home.join("runs")).unwrap();
+        let mut app = news_app(Some(home.clone()), true);
+        app.news.local_override = Some((clock(12, 0, 0).unwrap(), "2026-09-29"));
+        app.state.workspaces[0].tabs[0].set_custom_name(NEWS_TAB_LABEL.into());
+        app.news.tab_id = app.public_tab_id(0, 0);
+        app.state.switch_workspace_tab(0, 0);
+        let now = Instant::now();
+
+        // Not changed, or no request: nothing queued.
+        let mut quiet_run = notify_record(NOW, "Nothing new", "low");
+        quiet_run.changed = false;
+        complete(&mut app, &home, &quiet_run, now);
+        let mut silent = notify_record(NOW + 10, "No request", "low");
+        silent.notify = None;
+        complete(&mut app, &home, &silent, now);
+        assert!(app.news.notify.pending.is_empty());
+
+        complete(
+            &mut app,
+            &home,
+            &notify_record(NOW + 20, " Sonnet 5.5 ", "low"),
+            now,
+        );
+        assert_eq!(app.news.notify.pending.len(), 1);
+        let pending = &app.news.notify.pending[0];
+        assert_eq!(pending.kind, "run");
+        assert_eq!(pending.title, "News: Sonnet 5.5");
+        assert_eq!(pending.body.as_deref(), Some("Out now."));
+        assert!(!pending.high);
+        assert_eq!(pending.deliver_after, 0, "noon: no quiet hours");
+        assert_eq!(app.news.due_notification_index(NOW), Some(0));
+        assert_eq!(app.news.status().pending_notifications, 1);
+        assert_eq!(app.news_get_info().pending_notifications, 1);
+        assert_eq!(app.news.notify.day, "2026-09-29");
+        assert_eq!(app.news.notify.delivered, 1);
+
+        // The second replaces the undelivered first (one queued per kind).
+        complete(
+            &mut app,
+            &home,
+            &notify_record(NOW + 30, "GPT-6", "low"),
+            now,
+        );
+        assert_eq!(app.news.notify.pending.len(), 1);
+        assert_eq!(app.news.notify.pending[0].title, "News: GPT-6");
+        assert_eq!(app.news.notify.delivered, 2);
+
+        // The third is dropped, a high one passes once, then nothing.
+        app.news.notify.pending.clear();
+        complete(
+            &mut app,
+            &home,
+            &notify_record(NOW + 40, "Third", "low"),
+            now,
+        );
+        assert!(app.news.notify.pending.is_empty());
+        complete(
+            &mut app,
+            &home,
+            &notify_record(NOW + 50, "Urgent", "high"),
+            now,
+        );
+        assert_eq!(app.news.notify.pending.len(), 1);
+        assert!(app.news.notify.pending[0].high);
+        app.news.notify.pending.clear();
+        complete(
+            &mut app,
+            &home,
+            &notify_record(NOW + 60, "Urgent 2", "high"),
+            now,
+        );
+        assert!(app.news.notify.pending.is_empty());
+
+        // Delivery is the server's; the deadline follows what is queued.
+        assert!(app.news.next_deadline(now, NOW).is_some());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn quiet_hours_hold_the_notification_until_they_end() {
+        let home = temp_home("notify-quiet");
+        std::fs::create_dir_all(home.join("runs")).unwrap();
+        let mut app = news_app(Some(home.clone()), false);
+        app.news.local_override = Some((clock(3, 30, 15).unwrap(), "2026-09-29"));
+        let now = Instant::now();
+        complete(&mut app, &home, &notify_record(NOW, "Night", "low"), now);
+        let now_unix = unix_now();
+        let pending = &app.news.notify.pending[0];
+        let expected = now_unix + (4 * 60 + 30) * 60 - 15;
+        assert!(
+            pending.deliver_after.abs_diff(expected) <= 2,
+            "deliver at 08:00: {} vs {expected}",
+            pending.deliver_after
+        );
+        assert!(app.news.due_notification_index(now_unix).is_none());
+        assert_eq!(
+            app.news.due_notification_index(pending.deliver_after),
+            Some(0)
+        );
+        let deadline = app
+            .news
+            .next_deadline(now, now_unix)
+            .expect("the loop wakes for the end of quiet hours, even with scheduling off");
+        let wait = deadline.saturating_duration_since(now).as_secs();
+        assert!(wait.abs_diff((4 * 60 + 30) * 60 - 15) <= 2, "{wait}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn three_failed_runs_raise_one_alert_until_a_success() {
+        let home = temp_home("notify-failures");
+        std::fs::create_dir_all(home.join("runs")).unwrap();
+        let mut app = news_app(Some(home.clone()), false);
+        app.news.local_override = Some((clock(12, 0, 0).unwrap(), "2026-09-29"));
+        let now = Instant::now();
+        let failed = |n: u64| NewsRunRecord {
+            started: iso_utc(NOW + n),
+            trigger: "scheduled".into(),
+            outcome: "invalid".into(),
+            errors: vec![format!("lead text ends in an ellipsis ({n})")],
+            ..NewsRunRecord::default()
+        };
+        complete(&mut app, &home, &failed(1), now);
+        complete(&mut app, &home, &failed(2), now);
+        assert!(
+            app.news.notify.pending.is_empty(),
+            "two failures: nothing yet"
+        );
+        complete(&mut app, &home, &failed(3), now);
+        assert_eq!(app.news.consecutive_failures, 3);
+        assert_eq!(app.news.notify.pending.len(), 1);
+        let alert = &app.news.notify.pending[0];
+        assert_eq!(alert.kind, "failures");
+        assert_eq!(alert.title, "News runs failing");
+        assert_eq!(
+            alert.body.as_deref(),
+            Some("3 in a row · lead text ends in an ellipsis (3)")
+        );
+        assert!(app.news.notify.failure_alerted);
+        complete(&mut app, &home, &failed(4), now);
+        assert_eq!(app.news.notify.pending.len(), 1, "not repeated");
+        assert_eq!(
+            app.news.notify.pending[0].body.as_deref(),
+            Some("3 in a row · lead text ends in an ellipsis (3)")
+        );
+
+        app.news.notify.pending.clear();
+        let mut ok = notify_record(NOW + 5, "Back", "low");
+        ok.notify = None;
+        complete(&mut app, &home, &ok, now);
+        assert_eq!(app.news.consecutive_failures, 0);
+        assert!(!app.news.notify.failure_alerted);
+        for n in 6..9 {
+            complete(&mut app, &home, &failed(n), now);
+        }
+        assert_eq!(
+            app.news.notify.pending.len(),
+            1,
+            "a new streak alerts again"
+        );
+        assert_eq!(
+            app.news.notify.pending[0].body.as_deref(),
+            Some("3 in a row · lead text ends in an ellipsis (8)")
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn a_persisted_run_is_watched_again_after_a_restart() {
         let dir = temp_home("restart");
         let store_path = dir.join(store::FILE_NAME);
@@ -1956,6 +2398,20 @@ mod tests {
                     index_len: 7,
                 }),
                 consecutive_failures: 3,
+                notify: store::NewsNotifyRecord {
+                    day: "2026-09-29".into(),
+                    delivered: 2,
+                    high_extra_used: true,
+                    failure_alerted: true,
+                    pending: vec![store::PendingNewsNotify {
+                        kind: "run".into(),
+                        title: "News: t".into(),
+                        body: None,
+                        high: false,
+                        deliver_after: NOW + 60,
+                        queued_at: NOW,
+                    }],
+                },
             },
         )
         .unwrap();
@@ -1970,6 +2426,11 @@ mod tests {
         assert_eq!(run.phase, NewsPhase::Running { next_poll: now });
         assert_eq!(state.consecutive_failures, 3);
         assert_eq!(state.tab_id.as_deref(), Some("w_1:t_1"));
+        assert_eq!(state.notify.delivered, 2);
+        assert!(state.notify.failure_alerted);
+        assert_eq!(state.notify.pending.len(), 1);
+        assert_eq!(state.due_notification_index(NOW), None);
+        assert_eq!(state.due_notification_index(NOW + 60), Some(0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

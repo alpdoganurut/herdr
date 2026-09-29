@@ -159,6 +159,9 @@ pub struct NewsGetInfo {
     /// has not been focused since.
     pub unread: bool,
     pub consecutive_failures: u32,
+    /// Notifications waiting for a client shell or the end of quiet hours.
+    #[serde(default)]
+    pub pending_notifications: u32,
 }
 
 /// `news.open`: focus the News tab; with `edition`, show that edition.
@@ -216,6 +219,9 @@ pub struct NewsStatusInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<NewsRunInfo>,
     pub consecutive_failures: u32,
+    /// Notifications waiting for a client shell or the end of quiet hours.
+    #[serde(default)]
+    pub pending_notifications: u32,
     /// Recent runs, newest first (at most 50).
     #[serde(default)]
     pub recent: Vec<NewsRunRecord>,
@@ -273,6 +279,7 @@ mod tests {
                 phase: "running".into(),
             }),
             consecutive_failures: 0,
+            pending_notifications: 0,
             recent: vec![NewsRunRecord {
                 started: "2026-09-29T11:05:07+00:00".into(),
                 trigger: "manual".into(),
@@ -341,6 +348,7 @@ mod tests {
             last_run: Some(last),
             unread: true,
             consecutive_failures: 0,
+            pending_notifications: 1,
         };
         let result = ResponseResult::NewsGet { news: info.clone() };
         let json = serde_json::to_value(&result).unwrap();

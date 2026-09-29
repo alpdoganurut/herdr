@@ -2,7 +2,9 @@
 //!
 //! `news.json` next to `session.json` keeps what the server must remember
 //! across restarts: the next scheduled run, the News tab and pane, a run in
-//! flight (so a restarted server keeps watching it) and the failure counter.
+//! flight (so a restarted server keeps watching it), the failure counter and
+//! the notification ledger (today's count, the pending notifications, the
+//! failure alert flag).
 //! Run history is not copied here: it is read back from the runner's
 //! `<home>/runs/index.jsonl`, the newest [`MAX_HISTORY`] lines.
 //!
@@ -147,6 +149,42 @@ pub struct PersistedNewsRun {
     pub index_len: u64,
 }
 
+/// A notification waiting for a client shell or the end of quiet hours.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingNewsNotify {
+    /// `run` (a run changed the page) or `failures` (three runs failed).
+    pub kind: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// `urgency: high`.
+    #[serde(default)]
+    pub high: bool,
+    /// Not before this time (seconds since the epoch): the end of quiet
+    /// hours; zero for now.
+    #[serde(default)]
+    pub deliver_after: u64,
+    #[serde(default)]
+    pub queued_at: u64,
+}
+
+/// The notification ledger.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NewsNotifyRecord {
+    /// The local day (`YYYY-MM-DD`) the counters are for.
+    pub day: String,
+    /// Run notifications allowed that day.
+    pub delivered: u8,
+    /// A high-urgency notification already went past the day's cap.
+    pub high_extra_used: bool,
+    /// The alert for the current failure streak was queued.
+    pub failure_alerted: bool,
+    /// Waiting for a client shell or the end of quiet hours; at most one per
+    /// kind, the newest replacing the older.
+    pub pending: Vec<PendingNewsNotify>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NewsRecord {
@@ -160,6 +198,7 @@ pub struct NewsRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<PersistedNewsRun>,
     pub consecutive_failures: u32,
+    pub notify: NewsNotifyRecord,
 }
 
 #[derive(Serialize)]
@@ -177,6 +216,7 @@ struct StoreFileIn {
     pane_id: Option<String>,
     run: Option<serde_json::Value>,
     consecutive_failures: u32,
+    notify: Option<serde_json::Value>,
 }
 
 /// Load the record. Never fails: a missing, unreadable or corrupt file is
@@ -232,12 +272,29 @@ pub fn load(path: &Path) -> NewsRecord {
             })
             .ok()
     });
+    let notify = file
+        .notify
+        .and_then(|value| {
+            serde_json::from_value::<NewsNotifyRecord>(value)
+                .map_err(|err| {
+                    tracing::warn!(
+                        event = "persist.news.load",
+                        outcome = "notify_skipped",
+                        path = %path.display(),
+                        err = %err,
+                        "dropping a news notification ledger this build cannot read"
+                    )
+                })
+                .ok()
+        })
+        .unwrap_or_default();
     NewsRecord {
         next_run_at: file.next_run_at,
         tab_id: file.tab_id,
         pane_id: file.pane_id,
         run,
         consecutive_failures: file.consecutive_failures,
+        notify,
     }
 }
 
@@ -434,6 +491,20 @@ mod tests {
                 index_len: 1234,
             }),
             consecutive_failures: 2,
+            notify: NewsNotifyRecord {
+                day: "2026-09-29".into(),
+                delivered: 1,
+                high_extra_used: false,
+                failure_alerted: true,
+                pending: vec![PendingNewsNotify {
+                    kind: "run".into(),
+                    title: "News: Sonnet 5.5".into(),
+                    body: Some("Out now.".into()),
+                    high: true,
+                    deliver_after: 1_800_000_600,
+                    queued_at: 1_799_999_000,
+                }],
+            },
         }
     }
 
@@ -451,6 +522,7 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(dir.file()).unwrap()).unwrap();
         assert_eq!(json["version"], 1);
         assert_eq!(json["run"]["trigger"], "scheduled");
+        assert_eq!(json["notify"]["pending"][0]["kind"], "run");
         assert_eq!(load(&dir.file()), record());
 
         save(&dir.file(), &NewsRecord::default()).unwrap();
@@ -480,6 +552,19 @@ mod tests {
         assert_eq!(loaded.consecutive_failures, 1);
         assert!(loaded.run.is_none());
         assert!(dir.file().exists(), "a tolerable file stays in place");
+
+        fs::write(
+            dir.file(),
+            r#"{"version": 1, "notify": {"day": "2026-09-29", "delivered": 2, "pending": [{"kind": "run", "title": "t"}], "later": true}}"#,
+        )
+        .unwrap();
+        let loaded = load(&dir.file());
+        assert_eq!(loaded.notify.delivered, 2);
+        assert_eq!(loaded.notify.pending.len(), 1);
+        assert_eq!(loaded.notify.pending[0].deliver_after, 0);
+        assert!(!loaded.notify.pending[0].high);
+        fs::write(dir.file(), r#"{"version": 1, "notify": 7}"#).unwrap();
+        assert_eq!(load(&dir.file()).notify, NewsNotifyRecord::default());
     }
 
     #[test]

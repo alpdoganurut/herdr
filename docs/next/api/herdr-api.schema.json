@@ -8735,6 +8735,13 @@
                 "null"
               ]
             },
+            "pending_notifications": {
+              "default": 0,
+              "description": "Notifications waiting for a client shell or the end of quiet hours.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
             "quiet_hours": {
               "description": "The configured quiet window, `HH:MM-HH:MM`, or empty.",
               "type": "string"
@@ -9011,6 +9018,13 @@
                 "string",
                 "null"
               ]
+            },
+            "pending_notifications": {
+              "default": 0,
+              "description": "Notifications waiting for a client shell or the end of quiet hours.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
             },
             "quiet_hours": {
               "description": "The configured quiet window, `HH:MM-HH:MM`, or empty.",

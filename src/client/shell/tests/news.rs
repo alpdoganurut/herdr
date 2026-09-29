@@ -61,6 +61,7 @@ fn info(tab_id: Option<&str>) -> NewsGetInfo {
         }),
         unread: false,
         consecutive_failures: 0,
+        pending_notifications: 0,
     }
 }
 

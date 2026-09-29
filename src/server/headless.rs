@@ -76,6 +76,7 @@ mod bootstrap;
 mod client_views;
 mod endpoint_requests;
 mod lifecycle;
+mod news_notify;
 mod notifications;
 mod pane_graphics;
 mod render;
@@ -2107,6 +2108,8 @@ impl HeadlessServer {
                 self.sync_foreground_client_state();
                 self.claim_unowned_shell_tab_geometry(client_id, true);
                 self.nudge_handoff_panes_on_first_client_attach();
+                // A news notification that waited for a client shell.
+                self.flush_news_notifications(Instant::now());
                 true
             }
             ServerEvent::GraphicsTransmissionResult {
@@ -3452,6 +3455,7 @@ impl HeadlessServer {
 
         changed |= self.app.handle_tab_bar_status_tasks(now);
         changed |= self.app.handle_news_tasks(now);
+        self.flush_news_notifications(now);
         changed |= self.app.escalate_suspended_agent_exits(now);
         changed |= self.app.start_pending_agent_restarts(now);
 

@@ -479,6 +479,12 @@ fn format_status(status: &NewsStatusInfo, clock: &LocalClock, runs: usize) -> St
             status.consecutive_failures
         ));
     }
+    if status.pending_notifications > 0 {
+        out.push_str(&format!(
+            "pending notifications: {}\n",
+            status.pending_notifications
+        ));
+    }
     if status.recent.is_empty() {
         out.push_str("recent runs: none\n");
     } else {
@@ -572,6 +578,7 @@ mod tests {
                 phase: "running".into(),
             }),
             consecutive_failures: 2,
+            pending_notifications: 1,
             recent: (0..7)
                 .map(|n| NewsRunRecord {
                     started: format!("2027-01-1{n}T08:00:00+00:00"),
@@ -605,6 +612,7 @@ mod tests {
              next run: 2027-01-15 10:00 (in 2h 00m)\n\
              current: running since 2027-01-15 07:58 (manual, 2m00s)\n\
              failures in a row: 2\n\
+             pending notifications: 1\n\
              recent runs:\n\
              \x20 2027-01-10 08:00  scheduled  ok         4m55s  $ 0.90   31 turns  edition 4  changed\n\
              \x20 2027-01-11 08:00  scheduled  invalid    4m55s  $ 0.90   31 turns\n\
@@ -625,6 +633,7 @@ mod tests {
             tab_id: None,
             run: None,
             consecutive_failures: 0,
+            pending_notifications: 0,
             recent: Vec::new(),
             quiet_hours: String::new(),
             home: String::new(),
