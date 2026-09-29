@@ -2,11 +2,13 @@
 //! and state, from `news.get`.
 //!
 //! Four rows act on Enter or a click: `scheduled runs: on|off` toggles
-//! `news.enabled`, `every N h` and `quiet hours …` open a picker in place of
-//! the rows (`3 / 6 / 12 / 24 h`; `off` and four windows, a configured value
-//! off the list first), and `run now` starts a run (`news.run`). Below them
-//! the model, the last run and the next run are shown. Config rows persist
-//! like the other settings (`ConfigEdit` + `server.reload_config`), then the
+//! `news.enabled` on the active server (`news.set_enabled`, so a remote
+//! server's own config changes), `every N h` and `quiet hours …` open a
+//! picker in place of the rows (`3 / 6 / 12 / 24 h`; `off` and four windows,
+//! a configured value off the list first), and `run now` starts a run
+//! (`news.run`). Below them the model, the last run and the next run are
+//! shown. The interval and quiet-hours rows persist like the other settings
+//! (`ConfigEdit` on the local config + `server.reload_config`), then the
 //! section pulls `news.get` again.
 
 use super::render::put_text;
@@ -143,6 +145,8 @@ impl ClientShellState {
         let Some(news) = self.news_settings() else {
             return;
         };
+        // The pickers write the local config file (no server method for the
+        // interval or quiet hours yet); a remote server keeps its own.
         match news.picker.clone() {
             Some(ClientNewsPicker::Interval(choices)) => {
                 if let Some(hours) = choices.get(selected).copied() {
@@ -175,12 +179,18 @@ impl ClientShellState {
         };
         match selected {
             ROW_ENABLED => {
-                if self.save_settings_edit(
-                    crate::config::ConfigEdit::NewsEnabled(!info.enabled),
+                // The active server writes its own config and reloads it;
+                // its reply refreshes the section.
+                self.push_endpoint_method_with_kind(
+                    crate::api::schema::Method::NewsSetEnabled(
+                        crate::api::schema::NewsSetEnabledParams {
+                            enabled: !info.enabled,
+                        },
+                    ),
+                    PendingEndpointKind::NewsSetEnabled,
                     outcome,
-                ) {
-                    self.pull_news_now(outcome);
-                }
+                );
+                outcome.repaint = true;
             }
             ROW_INTERVAL => {
                 let choices = interval_choices(info.interval_hours);

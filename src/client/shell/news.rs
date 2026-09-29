@@ -377,6 +377,9 @@ impl ClientShellState {
             _ => {
                 if let Ok(crate::api::schema::ResponseResult::NewsGet { news }) = result {
                     self.news.info = Some(news);
+                    // The settings section shows the reply at once (the
+                    // scheduling toggle goes through news.set_enabled).
+                    self.sync_news_settings();
                 }
                 self.refresh_news();
                 (true, Vec::new())

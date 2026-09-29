@@ -140,9 +140,10 @@ fn news_log(args: &[String]) -> std::io::Result<i32> {
         Ok(status) => status,
         Err(response) => return super::print_response(&response),
     };
-    // The server's history is capped; the log file has everything.
+    // The server's history is capped; the log file has everything, but it
+    // lives on the server's machine: read it only when that is this one.
     let home = std::path::Path::new(&status.home);
-    let records = if status.home.is_empty() {
+    let records = if super::target::is_remote() || !home.is_dir() {
         status.recent.clone()
     } else {
         crate::persist::news::read_history(home, count)

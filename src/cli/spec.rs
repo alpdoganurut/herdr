@@ -851,7 +851,7 @@ fn news_command() -> Command {
                 .arg(Arg::new("count").value_name("N").required(false))
                 .arg(json_flag())
                 .long_about(
-                    "Prints the newest N runs (default 10) from <home>/runs/index.jsonl, newest first, with the editor's summary and any validation errors.",
+                    "Prints the newest N runs (default 10) from <home>/runs/index.jsonl, newest first, with the editor's summary and any validation errors. On a remote target (or when the home is not on this machine) the server's own history is shown instead (the newest 50, as news.status reports them).",
                 ),
         )
         .subcommand(

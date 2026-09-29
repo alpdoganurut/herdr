@@ -553,20 +553,31 @@ fn the_news_settings_section_shows_the_desk_and_edits_the_config() {
         "the next run's local time: {text}"
     );
 
-    // Row 0: the toggle writes news.enabled, reloads the server and pulls again.
+    // Row 0: the toggle asks the active server (news.set_enabled), which
+    // writes its own config; the local file is not touched.
     let outcome = state.handle_input_bytes(b"\r");
-    let methods = endpoint_requests(&outcome)
-        .into_iter()
-        .map(|(_, method)| method)
-        .collect::<Vec<_>>();
+    let requests = endpoint_requests(&outcome);
     assert!(
         matches!(
-            &methods[..],
-            [Method::ServerReloadConfig(_), Method::NewsGet(_)]
+            &requests[..],
+            [(_, Method::NewsSetEnabled(params))] if !params.enabled
         ),
-        "{methods:?}"
+        "on -> off through the server: {requests:?}"
     );
-    assert!(!written().news.enabled, "on -> off");
+    assert!(!written().news.enabled, "the local config is untouched");
+    let (request_id, _) = &requests[0];
+    let mut off = info(Some("tab_2"));
+    off.enabled = false;
+    state.handle_endpoint_result(
+        "boot-1",
+        request_id,
+        Ok(ResponseResult::NewsGet { news: off }),
+    );
+    let text = settings_frame_text(&mut state);
+    assert!(
+        text.contains("scheduled runs: off"),
+        "the reply refreshes the row: {text}"
+    );
 
     // Row 1: the interval picker; Esc leaves it unsaved, Enter writes.
     state.handle_input_bytes(b"\x1b[B");
