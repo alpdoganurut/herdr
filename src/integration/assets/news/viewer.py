@@ -13,11 +13,18 @@ the selected story, and a folio line at the bottom (theme, edition, leaf).
 Editions: editions/index.json beside page.json. Left/right step days, up/down step editions,
 l jumps to the latest; j/k, the mouse wheel, space/b and PgUp/PgDn scroll.
 
-Usage: python3 almanac.py page.json            interactive
-       python3 almanac.py page.json --dump W   print the page at width W
+Usage: python3 viewer.py page.json [--edition N] [--theme T]   interactive
+       python3 viewer.py page.json --pinned                     in herdr's News tab (see below)
+       python3 viewer.py page.json --dump W                     print the page at width W
 
-Keys: j/k or arrows scroll, space/b leaf forward/back, g/G top/bottom,
-tab/shift-tab select a story, enter opens it, r reload, q quit.
+Keys: j/k or the mouse wheel scroll, space/b or PgDn/PgUp leaf forward/back, g/G top/bottom,
+left/right previous/next day, up/down previous/next edition, l the latest edition,
+tab/shift-tab select a story, enter opens it in the browser, t cycles the theme (saved
+beside page.json), r reloads, q quits. The page re-reads itself when a new edition lands.
+
+Pinned (--pinned, how herdr runs it in the News tab): q, Esc and Ctrl-C/Ctrl-Z/Ctrl-\\ do
+nothing (ISIG is off), so the tab cannot be quit by accident; only herdr's private sequence
+CSI 9999 ~ (HERDR_QUIT) ends the viewer, and herdr sends it before typing the next command.
 """
 import json, os, re, select, signal, subprocess, sys, termios, time, tty, unicodedata
 from datetime import datetime
@@ -103,8 +110,11 @@ def cut_cells(s, w):
         out.append(ch); used += cw
     return "".join(out)
 
-# A row is a list of segments (text, style, url).
-def seg(t, st=None, url=None): return (t, sgr() if st is None else st, url)
+# A row is a list of segments (text, style, url). Text and URL come from the agent's JSON:
+# C0/C1 control characters are dropped so nothing can inject escape sequences or end the OSC 8 link.
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+def seg(t, st=None, url=None):
+    return (CONTROL.sub("", t), sgr() if st is None else st, CONTROL.sub("", url) if url else url)
 def row_width(r): return sum(width(t) for t, _, _ in r)
 def pad(r, w):
     d = w - row_width(r)
@@ -140,6 +150,17 @@ def local(iso):
 def fmt_time(iso):
     d = local(iso)
     return d.strftime("%H:%M") if d else ""
+
+def fmt_story_time(iso, today=None):
+    """A story's time with its day: `14:05` today, `yesterday 14:05`, `Sun 14:05` inside the week,
+    `27 Sep` when older than six days. Fits a 16-cell margin note."""
+    d = local(iso)
+    if not d: return ""
+    days = ((today or datetime.now().astimezone().date()) - d.date()).days
+    if days <= 0: return d.strftime("%H:%M")
+    if days == 1: return "yesterday " + d.strftime("%H:%M")
+    if days <= 6: return d.strftime("%a %H:%M")
+    return "%d %s" % (d.day, d.strftime("%b"))
 
 # 3-row half-block capitals for the drop cap.
 FONT = {
@@ -250,7 +271,7 @@ def story_block(item, g, sel, idx, lead=False, sec=-1):
     elif body:
         for line in paragraph(body, T):
             rows.append(("  ", [seg(line, sgr("body"))], None))
-    src, t = item.get("source", "").strip(), fmt_time(item.get("time", ""))
+    src, t = item.get("source", "").strip(), fmt_story_time(item.get("time", ""))
     if mode == "inline":
         meta = src + (", " + t if src and t else t)
         if meta: rows.append(("  ", [seg("— " + meta, sgr("dim", italic=True))], None))
@@ -502,12 +523,15 @@ def emit(page, rows, secs, off, H, W):
     sys.stdout.write("".join(out) + foot); sys.stdout.flush()
 
 def tokens(buf):
-    """Split a raw read into key tokens (CSI sequences kept whole)."""
+    """Split a raw read into key tokens (CSI sequences kept whole). Returns (tokens, rest): an
+    escape sequence cut off by the end of the read is handed back to be prepended to the next one
+    (herdr's 7-byte quit sequence can straddle two reads)."""
     out, i = [], 0
     while i < len(buf):
-        if buf[i] == "\x1b" and i + 1 < len(buf) and buf[i + 1] in "[O":
+        if buf[i] == "\x1b" and (i + 1 == len(buf) or buf[i + 1] in "[O"):
             j = i + 2
             while j < len(buf) and not ("@" <= buf[j] <= "~"): j += 1
+            if j >= len(buf): return out, buf[i:]  # incomplete: wait for the rest
             tok = buf[i:j + 1]; i = j + 1
             if tok.startswith("\x1b[<"):          # SGR mouse report: keep only the wheel
                 button = tok[3:].split(";", 1)[0]
@@ -516,7 +540,7 @@ def tokens(buf):
             out.append(tok)
         else:
             out.append(buf[i]); i += 1
-    return out
+    return out, ""
 
 def load(path):
     with open(path) as f: return json.load(f)
@@ -580,21 +604,24 @@ def main():
 
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
-    rp, wp = os.pipe(); os.set_blocking(wp, False)
-    signal.set_wakeup_fd(wp)
-    signal.signal(signal.SIGWINCH, lambda *_: None)
-    tty.setcbreak(fd)
-    if PINNED:
-        # Pinned in herdr's News tab: Ctrl-C, Ctrl-Z and Ctrl-\ arrive as plain bytes and do
-        # nothing; only herdr's private quit sequence ends the viewer.
-        attrs = termios.tcgetattr(fd)
-        attrs[3] &= ~(termios.ISIG | termios.IEXTEN)
-        termios.tcsetattr(fd, termios.TCSANOW, attrs)
-    sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h"); sys.stdout.flush()
-    watch = os.path.join(HIST["dir"], "index.json") if HIST["eds"] else path
-    mtime = os.path.getmtime(watch)
-    off, sel, intro = 0, -1, True
     try:
+        # Everything from here on runs under the finally: whatever fails, the pane's shell gets
+        # its terminal back (cooked mode, ISIG, mouse off, main screen).
+        rp, wp = os.pipe(); os.set_blocking(wp, False)
+        signal.set_wakeup_fd(wp)
+        signal.signal(signal.SIGWINCH, lambda *_: None)
+        tty.setcbreak(fd)
+        if PINNED:
+            # Pinned in herdr's News tab: Ctrl-C, Ctrl-Z and Ctrl-\ arrive as plain bytes and do
+            # nothing; only herdr's private quit sequence ends the viewer.
+            attrs = termios.tcgetattr(fd)
+            attrs[3] &= ~(termios.ISIG | termios.IEXTEN)
+            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h"); sys.stdout.flush()
+        watch = os.path.join(HIST["dir"], "index.json") if HIST["eds"] else path
+        mtime = os.path.getmtime(watch)
+        off, sel, intro = 0, -1, True
+        carry = ""                                 # an escape sequence cut off by the last read
         while True:
             W, Hfull = os.get_terminal_size()
             H = max(1, Hfull - 1)
@@ -631,9 +658,10 @@ def main():
                     sel = min(sel, len(targets) - 1)
             except (OSError, json.JSONDecodeError): pass
             if fd not in ready: continue
-            buf = os.read(fd, 64).decode(errors="ignore")
+            buf = carry + os.read(fd, 64).decode(errors="ignore")
+            keys, carry = tokens(buf)
             quit_ = False
-            for k in tokens(buf):
+            for k in keys:
                 if k == HERDR_QUIT or (k == "q" and not PINNED): quit_ = True; break
                 elif k in ("j", "\x1b[<65"): off += 1 if k == "j" else 3
                 elif k in ("k", "\x1b[<64"): off -= 1 if k == "k" else 3
