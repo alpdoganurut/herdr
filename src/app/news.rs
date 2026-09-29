@@ -70,6 +70,9 @@ const START_RETRY: Duration = Duration::from_millis(500);
 /// How long a starting run waits for the shell prompt (after `q` to the
 /// viewer) before it is recorded `failed`.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
+/// Run-log polls in a row that must find the pane at its shell before a run
+/// with no record counts as interrupted.
+const INTERRUPTED_AFTER_POLLS: u8 = 2;
 /// Ctrl-C.
 const INTERRUPT: &[u8] = b"\x03";
 /// Quits the page viewer.
@@ -429,6 +432,12 @@ pub(crate) struct NewsState {
     pub(crate) notify: store::NewsNotifyRecord,
     /// A delivery held back by the notification rate limit tries again then.
     pub(crate) notify_retry_at: Option<Instant>,
+    /// Whether the News tab was the focused tab on the previous pass
+    /// (not persisted: a restart sees the focus as new).
+    pub(crate) was_focused: bool,
+    /// Consecutive run-log polls that found the News pane back at a shell
+    /// prompt while a run was in flight (the runner was interrupted).
+    pub(crate) shell_polls: u8,
     /// Tests: the local clock and day the policy goes by.
     #[cfg(test)]
     pub(crate) local_override: Option<(LocalClock, &'static str)>,
@@ -477,6 +486,8 @@ impl NewsState {
             pending_command: None,
             notify: store::NewsNotifyRecord::default(),
             notify_retry_at: None,
+            was_focused: false,
+            shell_polls: 0,
             #[cfg(test)]
             local_override: None,
             #[cfg(test)]
@@ -929,14 +940,7 @@ impl App {
             self.news.pending_command = None;
             return false;
         };
-        #[allow(unused_mut)] // the test override below assigns it
-        let mut ready = self
-            .lookup_runtime_sender(pane.ws_idx, pane.pane_id)
-            .is_some_and(|runtime| super::agents::available_shell_name(runtime).is_some());
-        #[cfg(test)]
-        {
-            ready = (ready || self.news.assume_shell_ready) && !self.news.assume_shell_busy;
-        }
+        let ready = self.news_pane_at_shell(&pane);
         if ready {
             self.news.pending_command = None;
             let mut command = pending.command;
@@ -1018,6 +1022,8 @@ impl App {
     /// state changed.
     pub(crate) fn handle_news_tasks(&mut self, now: Instant) -> bool {
         let unread_cleared = self.clear_news_unread_when_focused();
+        let restored = self.show_page_when_news_focused(now);
+        let unread_cleared = unread_cleared || restored;
         if self.news.run.is_some() {
             self.news.pending_command = None;
             return self.drive_news_run(now) || unread_cleared;
@@ -1183,6 +1189,74 @@ impl App {
         })
     }
 
+    /// Whether the News pane's foreground process is its shell (a prompt).
+    fn news_pane_at_shell(&self, pane: &NewsPane) -> bool {
+        #[allow(unused_mut)] // the test override below assigns it
+        let mut ready = self
+            .lookup_runtime_sender(pane.ws_idx, pane.pane_id)
+            .is_some_and(|runtime| super::agents::available_shell_name(runtime).is_some());
+        #[cfg(test)]
+        {
+            ready = (ready || self.news.assume_shell_ready) && !self.news.assume_shell_busy;
+        }
+        ready
+    }
+
+    /// The News pane, when its tab is the focused tab of the focused space.
+    fn focused_news_pane(&self) -> Option<NewsPane> {
+        let pane = self.existing_news_pane()?;
+        let focused = self.state.active == Some(pane.ws_idx)
+            && self
+                .state
+                .workspaces
+                .get(pane.ws_idx)
+                .is_some_and(|ws| ws.active_tab == pane.tab_idx);
+        focused.then_some(pane)
+    }
+
+    /// When the News tab gains focus and its pane sits at a bare shell (a
+    /// server restart restores panes as fresh shells; a viewer that was
+    /// quit leaves one), show the latest page again. Nothing while a run is
+    /// in flight or a command is already pending.
+    fn show_page_when_news_focused(&mut self, now: Instant) -> bool {
+        let focused = self.focused_news_pane();
+        let gained = focused.is_some() && !self.news.was_focused;
+        self.news.was_focused = focused.is_some();
+        let (Some(pane), true) = (focused, gained) else {
+            return false;
+        };
+        if self.news.run.is_some() || self.news.pending_command.is_some() {
+            return false;
+        }
+        let Some(home) = self.news.home.clone() else {
+            return false;
+        };
+        if !store::page_path(&home).is_file() || !self.news_pane_at_shell(&pane) {
+            return false;
+        }
+        if let Err(err) = crate::integration::news_assets::install(&home) {
+            tracing::warn!(
+                event = "news.open",
+                outcome = "install_failed",
+                err = %err,
+                "could not install the news viewer"
+            );
+            return false;
+        }
+        tracing::info!(
+            event = "news.open",
+            outcome = "restored",
+            "News tab focused at a bare shell; showing the page"
+        );
+        self.news.pending_command = Some(PendingPaneCommand {
+            command: viewer_command(&home, None),
+            next_check: now,
+            give_up_at: now + START_TIMEOUT,
+            quit_sent: true,
+        });
+        self.drive_news_pending_command(now)
+    }
+
     fn news_pane_bytes(&self, pane: &NewsPane, bytes: Bytes) -> Result<(), String> {
         let runtime = self
             .lookup_runtime_sender(pane.ws_idx, pane.pane_id)
@@ -1193,14 +1267,7 @@ impl App {
     /// Type the command when the pane is at a shell prompt; otherwise send
     /// `q` (once, on the first attempt) and keep the run in `Starting`.
     fn launch_news_run(&mut self, pane: &NewsPane, now: Instant, first: bool) {
-        #[allow(unused_mut)] // the test override below assigns it
-        let mut ready = self
-            .lookup_runtime_sender(pane.ws_idx, pane.pane_id)
-            .is_some_and(|runtime| super::agents::available_shell_name(runtime).is_some());
-        #[cfg(test)]
-        {
-            ready = (ready || self.news.assume_shell_ready) && !self.news.assume_shell_busy;
-        }
+        let ready = self.news_pane_at_shell(pane);
         let (trigger, give_up_at) = match self.news.run.as_ref() {
             Some(run) => match run.phase {
                 NewsPhase::Starting { give_up_at, .. } => (run.trigger, give_up_at),
@@ -1319,7 +1386,23 @@ impl App {
                     }
                 };
                 if let Some(record) = completed_record(&records, &run.started).cloned() {
+                    self.news.shell_polls = 0;
                     self.complete_news_run(record);
+                    return true;
+                }
+                // The runner writes its record before it exits; a pane back at
+                // its shell with no record means the run was interrupted.
+                let at_shell = pane
+                    .as_ref()
+                    .is_some_and(|pane| self.news_pane_at_shell(pane));
+                self.news.shell_polls = if at_shell {
+                    self.news.shell_polls.saturating_add(1)
+                } else {
+                    0
+                };
+                if self.news.shell_polls >= INTERRUPTED_AFTER_POLLS {
+                    self.news.shell_polls = 0;
+                    self.interrupt_news_run();
                     return true;
                 }
                 if let Some(run) = self.news.run.as_mut() {
@@ -1346,6 +1429,37 @@ impl App {
         );
         let record = self.server_news_record(&run, "failed", reason);
         self.complete_news_run(record);
+    }
+
+    /// The runner stopped without writing its record (Ctrl-C, a crash): the
+    /// agent released, an `interrupted` record, and the page shown again.
+    fn interrupt_news_run(&mut self) {
+        let Some(run) = self.news.run.clone() else {
+            return;
+        };
+        tracing::warn!(
+            event = "news.run",
+            outcome = "interrupted",
+            trigger = run.trigger.name(),
+            "news runner exited without a result"
+        );
+        if let Some(pane) = self.existing_news_pane() {
+            self.handle_internal_event(crate::events::AppEvent::HookAgentReleased {
+                pane_id: pane.pane_id,
+                source: NEWS_HOOK_SOURCE.into(),
+                agent_label: NEWS_AGENT_LABEL.into(),
+                known_agent: None,
+                seq: None,
+            });
+        }
+        let record = self.server_news_record(
+            &run,
+            "interrupted",
+            "the runner exited without a result".into(),
+        );
+        self.complete_news_run(record);
+        // Bring the page back: the pane is at a bare shell now.
+        self.news.was_focused = false;
     }
 
     /// The watchdog: Ctrl-C to the pane, the agent released, a `timeout`
@@ -1937,6 +2051,114 @@ mod tests {
         assert!(app.handle_news_tasks(now), "focused: the mark clears");
         assert!(!app.state.workspaces[0].tabs[1].important);
         assert!(!app.handle_news_tasks(now), "and nothing changes after");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The News tab (second tab) with a runtime whose input the test reads.
+    fn news_tab_with_input(app: &mut App) -> tokio::sync::mpsc::Receiver<Bytes> {
+        app.state.workspaces[0].test_add_tab(Some("other"));
+        news_tab_at(app, 1);
+        let tab = &app.state.workspaces[0].tabs[1];
+        let terminal_id = tab.terminal_id(tab.root_pane).unwrap().clone();
+        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id, runtime);
+        rx
+    }
+
+    fn typed(rx: &mut tokio::sync::mpsc::Receiver<Bytes>) -> String {
+        let mut out = String::new();
+        while let Ok(bytes) = rx.try_recv() {
+            out.push_str(&String::from_utf8_lossy(&bytes));
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn a_news_tab_focused_at_a_bare_shell_shows_the_page_again() {
+        let home = temp_home("refocus");
+        let mut app = news_app(Some(home.clone()), false);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(store::page_path(&home), "{}").unwrap();
+        let mut rx = news_tab_with_input(&mut app);
+        app.news.assume_shell_ready = true;
+        let now = Instant::now();
+
+        app.state.switch_workspace_tab(0, 0);
+        app.handle_news_tasks(now);
+        assert_eq!(typed(&mut rx), "", "not focused: nothing typed");
+
+        // Gaining focus at a shell (a restart, a quit viewer) brings the page back.
+        app.state.switch_workspace_tab(0, 1);
+        assert!(app.handle_news_tasks(now));
+        let input = typed(&mut rx);
+        assert!(
+            input.contains("viewer.py") && input.ends_with('\r'),
+            "{input:?}"
+        );
+        assert!(
+            home.join("bin").join("viewer.py").is_file(),
+            "the viewer is installed"
+        );
+
+        // Staying focused does not type it again.
+        app.handle_news_tasks(now);
+        assert_eq!(typed(&mut rx), "");
+
+        // Busy (the viewer, or anything else): focus does nothing.
+        app.state.switch_workspace_tab(0, 0);
+        app.handle_news_tasks(now);
+        app.news.assume_shell_busy = true;
+        app.state.switch_workspace_tab(0, 1);
+        app.handle_news_tasks(now);
+        assert_eq!(typed(&mut rx), "", "a busy pane is left alone");
+
+        // No page yet: nothing to show.
+        app.news.assume_shell_busy = false;
+        std::fs::remove_file(store::page_path(&home)).unwrap();
+        app.state.switch_workspace_tab(0, 0);
+        app.handle_news_tasks(now);
+        app.state.switch_workspace_tab(0, 1);
+        app.handle_news_tasks(now);
+        assert_eq!(typed(&mut rx), "");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_pane_is_back_at_its_shell_without_a_record_is_interrupted() {
+        let home = temp_home("interrupted");
+        let mut app = news_app(Some(home.clone()), false);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(store::page_path(&home), "{}").unwrap();
+        let mut rx = news_tab_with_input(&mut app);
+        app.state.switch_workspace_tab(0, 1);
+        let now = Instant::now();
+        app.news.assume_shell_busy = true;
+        app.handle_news_tasks(now); // focus recorded while busy: no viewer
+        app.news.run = Some(in_flight(NOW, now));
+
+        // Busy (the runner is the foreground process): keep waiting.
+        assert!(!app.handle_news_tasks(now));
+        assert!(app.news.run.is_some());
+
+        // Back at the shell with no record: one poll is not enough ...
+        app.news.assume_shell_busy = false;
+        app.news.assume_shell_ready = true;
+        assert!(!app.handle_news_tasks(now + POLL_INTERVAL));
+        assert!(
+            app.news.run.is_some(),
+            "one poll at the shell is not enough"
+        );
+        // ... the second one records the run as interrupted.
+        assert!(app.handle_news_tasks(now + 2 * POLL_INTERVAL));
+        assert!(app.news.run.is_none());
+        let log = std::fs::read_to_string(store::index_path(&home)).unwrap();
+        assert!(log.contains("\"interrupted\""), "{log}");
+        assert_eq!(app.news.consecutive_failures, 1);
+
+        // And the page comes back on the next pass.
+        let _ = typed(&mut rx);
+        app.handle_news_tasks(now + 2 * POLL_INTERVAL);
+        assert!(typed(&mut rx).contains("viewer.py"));
         let _ = std::fs::remove_dir_all(&home);
     }
 

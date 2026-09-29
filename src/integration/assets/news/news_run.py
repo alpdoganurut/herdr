@@ -252,6 +252,10 @@ def run_agent(run_dir, prompt, model, resume=None):
                         say("  " + part["text"].strip().splitlines()[0][:150], "2")
             elif t == "result":
                 result = e
+    except KeyboardInterrupt:
+        try: os.killpg(proc.pid, signal.SIGTERM)
+        except OSError: pass
+        raise
     finally:
         try: proc.wait(timeout=10)
         except subprocess.TimeoutExpired: os.killpg(proc.pid, signal.SIGKILL)
@@ -297,6 +301,12 @@ def publish(home, run_dir, page, decision, trigger, anchors_doc, started, next_r
     return n
 
 # ------------------------------------------------------------------ main
+def view(home, a):
+    """Replace this process with the page viewer (interactive runs only)."""
+    page = os.path.join(home, "page.json")
+    if a.no_view or not sys.stdout.isatty() or not os.path.exists(page): return
+    os.execvp(sys.executable, [sys.executable, os.path.join(ASSETS, "viewer.py"), page])
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--home", required=True)
@@ -335,6 +345,18 @@ def main(argv=None):
             record["turns"], (", edition %d" % record["edition"]) if record["edition"] else ""), tone)
         return code
 
+    try:
+        return desk(a, home, run_dir, stamp, started, record, finish)
+    except KeyboardInterrupt:
+        print()
+        record["errors"] = ["interrupted by the user"]
+        finish("interrupted", 130)
+        view(home, a)
+        return 130
+
+
+def desk(a, home, run_dir, stamp, started, record, finish):
+    """Fetch, run the editor, validate, publish. Returns the exit code."""
     say("AI news run %s (%s)" % (stamp, a.trigger), "1")
     HERDR.title("News: run %s" % stamp)
     # inputs
@@ -387,9 +409,7 @@ def main(argv=None):
     record["decision"] = decision
     record["edition"] = publish(home, run_dir, page, decision, a.trigger, anchors_doc, started, a.next_run)
     code = finish("ok", 0)
-    if not a.no_view and sys.stdout.isatty():
-        viewer = os.path.join(ASSETS, "viewer.py")
-        os.execvp(sys.executable, [sys.executable, viewer, os.path.join(home, "page.json")])
+    view(home, a)
     return code
 
 
