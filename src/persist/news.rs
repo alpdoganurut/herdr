@@ -369,25 +369,52 @@ pub fn record_from_index_line(line: &str) -> Option<NewsRunRecord> {
     })
 }
 
-/// The newest `cap` decodable records of `runs/index.jsonl`, newest first.
-/// A missing log is an empty list; undecodable lines are skipped.
+/// How much of the end of `runs/index.jsonl` [`read_history`] reads: room
+/// for well over [`MAX_HISTORY`] records (a runner line is under 1 KB).
+pub const HISTORY_TAIL_BYTES: u64 = 64 * 1024;
+
+/// The last `bytes` of the run log (all of it when shorter), as text. The
+/// log is never pruned, so nothing reads it whole. `Ok(None)` when missing.
+fn read_index_tail(home: &Path, bytes: u64) -> io::Result<Option<(String, bool)>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match fs::File::open(index_path(home)) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(bytes);
+    file.seek(SeekFrom::Start(start))?;
+    let mut buffer = Vec::with_capacity(usize::try_from(len - start).unwrap_or(0));
+    file.read_to_end(&mut buffer)?;
+    Ok(Some((
+        String::from_utf8_lossy(&buffer).into_owned(),
+        start > 0,
+    )))
+}
+
+/// The newest `cap` decodable records of `runs/index.jsonl`, newest first,
+/// from the log's last [`HISTORY_TAIL_BYTES`]. A missing log is an empty
+/// list; undecodable lines (and the cut first line of the tail) are skipped.
 pub fn read_history(home: &Path, cap: usize) -> Vec<NewsRunRecord> {
-    let content = match fs::read_to_string(index_path(home)) {
-        Ok(content) => content,
+    let (content, cut) = match read_index_tail(home, HISTORY_TAIL_BYTES) {
+        Ok(Some(tail)) => tail,
+        Ok(None) => return Vec::new(),
         Err(err) => {
-            if err.kind() != io::ErrorKind::NotFound {
-                tracing::warn!(
-                    event = "persist.news.history",
-                    outcome = "read_error",
-                    err = %err,
-                    "failed to read the news run log"
-                );
-            }
+            tracing::warn!(
+                event = "persist.news.history",
+                outcome = "read_error",
+                err = %err,
+                "failed to read the news run log"
+            );
             return Vec::new();
         }
     };
-    content
-        .lines()
+    let mut lines = content.lines();
+    if cut {
+        lines.next();
+    }
+    lines
         .rev()
         .filter_map(record_from_index_line)
         .take(cap)
@@ -395,16 +422,22 @@ pub fn read_history(home: &Path, cap: usize) -> Vec<NewsRunRecord> {
 }
 
 /// Every record appended to `runs/index.jsonl` after its first `after`
-/// bytes, oldest first. Used to spot the run in flight finishing.
+/// bytes, oldest first: the file is read from that offset on. Used to spot
+/// the run in flight finishing. A log shorter than `after` (replaced or
+/// truncated since) is read whole.
 pub fn read_index_after(home: &Path, after: u64) -> io::Result<Vec<NewsRunRecord>> {
-    let content = match fs::read(index_path(home)) {
-        Ok(content) => content,
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match fs::File::open(index_path(home)) {
+        Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
     };
-    let after = usize::try_from(after).unwrap_or(usize::MAX);
-    let tail = content.get(after..).unwrap_or(&content[..]);
-    Ok(String::from_utf8_lossy(tail)
+    let len = file.metadata()?.len();
+    let start = if after <= len { after } else { 0 };
+    file.seek(SeekFrom::Start(start))?;
+    let mut buffer = Vec::with_capacity(usize::try_from(len - start).unwrap_or(0));
+    file.read_to_end(&mut buffer)?;
+    Ok(String::from_utf8_lossy(&buffer)
         .lines()
         .filter_map(record_from_index_line)
         .collect())
@@ -693,6 +726,40 @@ mod tests {
     }
 
     #[test]
+    fn history_reads_a_bounded_tail_of_a_long_log() {
+        let dir = TempDir::new("history-tail");
+        let home = dir.0.join("news");
+        fs::create_dir_all(home.join("runs")).unwrap();
+        // 200 records of about 1 KB: the log is well over the tail size.
+        let pad = "e".repeat(1000);
+        let mut lines = String::new();
+        for n in 0..200 {
+            lines.push_str(&format!(
+                r#"{{"started":"2026-09-01T00:{:02}:{:02}+00:00","trigger":"scheduled","outcome":"ok","edition":{n},"errors":["{pad}"]}}"#,
+                n / 60,
+                n % 60
+            ));
+            lines.push('\n');
+        }
+        fs::write(index_path(&home), &lines).unwrap();
+        assert!(lines.len() as u64 > HISTORY_TAIL_BYTES);
+        let history = read_history(&home, MAX_HISTORY);
+        assert_eq!(history.len(), MAX_HISTORY);
+        assert_eq!(history[0].edition, Some(199));
+        assert_eq!(history[49].edition, Some(150));
+        let (tail, cut) = read_index_tail(&home, HISTORY_TAIL_BYTES).unwrap().unwrap();
+        assert!(cut);
+        assert!(tail.len() as u64 <= HISTORY_TAIL_BYTES);
+        assert!(
+            !tail.starts_with('{'),
+            "the first line of the tail is a cut one"
+        );
+        let (whole, cut) = read_index_tail(&home, u64::MAX).unwrap().unwrap();
+        assert!(!cut);
+        assert_eq!(whole, lines);
+    }
+
+    #[test]
     fn index_tail_and_server_records() {
         let dir = TempDir::new("tail");
         let home = dir.0.join("news");
@@ -724,5 +791,16 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].outcome, "timeout");
         assert_eq!(history[1].outcome, "ok");
+
+        // Only the bytes after the offset are read: a record cut by the
+        // offset is not seen. Past the end (the log was replaced), the whole
+        // log is read.
+        assert_eq!(read_index_after(&home, before + 1).unwrap().len(), 0);
+        assert_eq!(
+            read_index_after(&home, before).unwrap()[0].outcome,
+            "timeout"
+        );
+        assert_eq!(read_index_after(&home, u64::MAX).unwrap().len(), 2);
+        assert_eq!(read_index_after(&home, 0).unwrap().len(), 2);
     }
 }
