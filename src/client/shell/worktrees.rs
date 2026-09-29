@@ -537,6 +537,10 @@ impl ClientShellState {
                 | PendingEndpointKind::SessionClosedList
                 | PendingEndpointKind::SessionClosedReopen
                 | PendingEndpointKind::SessionClosedRemove
+                | PendingEndpointKind::NewsGet
+                | PendingEndpointKind::NewsRun
+                | PendingEndpointKind::NewsOpen
+                | PendingEndpointKind::NewsSetEnabled
                 | PendingEndpointKind::SelectionCopy
                 | PendingEndpointKind::PaneScroll { .. }
                 | PendingEndpointKind::WordSelection { .. }

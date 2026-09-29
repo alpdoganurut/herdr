@@ -85,6 +85,18 @@ impl ClientContextMenuOverlay {
                 item("Ungroup", Action::Ungroup),
                 item("Close group", Action::CloseGroup),
             ],
+            ClientContextMenuTarget::News { enabled, .. } => vec![
+                item("Run now", Action::NewsRun),
+                item("Open", Action::NewsOpen),
+                item(
+                    if *enabled {
+                        "Pause schedule"
+                    } else {
+                        "Resume schedule"
+                    },
+                    Action::NewsToggleSchedule,
+                ),
+            ],
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -293,6 +305,9 @@ impl ClientShellState {
             }
             ClientContextMenuTarget::Group { workspace_id } => {
                 self.activate_group_context_action(workspace_id, action, outcome)
+            }
+            ClientContextMenuTarget::News { enabled, .. } => {
+                self.activate_news_context_action(enabled, action, outcome)
             }
             ClientContextMenuTarget::Tab {
                 tab_id,

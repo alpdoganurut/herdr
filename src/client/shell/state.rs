@@ -115,6 +115,8 @@ pub(super) struct ShellHitMap {
     /// group is folded.
     pub(super) group_toggle_all: Rect,
     pub(super) group_new: Rect,
+    /// The `tabs` layout's pinned News row (not a `sidebar_tabs` row: no drag).
+    pub(super) news_row: Rect,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
@@ -642,6 +644,12 @@ pub(super) enum ClientContextMenuAction {
     RemindTop,
     /// Tab menu: the selector's second row (1h 6h daily).
     RemindBottom,
+    /// News row menu: `news.run`.
+    NewsRun,
+    /// News row menu: `news.open`.
+    NewsOpen,
+    /// News row menu: `news.set_enabled` with the opposite of the current value.
+    NewsToggleSchedule,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -701,6 +709,9 @@ pub(super) enum ClientContextMenuTarget {
         has_manual_label: bool,
         right_click_passthrough: bool,
     },
+    /// The `tabs` layout's pinned News row; `enabled` is the schedule state
+    /// when the menu opened (the toggle item flips it).
+    News { enabled: bool },
 }
 
 #[derive(Debug)]
@@ -785,6 +796,10 @@ pub(super) enum PendingEndpointKind {
     SessionClosedList,
     SessionClosedReopen,
     SessionClosedRemove,
+    NewsGet,
+    NewsRun,
+    NewsOpen,
+    NewsSetEnabled,
     PrepareWorktreeCreate {
         workspace_id: String,
     },
@@ -1098,6 +1113,8 @@ pub(crate) struct ClientShellState {
     /// (`idle_reminders.rs`).
     pub(super) idle_reminders:
         HashMap<(ClientEndpointId, String), super::idle_reminders::ClientIdleReminder>,
+    /// The news desk as `news.get` last reported it (`news.rs`).
+    pub(super) news: super::news::ClientNewsState,
     /// Tabs with a scheduled reminder, keyed like `idle_reminders`.
     pub(super) scheduled_reminders:
         HashMap<(ClientEndpointId, String), super::idle_reminders::ClientScheduledReminder>,
@@ -1276,6 +1293,7 @@ impl ClientShellState {
             queued_notifications: VecDeque::new(),
             idle_reminders: HashMap::new(),
             scheduled_reminders: HashMap::new(),
+            news: super::news::ClientNewsState::default(),
             reminder_epochs: HashMap::new(),
             reminder_local_time: None,
             reminder_daily_minutes: None,
@@ -2052,6 +2070,7 @@ impl ClientShellState {
             .into_iter()
             .chain(self.selection_repaint_deadline)
             .chain(self.next_idle_reminder_deadline())
+            .chain(self.next_news_deadline(now))
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)

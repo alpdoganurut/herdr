@@ -1895,6 +1895,11 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                if super::contains(self.hits.news_row, point) {
+                    self.open_news_context_menu(mouse.column, mouse.row);
+                    outcome.repaint = true;
+                    return;
+                }
                 let tab_id = self
                     .hits
                     .sidebar_tabs
@@ -2177,6 +2182,18 @@ impl ClientShellState {
                 if super::contains(self.hits.group_new, point) {
                     self.open_move_tab_to_group_overlay();
                     outcome.repaint = true;
+                    return;
+                }
+                if super::contains(self.hits.news_row, point) {
+                    // The pinned row is never dragged: it focuses on the press.
+                    if let Some(row) = self.news_row() {
+                        self.push_endpoint_method(
+                            crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
+                                tab_id: row.tab_id,
+                            }),
+                            outcome,
+                        );
+                    }
                     return;
                 }
                 let sidebar_tab_press = self

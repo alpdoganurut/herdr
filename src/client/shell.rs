@@ -25,6 +25,7 @@ mod input_source;
 mod link_hover;
 mod mobile;
 mod mouse;
+mod news;
 mod notification_format;
 mod notification_policy;
 mod notifications;

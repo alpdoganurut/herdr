@@ -26,6 +26,7 @@ src/app/tab_remind.rs
 src/cli/news.rs
 src/cli/tab_closed.rs
 src/client/shell/idle_reminders.rs
+src/client/shell/news.rs
 src/client/shell/notification_format.rs
 src/client/shell/settings_closed.rs
 src/client/shell/settings_daily_time.rs
@@ -35,6 +36,7 @@ src/client/shell/tab_color.rs
 src/client/shell/tab_remind_menu.rs
 src/client/shell/tab_sidebar.rs
 src/client/shell/tests/idle_reminders.rs
+src/client/shell/tests/news.rs
 src/client/shell/tests/notification_format.rs
 src/client/shell/tests/settings_backups.rs
 src/client/shell/tests/settings_closed.rs
@@ -122,6 +124,7 @@ src/server/headless/tests/fork_smoke.rs
 | ClientShellState | reminder_epochs | std::collections::HashMap::new() |
 | ClientShellState | reminder_local_time | None |
 | ClientShellState | reminder_daily_minutes | None |
+| ClientShellState | news | Default::default() |
 | ClientPendingNotification | reminder | None |
 | ClientVisibleNotification | reminder | None |
 | ShellHitMap | sidebar_tabs | Vec::new() |
@@ -131,11 +134,13 @@ src/server/headless/tests/fork_smoke.rs
 | ShellHitMap | notification_toasts | Vec::new() |
 | ShellHitMap | context_menu_swatches | Vec::new() |
 | ShellHitMap | context_menu_remind_options | Vec::new() |
+| ShellHitMap | news_row | Rect::default() |
 | OverlayRender | menu_swatches | Vec::new() |
 | OverlayRender | menu_remind_options | Vec::new() |
 | ShellRenderState | sidebar_tab_drop_row | None |
 | ShellRenderState | idle_reminders | &self.idle_reminders |
 | ShellRenderState | scheduled_reminders | &self.scheduled_reminders |
+| ShellRenderState | news_row | None |
 | ClientSettingsOverlay | transcripts | None |
 | ClientSettingsOverlay | loading_transcripts | false |
 | ClientSettingsOverlay | closed | Box::default() |
@@ -229,18 +234,26 @@ ClientContextMenuAction::RestartAgent   [src/client/shell/state.rs, after CloseG
 ClientContextMenuAction::Color   [src/client/shell/state.rs, after RestartAgent; the tab menu's swatch row; internal]
 ClientContextMenuAction::Important   [src/client/shell/state.rs, after Color; the tab menu's important toggle; internal]
 ClientContextMenuAction::RemindTop   [src/client/shell/state.rs, after Important; the reminder selector's first row; internal]
-ClientContextMenuAction::RemindBottom   [src/client/shell/state.rs, last after RemindTop; the selector's second row; internal]
+ClientContextMenuAction::RemindBottom   [src/client/shell/state.rs, after RemindTop; the selector's second row; internal]
+ClientContextMenuAction::NewsRun   [src/client/shell/state.rs, after RemindBottom; the News row menu's Run now; internal]
+ClientContextMenuAction::NewsOpen   [src/client/shell/state.rs, after NewsRun; the News row menu's Open; internal]
+ClientContextMenuAction::NewsToggleSchedule   [src/client/shell/state.rs, last after NewsOpen; the News row menu's Pause / Resume schedule; internal]
 ConfigEdit::IdleReminderMinutes   [src/config/write.rs, after ToastDelivery; the settings overlay's reminders tab; internal]
 ConfigEdit::DailyReminderTime   [src/config/write.rs, after SoundFile; the reminders tab's daily time picker, written as a quoted "HH:MM"; internal]
 ConfigEdit::NewsEnabled   [src/config/write.rs, last after DailyReminderTime; `news.enabled`, written by news.set_enabled on the server; internal]
 ConfigEdit::SoundFile   [src/config/write.rs, after IdleReminderMinutes; the settings sound pickers ([ui.sound] done_path / request_path / reminder_path); internal]
 ClientContextMenuTarget::Group   [src/client/shell/state.rs, between Tab and Pane; internal]
+ClientContextMenuTarget::News   [src/client/shell/state.rs, last after Pane; the tabs layout's pinned News row, `{ enabled }`; internal]
 ClientChromeDrag::SidebarTab   [src/client/shell/state.rs, before PaneSplit; internal]
 ClientRenameTarget::MoveTabToGroup   [src/client/shell/state.rs, last; internal]
 PendingEndpointKind::AgentTranscripts   [src/client/shell/state.rs, after IntegrationInstall; internal]
 PendingEndpointKind::SessionClosedList   [src/client/shell/state.rs, after AgentTranscripts; internal]
 PendingEndpointKind::SessionClosedReopen   [src/client/shell/state.rs, after SessionClosedList; internal]
 PendingEndpointKind::SessionClosedRemove   [src/client/shell/state.rs, after SessionClosedReopen; internal]
+PendingEndpointKind::NewsGet   [src/client/shell/state.rs, after SessionClosedRemove; internal]
+PendingEndpointKind::NewsRun   [src/client/shell/state.rs, after NewsGet; internal]
+PendingEndpointKind::NewsOpen   [src/client/shell/state.rs, after NewsRun; internal]
+PendingEndpointKind::NewsSetEnabled   [src/client/shell/state.rs, after NewsOpen; internal]
 AgentRenameError::Suspended   [src/app/agents.rs, after PendingLaunch; internal, surfaces as error code agent_suspended]
 SubagentEvent::Snapshot   [src/api/schema/panes.rs, fork-owned enum, last after Stop; wire "snapshot"]
 AgentSuspendError::SubagentsRunning   [src/app/agent_suspend.rs, fork-owned enum, after Working; surfaces as error code agent_subagents_running, restart inherits it through AgentRestartError::Suspend]
@@ -300,7 +313,7 @@ src/api/schema.rs  additive: fork Method variants stay directly after AgentStart
 src/persist.rs  additive: `pub mod closed_sessions;` directly after `pub mod agent_transcripts;`, `pub mod news;` directly after it; the closed-sessions and news lines last in the module doc
 src/app/mod.rs  additive: `mod closed_sessions;` directly after `mod agents;`, `mod news;` directly after it
 src/cli.rs  additive: `mod tab_closed;` directly after `mod tab;`, `mod news;` directly after it; the `news` arm directly after the `session` arm in maybe_run
-src/client/shell.rs  additive: `mod settings_closed;` directly after `mod settings;`
+src/client/shell.rs  additive: `mod settings_closed;` directly after `mod settings;`, `mod news;` directly after `mod mouse;`
 src/api/schema/response.rs  additive: fork ResponseResult variants stay directly after AgentStarted (NewsStatus, NewsGet and NewsHistory close the block); `use super::news::{NewsEditionInfo, NewsGetInfo, NewsStatusInfo};` directly after the closed_sessions use
 src/api/schema/agents.rs  additive: fork params types stay after AgentStartParams; AgentInfo.subagents stays directly after state_change_seq
 src/api/schema/panes.rs  additive: PaneReportSubagentParams and SubagentEvent stay last in the file
@@ -359,19 +372,19 @@ src/config/sound.rs  mid-logic: SoundConfig::diagnostics accepts supported_sound
 src/server/headless.rs  mid-logic: sound_notify_message gains a Sound::Reminder arm (never sent)
 src/app/actions.rs  mid-logic: the client notification kind match treats Sound::Reminder like Done
 src/client/shell_runtime.rs  mid-logic: the action loop plays ClientShellAction::PreviewSound
-src/client/shell/mouse.rs  mid-logic: handle_mouse (sidebar tab drag, group menu, locked-pane gestures, notification card hits: timed left-click keeps the upstream pane_id gate, sticky left focuses / right dismisses / the fold line swallows), push_pane_mouse_event; the ContextMenu block asks route_tab_color_swatch_mouse, then route_tab_remind_option_mouse first (swatch / reminder option hover and click); a settings choice click also applies at once when reminders_click_applies (the reminders tab's daily time row and picker)
+src/client/shell/mouse.rs  mid-logic: handle_mouse (the News row: a left press on hits.news_row focuses its tab through tab.focus before the sidebar tab press is taken, and a right-click opens the News menu before the tab-row lookup; sidebar tab drag, group menu, locked-pane gestures, notification card hits: timed left-click keeps the upstream pane_id gate, sticky left focuses / right dismisses / the fold line swallows), push_pane_mouse_event; the ContextMenu block asks route_tab_color_swatch_mouse, then route_tab_remind_option_mouse first (swatch / reminder option hover and click); a settings choice click also applies at once when reminders_click_applies (the reminders tab's daily time row and picker)
 src/client/shell/surface_patch.rs  mid-logic: fast_path_blocker else-if for suspended panes; the notification arm calls notification_blocks_patch (timed: any card blocks, as upstream; sticky: only patch rows over a drawn card)
-src/client/shell/composition.rs  mid-logic: compose paints the suspended card and occludes graphics; compose draws the sticky notification stack (render_notification_stack), occludes every card rect, fills hits.notification_toasts, and hands the stack bounds to copy_feedback_offset_for_toast; the context menu branch copies rendered.menu_swatches and menu_remind_options into the hit map; both ShellRenderState literals pass idle_reminders and scheduled_reminders; render_client_overlay gets &self.config
+src/client/shell/composition.rs  mid-logic: both ShellRenderState literals pass news_row (computed by news_row() before the mutable borrows); compose paints the suspended card and occludes graphics; compose draws the sticky notification stack (render_notification_stack), occludes every card rect, fills hits.notification_toasts, and hands the stack bounds to copy_feedback_offset_for_toast; the context menu branch copies rendered.menu_swatches and menu_remind_options into the hit map; both ShellRenderState literals pass idle_reminders and scheduled_reminders; render_client_overlay gets &self.config
 src/client/shell/render.rs  mid-logic: render_shell else-if for the tabs layout
 src/client/shell/config.rs  mid-logic: layout (show_tab_bar), from_config, apply_live_config (sound_files, daily_reminder_minutes), reload_client_config (rebalance_notification_cards after a sticky flip)
 src/client/shell/notification_policy.rs  mid-logic: retire_endpoint_notifications, queue_visible_notification (sticky push), promote_queued_notification, focus_visible_notification (split into focus_notification_at), receive_notification (replace-by-pane moved into replace_pane_notifications), tick_notifications (starts with tick_idle_reminders, whose due reminders it delivers from the pending list; a pending reminder's sound becomes Sound::Reminder; a validated pending event is passed through format_agent_notification before the target/sound/delivery code, so every path gets the `tabs` layout text; expiry gated on !toast_sticky); notification_validation is reused by sticky_notification_is_stale; notification_target_is_active is the idle reminders' focus test
 src/client/shell/endpoints.rs  mid-logic: cache_endpoint_snapshot_with_surface ends with prune_sticky_notifications
 src/client/shell/machine_diagnostics.rs  mid-logic: handle_machine_badge_event also yields to hits.notification_toasts
-src/client/shell/state.rs  mid-logic: ClientShellState::new initialises visible_notifications and the reminder maps; timer_delay chains next_idle_reminder_deadline
+src/client/shell/state.rs  mid-logic: ClientShellState::new initialises visible_notifications, the reminder maps and news; timer_delay chains next_idle_reminder_deadline then next_news_deadline (the running row's minute clock)
 src/config.rs  mid-logic: Config::collect_diagnostics chains tab_agent_glyph_color_diagnostics and HerdrToastConfig::diagnostic
 src/client/shell/tests/graphics.rs  depends: assert_graphics_cover is pub(super) for tests/sticky_notifications.rs; its ClientContextMenuTarget::Tab literal carries `color: Default::default()` (section 2)
 src/client/shell/actions.rs  mid-logic: record_binding (topology lock, group keys), endpoint_method_for_action (SwitchTab/NextTab scope, CycleTabColor, ToggleTabImportant)
-src/client/shell/context_menu.rs  mid-logic: items (after Close, so upstream item indices hold: the important toggle, the two reminder selector rows, then the swatch row `Color` last), open_tab_context_menu (captures the tab color, important and remind_every into the Tab target), activate_context_menu_item (the swatch row, Important and the selector act before the target dispatch, so no tab focus; the Tab arm ignores `color`, `important` and `remind` with `..`)
+src/client/shell/context_menu.rs  mid-logic: items (a News target lists Run now, Open, Pause / Resume schedule; after Close, so upstream item indices hold: the important toggle, the two reminder selector rows, then the swatch row `Color` last), activate_context_menu_item's target match sends News to activate_news_context_action, open_tab_context_menu (captures the tab color, important and remind_every into the Tab target), activate_context_menu_item (the swatch row, Important and the selector act before the target dispatch, so no tab focus; the Tab arm ignores `color`, `important` and `remind` with `..`)
 src/client/shell/overlay_input.rs  mid-logic: save_rename_overlay, accept_close_confirmation (close_group now from the overlay); the ContextMenu key block asks route_tab_remind_menu_key, then route_tab_color_menu_key first (Up/Down move between and re-seat the selector and swatch cursors, Left/Right/h/l on either row)
 src/client/shell/overlays.rs  mid-logic: render_context_menu widens a tab menu to the swatch row and the reminder selector, draws the swatches and the selector's options in place of their items' labels (only the cursor one highlighted, while its row is) and returns their rects as menu_swatches / menu_remind_options; render_client_overlay passes the config to the settings overlay
 src/client/shell/tabs.rs  mid-logic: render_tab_bar tints unfocused tabs with their color tag (focused tab unchanged)
@@ -381,9 +394,10 @@ src/app/api/workspaces.rs  mid-logic: handle_workspace_close captures closed_ses
 src/app/api/panes.rs  mid-logic: handle_pane_move (PaneMoveRecoveryContext.previous_tab_color, previous_tab_important and previous_tab_remind_every; a whole-tab move applies them to the NewTab / NewWorkspace tab), recover_failed_pane_move restores them
 src/client/shell/settings.rs  mid-logic: selected_index_for_settings_section, select_settings_section (refreshes idle_reminder_minutes, closes a sound picker and a daily time picker, requests session.closed_list on entering `closed`), settings_choice_count (Sound counts sound_section_rows, Reminders counts reminders_section_rows, ClosedSessions the filtered rows), apply_settings_choice (Sound goes to apply_sound_choice, Reminders asks apply_daily_time_choice first, then writes ConfigEdit::IdleReminderMinutes, ClosedSessions reopens), route_settings_key (Esc closes an open sound or daily time picker first, then route_closed_sessions_key takes filter text, Backspace, Delete / `d` and Esc on a non-empty filter; Up/Down preview its sound), handle_settings_endpoint_result
 src/client/shell/settings_overlay.rs  mid-logic: render_settings_overlay (show_primary match, ClosedSessions shows ` ↵ reopen ` while rows are listed; the section tab strip drops its one-cell gaps when it does not fit the 74-column inner width, and then drops each label's padding (settings_tab_label) and keeps the gaps, which with eight sections is always; Sound renders render_sound_section (rows or the open picker); Reminders arm: render_reminders draws the daily time row below the intervals, or the open daily time picker; ClosedSessions renders settings_closed::render_closed_sessions)
-src/client/shell/actions.rs  mid-logic: push_endpoint_method_with_kind treats SessionClosedReopen as focus-changing; handle_endpoint_result sends the SessionClosed* kinds to handle_closed_sessions_endpoint_result
-src/client/shell/worktrees.rs  mid-logic: the exhaustive PendingEndpointKind error arm lists the SessionClosed* kinds
+src/client/shell/actions.rs  mid-logic: push_endpoint_method_with_kind treats SessionClosedReopen and NewsOpen as focus-changing; handle_endpoint_result sends the SessionClosed* kinds to handle_closed_sessions_endpoint_result and the News* kinds to handle_news_endpoint_result
+src/client/shell/worktrees.rs  mid-logic: the exhaustive PendingEndpointKind error arm lists the SessionClosed* and News* kinds
 src/client/shell/endpoint_navigation.rs  mid-logic: finish_endpoint_workspace_press early return in the tabs layout
+src/client/mod.rs  mid-logic: the client loop's tick block calls shell.tick_news(now, &mut outcome) directly after tick_notifications (the only non-input producer of endpoint requests: news.get is pulled from there)
 src/protocol/wire.rs  depends: ClientShellSnapshot.tab_bar_right and tab_bar_right_separator feed the tabs sidebar footer (status_footer_lines and render_tab_status_footer in src/client/shell/tab_sidebar.rs), which joins the segment texts with the separator, splits on `\n` (a command entry's `lines`), parses kept SGR (`ansi`) and truncates each row with `…`; ClientShellTabStatusSegment.text stays a plain String, so multi-line and SGR text needs no wire change
 src/app/tab_bar_status.rs  mid-logic: configure_tab_bar_status (Command arm reads lines/ansi into TabBarCommandRuntime.format), handle_tab_bar_status_tasks (spawns with the format), spawn_status_command (test-only wrapper), run_status_command (reads through output::read_status_output_lines and builds the text with output::status_output_text, which hand off to upstream's read_last_output_line and command_output_text for the defaults); output.rs reuses command_output_text, read_last_output_line, is_unicode_format_control, MAX_COMMAND_LINE_BYTES and MAX_STATUS_TEXT_CHARS and mirrors strip_terminal_control_sequences (an upstream change to that state machine must be mirrored in strip_control_sequences_keeping_sgr)
 src/config/tab_bar.rs  mid-logic: tab_bar_right_diagnostics (the lines clamp warning in the Command arm)
@@ -553,6 +567,12 @@ NewsOpen
 NewsHistory
 NewsSetEnabled
 NewsEnabled
+news_row
+tick_news
+NewsRow
+ClientNewsState
+NewsToggleSchedule
+open_news_context_menu
 news.json
 herdr:news
 news_assets
@@ -589,7 +609,7 @@ server::headless::tests::fork_smoke::news_status_and_run_reach_the_news_tab
 - `agent.suspend` (and so `herdr agent suspend`, the "Suspend agent" menu item and `keys.toggle_agent_suspend`) refuses a `working` agent with `agent_working`, the same guard `agent.restart` uses, and sends it no input.
 
 ### Added
-- AI news desk, phase 3 (the News tab becomes native): new socket methods `news.get` (the schedule, the News tab while it exists, the run in flight, the last run and the unread mark), `news.history` (the editions index), `news.open` (focuses the News tab, creating it in the first space with the page viewer when it is gone; `--edition N` quits whatever holds the pane with `q` and reopens the viewer on that edition once the shell prompt is back, refused while a run is in flight) and `news.set_enabled` (writes `news.enabled` to the config file and reloads it); CLI `herdr news open [--edition N] | history [--days N] [--json] | enable | disable`. Focusing the News tab clears its important (unread) mark on the server, so it works from any client. No wire change.
+- AI news desk, phase 3 (the News tab becomes native): new socket methods `news.get` (the schedule, the News tab while it exists, the run in flight, the last run and the unread mark), `news.history` (the editions index), `news.open` (focuses the News tab, creating it in the first space with the page viewer when it is gone; `--edition N` quits whatever holds the pane with `q` and reopens the viewer on that edition once the shell prompt is back, refused while a run is in flight) and `news.set_enabled` (writes `news.enabled` to the config file and reloads it); CLI `herdr news open [--edition N] | history [--days N] [--json] | enable | disable`. Focusing the News tab clears its important (unread) mark on the server, so it works from any client. In the `tabs` sidebar layout the News tab leaves the scrolling list for a pinned row between the list and the status footer: a state glyph, `News` and `running 2m` (a run in flight, ticking by the minute), `unread` (the tab is important), `failed` (the last run did not succeed), `paused` (scheduling off) or the last run's local time; a left click focuses the tab, a right-click offers Run now, Open and Pause / Resume schedule. The row exists only while the News tab does (closing the tab is allowed; the next run or `news.open` recreates it) and the `spaces` layout keeps the tab in its list. The client fills it from `news.get` on the tick after the first snapshot of a connection, whenever the tab set or the News tab's status or mark changes, and after every `news.*` reply, and never asks a server that does not advertise the method. No wire change.
 - AI news desk, phase 2 (server-owned runs): `herdr news run` (`news.run`) installs the bundled runner (`news_run.py`, `anchors.py`, `viewer.py`, `system.md`, `topic.md`, `sources.json`, embedded in the binary) under `<session data dir>/news/bin/`, keeps one `News` tab in the first space (created unfocused, reused while it keeps its label), quits the page viewer with `q` when it is showing, and types `python3 <home>/bin/news_run.py --home <home> --trigger manual|scheduled [--model M]` into its shell; a run is in flight until `runs/index.jsonl` gains its record (polled every 5 s) or a 65-minute watchdog interrupts it (Ctrl-C, agent released, a `timeout` record), and a finished run that changed the page marks the tab important. `[news] enabled = true` (default false) schedules runs every `interval_hours` (default 6) outside `quiet_hours` (default `00:00-08:00` local, deferred to their end, missed slots collapsed to one run, a manual run restarts the interval); `model` is handed to the runner. `herdr news status [--json]` prints the schedule, home, tab, next run, run in flight and the last five runs (`news.status`), `herdr news log [N] [--json]` the newest runs from the run log. The schedule, tab and run in flight persist in `news.json` next to `session.json`. The runner is the pane's only reporter and reports as agent `news` from source `herdr:news` (a plain hook source with a label no screen manifest owns, so the tab shows working / done without a detected process; a `claude` label would stay with screen detection, which never sees the `claude -p` child; no session id, so nothing is persisted or resumed on restart): it starts the editor without herdr's pane identity so the shared Claude hook stays silent (its `herdr:claude` session claim would make the server drop the runner's reports as a conflicting owner), and the server clears the News pane's stale agent identity (a session or hook authority from an interactive claude, the recent-exit marker) when it types the command. No wire change.
 - Recently closed agent sessions: closing a tab, pane or space whose pane holds a live or suspended agent session (not a plain shell, not a tab moved to another group, not at server shutdown) records one entry per session in `closed-sessions.json` next to `session.json` (newest 100: agent and session reference, tab label, color and reminders, group, directory, close time). `herdr tab closed [--json]` lists them numbered, `herdr tab reopen <n|id|session-id-prefix>` reopens one, and the settings overlay's new `closed` tab lists `label · group · dir · 2h ago` with type-to-filter, Enter to reopen and Delete (or `d`) to remove. Reopening opens a tab in the original group (the first space when it is gone) with the same label, color and reminders, puts a deleted transcript back from the backup store, and types the native resume command; the entry is then removed. New socket methods `session.closed_list`, `session.closed_reopen`, `session.closed_remove`; no protocol change. The settings tab strip drops the labels' padding to fit the eighth tab.
 - `ui.tab_bar_right` command entries accept `lines` (1–4, default 1, clamped with a config warning) to keep the last non-empty output lines, joined with `\n` in the segment, and `ansi` (default false) to keep SGR color and weight sequences (`ESC [ digits;… m`) while every other escape and control character is still stripped. The `tabs` sidebar footer draws one row per line (at most four in total, the list shrinks to match and scrolling still reaches the last tab), styles reset (0), bold (1), dim (2), normal intensity (22), foreground 30–37 / 90–97, `38;5;n`, `38;2;r;g;b` and the default foreground (39) over its dim base, and truncates each row with `…`. The `spaces` tab bar shows only a segment's last line without escapes. No wire change: the segment stays a string and the protocol is unchanged; with the defaults the text is byte-for-byte upstream's.

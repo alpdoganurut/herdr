@@ -23,6 +23,10 @@
 //! sends its lines joined with `\n` and one with `ansi = true` keeps SGR
 //! sequences; the footer draws one row per line (at most
 //! `MAX_STATUS_ROWS`) and parses the SGR into styles.
+//!
+//! The News tab (`news.rs`) is pinned: it leaves the scrolling list and takes
+//! one row between the list and the status footer (`hits.news_row`), with a
+//! state glyph, `News` and a short status.
 
 use ratatui::{
     buffer::Buffer,
@@ -96,10 +100,12 @@ pub(super) fn is_group_index(index: usize) -> bool {
 }
 
 /// The rows to draw, honouring fold state except for the focused tab's group.
-/// One pass over the tabs, which the endpoint emits space by space.
+/// One pass over the tabs, which the endpoint emits space by space. The
+/// pinned News tab (`pinned_tab_id`) is left out.
 fn entries<'a>(
     snapshot: &'a ClientShellSnapshot,
     collapsed_groups: &HashSet<String>,
+    pinned_tab_id: Option<&str>,
 ) -> Vec<Entry<'a>> {
     let focused = focused_workspace(snapshot);
     let position: HashMap<&str, usize> = snapshot
@@ -111,6 +117,9 @@ fn entries<'a>(
     let mut members: Vec<Vec<&crate::protocol::ClientShellTab>> =
         vec![Vec::new(); snapshot.workspaces.len()];
     for tab in &snapshot.tabs {
+        if pinned_tab_id == Some(tab.tab_id.as_str()) {
+            continue;
+        }
         if let Some(index) = position.get(tab.workspace_id.as_str()) {
             members[*index].push(tab);
         }
@@ -165,8 +174,11 @@ pub(super) fn render_tab_sidebar(
 
     let status_lines = status_footer_lines(snapshot);
     // Rows left under the toolbar and above the menu row; the status keeps
-    // one of them for the list once it has more than one line.
+    // one of them for the list once it has more than one line, and the
+    // pinned News row takes one more when there is a News tab.
     let available = content.height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS);
+    let news_rows = u16::from(state.news_row.is_some()).min(available.saturating_sub(1));
+    let available = available.saturating_sub(news_rows);
     let status_rows = (status_lines.len().min(usize::from(u16::MAX)) as u16)
         .min(available.saturating_sub(1).max(1))
         .min(available);
@@ -176,13 +188,20 @@ pub(super) fn render_tab_sidebar(
         content.width,
         content
             .height
-            .saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS + status_rows),
+            .saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS + status_rows + news_rows),
     );
+    if news_rows > 0 {
+        if let Some(row) = state.news_row.as_ref() {
+            let rect = Rect::new(content.x, body.bottom(), content.width, 1);
+            render_news_row(buffer, rect, row, config);
+            hits.news_row = rect;
+        }
+    }
     if status_rows > 0 {
         render_tab_status_footer(
             buffer,
             content,
-            body.bottom(),
+            body.bottom().saturating_add(news_rows),
             &status_lines[..usize::from(status_rows)],
             palette,
         );
@@ -207,7 +226,11 @@ pub(super) fn render_tab_sidebar(
             *count = count.saturating_add(agent.subagents);
         }
     }
-    let rows = entries(snapshot, state.collapsed_groups);
+    let rows = entries(
+        snapshot,
+        state.collapsed_groups,
+        state.news_row.as_ref().map(|row| row.tab_id.as_str()),
+    );
     let row_heights = vec![1u16; rows.len()];
     let gaps = vec![0u16; rows.len()];
     let mut metrics =
@@ -368,6 +391,50 @@ pub(super) fn render_tab_sidebar(
         "«",
         Style::default().fg(palette.overlay0),
     );
+}
+
+/// The pinned News row: ` <glyph> News … <status> `, the label bold on the
+/// focused tab's row (with the focused row background), the glyph in the
+/// state's color, the status dim and right-aligned.
+fn render_news_row(
+    buffer: &mut Buffer,
+    rect: Rect,
+    row: &super::news::NewsRow,
+    config: &ClientShellConfig,
+) {
+    let palette = &config.palette;
+    let row_style = if row.focused {
+        Style::default().bg(palette.active_row_bg)
+    } else {
+        Style::default()
+    };
+    let label_style = if row.focused {
+        Style::default()
+            .fg(palette.text)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(palette.subtext0)
+    };
+    let glyph = row.state.glyph();
+    let lead = 1 + display_width(glyph) as u16 + 1;
+    let status_cells = display_width(&row.status) as u16 + 1;
+    let available = rect.width.saturating_sub(lead + status_cells + 1) as usize;
+    let label = crate::ui::truncate_end(super::news::NEWS_ROW_LABEL, available);
+    let pad = rect
+        .width
+        .saturating_sub(lead + display_width(&label) as u16 + status_cells);
+    let spans = vec![
+        Span::raw(" "),
+        Span::styled(glyph, Style::default().fg(row.state.color(palette))),
+        Span::raw(" "),
+        Span::styled(label, label_style),
+        Span::raw(" ".repeat(usize::from(pad))),
+        Span::styled(row.status.clone(), Style::default().fg(palette.overlay1)),
+        Span::raw(" "),
+    ];
+    Paragraph::new(Line::from(spans))
+        .style(row_style)
+        .render(rect, buffer);
 }
 
 /// The footer's lines: the non-empty status segments joined with the

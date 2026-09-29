@@ -262,6 +262,7 @@ mod keybindings_settings;
 mod link_hover;
 mod mobile;
 mod mouse_selection;
+mod news;
 mod notification_format;
 mod popup_focus_projection;
 mod settings_backups;
