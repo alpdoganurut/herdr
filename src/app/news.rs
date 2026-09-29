@@ -19,6 +19,13 @@
 //! page marks the News tab important (the fork's `tab.set_reminder` state),
 //! so it shows as unread.
 //!
+//! The client shell reads `news.get` (the pinned row, the settings section);
+//! `news.open` focuses the News tab, creating it with the page viewer when
+//! it is gone, or shows a past edition; `news.history` lists the editions;
+//! `news.set_enabled` writes `news.enabled` to the config and reloads it.
+//! Focusing the News tab clears its important mark here, on the scheduler
+//! pass, so it works from any client.
+//!
 //! Everything the server must remember survives in `news.json` next to
 //! `session.json` ([`crate::persist::news`]).
 
@@ -29,7 +36,10 @@ use bytes::Bytes;
 
 use super::api::responses::{encode_error, encode_success};
 use super::App;
-use crate::api::schema::{NewsRunInfo, NewsRunRecord, NewsStatusInfo, ResponseResult};
+use crate::api::schema::{
+    NewsGetInfo, NewsHistoryParams, NewsOpenParams, NewsRunInfo, NewsRunRecord,
+    NewsSetEnabledParams, NewsStatusInfo, ResponseResult,
+};
 use crate::config::{NewsConfig, QuietHours};
 use crate::persist::news as store;
 
@@ -55,6 +65,21 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const INTERRUPT: &[u8] = b"\x03";
 /// Quits the page viewer.
 const VIEWER_QUIT: &[u8] = b"q";
+/// The page viewer asset, under the home's `bin/`.
+const VIEWER: &str = "viewer.py";
+
+/// A command waiting for the News pane's shell prompt (`news.open`: the
+/// viewer for a new tab or a past edition). Not persisted: a restart drops
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingPaneCommand {
+    pub(crate) command: String,
+    pub(crate) next_check: Instant,
+    pub(crate) give_up_at: Instant,
+    /// Whether `q` was already sent to whatever holds the pane (a fresh
+    /// tab's shell gets none).
+    pub(crate) quit_sent: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NewsTrigger {
@@ -137,7 +162,7 @@ impl NewsRun {
     }
 }
 
-/// Why a run did not start.
+/// Why a run did not start (or `news.open` did not open).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NewsStartError {
     /// No news home: the session is not persisted.
@@ -146,6 +171,10 @@ pub(crate) enum NewsStartError {
     InFlight,
     /// Installing the runner or creating the tab failed.
     Failed(String),
+    /// `news.open --edition`: no such edition.
+    NoEdition(u32),
+    /// `news.set_enabled`: the config file could not be written.
+    ConfigWrite(String),
 }
 
 impl NewsStartError {
@@ -154,6 +183,8 @@ impl NewsStartError {
             Self::Unavailable => "news_unavailable",
             Self::InFlight => "news_run_in_flight",
             Self::Failed(_) => "news_run_failed",
+            Self::NoEdition(_) => "news_edition_not_found",
+            Self::ConfigWrite(_) => "news_config_write_failed",
         }
     }
 
@@ -163,7 +194,8 @@ impl NewsStartError {
                 "the news desk needs a persisted session (no session data directory)".into()
             }
             Self::InFlight => "a news run is already in flight".into(),
-            Self::Failed(message) => message.clone(),
+            Self::Failed(message) | Self::ConfigWrite(message) => message.clone(),
+            Self::NoEdition(edition) => format!("edition {edition} does not exist"),
         }
     }
 }
@@ -283,6 +315,22 @@ pub(crate) fn run_command(home: &Path, trigger: NewsTrigger, model: Option<&str>
     command
 }
 
+/// The page viewer command (`news.open`): the latest page, or `edition`.
+pub(crate) fn viewer_command(home: &Path, edition: Option<u32>) -> String {
+    let viewer = home
+        .join(crate::integration::news_assets::BIN_DIR)
+        .join(VIEWER);
+    let mut command = format!(
+        "python3 {} {}",
+        shell_quote(&viewer.display().to_string()),
+        shell_quote(&store::page_path(home).display().to_string())
+    );
+    if let Some(edition) = edition {
+        command.push_str(&format!(" --edition {edition}"));
+    }
+    command
+}
+
 /// Server-side news state (`App.news`).
 #[derive(Debug)]
 pub(crate) struct NewsState {
@@ -301,10 +349,15 @@ pub(crate) struct NewsState {
     pub(crate) pane_id: Option<String>,
     pub(crate) run: Option<NewsRun>,
     pub(crate) consecutive_failures: u32,
+    /// A viewer command waiting for the pane's shell prompt (`news.open`).
+    pub(crate) pending_command: Option<PendingPaneCommand>,
     /// Tests: treat the pane as at a shell prompt without probing its
     /// foreground process (test shells are `cat`, never a shell).
     #[cfg(test)]
     pub(crate) assume_shell_ready: bool,
+    /// Tests: treat the pane as busy (never at a shell prompt).
+    #[cfg(test)]
+    pub(crate) assume_shell_busy: bool,
 }
 
 impl NewsState {
@@ -340,8 +393,11 @@ impl NewsState {
             pane_id: None,
             run: None,
             consecutive_failures: 0,
+            pending_command: None,
             #[cfg(test)]
             assume_shell_ready: false,
+            #[cfg(test)]
+            assume_shell_busy: false,
         };
         state.apply_config(config);
         state
@@ -415,6 +471,10 @@ impl NewsState {
 
     /// The next instant the scheduler needs a tick.
     pub(crate) fn next_deadline(&self, now: Instant, now_unix: u64) -> Option<Instant> {
+        let pending = self
+            .pending_command
+            .as_ref()
+            .map(|pending| pending.next_check);
         if let Some(run) = &self.run {
             let watchdog = run.watch_from + WATCHDOG;
             return Some(match run.phase {
@@ -423,10 +483,18 @@ impl NewsState {
             });
         }
         if !self.enabled || self.home.is_none() {
-            return None;
+            return pending;
         }
         let next = self.next_run_at.unwrap_or(now_unix);
-        Some(now + Duration::from_secs(next.saturating_sub(now_unix)))
+        let scheduled = now + Duration::from_secs(next.saturating_sub(now_unix));
+        Some(pending.map_or(scheduled, |pending| pending.min(scheduled)))
+    }
+
+    /// The last finished run, from the run log.
+    fn last_run(&self) -> Option<NewsRunRecord> {
+        self.home
+            .as_deref()
+            .and_then(|home| store::read_history(home, 1).into_iter().next())
     }
 
     pub(crate) fn status(&self) -> NewsStatusInfo {
@@ -494,19 +562,292 @@ impl App {
         )
     }
 
+    pub(super) fn handle_news_get(&mut self, id: String) -> String {
+        encode_success(
+            id,
+            ResponseResult::NewsGet {
+                news: self.news_get_info(),
+            },
+        )
+    }
+
+    pub(super) fn handle_news_history(&mut self, id: String, params: NewsHistoryParams) -> String {
+        let Some(home) = self.news.home.as_deref() else {
+            let err = NewsStartError::Unavailable;
+            return encode_error(id, err.code(), err.message());
+        };
+        let mut editions = store::read_editions(home);
+        if let Some(days) = params.days.filter(|days| *days > 0) {
+            // Whole local days, newest first: today counts as one.
+            let mut kept_days = editions
+                .iter()
+                .map(|edition| edition.day.clone())
+                .collect::<Vec<_>>();
+            kept_days.sort();
+            kept_days.dedup();
+            let keep = kept_days
+                .iter()
+                .rev()
+                .take(days as usize)
+                .cloned()
+                .collect::<std::collections::HashSet<_>>();
+            editions.retain(|edition| keep.contains(&edition.day));
+        }
+        encode_success(id, ResponseResult::NewsHistory { editions })
+    }
+
+    pub(super) fn handle_news_open(&mut self, id: String, params: NewsOpenParams) -> String {
+        match self.open_news(params.edition, Instant::now()) {
+            Ok(()) => encode_success(
+                id,
+                ResponseResult::NewsGet {
+                    news: self.news_get_info(),
+                },
+            ),
+            Err(err) => encode_error(id, err.code(), err.message()),
+        }
+    }
+
+    pub(super) fn handle_news_set_enabled(
+        &mut self,
+        id: String,
+        params: NewsSetEnabledParams,
+    ) -> String {
+        match self.set_news_enabled(params.enabled) {
+            Ok(()) => encode_success(
+                id,
+                ResponseResult::NewsGet {
+                    news: self.news_get_info(),
+                },
+            ),
+            Err(err) => encode_error(id, err.code(), err.message()),
+        }
+    }
+
+    /// `news.get`: the schedule, the tab (only while it exists), the run in
+    /// flight, the last run and the unread mark.
+    pub(crate) fn news_get_info(&self) -> NewsGetInfo {
+        let pane = self.existing_news_pane();
+        let unread = pane.as_ref().is_some_and(|pane| {
+            self.state
+                .workspaces
+                .get(pane.ws_idx)
+                .and_then(|ws| ws.tabs.get(pane.tab_idx))
+                .is_some_and(|tab| tab.important)
+        });
+        NewsGetInfo {
+            enabled: self.news.enabled,
+            interval_hours: u32::try_from(self.news.interval.as_secs() / 3600).unwrap_or(u32::MAX),
+            quiet_hours: self.news.quiet_text.clone(),
+            model: self.news.model.clone(),
+            tab_id: pane
+                .as_ref()
+                .and_then(|pane| self.public_tab_id(pane.ws_idx, pane.tab_idx)),
+            pane_id: pane
+                .as_ref()
+                .and_then(|pane| self.public_pane_id(pane.ws_idx, pane.pane_id)),
+            next_run_at: (self.news.enabled && self.news.home.is_some())
+                .then(|| self.news.next_run_at.unwrap_or_else(unix_now)),
+            run: self.news.run.as_ref().map(NewsRun::info),
+            last_run: self.news.last_run().map(|record| record.last_run()),
+            unread,
+            consecutive_failures: self.news.consecutive_failures,
+        }
+    }
+
+    /// `news.set_enabled`: write `news.enabled` to the config file and reload
+    /// it, so the file stays the truth and the running server follows.
+    pub(crate) fn set_news_enabled(&mut self, enabled: bool) -> Result<(), NewsStartError> {
+        crate::config::write_edit(crate::config::ConfigEdit::NewsEnabled(enabled))
+            .map_err(NewsStartError::ConfigWrite)?;
+        let report = self.reload_config();
+        if self.news.enabled != enabled {
+            // The reload kept an invalid file's previous sections; the
+            // written value still applies to this server.
+            tracing::warn!(
+                event = "news.set_enabled",
+                outcome = "applied_directly",
+                status = ?report.status,
+                "config reload did not apply news.enabled; applying it in memory"
+            );
+            self.news.enabled = enabled;
+        }
+        tracing::info!(
+            event = "news.set_enabled",
+            outcome = "ok",
+            enabled,
+            "news scheduling changed"
+        );
+        self.news.persist();
+        Ok(())
+    }
+
+    /// `news.open`: focus the News tab. A tab that had to be created gets
+    /// the page viewer (when there is a page); with `edition`, whatever
+    /// holds the pane is quit with `q` and the viewer opens that edition.
+    /// Refused with `edition` while a run is in flight.
+    pub(crate) fn open_news(
+        &mut self,
+        edition: Option<u32>,
+        now: Instant,
+    ) -> Result<(), NewsStartError> {
+        if edition.is_some() && self.news.run.is_some() {
+            return Err(NewsStartError::InFlight);
+        }
+        let home = self.news.home.clone().ok_or(NewsStartError::Unavailable)?;
+        if let Some(edition) = edition {
+            if !store::read_editions(&home)
+                .iter()
+                .any(|entry| entry.edition == edition)
+            {
+                return Err(NewsStartError::NoEdition(edition));
+            }
+        }
+        let (pane, created) = self
+            .ensure_news_tab(&home)
+            .map_err(NewsStartError::Failed)?;
+        self.state.switch_workspace_tab(pane.ws_idx, pane.tab_idx);
+        self.schedule_session_save();
+        let show_viewer = edition.is_some()
+            || (created && self.news.run.is_none() && store::page_path(&home).is_file());
+        if show_viewer {
+            std::fs::create_dir_all(&home)
+                .and_then(|()| crate::integration::news_assets::install(&home))
+                .map_err(|err| {
+                    NewsStartError::Failed(format!(
+                        "failed to install the news viewer under {}: {err}",
+                        home.display()
+                    ))
+                })?;
+            self.news.pending_command = Some(PendingPaneCommand {
+                command: viewer_command(&home, edition),
+                next_check: now,
+                give_up_at: now + START_TIMEOUT,
+                quit_sent: created,
+            });
+            self.drive_news_pending_command(now);
+        }
+        tracing::info!(
+            event = "news.open",
+            outcome = "ok",
+            edition = edition.unwrap_or(0),
+            created,
+            viewer = show_viewer,
+            "News tab focused"
+        );
+        Ok(())
+    }
+
+    /// The pending viewer command: type it once the pane is at a shell
+    /// prompt, else send `q` once and probe again; give up after the start
+    /// timeout. Returns whether anything was sent.
+    fn drive_news_pending_command(&mut self, now: Instant) -> bool {
+        let Some(pending) = self.news.pending_command.clone() else {
+            return false;
+        };
+        if now < pending.next_check {
+            return false;
+        }
+        let Some(pane) = self.existing_news_pane() else {
+            self.news.pending_command = None;
+            return false;
+        };
+        #[allow(unused_mut)] // the test override below assigns it
+        let mut ready = self
+            .lookup_runtime_sender(pane.ws_idx, pane.pane_id)
+            .is_some_and(|runtime| super::agents::available_shell_name(runtime).is_some());
+        #[cfg(test)]
+        {
+            ready = (ready || self.news.assume_shell_ready) && !self.news.assume_shell_busy;
+        }
+        if ready {
+            self.news.pending_command = None;
+            let mut command = pending.command;
+            command.push('\r');
+            if let Err(err) = self.news_pane_bytes(&pane, Bytes::from(command)) {
+                tracing::warn!(
+                    event = "news.open",
+                    outcome = "command_failed",
+                    err = %err,
+                    "could not type the viewer command"
+                );
+            }
+            return true;
+        }
+        if now >= pending.give_up_at {
+            tracing::warn!(
+                event = "news.open",
+                outcome = "no_prompt",
+                "the News pane never returned to a shell prompt; viewer not started"
+            );
+            self.news.pending_command = None;
+            return false;
+        }
+        let mut sent = false;
+        if !pending.quit_sent {
+            sent = self
+                .news_pane_bytes(&pane, Bytes::from_static(VIEWER_QUIT))
+                .is_ok();
+        }
+        self.news.pending_command = Some(PendingPaneCommand {
+            next_check: now + START_RETRY,
+            quit_sent: true,
+            ..pending
+        });
+        sent
+    }
+
+    /// The unread mark clears when the News tab is looked at: its
+    /// `important` flag goes once it is the focused tab of the focused
+    /// space. Returns whether it changed.
+    fn clear_news_unread_when_focused(&mut self) -> bool {
+        let Some(pane) = self.existing_news_pane() else {
+            return false;
+        };
+        if self.state.active != Some(pane.ws_idx) {
+            return false;
+        }
+        let Some(tab) = self
+            .state
+            .workspaces
+            .get_mut(pane.ws_idx)
+            .filter(|ws| ws.active_tab == pane.tab_idx)
+            .and_then(|ws| ws.tabs.get_mut(pane.tab_idx))
+        else {
+            return false;
+        };
+        if !tab.important {
+            return false;
+        }
+        tab.important = false;
+        tracing::info!(
+            event = "news.unread",
+            outcome = "cleared",
+            "News tab focused; unread mark cleared"
+        );
+        self.state.mark_session_dirty();
+        self.schedule_session_save();
+        true
+    }
+
     /// The scheduler's contribution to the headless loop deadline.
     pub(crate) fn next_news_deadline(&self, now: Instant) -> Option<Instant> {
         self.news.next_deadline(now, unix_now())
     }
 
-    /// One scheduler pass: drive the run in flight (launch, poll, watchdog)
-    /// or start a due scheduled run. Returns whether shared state changed.
+    /// One scheduler pass: clear the unread mark of a focused News tab,
+    /// drive the run in flight (launch, poll, watchdog) or the pending
+    /// viewer command, or start a due scheduled run. Returns whether shared
+    /// state changed.
     pub(crate) fn handle_news_tasks(&mut self, now: Instant) -> bool {
+        let unread_cleared = self.clear_news_unread_when_focused();
         if self.news.run.is_some() {
-            return self.drive_news_run(now);
+            self.news.pending_command = None;
+            return self.drive_news_run(now) || unread_cleared;
         }
+        self.drive_news_pending_command(now);
         match self.news.schedule_action(unix_now(), LocalClock::now()) {
-            ScheduleAction::Wait => false,
+            ScheduleAction::Wait => unread_cleared,
             ScheduleAction::Defer(until) => {
                 if self.news.next_run_at != Some(until) {
                     tracing::info!(
@@ -518,7 +859,7 @@ impl App {
                     self.news.next_run_at = Some(until);
                     self.news.persist();
                 }
-                false
+                unread_cleared
             }
             ScheduleAction::Run => match self.start_news_run(NewsTrigger::Scheduled, now) {
                 Ok(_) => true,
@@ -533,7 +874,7 @@ impl App {
                     // Try again next interval rather than every tick.
                     self.news.next_run_at = Some(unix_now() + self.news.interval.as_secs());
                     self.news.persist();
-                    false
+                    unread_cleared
                 }
             },
         }
@@ -558,9 +899,11 @@ impl App {
                     home.display()
                 ))
             })?;
-        let pane = self
+        let (pane, _) = self
             .ensure_news_tab(&home)
             .map_err(NewsStartError::Failed)?;
+        // A run takes the pane: a viewer waiting for the prompt is dropped.
+        self.news.pending_command = None;
         let started_at = unix_now();
         self.news.run = Some(NewsRun {
             started_at,
@@ -597,9 +940,10 @@ impl App {
 
     /// The News tab: the stored one when it still exists and is still
     /// labelled `News`, else a new tab in the first space (not focused).
-    fn ensure_news_tab(&mut self, home: &Path) -> Result<NewsPane, String> {
+    /// The flag says whether it was created.
+    fn ensure_news_tab(&mut self, home: &Path) -> Result<(NewsPane, bool), String> {
         if let Some(pane) = self.existing_news_pane() {
-            return Ok(pane);
+            return Ok((pane, false));
         }
         let Some(ws_idx) = (!self.state.workspaces.is_empty()).then_some(0) else {
             return Err("no space to open the News tab in".into());
@@ -639,11 +983,14 @@ impl App {
             tab_id = self.news.tab_id.as_deref().unwrap_or(""),
             "News tab created"
         );
-        Ok(NewsPane {
-            ws_idx,
-            tab_idx,
-            pane_id,
-        })
+        Ok((
+            NewsPane {
+                ws_idx,
+                tab_idx,
+                pane_id,
+            },
+            true,
+        ))
     }
 
     fn existing_news_pane(&self) -> Option<NewsPane> {
@@ -675,7 +1022,7 @@ impl App {
             .is_some_and(|runtime| super::agents::available_shell_name(runtime).is_some());
         #[cfg(test)]
         {
-            ready = ready || self.news.assume_shell_ready;
+            ready = (ready || self.news.assume_shell_ready) && !self.news.assume_shell_busy;
         }
         let (trigger, give_up_at) = match self.news.run.as_ref() {
             Some(run) => match run.phase {
@@ -1295,6 +1642,301 @@ mod tests {
         let disabled_home = news_app(None, true);
         assert_eq!(disabled_home.news.next_deadline(now, NOW), None);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    fn news_tab_at(app: &mut App, idx: usize) {
+        app.state.workspaces[0].tabs[idx].set_custom_name(NEWS_TAB_LABEL.into());
+        app.news.tab_id = app.public_tab_id(0, idx);
+    }
+
+    fn editions_index(home: &Path, editions: &[u32]) {
+        std::fs::create_dir_all(home.join("editions")).unwrap();
+        let entries = editions
+            .iter()
+            .map(|n| {
+                serde_json::json!({
+                    "edition": n, "path": format!("2026-09-{n:02}/0900-e{n:04}.json"),
+                    "at": format!("2026-09-{n:02}T06:00:00+00:00"), "day": format!("2026-09-{n:02}"),
+                    "trigger": "scheduled", "stories": 20 + n, "changed": n % 2 == 1
+                })
+            })
+            .collect::<Vec<_>>();
+        std::fs::write(
+            store::editions_index_path(home),
+            serde_json::json!({ "version": 1, "editions": entries }).to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn news_get_reports_the_tab_only_while_it_exists_and_its_unread_mark() {
+        let home = temp_home("get");
+        std::fs::create_dir_all(home.join("runs")).unwrap();
+        store::append_index_record(
+            &home,
+            &NewsRunRecord {
+                started: iso_utc(NOW - 600),
+                ended: Some(iso_utc(NOW - 300)),
+                trigger: "scheduled".into(),
+                outcome: "ok".into(),
+                edition: Some(4),
+                changed: true,
+                ..NewsRunRecord::default()
+            },
+        )
+        .unwrap();
+        let mut app = news_app(Some(home.clone()), false);
+        app.news.tab_id = Some("w_9:t_9".into());
+        let response = request(
+            &mut app,
+            crate::api::schema::Method::NewsGet(Default::default()),
+        );
+        assert_eq!(response["result"]["type"], "news_get", "{response}");
+        let news = &response["result"]["news"];
+        assert!(news.get("tab_id").is_none(), "a gone tab is not reported");
+        assert_eq!(news["unread"], false);
+        assert_eq!(news["enabled"], false);
+        assert!(news.get("next_run_at").is_none());
+        assert_eq!(news["last_run"]["edition"], 4);
+        assert_eq!(news["last_run"]["started_at"], NOW - 600);
+        assert_eq!(news["last_run"]["outcome"], "ok");
+
+        news_tab_at(&mut app, 0);
+        app.state.workspaces[0].tabs[0].important = true;
+        let info = app.news_get_info();
+        assert_eq!(info.tab_id, app.public_tab_id(0, 0));
+        assert!(info.unread);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn the_unread_mark_clears_on_the_scheduler_pass_once_the_tab_is_focused() {
+        let home = temp_home("unread");
+        let mut app = news_app(Some(home.clone()), false);
+        app.state.workspaces[0].test_add_tab(Some("other"));
+        news_tab_at(&mut app, 1);
+        app.state.workspaces[0].tabs[1].important = true;
+        app.state.switch_workspace_tab(0, 0);
+        let now = Instant::now();
+        assert!(!app.handle_news_tasks(now), "unfocused: the mark stays");
+        assert!(app.state.workspaces[0].tabs[1].important);
+
+        app.state.switch_workspace_tab(0, 1);
+        assert!(app.handle_news_tasks(now), "focused: the mark clears");
+        assert!(!app.state.workspaces[0].tabs[1].important);
+        assert!(!app.handle_news_tasks(now), "and nothing changes after");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn news_open_creates_the_tab_with_the_viewer_focuses_it_and_shows_editions() {
+        let home = temp_home("open");
+        let mut app = news_app(None, false);
+        let response = request(
+            &mut app,
+            crate::api::schema::Method::NewsOpen(Default::default()),
+        );
+        assert_eq!(response["error"]["code"], "news_unavailable");
+
+        let mut app = news_app(Some(home.clone()), false);
+        app.news.assume_shell_ready = true;
+        app.state.default_shell = "/bin/cat".into();
+        app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(store::page_path(&home), "{}").unwrap();
+        editions_index(&home, &[1, 2]);
+
+        let response = request(
+            &mut app,
+            crate::api::schema::Method::NewsOpen(Default::default()),
+        );
+        assert_eq!(response["result"]["type"], "news_get", "{response}");
+        let workspace = &app.state.workspaces[0];
+        assert_eq!(workspace.tabs.len(), 2);
+        assert_eq!(workspace.tabs[1].custom_name.as_deref(), Some("News"));
+        assert_eq!(workspace.active_tab, 1, "news.open focuses the tab");
+        assert_eq!(
+            response["result"]["news"]["tab_id"],
+            app.public_tab_id(0, 1).unwrap()
+        );
+        let tab = &workspace.tabs[1];
+        let terminal_id = tab.terminal_id(tab.root_pane).unwrap().clone();
+        let runtime = app.terminal_runtimes.get(&terminal_id).unwrap();
+        for _ in 0..80 {
+            if runtime
+                .snapshot_history()
+                .is_some_and(|text| text.contains("viewer.py"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let history = runtime.snapshot_history().unwrap_or_default();
+        assert!(
+            history.contains("viewer.py") && history.contains("page.json"),
+            "a created tab gets the viewer: {history}"
+        );
+        assert!(!history.contains("--edition"), "{history}");
+        assert!(app.news.pending_command.is_none());
+
+        // An existing tab is only focused (no second viewer).
+        app.state.switch_workspace_tab(0, 0);
+        let response = request(
+            &mut app,
+            crate::api::schema::Method::NewsOpen(Default::default()),
+        );
+        assert_eq!(response["result"]["type"], "news_get");
+        assert_eq!(app.state.workspaces[0].active_tab, 1);
+        assert!(app.news.pending_command.is_none());
+
+        // A past edition: refused while a run is in flight, unknown numbers
+        // refused, else the viewer command carries it.
+        app.news.run = Some(in_flight(NOW, Instant::now()));
+        let response = request(
+            &mut app,
+            crate::api::schema::Method::NewsOpen(crate::api::schema::NewsOpenParams {
+                edition: Some(1),
+            }),
+        );
+        assert_eq!(response["error"]["code"], "news_run_in_flight");
+        app.news.run = None;
+        let response = request(
+            &mut app,
+            crate::api::schema::Method::NewsOpen(crate::api::schema::NewsOpenParams {
+                edition: Some(9),
+            }),
+        );
+        assert_eq!(response["error"]["code"], "news_edition_not_found");
+        let response = request(
+            &mut app,
+            crate::api::schema::Method::NewsOpen(crate::api::schema::NewsOpenParams {
+                edition: Some(2),
+            }),
+        );
+        assert_eq!(response["result"]["type"], "news_get", "{response}");
+        let runtime = app.terminal_runtimes.get(&terminal_id).unwrap();
+        for _ in 0..80 {
+            if runtime
+                .snapshot_history()
+                .is_some_and(|text| text.contains("--edition 2"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let history = runtime.snapshot_history().unwrap_or_default();
+        assert!(history.contains("--edition 2"), "{history}");
+
+        // The history, whole and by days.
+        let response = request(
+            &mut app,
+            crate::api::schema::Method::NewsHistory(Default::default()),
+        );
+        assert_eq!(response["result"]["type"], "news_history");
+        assert_eq!(response["result"]["editions"].as_array().unwrap().len(), 2);
+        let response = request(
+            &mut app,
+            crate::api::schema::Method::NewsHistory(crate::api::schema::NewsHistoryParams {
+                days: Some(1),
+            }),
+        );
+        let editions = response["result"]["editions"].as_array().unwrap();
+        assert_eq!(editions.len(), 1);
+        assert_eq!(editions[0]["edition"], 2);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn a_pending_viewer_command_quits_the_pane_once_then_waits_for_the_prompt() {
+        let home = temp_home("pending");
+        let mut app = news_app(Some(home.clone()), false);
+        news_tab_at(&mut app, 0);
+        let tab = &app.state.workspaces[0].tabs[0];
+        let terminal_id = tab.terminal_id(tab.root_pane).unwrap().clone();
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id, runtime);
+        let now = Instant::now();
+        app.news.assume_shell_busy = true;
+        app.news.pending_command = Some(PendingPaneCommand {
+            command: "echo hi".into(),
+            next_check: now,
+            give_up_at: now + START_TIMEOUT,
+            quit_sent: false,
+        });
+        app.handle_news_tasks(now);
+        assert_eq!(rx.try_recv().unwrap().as_ref(), b"q", "the viewer is quit");
+        let pending = app.news.pending_command.clone().expect("still pending");
+        assert!(pending.quit_sent);
+        assert_eq!(pending.next_check, now + START_RETRY);
+        assert_eq!(
+            app.news.next_deadline(now, NOW),
+            Some(now + START_RETRY),
+            "the loop wakes for the probe"
+        );
+        app.handle_news_tasks(now + START_RETRY);
+        assert!(rx.try_recv().is_err(), "q is sent once");
+        // The prompt is back.
+        app.news.assume_shell_busy = false;
+        app.handle_news_tasks(now + 2 * START_RETRY);
+        assert_eq!(rx.try_recv().unwrap().as_ref(), b"echo hi\r");
+        assert!(app.news.pending_command.is_none());
+
+        // Never a prompt: given up after the start timeout.
+        app.news.assume_shell_busy = true;
+        app.news.pending_command = Some(PendingPaneCommand {
+            command: "echo hi".into(),
+            next_check: now,
+            give_up_at: now + START_TIMEOUT,
+            quit_sent: true,
+        });
+        app.handle_news_tasks(now + START_TIMEOUT);
+        assert!(app.news.pending_command.is_none());
+        assert!(rx.try_recv().is_err());
+
+        // A run in flight drops it.
+        app.news.pending_command = Some(PendingPaneCommand {
+            command: "echo hi".into(),
+            next_check: now,
+            give_up_at: now + START_TIMEOUT,
+            quit_sent: true,
+        });
+        app.news.run = Some(in_flight(NOW, now));
+        app.handle_news_tasks(now);
+        assert!(app.news.pending_command.is_none());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn set_enabled_writes_the_config_and_applies_it() {
+        let dir = temp_home("set-enabled");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[news]\nenabled = false\ninterval_hours = 3\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+        let mut app = news_app(Some(dir.join("news")), false);
+        let response = request(
+            &mut app,
+            crate::api::schema::Method::NewsSetEnabled(crate::api::schema::NewsSetEnabledParams {
+                enabled: true,
+            }),
+        );
+        assert_eq!(response["result"]["type"], "news_get", "{response}");
+        assert_eq!(response["result"]["news"]["enabled"], true);
+        assert!(app.news.enabled);
+        let written: crate::config::Config =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(written.news.enabled);
+        assert_eq!(written.news.interval_hours, 3, "other keys are kept");
+
+        let response = request(
+            &mut app,
+            crate::api::schema::Method::NewsSetEnabled(crate::api::schema::NewsSetEnabledParams {
+                enabled: false,
+            }),
+        );
+        assert_eq!(response["result"]["news"]["enabled"], false);
+        assert!(!app.news.enabled);
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

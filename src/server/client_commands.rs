@@ -22,6 +22,10 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "integration.install",
     "integration.list",
     "layout.set_split_ratio",
+    "news.get",
+    "news.open",
+    "news.run",
+    "news.set_enabled",
     "pane.clear",
     "pane.close",
     "pane.copy_motion",
@@ -351,6 +355,22 @@ mod tests {
         assert_eq!(
             actual.remove("session.closed_reopen").as_deref(),
             Some("f18fab7830a2e3c6e915def7f93b9afb48f406bc78001cecd0a17f188291306d")
+        );
+        assert_eq!(
+            actual.remove("news.get").as_deref(),
+            Some("aa473a7480d449faed99b6e7958a359b79c42352fa2baf37a080c17d17c8c855")
+        );
+        assert_eq!(
+            actual.remove("news.open").as_deref(),
+            Some("bb5614fbd62d35a07127482009b8f69808325fecf27588dc70da6a19b15b4fb7")
+        );
+        assert_eq!(
+            actual.remove("news.run").as_deref(),
+            Some("19594c58ed9598a02c2edd64f939dfd11e71b82267bdcaac244a3f5e840209ff")
+        );
+        assert_eq!(
+            actual.remove("news.set_enabled").as_deref(),
+            Some("1246ec256f7160ad56a4bc171faceb2e68649e592628021b0f821624c87b2d74")
         );
 
         assert_eq!(

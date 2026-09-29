@@ -1122,6 +1122,12 @@ impl App {
             }
             Method::NewsRun(_) => return self.handle_news_run(request.id),
             Method::NewsStatus(_) => return self.handle_news_status(request.id),
+            Method::NewsGet(_) => return self.handle_news_get(request.id),
+            Method::NewsHistory(params) => return self.handle_news_history(request.id, params),
+            Method::NewsOpen(params) => return self.handle_news_open(request.id, params),
+            Method::NewsSetEnabled(params) => {
+                return self.handle_news_set_enabled(request.id, params)
+            }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

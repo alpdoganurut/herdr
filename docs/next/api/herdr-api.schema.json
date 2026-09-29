@@ -2473,6 +2473,46 @@
           ],
           "type": "object"
         },
+        "NewsHistoryParams": {
+          "description": "`news.history`: the editions index, optionally only the last `days` days.",
+          "properties": {
+            "days": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "NewsOpenParams": {
+          "description": "`news.open`: focus the News tab; with `edition`, show that edition.",
+          "properties": {
+            "edition": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "NewsSetEnabledParams": {
+          "description": "`news.set_enabled`: turn scheduled runs on or off (written to the config).",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "type": "object"
+        },
         "NotificationShowParams": {
           "properties": {
             "body": {
@@ -5957,6 +5997,70 @@
         {
           "properties": {
             "method": {
+              "const": "news.get",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "news.history",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/NewsHistoryParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "news.open",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/NewsOpenParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "news.set_enabled",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/NewsSetEnabledParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -8538,6 +8642,215 @@
             }
           ]
         },
+        "NewsEditionInfo": {
+          "description": "One published edition from `<home>/editions/index.json` (`news.history`).",
+          "properties": {
+            "at": {
+              "default": "",
+              "description": "When it was published, ISO 8601 UTC.",
+              "type": "string"
+            },
+            "changed": {
+              "default": false,
+              "type": "boolean"
+            },
+            "day": {
+              "default": "",
+              "description": "The local day, `YYYY-MM-DD`.",
+              "type": "string"
+            },
+            "edition": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "path": {
+              "default": "",
+              "description": "The edition file, relative to `<home>/editions/`.",
+              "type": "string"
+            },
+            "stories": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "trigger": {
+              "default": "",
+              "description": "`manual` or `scheduled`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "edition"
+          ],
+          "type": "object"
+        },
+        "NewsGetInfo": {
+          "description": "`news.get`: what the client shell shows (the pinned row, the settings\nsection) and what `news.open` / `news.set_enabled` answer.",
+          "properties": {
+            "consecutive_failures": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "enabled": {
+              "description": "Whether scheduled runs are on (`news.enabled`).",
+              "type": "boolean"
+            },
+            "interval_hours": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "last_run": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/NewsLastRun"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last finished run."
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "next_run_at": {
+              "description": "The next scheduled run, seconds since the Unix epoch; absent while\nscheduling is off or the server has no news home.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "quiet_hours": {
+              "description": "The configured quiet window, `HH:MM-HH:MM`, or empty.",
+              "type": "string"
+            },
+            "run": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/NewsRunInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The run in flight."
+            },
+            "tab_id": {
+              "description": "The News tab and its pane, while the tab exists.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "unread": {
+              "description": "The News tab is marked important: a run changed the page and the tab\nhas not been focused since.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled",
+            "interval_hours",
+            "quiet_hours",
+            "unread",
+            "consecutive_failures"
+          ],
+          "type": "object"
+        },
+        "NewsLastRun": {
+          "description": "The last finished run, in `news.get`.",
+          "properties": {
+            "changed": {
+              "default": false,
+              "type": "boolean"
+            },
+            "edition": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "ended_at": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "error": {
+              "description": "The first recorded error of a run that did not succeed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "outcome": {
+              "description": "`ok`, `invalid`, `timeout`, `failed` or `dry-run`.",
+              "type": "string"
+            },
+            "started_at": {
+              "description": "Seconds since the Unix epoch.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "trigger": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "started_at",
+            "trigger",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        "NewsNotifyInfo": {
+          "description": "The editor's notification request (`decision.notify`) on a run that\nchanged the page. The server's policy decides whether it is delivered.",
+          "properties": {
+            "body": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "urgency": {
+              "default": "low",
+              "description": "`low` or `high` (high may exceed the daily cap once).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "title"
+          ],
+          "type": "object"
+        },
         "NewsRunInfo": {
           "description": "The run in flight.",
           "properties": {
@@ -8597,6 +8910,17 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "notify": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/NewsNotifyInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The editor's notification request (`decision.notify`), when it made one."
             },
             "outcome": {
               "description": "`ok`, `invalid`, `timeout`, `failed` or `dry-run`.",
@@ -10572,6 +10896,41 @@
               "required": [
                 "type",
                 "status"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "news": {
+                  "$ref": "#/schemas/success_response/$defs/NewsGetInfo"
+                },
+                "type": {
+                  "const": "news_get",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "news"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "editions": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/NewsEditionInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "news_history",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "editions"
               ],
               "type": "object"
             },

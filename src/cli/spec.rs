@@ -854,6 +854,46 @@ fn news_command() -> Command {
                     "Prints the newest N runs (default 10) from <home>/runs/index.jsonl, newest first, with the editor's summary and any validation errors.",
                 ),
         )
+        .subcommand(
+            Command::new("open")
+                .about("Focus the News tab, or show a past edition")
+                .override_usage("herdr news open [--edition N]")
+                .arg(
+                    Arg::new("edition")
+                        .long("edition")
+                        .value_name("N")
+                        .required(false),
+                )
+                .long_about(
+                    "Focuses the News tab (news.open), creating it in the first space with the page viewer when it is gone. With --edition N the viewer is quit with `q` and reopened on that edition; refused while a run is in flight.",
+                ),
+        )
+        .subcommand(
+            Command::new("history")
+                .about("List the published editions")
+                .override_usage("herdr news history [--days N] [--json]")
+                .arg(Arg::new("days").long("days").value_name("N").required(false))
+                .arg(json_flag())
+                .long_about(
+                    "Lists every edition from <home>/editions/index.json, oldest first (news.history): number, local time, trigger, story count and whether the page changed. --days N keeps the last N local days.",
+                ),
+        )
+        .subcommand(
+            Command::new("enable")
+                .about("Turn scheduled news runs on")
+                .override_usage("herdr news enable")
+                .long_about(
+                    "Writes news.enabled = true to the config file and reloads it (news.set_enabled); the schedule starts from the next due slot.",
+                ),
+        )
+        .subcommand(
+            Command::new("disable")
+                .about("Turn scheduled news runs off")
+                .override_usage("herdr news disable")
+                .long_about(
+                    "Writes news.enabled = false to the config file and reloads it (news.set_enabled); `herdr news run` still works.",
+                ),
+        )
 }
 
 fn session_command() -> Command {
@@ -1499,6 +1539,21 @@ mod tests {
         assert!(log
             .get_arguments()
             .any(|arg| arg.get_id() == "count" && !arg.is_required_set()));
+    }
+
+    #[test]
+    fn spec_models_news_open_history_enable_and_disable() {
+        let cmd = super::command();
+        assert!(has_option(command_path(&cmd, &["news", "open"]), "edition"));
+        let history = command_path(&cmd, &["news", "history"]);
+        assert!(has_option(history, "days"));
+        assert!(has_option(history, "json"));
+        for name in ["enable", "disable"] {
+            assert!(command_path(&cmd, &["news", name])
+                .get_arguments()
+                .next()
+                .is_none());
+        }
     }
 
     #[test]

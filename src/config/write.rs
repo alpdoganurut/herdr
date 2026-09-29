@@ -12,6 +12,8 @@ pub(crate) enum ConfigEdit<'a> {
     },
     /// Fork: `ui.daily_reminder_time`, as minutes past midnight.
     DailyReminderTime(u32),
+    /// Fork: `news.enabled` (scheduled news runs on or off).
+    NewsEnabled(bool),
 }
 
 /// Fork: minutes past midnight as a 24-hour "HH:MM".
@@ -29,6 +31,7 @@ impl ConfigEdit<'_> {
             Self::IdleReminderMinutes(_) => "reminder setting",
             Self::DailyReminderTime(_) => "daily reminder time",
             Self::SoundFile { .. } => "sound setting",
+            Self::NewsEnabled(_) => "news setting",
         }
     }
 
@@ -82,6 +85,9 @@ impl ConfigEdit<'_> {
                 "daily_reminder_time",
                 &toml::Value::String(format_time_of_day(minutes)).to_string(),
             ),
+            Self::NewsEnabled(enabled) => {
+                super::upsert_section_bool(content, "news", "enabled", enabled)
+            }
         }
     }
 }
@@ -117,6 +123,21 @@ pub(crate) fn write_edit(edit: ConfigEdit<'_>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn news_enabled_edit_writes_the_news_section() {
+        let edited = ConfigEdit::NewsEnabled(true).apply("[ui]\nsidebar_layout = \"tabs\"\n");
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(config.news.enabled);
+        assert_eq!(
+            config.ui.sidebar_layout,
+            crate::config::SidebarLayoutConfig::Tabs
+        );
+        let edited = ConfigEdit::NewsEnabled(false).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(!config.news.enabled);
+        assert_eq!(edited.matches("[news]").count(), 1);
+    }
 
     #[test]
     fn sound_file_edit_writes_and_removes_the_sound_key() {

@@ -1,11 +1,18 @@
-//! `herdr news run | status | log [n]` (fork): the AI news desk
-//! (`news.run`, `news.status`).
+//! `herdr news run | status | log [n] | open [--edition N] | history [--days N]
+//! | enable | disable` (fork): the AI news desk (`news.run`, `news.status`,
+//! `news.open`, `news.history`, `news.set_enabled`).
 
-use crate::api::schema::{EmptyParams, Method, NewsRunRecord, NewsStatusInfo, Request};
+use crate::api::schema::{
+    EmptyParams, Method, NewsEditionInfo, NewsGetInfo, NewsHistoryParams, NewsOpenParams,
+    NewsRunRecord, NewsSetEnabledParams, NewsStatusInfo, Request,
+};
+use crate::persist::news::iso_to_unix;
 
-const USAGE: &str = "usage: herdr news <run|status [--json]|log [N] [--json]>";
+const USAGE: &str = "usage: herdr news <run|status [--json]|log [N] [--json]|open [--edition N]|history [--days N] [--json]|enable|disable>";
 const STATUS_USAGE: &str = "usage: herdr news status [--json]";
 const LOG_USAGE: &str = "usage: herdr news log [N] [--json]";
+const OPEN_USAGE: &str = "usage: herdr news open [--edition N]";
+const HISTORY_USAGE: &str = "usage: herdr news history [--days N] [--json]";
 /// How many runs `status` lists and `log` shows by default.
 const STATUS_RUNS: usize = 5;
 const LOG_RUNS: usize = 10;
@@ -15,6 +22,10 @@ pub(super) fn run_news_command(args: &[String]) -> std::io::Result<i32> {
         Some("run") => news_run(&args[1..]),
         Some("status") => news_status(&args[1..]),
         Some("log") => news_log(&args[1..]),
+        Some("open") => news_open(&args[1..]),
+        Some("history") => news_history(&args[1..]),
+        Some("enable") => news_set_enabled(&args[1..], true),
+        Some("disable") => news_set_enabled(&args[1..], false),
         Some("help" | "--help" | "-h") => {
             eprintln!("{USAGE}");
             Ok(0)
@@ -152,6 +163,170 @@ fn news_log(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
+fn fetch_get(
+    request_id: &str,
+    method: Method,
+) -> std::io::Result<Result<NewsGetInfo, serde_json::Value>> {
+    let response = super::send_request(&Request {
+        id: request_id.into(),
+        method,
+    })?;
+    if response.get("error").is_some() {
+        return Ok(Err(response));
+    }
+    let news = response
+        .pointer("/result/news")
+        .cloned()
+        .ok_or_else(|| std::io::Error::other("the server sent no news record"))?;
+    serde_json::from_value(news)
+        .map(Ok)
+        .map_err(std::io::Error::other)
+}
+
+fn news_open(args: &[String]) -> std::io::Result<i32> {
+    let mut edition = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--edition" => match args.next().and_then(|n| n.parse::<u32>().ok()) {
+                Some(n) if n > 0 => edition = Some(n),
+                _ => {
+                    eprintln!("{OPEN_USAGE}");
+                    return Ok(2);
+                }
+            },
+            "help" | "--help" | "-h" => {
+                eprintln!("{OPEN_USAGE}");
+                return Ok(0);
+            }
+            _ => {
+                eprintln!("{OPEN_USAGE}");
+                return Ok(2);
+            }
+        }
+    }
+    let news = match fetch_get(
+        "cli:news:open",
+        Method::NewsOpen(NewsOpenParams { edition }),
+    )? {
+        Ok(news) => news,
+        Err(response) => return super::print_response(&response),
+    };
+    match edition {
+        Some(edition) => println!(
+            "News tab {} focused, showing edition {edition}",
+            news.tab_id.as_deref().unwrap_or("?")
+        ),
+        None => println!("News tab {} focused", news.tab_id.as_deref().unwrap_or("?")),
+    }
+    Ok(0)
+}
+
+fn news_history(args: &[String]) -> std::io::Result<i32> {
+    let mut json = false;
+    let mut days = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--days" => match args.next().and_then(|n| n.parse::<u32>().ok()) {
+                Some(n) if n > 0 => days = Some(n),
+                _ => {
+                    eprintln!("{HISTORY_USAGE}");
+                    return Ok(2);
+                }
+            },
+            "help" | "--help" | "-h" => {
+                eprintln!("{HISTORY_USAGE}");
+                return Ok(0);
+            }
+            _ => {
+                eprintln!("{HISTORY_USAGE}");
+                return Ok(2);
+            }
+        }
+    }
+    let response = super::send_request(&Request {
+        id: "cli:news:history".into(),
+        method: Method::NewsHistory(NewsHistoryParams { days }),
+    })?;
+    if response.get("error").is_some() {
+        return super::print_response(&response);
+    }
+    let editions: Vec<NewsEditionInfo> = response
+        .pointer("/result/editions")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(std::io::Error::other)?
+        .unwrap_or_default();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&editions)?);
+        return Ok(0);
+    }
+    if editions.is_empty() {
+        println!("no editions yet");
+        return Ok(0);
+    }
+    let clock = LocalClock::now();
+    for edition in &editions {
+        println!("{}", format_edition(edition, &clock));
+    }
+    Ok(0)
+}
+
+fn news_set_enabled(args: &[String], enabled: bool) -> std::io::Result<i32> {
+    let usage = if enabled {
+        "usage: herdr news enable"
+    } else {
+        "usage: herdr news disable"
+    };
+    if let Some(arg) = args.first() {
+        eprintln!("{usage}");
+        return Ok(if matches!(arg.as_str(), "help" | "--help" | "-h") {
+            0
+        } else {
+            2
+        });
+    }
+    let news = match fetch_get(
+        "cli:news:set_enabled",
+        Method::NewsSetEnabled(NewsSetEnabledParams { enabled }),
+    )? {
+        Ok(news) => news,
+        Err(response) => return super::print_response(&response),
+    };
+    let clock = LocalClock::now();
+    if news.enabled {
+        match news.next_run_at {
+            Some(at) => println!(
+                "scheduled news runs on; next run {} ({})",
+                clock.format(at),
+                format_until(clock.now, at)
+            ),
+            None => println!("scheduled news runs on"),
+        }
+    } else {
+        println!("scheduled news runs off; `herdr news run` still works");
+    }
+    Ok(0)
+}
+
+/// One `history` line: `  3  2026-09-29 09:15  manual     30 stories  changed`.
+fn format_edition(edition: &NewsEditionInfo, clock: &LocalClock) -> String {
+    let mut line = format!(
+        "{:>4}  {}  {:<9}  {:>2} stories",
+        edition.edition,
+        clock.format_iso(&edition.at),
+        edition.trigger,
+        edition.stories
+    );
+    if edition.changed {
+        line.push_str("  changed");
+    }
+    line
+}
+
 /// The local clock: the UTC offset in effect now (applied to every
 /// timestamp; a DST change between then and now shifts old times by an
 /// hour, which the listing tolerates).
@@ -200,35 +375,6 @@ impl LocalClock {
             .map(|unix| self.format(unix))
             .unwrap_or_else(|| iso.to_string())
     }
-}
-
-/// `YYYY-MM-DDTHH:MM:SS` (any suffix; assumed UTC, which is what the
-/// runner writes) to seconds since the epoch.
-fn iso_to_unix(iso: &str) -> Option<u64> {
-    let bytes = iso.as_bytes();
-    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
-        return None;
-    }
-    let field = |range: std::ops::Range<usize>| iso.get(range)?.parse::<i64>().ok();
-    let (year, month, day) = (field(0..4)?, field(5..7)?, field(8..10)?);
-    let (hour, minute, second) = (field(11..13)?, field(14..16)?, field(17..19)?);
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 60
-    {
-        return None;
-    }
-    // Days from civil (Howard Hinnant), proleptic Gregorian.
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    u64::try_from(days * 86_400 + hour * 3_600 + minute * 60 + second).ok()
 }
 
 fn format_duration(seconds: u64) -> String {
@@ -357,16 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn iso_timestamps_convert_to_unix_seconds() {
-        assert_eq!(iso_to_unix("1970-01-01T00:00:00+00:00"), Some(0));
-        assert_eq!(
-            iso_to_unix("2026-09-21T14:13:20+00:00"),
-            Some(1_790_000_000)
-        );
-        assert_eq!(iso_to_unix("2027-01-15T08:00:00Z"), Some(1_800_000_000));
-        assert_eq!(iso_to_unix("2024-02-29T23:59:59"), Some(1_709_251_199));
-        assert_eq!(iso_to_unix("soon"), None);
-        assert_eq!(iso_to_unix("2026-13-01T00:00:00"), None);
+    fn local_clock_formats_unix_and_iso_times() {
         assert_eq!(utc().format(1_790_000_000), "2026-09-21 14:13");
         let plus_three = LocalClock {
             now: 0,
@@ -378,6 +515,33 @@ mod tests {
             "2026-09-21 17:13"
         );
         assert_eq!(plus_three.format_iso("garbage"), "garbage");
+    }
+
+    #[test]
+    fn history_lines_are_numbered_and_flag_changes() {
+        let edition = NewsEditionInfo {
+            edition: 3,
+            at: "2026-09-29T06:15:51+00:00".into(),
+            trigger: "manual".into(),
+            stories: 30,
+            changed: true,
+            ..NewsEditionInfo::default()
+        };
+        assert_eq!(
+            format_edition(&edition, &utc()),
+            "   3  2026-09-29 06:15  manual     30 stories  changed"
+        );
+        let same = NewsEditionInfo {
+            edition: 12,
+            trigger: "scheduled".into(),
+            stories: 7,
+            changed: false,
+            ..edition
+        };
+        assert_eq!(
+            format_edition(&same, &utc()),
+            "  12  2026-09-29 06:15  scheduled   7 stories"
+        );
     }
 
     #[test]

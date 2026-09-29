@@ -169,6 +169,14 @@ pub enum Method {
     NewsRun(EmptyParams),
     #[serde(rename = "news.status")]
     NewsStatus(EmptyParams),
+    #[serde(rename = "news.get")]
+    NewsGet(EmptyParams),
+    #[serde(rename = "news.history")]
+    NewsHistory(NewsHistoryParams),
+    #[serde(rename = "news.open")]
+    NewsOpen(NewsOpenParams),
+    #[serde(rename = "news.set_enabled")]
+    NewsSetEnabled(NewsSetEnabledParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

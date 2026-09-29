@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::schema::NewsRunRecord;
+use crate::api::schema::{NewsEditionInfo, NewsNotifyInfo, NewsRunRecord};
 
 /// File name inside the session data directory.
 pub const FILE_NAME: &str = "news.json";
@@ -29,6 +29,10 @@ const CORRUPT_FILE_NAME: &str = "news.corrupt.json";
 pub const HOME_DIR_NAME: &str = "news";
 /// The runner's run log, relative to the home.
 pub const INDEX_FILE: &str = "runs/index.jsonl";
+/// The runner's editions index, relative to the home.
+pub const EDITIONS_INDEX_FILE: &str = "editions/index.json";
+/// The published page (a copy of the latest edition), relative to the home.
+pub const PAGE_FILE: &str = "page.json";
 /// The most run records read back.
 pub const MAX_HISTORY: usize = 50;
 const FILE_VERSION: u32 = 1;
@@ -46,6 +50,86 @@ pub fn home_dir() -> PathBuf {
 /// The runner's run log inside `home`.
 pub fn index_path(home: &Path) -> PathBuf {
     home.join(INDEX_FILE)
+}
+
+/// The editions index inside `home`.
+pub fn editions_index_path(home: &Path) -> PathBuf {
+    home.join(EDITIONS_INDEX_FILE)
+}
+
+/// The published page inside `home`.
+pub fn page_path(home: &Path) -> PathBuf {
+    home.join(PAGE_FILE)
+}
+
+/// `YYYY-MM-DDTHH:MM:SS` (any suffix; assumed UTC, which is what the
+/// runner writes) to seconds since the epoch.
+pub fn iso_to_unix(iso: &str) -> Option<u64> {
+    let bytes = iso.as_bytes();
+    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
+        return None;
+    }
+    let field = |range: std::ops::Range<usize>| iso.get(range)?.parse::<i64>().ok();
+    let (year, month, day) = (field(0..4)?, field(5..7)?, field(8..10)?);
+    let (hour, minute, second) = (field(11..13)?, field(14..16)?, field(17..19)?);
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    // Days from civil (Howard Hinnant), proleptic Gregorian.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hour * 3_600 + minute * 60 + second).ok()
+}
+
+/// The editions the runner indexed, oldest first. A missing or unreadable
+/// index is an empty list; entries this build cannot decode are skipped.
+pub fn read_editions(home: &Path) -> Vec<NewsEditionInfo> {
+    let content = match fs::read_to_string(editions_index_path(home)) {
+        Ok(content) => content,
+        Err(err) => {
+            if err.kind() != io::ErrorKind::NotFound {
+                tracing::warn!(
+                    event = "persist.news.editions",
+                    outcome = "read_error",
+                    err = %err,
+                    "failed to read the news editions index"
+                );
+            }
+            return Vec::new();
+        }
+    };
+    let value: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!(
+                event = "persist.news.editions",
+                outcome = "parse_error",
+                err = %err,
+                "the news editions index is not valid JSON"
+            );
+            return Vec::new();
+        }
+    };
+    value
+        .get("editions")
+        .and_then(|editions| editions.as_array())
+        .map(|editions| {
+            editions
+                .iter()
+                .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A run in flight, as persisted.
@@ -211,6 +295,10 @@ pub fn record_from_index_line(line: &str) -> Option<NewsRunRecord> {
             .and_then(|v| v.as_str())
             .filter(|s| !s.trim().is_empty())
             .map(str::to_string),
+        notify: decision
+            .and_then(|d| d.get("notify"))
+            .and_then(|v| serde_json::from_value::<NewsNotifyInfo>(v.clone()).ok())
+            .filter(|notify| !notify.title.trim().is_empty()),
         errors: object
             .get("errors")
             .and_then(|v| v.as_array())
@@ -284,14 +372,19 @@ pub fn append_index_record(home: &Path, record: &NewsRunRecord) -> io::Result<()
     let mut value = serde_json::to_value(record)?;
     if let Some(object) = value.as_object_mut() {
         object.insert("recorded_by".into(), "herdr".into());
-        if record.summary.is_some() || record.changed {
+        if record.summary.is_some() || record.changed || record.notify.is_some() {
             object.insert(
                 "decision".into(),
-                serde_json::json!({ "changed": record.changed, "summary": record.summary }),
+                serde_json::json!({
+                    "changed": record.changed,
+                    "summary": record.summary,
+                    "notify": record.notify,
+                }),
             );
         }
         object.remove("changed");
         object.remove("summary");
+        object.remove("notify");
     }
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -418,6 +511,74 @@ mod tests {
         assert!(record_from_index_line("").is_none());
         assert!(record_from_index_line("not json").is_none());
         assert!(record_from_index_line(r#"{"outcome":"ok"}"#).is_none());
+    }
+
+    #[test]
+    fn iso_timestamps_convert_to_unix_seconds() {
+        assert_eq!(iso_to_unix("1970-01-01T00:00:00+00:00"), Some(0));
+        assert_eq!(
+            iso_to_unix("2026-09-21T14:13:20+00:00"),
+            Some(1_790_000_000)
+        );
+        assert_eq!(iso_to_unix("2027-01-15T08:00:00Z"), Some(1_800_000_000));
+        assert_eq!(iso_to_unix("2024-02-29T23:59:59"), Some(1_709_251_199));
+        assert_eq!(iso_to_unix("soon"), None);
+        assert_eq!(iso_to_unix("2026-13-01T00:00:00"), None);
+    }
+
+    #[test]
+    fn the_notify_request_rides_along_in_the_decision() {
+        let line = r#"{"started": "2026-09-29T06:09:22+00:00", "trigger": "manual", "outcome": "ok", "edition": 1, "decision": {"changed": true, "notify": {"title": "Sonnet 5.5", "body": "Out now.", "urgency": "high"}, "summary": "One launch."}}"#;
+        let record = record_from_index_line(line).unwrap();
+        let notify = record.notify.as_ref().expect("notify decoded");
+        assert_eq!(notify.title, "Sonnet 5.5");
+        assert_eq!(notify.body.as_deref(), Some("Out now."));
+        assert_eq!(notify.urgency, "high");
+
+        let blank = record_from_index_line(
+            r#"{"started":"2026-09-29T06:09:22+00:00","outcome":"ok","decision":{"changed":true,"notify":{"title":"  "}}}"#,
+        )
+        .unwrap();
+        assert!(blank.notify.is_none(), "a blank title is no request");
+        let null = record_from_index_line(
+            r#"{"started":"2026-09-29T06:09:22+00:00","outcome":"ok","decision":{"changed":true,"notify":null}}"#,
+        )
+        .unwrap();
+        assert!(null.notify.is_none());
+
+        let dir = TempDir::new("notify-roundtrip");
+        let home = dir.0.join("news");
+        append_index_record(&home, &record).unwrap();
+        let back = read_history(&home, 1);
+        assert_eq!(back[0].notify, record.notify);
+        assert_eq!(back[0].summary.as_deref(), Some("One launch."));
+    }
+
+    #[test]
+    fn editions_index_reads_oldest_first_and_tolerates_junk() {
+        let dir = TempDir::new("editions");
+        let home = dir.0.join("news");
+        assert!(read_editions(&home).is_empty());
+        fs::create_dir_all(home.join("editions")).unwrap();
+        fs::write(editions_index_path(&home), "not json").unwrap();
+        assert!(read_editions(&home).is_empty());
+        fs::write(
+            editions_index_path(&home),
+            r#"{"version": 1, "editions": [
+                {"edition": 1, "path": "2026-09-29/0915-e0001.json", "at": "2026-09-29T06:15:51+00:00", "day": "2026-09-29", "trigger": "manual", "stories": 30, "changed": true},
+                {"edition": "two"},
+                {"edition": 3, "day": "2026-09-30"}
+            ]}"#,
+        )
+        .unwrap();
+        let editions = read_editions(&home);
+        assert_eq!(editions.len(), 2);
+        assert_eq!(editions[0].edition, 1);
+        assert_eq!(editions[0].stories, 30);
+        assert!(editions[0].changed);
+        assert_eq!(editions[1].edition, 3);
+        assert_eq!(editions[1].day, "2026-09-30");
+        assert!(editions[1].trigger.is_empty());
     }
 
     #[test]

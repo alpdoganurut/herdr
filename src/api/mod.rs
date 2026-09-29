@@ -59,6 +59,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::PaneReportSubagent(_)
             | Method::SessionClosedReopen(_)
             | Method::NewsRun(_)
+            | Method::NewsOpen(_)
             | Method::AgentPrompt(_)
             | Method::AgentSendKeys(_)
             | Method::PaneSplit(_)
