@@ -486,6 +486,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # show_activity = true
 # The overlay's colour (frame glow, cursor, ripple), #rrggbb; applies on reload-config.
 # activity_color = "#aa6eff"
+# The symbol that starts a tab group's title (then the herdr tab label), keyed by
+# canonical agent id plus "default"; plain Unicode Chrome renders. Omitted keys keep their defaults.
+# group_symbols = { claude = "✻", codex = "◇", default = "◌" }
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

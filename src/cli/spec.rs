@@ -1042,7 +1042,9 @@ fn browser_command() -> Command {
         )
         .subcommand(
             Command::new("setup")
-                .about("Install the Playwright sidecar (npm ci) and register the MCP server for Claude Code")
+                .about("Install the Playwright sidecar (npm ci) and register the MCP server for Claude Code and/or Codex")
+                .arg(flag("claude").help("Register with Claude Code (user scope)"))
+                .arg(flag("codex").help("Register in Codex's config.toml with the pane variables forwarded"))
                 .arg(flag("no-mcp"))
                 .arg(option("node", "PATH")),
         )

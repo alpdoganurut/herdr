@@ -1699,6 +1699,12 @@
           "description": "Show agent activity in the Chromium window: the tabs an agent pane opens or acts on sit in a tab group named after the agent and its herdr tab (the companion extension, loaded with `--load-extension`; expanded while the pane is active, collapsed after `active_glyph_secs`), and a purple glow frame with a gliding cursor is injected into the page while an operation runs and for a few seconds after. `false` turns all three off; a running profile needs a restart to load or drop the extension."
         },
         {
+          "key": "browser.group_symbols",
+          "type": "table",
+          "default": "{ claude = \"✻\", codex = \"◇\", default = \"◌\" }",
+          "description": "The symbol a tab group's title starts with, followed by the herdr tab label (the pane id when the tab has no label), keyed by canonical agent id plus `default` (any other agent, or a pane without one). Plain Unicode that Chrome's UI font renders; keys you omit keep their defaults."
+        },
+        {
           "key": "browser.activity_color",
           "type": "string",
           "default": "\"#aa6eff\"",

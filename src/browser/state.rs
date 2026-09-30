@@ -21,7 +21,7 @@ pub const MAX_TAB_USERS: usize = 8;
 /// A crashed profile shows as crashed for this long, then as stopped.
 pub const CRASH_RETENTION_SECS: u64 = 600;
 /// Longest `detail` string in a touch or activity.
-pub const MAX_DETAIL_CHARS: usize = 120;
+pub const MAX_DETAIL_CHARS: usize = 220;
 
 /// A tab is identified by its profile and Chromium target id.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

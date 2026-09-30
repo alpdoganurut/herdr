@@ -655,6 +655,16 @@ pub fn act_result(
 }
 
 /// The ledger detail of an act: the element, never the text.
+/// The ledger line of an eval: the code itself, one line, sanitized and
+/// clipped (never its result).
+pub const EVAL_DETAIL_CHARS: usize = 200;
+pub fn eval_detail(expr: &str) -> String {
+    format!(
+        "eval: {}",
+        clip(&one_line(&sanitize(expr)), EVAL_DETAIL_CHARS)
+    )
+}
+
 pub fn act_detail(kind: &str, target: &str, host: &Value, typed_len: Option<usize>) -> String {
     let role = host["role"].as_str().unwrap_or("element");
     let name = clip(&one_line(host["name"].as_str().unwrap_or("")), 40);

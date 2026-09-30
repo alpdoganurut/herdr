@@ -48,7 +48,7 @@ Act (refs from browser snapshot; a password field is refused, ask the user):
 
   status [--json]   log [-n 50] [--pane ID] [--tab T] [--json]   start|stop [--profile P] [--all]
   profile list | create [--temp] NAME | delete NAME
-  setup [--no-mcp] [--node PATH]   doctor   mcp
+  setup [--claude] [--codex] [--no-mcp] [--node PATH]   doctor   mcp
 
 Flags on every verb: --profile P (new = a fresh temporary profile), --tab T, --pane ID, --timeout MS, --json";
 
@@ -1002,46 +1002,228 @@ fn claude_on_path() -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// The MCP entry `setup` registers: the shell expands `HERDR_BIN_PATH` inside
-/// a herdr pane (so the dev instance reaches its own binary); outside herdr
-/// the absolute fallback keeps the server from showing as failed.
-pub(crate) fn mcp_entry_json(fallback_binary: &Path) -> String {
-    let command = format!(
+/// The shell line both registrations run: `HERDR_BIN_PATH` expands inside a
+/// herdr pane (so the dev instance reaches its own binary); outside herdr the
+/// absolute fallback keeps the server from showing as failed.
+pub(crate) fn mcp_shell_command(fallback_binary: &Path) -> String {
+    format!(
         "exec \"${{HERDR_BIN_PATH:-{}}}\" browser mcp",
         fallback_binary.display()
-    );
+    )
+}
+
+/// The MCP entry `setup` registers with Claude Code.
+pub(crate) fn mcp_entry_json(fallback_binary: &Path) -> String {
     serde_json::json!({
         "type": "stdio",
         "command": "sh",
-        "args": ["-c", command],
+        "args": ["-c", mcp_shell_command(fallback_binary)],
     })
     .to_string()
 }
 
+/// The pane variables Codex must forward to the server: Codex starts MCP
+/// servers with a minimal environment (HOME, PATH, …), so without this list
+/// the server cannot find the pane's herdr socket or attribute the caller.
+pub(crate) const CODEX_FORWARDED_ENV: [&str; 7] = [
+    "HERDR_PANE_ID",
+    "HERDR_BIN_PATH",
+    "HERDR_SOCKET_PATH",
+    "HERDR_SESSION",
+    "HERDR_ENV",
+    "HERDR_TAB_ID",
+    "HERDR_WORKSPACE_ID",
+];
+
+/// The `[mcp_servers.herdr-browser]` table `setup --codex` writes.
+pub(crate) fn codex_mcp_block(fallback_binary: &Path) -> String {
+    let mut table = toml::value::Table::new();
+    table.insert("command".into(), toml::Value::String("sh".into()));
+    table.insert(
+        "args".into(),
+        toml::Value::Array(vec![
+            toml::Value::String("-c".into()),
+            toml::Value::String(mcp_shell_command(fallback_binary)),
+        ]),
+    );
+    table.insert(
+        "env_vars".into(),
+        toml::Value::Array(
+            CODEX_FORWARDED_ENV
+                .iter()
+                .map(|v| toml::Value::String((*v).into()))
+                .collect(),
+        ),
+    );
+    let body = toml::to_string(&toml::Value::Table(table)).unwrap_or_default();
+    format!("[mcp_servers.{MCP_SERVER_NAME}]\n{body}")
+}
+
+/// Put `block` (a `[mcp_servers.herdr-browser]` table) into a Codex
+/// `config.toml`: an existing table of that name is replaced in place (the
+/// rest of the file is untouched), else the block goes at the end.
+pub(crate) fn upsert_codex_block(config: &str, block: &str) -> String {
+    let header = format!("[mcp_servers.{MCP_SERVER_NAME}]");
+    let is_header = |line: &str| {
+        let trimmed = line.trim();
+        trimmed.starts_with('[') && !trimmed.starts_with("[[") || trimmed.starts_with("[[")
+    };
+    let is_ours = |line: &str| {
+        let trimmed = line.trim();
+        trimmed == header
+            || trimmed == format!("[mcp_servers.\"{MCP_SERVER_NAME}\"]")
+            || trimmed.starts_with(&format!("[mcp_servers.{MCP_SERVER_NAME}."))
+            || trimmed.starts_with(&format!("[mcp_servers.\"{MCP_SERVER_NAME}\"."))
+    };
+    let lines: Vec<&str> = config.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    let mut replaced = false;
+    while i < lines.len() {
+        if is_ours(lines[i]) {
+            // Skip this table (and its sub-tables) up to the next header.
+            i += 1;
+            while i < lines.len() && (!is_header(lines[i]) || is_ours(lines[i])) {
+                i += 1;
+            }
+            if !replaced {
+                out.push(block.trim_end().to_string());
+                out.push(String::new());
+                replaced = true;
+            }
+            continue;
+        }
+        out.push(lines[i].to_string());
+        i += 1;
+    }
+    if !replaced {
+        while out.last().is_some_and(|l| l.trim().is_empty()) {
+            out.pop();
+        }
+        if !out.is_empty() {
+            out.push(String::new());
+        }
+        out.push(block.trim_end().to_string());
+    }
+    let mut text = out.join("\n");
+    while text.ends_with("\n\n") {
+        text.pop();
+    }
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
+/// Codex's `config.toml` (`$CODEX_HOME`, else `~/.codex`).
+fn codex_config_path() -> Option<PathBuf> {
+    let dir = match std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty()) {
+        Some(home) => PathBuf::from(home),
+        None => PathBuf::from(std::env::var_os("HOME")?).join(".codex"),
+    };
+    Some(dir.join("config.toml"))
+}
+
+/// What Codex's config says about the server: `Ok(true)` registered with the
+/// forwarded pane variables, `Ok(false)` absent, `Err` registered without them.
+fn codex_registration(path: &Path) -> Option<Result<bool, String>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: toml::Value = toml::from_str(&text).ok()?;
+    let entry = value.get("mcp_servers")?.get(MCP_SERVER_NAME);
+    let Some(entry) = entry else {
+        return Some(Ok(false));
+    };
+    let forwarded = entry
+        .get("env_vars")
+        .and_then(toml::Value::as_array)
+        .is_some_and(|vars| {
+            CODEX_FORWARDED_ENV
+                .iter()
+                .all(|v| vars.iter().any(|x| x.as_str() == Some(v)))
+        });
+    if forwarded {
+        Some(Ok(true))
+    } else {
+        Some(Err(
+            "registered without the forwarded pane variables (env_vars); rerun `herdr browser setup --codex`"
+                .into(),
+        ))
+    }
+}
+
+fn register_codex(fallback: &Path) -> String {
+    let Some(path) = codex_config_path() else {
+        return "codex: no home directory".into();
+    };
+    let current = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return format!("codex: cannot read {} ({err})", path.display()),
+    };
+    let block = codex_mcp_block(fallback);
+    let next = upsert_codex_block(&current, &block);
+    if next == current {
+        return format!(
+            "codex: {} already registers {MCP_SERVER_NAME}",
+            path.display()
+        );
+    }
+    if let Some(parent) = path.parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            return format!("codex: cannot create {} ({err})", parent.display());
+        }
+    }
+    let tmp = path.with_file_name(format!(".config.toml.herdr-{}", std::process::id()));
+    let written = std::fs::write(&tmp, &next).and_then(|()| std::fs::rename(&tmp, &path));
+    match written {
+        Ok(()) => format!(
+            "codex: wrote [mcp_servers.{MCP_SERVER_NAME}] to {}:\n{}",
+            path.display(),
+            block
+                .lines()
+                .map(|l| format!("          {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+        Err(err) => {
+            let _ = std::fs::remove_file(&tmp);
+            format!("codex: cannot write {} ({err})", path.display())
+        }
+    }
+}
+
 fn setup(args: &[String]) -> std::io::Result<i32> {
     let mut register_mcp = true;
+    // Which agents to register the MCP server for: none named = both, each
+    // when its tool is around.
+    let mut want_claude = false;
+    let mut want_codex = false;
     let mut node_override: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--no-mcp" => register_mcp = false,
+            "--claude" => want_claude = true,
+            "--codex" => want_codex = true,
             "--node" => {
                 i += 1;
                 node_override = args.get(i).cloned();
             }
             "help" | "--help" | "-h" => {
-                println!("usage: herdr browser setup [--no-mcp] [--node PATH]\nInstalls the Playwright sidecar under the browser home (npm ci), records the node used, and registers the herdr-browser MCP server for Claude Code (user scope).");
+                println!("usage: herdr browser setup [--claude] [--codex] [--no-mcp] [--node PATH]\nInstalls the Playwright sidecar under the browser home (npm ci), records the node used, and registers the herdr-browser MCP server for Claude Code (user scope) and/or Codex (~/.codex/config.toml); with neither flag, both when found.");
                 return Ok(0);
             }
             other => {
                 eprintln!(
-                    "unknown flag {other}\nusage: herdr browser setup [--no-mcp] [--node PATH]"
+                    "unknown flag {other}\nusage: herdr browser setup [--claude] [--codex] [--no-mcp] [--node PATH]"
                 );
                 return Ok(2);
             }
         }
         i += 1;
     }
+    let both = !want_claude && !want_codex;
+    let (want_claude, want_codex) = (want_claude || both, want_codex || both);
     let config = crate::config::Config::load().config.browser;
     let home = crate::browser::browser_home();
     let host_dir = home.join(crate::integration::browser_assets::HOST_DIR);
@@ -1169,7 +1351,9 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
     let fallback = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("herdr"));
     let entry = mcp_entry_json(&fallback);
     if !register_mcp {
-        println!("  mcp:    skipped (--no-mcp). To register by hand:\n          claude mcp add-json --scope user {MCP_SERVER_NAME} '{entry}'");
+        println!("  mcp:    skipped (--no-mcp). To register by hand:\n          claude mcp add-json --scope user {MCP_SERVER_NAME} '{entry}'\n          or add this to ~/.codex/config.toml:\n{}", codex_mcp_block(&fallback).lines().map(|l| format!("          {l}")).collect::<Vec<_>>().join("\n"));
+    } else if !want_claude {
+        // --codex alone
     } else if let Some(claude) = claude_on_path() {
         let _ = std::process::Command::new(&claude)
             .args(["mcp", "remove", "-s", "user", MCP_SERVER_NAME])
@@ -1183,8 +1367,24 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
     } else {
         println!("  mcp:    `claude` not on PATH; when it is:\n          claude mcp add-json --scope user {MCP_SERVER_NAME} '{entry}'");
     }
+    if register_mcp && want_codex {
+        let codex_present =
+            codex_on_path().is_some() || codex_config_path().is_some_and(|p| p.exists());
+        if codex_present || !both {
+            println!("  {}", register_codex(&fallback));
+        } else {
+            println!("  codex:  not found (no `codex` on PATH, no ~/.codex/config.toml); `herdr browser setup --codex` registers it anyway");
+        }
+    }
     println!("done. Try: herdr browser open https://example.com && herdr browser read");
     Ok(0)
+}
+
+fn codex_on_path() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("codex"))
+        .find(|candidate| candidate.is_file())
 }
 
 fn doctor(args: &[String]) -> std::io::Result<i32> {
@@ -1294,6 +1494,24 @@ fn doctor(args: &[String]) -> std::io::Result<i32> {
         }
         None => println!("info claude: not on PATH (MCP registration skipped)"),
     }
+    match codex_config_path().and_then(|path| codex_registration(&path)) {
+        Some(Ok(true)) => check(
+            true,
+            format!("codex mcp: {MCP_SERVER_NAME} registered (pane variables forwarded)"),
+        ),
+        Some(Ok(false)) => {
+            if codex_on_path().is_some() {
+                check(
+                    false,
+                    format!("codex mcp: {MCP_SERVER_NAME} not registered — run `herdr browser setup --codex`"),
+                );
+            } else {
+                println!("info codex mcp: {MCP_SERVER_NAME} not registered (no `codex` on PATH)");
+            }
+        }
+        Some(Err(problem)) => check(false, format!("codex mcp: {MCP_SERVER_NAME} {problem}")),
+        None => println!("info codex: no config.toml (registration skipped)"),
+    }
     match super::send_request_unchecked(&Request {
         id: "cli:browser:doctor".into(),
         method: Method::BrowserGet(BrowserGetParams::default()),
@@ -1355,6 +1573,58 @@ mod tests {
 
     fn s(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn codex_block_is_upserted_without_touching_the_rest() {
+        let block = codex_mcp_block(Path::new("/opt/herdr"));
+        assert!(block.starts_with("[mcp_servers.herdr-browser]\n"));
+        assert!(block.contains("command = \"sh\""));
+        let parsed: toml::Value = toml::from_str(&block).unwrap();
+        let entry = &parsed["mcp_servers"]["herdr-browser"];
+        assert_eq!(
+            entry["args"][1].as_str(),
+            Some("exec \"${HERDR_BIN_PATH:-/opt/herdr}\" browser mcp")
+        );
+        let vars: Vec<&str> = entry["env_vars"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(vars, CODEX_FORWARDED_ENV);
+        let other = "model = \"x\"\n\n[mcp_servers.node_repl]\ncommand = \"node\"\n\n[mcp_servers.node_repl.env]\nA = \"1\"\n";
+        let once = upsert_codex_block(other, &block);
+        assert!(once.starts_with(other), "existing content untouched");
+        assert!(once.ends_with(&format!("{}\n", block.trim_end())));
+        let value: toml::Value = toml::from_str(&once).unwrap();
+        assert_eq!(
+            value["mcp_servers"]["herdr-browser"]["command"].as_str(),
+            Some("sh")
+        );
+        assert_eq!(
+            value["mcp_servers"]["node_repl"]["env"]["A"].as_str(),
+            Some("1")
+        );
+        // idempotent
+        assert_eq!(upsert_codex_block(&once, &block), once);
+        // an old entry in the middle (with a sub-table) is replaced in place
+        let stale = "a = 1\n[mcp_servers.herdr-browser]\ncommand = \"old\"\n[mcp_servers.herdr-browser.env]\nX = \"1\"\n[features]\nrmcp_client = true\n";
+        let fixed = upsert_codex_block(stale, &block);
+        let value: toml::Value = toml::from_str(&fixed).unwrap();
+        assert_eq!(
+            value["mcp_servers"]["herdr-browser"]["command"].as_str(),
+            Some("sh")
+        );
+        assert!(value["mcp_servers"]["herdr-browser"].get("env").is_none());
+        assert_eq!(value["features"]["rmcp_client"].as_bool(), Some(true));
+        assert_eq!(value["a"].as_integer(), Some(1));
+        assert_eq!(fixed.matches("[mcp_servers.herdr-browser]").count(), 1);
+        // an empty file gets just the block
+        assert_eq!(
+            upsert_codex_block("", &block),
+            format!("{}\n", block.trim_end())
+        );
     }
 
     #[test]

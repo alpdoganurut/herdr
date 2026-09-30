@@ -24,14 +24,17 @@ pub fn group_color(pane_id: &str) -> &'static str {
     GROUP_COLORS[(hash % GROUP_COLORS.len() as u64) as usize]
 }
 
-/// `<agent label> · <herdr tab label>`, whichever exist; the pane id when neither does.
-pub fn group_title(agent: Option<&str>, tab_label: &str, pane_id: &str) -> String {
-    let agent = agent.map(str::trim).filter(|a| !a.is_empty());
-    let tab = Some(tab_label.trim()).filter(|t| !t.is_empty());
-    match (agent, tab) {
-        (Some(agent), Some(tab)) => format!("{agent} · {tab}"),
-        (Some(one), None) | (None, Some(one)) => one.to_string(),
-        (None, None) => pane_id.to_string(),
+/// `<agent symbol> <herdr tab label>` (no provider names in the window); the
+/// pane id stands in when the tab has no label.
+pub fn group_title(symbol: &str, tab_label: &str, pane_id: &str) -> String {
+    let label = Some(tab_label.trim())
+        .filter(|t| !t.is_empty())
+        .unwrap_or(pane_id);
+    let symbol = symbol.trim();
+    if symbol.is_empty() {
+        label.to_string()
+    } else {
+        format!("{symbol} {label}")
     }
 }
 
@@ -57,7 +60,7 @@ pub fn directive(actor: &BrowserActor, config: &BrowserConfig) -> Option<Value> 
         "color": config.activity_color(),
         "group": {
             "key": pane_id,
-            "title": group_title(agent.as_deref(), tab_label, pane_id),
+            "title": group_title(&config.group_symbol(agent.as_deref()), tab_label, pane_id),
             "color": group_color(pane_id),
             "collapse_ms": config.active_glyph_secs.saturating_mul(1000),
         },
@@ -92,14 +95,19 @@ mod tests {
     }
 
     #[test]
-    fn titles_fall_back_from_agent_and_tab_to_the_pane_id() {
+    fn titles_are_a_symbol_and_the_tab_label_with_the_pane_id_as_fallback() {
+        assert_eq!(group_title("✻", "planner", "w2:p7"), "✻ planner");
+        assert_eq!(group_title("◇", "  ", "w2:p7"), "◇ w2:p7");
+        assert_eq!(group_title("", "planner", "w2:p7"), "planner");
+        let config = BrowserConfig::default();
         assert_eq!(
-            group_title(Some("claude"), "planner", "w2:p7"),
-            "claude · planner"
+            group_title(&config.group_symbol(Some("codex")), "review", "w1:p1"),
+            "◇ review"
         );
-        assert_eq!(group_title(None, "planner", "w2:p7"), "planner");
-        assert_eq!(group_title(Some("claude"), "  ", "w2:p7"), "claude");
-        assert_eq!(group_title(None, "", "w2:p7"), "w2:p7");
+        assert_eq!(
+            group_title(&config.group_symbol(None), "shell", "w1:p1"),
+            "◌ shell"
+        );
     }
 
     #[test]
@@ -130,7 +138,20 @@ mod tests {
             "an invalid colour falls back to the default"
         );
         assert_eq!(d["group"]["key"], "w2:p7");
-        assert_eq!(d["group"]["title"], "claude · planner");
+        assert_eq!(
+            d["group"]["title"], "✻ planner",
+            "a symbol, never the provider name"
+        );
+        let custom = BrowserConfig {
+            group_symbols: [("claude".to_string(), "C".to_string())]
+                .into_iter()
+                .collect(),
+            ..BrowserConfig::default()
+        };
+        assert_eq!(
+            directive(&pane(Some("claude"), "planner"), &custom).unwrap()["group"]["title"],
+            "C planner"
+        );
         assert_eq!(d["group"]["color"], group_color("w2:p7"));
         assert_eq!(d["group"]["collapse_ms"], 90_000);
         assert!(directive(&BrowserActor::User, &config).is_none());

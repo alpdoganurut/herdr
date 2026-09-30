@@ -1359,13 +1359,24 @@ impl BrowserHub {
                                 "browser eval is disabled ([browser] allow_eval = false)",
                             ));
                         }
-                        let reply = self.request(
-                            "eval",
-                            Some(profile),
-                            Some(target),
-                            json!({ "expr": expr }),
-                            deadline,
-                        )?;
+                        // The password rule holds for eval too: the sidecar
+                        // snapshots the page's password fields around the
+                        // code and refuses (restoring them) when one changed.
+                        let reply = self
+                            .request(
+                                "eval",
+                                Some(profile),
+                                Some(target),
+                                json!({ "expr": expr, "guard_passwords": !config.type_into_password_fields }),
+                                deadline,
+                            )
+                            .map_err(|mut err| {
+                                // A refused eval still shows what ran in the ledger.
+                                if err.code == "password_field_refused" {
+                                    err.message = format!("{} — {}", err.message, shape::eval_detail(expr));
+                                }
+                                err
+                            })?;
                         let page = reply.page.clone().unwrap_or_default();
                         self.note_page(&key, &page);
                         let record = self.record(&key)?;
@@ -1376,7 +1387,7 @@ impl BrowserHub {
                                 &reply.result,
                                 max.unwrap_or(4000).clamp(100, 200_000) as usize,
                             ),
-                            format!("eval {} chars", expr.chars().count()),
+                            shape::eval_detail(expr),
                         )
                     }
                     BrowserOp::Dialog { action, text } => {

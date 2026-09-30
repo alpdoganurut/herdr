@@ -78,7 +78,16 @@ pub struct BrowserConfig {
     /// The activity overlay's colour (frame border and glow, cursor fill,
     /// ripple), `#rrggbb`. Default: `#aa6eff`. Invalid → the default.
     pub activity_color: String,
+    /// The symbol that starts a tab group's title, keyed by canonical agent
+    /// id plus `default` (any other agent, or none). Plain Unicode Chrome's
+    /// UI font renders. Keys you omit keep their defaults:
+    /// claude `✻`, codex `◇`, default `◌`.
+    pub group_symbols: std::collections::BTreeMap<String, String>,
 }
+
+/// The tab group title symbols keys omit fall back to.
+pub const DEFAULT_GROUP_SYMBOLS: [(&str, &str); 3] =
+    [("claude", "✻"), ("codex", "◇"), ("default", "◌")];
 
 /// The activity overlay's default colour (the approved purple).
 pub const DEFAULT_ACTIVITY_COLOR: &str = "#aa6eff";
@@ -115,11 +124,36 @@ impl Default for BrowserConfig {
             op_timeout_ms: 30_000,
             show_activity: true,
             activity_color: DEFAULT_ACTIVITY_COLOR.into(),
+            group_symbols: std::collections::BTreeMap::new(),
         }
     }
 }
 
 impl BrowserConfig {
+    /// The tab group symbol for an agent (`default` for none or an unknown
+    /// one); a configured value wins over the built-in, blank values are ignored.
+    pub fn group_symbol(&self, agent: Option<&str>) -> String {
+        let configured = |key: &str| {
+            self.group_symbols
+                .get(key)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let builtin = |key: &str| {
+            DEFAULT_GROUP_SYMBOLS
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| (*v).to_string())
+        };
+        let agent = agent.map(str::trim).filter(|a| !a.is_empty());
+        agent
+            .and_then(|agent| configured(agent).or_else(|| builtin(agent)))
+            .or_else(|| configured("default"))
+            .or_else(|| builtin("default"))
+            .unwrap_or_default()
+    }
+
     /// The overlay colour, lower-case `#rrggbb`; the default when invalid.
     pub fn activity_color(&self) -> String {
         let value = self.activity_color.trim();
@@ -432,6 +466,27 @@ mod tests {
         }
         assert!(valid_hex_color("#AbCdEf"));
         assert!(!valid_hex_color("#abcdeff"));
+    }
+
+    #[test]
+    fn group_symbols_default_per_agent_and_take_overrides() {
+        let config = BrowserConfig::default();
+        assert_eq!(config.group_symbol(Some("claude")), "✻");
+        assert_eq!(config.group_symbol(Some("codex")), "◇");
+        assert_eq!(config.group_symbol(Some("pi")), "◌");
+        assert_eq!(config.group_symbol(None), "◌");
+        let config: BrowserConfig =
+            toml::from_str("group_symbols = { claude = \"C\", default = \"*\", codex = \" \" }")
+                .unwrap();
+        assert_eq!(config.group_symbol(Some("claude")), "C");
+        assert_eq!(
+            config.group_symbol(Some("codex")),
+            "◇",
+            "a blank override is ignored"
+        );
+        assert_eq!(config.group_symbol(Some("pi")), "*");
+        assert_eq!(config.group_symbol(None), "*");
+        assert!(config.diagnostics().is_empty());
     }
 
     #[test]

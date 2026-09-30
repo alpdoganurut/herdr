@@ -160,7 +160,13 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                             json!({ "id": id, "ok": true, "result": { "scroll_y": 100, "scroll_height": 3000 }, "page": page })
                         }
                         "eval" => {
-                            json!({ "id": id, "ok": true, "result": { "value": { "a": 1 } }, "page": page })
+                            // The guard refuses code that touches the fixture's password field.
+                            let guarded = args["guard_passwords"].as_bool().unwrap_or(false);
+                            if guarded && args["expr"].as_str().is_some_and(|e| e.contains("#pw")) {
+                                json!({ "id": id, "ok": false, "error": { "code": "password_field_refused", "message": "eval changed a password field; restored" } })
+                            } else {
+                                json!({ "id": id, "ok": true, "result": { "value": { "a": 1 } }, "page": page })
+                            }
                         }
                         "dialog" => {
                             json!({ "id": id, "ok": true, "result": { "type": "alert", "message": "hi" }, "page": page })
@@ -1553,7 +1559,7 @@ fn an_agent_call_carries_the_activity_directive_and_the_user_s_does_not() {
         assert_eq!(directive["frame"], true, "{directive}");
         assert_eq!(directive["animate"], true);
         assert_eq!(directive["group"]["key"], "w2:pA");
-        assert_eq!(directive["group"]["title"], "claude · planner");
+        assert_eq!(directive["group"]["title"], "✻ planner");
         assert_eq!(
             directive["group"]["color"],
             crate::browser::activity::group_color("w2:pA")
@@ -1897,5 +1903,121 @@ fn an_open_whose_page_failed_still_adopts_the_tab_and_close_opened_covers_it() {
         "{}",
         batch.text
     );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn eval_is_guarded_by_the_password_rule_and_logs_the_code_not_the_result() {
+    let (hub, shared, _stream, home) = hub("eval-guard");
+    let actor = pane("w2:pG");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    let err = hub
+        .run(
+            &actor,
+            params(BrowserOp::Eval {
+                expr: "document.querySelector('#pw2').value='x'".into(),
+                max: None,
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "password_field_refused");
+    let ok = hub
+        .run(
+            &actor,
+            params(BrowserOp::Eval {
+                expr: "document.title\u{7}".into(),
+                max: None,
+            }),
+        )
+        .unwrap();
+    assert!(
+        ok.text.contains("\"a\": 1") || ok.text.contains("{\"a\":1}"),
+        "{}",
+        ok.text
+    );
+    {
+        let ops = shared.lock().unwrap().ops.clone();
+        let evals: Vec<&Value> = ops
+            .iter()
+            .filter(|(op, _, _)| op == "eval")
+            .map(|(_, _, a)| a)
+            .collect();
+        assert_eq!(evals.len(), 2);
+        assert_eq!(
+            evals[0]["guard_passwords"], true,
+            "the default config guards"
+        );
+    }
+    hub.with_state(|state| {
+        let log = state.activity(3, None, None);
+        assert_eq!(log[0].op, "eval");
+        assert_eq!(
+            log[0].detail, "eval: document.title",
+            "sanitized code, no result"
+        );
+        assert!(!log[0].detail.contains("\"a\""));
+        assert_eq!(log[1].op, "eval");
+        assert!(
+            log[1].detail.contains("password_field_refused"),
+            "{}",
+            log[1].detail
+        );
+        assert!(
+            log[1]
+                .detail
+                .contains("eval: document.querySelector('#pw2').value='x'"),
+            "a refused eval still shows its code: {}",
+            log[1].detail
+        );
+    });
+    // Long code is clipped in the ledger.
+    let long = format!("document.title + '{}'", "y".repeat(400));
+    hub.run(
+        &actor,
+        params(BrowserOp::Eval {
+            expr: long,
+            max: None,
+        }),
+    )
+    .unwrap();
+    hub.with_state(|state| {
+        let detail = &state.activity(1, None, None)[0].detail;
+        assert!(
+            detail.starts_with("eval: document.title + 'yyyy"),
+            "{detail}"
+        );
+        assert!(detail.chars().count() <= 220, "{}", detail.chars().count());
+    });
+    // Passwords allowed by config: no guard.
+    hub.apply_config(&BrowserConfig {
+        type_into_password_fields: true,
+        ..BrowserConfig::default()
+    });
+    hub.run(
+        &actor,
+        params(BrowserOp::Eval {
+            expr: "document.querySelector('#pw2').value='x'".into(),
+            max: None,
+        }),
+    )
+    .unwrap();
+    let last = shared
+        .lock()
+        .unwrap()
+        .ops
+        .iter()
+        .rev()
+        .find(|(op, _, _)| op == "eval")
+        .map(|(_, _, a)| a.clone())
+        .unwrap();
+    assert_eq!(last["guard_passwords"], false);
     let _ = std::fs::remove_dir_all(&home);
 }

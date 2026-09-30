@@ -599,10 +599,24 @@ const ops = {
   async eval({ profile: name, target, args }) {
     const state = needPage(needProfile(name), target);
     await guardDialog(state);
-    const r = await withRetry(state, async () => {
-      const value = await state.page.evaluate(args.expr);
-      try { JSON.stringify(value); return value === undefined ? null : value; } catch { return String(value); }
-    });
+    // The password rule: the page's password fields are snapshotted in the
+    // isolated world (values stay in the page, reachable only through this
+    // CDP session, never logged or returned); a change is undone and refused.
+    // Fail closed: a guard that cannot run refuses the eval.
+    const guard = args.guard_passwords ? await passwordSnapshot(state).catch(() => null) : false;
+    if (guard === null) fail('password_field_refused', 'the password guard could not inspect the page; eval refused ([browser] type_into_password_fields = false)');
+    let r;
+    try {
+      r = await withRetry(state, async () => {
+        const value = await state.page.evaluate(args.expr);
+        try { JSON.stringify(value); return value === undefined ? null : value; } catch { return String(value); }
+      });
+    } finally {
+      if (guard) {
+        const changed = await passwordCheck(state, guard).catch(() => -1);
+        if (changed !== 0) fail('password_field_refused', changed > 0 ? 'eval changed a password field; restored ([browser] type_into_password_fields = false)' : 'the password guard could not re-check the page after eval; refused');
+      }
+    }
     return { result: { value: r.value, navigated_during: r.navigated_during }, page: await pageInfo(state) };
   },
 
@@ -750,6 +764,57 @@ const ops = {
     return { result: { type: dialog.type(), message: dialog.message() }, page: await pageInfo(state) };
   },
 };
+
+// The password guard around eval: every password field (input[type=password],
+// autocomplete current-/new-password; through open shadow roots and
+// same-origin frames) with its value and type, as an object in the isolated
+// world held by a remote object id. Nothing crosses to the sidecar but the id.
+const PASSWORD_SNAPSHOT_JS = `(() => {
+  const out = [];
+  const seen = new Set();
+  const walk = (root) => {
+    if (!root || seen.has(root)) return;
+    seen.add(root);
+    for (const el of root.querySelectorAll('input')) {
+      const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+      if (el.type === 'password' || ac === 'current-password' || ac === 'new-password') out.push({ el, value: el.value, type: el.type });
+    }
+    for (const host of root.querySelectorAll('*')) if (host.shadowRoot) walk(host.shadowRoot);
+    for (const frame of root.querySelectorAll('iframe,frame')) { try { walk(frame.contentDocument); } catch {} }
+  };
+  walk(document);
+  return out;
+})()`;
+async function passwordSnapshot(state) {
+  const contextId = await state.overlay.context();
+  const r = await state.session.send('Runtime.evaluate', { expression: PASSWORD_SNAPSHOT_JS, contextId, returnByValue: false });
+  if (r.exceptionDetails || !r.result || !r.result.objectId) throw new Error('password snapshot failed');
+  return r.result.objectId;
+}
+// Fields whose value changed are restored (type too when it moved away from
+// password); returns how many were restored, throws when the check cannot run.
+async function passwordCheck(state, objectId) {
+  try {
+    const r = await state.session.send('Runtime.callFunctionOn', {
+      objectId,
+      functionDeclaration: `function () {
+        let restored = 0;
+        for (const rec of this) {
+          const el = rec.el;
+          if (!el || !el.isConnected) continue;
+          if (el.type !== rec.type) { try { el.type = rec.type; } catch {} }
+          if (el.value !== rec.value) { try { el.value = rec.value; } catch {} restored++; }
+        }
+        return restored;
+      }`,
+      returnByValue: true,
+    });
+    if (r.exceptionDetails) throw new Error('password check failed');
+    return Number(r.result && r.result.value) || 0;
+  } finally {
+    state.session.send('Runtime.releaseObject', { objectId }).catch(() => {});
+  }
+}
 
 // Keep only actionable lines (and headings for orientation) of an aria snapshot.
 function interactiveOnly(snapshot) {
