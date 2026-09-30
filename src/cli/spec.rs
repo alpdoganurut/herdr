@@ -1049,6 +1049,12 @@ fn browser_command() -> Command {
                 .arg(option("node", "PATH")),
         )
         .subcommand(
+            Command::new("wrap")
+                .about("Run codex or claude with herdr+'s browser steering (setup prints the shell functions)")
+                .arg(Arg::new("agent").value_parser(["codex", "claude"]).required(true))
+                .arg(Arg::new("args").num_args(0..).allow_hyphen_values(true).trailing_var_arg(true)),
+        )
+        .subcommand(
             Command::new("install-chromium")
                 .about("Install a branded copy of a built Chromium.app (name, icon; ad-hoc signed) that \"auto\" finds first")
                 .arg(Arg::new("app").value_name("CHROMIUM_APP").required(true))

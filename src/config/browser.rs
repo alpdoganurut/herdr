@@ -83,6 +83,14 @@ pub struct BrowserConfig {
     /// UI font renders. Keys you omit keep their defaults:
     /// claude `✻`, codex `◇`, default `◌`.
     pub group_symbols: std::collections::BTreeMap<String, String>,
+    /// Steer agents in herdr panes to the herdr browser: the MCP server's
+    /// instructions and `herdr browser wrap` add a preference for the
+    /// herdr-browser tools over the agents' own browser tools. Default: true.
+    pub steer_agents: bool,
+    /// `herdr browser wrap` turns the agents' built-in browsers off for that
+    /// session (Codex's in-app browser and browser_use, Claude in Chrome).
+    /// Default: true.
+    pub disable_native_browser: bool,
 }
 
 /// The tab group title symbols keys omit fall back to.
@@ -125,6 +133,8 @@ impl Default for BrowserConfig {
             show_activity: true,
             activity_color: DEFAULT_ACTIVITY_COLOR.into(),
             group_symbols: std::collections::BTreeMap::new(),
+            steer_agents: true,
+            disable_native_browser: true,
         }
     }
 }

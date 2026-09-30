@@ -49,6 +49,7 @@ Act (refs from browser snapshot; a password field is refused, ask the user):
   status [--json]   log [-n 50] [--pane ID] [--tab T] [--json]   start|stop [--profile P] [--all]
   profile list | create [--temp] NAME | delete NAME
   setup [--claude] [--codex] [--no-mcp] [--node PATH]   doctor   mcp
+  wrap <codex|claude> -- ARGS…   run the agent with herdr+'s browser steering (setup prints the shell functions)
   install-chromium <Chromium.app> [--icon PNG|ICNS] [--name 'herdr+ Browser'] [--dest ~/Applications]
         a branded copy (name, the herdr+ icon or --icon; bundle id and keychain item unchanged), ad-hoc signed; \"auto\" finds it first
 
@@ -70,6 +71,7 @@ pub(super) fn run_browser_command(args: &[String]) -> std::io::Result<i32> {
         "setup" => setup(rest),
         "doctor" => doctor(rest),
         "install-chromium" => install_chromium(rest),
+        "wrap" => wrap(rest),
         "mcp" => super::browser_mcp::run(rest),
         "status" => status(rest),
         "log" => log(rest),
@@ -1370,12 +1372,15 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
     } else {
         println!("  mcp:    `claude` not on PATH; when it is:\n          claude mcp add-json --scope user {MCP_SERVER_NAME} '{entry}'");
     }
+    if register_mcp && want_claude {
+        println!("  claude: inside herdr+ run Claude Code through `herdr browser wrap claude` (the browser steering as an appended system\n          prompt, --no-chrome, per [browser] steer_agents / disable_native_browser; execs claude-z when present so session\n          UUIDs keep working). herdr does not edit your shell files; add this to ~/.zshrc:\n{}", claude_wrapper_function().lines().map(|l| format!("          {l}")).collect::<Vec<_>>().join("\n"));
+    }
     if register_mcp && want_codex {
         let codex_present =
             codex_on_path().is_some() || codex_config_path().is_some_and(|p| p.exists());
         if codex_present || !both {
             println!("  {}", register_codex(&fallback));
-            println!("  codex:  interactive codex hands sessions to a shared app-server daemon that spawns MCP servers with ITS environment\n          (another pane's HERDR_PANE_ID, another herdr's socket): inside herdr+ run codex with --no-daemon. herdr does not\n          edit your shell files; add this to ~/.zshrc (or the bash equivalent):\n{}", codex_wrapper_function().lines().map(|l| format!("          {l}")).collect::<Vec<_>>().join("\n"));
+            println!("  codex:  interactive codex hands sessions to a shared app-server daemon that spawns MCP servers with ITS environment\n          (another pane's HERDR_PANE_ID, another herdr's socket): inside herdr+ run codex through `herdr browser wrap codex`\n          (--no-daemon, the browser steering, the native-browser switches per [browser] steer_agents / disable_native_browser).\n          herdr does not edit your shell files; add this to ~/.zshrc (or the bash equivalent):\n{}", codex_wrapper_function().lines().map(|l| format!("          {l}")).collect::<Vec<_>>().join("\n"));
         } else {
             println!("  codex:  not found (no `codex` on PATH, no ~/.codex/config.toml); `herdr browser setup --codex` registers it anyway");
         }
@@ -1384,9 +1389,132 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-/// The shell function `setup --codex` suggests: `--no-daemon` inside a herdr pane only.
+/// The shell functions `setup` suggests: inside a herdr pane the agent runs
+/// through `herdr browser wrap` (which adds --no-daemon for Codex, the
+/// steering instruction and the native-browser switches per config);
+/// elsewhere the real binary. `claude-z` is wrapped rather than `claude`
+/// because an alias `claude='claude-z'` expands before any `claude`
+/// function would run; `command claude-z` inside the function is the
+/// script itself, and `wrap claude` execs that script so session UUIDs
+/// keep working.
 pub(crate) fn codex_wrapper_function() -> &'static str {
-    "codex() { if [ -n \"$HERDR_PANE_ID\" ]; then command codex --no-daemon \"$@\"; else command codex \"$@\"; fi }"
+    "codex() { if [ -n \"$HERDR_PANE_ID\" ] && [ -n \"$HERDR_BIN_PATH\" ]; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }"
+}
+
+pub(crate) fn claude_wrapper_function() -> &'static str {
+    "claude-z() { if [ -n \"$HERDR_PANE_ID\" ] && [ -n \"$HERDR_BIN_PATH\" ]; then \"$HERDR_BIN_PATH\" browser wrap claude -- \"$@\"; else command claude-z \"$@\"; fi }\n# without a claude='claude-z' alias, the same function named claude() with `command claude` instead"
+}
+
+/// A TOML basic string for `-c key=value` (Codex parses the value as TOML).
+pub(crate) fn toml_basic_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The argv `wrap` builds in front of the user's arguments.
+pub(crate) fn wrap_args(agent: &str, config: &crate::config::BrowserConfig) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    match agent {
+        "codex" => {
+            // The daemon would spawn MCP servers with another pane's environment.
+            args.push("--no-daemon".into());
+            if config.disable_native_browser {
+                args.extend(
+                    ["--disable", "in_app_browser", "--disable", "browser_use"].map(String::from),
+                );
+            }
+            if config.steer_agents {
+                args.push("-c".into());
+                args.push(format!(
+                    "developer_instructions={}",
+                    toml_basic_string(super::browser_mcp::STEERING)
+                ));
+            }
+        }
+        "claude" => {
+            if config.steer_agents {
+                args.push("--append-system-prompt".into());
+                args.push(super::browser_mcp::STEERING.to_string());
+            }
+            if config.disable_native_browser {
+                args.push("--no-chrome".into());
+            }
+        }
+        _ => {}
+    }
+    args
+}
+
+/// The binary `wrap` execs: the first of `names` on PATH that is a file.
+fn real_binary(names: &[&str]) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for name in names {
+        if let Some(found) = std::env::split_paths(&path)
+            .map(|dir| dir.join(name))
+            .find(|candidate| candidate.is_file())
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn wrap(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr browser wrap <codex|claude> [--] ARGS…\nRuns the agent with herdr+'s browser steering per [browser] steer_agents / disable_native_browser (codex: always --no-daemon; claude: through claude-z when present).";
+    let Some(agent) = args.first().map(String::as_str) else {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    if agent == "--help" || agent == "-h" || agent == "help" {
+        println!("{USAGE}");
+        return Ok(0);
+    }
+    if agent != "codex" && agent != "claude" {
+        eprintln!("unknown agent {agent:?}\n{USAGE}");
+        return Ok(2);
+    }
+    let mut rest: &[String] = &args[1..];
+    if rest.first().is_some_and(|a| a == "--") {
+        rest = &rest[1..];
+    }
+    let config = crate::config::Config::load().config.browser;
+    let mut argv = wrap_args(agent, &config);
+    argv.extend(rest.iter().cloned());
+    let names: &[&str] = if agent == "claude" {
+        &["claude-z", "claude"]
+    } else {
+        &["codex"]
+    };
+    let Some(binary) = real_binary(names) else {
+        eprintln!("herdr browser wrap: no {} on PATH", names.join(" or "));
+        return Ok(127);
+    };
+    let mut command = std::process::Command::new(&binary);
+    command.args(&argv);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = command.exec();
+        eprintln!("herdr browser wrap: cannot run {}: {err}", binary.display());
+        Ok(126)
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command.status()?;
+        Ok(status.code().unwrap_or(1))
+    }
 }
 
 /// Whether a Codex app-server daemon runs (it spawns MCP servers with its own environment).
@@ -1506,6 +1634,10 @@ fn doctor(args: &[String]) -> std::io::Result<i32> {
     check(
         config.enabled,
         format!("[browser] enabled = {}", config.enabled),
+    );
+    println!(
+        "info [browser] steer_agents = {} · disable_native_browser = {} (herdr browser wrap; setup prints the shell functions)",
+        config.steer_agents, config.disable_native_browser
     );
     let home_env = std::env::var_os("HOME").map(PathBuf::from);
     match crate::browser::launch::resolve_executable(&config.executable, home_env.as_deref()) {
@@ -1677,6 +1809,43 @@ mod tests {
 
     fn s(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn wrap_builds_the_agents_argv_from_config() {
+        let on = crate::config::BrowserConfig::default();
+        let codex = wrap_args("codex", &on);
+        assert_eq!(codex[0], "--no-daemon");
+        assert_eq!(
+            &codex[1..5],
+            ["--disable", "in_app_browser", "--disable", "browser_use"]
+        );
+        assert_eq!(codex[5], "-c");
+        assert!(codex[6].starts_with("developer_instructions=\"You are working inside herdr+."));
+        let value = codex[6].trim_start_matches("developer_instructions=");
+        let parsed: toml::Value = toml::from_str(&format!("x = {value}")).unwrap();
+        assert_eq!(
+            parsed["x"].as_str(),
+            Some(super::super::browser_mcp::STEERING),
+            "a valid TOML string"
+        );
+        let claude = wrap_args("claude", &on);
+        assert_eq!(claude[0], "--append-system-prompt");
+        assert_eq!(claude[1], super::super::browser_mcp::STEERING);
+        assert_eq!(claude[2], "--no-chrome");
+        let off = crate::config::BrowserConfig {
+            steer_agents: false,
+            disable_native_browser: false,
+            ..on.clone()
+        };
+        assert_eq!(wrap_args("codex", &off), ["--no-daemon"]);
+        assert!(wrap_args("claude", &off).is_empty());
+        assert_eq!(
+            toml_basic_string("a \"q\" \\ \n"),
+            "\"a \\\"q\\\" \\\\ \\n\""
+        );
+        assert!(codex_wrapper_function().contains("browser wrap codex -- \"$@\""));
+        assert!(claude_wrapper_function().starts_with("claude-z() {"));
     }
 
     #[test]

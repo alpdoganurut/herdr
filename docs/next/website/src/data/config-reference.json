@@ -1705,6 +1705,18 @@
           "description": "The symbol a tab group's title starts with, followed by the herdr tab label (the pane id when the tab has no label), keyed by canonical agent id plus `default` (any other agent, or a pane without one). Plain Unicode that Chrome's UI font renders; keys you omit keep their defaults."
         },
         {
+          "key": "browser.steer_agents",
+          "type": "boolean",
+          "default": "true",
+          "description": "Steer agents in herdr+ panes to this browser: the herdr-browser MCP server's instructions and `herdr browser wrap` carry a preference for the herdr-browser tools over the agents' own browser tools (Claude in Chrome, Codex's in-app browser / browser_use); web search stays fine for quick lookups. `false` keeps the neutral instructions."
+        },
+        {
+          "key": "browser.disable_native_browser",
+          "type": "boolean",
+          "default": "true",
+          "description": "`herdr browser wrap <codex|claude>` turns the agent's built-in browser off for that session: Codex gets `--disable in_app_browser --disable browser_use`, Claude Code `--no-chrome`. Only affects sessions started through the wrapper (the shell functions `herdr browser setup` prints)."
+        },
+        {
           "key": "browser.activity_color",
           "type": "string",
           "default": "\"#aa6eff\"",

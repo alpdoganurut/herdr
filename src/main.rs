@@ -490,6 +490,12 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # The symbol that starts a tab group's title (then the herdr tab label), keyed by
 # canonical agent id plus "default"; plain Unicode Chrome renders. Omitted keys keep their defaults.
 # group_symbols = { claude = "✻", codex = "◇", default = "◌" }
+# Steer agents in herdr+ panes to this browser: the MCP instructions and `herdr browser wrap`
+# add a preference for the herdr-browser tools over the agents' own browser tools.
+# steer_agents = true
+# `herdr browser wrap` turns the agents' built-in browsers off for that session
+# (Codex in-app browser / browser_use, Claude in Chrome).
+# disable_native_browser = true
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.
