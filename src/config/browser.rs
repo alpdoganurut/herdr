@@ -91,6 +91,12 @@ pub struct BrowserConfig {
     /// session (Codex's in-app browser and browser_use, Claude in Chrome).
     /// Default: true.
     pub disable_native_browser: bool,
+    /// Plain `codex` / `claude` in a herdr pane (through the shell hook
+    /// `herdr browser setup --shell` installs) run through `herdr browser
+    /// wrap`. `false` runs them unchanged — except Codex still gets
+    /// `--no-daemon`, without which its sessions cannot be attributed to the
+    /// pane. Read per launch. Default: true.
+    pub wrap_agents: bool,
 }
 
 /// The tab group title symbols keys omit fall back to.
@@ -135,6 +141,7 @@ impl Default for BrowserConfig {
             group_symbols: std::collections::BTreeMap::new(),
             steer_agents: true,
             disable_native_browser: true,
+            wrap_agents: true,
         }
     }
 }

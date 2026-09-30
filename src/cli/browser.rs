@@ -49,7 +49,7 @@ Act (refs from browser snapshot; a password field is refused, ask the user):
   status [--json]   log [-n 50] [--pane ID] [--tab T] [--json]   start|stop [--profile P] [--all]
   profile list | create [--temp] NAME | delete NAME
   setup [--claude] [--codex] [--no-mcp] [--node PATH]   doctor   mcp
-  wrap <codex|claude> -- ARGS…   run the agent with herdr+'s browser steering (setup prints the shell functions)
+  wrap <codex|claude> -- ARGS…   run the agent with herdr+'s browser steering ([browser] wrap_agents; setup --shell hooks plain codex/claude)
   install-chromium <Chromium.app> [--icon PNG|ICNS] [--name 'herdr+ Browser'] [--dest ~/Applications]
         a branded copy (name, the herdr+ icon or --icon; bundle id and keychain item unchanged), ad-hoc signed; \"auto\" finds it first
 
@@ -1203,6 +1203,8 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
     // when its tool is around.
     let mut want_claude = false;
     let mut want_codex = false;
+    let mut shell = false;
+    let mut shell_remove = false;
     let mut node_override: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
@@ -1210,22 +1212,28 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
             "--no-mcp" => register_mcp = false,
             "--claude" => want_claude = true,
             "--codex" => want_codex = true,
+            "--shell" => shell = true,
+            "--remove" => shell_remove = true,
             "--node" => {
                 i += 1;
                 node_override = args.get(i).cloned();
             }
             "help" | "--help" | "-h" => {
-                println!("usage: herdr browser setup [--claude] [--codex] [--no-mcp] [--node PATH]\nInstalls the Playwright sidecar under the browser home (npm ci), records the node used, and registers the herdr-browser MCP server for Claude Code (user scope) and/or Codex (~/.codex/config.toml); with neither flag, both when found.");
+                println!("usage: herdr browser setup [--claude] [--codex] [--no-mcp] [--node PATH] | --shell [--remove]\nInstalls the Playwright sidecar under the browser home (npm ci), records the node used, and registers the herdr-browser MCP server for Claude Code (user scope) and/or Codex (~/.codex/config.toml); with neither flag, both when found.\n--shell writes the managed shell file (codex/claude run through `herdr browser wrap` inside herdr+ panes) and adds one guarded line to ~/.zshrc; --shell --remove takes the line out again.");
                 return Ok(0);
             }
             other => {
                 eprintln!(
-                    "unknown flag {other}\nusage: herdr browser setup [--claude] [--codex] [--no-mcp] [--node PATH]"
+                    "unknown flag {other}\nusage: herdr browser setup [--claude] [--codex] [--no-mcp] [--node PATH] | --shell [--remove]"
                 );
                 return Ok(2);
             }
         }
         i += 1;
+    }
+    if shell || shell_remove {
+        println!("herdr browser setup --shell");
+        return setup_shell(shell_remove);
     }
     let both = !want_claude && !want_codex;
     let (want_claude, want_codex) = (want_claude || both, want_codex || both);
@@ -1372,6 +1380,9 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
     } else {
         println!("  mcp:    `claude` not on PATH; when it is:\n          claude mcp add-json --scope user {MCP_SERVER_NAME} '{entry}'");
     }
+    if register_mcp {
+        println!("  shell:  `herdr browser setup --shell` installs the shell hook so plain codex / claude in herdr+ panes go through\n          `herdr browser wrap` ([browser] wrap_agents); this setup did not touch ~/.zshrc");
+    }
     if register_mcp && want_claude {
         println!("  claude: inside herdr+ run Claude Code through `herdr browser wrap claude` (the browser steering as an appended system\n          prompt, --no-chrome, per [browser] steer_agents / disable_native_browser; execs claude-z when present so session\n          UUIDs keep working). herdr does not edit your shell files; add this to ~/.zshrc:\n{}", claude_wrapper_function().lines().map(|l| format!("          {l}")).collect::<Vec<_>>().join("\n"));
     }
@@ -1386,6 +1397,145 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
         }
     }
     println!("done. Try: herdr browser open https://example.com && herdr browser read");
+    Ok(0)
+}
+
+/// The managed shell file: `<config dir>/herdr/shell/herdr-plus.zsh`.
+pub(crate) fn shell_file_path() -> PathBuf {
+    crate::config::config_dir()
+        .join("shell")
+        .join("herdr-plus.zsh")
+}
+
+/// What `setup --shell` writes (overwritten every time).
+pub(crate) fn shell_file_contents() -> String {
+    "# managed by herdr browser setup — rewritten by every `herdr browser setup --shell`; do not edit\n\
+# Inside a herdr+ pane, codex and claude run through `herdr browser wrap` ([browser] wrap_agents,\n\
+# steer_agents and disable_native_browser decide what it adds); elsewhere the real commands run.\n\
+_herdr_plus_wrap() { [ -n \"$HERDR_PANE_ID\" ] && [ -n \"$HERDR_BIN_PATH\" ]; }\n\
+codex() { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }\n\
+claude-z() { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap claude -- \"$@\"; else command claude-z \"$@\"; fi }\n\
+# `claude` itself only when it is not an alias (an alias claude='claude-z' reaches the function above);\n\
+# the `function` form keeps zsh from expanding such an alias while parsing this file.\n\
+if ! alias claude >/dev/null 2>&1; then\n\
+  function claude { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap claude -- \"$@\"; else command claude \"$@\"; fi }\n\
+fi\n"
+    .to_string()
+}
+
+pub(crate) const ZSHRC_MARKER: &str = "# herdr+";
+
+/// The one line `setup --shell` adds to `~/.zshrc`.
+pub(crate) fn zshrc_hook_line(file: &Path) -> String {
+    format!(
+        "[ -n \"$HERDR_PANE_ID\" ] && [ -f \"{0}\" ] && source \"{0}\"  {ZSHRC_MARKER}",
+        file.display()
+    )
+}
+
+fn has_hook_line(text: &str) -> bool {
+    text.lines()
+        .any(|line| line.trim_end().ends_with(ZSHRC_MARKER) && line.contains("herdr-plus.zsh"))
+}
+
+/// Add the hook line when absent. Returns whether it was added.
+pub(crate) fn add_hook_line(text: &str, line: &str) -> (String, bool) {
+    if has_hook_line(text) {
+        return (text.to_string(), false);
+    }
+    let mut out = text.to_string();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(line);
+    out.push('\n');
+    (out, true)
+}
+
+/// Drop the hook line (only lines carrying the marker and the file name). Returns whether one went.
+pub(crate) fn remove_hook_line(text: &str) -> (String, bool) {
+    let mut removed = false;
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        if line.trim_end().ends_with(ZSHRC_MARKER) && line.contains("herdr-plus.zsh") {
+            removed = true;
+            continue;
+        }
+        out.push_str(line);
+    }
+    (out, removed)
+}
+
+fn zshrc_path() -> Option<PathBuf> {
+    let home = std::env::var_os("ZDOTDIR")
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var_os("HOME"))?;
+    Some(PathBuf::from(home).join(".zshrc"))
+}
+
+/// `setup --shell [--remove]`: the managed file and the guarded line in .zshrc.
+fn setup_shell(remove: bool) -> std::io::Result<i32> {
+    let file = shell_file_path();
+    let Some(zshrc) = zshrc_path() else {
+        eprintln!("no HOME (or ZDOTDIR); cannot find .zshrc");
+        return Ok(2);
+    };
+    let line = zshrc_hook_line(&file);
+    if remove {
+        let text = match std::fs::read_to_string(&zshrc) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => {
+                eprintln!("cannot read {}: {err}", zshrc.display());
+                return Ok(1);
+            }
+        };
+        let (next, removed) = remove_hook_line(&text);
+        if removed {
+            std::fs::write(&zshrc, next)?;
+            println!(
+                "  shell:  removed the herdr+ line from {} ({} stays, harmless)",
+                zshrc.display(),
+                file.display()
+            );
+        } else {
+            println!("  shell:  {} has no herdr+ line", zshrc.display());
+        }
+        return Ok(0);
+    }
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&file, shell_file_contents())?;
+    println!("  shell:  wrote {}", file.display());
+    let text = match std::fs::read_to_string(&zshrc) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            eprintln!("cannot read {}: {err}", zshrc.display());
+            return Ok(1);
+        }
+    };
+    let (next, added) = add_hook_line(&text, &line);
+    if added {
+        let backup = zshrc.with_file_name(".zshrc.herdr-backup");
+        if !backup.exists() && zshrc.exists() {
+            std::fs::copy(&zshrc, &backup)?;
+            println!(
+                "  shell:  backed up {} to {}",
+                zshrc.display(),
+                backup.display()
+            );
+        }
+        std::fs::write(&zshrc, next)?;
+        println!("  shell:  added to {}:\n          {line}", zshrc.display());
+    } else {
+        println!("  shell:  {} already has the herdr+ line", zshrc.display());
+    }
+    println!(
+        "  shell:  new panes pick it up; in an open one: source {}",
+        file.display()
+    );
     Ok(0)
 }
 
@@ -1428,8 +1578,12 @@ pub(crate) fn wrap_args(agent: &str, config: &crate::config::BrowserConfig) -> V
     let mut args: Vec<String> = Vec::new();
     match agent {
         "codex" => {
-            // The daemon would spawn MCP servers with another pane's environment.
+            // The daemon would spawn MCP servers with another pane's environment:
+            // attribution needs this even when wrapping is off.
             args.push("--no-daemon".into());
+            if !config.wrap_agents {
+                return args;
+            }
             if config.disable_native_browser {
                 args.extend(
                     ["--disable", "in_app_browser", "--disable", "browser_use"].map(String::from),
@@ -1444,6 +1598,9 @@ pub(crate) fn wrap_args(agent: &str, config: &crate::config::BrowserConfig) -> V
             }
         }
         "claude" => {
+            if !config.wrap_agents {
+                return args;
+            }
             if config.steer_agents {
                 args.push("--append-system-prompt".into());
                 args.push(super::browser_mcp::STEERING.to_string());
@@ -1636,9 +1793,24 @@ fn doctor(args: &[String]) -> std::io::Result<i32> {
         format!("[browser] enabled = {}", config.enabled),
     );
     println!(
-        "info [browser] steer_agents = {} · disable_native_browser = {} (herdr browser wrap; setup prints the shell functions)",
-        config.steer_agents, config.disable_native_browser
+        "info [browser] wrap_agents = {} · steer_agents = {} · disable_native_browser = {} (herdr browser wrap)",
+        config.wrap_agents, config.steer_agents, config.disable_native_browser
     );
+    match zshrc_path() {
+        Some(zshrc) => {
+            let hooked = std::fs::read_to_string(&zshrc)
+                .map(|text| has_hook_line(&text))
+                .unwrap_or(false);
+            println!(
+                "info shell hook: {} {} (plain codex / claude in herdr+ panes → herdr browser wrap; `herdr browser setup --shell` adds it, `--shell --remove` takes it out); file {}{}",
+                zshrc.display(),
+                if hooked { "has the herdr+ line" } else { "has no herdr+ line" },
+                shell_file_path().display(),
+                if shell_file_path().is_file() { "" } else { " (missing)" }
+            );
+        }
+        None => println!("info shell hook: no HOME; skipped"),
+    }
     let home_env = std::env::var_os("HOME").map(PathBuf::from);
     match crate::browser::launch::resolve_executable(&config.executable, home_env.as_deref()) {
         Ok(exe) => check(
@@ -1812,6 +1984,36 @@ mod tests {
     }
 
     #[test]
+    fn the_shell_hook_line_is_added_once_and_removed_cleanly() {
+        let file = Path::new("/Users/me/.config/herdr/shell/herdr-plus.zsh");
+        let line = zshrc_hook_line(file);
+        assert_eq!(line, "[ -n \"$HERDR_PANE_ID\" ] && [ -f \"/Users/me/.config/herdr/shell/herdr-plus.zsh\" ] && source \"/Users/me/.config/herdr/shell/herdr-plus.zsh\"  # herdr+");
+        let (once, added) = add_hook_line("alias claude='claude-z'\nexport X=1", &line);
+        assert!(added);
+        assert_eq!(
+            once,
+            format!("alias claude='claude-z'\nexport X=1\n{line}\n")
+        );
+        let (twice, added) = add_hook_line(&once, &line);
+        assert!(!added);
+        assert_eq!(twice, once);
+        let (gone, removed) = remove_hook_line(&once);
+        assert!(removed);
+        assert_eq!(gone, "alias claude='claude-z'\nexport X=1\n");
+        let (same, removed) = remove_hook_line(&gone);
+        assert!(!removed);
+        assert_eq!(same, gone);
+        let (empty, added) = add_hook_line("", &line);
+        assert!(added);
+        assert_eq!(empty, format!("{line}\n"));
+        let contents = shell_file_contents();
+        assert!(contents.starts_with("# managed by herdr browser setup"));
+        assert!(contents.contains("codex() { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }"));
+        assert!(contents.contains("claude-z() {"));
+        assert!(contents.contains("if ! alias claude >/dev/null 2>&1; then"));
+    }
+
+    #[test]
     fn wrap_builds_the_agents_argv_from_config() {
         let on = crate::config::BrowserConfig::default();
         let codex = wrap_args("codex", &on);
@@ -1840,6 +2042,13 @@ mod tests {
         };
         assert_eq!(wrap_args("codex", &off), ["--no-daemon"]);
         assert!(wrap_args("claude", &off).is_empty());
+        // wrap_agents = false: unchanged, except Codex's --no-daemon
+        let unwrapped = crate::config::BrowserConfig {
+            wrap_agents: false,
+            ..on.clone()
+        };
+        assert_eq!(wrap_args("codex", &unwrapped), ["--no-daemon"]);
+        assert!(wrap_args("claude", &unwrapped).is_empty());
         assert_eq!(
             toml_basic_string("a \"q\" \\ \n"),
             "\"a \\\"q\\\" \\\\ \\n\""

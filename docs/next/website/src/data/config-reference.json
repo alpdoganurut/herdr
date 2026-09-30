@@ -1717,6 +1717,12 @@
           "description": "`herdr browser wrap <codex|claude>` turns the agent's built-in browser off for that session: Codex gets `--disable in_app_browser --disable browser_use`, Claude Code `--no-chrome`. Only affects sessions started through the wrapper (the shell functions `herdr browser setup` prints)."
         },
         {
+          "key": "browser.wrap_agents",
+          "type": "boolean",
+          "default": "true",
+          "description": "Whether plain `codex` and `claude` in herdr+ panes run through `herdr browser wrap` (the shell hook `herdr browser setup --shell` installs). `false` runs them unchanged — except Codex still gets `--no-daemon`, since a shared Codex daemon would attribute every session to the pane that started it. Read at each launch, so the hook can stay installed."
+        },
+        {
           "key": "browser.activity_color",
           "type": "string",
           "default": "\"#aa6eff\"",

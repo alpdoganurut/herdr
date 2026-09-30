@@ -496,6 +496,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # `herdr browser wrap` turns the agents' built-in browsers off for that session
 # (Codex in-app browser / browser_use, Claude in Chrome).
 # disable_native_browser = true
+# Plain codex / claude in herdr+ panes (shell hook from `herdr browser setup --shell`) run through
+# `herdr browser wrap`; false runs them unchanged except Codex's --no-daemon (attribution). Read per launch.
+# wrap_agents = true
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

@@ -1045,6 +1045,8 @@ fn browser_command() -> Command {
                 .about("Install the Playwright sidecar (npm ci) and register the MCP server for Claude Code and/or Codex")
                 .arg(flag("claude").help("Register with Claude Code (user scope)"))
                 .arg(flag("codex").help("Register in Codex's config.toml with the pane variables forwarded"))
+                .arg(flag("shell").help("Write the managed shell file and add one guarded line to ~/.zshrc (plain codex/claude in herdr+ panes → herdr browser wrap)"))
+                .arg(flag("remove").help("With --shell: take the line out of ~/.zshrc again"))
                 .arg(flag("no-mcp"))
                 .arg(option("node", "PATH")),
         )
