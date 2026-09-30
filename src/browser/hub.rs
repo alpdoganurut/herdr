@@ -84,7 +84,13 @@ struct Inner {
     /// Panes whose tab groups were released (gone panes), so a poll does not
     /// ask again.
     released: Mutex<HashSet<String>>,
+    /// Panes whose release failed: attempts so far and when to try again.
+    release_backoff: Mutex<HashMap<String, (u32, Instant)>>,
 }
+
+/// A failed release is retried this many times, each wait one step longer.
+const RELEASE_MAX_ATTEMPTS: u32 = 5;
+const RELEASE_BACKOFF: Duration = Duration::from_secs(30);
 
 thread_local! {
     /// The activity directive of the call running on this thread (set by
@@ -136,6 +142,7 @@ impl BrowserHub {
                 read_cache: Mutex::new(HashMap::new()),
                 companion: Mutex::new(HashMap::new()),
                 released: Mutex::new(HashSet::new()),
+                release_backoff: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -226,40 +233,50 @@ impl BrowserHub {
         info
     }
 
-    /// Panes that are gone: their tab groups are dissolved (once per pane;
-    /// a pane id seen again in a call is armed again). Never blocks the caller.
+    /// Every pane id the ledger knows (open tabs' actors and cursors), for
+    /// the App to check against its panes.
+    pub fn known_pane_ids(&self) -> Vec<String> {
+        let state = self.inner.state.lock().unwrap();
+        let mut ids: Vec<String> = state
+            .tabs
+            .values()
+            .filter(|record| record.is_open())
+            .flat_map(|record| [&record.opened_by, &record.last_actor])
+            .filter_map(|actor| actor.pane_id().map(str::to_string))
+            .chain(state.cursors.keys().cloned())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// Panes that are gone: their tab groups are dissolved — once per pane
+    /// when it works; a failed release (no companion, an error) is retried
+    /// with a growing wait, at most RELEASE_MAX_ATTEMPTS times; a pane id
+    /// seen again in a call is armed again. Never blocks the caller.
     pub fn release_panes(&self, panes: Vec<String>) {
         // No sidecar, nothing to tidy yet: asked again once it runs.
         if panes.is_empty() || self.inner.host.lock().unwrap().is_none() {
             return;
         }
-        let fresh: Vec<Value> = {
+        let fresh: Vec<String> = {
             let mut released = self.inner.released.lock().unwrap();
-            let state = self.inner.state.lock().unwrap();
+            let backoff = self.inner.release_backoff.lock().unwrap();
+            let now = Instant::now();
             panes
                 .into_iter()
-                .filter(|pane| released.insert(pane.clone()))
-                .map(|pane| {
-                    // The group's title as the ledger last saw the pane, so a
-                    // sidecar that restarted since can still find the group.
-                    let title = state
-                        .tabs
-                        .values()
-                        .flat_map(|record| [&record.opened_by, &record.last_actor])
-                        .find_map(|actor| match actor {
-                            BrowserActor::Pane {
-                                pane_id,
-                                tab_label,
-                                agent,
-                                ..
-                            } if pane_id == &pane => Some(super::activity::group_title(
-                                agent.as_deref(),
-                                tab_label,
-                                pane_id,
-                            )),
-                            _ => None,
-                        });
-                    json!({ "key": pane, "title": title })
+                .filter(|pane| {
+                    if released.contains(pane) {
+                        return false;
+                    }
+                    match backoff.get(pane) {
+                        Some((attempts, _)) if *attempts >= RELEASE_MAX_ATTEMPTS => false,
+                        Some((_, next)) if *next > now => false,
+                        _ => {
+                            released.insert(pane.clone());
+                            true
+                        }
+                    }
                 })
                 .collect()
         };
@@ -270,14 +287,56 @@ impl BrowserHub {
         let _ = std::thread::Builder::new()
             .name("herdr-browser-release".into())
             .spawn(move || {
-                let _ = hub.request(
+                let outcome = hub.request(
                     "release",
                     None,
                     None,
                     json!({ "keys": fresh }),
                     Duration::from_secs(5),
                 );
+                let (failed, reason): (Vec<String>, String) = match &outcome {
+                    Ok(reply) => (
+                        reply.result["failed"]
+                            .as_array()
+                            .map(|keys| {
+                                keys.iter()
+                                    .filter_map(|k| k.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        reply.result["reason"]
+                            .as_str()
+                            .unwrap_or("the sidecar could not release them")
+                            .to_string(),
+                    ),
+                    Err(err) => (fresh.clone(), err.message.clone()),
+                };
+                let mut released = hub.inner.released.lock().unwrap();
+                let mut backoff = hub.inner.release_backoff.lock().unwrap();
+                for key in &fresh {
+                    if !failed.contains(key) {
+                        backoff.remove(key);
+                    }
+                }
+                if !failed.is_empty() {
+                    tracing::warn!(event = "browser.release.failed", keys = ?failed, reason = %reason, "tab groups of gone panes not released; retrying later");
+                    for key in failed {
+                        released.remove(&key);
+                        let attempts = backoff.get(&key).map(|(a, _)| *a).unwrap_or(0) + 1;
+                        backoff.insert(key, (attempts, Instant::now() + RELEASE_BACKOFF * attempts));
+                    }
+                }
             });
+    }
+
+    #[cfg(test)]
+    pub fn release_attempts_for_test(&self, pane: &str) -> Option<u32> {
+        self.inner
+            .release_backoff
+            .lock()
+            .unwrap()
+            .get(pane)
+            .map(|(attempts, _)| *attempts)
     }
 
     pub fn status(&self) -> BrowserStatusInfo {
@@ -614,6 +673,7 @@ impl BrowserHub {
         // The activity directive rides on this call's sidecar requests.
         if let Some(pane) = &pane {
             self.inner.released.lock().unwrap().remove(pane);
+            self.inner.release_backoff.lock().unwrap().remove(pane);
         }
         ACTIVITY.with(|slot| *slot.borrow_mut() = super::activity::directive(actor, &config));
         let result = self.execute(
@@ -766,13 +826,39 @@ impl BrowserHub {
         match &params.op {
             BrowserOp::Open { url, focus, wait } => {
                 let url = shape::normalize_url(url)?;
-                let reply = self.request(
+                let reply = match self.request(
                     "open",
                     Some(profile),
                     None,
                     json!({ "url": url, "background": !focus, "wait": wait }),
                     deadline,
-                )?;
+                ) {
+                    Ok(reply) => reply,
+                    Err(err) => {
+                        // The tab exists although the page did not load: it is
+                        // the caller's (adopted, current) before the error goes out.
+                        if let Some(target) = err.target.as_deref() {
+                            let key = TabKey::new(profile, target);
+                            let mut state = self.inner.state.lock().unwrap();
+                            state.adopt_tab(
+                                &key,
+                                &HostTab {
+                                    target: target.to_string(),
+                                    url: url.clone(),
+                                    title: String::new(),
+                                    selected: *focus,
+                                    dialog_open: false,
+                                },
+                                actor,
+                                now,
+                            );
+                            if let Some(pane) = pane {
+                                state.set_cursor(pane, &key, actor.tab_id(), now);
+                            }
+                        }
+                        return Err(err);
+                    }
+                };
                 let target = reply.result["target"]
                     .as_str()
                     .unwrap_or_default()
@@ -1615,7 +1701,25 @@ impl BrowserHub {
                         }
                     }
                 }
-                Err(_) => failed = true,
+                Err(err) => {
+                    failed = true;
+                    // An open whose page failed still made a tab: close_opened covers it.
+                    if let (BrowserOp::Open { .. }, Some(target)) =
+                        (&step.op, err.target.as_deref())
+                    {
+                        let id = self
+                            .inner
+                            .state
+                            .lock()
+                            .unwrap()
+                            .tabs
+                            .get(&TabKey::new(profile, target))
+                            .map(|record| record.id());
+                        if let Some(id) = id {
+                            opened.push(id);
+                        }
+                    }
+                }
             }
         }
         let final_result = match final_op {
@@ -1702,7 +1806,7 @@ impl BrowserHub {
             .map(|(name, _)| name.clone())
             .collect();
         for name in names {
-            self.stop_profile(&name);
+            self.stop_profile_with(&name, false);
         }
     }
 
@@ -1882,9 +1986,8 @@ impl BrowserHub {
         // The attach can stall on a page dialog or on a tab that is still
         // restoring; one retry after a pause covers the transient case, the
         // rest is reported as attach_blocked with the remedy.
-        let attach_timed_out = |err: &BrowserError| {
-            err.code == "browser_timeout" || err.message.contains("connectOverCDP")
-        };
+        let attach_timed_out =
+            |err: &BrowserError| err.code == "browser_timeout" || err.code == "attach_timeout";
         let mut attempt = 0;
         let reply = loop {
             attempt += 1;
@@ -1943,9 +2046,15 @@ impl BrowserHub {
     }
 
     fn stop_profile(&self, name: &str) {
-        // A running profile this server has not attached yet (a fresh server
-        // with the last one's run record, adopted on first use): attach first,
-        // so Browser.close reaches it instead of a signal.
+        self.stop_profile_with(name, true);
+    }
+
+    /// `attach`: a running profile this server has not attached yet (a fresh
+    /// server with the last one's run record, adopted on first use) is
+    /// attached first, so Browser.close reaches it instead of a signal. The
+    /// shutdown path passes false: it never starts a sidecar or attaches, it
+    /// only closes what is attached and terminates the recorded live pid.
+    fn stop_profile_with(&self, name: &str, attach: bool) {
         // Only a live browser is attached to (a Running state whose process is
         // gone must not make this launch one in order to stop it).
         let live_pid = {
@@ -1954,22 +2063,24 @@ impl BrowserHub {
         }
         .or_else(|| launch::read_run_record(&self.inner.home, name).map(|record| record.pid))
         .filter(|pid| crate::platform::process_exists(*pid));
-        let needs_attach = live_pid.is_some() && {
+        let is_attached = || {
             let host = self.inner.host.lock().unwrap();
-            !host
-                .as_ref()
+            host.as_ref()
                 .is_some_and(|link| link.attached.contains(name))
         };
-        if needs_attach {
-            let _ = self.ensure_running(name);
+        if attach && live_pid.is_some() && !is_attached() {
+            if let Err(err) = self.ensure_running(name) {
+                tracing::warn!(event = "browser.stop.attach", profile = %name, code = %err.code, message = %err.message, "could not attach before stopping; the process is signalled instead");
+            }
         }
         let lock = self.profile_lock(name);
         let _guard = lock.lock().unwrap();
         let status = self.inner.state.lock().unwrap().profile(name);
         let pid = status.pid().or(live_pid);
-        let closed = self
-            .request("close_browser", Some(name), None, Value::Null, STOP_GRACE)
-            .is_ok();
+        let closed = is_attached()
+            && self
+                .request("close_browser", Some(name), None, Value::Null, STOP_GRACE)
+                .is_ok();
         if let Some(pid) = pid {
             let deadline = Instant::now() + STOP_GRACE;
             while crate::platform::process_exists(pid) && Instant::now() < deadline {
@@ -2342,7 +2453,7 @@ impl BrowserHub {
                 } else {
                     let error = reply.error.unwrap_or_default();
                     let code = if error.code.is_empty() { "browser_error".to_string() } else { error.code };
-                    Err(BrowserError::new(&code, error.message))
+                    Err(BrowserError::new(&code, error.message).with_target(error.target))
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {

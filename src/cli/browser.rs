@@ -40,6 +40,7 @@ Act (refs from browser snapshot; a password field is refused, ask the user):
   type [TAB] (--ref eN | --selector CSS) TEXT [--submit] [--clear]
   fill [TAB] (--ref eN | --selector CSS) TEXT      select [TAB] (--ref eN | --selector CSS) VALUE
   press [TAB] KEY [--ref eN | --selector CSS]      (no target: the focused element)
+  TEXT/VALUE that begins with a tab-like word (t5) or a dash: put -- before it, e.g. type --ref e3 -- t5 abc
   batch [TAB] [--file steps.json] [--continue] [--final snapshot|screenshot] [--close-opened] [--no-animate]
         steps as a JSON array (stdin); a snapshot step gives the steps after it their refs,
         --close-opened closes the tabs the batch opened after the final step
@@ -142,6 +143,8 @@ pub(crate) fn parse_common(
     let mut common = Common::default();
     let mut i = 0;
     let mut only_positionals = false;
+    // Where the positionals after `--` begin: none of those is a tab id.
+    let mut literal_from: Option<usize> = None;
     while i < args.len() {
         let arg = &args[i];
         if only_positionals || !arg.starts_with('-') || arg == "-" {
@@ -151,6 +154,7 @@ pub(crate) fn parse_common(
         }
         if arg == "--" {
             only_positionals = true;
+            literal_from.get_or_insert(common.positionals.len());
             i += 1;
             continue;
         }
@@ -194,7 +198,7 @@ pub(crate) fn parse_common(
         }
         i += 1;
     }
-    if tab_positional && common.tab.is_none() {
+    if tab_positional && common.tab.is_none() && literal_from != Some(0) {
         if let Some(first) = common.positionals.first() {
             if looks_like_tab(first) {
                 common.tab = Some(common.positionals.remove(0));
@@ -1515,6 +1519,12 @@ mod tests {
         assert!(build_op("read", &s(&["--offset", "x"]))
             .unwrap_err()
             .contains("--offset expects a number"));
+        // After `--` nothing is a tab id: the text starts with the tab-like word.
+        let (op, c) = build_op("type", &s(&["--ref", "e3", "--", "t5", "abc"])).unwrap();
+        assert!(c.tab.is_none());
+        assert!(matches!(op, BrowserOp::Type { ref text, .. } if text == "t5 abc"));
+        let (_, c) = build_op("type", &s(&["t5", "--ref", "e3", "--", "t6", "x"])).unwrap();
+        assert_eq!(c.tab.as_deref(), Some("t5"), "a tab before -- still counts");
         assert!(!looks_like_tab("t"));
         assert!(!looks_like_tab("tx3"));
         assert!(looks_like_tab("t12"));

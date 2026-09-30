@@ -95,10 +95,17 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                 } else if let Some((_, code, message)) =
                     state.errors.iter().find(|(name, _, _)| name == &op)
                 {
+                    // A failed open still made a tab: the error names it, like the sidecar's.
+                    let mut error = json!({ "code": code, "message": message });
+                    if op == "open" {
+                        let n = state.next_target;
+                        state.next_target += 1;
+                        let target = format!("T{n}");
+                        events.push(json!({ "event": "tab", "profile": "main", "target": target, "kind": "opened", "url": "about:blank", "initiator": "other" }).to_string());
+                        error["target"] = json!(target);
+                    }
                     (
-                        Some(
-                            json!({ "id": id, "ok": false, "error": { "code": code, "message": message } }),
-                        ),
+                        Some(json!({ "id": id, "ok": false, "error": error })),
                         events,
                         delay,
                     )
@@ -178,7 +185,18 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                         }
                         "close" | "close_browser" => json!({ "id": id, "ok": true, "result": {} }),
                         "release" => {
-                            json!({ "id": id, "ok": true, "result": { "released": args["keys"].as_array().map(Vec::len).unwrap_or(0) } })
+                            // Keys with "fail" in them are reported back as failed.
+                            let keys: Vec<String> = args["keys"]
+                                .as_array()
+                                .map(|k| {
+                                    k.iter()
+                                        .filter_map(|v| v.as_str().map(str::to_string))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let (failed, released): (Vec<String>, Vec<String>) =
+                                keys.into_iter().partition(|k| k.contains("fail"));
+                            json!({ "id": id, "ok": true, "result": { "released": released, "failed": failed, "reason": "companion not ready" } })
                         }
                         other => {
                             json!({ "id": id, "ok": false, "error": { "code": "unknown_op", "message": other } })
@@ -1700,11 +1718,7 @@ fn gone_panes_release_their_groups_once() {
         1,
         "one release for the two panes, none for the repeat: {releases:?}"
     );
-    assert_eq!(
-        releases[0]["keys"],
-        json!([{ "key": "w2:pC", "title": "claude · planner" }, { "key": "w2:pZ", "title": null }]),
-        "the ledger's title travels with a known pane"
-    );
+    assert_eq!(releases[0]["keys"], json!(["w2:pC", "w2:pZ"]));
     assert!(
         releases[0].get("_activity").is_none(),
         "a release carries no directive"
@@ -1772,6 +1786,116 @@ fn attach_records_the_companion_state_for_status() {
     assert_eq!(
         main.companion.as_deref(),
         Some("missing (no companion service worker on the DevTools port)")
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_failed_release_is_retried_later_not_on_every_poll() {
+    let (hub, shared, _stream, home) = hub("activity-release-retry");
+    let actor = pane("w2:pE");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    hub.release_panes(vec!["w2:pE".into(), "w2:pfail".into()]);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && hub.release_attempts_for_test("w2:pfail").is_none() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        hub.release_attempts_for_test("w2:pfail"),
+        Some(1),
+        "the failed key is armed for a retry"
+    );
+    assert_eq!(
+        hub.release_attempts_for_test("w2:pE"),
+        None,
+        "the released key is done"
+    );
+    // Polls within the backoff send nothing more for the failed key.
+    hub.release_panes(vec!["w2:pfail".into(), "w2:pE".into()]);
+    std::thread::sleep(Duration::from_millis(200));
+    let releases: Vec<Value> = shared
+        .lock()
+        .unwrap()
+        .ops
+        .iter()
+        .filter(|(op, _, _)| op == "release")
+        .map(|(_, _, a)| a.clone())
+        .collect();
+    assert_eq!(releases.len(), 1, "{releases:?}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn an_open_whose_page_failed_still_adopts_the_tab_and_close_opened_covers_it() {
+    let (hub, shared, _stream, home) = hub("open-failed-adopt");
+    shared.lock().unwrap().errors.push(("open".into(), "navigation_failed".into(), "net::ERR_NAME_NOT_RESOLVED (the new tab is your current tab; browser read shows what loaded)".into()));
+    let actor = pane("w2:pF");
+    let err = hub
+        .run(
+            &actor,
+            params(BrowserOp::Open {
+                url: "https://nowhere.test/".into(),
+                focus: false,
+                wait: None,
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "navigation_failed");
+    assert_eq!(err.target.as_deref(), Some("T1"));
+    hub.with_state(|state| {
+        let record = state
+            .tabs
+            .get(&TabKey::new("main", "T1"))
+            .expect("the tab is in the ledger");
+        assert!(record.is_open());
+        assert_eq!(record.url, "https://nowhere.test/");
+        assert_eq!(
+            record.opened_by.pane_id(),
+            Some("w2:pF"),
+            "attributed to the caller, not herdr"
+        );
+        assert_eq!(
+            state.cursor("w2:pF").unwrap().key(),
+            record.key(),
+            "and it is the pane's current tab"
+        );
+    });
+    // In a batch the failed open's tab is still closed by close_opened.
+    let batch = hub
+        .run(
+            &actor,
+            params(BrowserOp::Batch {
+                ops: vec![step(BrowserOp::Open {
+                    url: "https://nowhere.test/2".into(),
+                    focus: false,
+                    wait: None,
+                })],
+                stop_on_error: false,
+                final_: None,
+                close_opened: true,
+                animate: true,
+            }),
+        )
+        .unwrap();
+    assert!(
+        batch
+            .text
+            .contains(" 1. open       error   navigation_failed"),
+        "{}",
+        batch.text
+    );
+    assert!(
+        batch.text.contains(" 2. close      ok      t3"),
+        "{}",
+        batch.text
     );
     let _ = std::fs::remove_dir_all(&home);
 }

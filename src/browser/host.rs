@@ -45,6 +45,9 @@ pub struct HostError {
     pub code: String,
     #[serde(default)]
     pub message: String,
+    /// The tab the failed op created (an `open` whose navigation failed).
+    #[serde(default)]
+    pub target: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]

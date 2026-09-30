@@ -186,6 +186,19 @@ pub(super) fn render_tab_sidebar(
         .chain(state.news_row.as_ref().map(PinnedRow::News))
         .collect();
     let news_rows = (pinned.len() as u16).min(available.saturating_sub(1));
+    // When not every pinned row fits, News keeps its row (it had it first);
+    // Browser only shows with room to spare.
+    let pinned: Vec<PinnedRow<'_>> = if usize::from(news_rows) >= pinned.len() {
+        pinned
+    } else {
+        let (news, rest): (Vec<PinnedRow<'_>>, Vec<PinnedRow<'_>>) = pinned
+            .into_iter()
+            .partition(|row| matches!(row, PinnedRow::News(_)));
+        news.into_iter()
+            .chain(rest)
+            .take(usize::from(news_rows))
+            .collect()
+    };
     let available = available.saturating_sub(news_rows);
     let status_rows = (status_lines.len().min(usize::from(u16::MAX)) as u16)
         .min(available.saturating_sub(1).max(1))

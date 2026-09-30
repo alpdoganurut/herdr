@@ -90,14 +90,8 @@ pub(crate) struct BrowserRow {
 
 /// The row's state and status text for `info`.
 pub(crate) fn browser_row_state(info: &BrowserGetInfo) -> (BrowserRowState, String) {
-    if let Some(crashed) = info.profiles.iter().find(|p| p.state == "crashed") {
-        let detail = crashed
-            .detail
-            .as_deref()
-            .filter(|d| !d.is_empty())
-            .map(|_| "crashed".to_string())
-            .unwrap_or_else(|| "crashed".into());
-        return (BrowserRowState::Crashed, detail);
+    if info.profiles.iter().any(|p| p.state == "crashed") {
+        return (BrowserRowState::Crashed, "crashed".into());
     }
     if info.tabs.iter().any(|tab| tab.dialog_open) {
         return (BrowserRowState::Dialog, "dialog open".into());
@@ -319,7 +313,8 @@ impl ClientShellState {
             if now.saturating_sub(cursor.last_at) > window {
                 continue;
             }
-            if let Some(tab) = cursor.tab_id.clone().or_else(|| pane_tab(&cursor.pane_id)) {
+            // The pane's tab as it is now (a moved pane), else as recorded.
+            if let Some(tab) = pane_tab(&cursor.pane_id).or_else(|| cursor.tab_id.clone()) {
                 tabs.insert(tab);
             }
         }
@@ -332,9 +327,9 @@ impl ClientShellState {
             }
             if let Some(tab_id) = touch
                 .actor
-                .tab_id()
-                .map(str::to_string)
-                .or_else(|| touch.actor.pane_id().and_then(pane_tab))
+                .pane_id()
+                .and_then(pane_tab)
+                .or_else(|| touch.actor.tab_id().map(str::to_string))
             {
                 tabs.insert(tab_id);
             }
@@ -393,6 +388,10 @@ impl ClientShellState {
         now: std::time::Instant,
     ) -> Option<std::time::Instant> {
         if self.browser.pulled_for.is_none() && self.snapshot.is_none() {
+            return None;
+        }
+        // A pull in flight: its answer drives the next one.
+        if self.browser.loading {
             return None;
         }
         let method = Method::BrowserGet(BrowserGetParams::default());
@@ -457,7 +456,10 @@ impl ClientShellState {
             cursor,
             scroll: 0,
             local: self.active_endpoint_id.is_local(),
-            loading: self.browser.info.is_none(),
+            // "loading" only when a pull can actually happen.
+            loading: self.browser.info.is_none()
+                && self.supports_endpoint_method(&Method::BrowserGet(BrowserGetParams::default()))
+                && self.endpoint_is_online(&self.active_endpoint_id),
         }));
         outcome.repaint = true;
         self.refresh_browser();
@@ -465,6 +467,13 @@ impl ClientShellState {
 
     /// Re-list the overlay after a `browser.get`, keeping the cursor on the
     /// same tab when it is still listed.
+    /// The overlay stops saying "loading" when the pull came back empty-handed.
+    fn clear_browser_overlay_loading(&mut self) {
+        if let Some(ClientShellOverlay::Browser(overlay)) = self.overlay.as_mut() {
+            overlay.loading = false;
+        }
+    }
+
     fn sync_browser_overlay(&mut self) {
         let Some(info) = self.browser.info.as_ref() else {
             return;
@@ -686,8 +695,12 @@ impl ClientShellState {
                     Ok(_) => {
                         self.set_endpoint_error("endpoint returned an unexpected browser result");
                         self.browser.info = None;
+                        self.clear_browser_overlay_loading();
                     }
-                    Err(_) => self.browser.info = None,
+                    Err(_) => {
+                        self.browser.info = None;
+                        self.clear_browser_overlay_loading();
+                    }
                 }
                 self.sync_browser_overlay();
                 (true, Vec::new())

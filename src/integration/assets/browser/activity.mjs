@@ -7,7 +7,7 @@
 export const WORLD = 'herdr';
 export const HOST_ATTR = 'data-herdr-overlay';
 /** The companion worker code this sidecar expects (VERSION in companion/sw.js); an older running worker is reloaded. */
-export const COMPANION_VERSION = 2;
+export const COMPANION_VERSION = 3;
 /** The frame stays this long after the last operation. */
 export const LINGER_MS = 3000;
 /** The cursor's glide (matches the CSS transition). */
@@ -184,14 +184,15 @@ export class Companion {
     this.state = 'unknown';
     this.detail = '';
     this.tabIds = new Map(); // targetId -> extension tab id
-    this.groups = new Map(); // pane key -> { groupId, tabs: Set<tabId>, timer }
+    this.groups = new Map(); // pane key -> { tabs: Set<tabId>, timer } (the group id lives in the worker's session storage)
     this.userUngrouped = new Set();
     this.chain = Promise.resolve();
+    this.connecting = null;
     this.log = () => {};
   }
   info() { return { state: this.state, detail: this.detail }; }
   async targets() {
-    const res = await fetch(`http://127.0.0.1:${this.profile.port}/json/list`);
+    const res = await fetch(`http://127.0.0.1:${this.profile.port}/json/list`, { signal: AbortSignal.timeout(2000) });
     return res.json();
   }
   findIn(list) { return list.find((t) => t.type === 'service_worker' && /\/sw\.js$/.test(t.url)) || null; }
@@ -242,12 +243,23 @@ export class Companion {
       if (session) await session.detach().catch(() => {});
     }
   }
-  async connect() {
-    if (this.ws && this.ws.readyState === 1) return this.ws;
+  /** One connection at a time: concurrent callers share the in-flight attempt. */
+  connect() {
+    if (this.ws && this.ws.readyState === 1) return Promise.resolve(this.ws);
+    if (this.connecting) return this.connecting;
+    this.connecting = this._connect().finally(() => { this.connecting = null; });
+    return this.connecting;
+  }
+  async _connect() {
     const sw = await this.worker(true);
     if (!sw) { this.state = 'missing'; throw new Error('companion: no service worker'); }
     const ws = new WebSocket(sw.webSocketDebuggerUrl);
-    await withTimeout(new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error('companion: websocket failed')); }), COMPANION_CALL_MS, 'companion connect');
+    try {
+      await withTimeout(new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error('companion: websocket failed')); }), COMPANION_CALL_MS, 'companion connect');
+    } catch (err) {
+      try { ws.close(); } catch {}
+      throw err;
+    }
     ws.onmessage = (m) => {
       let msg; try { msg = JSON.parse(m.data); } catch { return; }
       const waiter = this.pending.get(msg.id);
@@ -316,40 +328,38 @@ export class Companion {
     const tabId = await this.tabIdFor(state);
     if (tabId == null || this.userUngrouped.has(tabId)) return;
     let g = this.groups.get(group.key);
-    if (!g) { g = { groupId: null, tabs: new Set(), timer: null }; this.groups.set(group.key, g); }
+    if (!g) { g = { tabs: new Set(), timer: null }; this.groups.set(group.key, g); }
     const wasGrouped = g.tabs.has(tabId);
     let reply;
     try {
-      reply = await this.call('herdrGroup', { tabId, groupId: g.groupId, title: String(group.title || group.key), color: String(group.color || 'purple'), wasGrouped });
+      // The group is the pane's (keyed by its id in the worker's session storage), never one found by title.
+      reply = await this.call('herdrGroup', { key: String(group.key), tabId, title: String(group.title || group.key), color: String(group.color || 'purple'), wasGrouped });
     } catch (err) {
       if (/No tab with id/i.test(err.message)) { this.tabIds.delete(state.target); g.tabs.delete(tabId); }
       throw err;
     }
     if (reply && reply.skipped === 'user_ungrouped') { this.userUngrouped.add(tabId); g.tabs.delete(tabId); return; }
     if (!reply || reply.skipped) return;
-    g.groupId = reply.groupId;
     g.tabs.add(tabId);
     if (g.timer) clearTimeout(g.timer);
     const ms = Math.max(1000, Number(group.collapse_ms) || 120000);
     g.timer = setTimeout(() => {
       g.timer = null;
-      this.call('herdrCollapse', g.groupId).catch((err) => this.log(`companion collapse: ${err.message}`));
+      this.call('herdrCollapse', String(group.key)).catch((err) => this.log(`companion collapse: ${err.message}`));
     }, ms);
     if (g.timer.unref) g.timer.unref();
   }
-  /** Panes that are gone: their groups dissolve — the tabs we put in, and (by
-   *  title, for a sidecar that restarted since) any group still carrying the name. */
-  async release(entries) {
-    for (const entry of entries) {
-      const key = typeof entry === 'string' ? entry : String(entry.key || '');
-      const title = typeof entry === 'string' ? null : entry.title;
-      const g = this.groups.get(key);
+  /** Panes that are gone: the group recorded for each key dissolves (only
+   *  that group; a same-named group of the user's or another pane's is never
+   *  touched). Throws when the worker could not do it. */
+  async release(keys) {
+    for (const key of keys) {
+      const g = this.groups.get(String(key));
       if (g) {
         if (g.timer) clearTimeout(g.timer);
-        this.groups.delete(key);
-        if (g.tabs.size) await this.call('herdrUngroup', [...g.tabs]).catch((err) => this.log(`companion release: ${err.message}`));
+        this.groups.delete(String(key));
       }
-      if (title) await this.call('herdrDissolve', String(title)).catch((err) => this.log(`companion dissolve: ${err.message}`));
+      await this.call('herdrRelease', String(key));
     }
   }
   close() {

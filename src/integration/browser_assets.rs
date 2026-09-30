@@ -44,6 +44,10 @@ pub const BROWSER_ASSETS: &[(&str, &str)] = &[
         "companion/sw.js",
         include_str!("assets/browser/companion/sw.js"),
     ),
+    (
+        "companion/companion.js",
+        include_str!("assets/browser/companion/companion.js"),
+    ),
 ];
 
 /// SHA-256 over every embedded asset (name and content), hex.
@@ -170,7 +174,8 @@ mod tests {
                 "package-lock.json",
                 "smoke.mjs",
                 "companion/manifest.json",
-                "companion/sw.js"
+                "companion/sw.js",
+                "companion/companion.js"
             ]
         );
         let manifest: serde_json::Value = serde_json::from_str(
@@ -184,13 +189,25 @@ mod tests {
         assert_eq!(manifest["manifest_version"], 3);
         assert_eq!(
             manifest["permissions"],
-            serde_json::json!(["tabs", "tabGroups", "alarms"])
+            serde_json::json!(["tabs", "tabGroups", "alarms", "storage"])
         );
         assert_eq!(manifest["background"]["service_worker"], "sw.js");
-        // The worker's VERSION and the sidecar's COMPANION_VERSION move together.
-        let sw = BROWSER_ASSETS
+        // sw.js is the never-changing bootstrap; the worker's VERSION (in
+        // companion.js) and the sidecar's COMPANION_VERSION move together.
+        let bootstrap = BROWSER_ASSETS
             .iter()
             .find(|(n, _)| *n == "companion/sw.js")
+            .unwrap()
+            .1;
+        assert!(
+            bootstrap.contains(
+                "importScripts('companion.js?v=' + chrome.runtime.getManifest().version)"
+            ),
+            "sw.js is the stable bootstrap"
+        );
+        let sw = BROWSER_ASSETS
+            .iter()
+            .find(|(n, _)| *n == "companion/companion.js")
             .unwrap()
             .1;
         let activity = BROWSER_ASSETS
@@ -210,7 +227,14 @@ mod tests {
         assert_eq!(
             after(sw, "const VERSION ="),
             after(activity, "export const COMPANION_VERSION ="),
-            "bump VERSION in companion/sw.js and COMPANION_VERSION in activity.mjs together"
+            "bump VERSION in companion/companion.js and COMPANION_VERSION in activity.mjs together"
+        );
+        // Chrome refreshes an unpacked extension's worker only on a manifest
+        // version change: the manifest is 0.<VERSION>.0.
+        assert_eq!(
+            manifest["version"],
+            format!("0.{}.0", after(sw, "const VERSION =")),
+            "bump the manifest version with VERSION"
         );
         let package: serde_json::Value = serde_json::from_str(
             BROWSER_ASSETS

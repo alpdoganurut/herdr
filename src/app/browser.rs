@@ -26,6 +26,7 @@ impl App {
     }
 
     pub(super) fn handle_browser_get(&mut self, id: String, params: BrowserGetParams) -> String {
+        self.release_gone_panes();
         let mut browser = hub().get(params.since_seq);
         // Actors whose pane is gone: re-resolved here, where the App knows.
         for tab in &mut browser.tabs {
@@ -35,7 +36,6 @@ impl App {
                 self.mark_gone(&mut last.actor);
             }
         }
-        self.release_gone_panes(&browser);
         // Cursors: drop vanished panes and re-resolve the pane's herdr tab (a
         // pane moved to another tab must not leave the glyph behind).
         browser
@@ -53,30 +53,14 @@ impl App {
     }
 
     /// Gone panes: their tab groups in the window are dissolved (the hub asks
-    /// the sidecar once per pane, off this thread).
-    fn release_gone_panes(&self, browser: &crate::api::schema::BrowserGetInfo) {
-        let mut gone: Vec<String> = browser
-            .tabs
-            .iter()
-            .flat_map(|tab| [&tab.opened_by, &tab.last_actor])
-            .filter_map(|actor| match actor {
-                BrowserActor::Pane {
-                    pane_id,
-                    gone: true,
-                    ..
-                } => Some(pane_id.clone()),
-                _ => None,
-            })
-            .chain(
-                browser
-                    .recent_panes
-                    .iter()
-                    .filter(|cursor| self.parse_pane_id(&cursor.pane_id).is_none())
-                    .map(|cursor| cursor.pane_id.clone()),
-            )
+    /// the sidecar, off this thread). Read from the hub's own ledger on every
+    /// call, so an unchanged (`since_seq`) answer still notices them.
+    fn release_gone_panes(&self) {
+        let gone: Vec<String> = hub()
+            .known_pane_ids()
+            .into_iter()
+            .filter(|pane| self.parse_pane_id(pane).is_none())
             .collect();
-        gone.sort();
-        gone.dedup();
         if !gone.is_empty() {
             hub().release_panes(gone);
         }
@@ -94,7 +78,7 @@ impl App {
             self.mark_gone(&mut tab.opened_by);
             self.mark_gone(&mut tab.last_actor);
         }
-        self.release_gone_panes(&status.get);
+        self.release_gone_panes();
         encode_success(id, ResponseResult::BrowserStatus { status })
     }
 

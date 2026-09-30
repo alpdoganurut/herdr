@@ -37,6 +37,9 @@ use crate::config::BrowserConfig;
 pub struct BrowserError {
     pub code: String,
     pub message: String,
+    /// The sidecar target the failed op created (an `open` whose navigation
+    /// failed): the tab exists and is adopted before the error is answered.
+    pub target: Option<String>,
 }
 
 impl BrowserError {
@@ -44,7 +47,13 @@ impl BrowserError {
         Self {
             code: code.into(),
             message: message.into(),
+            target: None,
         }
+    }
+
+    pub fn with_target(mut self, target: Option<String>) -> Self {
+        self.target = target.filter(|t| !t.is_empty());
+        self
     }
 
     pub fn disabled() -> Self {

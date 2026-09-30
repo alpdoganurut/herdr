@@ -188,16 +188,19 @@ async function attach(profile, port, deadlineMs) {
   }
   profile.port = port;
   const t0 = Date.now();
-  const stamp = () => `${new Date().toISOString()} attach ${profile.name}:${port}`;
-  process.stderr.write(`${stamp()} connectOverCDP…\n`);
+  const stamp = () => `attach ${profile.name}:${port}`;
+  log('debug', `${stamp()} connectOverCDP…`);
   let browser;
   try {
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { noDefaults: true, timeout: Math.max(1000, deadlineMs - 500) });
   } catch (err) {
-    process.stderr.write(`${stamp()} connectOverCDP failed after ${Date.now() - t0} ms: ${String(err.message).split('\n')[0]}\n`);
+    const message = String(err && err.message || err).split('\n')[0];
+    log('debug', `${stamp()} connectOverCDP failed after ${Date.now() - t0} ms: ${message}`);
+    // A distinct code for the connect timeout: herdr retries that once.
+    if (/Timeout/i.test(message)) fail('attach_timeout', `the browser did not accept the CDP connection within ${deadlineMs} ms (${message})`);
     throw err;
   }
-  process.stderr.write(`${stamp()} connected in ${Date.now() - t0} ms, pages ${browser.contexts()[0] ? browser.contexts()[0].pages().length : 'none'}\n`);
+  log('debug', `${stamp()} connected in ${Date.now() - t0} ms, pages ${browser.contexts()[0] ? browser.contexts()[0].pages().length : 'none'}`);
   profile.browser = browser;
   const ctx = browser.contexts()[0];
   if (!ctx) fail('browser_start_failed', 'the browser has no default context');
@@ -223,11 +226,11 @@ async function attach(profile, port, deadlineMs) {
     event('browser', { profile: profile.name, kind: 'disconnected', detail: 'CDP connection closed' });
   });
   await Promise.all(ctx.pages().map(page => track(profile, page, null).catch((err) => log('warn', `track failed: ${err.message}`))));
-  process.stderr.write(`${stamp()} tracked in ${Date.now() - t0} ms\n`);
+  log('debug', `${stamp()} tracked in ${Date.now() - t0} ms`);
   event('browser', { profile: profile.name, kind: 'attached', detail: browser.version() });
   // The companion extension (tab groups): loaded or not, bounded.
   const companion = await withTimeout(profile.companion.probe(), 3000, 'x', 'x').catch(() => ({ state: 'missing', detail: 'probe timed out' }));
-  process.stderr.write(`${stamp()} companion ${companion.state}${companion.detail ? ' (' + companion.detail + ')' : ''}\n`);
+  log('debug', `${stamp()} companion ${companion.state}${companion.detail ? ' (' + companion.detail + ')' : ''}`);
   return Object.assign(await tabs(profile), { companion });
 }
 
@@ -371,7 +374,12 @@ const ops = {
     state.inflight++;
     try {
       const response = await state.page.goto(args.url, { waitUntil, timeout: Math.max(1000, deadline_ms - 1000) })
-        .catch((err) => { throw new OpError(/Timeout/i.test(err.message) ? 'browser_timeout' : 'navigation_failed', err.message.split('\n')[0] + ' (page partially loaded; try browser read)'); });
+        .catch((err) => {
+          // The tab exists and is the caller's now: the error names it.
+          const failure = new OpError(/Timeout/i.test(err.message) ? 'browser_timeout' : 'navigation_failed', err.message.split('\n')[0] + ' (the new tab is your current tab; browser read shows what loaded)');
+          failure.target = targetId;
+          throw failure;
+        });
       if (response) state.lastStatus = response.status();
       await settle(state, args.wait);
     } finally { state.inflight--; }
@@ -491,19 +499,19 @@ const ops = {
     if (type === 'jpeg') options.quality = args.quality || 70;
     const scope = scopeLocator(state, args);
     let buffer;
-    // The agent's picture is the page: the activity overlay steps aside.
+    // The agent's picture is the page: the activity overlay steps aside for
+    // both captures (the file and the inline copy).
     await state.overlay.suspend(true);
+    let size; let inlinePath = null;
+    try {
     try {
       buffer = scope ? await scope.screenshot(options) : await state.page.screenshot(options);
     } catch (err) {
       if (/Timeout/i.test(err.message)) fail('tab_not_rendered', 'the tab did not paint within 5 s (background tab); rerun with --front to select it first');
       if (args.ref && /aria-ref|resolve/i.test(err.message)) fail('stale_ref', `ref ${args.ref} no longer resolves; take a new snapshot`);
       throw err;
-    } finally {
-      await state.overlay.suspend(false);
     }
-    const size = imageSize(buffer, type);
-    let inlinePath = null;
+    size = imageSize(buffer, type);
     const maxPx = args.max_px || 1568;
     const longEdge = Math.max(size.width, size.height);
     if (longEdge > maxPx && args.inline_path) {
@@ -528,6 +536,9 @@ const ops = {
       const shot = await session.send('Page.captureScreenshot', { format: type, quality: type === 'jpeg' ? (args.quality || 70) : undefined, clip, captureBeyondViewport: Boolean(args.full || scope) });
       fs.writeFileSync(args.inline_path, Buffer.from(shot.data, 'base64'));
       inlinePath = args.inline_path;
+    }
+    } finally {
+      await state.overlay.suspend(false);
     }
     return { result: { path: args.path, inline_path: inlinePath, width: size.width, height: size.height, bytes: buffer.length }, page: await pageInfo(state) };
   },
@@ -610,17 +621,43 @@ const ops = {
       catch (err) { if (args.ref) fail('stale_ref', `ref ${args.ref} no longer resolves (the page changed); re-run browser snapshot`); fail('invalid_request', `selector ${args.selector} matched nothing within the deadline`); }
       if (!handle) fail('stale_ref', `ref ${args.ref || args.selector} no longer resolves; re-run browser snapshot`);
     }
+    // Names never carry a field's contents (no value, no innerText of an
+    // editable); the element described is the one Playwright writes to (a
+    // label's control, not the label); a frame counts as a password field
+    // (what is inside it cannot be inspected).
     const describe = (el) => {
+      const editable = (n) => Boolean(n) && (/^(input|textarea|select)$/i.test(n.tagName) || n.isContentEditable === true);
+      if (!editable(el)) {
+        const label = el.closest ? el.closest('label') : null;
+        const control = el.control || (label && label.control);
+        if (control) el = control;
+      }
       const tag = el.tagName.toLowerCase();
       const role = el.getAttribute('role') || (tag === 'a' ? 'link' : tag === 'button' || (tag === 'input' && /^(button|submit|reset)$/.test(el.type)) ? 'button' : tag === 'select' ? 'combobox' : tag === 'textarea' || (tag === 'input') ? 'textbox' : tag);
-      const name = (el.getAttribute('aria-label') || (el.labels && el.labels[0] && el.labels[0].innerText) || el.placeholder || el.innerText || el.value || el.getAttribute('title') || el.name || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+      const name = (el.getAttribute('aria-label') || (el.labels && el.labels[0] && el.labels[0].innerText) || el.placeholder || (editable(el) ? '' : el.innerText) || el.getAttribute('title') || el.name || '').replace(/\s+/g, ' ').trim().slice(0, 60);
       const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
-      const password = (tag === 'input' && el.type === 'password') || ac === 'current-password' || ac === 'new-password';
+      const password = (tag === 'input' && el.type === 'password') || ac === 'current-password' || ac === 'new-password' || tag === 'iframe' || tag === 'frame';
       return { role, name, password, tag };
     };
     const describeTarget = async () => {
       if (handle) return handle.evaluate(describe);
-      return page.evaluate((d) => { const el = document.activeElement; return el && el !== document.body ? (0, eval)(d)(el) : { role: 'page', name: '', password: false, tag: 'body' }; }, describe.toString()).catch(() => ({ role: 'page', name: '', password: false, tag: 'body' }));
+      // No target: the deep active element (through open shadow roots), as a
+      // real handle; when it cannot be read the check fails closed.
+      let active = null;
+      try {
+        active = await page.evaluateHandle(() => {
+          let el = document.activeElement;
+          while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+          return el && el !== document.body && el !== document.documentElement ? el : null;
+        });
+        const el = active.asElement();
+        if (!el) return { role: 'page', name: '', password: false, tag: 'body' };
+        return await el.evaluate(describe);
+      } catch {
+        return { role: 'page', name: '', password: true, tag: 'unknown' };
+      } finally {
+        if (active) await active.dispose().catch(() => {});
+      }
     };
     const info = await describeTarget();
     const typing = kind === 'type' || kind === 'fill' || kind === 'press';
@@ -643,7 +680,7 @@ const ops = {
       } catch (err) {
         log('debug', `overlay glide: ${err.message}`);
       }
-      process.stderr.write(`activity act:${kind} overlay ${Date.now() - t0} ms\n`);
+      log('debug', `activity act:${kind} overlay ${Date.now() - t0} ms`);
     }
     state.inflight++;
     let navigated = false;
@@ -686,12 +723,20 @@ const ops = {
   },
 
   // Panes that are gone: their tab groups dissolve, in every attached profile.
+  // Keys that could not be released (no companion, an error) come back as
+  // `failed`, for herdr to retry later.
   async release({ args }) {
-    const keys = Array.isArray(args.keys) ? args.keys.filter((k) => k && (typeof k === 'string' || typeof k === 'object')) : [];
-    for (const profile of profiles.values()) {
-      if (profile.companion.state === 'ready') await profile.companion.release(keys).catch((err) => log('debug', `release: ${err.message}`));
+    const keys = Array.isArray(args.keys) ? args.keys.filter((k) => typeof k === 'string' && k).map(String) : [];
+    const ready = [...profiles.values()].filter((profile) => profile.companion.state === 'ready');
+    if (!ready.length) return { released: [], failed: keys, reason: 'companion not ready' };
+    const failed = new Set();
+    for (const profile of ready) {
+      for (const key of keys) {
+        try { await profile.companion.release([key]); }
+        catch (err) { failed.add(key); log('debug', `release ${key}: ${err.message}`); }
+      }
     }
-    return { released: keys.length };
+    return { released: keys.filter((k) => !failed.has(k)), failed: [...failed] };
   },
 
   async dialog({ profile: name, target, args }) {
@@ -766,7 +811,9 @@ async function handle(req) {
     else send({ id: req.id, ok: true, result: out || {} });
   } catch (err) {
     const code = err instanceof OpError ? err.code : (/Target closed|has been closed/i.test(err.message) ? 'tab_closed' : 'browser_error');
-    send({ id: req.id, ok: false, error: { code, message: String(err && err.message || err).split('\n')[0].slice(0, 500) } });
+    const error = { code, message: String(err && err.message || err).split('\n')[0].slice(0, 500) };
+    if (err && err.target) error.target = String(err.target);
+    send({ id: req.id, ok: false, error });
   } finally {
     if (state && !state.closed) activityEnd(state, activity);
   }

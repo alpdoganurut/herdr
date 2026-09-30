@@ -595,6 +595,117 @@ fn the_open_browser_binding_opens_the_overlay_in_either_layout() {
     assert!(!Config::default().keys.open_browser.has_values());
 }
 
+#[test]
+fn the_overlay_stops_loading_when_the_pull_fails_or_cannot_happen() {
+    // A pull that errors: the overlay is not stuck on "loading".
+    let mut state = tabs_state(browser_snapshot());
+    let mut outcome = ClientShellInput::default();
+    state.open_browser_overlay(&mut outcome);
+    let Some(ClientShellOverlay::Browser(overlay)) = state.overlay.as_ref() else {
+        panic!("browser overlay");
+    };
+    assert!(overlay.loading, "nothing pulled yet on a live endpoint");
+    let outcome = tick(&mut state, std::time::Instant::now());
+    let requests = endpoint_requests(&outcome);
+    let [(request_id, Method::BrowserGet(_))] = &requests[..] else {
+        panic!("expected one browser.get, got {requests:?}");
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        request_id,
+        Err(ClientShellEndpointError {
+            code: Some("browser_disabled".into()),
+            message: "off".into(),
+        }),
+    );
+    let Some(ClientShellOverlay::Browser(overlay)) = state.overlay.as_ref() else {
+        panic!("browser overlay");
+    };
+    assert!(!overlay.loading, "an error clears loading");
+    // An endpoint without browser.get never says "loading".
+    let mut state = tabs_state(browser_snapshot());
+    state.set_endpoint_methods(Some(vec!["tab.focus".into()]));
+    let mut outcome = ClientShellInput::default();
+    state.open_browser_overlay(&mut outcome);
+    let Some(ClientShellOverlay::Browser(overlay)) = state.overlay.as_ref() else {
+        panic!("browser overlay");
+    };
+    assert!(!overlay.loading, "no pull can happen");
+}
+
+#[test]
+fn a_moved_pane_marks_its_current_tab_not_the_recorded_one() {
+    let mut snapshot = browser_snapshot();
+    // pane_1 now lives in tab_2 (moved after the touch was recorded for tab_1)
+    snapshot.panes[0].tab_id = "tab_2".into();
+    let mut state = tabs_state(snapshot);
+    state.compose(106, 20).expect("composed frame");
+    deliver(&mut state, running_info(1, now()));
+    assert_eq!(
+        state.browser_marked_tabs(),
+        std::collections::HashSet::from(["tab_2".to_string()]),
+        "the marker follows the pane; the recorded tab_1 is not marked"
+    );
+    // A pane the snapshot no longer has falls back to the recorded tab.
+    let mut snapshot = browser_snapshot();
+    snapshot.panes.clear();
+    let mut state = tabs_state(snapshot);
+    state.compose(106, 20).expect("composed frame");
+    deliver(&mut state, running_info(1, now()));
+    assert_eq!(
+        state.browser_marked_tabs(),
+        std::collections::HashSet::from(["tab_1".to_string()])
+    );
+}
+
+#[test]
+fn with_room_for_one_pinned_row_news_keeps_it() {
+    let news = || crate::api::schema::NewsGetInfo {
+        enabled: true,
+        times: vec![],
+        quiet_hours: String::new(),
+        model: None,
+        tab_id: None,
+        pane_id: None,
+        next_run_at: None,
+        run: None,
+        last_run: None,
+        unread: false,
+        consecutive_failures: 0,
+        pending_notifications: 0,
+    };
+    // Growing heights: the first that shows a pinned row shows News alone.
+    let mut seen_single = false;
+    for height in 1u16..20 {
+        let mut state = tabs_state(browser_snapshot());
+        if state.compose(106, height).is_none() {
+            continue;
+        }
+        deliver(&mut state, running_info(1, now()));
+        state.news.info = Some(news());
+        if state.compose(106, height).is_none() {
+            continue;
+        }
+        let browser = state.hits.browser_row != ratatui::layout::Rect::default();
+        let news_shown = state.hits.news_row != ratatui::layout::Rect::default();
+        if browser && news_shown {
+            assert!(
+                seen_single,
+                "a single row must have shown before both fit (height {height})"
+            );
+            break;
+        }
+        if browser || news_shown {
+            seen_single = true;
+            assert!(
+                news_shown && !browser,
+                "News has priority at height {height}"
+            );
+        }
+    }
+    assert!(seen_single, "no height showed exactly one pinned row");
+}
+
 pub(crate) mod fork_smoke {
     use super::*;
 
