@@ -94,6 +94,7 @@ pub fn snapshot(info: &BrowserGetInfo, config: &BrowserConfig, now: u64) -> Valu
         };
         let row = json!({
             "id": tab.id,
+            "target": tab.target_id,
             "short": short,
             "profile": profile,
             "title": tab.title,
@@ -161,6 +162,7 @@ pub fn snapshot(info: &BrowserGetInfo, config: &BrowserConfig, now: u64) -> Valu
         "version": NTP_SNAPSHOT_VERSION,
         "at": now,
         "show_activity": config.show_activity,
+        "active_secs": window,
         "profile": profile,
         "agents": agent_rows.into_iter().map(|(_, a)| a).collect::<Vec<_>>(),
         "agent_tabs": agent_tabs,
@@ -317,6 +319,10 @@ mod tests {
         assert_eq!(snap["profile"], "main");
         assert_eq!(snap["agent_tabs"], 3);
         assert_eq!(snap["last_at"], 1000);
+        assert_eq!(
+            snap["active_secs"], 60,
+            "the page keeps live/idle current itself"
+        );
         let agents = snap["agents"].as_array().unwrap();
         assert_eq!(agents.len(), 2);
         let first = &agents[0];
@@ -330,6 +336,10 @@ mod tests {
         let tabs = first["tabs"].as_array().unwrap();
         assert_eq!(tabs.len(), 2, "closed tabs are left out");
         assert_eq!(tabs[0]["short"], "t12");
+        assert_eq!(
+            tabs[0]["target"], "T-main:t12",
+            "the CDP target the page maps to a Chrome tab id"
+        );
         assert_eq!(tabs[0]["current"], true);
         assert_eq!(tabs[0]["host"], "en.wikipedia.org");
         assert_eq!(tabs[1]["short"], "t10");

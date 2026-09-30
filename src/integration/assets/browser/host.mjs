@@ -229,7 +229,7 @@ async function attach(profile, port, deadlineMs, pinDashboard) {
   log('debug', `${stamp()} tracked in ${Date.now() - t0} ms`);
   event('browser', { profile: profile.name, kind: 'attached', detail: browser.version() });
   // The companion extension (tab groups): loaded or not, bounded.
-  const companion = await withTimeout(profile.companion.probe(), 3000, 'x', 'x').catch(() => ({ state: 'missing', detail: 'probe timed out' }));
+  const companion = await withTimeout(profile.companion.probe(), 6000, 'x', 'x').catch(() => ({ state: 'missing', detail: 'probe timed out' }));
   log('debug', `${stamp()} companion ${companion.state}${companion.detail ? ' (' + companion.detail + ')' : ''}`);
   if (companion.state === 'ready' && pinDashboard !== undefined) {
     await withTimeout(profile.companion.dashboard(pinDashboard), 3000, 'x', 'x').catch((err) => log('debug', `dashboard: ${err.message}`));
@@ -290,11 +290,12 @@ async function settle(state, wait) {
   await state.page.waitForLoadState('networkidle', { timeout: 1500 }).catch(() => {});
 }
 // Retry once when the page navigated mid-op (user or script).
+const isNavigationError = (err) => /Execution context was destroyed|navigation|detached/i.test(err.message);
 async function withRetry(state, fn) {
   try {
     return { value: await fn(), navigated_during: false };
   } catch (err) {
-    if (/Execution context was destroyed|navigation|detached/i.test(err.message)) {
+    if (isNavigationError(err)) {
       await state.page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
       return { value: await fn(), navigated_during: true };
     }
@@ -348,6 +349,9 @@ const ops = {
   },
   async close_browser({ profile: name }) {
     const profile = needProfile(name);
+    // A stale companion worker is stopped first, so the next start registers the new files.
+    // (herdr waits STOP_GRACE = 5 s for this op; the retire needs up to ~3 s on a slow path)
+    await withTimeout(profile.companion.stopStaleWorker(), 4000, 'x', 'x').catch((err) => log('debug', `stale worker stop: ${err.message}`));
     const session = await profile.browser.newBrowserCDPSession();
     await session.send('Browser.close').catch(() => {});
     return {};
@@ -608,14 +612,24 @@ const ops = {
     // Fail closed: a guard that cannot run refuses the eval.
     const guard = args.guard_passwords ? await passwordSnapshot(state).catch(() => null) : false;
     if (guard === null) fail('password_field_refused', 'the password guard could not inspect the page; eval refused ([browser] type_into_password_fields = false)');
+    const run = async () => {
+      const value = await state.page.evaluate(args.expr);
+      try { JSON.stringify(value); return value === undefined ? null : value; } catch { return String(value); }
+    };
     let r;
+    let navigated = false;
     try {
-      r = await withRetry(state, async () => {
-        const value = await state.page.evaluate(args.expr);
-        try { JSON.stringify(value); return value === undefined ? null : value; } catch { return String(value); }
-      });
+      if (guard) {
+        // Never re-run under the guard: the snapshot belongs to the page that
+        // was there; a navigation during the eval is a refusal, not a retry.
+        try { r = { value: await run(), navigated_during: false }; }
+        catch (err) { if (isNavigationError(err)) navigated = true; throw err; }
+      } else {
+        r = await withRetry(state, run);
+      }
     } finally {
       if (guard) {
+        if (navigated) fail('password_field_refused', 'the page navigated during a guarded eval; the result is discarded and the eval is not re-run ([browser] type_into_password_fields = false)');
         const changed = await passwordCheck(state, guard).catch(() => -1);
         if (changed !== 0) fail('password_field_refused', changed > 0 ? 'eval changed a password field; restored ([browser] type_into_password_fields = false)' : 'the password guard could not re-check the page after eval; refused');
       }
@@ -756,8 +770,18 @@ const ops = {
     let pushed = 0;
     for (const profile of profiles.values()) {
       if (profile.companion.state !== 'ready') continue;
-      try { await profile.companion.call('herdrSnapshot', args.snapshot || null); pushed++; }
-      catch (err) { log('debug', `ntp push: ${err.message}`); }
+      try {
+        // target -> Chrome tab id, so a click on the page activates exactly
+        // that tab (resolved once per page, cached by the companion driver).
+        const tabIds = {};
+        for (const state of profile.pages.values()) {
+          const id = await profile.companion.tabIdFor(state, true).catch(() => null);
+          if (id != null) tabIds[state.target] = id;
+        }
+        const snapshot = args.snapshot ? { ...args.snapshot, tabIds } : null;
+        await profile.companion.call('herdrSnapshot', snapshot);
+        pushed++;
+      } catch (err) { log('debug', `ntp push: ${err.message}`); }
     }
     return { pushed };
   },

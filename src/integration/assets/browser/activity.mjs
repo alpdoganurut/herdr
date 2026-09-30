@@ -7,7 +7,7 @@
 export const WORLD = 'herdr';
 export const HOST_ATTR = 'data-herdr-overlay';
 /** The companion worker code this sidecar expects (VERSION in companion/sw.js); an older running worker is reloaded. */
-export const COMPANION_VERSION = 9;
+export const COMPANION_VERSION = 10;
 /** The frame stays this long after the last operation. */
 export const LINGER_MS = 3000;
 /** The cursor's glide (matches the CSS transition). */
@@ -189,29 +189,97 @@ export class Companion {
     this.chain = Promise.resolve();
     this.connecting = null;
     this.log = () => {};
+    this.stale = false; // the running worker is older than this herdr's files
+    this.scope = null; // chrome-extension://<id>/
+    this.gen = 0; // bumped by close(): a worker wait from an earlier browser gives up
   }
   info() { return { state: this.state, detail: this.detail }; }
+  /** A DevTools session on a page of the profile over a connection of its
+   *  own: the `ServiceWorker` domain is only served on page targets (not on
+   *  the browser target), and an unregister sent through the sidecar's
+   *  long-lived connection never took while the same calls over a fresh
+   *  `connectOverCDP` did (live, repeatedly). Answers { session, close }. */
+  async pageSession() {
+    // (loaded here, not at the top: scripts/test_browser_companion.mjs imports this file from the source tree)
+    const { chromium } = await import('playwright-core');
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${this.profile.port}`, { timeout: COMPANION_CALL_MS });
+    const close = () => browser.close().catch(() => {});
+    const ctx = browser.contexts()[0];
+    const pages = ctx ? ctx.pages() : [];
+    // a page outside the extension's own scope first (what worked live)
+    const page = pages.find((p) => !this.scope || !p.url().startsWith(this.scope)) || pages[0];
+    if (!page) { await close(); return null; }
+    const session = await ctx.newCDPSession(page);
+    return { session, close };
+  }
+  /** Chrome keeps an unpacked command-line extension's worker script for good:
+   *  a manifest version bump, a browser restart, `chrome.runtime.reload()`
+   *  and `importScripts` of a new URL do not refresh it, and a worker that is
+   *  unregistered at runtime does not come back until the next browser start.
+   *  So a stale worker keeps serving this session (reported as pending), and
+   *  right before herdr closes the browser its registration is removed and
+   *  the worker stopped — together, in one DevTools session: an unregister
+   *  alone never completed while the worker ran, and a worker that was still
+   *  running at shutdown came back with the old script. After that the next
+   *  start registers the files on disk afresh (verified live). The
+   *  `ServiceWorker` domain is only served on page targets, hence the page
+   *  session; nothing on disk is touched. */
+  async stopStaleWorker() {
+    if (!this.stale || !this.scope) return false;
+    const link = await this.pageSession();
+    if (!link) { this.log('companion: no page for a DevTools session; the stale worker stays'); return false; }
+    const { session } = link;
+    const versions = new Map(); // versionId -> runningStatus
+    let deleted = false;
+    const onVersions = ({ versions: list }) => { for (const v of list) if (v.scriptURL.startsWith(this.scope)) versions.set(v.versionId, v.runningStatus); };
+    const onRegistrations = ({ registrations }) => { for (const r of registrations) if (r.scopeURL === this.scope && r.isDeleted) deleted = true; };
+    const live = () => [...versions].filter(([, status]) => status === 'running' || status === 'starting').map(([id]) => id);
+    session.on('ServiceWorker.workerVersionUpdated', onVersions);
+    session.on('ServiceWorker.workerRegistrationUpdated', onRegistrations);
+    try {
+      await withTimeout(session.send('ServiceWorker.enable'), COMPANION_CALL_MS, 'ServiceWorker.enable');
+      await sleep(700); // the domain's initial dump settles (an unregister sent right after enable never took)
+      const running = live();
+      // (the held worker connection stays open until the worker is gone: a
+      // registration whose worker lost its DevTools session first was never
+      // marked deleted)
+      await withTimeout(session.send('ServiceWorker.unregister', { scopeURL: this.scope }), COMPANION_CALL_MS, 'ServiceWorker.unregister');
+      for (const versionId of running) await session.send('ServiceWorker.stopWorker', { versionId }).catch(() => {});
+      for (let i = 0; i < 20 && !(deleted && running.every((id) => versions.get(id) === 'stopped')); i++) await sleep(100);
+      this.close();
+      this.log(`companion: stale worker retired (registration ${deleted ? 'deleted' : 'still listed'}, ${running.length} stopped); the next browser start loads the new files`);
+      return deleted;
+    } finally {
+      session.off('ServiceWorker.workerVersionUpdated', onVersions);
+      session.off('ServiceWorker.workerRegistrationUpdated', onRegistrations);
+      await session.detach().catch(() => {});
+      await link.close();
+    }
+  }
   async targets() {
     const res = await fetch(`http://127.0.0.1:${this.profile.port}/json/list`, { signal: AbortSignal.timeout(2000) });
     return res.json();
   }
   findIn(list) { return list.find((t) => t.type === 'service_worker' && /\/sw\.js$/.test(t.url)) || null; }
   /** Is the extension loaded, and current? (at attach) A worker still running
-   *  older code (the files were refreshed under it) is reported, not reloaded:
-   *  chrome.runtime.reload() on a command-line extension whose permissions
-   *  grew disables it until the user re-enables it; a browser restart loads
-   *  the new files cleanly. */
+   *  older code (the files were refreshed under it) keeps serving this
+   *  session and is reported as pending; see `stopStaleWorker`. */
   async probe() {
+    this.stale = false;
+    this.scope = null;
     if (typeof WebSocket !== 'function') { this.state = 'unsupported'; this.detail = 'node has no WebSocket'; return this.info(); }
     try {
       const sw = await this.worker(true);
       if (!sw) { this.state = 'missing'; this.detail = 'no companion service worker on the DevTools port'; return this.info(); }
       this.state = 'ready';
       this.detail = '';
+      // (not URL.origin: Node answers "null" for chrome-extension: URLs)
+      this.scope = sw.url.slice(0, sw.url.lastIndexOf('/') + 1);
       const ping = String(await this.call('herdrPing').catch(() => ''));
       const version = Number((ping.split('/')[1] || '0'));
       if (version !== COMPANION_VERSION) {
-        this.detail = `worker v${version || '?'}, this herdr expects v${COMPANION_VERSION}; \`herdr browser stop\` and open again to update tab groups`;
+        this.stale = true; // retired by stopStaleWorker when herdr closes the browser
+        this.detail = `worker v${version || '?'}, this herdr expects v${COMPANION_VERSION} — extension update pending: \`herdr browser stop\` and open again`;
       }
     } catch (err) {
       this.state = 'missing';
@@ -221,10 +289,11 @@ export class Companion {
   }
   /** The worker target, woken by a tab event when Chrome idled it out. */
   async worker(wake) {
+    const gen = this.gen;
     let sw = this.findIn(await this.targets());
     if (!sw && wake) {
       await this.nudge();
-      for (let i = 0; i < 15 && !sw; i++) { await sleep(100); sw = this.findIn(await this.targets()); }
+      for (let i = 0; i < 15 && !sw && gen === this.gen && this.profile.browser; i++) { await sleep(100); sw = this.findIn(await this.targets()); }
     }
     return sw;
   }
@@ -301,7 +370,7 @@ export class Companion {
     else this.log(`companion: no blank tab to adopt for ${targetId}`);
   }
   /** The extension tab id of a tracked page: cached, else the one tab with its URL (and title). */
-  async tabIdFor(state) {
+  async tabIdFor(state, quiet = false) {
     const cached = this.tabIds.get(state.target);
     if (cached != null) return cached;
     const url = state.page.url();
@@ -312,7 +381,7 @@ export class Companion {
       const title = await state.page.title().catch(() => '');
       candidates = candidates.filter((t) => t.title === title);
     }
-    if (candidates.length !== 1) { this.log(`companion: ${candidates.length} tabs match ${url}; not grouped`); return null; }
+    if (candidates.length !== 1) { if (!quiet) this.log(`companion: ${candidates.length} tabs match ${url}; not grouped`); return null; }
     this.tabIds.set(state.target, candidates[0].id);
     return candidates[0].id;
   }
@@ -370,10 +439,17 @@ export class Companion {
       await this.call('herdrRelease', String(key));
     }
   }
+  /** The browser went away (or is being closed): drop everything that
+   *  belonged to it. An in-flight connect keeps failing on its own; the next
+   *  attach's calls must not wait on it (one probe timed out that way). */
   close() {
     for (const g of this.groups.values()) if (g.timer) clearTimeout(g.timer);
     this.groups.clear();
     this.tabIds.clear();
     if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
+    this.connecting = null;
+    this.gen++;
+    this.stale = false;
+    this.scope = null;
   }
 }

@@ -271,10 +271,16 @@ pub struct BrowserState {
 /// and `newtab.html`, Chromium's own new tab): furniture, not tabs — never
 /// adopted, grouped, overlaid, counted or made current.
 pub fn is_dashboard_url(url: &str) -> bool {
-    url.starts_with("chrome://newtab")
-        || url.starts_with("chrome://new-tab-page")
-        || (url.starts_with("chrome-extension://")
-            && (url.ends_with("/dashboard.html") || url.ends_with("/newtab.html")))
+    if url.starts_with("chrome://newtab") || url.starts_with("chrome://new-tab-page") {
+        return true;
+    }
+    // only the companion's own id: another extension's dashboard.html is a tab
+    let ours = format!(
+        "chrome-extension://{}/",
+        crate::integration::browser_assets::COMPANION_EXTENSION_ID
+    );
+    url.strip_prefix(ours.as_str())
+        .is_some_and(|rest| rest.starts_with("dashboard.html") || rest.starts_with("newtab.html"))
 }
 
 fn clip_detail(detail: &str) -> String {
@@ -1115,9 +1121,21 @@ mod tests {
                 selected: false,
                 dialog_open: false,
             },
+            HostTab {
+                target: "O".into(),
+                url: "chrome-extension://abcdefghijklmnopabcdefghijklmnop/dashboard.html".into(),
+                title: "someone else's dashboard".into(),
+                selected: false,
+                dialog_open: false,
+            },
         ];
         state.reconcile("main", &tabs, 10);
-        assert_eq!(state.open_tabs("main").count(), 1);
+        assert_eq!(
+            state.open_tabs("main").count(),
+            2,
+            "another extension's dashboard.html is an ordinary tab"
+        );
+        assert!(state.tabs.contains_key(&TabKey::new("main", "O")));
         assert!(!state.tabs.contains_key(&TabKey::new("main", "D")));
         assert!(!state.tabs.contains_key(&TabKey::new("main", "N")));
         // an `opened` event for the dashboard is ignored; a tab that turns into it leaves
@@ -1126,7 +1144,7 @@ mod tests {
                 profile: "main".into(),
                 target: "D2".into(),
                 kind: "opened".into(),
-                url: "chrome-extension://x/dashboard.html".into(),
+                url: "chrome-extension://jmegdddadjhcnkdfpmeeockadkdbfpop/dashboard.html".into(),
                 title: String::new(),
                 initiator: "other".into(),
                 selected: None,
@@ -1140,7 +1158,7 @@ mod tests {
                 profile: "main".into(),
                 target: "S".into(),
                 kind: "navigated".into(),
-                url: "chrome-extension://x/newtab.html".into(),
+                url: "chrome-extension://jmegdddadjhcnkdfpmeeockadkdbfpop/newtab.html".into(),
                 title: String::new(),
                 initiator: "other".into(),
                 selected: None,
@@ -1148,9 +1166,23 @@ mod tests {
             },
             12,
         );
-        assert_eq!(state.open_tabs("main").count(), 0);
+        assert_eq!(
+            state.open_tabs("main").count(),
+            1,
+            "only the other extension's tab is left"
+        );
         assert!(is_dashboard_url("chrome://new-tab-page/"));
         assert!(!is_dashboard_url("https://example.com/dashboard.html"));
+        assert!(is_dashboard_url(
+            "chrome-extension://jmegdddadjhcnkdfpmeeockadkdbfpop/dashboard.html?x=1"
+        ));
+        assert!(
+            !is_dashboard_url("chrome-extension://abcdefghijklmnopabcdefghijklmnop/dashboard.html"),
+            "another extension's dashboard is a normal tab"
+        );
+        assert!(!is_dashboard_url(
+            "chrome-extension://abcdefghijklmnopabcdefghijklmnop/newtab.html"
+        ));
     }
 
     #[test]

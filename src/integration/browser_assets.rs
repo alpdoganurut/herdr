@@ -20,14 +20,20 @@ pub const HOST_DIR: &str = "host";
 pub const ENTRY: &str = "host.mjs";
 /// The companion extension directory under `HOST_DIR` (`--load-extension`).
 pub const COMPANION_DIR: &str = "companion";
+/// The companion's extension id: fixed by the `key` in its manifest
+/// (`a`–`p` alphabet of the first 16 bytes of SHA-256 over the DER key), so
+/// only pages under this id are herdr's own furniture (`state::is_dashboard_url`).
+pub const COMPANION_EXTENSION_ID: &str = "jmegdddadjhcnkdfpmeeockadkdbfpop";
 /// The companion worker's code version (`VERSION` in companion.js, the
 /// manifest's `0.<n>.0`, `COMPANION_VERSION` in activity.mjs). Chrome keeps an
 /// unpacked command-line extension's worker script for good — a manifest
 /// version bump, a browser restart, `chrome.runtime.reload()` or
-/// `importScripts` of a new URL do not refresh it — so a profile that last
-/// ran another version has its `Default/Service Worker` store cleared
-/// before the launch (`launch::refresh_companion_worker`).
-pub const COMPANION_VERSION: u32 = 9;
+/// `importScripts` of a new URL do not refresh it; the sidecar's `Companion`
+/// reports a stale worker at attach (`extension update pending`) and
+/// `Companion.stopStaleWorker` retires it right before herdr closes the
+/// browser (unregister + stop over a fresh page-target CDP session), so the
+/// next start registers the new files; nothing on disk is deleted for it.
+pub const COMPANION_VERSION: u32 = 10;
 pub const RUNTIME_FILE: &str = "runtime.json";
 pub const RUNTIME_VERSION: u32 = 1;
 /// The playwright-core version `package.json` pins.
@@ -263,7 +269,7 @@ mod tests {
         assert_eq!(
             after(sw, "const VERSION ="),
             COMPANION_VERSION,
-            "bump COMPANION_VERSION in browser_assets.rs with them (it drives the worker refresh)"
+            "bump COMPANION_VERSION in browser_assets.rs with them (doctor prints it; the sidecar's stopStaleWorker retires an older worker)"
         );
         assert!(
             manifest["key"].as_str().is_some_and(|k| k.len() > 300),
@@ -314,6 +320,28 @@ mod tests {
 
     /// The companion driver's JS-level regression check (scripts/test_browser_companion.mjs),
     /// when a node is around; skipped otherwise.
+    #[test]
+    fn the_extension_id_constant_matches_the_manifest_key() {
+        use base64::Engine;
+        let manifest = BROWSER_ASSETS
+            .iter()
+            .find(|(n, _)| *n == "companion/manifest.json")
+            .unwrap()
+            .1;
+        let value: serde_json::Value = serde_json::from_str(manifest).unwrap();
+        let key = value["key"].as_str().expect("the manifest pins a key");
+        let der = base64::engine::general_purpose::STANDARD
+            .decode(key)
+            .unwrap();
+        let digest = Sha256::digest(&der);
+        let id: String = digest[..16]
+            .iter()
+            .flat_map(|byte| [byte >> 4, byte & 0x0f])
+            .map(|nibble| (b'a' + nibble) as char)
+            .collect();
+        assert_eq!(id, COMPANION_EXTENSION_ID);
+    }
+
     #[test]
     fn companion_driver_survives_a_transient_worker_miss() {
         let node = std::env::var_os("PATH").and_then(|path| {

@@ -8,7 +8,7 @@ chrome.alarms.create('herdr-keepalive', { periodInMinutes: 0.5 });
 // version (0.<VERSION>.0), COMPANION_VERSION in activity.mjs and
 // COMPANION_VERSION in browser_assets.rs (herdr clears a profile's worker
 // store before launching it with a new version, so the new code loads).
-const VERSION = 9;
+const VERSION = 10;
 self.herdrPing = () => 'herdr-companion/' + VERSION;
 
 // The new tab page's data: herdr's compact snapshot, kept in session storage
@@ -104,13 +104,10 @@ self.herdrRelease = async (key) => {
 // window (`[browser] pin_dashboard`, told by herdr at attach and on config
 // changes, remembered in storage.local for the next browser start). A window
 // whose user unpinned or closed it is left alone for the session
-// (storage.session); older herdr pages (another extension id) are closed.
+// (storage.session). Only pages under this extension's own id are ours:
+// another extension's dashboard.html is somebody else's tab.
 const DASHBOARD_URL = chrome.runtime.getURL('dashboard.html');
 const isOurDashboard = (t) => t.url === DASHBOARD_URL || t.pendingUrl === DASHBOARD_URL;
-const isStaleHerdrPage = (t) => {
-  const url = t.url || t.pendingUrl || '';
-  return /^chrome-extension:\/\/[a-p]{32}\/(dashboard|newtab)\.html$/.test(url) && !url.startsWith(chrome.runtime.getURL(''));
-};
 async function dashboardPinned() {
   const { dashboardPin } = await chrome.storage.local.get('dashboardPin');
   return dashboardPin !== false;
@@ -122,8 +119,6 @@ async function dashboardSession() {
 async function ensureDashboardWindow(win, pin, session) {
   if (win.type && win.type !== 'normal') return;
   const tabs = await chrome.tabs.query({ windowId: win.id });
-  const stale = tabs.filter(isStaleHerdrPage);
-  if (stale.length) await chrome.tabs.remove(stale.map((t) => t.id)).catch(() => {});
   const ours = tabs.filter(isOurDashboard).sort((a, b) => a.index - b.index);
   if (!pin) {
     if (ours.length) await chrome.tabs.remove(ours.map((t) => t.id)).catch(() => {});

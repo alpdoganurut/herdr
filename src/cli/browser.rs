@@ -1066,59 +1066,82 @@ pub(crate) fn codex_mcp_block(fallback_binary: &Path) -> String {
 }
 
 /// Put `block` (a `[mcp_servers.herdr-browser]` table) into a Codex
-/// `config.toml`: an existing table of that name is replaced in place (the
-/// rest of the file is untouched), else the block goes at the end.
-pub(crate) fn upsert_codex_block(config: &str, block: &str) -> String {
-    let header = format!("[mcp_servers.{MCP_SERVER_NAME}]");
-    let is_header = |line: &str| {
-        let trimmed = line.trim();
-        trimmed.starts_with('[') && !trimmed.starts_with("[[") || trimmed.starts_with("[[")
-    };
-    let is_ours = |line: &str| {
-        let trimmed = line.trim();
-        trimmed == header
-            || trimmed == format!("[mcp_servers.\"{MCP_SERVER_NAME}\"]")
-            || trimmed.starts_with(&format!("[mcp_servers.{MCP_SERVER_NAME}."))
-            || trimmed.starts_with(&format!("[mcp_servers.\"{MCP_SERVER_NAME}\"."))
-    };
-    let lines: Vec<&str> = config.lines().collect();
-    let mut out: Vec<String> = Vec::new();
-    let mut i = 0;
-    let mut replaced = false;
-    while i < lines.len() {
-        if is_ours(lines[i]) {
-            // Skip this table (and its sub-tables) up to the next header.
-            i += 1;
-            while i < lines.len() && (!is_header(lines[i]) || is_ours(lines[i])) {
-                i += 1;
-            }
-            if !replaced {
-                out.push(block.trim_end().to_string());
-                out.push(String::new());
-                replaced = true;
-            }
-            continue;
+/// `config.toml`, edited as a document: an existing entry in any shape
+/// (a table, a dotted key, an inline `herdr-browser = {…}`) is replaced,
+/// everything else — other tables, comments, spacing — stays. A file that
+/// does not parse is refused.
+pub(crate) fn upsert_codex_block(config: &str, block: &str) -> Result<String, String> {
+    use toml_edit::{DocumentMut, Item, Table};
+    let mut doc: DocumentMut = config
+        .parse()
+        .map_err(|err| format!("config.toml does not parse, left untouched: {err}"))?;
+    let fresh: DocumentMut = block
+        .parse()
+        .map_err(|err| format!("herdr's block does not parse: {err}"))?;
+    let entry: Table = fresh["mcp_servers"][MCP_SERVER_NAME]
+        .as_table()
+        .cloned()
+        .ok_or_else(|| "herdr's block has no table".to_string())?;
+    if doc.get("mcp_servers").is_none() {
+        let mut servers = Table::new();
+        servers.set_implicit(true);
+        doc["mcp_servers"] = Item::Table(servers);
+    }
+    let inline = doc["mcp_servers"].is_inline_table();
+    let servers = doc
+        .get_mut("mcp_servers")
+        .and_then(Item::as_table_like_mut)
+        .ok_or_else(|| "`mcp_servers` is not a table; left untouched".to_string())?;
+    servers.remove(MCP_SERVER_NAME);
+    if inline {
+        servers.insert(MCP_SERVER_NAME, toml_edit::value(entry.into_inline_table()));
+    } else {
+        servers.insert(MCP_SERVER_NAME, Item::Table(entry));
+    }
+    Ok(doc.to_string())
+}
+
+/// Write `contents` over `path` in place: through the symlink to the real
+/// file, via a temp file in the same directory, keeping the file's mode.
+fn write_in_place(path: &Path, contents: &str) -> std::io::Result<PathBuf> {
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Some(parent) = real.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let name = real
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".into());
+    let tmp = real.with_file_name(format!(".{name}.herdr-{}", std::process::id()));
+    let mode = std::fs::metadata(&real).ok().map(|m| m.permissions());
+    let result = std::fs::write(&tmp, contents).and_then(|()| {
+        if let Some(mode) = mode {
+            std::fs::set_permissions(&tmp, mode)?;
         }
-        out.push(lines[i].to_string());
-        i += 1;
+        std::fs::rename(&tmp, &real)
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    if !replaced {
-        while out.last().is_some_and(|l| l.trim().is_empty()) {
-            out.pop();
-        }
-        if !out.is_empty() {
-            out.push(String::new());
-        }
-        out.push(block.trim_end().to_string());
+    result.map(|()| real)
+}
+
+/// A one-time copy of `path` as `<name>.herdr-backup` next to it (never overwritten).
+fn backup_once(path: &Path) -> std::io::Result<Option<PathBuf>> {
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if !real.exists() {
+        return Ok(None);
     }
-    let mut text = out.join("\n");
-    while text.ends_with("\n\n") {
-        text.pop();
+    let name = real
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".into());
+    let backup = real.with_file_name(format!("{name}.herdr-backup"));
+    if backup.exists() {
+        return Ok(None);
     }
-    if !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text
+    std::fs::copy(&real, &backup)?;
+    Ok(Some(backup))
 }
 
 /// Codex's `config.toml` (`$CODEX_HOME`, else `~/.codex`).
@@ -1167,34 +1190,34 @@ fn register_codex(fallback: &Path) -> String {
         Err(err) => return format!("codex: cannot read {} ({err})", path.display()),
     };
     let block = codex_mcp_block(fallback);
-    let next = upsert_codex_block(&current, &block);
+    let next = match upsert_codex_block(&current, &block) {
+        Ok(next) => next,
+        Err(err) => return format!("codex: {} {err}", path.display()),
+    };
     if next == current {
         return format!(
             "codex: {} already registers {MCP_SERVER_NAME}",
             path.display()
         );
     }
-    if let Some(parent) = path.parent() {
-        if let Err(err) = std::fs::create_dir_all(parent) {
-            return format!("codex: cannot create {} ({err})", parent.display());
-        }
-    }
-    let tmp = path.with_file_name(format!(".config.toml.herdr-{}", std::process::id()));
-    let written = std::fs::write(&tmp, &next).and_then(|()| std::fs::rename(&tmp, &path));
-    match written {
-        Ok(()) => format!(
-            "codex: wrote [mcp_servers.{MCP_SERVER_NAME}] to {}:\n{}",
-            path.display(),
+    let backup = match backup_once(&path) {
+        Ok(backup) => backup,
+        Err(err) => return format!("codex: cannot back up {} ({err})", path.display()),
+    };
+    match write_in_place(&path, &next) {
+        Ok(real) => format!(
+            "codex: wrote [mcp_servers.{MCP_SERVER_NAME}] to {}{}:\n{}",
+            real.display(),
+            backup
+                .map(|b| format!(" (backup {})", b.display()))
+                .unwrap_or_default(),
             block
                 .lines()
                 .map(|l| format!("          {l}"))
                 .collect::<Vec<_>>()
                 .join("\n")
         ),
-        Err(err) => {
-            let _ = std::fs::remove_file(&tmp);
-            format!("codex: cannot write {} ({err})", path.display())
-        }
+        Err(err) => format!("codex: cannot write {} ({err})", path.display()),
     }
 }
 
@@ -1414,8 +1437,8 @@ pub(crate) fn shell_file_contents() -> String {
 # Inside a herdr+ pane, codex and claude run through `herdr browser wrap` ([browser] wrap_agents,\n\
 # steer_agents and disable_native_browser decide what it adds); elsewhere the real commands run.\n\
 _herdr_plus_wrap() { [ -n \"$HERDR_PANE_ID\" ] && [ -n \"$HERDR_BIN_PATH\" ]; }\n\
-codex() { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }\n\
-claude-z() { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap claude -- \"$@\"; else command claude-z \"$@\"; fi }\n\
+function codex { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }\n\
+function claude-z { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap claude -- \"$@\"; else command claude-z \"$@\"; fi }\n\
 # `claude` itself only when it is not an alias (an alias claude='claude-z' reaches the function above);\n\
 # the `function` form keeps zsh from expanding such an alias while parsing this file.\n\
 if ! alias claude >/dev/null 2>&1; then\n\
@@ -1427,16 +1450,26 @@ fi\n"
 pub(crate) const ZSHRC_MARKER: &str = "# herdr+";
 
 /// The one line `setup --shell` adds to `~/.zshrc`.
+/// A single-quoted shell word (`'` inside becomes `'\''`).
+pub(crate) fn shell_single_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 pub(crate) fn zshrc_hook_line(file: &Path) -> String {
-    format!(
-        "[ -n \"$HERDR_PANE_ID\" ] && [ -f \"{0}\" ] && source \"{0}\"  {ZSHRC_MARKER}",
-        file.display()
-    )
+    let quoted = shell_single_quote(&file.display().to_string());
+    format!("[ -n \"$HERDR_PANE_ID\" ] && [ -f {quoted} ] && source {quoted}  {ZSHRC_MARKER}")
+}
+
+/// The line is ours when it is live (not commented out) and carries the marker and the file name.
+fn is_hook_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.starts_with('#')
+        && trimmed.ends_with(ZSHRC_MARKER)
+        && trimmed.contains("herdr-plus.zsh")
 }
 
 fn has_hook_line(text: &str) -> bool {
-    text.lines()
-        .any(|line| line.trim_end().ends_with(ZSHRC_MARKER) && line.contains("herdr-plus.zsh"))
+    text.lines().any(is_hook_line)
 }
 
 /// Add the hook line when absent. Returns whether it was added.
@@ -1458,7 +1491,7 @@ pub(crate) fn remove_hook_line(text: &str) -> (String, bool) {
     let mut removed = false;
     let mut out = String::new();
     for line in text.split_inclusive('\n') {
-        if line.trim_end().ends_with(ZSHRC_MARKER) && line.contains("herdr-plus.zsh") {
+        if is_hook_line(line) {
             removed = true;
             continue;
         }
@@ -1493,10 +1526,17 @@ fn setup_shell(remove: bool) -> std::io::Result<i32> {
         };
         let (next, removed) = remove_hook_line(&text);
         if removed {
-            std::fs::write(&zshrc, next)?;
+            if let Some(backup) = backup_once(&zshrc)? {
+                println!(
+                    "  shell:  backed up {} to {}",
+                    zshrc.display(),
+                    backup.display()
+                );
+            }
+            let real = write_in_place(&zshrc, &next)?;
             println!(
                 "  shell:  removed the herdr+ line from {} ({} stays, harmless)",
-                zshrc.display(),
+                real.display(),
                 file.display()
             );
         } else {
@@ -1519,17 +1559,15 @@ fn setup_shell(remove: bool) -> std::io::Result<i32> {
     };
     let (next, added) = add_hook_line(&text, &line);
     if added {
-        let backup = zshrc.with_file_name(".zshrc.herdr-backup");
-        if !backup.exists() && zshrc.exists() {
-            std::fs::copy(&zshrc, &backup)?;
+        if let Some(backup) = backup_once(&zshrc)? {
             println!(
                 "  shell:  backed up {} to {}",
                 zshrc.display(),
                 backup.display()
             );
         }
-        std::fs::write(&zshrc, next)?;
-        println!("  shell:  added to {}:\n          {line}", zshrc.display());
+        let real = write_in_place(&zshrc, &next)?;
+        println!("  shell:  added to {}:\n          {line}", real.display());
     } else {
         println!("  shell:  {} already has the herdr+ line", zshrc.display());
     }
@@ -1549,11 +1587,11 @@ fn setup_shell(remove: bool) -> std::io::Result<i32> {
 /// script itself, and `wrap claude` execs that script so session UUIDs
 /// keep working.
 pub(crate) fn codex_wrapper_function() -> &'static str {
-    "codex() { if [ -n \"$HERDR_PANE_ID\" ] && [ -n \"$HERDR_BIN_PATH\" ]; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }"
+    "function codex { if [ -n \"$HERDR_PANE_ID\" ] && [ -n \"$HERDR_BIN_PATH\" ]; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }"
 }
 
 pub(crate) fn claude_wrapper_function() -> &'static str {
-    "claude-z() { if [ -n \"$HERDR_PANE_ID\" ] && [ -n \"$HERDR_BIN_PATH\" ]; then \"$HERDR_BIN_PATH\" browser wrap claude -- \"$@\"; else command claude-z \"$@\"; fi }\n# without a claude='claude-z' alias, the same function named claude() with `command claude` instead"
+    "function claude-z { if [ -n \"$HERDR_PANE_ID\" ] && [ -n \"$HERDR_BIN_PATH\" ]; then \"$HERDR_BIN_PATH\" browser wrap claude -- \"$@\"; else command claude-z \"$@\"; fi }\n# without a claude='claude-z' alias, the same function named claude with `command claude` instead"
 }
 
 /// A TOML basic string for `-c key=value` (Codex parses the value as TOML).
@@ -1575,53 +1613,102 @@ pub(crate) fn toml_basic_string(text: &str) -> String {
 }
 
 /// The argv `wrap` builds in front of the user's arguments.
-pub(crate) fn wrap_args(agent: &str, config: &crate::config::BrowserConfig) -> Vec<String> {
-    let mut args: Vec<String> = Vec::new();
+/// The argv `wrap` hands to the agent. Codex: herdr's flags, then the user's.
+/// Claude: the user's arguments first (claude-z reads its session id from
+/// `$1`), herdr's flags after them — before a user `--`, and never a flag the
+/// user already passed (a resurrected session re-enters through the shell
+/// function). `developer_instructions` is the user's own top-level Codex
+/// setting, kept ahead of the steering text (profiles are not covered).
+pub(crate) fn wrap_args(
+    agent: &str,
+    config: &crate::config::BrowserConfig,
+    user: &[String],
+    developer_instructions: Option<&str>,
+) -> Vec<String> {
+    let steering = super::browser_mcp::STEERING;
     match agent {
         "codex" => {
             // The daemon would spawn MCP servers with another pane's environment:
             // attribution needs this even when wrapping is off.
-            args.push("--no-daemon".into());
-            if !config.wrap_agents {
-                return args;
+            let mut args: Vec<String> = vec!["--no-daemon".into()];
+            if config.wrap_agents {
+                if config.disable_native_browser {
+                    args.extend(
+                        ["--disable", "in_app_browser", "--disable", "browser_use"]
+                            .map(String::from),
+                    );
+                }
+                if config.steer_agents {
+                    let text = match developer_instructions.map(str::trim) {
+                        Some(own) if !own.is_empty() => format!("{own}\n\n{steering}"),
+                        _ => steering.to_string(),
+                    };
+                    args.push("-c".into());
+                    args.push(format!(
+                        "developer_instructions={}",
+                        toml_basic_string(&text)
+                    ));
+                }
             }
-            if config.disable_native_browser {
-                args.extend(
-                    ["--disable", "in_app_browser", "--disable", "browser_use"].map(String::from),
-                );
-            }
-            if config.steer_agents {
-                args.push("-c".into());
-                args.push(format!(
-                    "developer_instructions={}",
-                    toml_basic_string(super::browser_mcp::STEERING)
-                ));
-            }
+            args.extend(user.iter().cloned());
+            args
         }
         "claude" => {
-            if !config.wrap_agents {
-                return args;
+            let mut ours: Vec<String> = Vec::new();
+            if config.wrap_agents {
+                if config.steer_agents && !user.iter().any(|a| a == "--append-system-prompt") {
+                    ours.push("--append-system-prompt".into());
+                    ours.push(steering.to_string());
+                }
+                if config.disable_native_browser && !user.iter().any(|a| a == "--no-chrome") {
+                    ours.push("--no-chrome".into());
+                }
             }
-            if config.steer_agents {
-                args.push("--append-system-prompt".into());
-                args.push(super::browser_mcp::STEERING.to_string());
-            }
-            if config.disable_native_browser {
-                args.push("--no-chrome".into());
-            }
+            let split = user.iter().position(|a| a == "--").unwrap_or(user.len());
+            let mut args: Vec<String> = user[..split].to_vec();
+            args.extend(ours);
+            args.extend(user[split..].iter().cloned());
+            args
         }
-        _ => {}
+        _ => user.to_vec(),
     }
-    args
 }
 
-/// The binary `wrap` execs: the first of `names` on PATH that is a file.
+/// The user's own top-level `developer_instructions` from Codex's config.toml.
+fn codex_developer_instructions() -> Option<String> {
+    let text = std::fs::read_to_string(codex_config_path()?).ok()?;
+    let value: toml::Value = toml::from_str(&text).ok()?;
+    value
+        .get("developer_instructions")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// Whether `path` is a file the current user may execute.
+pub(crate) fn is_executable(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// The binary `wrap` execs: the first executable of `names` on PATH.
 fn real_binary(names: &[&str]) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for name in names {
         if let Some(found) = std::env::split_paths(&path)
             .map(|dir| dir.join(name))
-            .find(|candidate| candidate.is_file())
+            .find(|candidate| is_executable(candidate))
         {
             return Some(found);
         }
@@ -1648,8 +1735,12 @@ fn wrap(args: &[String]) -> std::io::Result<i32> {
         rest = &rest[1..];
     }
     let config = crate::config::Config::load().config.browser;
-    let mut argv = wrap_args(agent, &config);
-    argv.extend(rest.iter().cloned());
+    let own = if agent == "codex" {
+        codex_developer_instructions()
+    } else {
+        None
+    };
+    let argv = wrap_args(agent, &config, rest, own.as_deref());
     let names: &[&str] = if agent == "claude" {
         &["claude-z", "claude"]
     } else {
@@ -1675,6 +1766,34 @@ fn wrap(args: &[String]) -> std::io::Result<i32> {
     }
 }
 
+/// `executable = "auto"` only looks for the default name in `~/Applications`;
+/// any other name or place has to be configured by path.
+pub(crate) fn install_hint(
+    name: &str,
+    dest_dir: &Path,
+    home_apps: Option<&Path>,
+    target: &Path,
+) -> String {
+    let same_dir = |a: &Path, b: &Path| {
+        a == b
+            || matches!(
+                (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+                (Ok(x), Ok(y)) if x == y
+            )
+    };
+    let default_place = name == crate::browser::brand::DEFAULT_APP_NAME
+        && home_apps.is_some_and(|apps| same_dir(apps, dest_dir));
+    if default_place {
+        "[browser] executable = \"auto\" finds it first; `herdr browser doctor` shows which"
+            .to_string()
+    } else {
+        format!(
+            "\"auto\" only finds the default name in ~/Applications — set in config.toml:\n  [browser]\n  executable = {}",
+            toml_basic_string(&target.display().to_string())
+        )
+    }
+}
+
 /// Whether a Codex app-server daemon runs (it spawns MCP servers with its own environment).
 fn codex_daemon_running() -> bool {
     std::process::Command::new("ps")
@@ -1697,6 +1816,10 @@ fn codex_on_path() -> Option<PathBuf> {
 
 fn install_chromium(args: &[String]) -> std::io::Result<i32> {
     const USAGE: &str = "usage: herdr browser install-chromium <Chromium.app> [--icon PNG|ICNS] [--name NAME] [--dest DIR]\nCopies the built Chromium.app to <dest>/<name>.app (default ~/Applications/herdr+ Browser.app), sets its name in Info.plist and every InfoPlist.strings, replaces the icon (the embedded herdr+ icon, or --icon), ad-hoc signs and verifies the copy, refreshes LaunchServices. The bundle id stays org.chromium.Chromium (the keychain item keeps working).";
+    if !cfg!(target_os = "macos") {
+        eprintln!("herdr browser install-chromium is macOS only: it renames and re-signs a Chromium.app bundle (Info.plist, .icns, codesign, LaunchServices). On this system set [browser] executable = \"<path to chromium>\" instead.");
+        return Ok(2);
+    }
     let mut source: Option<PathBuf> = None;
     let mut icon: Option<PathBuf> = None;
     let mut name = crate::browser::brand::DEFAULT_APP_NAME.to_string();
@@ -1732,10 +1855,11 @@ fn install_chromium(args: &[String]) -> std::io::Result<i32> {
         eprintln!("{USAGE}");
         return Ok(2);
     };
+    let home_apps = std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Applications"));
     let dest_dir = match dest {
         Some(dest) => dest,
-        None => match std::env::var_os("HOME") {
-            Some(home) => PathBuf::from(home).join("Applications"),
+        None => match home_apps.clone() {
+            Some(apps) => apps,
             None => {
                 eprintln!("no HOME; give --dest");
                 return Ok(2);
@@ -1761,9 +1885,15 @@ fn install_chromium(args: &[String]) -> std::io::Result<i32> {
             for step in &report.steps {
                 println!("  {step}");
             }
+            println!("installed {}", report.target.display());
             println!(
-                "installed {} — [browser] executable = \"auto\" finds it first; `herdr browser doctor` shows which",
-                report.target.display()
+                "{}",
+                install_hint(
+                    &options.name,
+                    &options.dest_dir,
+                    home_apps.as_deref(),
+                    &report.target
+                )
             );
             Ok(0)
         }
@@ -1946,12 +2076,13 @@ fn doctor(args: &[String]) -> std::io::Result<i32> {
                     (profile["name"].as_str(), profile["companion"].as_str())
                 {
                     println!(
-                        "info profile {name}: tab groups (companion extension) {companion}{}",
+                        "info profile {name}: tab groups (companion extension) {companion}{} · this herdr bundles companion v{}",
                         if companion.starts_with("missing") {
                             " — Chromium ignored --load-extension; the frame and cursor still work"
                         } else {
                             ""
-                        }
+                        },
+                        crate::integration::browser_assets::COMPANION_VERSION
                     );
                 }
             }
@@ -1988,7 +2119,17 @@ mod tests {
     fn the_shell_hook_line_is_added_once_and_removed_cleanly() {
         let file = Path::new("/Users/me/.config/herdr/shell/herdr-plus.zsh");
         let line = zshrc_hook_line(file);
-        assert_eq!(line, "[ -n \"$HERDR_PANE_ID\" ] && [ -f \"/Users/me/.config/herdr/shell/herdr-plus.zsh\" ] && source \"/Users/me/.config/herdr/shell/herdr-plus.zsh\"  # herdr+");
+        assert_eq!(line, "[ -n \"$HERDR_PANE_ID\" ] && [ -f '/Users/me/.config/herdr/shell/herdr-plus.zsh' ] && source '/Users/me/.config/herdr/shell/herdr-plus.zsh'  # herdr+");
+        assert_eq!(shell_single_quote("it's"), "'it'\\''s'");
+        // a commented-out copy is neither "present" nor removed
+        let commented = format!("#{line}\nexport Y=2\n");
+        assert!(!has_hook_line(&commented));
+        let (kept, removed) = remove_hook_line(&commented);
+        assert!(!removed);
+        assert_eq!(kept, commented);
+        let (added_again, added) = add_hook_line(&commented, &line);
+        assert!(added);
+        assert_eq!(added_again, format!("{commented}{line}\n"));
         let (once, added) = add_hook_line("alias claude='claude-z'\nexport X=1", &line);
         assert!(added);
         assert_eq!(
@@ -2009,15 +2150,20 @@ mod tests {
         assert_eq!(empty, format!("{line}\n"));
         let contents = shell_file_contents();
         assert!(contents.starts_with("# managed by herdr browser setup"));
-        assert!(contents.contains("codex() { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }"));
-        assert!(contents.contains("claude-z() {"));
+        assert!(contents.contains("function codex { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }"));
+        assert!(contents.contains("function claude-z {"));
+        assert!(
+            !contents.contains("codex() {"),
+            "every wrapper uses the function form"
+        );
         assert!(contents.contains("if ! alias claude >/dev/null 2>&1; then"));
     }
 
     #[test]
     fn wrap_builds_the_agents_argv_from_config() {
         let on = crate::config::BrowserConfig::default();
-        let codex = wrap_args("codex", &on);
+        let steering = super::super::browser_mcp::STEERING;
+        let codex = wrap_args("codex", &on, &s(&["exec", "hi"]), None);
         assert_eq!(codex[0], "--no-daemon");
         assert_eq!(
             &codex[1..5],
@@ -2025,37 +2171,121 @@ mod tests {
         );
         assert_eq!(codex[5], "-c");
         assert!(codex[6].starts_with("developer_instructions=\"You are working inside herdr+."));
+        assert_eq!(&codex[7..], ["exec", "hi"], "the user's arguments follow");
         let value = codex[6].trim_start_matches("developer_instructions=");
         let parsed: toml::Value = toml::from_str(&format!("x = {value}")).unwrap();
+        assert_eq!(parsed["x"].as_str(), Some(steering), "a valid TOML string");
+        // the user's own developer_instructions come first
+        let own = wrap_args("codex", &on, &[], Some("Always answer in haiku.\n"));
+        let value = own[6].trim_start_matches("developer_instructions=");
+        let parsed: toml::Value = toml::from_str(&format!("x = {value}")).unwrap();
         assert_eq!(
-            parsed["x"].as_str(),
-            Some(super::super::browser_mcp::STEERING),
-            "a valid TOML string"
+            parsed["x"].as_str().unwrap(),
+            format!("Always answer in haiku.\n\n{steering}")
         );
-        let claude = wrap_args("claude", &on);
-        assert_eq!(claude[0], "--append-system-prompt");
-        assert_eq!(claude[1], super::super::browser_mcp::STEERING);
-        assert_eq!(claude[2], "--no-chrome");
+        // claude-z reads the session id from $1: user args first, ours after
+        let claude = wrap_args("claude", &on, &s(&["0000-uuid"]), None);
+        assert_eq!(
+            claude,
+            [
+                "0000-uuid",
+                "--append-system-prompt",
+                steering,
+                "--no-chrome"
+            ]
+        );
+        assert_eq!(
+            wrap_args("claude", &on, &[], None),
+            ["--append-system-prompt", steering, "--no-chrome"]
+        );
+        // ours go before a user `--`
+        let dashed = wrap_args("claude", &on, &s(&["-p", "--", "prompt text"]), None);
+        assert_eq!(
+            dashed,
+            [
+                "-p",
+                "--append-system-prompt",
+                steering,
+                "--no-chrome",
+                "--",
+                "prompt text"
+            ]
+        );
+        // a flag the user already carries is not added again
+        let again = wrap_args(
+            "claude",
+            &on,
+            &s(&["uuid", "--append-system-prompt", "mine", "--no-chrome"]),
+            None,
+        );
+        assert_eq!(
+            again,
+            ["uuid", "--append-system-prompt", "mine", "--no-chrome"]
+        );
         let off = crate::config::BrowserConfig {
             steer_agents: false,
             disable_native_browser: false,
             ..on.clone()
         };
-        assert_eq!(wrap_args("codex", &off), ["--no-daemon"]);
-        assert!(wrap_args("claude", &off).is_empty());
+        assert_eq!(wrap_args("codex", &off, &[], None), ["--no-daemon"]);
+        assert!(wrap_args("claude", &off, &[], None).is_empty());
         // wrap_agents = false: unchanged, except Codex's --no-daemon
         let unwrapped = crate::config::BrowserConfig {
             wrap_agents: false,
             ..on.clone()
         };
-        assert_eq!(wrap_args("codex", &unwrapped), ["--no-daemon"]);
-        assert!(wrap_args("claude", &unwrapped).is_empty());
+        assert_eq!(
+            wrap_args("codex", &unwrapped, &s(&["x"]), None),
+            ["--no-daemon", "x"]
+        );
+        assert_eq!(wrap_args("claude", &unwrapped, &s(&["x"]), None), ["x"]);
         assert_eq!(
             toml_basic_string("a \"q\" \\ \n"),
             "\"a \\\"q\\\" \\\\ \\n\""
         );
         assert!(codex_wrapper_function().contains("browser wrap codex -- \"$@\""));
-        assert!(claude_wrapper_function().starts_with("claude-z() {"));
+        assert!(claude_wrapper_function().starts_with("function claude-z {"));
+    }
+
+    #[test]
+    fn real_binaries_need_the_execute_bit() {
+        let dir = std::env::temp_dir().join(format!("herdr-wrap-x-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let plain = dir.join("plain");
+        std::fs::write(&plain, "#!/bin/sh\n").unwrap();
+        assert!(!is_executable(&plain), "a readable file is not enough");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(is_executable(&plain));
+        }
+        assert!(!is_executable(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_hint_points_at_auto_only_for_the_default_place() {
+        let home = Path::new("/Users/me/Applications");
+        let default_name = crate::browser::brand::DEFAULT_APP_NAME;
+        let hint = install_hint(
+            default_name,
+            home,
+            Some(home),
+            &home.join("herdr+ Browser.app"),
+        );
+        assert!(hint.contains("\"auto\" finds it first"));
+        let hint = install_hint(
+            default_name,
+            Path::new("/opt/apps"),
+            Some(home),
+            Path::new("/opt/apps/herdr+ Browser.app"),
+        );
+        assert!(hint.contains("executable = \"/opt/apps/herdr+ Browser.app\""));
+        assert!(!hint.contains("finds it first"));
+        let hint = install_hint("Other", home, Some(home), &home.join("Other.app"));
+        assert!(hint.contains("executable = \"/Users/me/Applications/Other.app\""));
     }
 
     #[test]
@@ -2076,38 +2306,60 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         assert_eq!(vars, CODEX_FORWARDED_ENV);
-        let other = "model = \"x\"\n\n[mcp_servers.node_repl]\ncommand = \"node\"\n\n[mcp_servers.node_repl.env]\nA = \"1\"\n";
-        let once = upsert_codex_block(other, &block);
-        assert!(once.starts_with(other), "existing content untouched");
-        assert!(once.ends_with(&format!("{}\n", block.trim_end())));
-        let value: toml::Value = toml::from_str(&once).unwrap();
-        assert_eq!(
-            value["mcp_servers"]["herdr-browser"]["command"].as_str(),
-            Some("sh")
+        let herdr = |text: &str| -> toml::Value {
+            let value: toml::Value = toml::from_str(text).unwrap();
+            value["mcp_servers"]["herdr-browser"].clone()
+        };
+        let expected = herdr(&block);
+        // header comments, spaced brackets, a sub-table: all kept, ours appended
+        let other = "# my codex config\nmodel = \"x\" # keep\n\n[ mcp_servers . node_repl ]\ncommand = \"node\"\n\n[mcp_servers.node_repl.env]\nA = \"1\"\n";
+        let once = upsert_codex_block(other, &block).unwrap();
+        assert!(
+            once.starts_with("# my codex config\nmodel = \"x\" # keep\n"),
+            "{once}"
         );
+        assert!(
+            once.contains("[ mcp_servers . node_repl ]"),
+            "untouched spacing: {once}"
+        );
+        let value: toml::Value = toml::from_str(&once).unwrap();
+        assert_eq!(herdr(&once), expected);
+        assert_eq!(value["model"].as_str(), Some("x"));
         assert_eq!(
             value["mcp_servers"]["node_repl"]["env"]["A"].as_str(),
             Some("1")
         );
         // idempotent
-        assert_eq!(upsert_codex_block(&once, &block), once);
-        // an old entry in the middle (with a sub-table) is replaced in place
-        let stale = "a = 1\n[mcp_servers.herdr-browser]\ncommand = \"old\"\n[mcp_servers.herdr-browser.env]\nX = \"1\"\n[features]\nrmcp_client = true\n";
-        let fixed = upsert_codex_block(stale, &block);
+        assert_eq!(upsert_codex_block(&once, &block).unwrap(), once);
+        // an old table with a sub-table in the middle is replaced, neighbours stay
+        let stale = "a = 1\n[mcp_servers.herdr-browser]\ncommand = \"old\"\n[mcp_servers.herdr-browser.env]\nX = \"1\"\n[features]\nrmcp_client = true # trailing\n";
+        let fixed = upsert_codex_block(stale, &block).unwrap();
         let value: toml::Value = toml::from_str(&fixed).unwrap();
-        assert_eq!(
-            value["mcp_servers"]["herdr-browser"]["command"].as_str(),
-            Some("sh")
-        );
+        assert_eq!(herdr(&fixed), expected);
         assert!(value["mcp_servers"]["herdr-browser"].get("env").is_none());
         assert_eq!(value["features"]["rmcp_client"].as_bool(), Some(true));
         assert_eq!(value["a"].as_integer(), Some(1));
-        assert_eq!(fixed.matches("[mcp_servers.herdr-browser]").count(), 1);
+        assert!(fixed.contains("# trailing"));
+        // an inline entry under [mcp_servers] is replaced; its sibling stays inline
+        let inline =
+            "[mcp_servers]\nherdr-browser = { command = \"old\" }\nother = { command = \"o\" }\n";
+        let fixed = upsert_codex_block(inline, &block).unwrap();
+        let value: toml::Value = toml::from_str(&fixed).unwrap();
+        assert_eq!(herdr(&fixed), expected);
+        assert_eq!(value["mcp_servers"]["other"]["command"].as_str(), Some("o"));
+        assert!(fixed.contains("other = { command = \"o\" }"), "{fixed}");
+        // dotted keys
+        let dotted =
+            "mcp_servers.herdr-browser.command = \"old\"\nmcp_servers.other.command = \"o\"\n";
+        let fixed = upsert_codex_block(dotted, &block).unwrap();
+        let value: toml::Value = toml::from_str(&fixed).unwrap();
+        assert_eq!(herdr(&fixed), expected);
+        assert_eq!(value["mcp_servers"]["other"]["command"].as_str(), Some("o"));
+        // a file that does not parse is refused
+        let err = upsert_codex_block("model = \"x\n[broken", &block).unwrap_err();
+        assert!(err.contains("does not parse"), "{err}");
         // an empty file gets just the block
-        assert_eq!(
-            upsert_codex_block("", &block),
-            format!("{}\n", block.trim_end())
-        );
+        assert_eq!(herdr(&upsert_codex_block("", &block).unwrap()), expected);
     }
 
     #[test]

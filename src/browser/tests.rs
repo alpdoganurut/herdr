@@ -1989,7 +1989,7 @@ fn eval_is_guarded_by_the_password_rule_and_logs_the_code_not_the_result() {
             log[1].detail
         );
     });
-    // Long code is clipped in the ledger.
+    // Long code is clipped in the ledger; a long string literal is masked first.
     let long = format!("document.title + '{}'", "y".repeat(400));
     hub.run(
         &actor,
@@ -2001,9 +2001,10 @@ fn eval_is_guarded_by_the_password_rule_and_logs_the_code_not_the_result() {
     .unwrap();
     hub.with_state(|state| {
         let detail = &state.activity(1, None, None)[0].detail;
+        assert_eq!(detail, "eval: document.title + \"‹400 chars›\"", "{detail}");
         assert!(
-            detail.starts_with("eval: document.title + 'yyyy"),
-            "{detail}"
+            !detail.contains("yyyy"),
+            "the literal never reaches the ledger"
         );
         assert!(detail.chars().count() <= 220, "{}", detail.chars().count());
     });

@@ -487,6 +487,10 @@ pub(crate) fn ancestors(pid: u32) -> Vec<u32> {
 
 /// Whether the pane's shell is among these ancestors (`None` = cannot tell).
 pub(crate) fn started_from_pane(shell_pid: Option<u32>, ancestors: &[u32]) -> Option<bool> {
+    if ancestors.is_empty() {
+        // `ps` unavailable or a container: nothing to compare against.
+        return None;
+    }
     shell_pid.map(|pid| ancestors.contains(&pid))
 }
 
@@ -758,6 +762,11 @@ mod tests {
         assert_eq!(started_from_pane(Some(7), &[3, 7, 1]), Some(true));
         assert_eq!(started_from_pane(Some(9), &[3, 7, 1]), Some(false));
         assert_eq!(started_from_pane(None, &[3]), None);
+        assert_eq!(
+            started_from_pane(Some(3), &[]),
+            None,
+            "no ancestors: cannot tell"
+        );
         let mine = ancestors(std::process::id());
         assert!(!mine.is_empty(), "a test process has a parent");
     }

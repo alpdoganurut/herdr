@@ -86,6 +86,9 @@ struct Inner {
     released: Mutex<HashSet<String>>,
     /// Panes whose release failed: attempts so far and when to try again.
     release_backoff: Mutex<HashMap<String, (u32, Instant)>>,
+    /// Whether the last new-tab-page / dashboard push failed (a warning is
+    /// logged when that flips, not on every push).
+    push_failing: Mutex<HashMap<&'static str, bool>>,
     /// The new tab page push: when the last one went out, whether one is armed.
     ntp_push: Mutex<(Option<Instant>, bool)>,
 }
@@ -148,6 +151,7 @@ impl BrowserHub {
                 companion: Mutex::new(HashMap::new()),
                 released: Mutex::new(HashSet::new()),
                 release_backoff: Mutex::new(HashMap::new()),
+                push_failing: Mutex::new(HashMap::new()),
                 ntp_push: Mutex::new((None, false)),
             }),
         }
@@ -178,13 +182,14 @@ impl BrowserHub {
         let _ = std::thread::Builder::new()
             .name("herdr-browser-dashboard".into())
             .spawn(move || {
-                let _ = hub.request(
+                let outcome = hub.request(
                     "dashboard",
                     None,
                     None,
                     json!({ "pin": pin }),
                     Duration::from_secs(5),
                 );
+                hub.note_push("dashboard", outcome.map(|_| ()));
             });
     }
 
@@ -393,14 +398,45 @@ impl BrowserHub {
                 }
                 let config = hub.config();
                 let snapshot = super::ntp::snapshot(&hub.get(None), &config, unix_now());
-                let _ = hub.request(
+                let outcome = hub.request(
                     "ntp",
                     None,
                     None,
                     json!({ "snapshot": snapshot }),
                     Duration::from_secs(3),
                 );
+                hub.note_push("ntp", outcome.map(|_| ()));
             });
+    }
+
+    /// A failed companion push is logged once when it starts failing (and
+    /// once more when it recovers), never per push.
+    fn note_push(&self, what: &'static str, outcome: Result<(), BrowserError>) {
+        let mut failing = self.inner.push_failing.lock().unwrap();
+        let was = failing.get(what).copied().unwrap_or(false);
+        match outcome {
+            Ok(()) => {
+                if was {
+                    tracing::info!(
+                        event = "browser.push.recovered",
+                        what,
+                        "companion push works again"
+                    );
+                }
+                failing.insert(what, false);
+            }
+            Err(err) => {
+                if !was {
+                    let event = if what == "ntp" {
+                        "browser.ntp.push"
+                    } else {
+                        "browser.dashboard.push"
+                    };
+                    tracing::warn!(event = event, code = %err.code, message = %err.message, "companion push failed; further failures are not repeated");
+                }
+                failing.insert(what, true);
+            }
+        }
     }
 
     #[cfg(test)]
@@ -2016,20 +2052,6 @@ impl BrowserHub {
                 } else {
                     None
                 };
-                if extension_dir.is_some() {
-                    match launch::refresh_companion_worker(
-                        &profile_dir,
-                        browser_assets::COMPANION_VERSION,
-                    ) {
-                        Ok(true) => {
-                            tracing::info!(event = "browser.companion.refresh", profile = %name, version = browser_assets::COMPANION_VERSION, "companion worker store cleared for the new version")
-                        }
-                        Ok(false) => {}
-                        Err(err) => {
-                            tracing::warn!(event = "browser.companion.refresh", profile = %name, error = %err, "could not refresh the companion worker")
-                        }
-                    }
-                }
                 let options = LaunchOptions {
                     restore: config.restore_tabs && self.inner.profiles.has_launched(name),
                     extra_args: config.extra_args(),
@@ -2430,7 +2452,9 @@ impl BrowserHub {
         let now = unix_now();
         // Console-error counts only mark the ledger dirty; the supervisor's next
         // pass persists them (an error-looping page must not write per event).
-        let persist_now = !matches!(&event, HostEvent::Tab(tab) if tab.kind == "console_error");
+        let persist_now = !matches!(&event,
+            HostEvent::Tab(tab) if tab.kind == "console_error")
+            && !matches!(&event, HostEvent::Log { .. } | HostEvent::Unknown);
         match event {
             HostEvent::Tab(tab) => {
                 self.inner.state.lock().unwrap().apply_tab_event(&tab, now);

@@ -658,11 +658,50 @@ pub fn act_result(
 /// The ledger line of an eval: the code itself, one line, sanitized and
 /// clipped (never its result).
 pub const EVAL_DETAIL_CHARS: usize = 200;
+/// String literals longer than this are masked in the ledger (pasted tokens, cookies).
+pub const EVAL_LITERAL_KEEP: usize = 20;
 pub fn eval_detail(expr: &str) -> String {
     format!(
         "eval: {}",
-        clip(&one_line(&sanitize(expr)), EVAL_DETAIL_CHARS)
+        clip(
+            &one_line(&sanitize(&mask_long_literals(expr))),
+            EVAL_DETAIL_CHARS
+        )
     )
+}
+
+/// `'…'`, `"…"` and template literals longer than EVAL_LITERAL_KEEP become
+/// `"‹N chars›"`; short ones stay (selectors, keys). Escapes inside a literal
+/// are skipped; an unterminated literal runs to the end.
+pub fn mask_long_literals(code: &str) -> String {
+    let chars: Vec<char> = code.chars().collect();
+    let mut out = String::with_capacity(code.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\'' || c == '"' || c == '`' {
+            let quote = c;
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != quote {
+                if chars[j] == '\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            let inner_len = j.saturating_sub(i + 1);
+            let end = (j + 1).min(chars.len());
+            if inner_len > EVAL_LITERAL_KEEP {
+                out.push_str(&format!("\"‹{inner_len} chars›\""));
+            } else {
+                out.extend(&chars[i..end]);
+            }
+            i = end;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 pub fn act_detail(kind: &str, target: &str, host: &Value, typed_len: Option<usize>) -> String {
@@ -1019,6 +1058,29 @@ mod tests {
         assert_eq!(age(3 * 60 + 5), "3m");
         assert_eq!(age(2 * 3600), "2h");
         assert_eq!(age(3 * 86_400), "3d");
+    }
+
+    #[test]
+    fn eval_ledger_lines_mask_long_string_literals() {
+        let token = "x".repeat(40);
+        let code = format!("fetch('/api', {{headers: {{Authorization: \"Bearer {token}\"}}}}); document.querySelector('#login').click()");
+        let line = eval_detail(&code);
+        assert!(!line.contains(&token), "{line}");
+        assert!(line.contains("Authorization: \"‹47 chars›\""), "{line}");
+        assert!(line.contains("fetch('/api'"), "short literals stay: {line}");
+        assert!(line.contains("querySelector('#login')"), "{line}");
+        // template literals and escapes inside a literal
+        let masked = mask_long_literals("a = `${x} and a long template literal here`; b = 'it\\'s short'; c = \"unterminated long literal ......");
+        assert_eq!(
+            masked,
+            "a = \"‹37 chars›\"; b = 'it\\'s short'; c = \"‹32 chars›\""
+        );
+        assert_eq!(mask_long_literals("no literals"), "no literals");
+        let exact = "y".repeat(EVAL_LITERAL_KEEP);
+        assert_eq!(
+            mask_long_literals(&format!("'{exact}'")),
+            format!("'{exact}'")
+        );
     }
 
     #[test]

@@ -135,32 +135,6 @@ pub fn resolve_executable(
     })
 }
 
-/// The companion version a profile last ran, in `herdr-companion.version`
-/// next to `Default/`. When it differs from `version` the profile's
-/// `Default/Service Worker` store is removed (the browser is not running:
-/// this runs right before a launch), because Chrome keeps an unpacked
-/// command-line extension's worker script for good otherwise. Returns
-/// whether the store was cleared.
-pub fn refresh_companion_worker(profile_dir: &Path, version: u32) -> io::Result<bool> {
-    let marker = profile_dir.join("herdr-companion.version");
-    let recorded: Option<u32> = fs::read_to_string(&marker)
-        .ok()
-        .and_then(|text| text.trim().parse().ok());
-    if recorded == Some(version) {
-        return Ok(false);
-    }
-    let store = profile_dir.join("Default").join("Service Worker");
-    let cleared = if recorded.is_some() && store.is_dir() {
-        fs::remove_dir_all(&store)?;
-        true
-    } else {
-        false
-    };
-    fs::create_dir_all(profile_dir)?;
-    fs::write(&marker, format!("{version}\n"))?;
-    Ok(cleared)
-}
-
 /// Bind `127.0.0.1:0`, read the port, close.
 pub fn pick_port() -> io::Result<u16> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
@@ -672,39 +646,6 @@ mod tests {
         assert!(!again.contains(&"--restore-last-session".to_string()));
         assert!(!again.iter().any(|a| a.starts_with("--load-extension")));
         assert_ne!(again.last().unwrap(), "about:blank");
-    }
-
-    #[test]
-    fn a_companion_version_change_clears_the_profile_s_worker_store_once() {
-        let root = temp("companion-refresh");
-        let profile = root.join("main");
-        let store = profile.join("Default/Service Worker/ScriptCache");
-        fs::create_dir_all(&store).unwrap();
-        fs::write(store.join("x"), "cached").unwrap();
-        // a profile from before the marker: recorded, nothing cleared (no known old version)
-        assert!(!refresh_companion_worker(&profile, 4).unwrap());
-        assert!(store.is_dir());
-        assert_eq!(
-            fs::read_to_string(profile.join("herdr-companion.version"))
-                .unwrap()
-                .trim(),
-            "4"
-        );
-        // same version: nothing
-        assert!(!refresh_companion_worker(&profile, 4).unwrap());
-        assert!(store.is_dir());
-        // a new version: the store goes, the marker moves on
-        assert!(refresh_companion_worker(&profile, 5).unwrap());
-        assert!(!profile.join("Default/Service Worker").exists());
-        assert_eq!(
-            fs::read_to_string(profile.join("herdr-companion.version"))
-                .unwrap()
-                .trim(),
-            "5"
-        );
-        // and only once
-        assert!(!refresh_companion_worker(&profile, 5).unwrap());
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
