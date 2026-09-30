@@ -1109,3 +1109,160 @@ async fn news_daily_cap_is_charged_at_delivery() {
         .is_err());
     assert_eq!(server.app.news.notify.delivered, 3);
 }
+
+/// `browser.resolve_caller` turns a pane id into an actor that names the
+/// pane's tab, and `browser.get` reports a tab the ledger holds with that
+/// actor, marking it `gone` once the pane no longer exists. The hub is
+/// process-global; the tab is seeded straight into its ledger (no sidecar).
+#[cfg(unix)]
+#[tokio::test]
+async fn browser_get_reports_a_fake_host_tab_with_its_actor() {
+    use crate::api::schema::{BrowserActor, BrowserCaller, BrowserGetParams};
+    use crate::browser::state::{HostTab, TabKey};
+
+    let (mut server, _rx) = server_with_claude(None);
+    server.app.state.workspaces[0].tabs[0].custom_name = Some("planner".into());
+    let root_pane = server.app.state.workspaces[0].tabs[0].root_pane;
+    let pane_id = server.app.public_pane_id(0, root_pane).unwrap();
+
+    let resolved = api(
+        &mut server,
+        Method::BrowserResolveCaller(BrowserCaller {
+            pane_id: pane_id.clone(),
+        }),
+    );
+    assert_eq!(resolved["result"]["type"], "browser_actor", "{resolved}");
+    let actor: BrowserActor = serde_json::from_value(resolved["result"]["actor"].clone()).unwrap();
+    assert_eq!(actor.pane_id(), Some(pane_id.as_str()));
+    assert_eq!(actor.label(), "planner · claude");
+
+    let hub = crate::browser::hub();
+    let key = TabKey::new("main", "SMOKE-T");
+    hub.with_state_mut(|state| {
+        state.adopt_tab(
+            &key,
+            &HostTab {
+                target: "SMOKE-T".into(),
+                url: "https://github.com/herdr/pull/412".into(),
+                title: "PR".into(),
+                ..Default::default()
+            },
+            &actor,
+            1,
+        );
+        state.touch(
+            "main",
+            Some(&key),
+            &actor,
+            "read",
+            "markdown 20k/48k",
+            true,
+            300,
+            2,
+        );
+    });
+    let got = api(&mut server, Method::BrowserGet(BrowserGetParams::default()));
+    assert_eq!(got["result"]["type"], "browser_get", "{got}");
+    let tab = got["result"]["browser"]["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tab| tab["target_id"] == "SMOKE-T")
+        .expect("the seeded tab")
+        .clone();
+    assert_eq!(tab["opened_by"]["kind"], "pane");
+    assert_eq!(tab["opened_by"]["pane_id"], pane_id);
+    assert_eq!(tab["opened_by"]["tab_label"], "planner");
+    assert!(
+        tab["opened_by"].get("gone").is_none(),
+        "the pane exists: {tab}"
+    );
+    assert_eq!(tab["last"]["op"], "read");
+    assert_eq!(tab["users"][0], pane_id);
+    let seq = got["result"]["browser"]["seq"].as_u64().unwrap();
+    let same = api(
+        &mut server,
+        Method::BrowserGet(BrowserGetParams {
+            since_seq: Some(seq),
+        }),
+    );
+    assert_eq!(same["result"]["browser"]["unchanged"], true, "{same}");
+
+    // A pane id nobody has: external, and a tab whose pane is gone says so.
+    let missing = api(
+        &mut server,
+        Method::BrowserResolveCaller(BrowserCaller {
+            pane_id: "w9:p9".into(),
+        }),
+    );
+    assert_eq!(missing["error"]["code"], "pane_not_found", "{missing}");
+    hub.with_state_mut(|state| {
+        let gone_actor = BrowserActor::Pane {
+            pane_id: "w9:p9".into(),
+            tab_id: "w9:t9".into(),
+            workspace_id: "w9".into(),
+            tab_label: "old".into(),
+            workspace_label: None,
+            agent: None,
+            session: "default".into(),
+            gone: false,
+        };
+        let key = TabKey::new("main", "SMOKE-GONE");
+        state.adopt_tab(
+            &key,
+            &HostTab {
+                target: "SMOKE-GONE".into(),
+                ..Default::default()
+            },
+            &gone_actor,
+            3,
+        );
+    });
+    let got = api(&mut server, Method::BrowserGet(BrowserGetParams::default()));
+    let gone = got["result"]["browser"]["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tab| tab["target_id"] == "SMOKE-GONE")
+        .unwrap()
+        .clone();
+    assert_eq!(gone["opened_by"]["gone"], true, "{gone}");
+}
+
+/// The Chromium argv herdr builds never carries an automation or
+/// debugging-weakening switch, whatever `[browser] extra_args` says, and
+/// never `--remote-debugging-port=0` (Chromium flags that as automated).
+#[test]
+fn browser_launch_argv_carries_no_automation_switches() {
+    let config = crate::config::BrowserConfig {
+        extra_args: vec![
+            "--lang=tr".into(),
+            "--enable-automation".into(),
+            "--remote-debugging-port=0".into(),
+            "--no-sandbox".into(),
+            "--headless".into(),
+        ],
+        ..Default::default()
+    };
+    let argv = crate::browser::launch::argv(
+        std::path::Path::new("/tmp/profile"),
+        43210,
+        true,
+        &config.extra_args(),
+        false,
+    );
+    assert!(argv.contains(&"--remote-debugging-port=43210".to_string()));
+    assert!(argv.contains(&"--disable-blink-features=AutomationControlled".to_string()));
+    assert!(argv.contains(&"--restore-last-session".to_string()));
+    assert!(argv.contains(&"--lang=tr".to_string()));
+    for never in crate::browser::launch::NEVER_PASSED {
+        assert!(
+            !argv.iter().any(|arg| arg.starts_with(never)),
+            "{never} in {argv:?}"
+        );
+    }
+    assert!(!argv.iter().any(|arg| arg == "--remote-debugging-port=0"));
+    assert!(!argv
+        .iter()
+        .any(|arg| arg.starts_with("--use-mock-keychain")));
+}
