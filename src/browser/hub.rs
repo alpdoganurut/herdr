@@ -1684,24 +1684,38 @@ impl BrowserHub {
             },
         );
         self.ensure_host()?;
-        let reply = match self.request(
-            "attach",
-            Some(name),
-            None,
-            json!({ "port": record.port }),
-            ATTACH_TIMEOUT,
-        ) {
-            Ok(reply) => reply,
-            Err(err) if err.code == "browser_timeout" => {
-                return Err(BrowserError::new(
-                    "attach_blocked",
-                    format!(
-                        "the browser did not accept the attach within {} s; a page dialog may be waiting in the Chromium window — answer it and retry",
-                        ATTACH_TIMEOUT.as_secs()
-                    ),
-                ));
+        // The attach can stall on a page dialog or on a tab that is still
+        // restoring; one retry after a pause covers the transient case, the
+        // rest is reported as attach_blocked with the remedy.
+        let attach_timed_out = |err: &BrowserError| {
+            err.code == "browser_timeout" || err.message.contains("connectOverCDP")
+        };
+        let mut attempt = 0;
+        let reply = loop {
+            attempt += 1;
+            match self.request(
+                "attach",
+                Some(name),
+                None,
+                json!({ "port": record.port }),
+                ATTACH_TIMEOUT,
+            ) {
+                Ok(reply) => break reply,
+                Err(err) if attach_timed_out(&err) && attempt < 2 => {
+                    tracing::warn!(event = "browser.attach.retry", profile = %name, message = %err.message, "attach timed out; retrying once");
+                    std::thread::sleep(Duration::from_millis(1500));
+                }
+                Err(err) if attach_timed_out(&err) => {
+                    return Err(BrowserError::new(
+                        "attach_blocked",
+                        format!(
+                            "the browser did not accept the attach within {} s (twice): a page dialog may be waiting in the Chromium window (answer it), or a restored tab is still loading; retry, or `herdr browser stop` and open again",
+                            ATTACH_TIMEOUT.as_secs()
+                        ),
+                    ));
+                }
+                Err(err) => return Err(err),
             }
-            Err(err) => return Err(err),
         };
         let tabs: Vec<HostTab> =
             serde_json::from_value(reply.result["tabs"].clone()).unwrap_or_default();
