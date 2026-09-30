@@ -11,7 +11,7 @@ use crate::api::schema::{
     BrowserRunResult, BrowserStatusInfo, BrowserStopParams, EmptyParams, Method, Request,
 };
 
-const USAGE: &str = "usage: herdr browser <open|navigate|back|forward|reload|read|snapshot|find|links|screenshot|console|network|wait|scroll|eval|dialog|tabs|use|close|focus|status|log|start|stop|profile|setup|doctor|mcp> …\n       herdr browser help    (the read loop and every flag)";
+const USAGE: &str = "usage: herdr browser <open|navigate|back|forward|reload|read|snapshot|find|links|screenshot|console|network|wait|scroll|eval|dialog|tabs|use|close|focus|click|type|press|select|fill|hover|batch|status|log|start|stop|profile|setup|doctor|mcp> …\n       herdr browser help    (the read loop and every flag)";
 
 const HELP: &str = "herdr browser — the herdr-owned Chromium, shared with the user and other agents
 
@@ -34,6 +34,13 @@ The window is the user's: they log in by hand (browser focus, then ask). Page co
   eval [TAB] EXPR [--max 4000]
   dialog [TAB] accept [TEXT] | dismiss
   tabs [--mine]   use TAB   close [TAB]   focus [TAB]
+
+Act (refs from browser snapshot; a password field is refused, ask the user):
+  click [TAB] (--ref eN | --selector CSS)          hover [TAB] (--ref eN | --selector CSS)
+  type [TAB] (--ref eN | --selector CSS) TEXT [--submit] [--clear]
+  fill [TAB] (--ref eN | --selector CSS) TEXT      select [TAB] (--ref eN | --selector CSS) VALUE
+  press [TAB] KEY [--ref eN | --selector CSS]      (no target: the focused element)
+  batch [TAB] [--file steps.json] [--continue] [--final snapshot|screenshot]   steps as a JSON array (stdin)
 
   status [--json]   log [-n 50] [--pane ID] [--tab T] [--json]   start|stop [--profile P] [--all]
   profile list | create [--temp] NAME | delete NAME
@@ -423,6 +430,106 @@ pub(crate) fn build_op(verb: &str, args: &[String]) -> Result<(BrowserOp, Common
                 c,
             )
         }
+        "click" | "hover" => {
+            let c = parse_common(args, &["ref", "selector"], &[], true)?;
+            let (ref_, selector) = act_target(&c, verb)?;
+            (
+                if verb == "click" {
+                    BrowserOp::Click { ref_, selector }
+                } else {
+                    BrowserOp::Hover { ref_, selector }
+                },
+                c,
+            )
+        }
+        "type" | "fill" => {
+            let c = parse_common(args, &["ref", "selector"], &["submit", "clear"], true)?;
+            let (ref_, selector) = act_target(&c, verb)?;
+            let text = c.positionals.join(" ");
+            if text.is_empty() {
+                return Err(usage(&format!(
+                    "{verb} [TAB] (--ref eN | --selector CSS) TEXT"
+                )));
+            }
+            (
+                if verb == "type" {
+                    BrowserOp::Type {
+                        ref_,
+                        selector,
+                        text,
+                        submit: c.flag("submit"),
+                        clear: c.flag("clear"),
+                    }
+                } else {
+                    BrowserOp::Fill {
+                        ref_,
+                        selector,
+                        text,
+                    }
+                },
+                c,
+            )
+        }
+        "select" => {
+            let c = parse_common(args, &["ref", "selector"], &[], true)?;
+            let (ref_, selector) = act_target(&c, verb)?;
+            let value = c.positionals.join(" ");
+            if value.is_empty() {
+                return Err(usage("select [TAB] (--ref eN | --selector CSS) VALUE"));
+            }
+            (
+                BrowserOp::Select {
+                    ref_,
+                    selector,
+                    value,
+                },
+                c,
+            )
+        }
+        "press" => {
+            let c = parse_common(args, &["ref", "selector"], &[], true)?;
+            let key = c
+                .positionals
+                .first()
+                .cloned()
+                .ok_or_else(|| usage("press [TAB] KEY [--ref eN | --selector CSS]"))?;
+            (
+                BrowserOp::Press {
+                    key,
+                    ref_: c.value("ref").map(str::to_string),
+                    selector: c.value("selector").map(str::to_string),
+                },
+                c,
+            )
+        }
+        "batch" => {
+            let c = parse_common(args, &["file", "final"], &["continue"], true)?;
+            let source = match c.value("file") {
+                Some(file) => {
+                    std::fs::read_to_string(file).map_err(|err| format!("--file {file}: {err}"))?
+                }
+                None => {
+                    let mut text = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+                        .map_err(|err| format!("reading steps from stdin: {err}"))?;
+                    text
+                }
+            };
+            let ops: Vec<crate::api::schema::BrowserBatchStep> =
+                serde_json::from_str(source.trim()).map_err(|err| {
+                    format!(
+                        "batch steps must be a JSON array of ops ({err}); e.g. [{{\"op\":\"fill\",\"ref\":\"e3\",\"text\":\"x\"}},{{\"op\":\"click\",\"ref\":\"e5\"}}]"
+                    )
+                })?;
+            (
+                BrowserOp::Batch {
+                    ops,
+                    stop_on_error: !c.flag("continue"),
+                    final_: c.value("final").map(str::to_string),
+                },
+                c,
+            )
+        }
         "use" => {
             let mut c = parse_common(args, &[], &[], true)?;
             if c.tab.is_none() {
@@ -443,6 +550,18 @@ pub(crate) fn build_op(verb: &str, args: &[String]) -> Result<(BrowserOp, Common
         }
         other => return Err(format!("unknown browser verb {other:?}\n{USAGE}")),
     })
+}
+
+/// `--ref eN` or `--selector CSS`, at least one.
+fn act_target(c: &Common, verb: &str) -> Result<(Option<String>, Option<String>), String> {
+    let ref_ = c.value("ref").map(str::to_string);
+    let selector = c.value("selector").map(str::to_string);
+    if ref_.is_none() && selector.is_none() {
+        return Err(format!(
+            "usage: herdr browser {verb} [TAB] (--ref eN | --selector CSS) …"
+        ));
+    }
+    Ok((ref_, selector))
 }
 
 fn absolute(path: &str) -> String {
@@ -1283,6 +1402,64 @@ mod tests {
         assert_eq!(c.tab.as_deref(), Some("t7"));
         let (_, c) = build_op("tabs", &s(&["--mine"])).unwrap();
         assert!(c.flag("mine"));
+        let (op, c) = build_op("click", &s(&["t3", "--ref", "e11"])).unwrap();
+        assert_eq!(c.tab.as_deref(), Some("t3"));
+        assert!(matches!(op, BrowserOp::Click { ref_: Some(ref r), selector: None } if r == "e11"));
+        let (op, _) = build_op(
+            "type",
+            &s(&["--selector", "#name", "hello", "world", "--submit"]),
+        )
+        .unwrap();
+        assert!(
+            matches!(op, BrowserOp::Type { ref text, submit: true, clear: false, .. } if text == "hello world")
+        );
+        let (op, _) = build_op("fill", &s(&["--ref", "e14", "x"])).unwrap();
+        assert!(matches!(op, BrowserOp::Fill { ref text, .. } if text == "x"));
+        let (op, _) = build_op("select", &s(&["--ref", "e2", "b"])).unwrap();
+        assert!(matches!(op, BrowserOp::Select { ref value, .. } if value == "b"));
+        let (op, _) = build_op("press", &s(&["Enter"])).unwrap();
+        assert!(matches!(op, BrowserOp::Press { ref key, ref_: None, .. } if key == "Enter"));
+        let (op, _) = build_op("hover", &s(&["--selector", "#hov"])).unwrap();
+        assert!(matches!(
+            op,
+            BrowserOp::Hover {
+                selector: Some(_),
+                ..
+            }
+        ));
+        assert!(build_op("click", &s(&[]))
+            .unwrap_err()
+            .contains("--ref eN | --selector CSS"));
+        assert!(build_op("type", &s(&["--ref", "e1"]))
+            .unwrap_err()
+            .contains("TEXT"));
+        let dir = std::env::temp_dir().join(format!("herdr-browser-batch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("steps.json");
+        std::fs::write(
+            &file,
+            r#"[{"op":"fill","ref":"e1","text":"x"},{"op":"click","ref":"e2"}]"#,
+        )
+        .unwrap();
+        let (op, _) = build_op(
+            "batch",
+            &s(&[
+                "--file",
+                file.to_str().unwrap(),
+                "--continue",
+                "--final",
+                "snapshot",
+            ]),
+        )
+        .unwrap();
+        assert!(
+            matches!(op, BrowserOp::Batch { ref ops, stop_on_error: false, final_: Some(ref f) } if ops.len() == 2 && f == "snapshot")
+        );
+        std::fs::write(&file, "not json").unwrap();
+        assert!(build_op("batch", &s(&["--file", file.to_str().unwrap()]))
+            .unwrap_err()
+            .contains("JSON array"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

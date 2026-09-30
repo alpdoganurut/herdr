@@ -746,6 +746,12 @@
           "description": "Focus the News tab (news.open), creating it in the first space with the page viewer when it is gone. Unset by default; for example, open_news = \"alt+n\"."
         },
         {
+          "key": "keys.open_browser",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Open the Browser overlay: the herdr browser's profiles and tabs with who opened and last used each one; Enter focuses a tab's window, `s` starts or stops the profile, Esc closes. Unset by default; for example, open_browser = \"alt+b\"."
+        },
+        {
           "key": "keys.copy_mode",
           "type": "keybinding",
           "default": "\"prefix+[\"",
@@ -1655,6 +1661,24 @@
           "type": "boolean",
           "default": "true",
           "description": "Whether `browser eval` (arbitrary JavaScript in a tab) is allowed. When false it answers `eval_disabled`."
+        },
+        {
+          "key": "browser.allow_act",
+          "type": "boolean",
+          "default": "true",
+          "description": "Whether the act family (`browser click|type|press|select|fill|hover`, and their MCP tools and batch steps) is allowed. When false every act answers `act_disabled`."
+        },
+        {
+          "key": "browser.type_into_password_fields",
+          "type": "boolean",
+          "default": "false",
+          "description": "Whether agents may type, fill or press keys into a password field (`input[type=password]`, or `autocomplete` `current-password` / `new-password`, including the focused element for a bare `press`). Off by default: the sidecar answers `password_field_refused` and the agent is told to ask the user, who types it in the window (`browser focus`)."
+        },
+        {
+          "key": "browser.active_glyph_secs",
+          "type": "integer",
+          "default": "120",
+          "description": "A herdr tab whose pane used the browser within this many seconds wears the `◎` glyph on its row in the `tabs` sidebar layout (the pinned Browser row and its overlay show who is using which tab regardless)."
         },
         {
           "key": "browser.launch_timeout_ms",

@@ -195,10 +195,12 @@ impl BrowserTabRecord {
     }
 }
 
-/// A pane's current tab.
+/// A pane's current browser tab.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cursor {
     pub key: TabKey,
+    /// The pane's herdr tab, as the caller looked when it was set (the
+    /// client's `◎` glyph needs it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_id: Option<String>,
     pub last_at: u64,
@@ -659,13 +661,12 @@ impl BrowserState {
         }
     }
 
-    pub fn set_cursor(&mut self, pane_id: &str, key: &TabKey, now: u64) {
-        let tab_id = self.tabs.get(key).map(BrowserTabRecord::id);
+    pub fn set_cursor(&mut self, pane_id: &str, key: &TabKey, herdr_tab: Option<&str>, now: u64) {
         self.cursors.insert(
             pane_id.to_string(),
             Cursor {
                 key: key.clone(),
-                tab_id,
+                tab_id: herdr_tab.map(str::to_string),
                 last_at: now,
             },
         );
@@ -1041,7 +1042,7 @@ mod tests {
         let mut state = BrowserState::new();
         let a = TabKey::new("main", "A");
         state.adopt_tab(&a, &host_tab("A", "https://a/"), &pane("w2:pD"), 10);
-        state.set_cursor("w2:pD", &a, 10);
+        state.set_cursor("w2:pD", &a, Some("w2:tD"), 10);
         assert_eq!(state.cursor("w2:pD").unwrap().target_id, "A");
         state.apply_tab_event(
             &HostTabEvent {
@@ -1077,13 +1078,14 @@ mod tests {
         let a = TabKey::new("main", "A");
         state.adopt_tab(&a, &host_tab("A", "https://a/"), &pane("w2:pD"), 10);
         state.touch("main", Some(&a), &pane("w2:pD"), "read", "x", true, 1, 100);
-        state.set_cursor("w2:pD", &a, 100);
+        state.set_cursor("w2:pD", &a, Some("w2:tD"), 100);
         let info = state.get_info(None, 150, 120, true, &|_| false);
         assert!(!info.unchanged);
         assert_eq!(info.profiles[0].tabs, 1);
         assert_eq!(info.profiles[0].agents, 1);
         assert!(info.tabs[0].active);
         assert_eq!(info.recent_panes[0].current, "main:t1");
+        assert_eq!(info.recent_panes[0].tab_id.as_deref(), Some("w2:tD"));
         let same = state.get_info(Some(info.seq), 150, 120, true, &|_| false);
         assert!(same.unchanged);
         assert!(same.tabs.is_empty());

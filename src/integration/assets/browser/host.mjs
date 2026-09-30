@@ -317,14 +317,19 @@ const ops = {
 
   async open({ profile: name, args, deadline_ms }) {
     const profile = needProfile(name);
-    const targetId = await createTarget(profile, args.url, args.background !== false);
+    const waitUntil = waitUntilOf(args.wait);
+    // A blank target first: the page is tracked (listeners on, the first
+    // document's status included) before the navigation starts.
+    const targetId = await createTarget(profile, 'about:blank', args.background !== false);
     const deadline = Date.now() + Math.min(deadline_ms, 10000);
     let state = profile.pages.get(targetId);
     while (!state && Date.now() < deadline) { await sleep(50); state = profile.pages.get(targetId); }
     if (!state) fail('browser_start_failed', 'the new tab did not show up');
     state.inflight++;
     try {
-      await state.page.waitForLoadState(waitUntilOf(args.wait), { timeout: Math.max(1000, deadline_ms - 1000) }).catch((err) => { if (!/Target closed|closed/i.test(err.message)) throw new OpError('navigation_failed', err.message.split('\n')[0]); });
+      const response = await state.page.goto(args.url, { waitUntil, timeout: Math.max(1000, deadline_ms - 1000) })
+        .catch((err) => { throw new OpError(/Timeout/i.test(err.message) ? 'browser_timeout' : 'navigation_failed', err.message.split('\n')[0] + ' (page partially loaded; try browser read)'); });
+      if (response) state.lastStatus = response.status();
       await settle(state, args.wait);
     } finally { state.inflight--; }
     let card = null;
@@ -541,6 +546,76 @@ const ops = {
       try { JSON.stringify(value); return value === undefined ? null : value; } catch { return String(value); }
     });
     return { result: { value: r.value, navigated_during: r.navigated_during }, page: await pageInfo(state) };
+  },
+
+  async act({ profile: name, target, args, deadline_ms }) {
+    const state = needPage(needProfile(name), target);
+    await guardDialog(state);
+    const kind = args.kind;
+    const page = state.page;
+    const timeout = Math.max(1000, Math.min(10000, deadline_ms - 500));
+    const hidden = await page.evaluate(() => document.visibilityState !== 'visible').catch(() => true);
+    const scope = scopeLocator(state, args);
+    if (!scope && kind !== 'press') fail('invalid_request', `${kind} needs a ref (from browser snapshot) or a selector`);
+    let handle = null;
+    if (scope) {
+      try { handle = await scope.elementHandle({ timeout }); }
+      catch (err) { if (args.ref) fail('stale_ref', `ref ${args.ref} no longer resolves (the page changed); re-run browser snapshot`); fail('invalid_request', `selector ${args.selector} matched nothing within the deadline`); }
+      if (!handle) fail('stale_ref', `ref ${args.ref || args.selector} no longer resolves; re-run browser snapshot`);
+    }
+    const describe = (el) => {
+      const tag = el.tagName.toLowerCase();
+      const role = el.getAttribute('role') || (tag === 'a' ? 'link' : tag === 'button' || (tag === 'input' && /^(button|submit|reset)$/.test(el.type)) ? 'button' : tag === 'select' ? 'combobox' : tag === 'textarea' || (tag === 'input') ? 'textbox' : tag);
+      const name = (el.getAttribute('aria-label') || (el.labels && el.labels[0] && el.labels[0].innerText) || el.placeholder || el.innerText || el.value || el.getAttribute('title') || el.name || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+      const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+      const password = (tag === 'input' && el.type === 'password') || ac === 'current-password' || ac === 'new-password';
+      return { role, name, password, tag };
+    };
+    const describeTarget = async () => {
+      if (handle) return handle.evaluate(describe);
+      return page.evaluate((d) => { const el = document.activeElement; return el && el !== document.body ? (0, eval)(d)(el) : { role: 'page', name: '', password: false, tag: 'body' }; }, describe.toString()).catch(() => ({ role: 'page', name: '', password: false, tag: 'body' }));
+    };
+    const info = await describeTarget();
+    const typing = kind === 'type' || kind === 'fill' || kind === 'press';
+    if (typing && info.password && !args.allow_password) {
+      fail('password_field_refused', `that is a password field (${info.role} "${info.name}"); ask the user to type it — \`herdr browser focus\` brings the window up ([browser] type_into_password_fields = false)`);
+    }
+    const urlBefore = page.url();
+    state.inflight++;
+    let navigated = false;
+    const onNav = (frame) => { if (frame === page.mainFrame()) navigated = true; };
+    page.on('framenavigated', onNav);
+    try {
+      const force = hidden;
+      if (kind === 'click') await scope.click({ force, timeout });
+      else if (kind === 'hover') {
+        if (hidden) await handle.evaluate((el) => { for (const type of ['pointerover', 'mouseover', 'mouseenter']) el.dispatchEvent(new MouseEvent(type, { bubbles: type !== 'mouseenter' })); });
+        else await scope.hover({ timeout });
+      }
+      else if (kind === 'fill') await scope.fill(String(args.text ?? ''), { force, timeout });
+      else if (kind === 'select') await scope.selectOption(String(args.value ?? ''), { force, timeout }).catch(async (err) => { if (/did not find some options|not found/i.test(err.message)) await scope.selectOption({ label: String(args.value ?? '') }, { force, timeout }); else throw err; });
+      else if (kind === 'type') {
+        if (args.clear) await scope.fill('', { force, timeout });
+        await scope.focus({ timeout });
+        await scope.pressSequentially(String(args.text ?? ''), { timeout });
+        if (args.submit) await scope.press('Enter', { timeout });
+      }
+      else if (kind === 'press') {
+        if (scope) await scope.press(String(args.key), { timeout }); else await page.keyboard.press(String(args.key));
+      }
+      else fail('invalid_request', `unknown act ${kind}`);
+      // A step that navigated: the next one runs after domcontentloaded.
+      await sleep(120);
+      if (navigated || page.url() !== urlBefore) await page.waitForLoadState('domcontentloaded', { timeout: Math.max(1000, timeout) }).catch(() => {});
+    } catch (err) {
+      if (err instanceof OpError) throw err;
+      if (/Timeout/i.test(err.message)) fail(args.ref ? 'stale_ref' : 'browser_timeout', `${kind} did not complete within ${timeout} ms${args.ref ? ' (the ref may be stale; re-run browser snapshot)' : ''}`);
+      throw err;
+    } finally {
+      page.off('framenavigated', onNav);
+      state.inflight--;
+    }
+    return { result: { kind, role: info.role, name: info.name, navigated: navigated || page.url() !== urlBefore, url_before: urlBefore }, page: await pageInfo(state) };
   },
 
   async dialog({ profile: name, target, args }) {

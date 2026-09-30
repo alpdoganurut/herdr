@@ -142,6 +142,21 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                         "dialog" => {
                             json!({ "id": id, "ok": true, "result": { "type": "alert", "message": "hi" }, "page": page })
                         }
+                        "act" => {
+                            let kind = args["kind"].as_str().unwrap_or("").to_string();
+                            let is_pw = args["ref"].as_str() == Some("e16")
+                                || args["selector"].as_str() == Some("#pw");
+                            if is_pw
+                                && !args["allow_password"].as_bool().unwrap_or(false)
+                                && kind != "click"
+                            {
+                                json!({ "id": id, "ok": false, "error": { "code": "password_field_refused", "message": "that is a password field" } })
+                            } else if args["ref"].as_str() == Some("e99") {
+                                json!({ "id": id, "ok": false, "error": { "code": "stale_ref", "message": "ref e99 no longer resolves; re-run browser snapshot" } })
+                            } else {
+                                json!({ "id": id, "ok": true, "result": { "kind": kind, "role": if kind == "click" { "button" } else { "textbox" }, "name": if kind == "click" { "Press me" } else { "Name" }, "navigated": kind == "click", "url_before": "https://site.test/T1" }, "page": { "url": "https://site.test/after", "title": "After", "dialog_open": false } })
+                            }
+                        }
                         "navigate" | "history" | "focus" => {
                             json!({ "id": id, "ok": true, "result": {}, "page": { "url": args["url"].as_str().unwrap_or("https://site.test/after"), "title": "After", "status": 200 } })
                         }
@@ -906,5 +921,363 @@ fn paging_reuses_the_last_extraction_and_a_fresh_read_re_extracts() {
     .unwrap();
     hub.run(&actor, read(100)).unwrap();
     assert_eq!(reads(&shared), 4);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn act_ops_log_the_element_never_the_text_and_honour_the_switches() {
+    let (hub, shared, _stream, home) = hub("act");
+    let actor = pane("w2:pD");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    let typed = hub
+        .run(
+            &actor,
+            params(BrowserOp::Type {
+                ref_: Some("e14".into()),
+                selector: None,
+                text: "secret text".into(),
+                submit: true,
+                clear: false,
+            }),
+        )
+        .unwrap();
+    assert!(
+        typed
+            .text
+            .starts_with("typed 11 chars into textbox \"Name\" (e14)"),
+        "{}",
+        typed.text
+    );
+    let (_, _, args) = shared.lock().unwrap().ops.last().cloned().unwrap();
+    assert_eq!(args["kind"], "type");
+    assert_eq!(args["text"], "secret text", "the sidecar gets the text");
+    assert_eq!(args["allow_password"], false);
+    let clicked = hub
+        .run(
+            &actor,
+            params(BrowserOp::Click {
+                ref_: Some("e11".into()),
+                selector: None,
+            }),
+        )
+        .unwrap();
+    assert!(
+        clicked.text.contains("clicked button \"Press me\" (e11)"),
+        "{}",
+        clicked.text
+    );
+    assert!(
+        clicked
+            .text
+            .contains("navigated: site.test/T1 → site.test/after"),
+        "{}",
+        clicked.text
+    );
+    let refused = hub
+        .run(
+            &actor,
+            params(BrowserOp::Fill {
+                ref_: Some("e16".into()),
+                selector: None,
+                text: "hunter2".into(),
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, "password_field_refused");
+    let stale = hub
+        .run(
+            &actor,
+            params(BrowserOp::Hover {
+                ref_: Some("e99".into()),
+                selector: None,
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(stale.code, "stale_ref");
+    hub.with_state(|state| {
+        let log = state.activity(10, None, None);
+        assert_eq!(log[0].op, "act:hover");
+        assert!(!log[0].ok);
+        assert_eq!(log[1].op, "act:fill");
+        assert!(log[1].detail.starts_with("password_field_refused"));
+        assert_eq!(log[2].op, "act:click");
+        assert_eq!(log[2].detail, "click button \"Press me\" e11");
+        assert_eq!(log[3].op, "act:type");
+        assert_eq!(log[3].detail, "type 11 chars into textbox \"Name\" e14");
+        assert!(state
+            .activity(20, None, None)
+            .iter()
+            .all(|e| !e.detail.contains("secret") && !e.detail.contains("hunter2")));
+    });
+    hub.apply_config(&BrowserConfig {
+        type_into_password_fields: true,
+        ..BrowserConfig::default()
+    });
+    hub.run(
+        &actor,
+        params(BrowserOp::Fill {
+            ref_: Some("e16".into()),
+            selector: None,
+            text: "hunter2".into(),
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        shared.lock().unwrap().ops.last().unwrap().2["allow_password"],
+        true
+    );
+    hub.apply_config(&BrowserConfig {
+        allow_act: false,
+        ..BrowserConfig::default()
+    });
+    assert_eq!(
+        hub.run(
+            &actor,
+            params(BrowserOp::Click {
+                ref_: Some("e11".into()),
+                selector: None
+            })
+        )
+        .unwrap_err()
+        .code,
+        "act_disabled"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+fn step(op: BrowserOp) -> crate::api::schema::BrowserBatchStep {
+    crate::api::schema::BrowserBatchStep { tab: None, op }
+}
+
+#[test]
+fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
+    let (hub, shared, _stream, home) = hub("batch");
+    let actor = pane("w2:pD");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    let ops_before = shared.lock().unwrap().ops.len();
+    let batch = hub
+        .run(
+            &actor,
+            params(BrowserOp::Batch {
+                ops: vec![
+                    step(BrowserOp::Fill {
+                        ref_: Some("e14".into()),
+                        selector: None,
+                        text: "x".into(),
+                    }),
+                    step(BrowserOp::Click {
+                        ref_: Some("e11".into()),
+                        selector: None,
+                    }),
+                    step(BrowserOp::Hover {
+                        ref_: Some("e99".into()),
+                        selector: None,
+                    }),
+                    step(BrowserOp::Links {
+                        filter: None,
+                        max: None,
+                    }),
+                ],
+                stop_on_error: true,
+                final_: Some("snapshot".into()),
+            }),
+        )
+        .unwrap();
+    assert!(
+        batch
+            .text
+            .contains(" 1. act:fill   ok      fill 1 chars into textbox"),
+        "{}",
+        batch.text
+    );
+    assert!(batch.text.contains(" 2. act:click  ok"), "{}", batch.text);
+    assert!(
+        batch.text.contains(" 3. act:hover  error   stale_ref"),
+        "{}",
+        batch.text
+    );
+    assert!(
+        batch.text.contains(" 4. links      skipped"),
+        "{}",
+        batch.text
+    );
+    assert!(
+        batch
+            .text
+            .contains("[4 steps · 2 ok · 1 failed · 1 skipped]"),
+        "{}",
+        batch.text
+    );
+    assert!(
+        !batch.text.contains("[ref="),
+        "no final snapshot after a stop"
+    );
+    assert_eq!(
+        shared.lock().unwrap().ops.len() - ops_before,
+        3,
+        "fill, click, hover reached the sidecar"
+    );
+    hub.with_state(|state| {
+        let log = state.activity(10, None, None);
+        assert_eq!(log[0].op, "batch");
+        assert_eq!(log[0].detail, "4 steps · 2 ok · 1 failed");
+        assert_eq!(log[1].op, "act:hover");
+        assert_eq!(log[2].op, "act:click");
+        assert_eq!(log[3].op, "act:fill");
+    });
+    let batch = hub
+        .run(
+            &actor,
+            params(BrowserOp::Batch {
+                ops: vec![
+                    step(BrowserOp::Hover {
+                        ref_: Some("e99".into()),
+                        selector: None,
+                    }),
+                    step(BrowserOp::Links {
+                        filter: None,
+                        max: None,
+                    }),
+                ],
+                stop_on_error: false,
+                final_: Some("snapshot".into()),
+            }),
+        )
+        .unwrap();
+    assert!(batch.text.contains(" 2. links      ok"), "{}", batch.text);
+    assert!(
+        batch
+            .text
+            .contains("[3 steps · 2 ok · 1 failed · 0 skipped]"),
+        "{}",
+        batch.text
+    );
+    assert_eq!(batch.data["final"]["format"], "snapshot");
+    let long: Vec<_> = (0..21)
+        .map(|_| {
+            step(BrowserOp::Links {
+                filter: None,
+                max: None,
+            })
+        })
+        .collect();
+    assert_eq!(
+        hub.run(
+            &actor,
+            params(BrowserOp::Batch {
+                ops: long,
+                stop_on_error: true,
+                final_: None
+            })
+        )
+        .unwrap_err()
+        .code,
+        "batch_too_long"
+    );
+    let nested = vec![step(BrowserOp::Batch {
+        ops: vec![],
+        stop_on_error: true,
+        final_: None,
+    })];
+    assert_eq!(
+        hub.run(
+            &actor,
+            params(BrowserOp::Batch {
+                ops: nested,
+                stop_on_error: true,
+                final_: None
+            })
+        )
+        .unwrap_err()
+        .code,
+        "invalid_request"
+    );
+    assert_eq!(
+        hub.run(
+            &actor,
+            params(BrowserOp::Batch {
+                ops: vec![],
+                stop_on_error: true,
+                final_: None
+            })
+        )
+        .unwrap_err()
+        .code,
+        "invalid_request"
+    );
+    assert_eq!(
+        hub.run(
+            &actor,
+            params(BrowserOp::Batch {
+                ops: vec![step(BrowserOp::Links {
+                    filter: None,
+                    max: None
+                })],
+                stop_on_error: true,
+                final_: Some("video".into())
+            })
+        )
+        .unwrap_err()
+        .code,
+        "invalid_request"
+    );
+    let mut use_step = step(BrowserOp::Use);
+    use_step.tab = Some("t1".into());
+    let batch = hub
+        .run(
+            &actor,
+            params(BrowserOp::Batch {
+                ops: vec![
+                    use_step,
+                    step(BrowserOp::Links {
+                        filter: None,
+                        max: None,
+                    }),
+                ],
+                stop_on_error: true,
+                final_: None,
+            }),
+        )
+        .unwrap();
+    assert!(batch.text.contains(" 1. use        ok"), "{}", batch.text);
+    let (_, target, _) = shared.lock().unwrap().ops.last().cloned().unwrap();
+    assert_eq!(target.as_deref(), Some("U1"), "links ran on the user's tab");
+    hub.with_state(|state| assert_eq!(state.cursor("w2:pD").unwrap().target_id, "U1"));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn cursors_remember_the_pane_s_herdr_tab() {
+    let (hub, _shared, _stream, home) = hub("cursor-tab");
+    let actor = pane("w2:pD");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    let info = hub.get(None);
+    assert_eq!(info.recent_panes[0].pane_id, "w2:pD");
+    assert_eq!(info.recent_panes[0].tab_id.as_deref(), Some("w2:tD"));
+    assert_eq!(info.recent_panes[0].current, "main:t2");
     let _ = std::fs::remove_dir_all(&home);
 }

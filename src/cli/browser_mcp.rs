@@ -263,9 +263,65 @@ pub fn op_for_tool(
         }
         "browser_close" => BrowserOp::Close,
         "browser_focus" => BrowserOp::Focus,
+        "browser_click" => BrowserOp::Click {
+            ref_: opt_str(a, "ref"),
+            selector: opt_str(a, "selector"),
+        },
+        "browser_hover" => BrowserOp::Hover {
+            ref_: opt_str(a, "ref"),
+            selector: opt_str(a, "selector"),
+        },
+        "browser_type" => BrowserOp::Type {
+            ref_: opt_str(a, "ref"),
+            selector: opt_str(a, "selector"),
+            text: need("text")?,
+            submit: flag(a, "submit"),
+            clear: flag(a, "clear"),
+        },
+        "browser_fill" => BrowserOp::Fill {
+            ref_: opt_str(a, "ref"),
+            selector: opt_str(a, "selector"),
+            text: need("text")?,
+        },
+        "browser_select" => BrowserOp::Select {
+            ref_: opt_str(a, "ref"),
+            selector: opt_str(a, "selector"),
+            value: need("value")?,
+        },
+        "browser_press" => BrowserOp::Press {
+            key: need("key")?,
+            ref_: opt_str(a, "ref"),
+            selector: opt_str(a, "selector"),
+        },
+        "browser_batch" => {
+            let ops: Vec<crate::api::schema::BrowserBatchStep> =
+                serde_json::from_value(a["ops"].clone()).map_err(|err| {
+                    format!("browser_batch needs \"ops\": an array of op objects ({err})")
+                })?;
+            BrowserOp::Batch {
+                ops,
+                stop_on_error: a["stop_on_error"].as_bool().unwrap_or(true),
+                final_: opt_str(a, "final"),
+            }
+        }
         other => return Err(format!("unknown tool {other}")),
     };
     Ok((op, profile, tab))
+}
+
+/// The act tools' target: an aria ref or a CSS selector.
+fn target_props(mut props: Value) -> Value {
+    if let Some(map) = props.as_object_mut() {
+        map.insert(
+            "ref".into(),
+            json!({ "type": "string", "description": "Aria ref (e12) from browser_snapshot" }),
+        );
+        map.insert(
+            "selector".into(),
+            json!({ "type": "string", "description": "CSS selector (when no ref)" }),
+        );
+    }
+    props
 }
 
 fn schema(properties: Value, required: &[&str]) -> Value {
@@ -277,7 +333,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": props, "required": required })
 }
 
-/// The tool list (18 read tools; `act` arrives in v1b).
+/// The tool list: 18 read tools, the six act tools and `browser_batch`.
 pub fn tools() -> Vec<Value> {
     let big = json!({ "anthropic/maxResultSizeChars": MAX_RESULT_SIZE_CHARS });
     vec![
@@ -303,6 +359,14 @@ pub fn tools() -> Vec<Value> {
         json!({ "name": "browser_use", "description": "Make a tab (yours or the user's) your current tab.", "inputSchema": schema(json!({}), &["tab"]) }),
         json!({ "name": "browser_close", "description": "Close the current (or given) tab.", "inputSchema": schema(json!({}), &[]) }),
         json!({ "name": "browser_focus", "description": "Select the current (or given) tab and raise the browser window for the user, e.g. to ask them to log in or look at something.", "inputSchema": schema(json!({}), &[]) }),
+        json!({ "name": "browser_click", "description": "Click an element of the current tab by aria ref (from browser_snapshot) or CSS selector. Works on background tabs. A stale ref answers stale_ref: re-run browser_snapshot.", "inputSchema": schema(target_props(json!({})), &[]) }),
+        json!({ "name": "browser_type", "description": "Type text key by key into an element (ref or selector); `clear` empties it first, `submit` presses Enter after. Password fields are refused: ask the user to type it (browser_focus).", "inputSchema": schema(target_props(json!({ "text": { "type": "string" }, "submit": { "type": "boolean" }, "clear": { "type": "boolean" } })), &["text"]) }),
+        json!({ "name": "browser_fill", "description": "Set an input's value at once (ref or selector). Password fields are refused: ask the user.", "inputSchema": schema(target_props(json!({ "text": { "type": "string" } })), &["text"]) }),
+        json!({ "name": "browser_press", "description": "Press a key (Enter, Tab, Control+a, …) on an element (ref or selector) or, without a target, on the focused element.", "inputSchema": schema(target_props(json!({ "key": { "type": "string" } })), &["key"]) }),
+        json!({ "name": "browser_select", "description": "Pick an option of a <select> (ref or selector) by value or visible label.", "inputSchema": schema(target_props(json!({ "value": { "type": "string" } })), &["value"]) }),
+        json!({ "name": "browser_hover", "description": "Hover an element (ref or selector); on a background tab the hover events are dispatched to the element.", "inputSchema": schema(target_props(json!({})), &[]) }),
+        json!({ "name": "browser_batch", "description": "Run up to 20 steps on the current tab in order under one deadline: each step is an op object like the other tools' arguments plus \"op\" (e.g. {\"op\":\"fill\",\"ref\":\"e3\",\"text\":\"x\"}, {\"op\":\"click\",\"ref\":\"e5\"}, {\"op\":\"wait\",\"text\":\"Done\"}, {\"op\":\"read\"}); a step may carry its own \"tab\". Stops at the first error unless stop_on_error is false; `final` adds a snapshot or screenshot at the end. Every step is checked and logged like a single call.",
+            "inputSchema": schema(json!({ "ops": { "type": "array", "items": { "type": "object", "properties": { "op": { "type": "string", "enum": ["open", "navigate", "history", "read", "find", "links", "screenshot", "console", "network", "wait", "scroll", "eval", "dialog", "tabs", "use", "close", "focus", "click", "type", "press", "select", "fill", "hover"] }, "tab": { "type": "string" } }, "required": ["op"], "additionalProperties": true }, "minItems": 1, "maxItems": 20 }, "stop_on_error": { "type": "boolean", "description": "Default true" }, "final": { "type": "string", "enum": ["snapshot", "screenshot"] } }), &["ops"]), "_meta": big }),
     ]
 }
 
@@ -400,7 +464,18 @@ mod tests {
             .handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
             .unwrap();
         let tools = list["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 25);
+        for act in [
+            "browser_click",
+            "browser_type",
+            "browser_press",
+            "browser_select",
+            "browser_fill",
+            "browser_hover",
+            "browser_batch",
+        ] {
+            assert!(names_of(tools).contains(&act), "{act}");
+        }
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(
             names.contains(&"browser_read")
@@ -498,11 +573,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn names_of(tools: &[Value]) -> Vec<&str> {
+        tools.iter().map(|t| t["name"].as_str().unwrap()).collect()
+    }
+
+    #[test]
+    fn act_tools_map_to_act_ops_and_batch_parses_steps() {
+        let (op, _, _) = op_for_tool(
+            "browser_type",
+            &json!({ "ref": "e4", "text": "hi", "submit": true }),
+        )
+        .unwrap();
+        assert!(
+            matches!(op, BrowserOp::Type { ref_: Some(ref r), ref text, submit: true, .. } if r == "e4" && text == "hi")
+        );
+        assert!(op_for_tool("browser_fill", &json!({ "ref": "e4" }))
+            .unwrap_err()
+            .contains("needs \"text\""));
+        let (op, _, _) = op_for_tool("browser_batch", &json!({ "ops": [ { "op": "fill", "ref": "e1", "text": "x" }, { "op": "click", "ref": "e2" } ], "stop_on_error": false, "final": "snapshot" })).unwrap();
+        assert!(
+            matches!(op, BrowserOp::Batch { ref ops, stop_on_error: false, final_: Some(ref f) } if ops.len() == 2 && f == "snapshot")
+        );
+        assert!(op_for_tool("browser_batch", &json!({ "ops": "nope" }))
+            .unwrap_err()
+            .contains("array"));
+    }
+
     #[test]
     fn every_tool_maps_to_an_op() {
         for tool in tools() {
             let name = tool["name"].as_str().unwrap();
-            let args = json!({ "url": "https://a/", "action": "back", "query": "q", "expr": "1", "tab": "t1" });
+            let args = json!({ "url": "https://a/", "action": "back", "query": "q", "expr": "1", "tab": "t1", "text": "t", "key": "Enter", "value": "v", "ops": [ { "op": "click", "ref": "e1" } ] });
             let (op, _, tab) =
                 op_for_tool(name, &args).unwrap_or_else(|err| panic!("{name}: {err}"));
             assert_ne!(op, BrowserOp::Unknown, "{name}");

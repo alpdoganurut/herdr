@@ -606,6 +606,131 @@ pub fn eval_result(
     result
 }
 
+/// An act's outcome: `clicked button "Merge" (e41)`, plus what changed.
+pub fn act_result(
+    record: &BrowserTabRecord,
+    page: &PageInfo,
+    kind: &str,
+    target: &str,
+    host: &Value,
+    typed_len: Option<usize>,
+) -> BrowserRunResult {
+    let mut result = base(record, Some(page));
+    let role = host["role"].as_str().unwrap_or("element");
+    let name = clip(&one_line(host["name"].as_str().unwrap_or("")), 60);
+    let element = if name.is_empty() {
+        format!("{role} ({target})")
+    } else {
+        format!("{role} \"{name}\" ({target})")
+    };
+    let mut lines = vec![match (kind, typed_len) {
+        ("click", _) => format!("clicked {element}"),
+        ("hover", _) => format!("hovered {element}"),
+        ("select", _) => format!("selected an option of {element}"),
+        ("press", _) => format!("pressed a key on {element}"),
+        ("fill", Some(len)) => format!("filled {len} chars into {element}"),
+        (_, Some(len)) => format!("typed {len} chars into {element}"),
+        _ => format!("{kind} on {element}"),
+    }];
+    if host["navigated"].as_bool().unwrap_or(false) {
+        lines.push(format!(
+            "navigated: {} → {}",
+            display_url(host["url_before"].as_str().unwrap_or("")),
+            display_url(&page.url)
+        ));
+    }
+    if page.dialog_open {
+        lines.push("a dialog opened: browser dialog accept|dismiss, or the user answers it".into());
+    }
+    result.text = lines.join("\n");
+    result.data = json!({
+        "tab": record.id(), "kind": kind, "target": target, "role": role, "name": name,
+        "navigated": host["navigated"], "url": page.url, "title": page.title, "dialog_open": page.dialog_open,
+        "typed_len": typed_len,
+    });
+    result
+}
+
+/// The ledger detail of an act: the element, never the text.
+pub fn act_detail(kind: &str, target: &str, host: &Value, typed_len: Option<usize>) -> String {
+    let role = host["role"].as_str().unwrap_or("element");
+    let name = clip(&one_line(host["name"].as_str().unwrap_or("")), 40);
+    let element = if name.is_empty() {
+        format!("{role} {target}")
+    } else {
+        format!("{role} \"{name}\" {target}")
+    };
+    match typed_len {
+        Some(len) => format!("{kind} {len} chars into {element}"),
+        None => format!("{kind} {element}"),
+    }
+}
+
+/// One line per batch step, then the optional final result.
+pub struct BatchStepLine {
+    pub index: usize,
+    pub op: String,
+    pub outcome: String,
+    pub ok: bool,
+    pub skipped: bool,
+}
+
+pub fn batch_result(
+    header: String,
+    tab: Option<String>,
+    steps: &[BatchStepLine],
+    final_result: Option<&BrowserRunResult>,
+) -> BrowserRunResult {
+    let mut lines: Vec<String> = steps
+        .iter()
+        .map(|step| {
+            let mark = if step.skipped {
+                "skipped"
+            } else if step.ok {
+                "ok"
+            } else {
+                "error"
+            };
+            format!(
+                "{:>2}. {:<10} {mark:<7} {}",
+                step.index + 1,
+                step.op,
+                sanitize(&step.outcome)
+            )
+        })
+        .collect();
+    let ok = steps.iter().filter(|s| s.ok).count();
+    let failed = steps.iter().filter(|s| !s.ok && !s.skipped).count();
+    let skipped = steps.iter().filter(|s| s.skipped).count();
+    lines.push(format!(
+        "[{} steps · {ok} ok · {failed} failed · {skipped} skipped]",
+        steps.len()
+    ));
+    let mut data = json!({
+        "steps": steps.iter().map(|s| json!({ "index": s.index, "op": s.op, "ok": s.ok, "skipped": s.skipped, "outcome": s.outcome })).collect::<Vec<_>>(),
+        "ok": ok, "failed": failed, "skipped": skipped,
+    });
+    let mut result = BrowserRunResult {
+        header,
+        tab,
+        ..Default::default()
+    };
+    if let Some(final_result) = final_result {
+        lines.push(String::new());
+        lines.push(final_result.header.clone());
+        if !final_result.text.is_empty() {
+            lines.push(final_result.text.clone());
+        }
+        data["final"] = final_result.data.clone();
+        result.image_path = final_result.image_path.clone();
+        result.image_inline_path = final_result.image_inline_path.clone();
+        result.image_mime = final_result.image_mime.clone();
+    }
+    result.text = lines.join("\n");
+    result.data = data;
+    result
+}
+
 /// The tabs table: `*` marks the caller's current tab.
 pub fn tabs_result(
     profile: &str,

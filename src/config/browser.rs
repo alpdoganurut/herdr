@@ -58,6 +58,15 @@ pub struct BrowserConfig {
     pub active_seconds: u64,
     /// Whether `browser eval` is allowed. Default: true.
     pub allow_eval: bool,
+    /// Whether the `act` family (click, type, press, select, fill, hover) is
+    /// allowed. Default: true.
+    pub allow_act: bool,
+    /// Whether agents may type into password fields. Default: false (the user
+    /// logs in by hand).
+    pub type_into_password_fields: bool,
+    /// A herdr tab whose pane touched the browser within this many seconds
+    /// wears the `◎` glyph in the tabs sidebar. Default: 120.
+    pub active_glyph_secs: u64,
     /// How long a launch may take to answer `/json/version`. 3000..=120000 ms.
     pub launch_timeout_ms: u64,
     /// The default deadline of one browser operation. 1000..=600000 ms.
@@ -81,6 +90,9 @@ impl Default for BrowserConfig {
             screenshot_keep: 300,
             active_seconds: 120,
             allow_eval: true,
+            allow_act: true,
+            type_into_password_fields: false,
+            active_glyph_secs: 120,
             launch_timeout_ms: 15_000,
             op_timeout_ms: 30_000,
         }
@@ -282,6 +294,9 @@ mod tests {
         assert_eq!(config.launch_timeout_ms(), 15_000);
         assert_eq!(config.op_timeout_ms(), 30_000);
         assert!(config.allow_eval);
+        assert!(config.allow_act);
+        assert!(!config.type_into_password_fields);
+        assert_eq!(config.active_glyph_secs, 120);
         assert!(config.diagnostics().is_empty());
     }
 

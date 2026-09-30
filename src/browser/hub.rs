@@ -543,40 +543,66 @@ impl BrowserHub {
             now,
         );
         let ms = started.elapsed().as_millis() as u64;
+        self.record_outcome(
+            actor,
+            &profile,
+            pane.as_deref(),
+            &params,
+            op_name,
+            &result,
+            ms,
+        );
+        self.flush();
         match result {
-            Ok((mut result, key, detail)) => {
+            Ok((mut result, _, _)) => {
                 result.ms = ms;
-                if !matches!(params.op, BrowserOp::Tabs { .. }) {
-                    let mut state = self.inner.state.lock().unwrap();
-                    state.touch(
-                        &profile,
-                        key.as_ref(),
-                        actor,
-                        op_name,
-                        &detail,
-                        true,
-                        ms,
-                        unix_now(),
-                    );
-                    if let Some(pane) = pane.as_deref() {
-                        state.touch_cursor(pane, unix_now());
-                    }
-                }
-                self.flush();
                 Ok(result)
             }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// The ledger bookkeeping of one operation (single call or batch step):
+    /// the touch on its tab, the activity entry, the pane's cursor clock.
+    #[allow(clippy::too_many_arguments)]
+    fn record_outcome(
+        &self,
+        actor: &BrowserActor,
+        profile: &str,
+        pane: Option<&str>,
+        params: &BrowserRunParams,
+        op_name: &str,
+        result: &Result<(BrowserRunResult, Option<TabKey>, String), BrowserError>,
+        ms: u64,
+    ) {
+        let mut state = self.inner.state.lock().unwrap();
+        match result {
+            Ok((_, key, detail)) => {
+                if matches!(params.op, BrowserOp::Tabs { .. }) {
+                    return;
+                }
+                state.touch(
+                    profile,
+                    key.as_ref(),
+                    actor,
+                    op_name,
+                    detail,
+                    true,
+                    ms,
+                    unix_now(),
+                );
+                if let Some(pane) = pane {
+                    state.touch_cursor(pane, unix_now());
+                }
+            }
             Err(err) => {
-                let mut state = self.inner.state.lock().unwrap();
                 let key = params
                     .tab
                     .as_deref()
-                    .and_then(|tab| state.resolve_tab(&profile, tab).map(|r| r.key()))
-                    .or_else(|| {
-                        pane.as_deref()
-                            .and_then(|pane| state.cursor(pane).map(|r| r.key()))
-                    });
+                    .and_then(|tab| state.resolve_tab(profile, tab).map(|r| r.key()))
+                    .or_else(|| pane.and_then(|pane| state.cursor(pane).map(|r| r.key())));
                 state.touch(
-                    &profile,
+                    profile,
                     key.as_ref(),
                     actor,
                     op_name,
@@ -585,9 +611,6 @@ impl BrowserHub {
                     ms,
                     unix_now(),
                 );
-                drop(state);
-                self.flush();
-                Err(err)
             }
         }
     }
@@ -690,7 +713,7 @@ impl BrowserHub {
                         now,
                     );
                     if let Some(pane) = pane {
-                        state.set_cursor(pane, &key, now);
+                        state.set_cursor(pane, &key, actor.tab_id(), now);
                     }
                 }
                 if *focus {
@@ -745,7 +768,11 @@ impl BrowserHub {
                 let record = self.resolve_target(profile, Some(tab), None)?;
                 let key = record.key();
                 if let Some(pane) = pane {
-                    self.inner.state.lock().unwrap().set_cursor(pane, &key, now);
+                    self.inner
+                        .state
+                        .lock()
+                        .unwrap()
+                        .set_cursor(pane, &key, actor.tab_id(), now);
                 }
                 let result = shape::simple_result(
                     &record,
@@ -755,13 +782,34 @@ impl BrowserHub {
                 );
                 Ok((result, Some(key), record.short.clone()))
             }
+            BrowserOp::Batch {
+                ops,
+                stop_on_error,
+                final_,
+            } => self.execute_batch(
+                actor,
+                profile,
+                pane,
+                params,
+                ops,
+                *stop_on_error,
+                final_.as_deref(),
+                config,
+                deadline,
+                now,
+            ),
             op => {
                 let record = self.resolve_target(profile, params.tab.as_deref(), pane)?;
                 let key = record.key();
                 if let Some(pane) = pane {
                     // Following an explicit --tab moves the cursor there.
                     if params.tab.is_some() {
-                        self.inner.state.lock().unwrap().set_cursor(pane, &key, now);
+                        self.inner.state.lock().unwrap().set_cursor(
+                            pane,
+                            &key,
+                            actor.tab_id(),
+                            now,
+                        );
                     }
                 }
                 let target = record.target_id.as_str();
@@ -1197,13 +1245,284 @@ impl BrowserHub {
                             record.short.clone(),
                         )
                     }
+                    BrowserOp::Click { .. }
+                    | BrowserOp::Type { .. }
+                    | BrowserOp::Press { .. }
+                    | BrowserOp::Select { .. }
+                    | BrowserOp::Fill { .. }
+                    | BrowserOp::Hover { .. } => {
+                        if !config.allow_act {
+                            return Err(BrowserError::new(
+                                "act_disabled",
+                                "browser act (click, type, press, select, fill, hover) is disabled ([browser] allow_act = false)",
+                            ));
+                        }
+                        let (kind, ref_, selector, mut args, typed_len) = act_args(op);
+                        let target_name = ref_
+                            .clone()
+                            .or(selector.clone())
+                            .unwrap_or_else(|| "focused element".into());
+                        args["kind"] = json!(kind);
+                        args["ref"] = json!(ref_);
+                        args["selector"] = json!(selector);
+                        args["allow_password"] = json!(config.type_into_password_fields);
+                        let reply =
+                            self.request("act", Some(profile), Some(target), args, deadline)?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        self.note_page(&key, &page);
+                        if page.dialog_open {
+                            self.inner.state.lock().unwrap().set_dialog(&key, true);
+                        }
+                        let record = self.record(&key)?;
+                        (
+                            shape::act_result(
+                                &record,
+                                &page,
+                                kind,
+                                &target_name,
+                                &reply.result,
+                                typed_len,
+                            ),
+                            shape::act_detail(kind, &target_name, &reply.result, typed_len),
+                        )
+                    }
                     BrowserOp::Open { .. }
                     | BrowserOp::Tabs { .. }
                     | BrowserOp::Use
+                    | BrowserOp::Batch { .. }
                     | BrowserOp::Unknown => unreachable!(),
                 };
                 Ok((result, Some(key), detail))
             }
+        }
+    }
+
+    /// A batch: every step through `execute` with its own bookkeeping, one
+    /// overall deadline, the cursor moving as steps `use`/`open`; callers
+    /// without a pane follow the last step's tab.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_batch(
+        &self,
+        actor: &BrowserActor,
+        profile: &str,
+        pane: Option<&str>,
+        params: &BrowserRunParams,
+        ops: &[crate::api::schema::BrowserBatchStep],
+        stop_on_error: bool,
+        final_: Option<&str>,
+        config: &BrowserConfig,
+        deadline: Duration,
+        now: u64,
+    ) -> Result<(BrowserRunResult, Option<TabKey>, String), BrowserError> {
+        use crate::api::schema::BATCH_MAX_STEPS;
+        if ops.is_empty() {
+            return Err(BrowserError::new(
+                "invalid_request",
+                "batch needs at least one step",
+            ));
+        }
+        if ops.len() > BATCH_MAX_STEPS {
+            return Err(BrowserError::new(
+                "batch_too_long",
+                format!("batch has {} steps; at most {BATCH_MAX_STEPS}", ops.len()),
+            ));
+        }
+        if ops
+            .iter()
+            .any(|step| matches!(step.op, BrowserOp::Batch { .. } | BrowserOp::Unknown))
+        {
+            return Err(BrowserError::new(
+                "invalid_request",
+                "a batch step cannot be a batch or an unknown op",
+            ));
+        }
+        let final_op = match final_ {
+            None => None,
+            Some("snapshot") => Some(BrowserOp::Read {
+                format: Some("snapshot".into()),
+                selector: None,
+                ref_: None,
+                offset: None,
+                max: None,
+                all: false,
+                interactive: false,
+            }),
+            Some("screenshot") => Some(BrowserOp::Screenshot {
+                full: false,
+                ref_: None,
+                selector: None,
+                format: None,
+                out: None,
+                front: false,
+            }),
+            Some(other) => {
+                return Err(BrowserError::new(
+                    "invalid_request",
+                    format!("batch final {other:?}: expected snapshot or screenshot"),
+                ))
+            }
+        };
+        // The batch's own tab becomes the cursor (or, without a pane, the
+        // tab every step follows until one switches it).
+        let mut current_tab: Option<String> = params.tab.clone();
+        if let (Some(pane), Some(tab)) = (pane, params.tab.as_deref()) {
+            let record = self.resolve_target(profile, Some(tab), None)?;
+            self.inner
+                .state
+                .lock()
+                .unwrap()
+                .set_cursor(pane, &record.key(), actor.tab_id(), now);
+            current_tab = None;
+        }
+        let started = Instant::now();
+        let mut lines: Vec<shape::BatchStepLine> = Vec::new();
+        let mut last_key: Option<TabKey> = None;
+        let mut last_header = String::new();
+        let mut failed = false;
+        let mut run_step = |op: &BrowserOp,
+                            tab: Option<String>,
+                            index: usize,
+                            lines: &mut Vec<shape::BatchStepLine>|
+         -> Result<BrowserRunResult, BrowserError> {
+            let remaining = deadline.saturating_sub(started.elapsed());
+            let step_params = BrowserRunParams {
+                caller: params.caller.clone(),
+                profile: Some(profile.to_string()),
+                tab,
+                op: op.clone(),
+                timeout_ms: None,
+            };
+            let step_started = Instant::now();
+            let result = if remaining < Duration::from_millis(200) {
+                Err(BrowserError::timeout(format!(
+                    "the batch deadline ({} ms) passed before step {}",
+                    deadline.as_millis(),
+                    index + 1
+                )))
+            } else {
+                self.execute(
+                    actor,
+                    profile,
+                    pane,
+                    &step_params,
+                    config,
+                    remaining,
+                    unix_now(),
+                )
+            };
+            let ms = step_started.elapsed().as_millis() as u64;
+            self.record_outcome(actor, profile, pane, &step_params, op.name(), &result, ms);
+            match result {
+                Ok((result, key, detail)) => {
+                    if key.is_some() {
+                        last_key = key;
+                    }
+                    last_header = result.header.clone();
+                    lines.push(shape::BatchStepLine {
+                        index,
+                        op: op.name().to_string(),
+                        outcome: detail,
+                        ok: true,
+                        skipped: false,
+                    });
+                    Ok(result)
+                }
+                Err(err) => {
+                    lines.push(shape::BatchStepLine {
+                        index,
+                        op: op.name().to_string(),
+                        outcome: format!("{}: {}", err.code, err.message),
+                        ok: false,
+                        skipped: false,
+                    });
+                    Err(err)
+                }
+            }
+        };
+        for (index, step) in ops.iter().enumerate() {
+            if failed && stop_on_error {
+                lines.push(shape::BatchStepLine {
+                    index,
+                    op: step.op.name().to_string(),
+                    outcome: String::new(),
+                    ok: false,
+                    skipped: true,
+                });
+                continue;
+            }
+            let tab = step.tab.clone().or_else(|| {
+                if pane.is_some() {
+                    None
+                } else {
+                    current_tab.clone()
+                }
+            });
+            match run_step(&step.op, tab, index, &mut lines) {
+                Ok(result) => {
+                    if pane.is_none() {
+                        if let Some(tab) = result.tab.clone() {
+                            current_tab = Some(tab);
+                        }
+                    }
+                }
+                Err(_) => failed = true,
+            }
+        }
+        let final_result = match final_op {
+            Some(op) if !(failed && stop_on_error) => {
+                let tab = if pane.is_some() {
+                    None
+                } else {
+                    current_tab.clone()
+                };
+                run_step(&op, tab, ops.len(), &mut lines).ok()
+            }
+            _ => None,
+        };
+        let ok = lines.iter().filter(|line| line.ok).count();
+        let failed_count = lines
+            .iter()
+            .filter(|line| !line.ok && !line.skipped)
+            .count();
+        let tab_id = last_key.as_ref().and_then(|key| {
+            self.inner
+                .state
+                .lock()
+                .unwrap()
+                .tabs
+                .get(key)
+                .map(|r| r.id())
+        });
+        let header = if last_header.is_empty() {
+            format!("[{profile} · batch]")
+        } else {
+            last_header
+        };
+        let result = shape::batch_result(header, tab_id, &lines, final_result.as_ref());
+        let detail = format!("{} steps · {ok} ok · {failed_count} failed", lines.len());
+        Ok((result, last_key, detail))
+    }
+
+    /// `[browser] stop_with_server`: close every running profile and wait
+    /// for the processes to go, at server shutdown.
+    pub fn stop_with_server_if_configured(&self) {
+        if !self.config().stop_with_server {
+            return;
+        }
+        let names: Vec<String> = self
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .profiles
+            .iter()
+            .filter(|(_, status)| {
+                status.is_running() || matches!(status, ProfileStatus::Starting { .. })
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in names {
+            self.stop_profile(&name);
         }
     }
 
@@ -2026,5 +2345,72 @@ impl BrowserHub {
     #[cfg(test)]
     pub fn has_host(&self) -> bool {
         self.inner.host.lock().unwrap().is_some()
+    }
+}
+
+/// The sidecar arguments of an act op: `(kind, ref, selector, args, typed_len)`.
+fn act_args(
+    op: &BrowserOp,
+) -> (
+    &'static str,
+    Option<String>,
+    Option<String>,
+    Value,
+    Option<usize>,
+) {
+    match op {
+        BrowserOp::Click { ref_, selector } => {
+            ("click", ref_.clone(), selector.clone(), json!({}), None)
+        }
+        BrowserOp::Hover { ref_, selector } => {
+            ("hover", ref_.clone(), selector.clone(), json!({}), None)
+        }
+        BrowserOp::Type {
+            ref_,
+            selector,
+            text,
+            submit,
+            clear,
+        } => (
+            "type",
+            ref_.clone(),
+            selector.clone(),
+            json!({ "text": text, "submit": submit, "clear": clear }),
+            Some(text.chars().count()),
+        ),
+        BrowserOp::Fill {
+            ref_,
+            selector,
+            text,
+        } => (
+            "fill",
+            ref_.clone(),
+            selector.clone(),
+            json!({ "text": text }),
+            Some(text.chars().count()),
+        ),
+        BrowserOp::Select {
+            ref_,
+            selector,
+            value,
+        } => (
+            "select",
+            ref_.clone(),
+            selector.clone(),
+            json!({ "value": value }),
+            None,
+        ),
+        BrowserOp::Press {
+            key,
+            ref_,
+            selector,
+        } => (
+            "press",
+            ref_.clone(),
+            selector.clone(),
+            json!({ "key": key }),
+            None,
+        ),
+        _ => ("unknown", None, None, json!({}), None),
     }
 }

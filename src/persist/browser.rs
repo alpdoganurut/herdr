@@ -182,7 +182,7 @@ mod tests {
             &BrowserActor::User,
             5,
         );
-        state.set_cursor("w2:pD", &key, 6);
+        state.set_cursor("w2:pD", &key, Some("w2:tD"), 6);
         state.touch(
             "main",
             Some(&key),

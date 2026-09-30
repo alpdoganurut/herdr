@@ -745,6 +745,11 @@ impl HeadlessServer {
         if self.app.policy.persist_session {
             self.app.save_session_on_shutdown();
         }
+        // [browser] stop_with_server: close the browsers this server launched,
+        // never on a live handoff (the replacement reattaches to them).
+        if !self.handoff_in_progress {
+            crate::browser::hub().stop_with_server_if_configured();
+        }
 
         info!("headless server exiting");
         Ok(())

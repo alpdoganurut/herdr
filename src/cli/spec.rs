@@ -969,6 +969,55 @@ fn browser_command() -> Command {
         )
         .subcommand(verb("tabs", "List open tabs with who opened and last used them").arg(flag("mine")))
         .subcommand(verb("use", "Make a tab the current tab").arg(Arg::new("tab").value_name("TAB").required(true)))
+        .subcommand(
+            verb("click", "Click an element by aria ref or CSS selector")
+                .arg(browser_tab_arg())
+                .arg(option("ref", "REF"))
+                .arg(option("selector", "CSS")),
+        )
+        .subcommand(
+            verb("type", "Type text into an element key by key")
+                .arg(browser_tab_option())
+                .arg(Arg::new("text").value_name("TEXT").required(true).num_args(1..))
+                .arg(option("ref", "REF"))
+                .arg(option("selector", "CSS"))
+                .arg(flag("submit").help("Press Enter after the text"))
+                .arg(flag("clear").help("Empty the field first")),
+        )
+        .subcommand(
+            verb("fill", "Set an input's value at once")
+                .arg(browser_tab_option())
+                .arg(Arg::new("text").value_name("TEXT").required(true).num_args(1..))
+                .arg(option("ref", "REF"))
+                .arg(option("selector", "CSS")),
+        )
+        .subcommand(
+            verb("press", "Press a key on an element or the focused one")
+                .arg(browser_tab_option())
+                .arg(Arg::new("key").value_name("KEY").required(true))
+                .arg(option("ref", "REF"))
+                .arg(option("selector", "CSS")),
+        )
+        .subcommand(
+            verb("select", "Pick an option of a select by value or label")
+                .arg(browser_tab_option())
+                .arg(Arg::new("value").value_name("VALUE").required(true))
+                .arg(option("ref", "REF"))
+                .arg(option("selector", "CSS")),
+        )
+        .subcommand(
+            verb("hover", "Hover an element by aria ref or CSS selector")
+                .arg(browser_tab_arg())
+                .arg(option("ref", "REF"))
+                .arg(option("selector", "CSS")),
+        )
+        .subcommand(
+            verb("batch", "Run a JSON array of steps (stdin or --file) on the current tab")
+                .arg(browser_tab_arg())
+                .arg(option("file", "FILE").help("Steps file; default: stdin"))
+                .arg(flag("continue").help("Keep going after a failing step"))
+                .arg(option("final", "WHAT").value_parser(["snapshot", "screenshot"])),
+        )
         .subcommand(verb("close", "Close the current tab").arg(browser_tab_arg()))
         .subcommand(verb("focus", "Select the tab and raise the window for the user").arg(browser_tab_arg()))
         .subcommand(Command::new("status").about("Browser, sidecar, profiles, tabs and recent activity").arg(json_flag()))
@@ -1776,6 +1825,14 @@ mod tests {
         assert!(has_option(
             command_path(&cmd, &["browser", "setup"]),
             "node"
+        ));
+        assert!(has_option(command_path(&cmd, &["browser", "click"]), "ref"));
+        assert!(command_path(&cmd, &["browser", "type"])
+            .get_arguments()
+            .any(|arg| arg.get_id() == "text" && arg.is_required_set()));
+        assert!(has_option(
+            command_path(&cmd, &["browser", "batch"]),
+            "file"
         ));
         command_path(&cmd, &["browser", "profile", "delete"]);
         command_path(&cmd, &["browser", "mcp"]);

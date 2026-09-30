@@ -1802,6 +1802,716 @@
           ],
           "type": "object"
         },
+        "BrowserBatchStep": {
+          "description": "One step of a batch: the operation plus, when it needs one, its tab\n(`use`, `close`, `focus`, or a step meant for another tab).",
+          "oneOf": [
+            {
+              "description": "Open a new background tab and make it the caller's current tab.",
+              "properties": {
+                "focus": {
+                  "description": "Also select the tab and raise the window.",
+                  "type": "boolean"
+                },
+                "op": {
+                  "const": "open",
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "wait": {
+                  "description": "`domcontentloaded` (default), `load` or `networkidle`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "url"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "navigate",
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "wait": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "url"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`back`, `forward` or `reload`.",
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "op": {
+                  "const": "history",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "action"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "all": {
+                  "description": "Return everything (no paging).",
+                  "type": "boolean"
+                },
+                "format": {
+                  "description": "`markdown` (default), `text`, `snapshot` or `html`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "interactive": {
+                  "description": "Only actionable nodes and their headings (snapshot only).",
+                  "type": "boolean"
+                },
+                "max": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "read",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "context": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "max": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "find",
+                  "type": "string"
+                },
+                "query": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "query"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "filter": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "max": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "links",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "format": {
+                  "description": "`jpeg` (default) or `png`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "front": {
+                  "description": "Select the tab and raise the window first (logged as `focus`).",
+                  "type": "boolean"
+                },
+                "full": {
+                  "type": "boolean"
+                },
+                "op": {
+                  "const": "screenshot",
+                  "type": "string"
+                },
+                "out": {
+                  "description": "Write the full-size file here instead of `shots/`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "level": {
+                  "description": "`error`, `warn` or `all` (default).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "max": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "console",
+                  "type": "string"
+                },
+                "since": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "failed": {
+                  "type": "boolean"
+                },
+                "match": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "max": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "network",
+                  "type": "string"
+                },
+                "since": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "gone": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "load": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "wait",
+                  "type": "string"
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "timeout_s": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "by": {
+                  "description": "Pixels (negative scrolls up).",
+                  "format": "int64",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "scroll",
+                  "type": "string"
+                },
+                "to": {
+                  "description": "`top`, `bottom` or a ref `eN`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "expr": {
+                  "type": "string"
+                },
+                "max": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "eval",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "expr"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`accept` (with optional prompt text) or `dismiss` an open dialog.",
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "op": {
+                  "const": "dialog",
+                  "type": "string"
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "action"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "mine": {
+                  "type": "boolean"
+                },
+                "op": {
+                  "const": "tabs",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Make the tab in `BrowserRunParams.tab` the caller's current tab.",
+              "properties": {
+                "op": {
+                  "const": "use",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Close the current (or `BrowserRunParams.tab`) tab.",
+              "properties": {
+                "op": {
+                  "const": "close",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Select the tab and raise the window (for the human).",
+              "properties": {
+                "op": {
+                  "const": "focus",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Click an element (`ref` from a snapshot, or a CSS `selector`).",
+              "properties": {
+                "op": {
+                  "const": "click",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Type into an element key by key (`clear` first, `submit` presses Enter after).",
+              "properties": {
+                "clear": {
+                  "type": "boolean"
+                },
+                "op": {
+                  "const": "type",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "submit": {
+                  "type": "boolean"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Press a key (`Enter`, `Control+a`, …) on an element or the focused one.",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "op": {
+                  "const": "press",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "key"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Pick an option of a `<select>` by value or label.",
+              "properties": {
+                "op": {
+                  "const": "select",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "value"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Set an input's value at once.",
+              "properties": {
+                "op": {
+                  "const": "fill",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "hover",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Several steps on one tab, in order, under one deadline.",
+              "properties": {
+                "final": {
+                  "description": "`snapshot` or `screenshot` after the steps.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "batch",
+                  "type": "string"
+                },
+                "ops": {
+                  "items": {
+                    "$ref": "#/schemas/request/$defs/BrowserBatchStep"
+                  },
+                  "type": "array"
+                },
+                "stop_on_error": {
+                  "default": true,
+                  "description": "Stop at the first failing step (default true).",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "op",
+                "ops"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "unknown",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "properties": {
+            "tab": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "BrowserCaller": {
           "description": "Who is calling: the pane whose environment the CLI or the MCP server ran\nin (`HERDR_PANE_ID`), or `--pane`.",
           "properties": {
@@ -2370,6 +3080,209 @@
               },
               "required": [
                 "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Click an element (`ref` from a snapshot, or a CSS `selector`).",
+              "properties": {
+                "op": {
+                  "const": "click",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Type into an element key by key (`clear` first, `submit` presses Enter after).",
+              "properties": {
+                "clear": {
+                  "type": "boolean"
+                },
+                "op": {
+                  "const": "type",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "submit": {
+                  "type": "boolean"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Press a key (`Enter`, `Control+a`, …) on an element or the focused one.",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "op": {
+                  "const": "press",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "key"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Pick an option of a `<select>` by value or label.",
+              "properties": {
+                "op": {
+                  "const": "select",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "value"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Set an input's value at once.",
+              "properties": {
+                "op": {
+                  "const": "fill",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "hover",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Several steps on one tab, in order, under one deadline.",
+              "properties": {
+                "final": {
+                  "description": "`snapshot` or `screenshot` after the steps.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "batch",
+                  "type": "string"
+                },
+                "ops": {
+                  "items": {
+                    "$ref": "#/schemas/request/$defs/BrowserBatchStep"
+                  },
+                  "type": "array"
+                },
+                "stop_on_error": {
+                  "default": true,
+                  "description": "Stop at the first failing step (default true).",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "op",
+                "ops"
               ],
               "type": "object"
             },

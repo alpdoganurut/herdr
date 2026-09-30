@@ -181,6 +181,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # cycle_tab_color = ""              # unbound; cycles the focused tab's color: none, red, ... purple, none
 # toggle_tab_important = ""         # unbound; marks the focused tab important, or unmarks it
 # open_news = ""                    # unbound; focuses the News tab, creating it with the page viewer when gone
+# open_browser = ""                 # unbound; opens the Browser overlay (the herdr browser's tabs and who uses them)
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"
@@ -472,6 +473,12 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # A tab or pane touched within this many seconds counts as active.
 # active_seconds = 120
 # allow_eval = true
+# The act family (click, type, press, select, fill, hover); false answers act_disabled.
+# allow_act = true
+# Whether agents may type into password fields (the user logs in by hand otherwise).
+# type_into_password_fields = false
+# A tab whose pane used the browser within this many seconds wears the ◎ glyph.
+# active_glyph_secs = 120
 # launch_timeout_ms = 15000
 # op_timeout_ms = 30000
 

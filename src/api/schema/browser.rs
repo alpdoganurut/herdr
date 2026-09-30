@@ -61,6 +61,14 @@ impl BrowserActor {
         }
     }
 
+    /// The herdr tab id of a pane actor.
+    pub fn tab_id(&self) -> Option<&str> {
+        match self {
+            BrowserActor::Pane { tab_id, .. } => Some(tab_id),
+            _ => None,
+        }
+    }
+
     pub fn is_user(&self) -> bool {
         matches!(self, BrowserActor::User)
     }
@@ -228,9 +236,85 @@ pub enum BrowserOp {
     Close,
     /// Select the tab and raise the window (for the human).
     Focus,
+    /// Click an element (`ref` from a snapshot, or a CSS `selector`).
+    Click {
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        ref_: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<String>,
+    },
+    /// Type into an element key by key (`clear` first, `submit` presses Enter after).
+    Type {
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        ref_: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<String>,
+        text: String,
+        #[serde(default, skip_serializing_if = "super::is_false")]
+        submit: bool,
+        #[serde(default, skip_serializing_if = "super::is_false")]
+        clear: bool,
+    },
+    /// Press a key (`Enter`, `Control+a`, …) on an element or the focused one.
+    Press {
+        key: String,
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        ref_: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<String>,
+    },
+    /// Pick an option of a `<select>` by value or label.
+    Select {
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        ref_: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<String>,
+        value: String,
+    },
+    /// Set an input's value at once.
+    Fill {
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        ref_: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<String>,
+        text: String,
+    },
+    Hover {
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        ref_: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<String>,
+    },
+    /// Several steps on one tab, in order, under one deadline.
+    Batch {
+        ops: Vec<BrowserBatchStep>,
+        /// Stop at the first failing step (default true).
+        #[serde(default = "default_true")]
+        stop_on_error: bool,
+        /// `snapshot` or `screenshot` after the steps.
+        #[serde(default, rename = "final", skip_serializing_if = "Option::is_none")]
+        final_: Option<String>,
+    },
     #[serde(other)]
     Unknown,
 }
+
+fn default_true() -> bool {
+    true
+}
+
+/// One step of a batch: the operation plus, when it needs one, its tab
+/// (`use`, `close`, `focus`, or a step meant for another tab).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct BrowserBatchStep {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
+    #[serde(flatten)]
+    pub op: BrowserOp,
+}
+
+/// The most steps one batch runs.
+pub const BATCH_MAX_STEPS: usize = 20;
 
 impl BrowserOp {
     /// The name the activity log uses.
@@ -257,6 +341,13 @@ impl BrowserOp {
             BrowserOp::Use => "use",
             BrowserOp::Close => "close",
             BrowserOp::Focus => "focus",
+            BrowserOp::Click { .. } => "act:click",
+            BrowserOp::Type { .. } => "act:type",
+            BrowserOp::Press { .. } => "act:press",
+            BrowserOp::Select { .. } => "act:select",
+            BrowserOp::Fill { .. } => "act:fill",
+            BrowserOp::Hover { .. } => "act:hover",
+            BrowserOp::Batch { .. } => "batch",
             BrowserOp::Unknown => "unknown",
         }
     }
@@ -592,6 +683,41 @@ mod tests {
         assert!(
             matches!(params.op, BrowserOp::Screenshot { ref ref_, .. } if ref_.as_deref() == Some("e4"))
         );
+    }
+
+    #[test]
+    fn act_and_batch_ops_round_trip() {
+        let params: BrowserRunParams =
+            serde_json::from_str(r#"{"op":"type","ref":"e4","text":"hello","submit":true}"#)
+                .unwrap();
+        assert!(
+            matches!(&params.op, BrowserOp::Type { ref_: Some(r), text, submit: true, clear: false, .. } if r == "e4" && text == "hello")
+        );
+        assert_eq!(params.op.name(), "act:type");
+        let batch: BrowserRunParams = serde_json::from_str(
+            r##"{"op":"batch","ops":[{"op":"fill","selector":"#name","text":"x"},{"op":"click","ref":"e11"},{"op":"use","tab":"t2"}],"final":"snapshot"}"##,
+        )
+        .unwrap();
+        match &batch.op {
+            BrowserOp::Batch {
+                ops,
+                stop_on_error,
+                final_,
+            } => {
+                assert_eq!(ops.len(), 3);
+                assert!(*stop_on_error, "defaults to true");
+                assert_eq!(final_.as_deref(), Some("snapshot"));
+                assert!(matches!(ops[0].op, BrowserOp::Fill { .. }));
+                assert_eq!(ops[2].tab.as_deref(), Some("t2"));
+                assert_eq!(ops[2].op, BrowserOp::Use);
+            }
+            other => panic!("{other:?}"),
+        }
+        let back = serde_json::to_string(&batch).unwrap();
+        assert!(back.contains("\"final\":\"snapshot\""), "{back}");
+        let again: BrowserRunParams = serde_json::from_str(&back).unwrap();
+        assert_eq!(again, batch);
+        assert_eq!(BATCH_MAX_STEPS, 20);
     }
 
     #[test]
