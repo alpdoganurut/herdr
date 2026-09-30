@@ -23,7 +23,7 @@ pub mod shape;
 pub mod shots;
 pub mod state;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;
 
 use std::sync::OnceLock;

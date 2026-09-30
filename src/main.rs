@@ -450,6 +450,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Start the default profile with the server instead of on first use.
 # autostart = false
 # `herdr server stop` also closes the browser (by default the window survives herdr).
+# Not yet honoured in v1a.
 # stop_with_server = false
 # default_profile = "main"
 # "auto" looks for ~/Applications/Chromium.app then /Applications/Chromium.app;

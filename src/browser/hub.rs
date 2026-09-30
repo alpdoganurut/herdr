@@ -361,7 +361,8 @@ impl BrowserHub {
         Ok(self.get(None))
     }
 
-    /// Select a tab and raise the window, as the user (overlay / row).
+    /// Select a tab and raise the window, as the user (overlay / row). The
+    /// sidecar call runs on its own thread so the App loop never waits on it.
     pub fn focus(&self, profile: Option<&str>, tab: &str) -> Result<(), BrowserError> {
         let config = self.config();
         if !config.enabled {
@@ -378,26 +379,34 @@ impl BrowserHub {
         if !record.is_open() {
             return Err(BrowserError::tab_closed(&record.id()));
         }
-        self.request(
-            "focus",
-            Some(&record.profile),
-            Some(&record.target_id),
-            Value::Null,
-            Duration::from_secs(3),
-        )?;
-        let mut state = self.inner.state.lock().unwrap();
-        state.touch(
-            &record.profile,
-            Some(&record.key()),
-            &BrowserActor::User,
-            "focus",
-            &record.short,
-            true,
-            0,
-            unix_now(),
-        );
-        drop(state);
-        self.flush();
+        let hub = self.clone();
+        std::thread::Builder::new()
+            .name("herdr-browser-focus".into())
+            .spawn(move || {
+                let ok = hub
+                    .request(
+                        "focus",
+                        Some(&record.profile),
+                        Some(&record.target_id),
+                        Value::Null,
+                        Duration::from_secs(3),
+                    )
+                    .is_ok();
+                let mut state = hub.inner.state.lock().unwrap();
+                state.touch(
+                    &record.profile,
+                    Some(&record.key()),
+                    &BrowserActor::User,
+                    "focus",
+                    &record.short,
+                    ok,
+                    0,
+                    unix_now(),
+                );
+                drop(state);
+                hub.flush();
+            })
+            .map_err(|err| BrowserError::unavailable(err.to_string()))?;
         Ok(())
     }
 

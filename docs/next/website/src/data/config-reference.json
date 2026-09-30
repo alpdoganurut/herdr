@@ -1588,7 +1588,7 @@
           "key": "browser.stop_with_server",
           "type": "boolean",
           "default": "false",
-          "description": "Close the running browsers when the server stops. Off by default: Chromium is launched detached and survives herdr restarts and handoffs; the next server reattaches."
+          "description": "Close the running browsers when the server stops. Off by default: Chromium is launched detached and survives herdr restarts and handoffs; the next server reattaches. Not yet honoured in v1a (the key is read and reserved)."
         },
         {
           "key": "browser.default_profile",

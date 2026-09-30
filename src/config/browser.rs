@@ -28,7 +28,8 @@ pub struct BrowserConfig {
     pub enabled: bool,
     /// Start `default_profile` with the server. Default: false (lazy, on first use).
     pub autostart: bool,
-    /// `herdr server stop` also closes the browser. Default: false (the window survives herdr).
+    /// `herdr server stop` also closes the browser. Default: false (the window
+    /// survives herdr). Read but not yet honoured (v1b wires the shutdown).
     pub stop_with_server: bool,
     /// The profile used when a call names none. Default: `main`.
     pub default_profile: String,

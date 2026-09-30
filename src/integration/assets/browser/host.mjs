@@ -106,6 +106,8 @@ async function track(profile, page, initiator) {
     const state = new PageState(profile, page, targetId);
     profile.pages.set(targetId, state);
     state.session = session;
+    // Page events are per session: without Page.enable on ours, javascriptDialogClosed never arrives.
+    await session.send('Page.enable').catch(() => {});
     session.on('Page.javascriptDialogClosed', () => {
       if (state.dialog) {
         state.dialog = null;
@@ -219,10 +221,22 @@ function needPage(profile, target) {
   if (!state || state.closed) fail('tab_closed', 'that browser tab is gone; open another or pick one with browser tabs');
   return state;
 }
+// A dialog the user answered in the window: the renderer answers again, so a quick evaluate
+// resolving means the dialog is gone (belt and braces next to Page.javascriptDialogClosed).
+async function dialogStillOpen(state) {
+  if (!state.dialog) return false;
+  const gone = await withTimeout(state.page.evaluate('1').then(() => true), 300, 'x', 'x').catch(() => false);
+  if (gone) {
+    state.dialog = null;
+    event('dialog', { profile: state.profile.name, target: state.target, state: 'closed' });
+  }
+  return Boolean(state.dialog);
+}
 async function pageInfo(state) {
+  const dialogOpen = await dialogStillOpen(state);
   let title = '';
-  if (!state.dialog) title = await withTimeout(state.page.title(), 800, 'x', 'x').catch(() => '');
-  return { url: state.page.url(), title, dialog_open: Boolean(state.dialog), status: state.lastStatus || null };
+  if (!dialogOpen) title = await withTimeout(state.page.title(), 800, 'x', 'x').catch(() => '');
+  return { url: state.page.url(), title, dialog_open: dialogOpen, status: state.lastStatus || null };
 }
 function waitUntilOf(wait) {
   if (wait === 'load' || wait === 'networkidle' || wait === 'commit') return wait;
@@ -250,8 +264,8 @@ function scopeLocator(state, args) {
   if (args.selector) return state.page.locator(args.selector).first();
   return null;
 }
-function guardDialog(state) {
-  if (state.dialog) fail('dialog_open', `a ${state.dialog.type()} dialog is open on this tab ("${state.dialog.message().slice(0, 80)}"); browser dialog accept|dismiss, or the user answers it`);
+async function guardDialog(state) {
+  if (await dialogStillOpen(state)) fail('dialog_open', `a ${state.dialog.type()} dialog is open on this tab ("${state.dialog.message().slice(0, 80)}"); browser dialog accept|dismiss, or the user answers it`);
 }
 
 // ---------------------------------------------------------------------------
@@ -325,7 +339,7 @@ const ops = {
 
   async navigate({ profile: name, target, args, deadline_ms }) {
     const state = needPage(needProfile(name), target);
-    guardDialog(state);
+    await guardDialog(state);
     state.inflight++;
     let response = null;
     try {
@@ -339,7 +353,7 @@ const ops = {
 
   async history({ profile: name, target, args, deadline_ms }) {
     const state = needPage(needProfile(name), target);
-    guardDialog(state);
+    await guardDialog(state);
     state.inflight++;
     let response = null;
     try {
@@ -369,7 +383,7 @@ const ops = {
 
   async read({ profile: name, target, args, deadline_ms }) {
     const state = needPage(needProfile(name), target);
-    guardDialog(state);
+    await guardDialog(state);
     const scope = scopeLocator(state, args);
     const format = args.format || 'markdown';
     const run = async () => {
@@ -415,14 +429,14 @@ const ops = {
 
   async links({ profile: name, target, args }) {
     const state = needPage(needProfile(name), target);
-    guardDialog(state);
+    await guardDialog(state);
     const r = await withRetry(state, () => state.page.evaluate(linksFn, { filter: args.filter || '', max: args.max || 100 }));
     return { result: r.value, page: await pageInfo(state) };
   },
 
   async screenshot({ profile: name, target, args }) {
     const state = needPage(needProfile(name), target);
-    guardDialog(state);
+    await guardDialog(state);
     const type = args.format === 'png' ? 'png' : 'jpeg';
     const options = { path: args.path, type, fullPage: Boolean(args.full), timeout: SCREENSHOT_STALL_MS };
     if (type === 'jpeg') options.quality = args.quality || 70;
@@ -476,7 +490,7 @@ const ops = {
 
   async wait({ profile: name, target, args }) {
     const state = needPage(needProfile(name), target);
-    guardDialog(state);
+    await guardDialog(state);
     const timeout = Number(args.timeout_ms || 30000);
     const started = Date.now();
     try {
@@ -496,7 +510,7 @@ const ops = {
 
   async scroll({ profile: name, target, args }) {
     const state = needPage(needProfile(name), target);
-    guardDialog(state);
+    await guardDialog(state);
     if (args.to && /^e\d+$/.test(args.to)) {
       try { await state.page.locator(`aria-ref=${args.to}`).scrollIntoViewIfNeeded({ timeout: 5000 }); }
       catch { fail('stale_ref', `ref ${args.to} no longer resolves; take a new snapshot`); }
@@ -511,7 +525,7 @@ const ops = {
 
   async eval({ profile: name, target, args }) {
     const state = needPage(needProfile(name), target);
-    guardDialog(state);
+    await guardDialog(state);
     const r = await withRetry(state, async () => {
       const value = await state.page.evaluate(args.expr);
       try { JSON.stringify(value); return value === undefined ? null : value; } catch { return String(value); }
@@ -521,10 +535,11 @@ const ops = {
 
   async dialog({ profile: name, target, args }) {
     const state = needPage(needProfile(name), target);
-    if (!state.dialog) fail('no_dialog', 'no dialog is open on this tab');
+    if (!(await dialogStillOpen(state))) fail('no_dialog', 'no dialog is open on this tab');
     const dialog = state.dialog;
     state.dialog = null;
-    if (args.accept) await dialog.accept(args.text || undefined); else await dialog.dismiss();
+    try { if (args.accept) await dialog.accept(args.text || undefined); else await dialog.dismiss(); }
+    catch (err) { fail('no_dialog', `the dialog was already closed (${String(err.message).split('\n')[0]})`); }
     event('dialog', { profile: name, target, state: 'closed' });
     return { result: { type: dialog.type(), message: dialog.message() }, page: await pageInfo(state) };
   },
