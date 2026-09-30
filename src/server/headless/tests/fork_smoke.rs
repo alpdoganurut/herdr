@@ -1161,8 +1161,18 @@ async fn browser_get_reports_a_fake_host_tab_with_its_actor() {
             2,
         );
     });
+    // A cursor stored with a stale herdr tab is re-resolved through the pane.
+    hub.with_state_mut(|state| state.set_cursor(&pane_id, &key, Some("w9:t9"), 3));
     let got = api(&mut server, Method::BrowserGet(BrowserGetParams::default()));
     assert_eq!(got["result"]["type"], "browser_get", "{got}");
+    let cursor = got["result"]["browser"]["recent_panes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|cursor| cursor["pane_id"] == pane_id)
+        .expect("the pane's cursor")
+        .clone();
+    assert_eq!(cursor["tab_id"], actor.tab_id().unwrap(), "{cursor}");
     let tab = got["result"]["browser"]["tabs"]
         .as_array()
         .unwrap()

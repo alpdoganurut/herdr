@@ -35,9 +35,19 @@ impl App {
                 self.mark_gone(&mut last.actor);
             }
         }
+        // Cursors: drop vanished panes and re-resolve the pane's herdr tab (a
+        // pane moved to another tab must not leave the glyph behind).
         browser
             .recent_panes
             .retain(|cursor| self.parse_pane_id(&cursor.pane_id).is_some());
+        for cursor in &mut browser.recent_panes {
+            if let Some(tab_id) = self
+                .browser_actor_for_pane(&cursor.pane_id)
+                .and_then(|actor| actor.tab_id().map(str::to_string))
+            {
+                cursor.tab_id = Some(tab_id);
+            }
+        }
         encode_success(id, ResponseResult::BrowserGet { browser })
     }
 

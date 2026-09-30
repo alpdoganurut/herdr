@@ -74,7 +74,7 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
             let (reply, events, delay) = {
                 let mut state = state.lock().unwrap();
                 state.ops.push((op.clone(), target.clone(), args.clone()));
-                let events: Vec<String> = state.events.drain(..).collect();
+                let mut events: Vec<String> = state.events.drain(..).collect();
                 let delay = state
                     .delays
                     .iter()
@@ -110,6 +110,9 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                             let n = state.next_target;
                             state.next_target += 1;
                             let target = format!("T{n}");
+                            // The real sidecar's `opened` event (initiator other: the
+                            // page event fires before the reply) reaches the ledger first.
+                            events.push(json!({ "event": "tab", "profile": "main", "target": target, "kind": "opened", "url": "about:blank", "initiator": "other" }).to_string());
                             json!({ "id": id, "ok": true, "result": { "target": target, "card": { "headings": 2, "links": 5, "forms": 0, "text_chars": 900, "main_chars": 400, "login_wall": false, "preview": "# Opened" } }, "page": { "url": args["url"], "title": "Opened", "status": 200 } })
                         }
                         "read" => {
@@ -1237,6 +1240,46 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
         .code,
         "invalid_request"
     );
+    // an `open` step: the sidecar's early `opened` event and the reply make ONE record
+    let before = hub.with_state(|state| state.tabs.len());
+    let batch = hub
+        .run(
+            &actor,
+            params(BrowserOp::Batch {
+                ops: vec![
+                    step(BrowserOp::Open {
+                        url: "https://o.test/".into(),
+                        focus: false,
+                        wait: None,
+                    }),
+                    step(BrowserOp::Links {
+                        filter: None,
+                        max: None,
+                    }),
+                ],
+                stop_on_error: true,
+                final_: None,
+            }),
+        )
+        .unwrap();
+    assert!(batch.text.contains(" 1. open       ok"), "{}", batch.text);
+    hub.with_state(|state| {
+        assert_eq!(
+            state.tabs.len(),
+            before + 1,
+            "one record for the opened tab"
+        );
+        let opened = state
+            .cursor("w2:pD")
+            .expect("the cursor moved to the opened tab")
+            .clone();
+        assert_eq!(
+            opened.opened_by.pane_id(),
+            Some("w2:pD"),
+            "attributed to the agent, not the event's user"
+        );
+        assert_ne!(opened.target_id, "T1", "a new target, not the first open's");
+    });
     let mut use_step = step(BrowserOp::Use);
     use_step.tab = Some("t1".into());
     let batch = hub

@@ -583,13 +583,16 @@ const ops = {
     const urlBefore = page.url();
     state.inflight++;
     let navigated = false;
+    let dispatched = false;
     const onNav = (frame) => { if (frame === page.mainFrame()) navigated = true; };
     page.on('framenavigated', onNav);
     try {
       const force = hidden;
       if (kind === 'click') await scope.click({ force, timeout });
       else if (kind === 'hover') {
-        if (hidden) await handle.evaluate((el) => { for (const type of ['pointerover', 'mouseover', 'mouseenter']) el.dispatchEvent(new MouseEvent(type, { bubbles: type !== 'mouseenter' })); });
+        // A hidden tab has no pointer: the events are dispatched to the element
+        // (CSS :hover does not change), and the result says so.
+        if (hidden) { dispatched = true; await handle.evaluate((el) => { for (const type of ['pointerover', 'mouseover', 'mouseenter']) el.dispatchEvent(new MouseEvent(type, { bubbles: type !== 'mouseenter' })); }); }
         else await scope.hover({ timeout });
       }
       else if (kind === 'fill') await scope.fill(String(args.text ?? ''), { force, timeout });
@@ -615,7 +618,7 @@ const ops = {
       page.off('framenavigated', onNav);
       state.inflight--;
     }
-    return { result: { kind, role: info.role, name: info.name, navigated: navigated || page.url() !== urlBefore, url_before: urlBefore }, page: await pageInfo(state) };
+    return { result: { kind, role: info.role, name: info.name, navigated: navigated || page.url() !== urlBefore, url_before: urlBefore, dispatched }, page: await pageInfo(state) };
   },
 
   async dialog({ profile: name, target, args }) {
