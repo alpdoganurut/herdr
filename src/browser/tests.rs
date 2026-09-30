@@ -198,6 +198,9 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                         }
                         "close" | "close_browser" => json!({ "id": id, "ok": true, "result": {} }),
                         "ntp" => json!({ "id": id, "ok": true, "result": { "pushed": 1 } }),
+                        "dashboard" => {
+                            json!({ "id": id, "ok": true, "result": { "windows": 1, "pin": args["pin"] } })
+                        }
                         "release" => {
                             // Keys with "fail" in them are reported back as failed.
                             let keys: Vec<String> = args["keys"]
@@ -2079,6 +2082,72 @@ fn the_new_tab_page_snapshot_is_pushed_after_changes_at_most_once_a_second() {
     assert!(
         pushes.iter().all(|p| p.get("_activity").is_none()),
         "a push carries no directive"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn the_dashboard_pin_travels_with_attach_and_follows_the_config() {
+    let (hub, shared, _stream, home) = hub("dashboard-pin");
+    let actor = pane("w2:pI");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    {
+        let ops = shared.lock().unwrap().ops.clone();
+        let attach = ops.iter().find(|(op, _, _)| op == "attach").unwrap();
+        assert_eq!(attach.2["pin_dashboard"], true, "the default pins");
+    }
+    hub.apply_config(&BrowserConfig {
+        pin_dashboard: false,
+        ..BrowserConfig::default()
+    });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut pushes: Vec<Value> = Vec::new();
+    while Instant::now() < deadline {
+        pushes = shared
+            .lock()
+            .unwrap()
+            .ops
+            .iter()
+            .filter(|(op, _, _)| op == "dashboard")
+            .map(|(_, _, a)| a.clone())
+            .collect();
+        if !pushes.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(pushes.len(), 1, "{pushes:?}");
+    assert_eq!(pushes[0]["pin"], false);
+    // the same value again: no push; show_activity off: unpinned
+    hub.apply_config(&BrowserConfig {
+        pin_dashboard: false,
+        ..BrowserConfig::default()
+    });
+    hub.apply_config(&BrowserConfig {
+        show_activity: false,
+        ..BrowserConfig::default()
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let pushes: Vec<Value> = shared
+        .lock()
+        .unwrap()
+        .ops
+        .iter()
+        .filter(|(op, _, _)| op == "dashboard")
+        .map(|(_, _, a)| a.clone())
+        .collect();
+    assert_eq!(
+        pushes.len(),
+        1,
+        "unchanged effective value, no push: {pushes:?}"
     );
     let _ = std::fs::remove_dir_all(&home);
 }

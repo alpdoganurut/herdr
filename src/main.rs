@@ -499,6 +499,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Plain codex / claude in herdr+ panes (shell hook from `herdr browser setup --shell`) run through
 # `herdr browser wrap`; false runs them unchanged except Codex's --no-daemon (attribution). Read per launch.
 # wrap_agents = true
+# Keep the herdr+ dashboard as a pinned first tab in every browser window (a user who
+# unpins or closes it is left alone until the next launch). Needs show_activity.
+# pin_dashboard = true
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

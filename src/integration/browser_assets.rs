@@ -27,7 +27,7 @@ pub const COMPANION_DIR: &str = "companion";
 /// `importScripts` of a new URL do not refresh it — so a profile that last
 /// ran another version has its `Default/Service Worker` store cleared
 /// before the launch (`launch::refresh_companion_worker`).
-pub const COMPANION_VERSION: u32 = 4;
+pub const COMPANION_VERSION: u32 = 7;
 pub const RUNTIME_FILE: &str = "runtime.json";
 pub const RUNTIME_VERSION: u32 = 1;
 /// The playwright-core version `package.json` pins.
@@ -63,6 +63,10 @@ pub const BROWSER_ASSETS: &[(&str, &str)] = &[
     (
         "companion/newtab.js",
         include_str!("assets/browser/companion/newtab.js"),
+    ),
+    (
+        "companion/dashboard.html",
+        include_str!("assets/browser/companion/dashboard.html"),
     ),
 ];
 
@@ -193,7 +197,8 @@ mod tests {
                 "companion/sw.js",
                 "companion/companion.js",
                 "companion/newtab.html",
-                "companion/newtab.js"
+                "companion/newtab.js",
+                "companion/dashboard.html"
             ]
         );
         let manifest: serde_json::Value = serde_json::from_str(

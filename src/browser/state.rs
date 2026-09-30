@@ -267,6 +267,16 @@ pub struct BrowserState {
     pub dirty: bool,
 }
 
+/// The herdr+ dashboard and new-tab pages (the companion's `dashboard.html`
+/// and `newtab.html`, Chromium's own new tab): furniture, not tabs — never
+/// adopted, grouped, overlaid, counted or made current.
+pub fn is_dashboard_url(url: &str) -> bool {
+    url.starts_with("chrome://newtab")
+        || url.starts_with("chrome://new-tab-page")
+        || (url.starts_with("chrome-extension://")
+            && (url.ends_with("/dashboard.html") || url.ends_with("/newtab.html")))
+}
+
 fn clip_detail(detail: &str) -> String {
     let cleaned: String = detail
         .chars()
@@ -406,10 +416,15 @@ impl BrowserState {
     /// Bring the profile's tab set in line with what the sidecar sees: unknown
     /// targets are adopted as the user's, missing ones are closed.
     pub fn reconcile(&mut self, profile: &str, tabs: &[HostTab], now: u64) {
-        let seen: std::collections::HashSet<&str> =
-            tabs.iter().map(|tab| tab.target.as_str()).collect();
+        // The pinned dashboard and new-tab pages are the browser's furniture,
+        // never tabs in the ledger.
+        let seen: std::collections::HashSet<&str> = tabs
+            .iter()
+            .filter(|tab| !is_dashboard_url(&tab.url))
+            .map(|tab| tab.target.as_str())
+            .collect();
         let mut changed = false;
-        for tab in tabs {
+        for tab in tabs.iter().filter(|tab| !is_dashboard_url(&tab.url)) {
             let key = TabKey::new(profile, &tab.target);
             match self.tabs.get_mut(&key) {
                 Some(record) => {
@@ -492,6 +507,9 @@ impl BrowserState {
         let key = TabKey::new(&event.profile, &event.target);
         match event.kind.as_str() {
             "opened" => {
+                if is_dashboard_url(&event.url) {
+                    return;
+                }
                 if !self.tabs.contains_key(&key) {
                     let tab = HostTab {
                         target: event.target.clone(),
@@ -516,6 +534,13 @@ impl BrowserState {
                 let Some(record) = self.tabs.get_mut(&key) else {
                     return;
                 };
+                if is_dashboard_url(&event.url) {
+                    // A tab turned into the dashboard leaves the ledger.
+                    record.state = TabState::Closed;
+                    record.closed_at = Some(now);
+                    self.bump();
+                    return;
+                }
                 if record.url != event.url {
                     record.url = event.url.clone();
                 }
@@ -1063,6 +1088,69 @@ mod tests {
         assert!(!state.tabs[&a].is_open());
         state.prune(20 + CLOSED_TAB_RETENTION_SECS);
         assert!(!state.tabs.contains_key(&a));
+    }
+
+    #[test]
+    fn dashboard_and_new_tab_pages_never_enter_the_ledger() {
+        let mut state = BrowserState::new();
+        let tabs = vec![
+            HostTab {
+                target: "D".into(),
+                url: "chrome-extension://jmegdddadjhcnkdfpmeeockadkdbfpop/dashboard.html".into(),
+                title: "herdr+ dashboard".into(),
+                selected: false,
+                dialog_open: false,
+            },
+            HostTab {
+                target: "N".into(),
+                url: "chrome://newtab/".into(),
+                title: "New Tab".into(),
+                selected: true,
+                dialog_open: false,
+            },
+            HostTab {
+                target: "S".into(),
+                url: "https://site.test/".into(),
+                title: "Site".into(),
+                selected: false,
+                dialog_open: false,
+            },
+        ];
+        state.reconcile("main", &tabs, 10);
+        assert_eq!(state.open_tabs("main").count(), 1);
+        assert!(!state.tabs.contains_key(&TabKey::new("main", "D")));
+        assert!(!state.tabs.contains_key(&TabKey::new("main", "N")));
+        // an `opened` event for the dashboard is ignored; a tab that turns into it leaves
+        state.apply_tab_event(
+            &HostTabEvent {
+                profile: "main".into(),
+                target: "D2".into(),
+                kind: "opened".into(),
+                url: "chrome-extension://x/dashboard.html".into(),
+                title: String::new(),
+                initiator: "other".into(),
+                selected: None,
+                opener: None,
+            },
+            11,
+        );
+        assert!(!state.tabs.contains_key(&TabKey::new("main", "D2")));
+        state.apply_tab_event(
+            &HostTabEvent {
+                profile: "main".into(),
+                target: "S".into(),
+                kind: "navigated".into(),
+                url: "chrome-extension://x/newtab.html".into(),
+                title: String::new(),
+                initiator: "other".into(),
+                selected: None,
+                opener: None,
+            },
+            12,
+        );
+        assert_eq!(state.open_tabs("main").count(), 0);
+        assert!(is_dashboard_url("chrome://new-tab-page/"));
+        assert!(!is_dashboard_url("https://example.com/dashboard.html"));
     }
 
     #[test]

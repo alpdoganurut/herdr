@@ -19,11 +19,9 @@ fn pane_of(actor: &BrowserActor) -> Option<&str> {
     actor.pane_id()
 }
 
-/// New-tab pages (Chromium's and the companion's own) are not worth a row.
+/// New-tab pages and the dashboard (the ledger keeps them out already; belt and braces).
 fn is_new_tab_page(url: &str) -> bool {
-    url.starts_with("chrome://newtab")
-        || url.starts_with("chrome://new-tab-page")
-        || (url.starts_with("chrome-extension://") && url.ends_with("/newtab.html"))
+    crate::browser::state::is_dashboard_url(url)
 }
 
 fn host_of(url: &str) -> String {

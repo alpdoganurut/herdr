@@ -97,6 +97,10 @@ pub struct BrowserConfig {
     /// `--no-daemon`, without which its sessions cannot be attributed to the
     /// pane. Read per launch. Default: true.
     pub wrap_agents: bool,
+    /// Keep the herdr+ dashboard (the new tab page) as a pinned first tab in
+    /// every browser window; a user who unpins or closes it is left alone
+    /// until the next browser launch. Default: true.
+    pub pin_dashboard: bool,
 }
 
 /// The tab group title symbols keys omit fall back to.
@@ -142,6 +146,7 @@ impl Default for BrowserConfig {
             steer_agents: true,
             disable_native_browser: true,
             wrap_agents: true,
+            pin_dashboard: true,
         }
     }
 }

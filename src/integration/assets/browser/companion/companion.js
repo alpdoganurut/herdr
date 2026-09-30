@@ -8,7 +8,7 @@ chrome.alarms.create('herdr-keepalive', { periodInMinutes: 0.5 });
 // version (0.<VERSION>.0), COMPANION_VERSION in activity.mjs and
 // COMPANION_VERSION in browser_assets.rs (herdr clears a profile's worker
 // store before launching it with a new version, so the new code loads).
-const VERSION = 4;
+const VERSION = 7;
 self.herdrPing = () => 'herdr-companion/' + VERSION;
 
 // The new tab page's data: herdr's compact snapshot, kept in session storage
@@ -70,3 +70,104 @@ self.herdrRelease = async (key) => {
   if (tabs.length) await chrome.tabs.ungroup(tabs.map((t) => t.id));
   return { ungrouped: tabs.length };
 };
+
+// ---------------------------------------------------------------------------
+// The pinned dashboard: the herdr+ page as a pinned first tab in every normal
+// window (`[browser] pin_dashboard`, told by herdr at attach and on config
+// changes, remembered in storage.local for the next browser start). A window
+// whose user unpinned or closed it is left alone for the session
+// (storage.session); older herdr pages (another extension id) are closed.
+const DASHBOARD_URL = chrome.runtime.getURL('dashboard.html');
+const isOurDashboard = (t) => t.url === DASHBOARD_URL || t.pendingUrl === DASHBOARD_URL;
+const isStaleHerdrPage = (t) => {
+  const url = t.url || t.pendingUrl || '';
+  return /^chrome-extension:\/\/[a-p]{32}\/(dashboard|newtab)\.html$/.test(url) && !url.startsWith(chrome.runtime.getURL(''));
+};
+async function dashboardPinned() {
+  const { dashboardPin } = await chrome.storage.local.get('dashboardPin');
+  return dashboardPin !== false;
+}
+async function dashboardSession() {
+  const s = await chrome.storage.session.get(['dashboardDismissed', 'dashboardTabs']);
+  return { dismissed: s.dashboardDismissed || {}, tabs: s.dashboardTabs || {} };
+}
+async function ensureDashboardWindow(win, pin, session) {
+  if (win.type && win.type !== 'normal') return;
+  const tabs = await chrome.tabs.query({ windowId: win.id });
+  const stale = tabs.filter(isStaleHerdrPage);
+  if (stale.length) await chrome.tabs.remove(stale.map((t) => t.id)).catch(() => {});
+  const ours = tabs.filter(isOurDashboard).sort((a, b) => a.index - b.index);
+  if (!pin) {
+    if (ours.length) await chrome.tabs.remove(ours.map((t) => t.id)).catch(() => {});
+    return;
+  }
+  if (ours.length > 1) {
+    for (const extra of ours.slice(1)) delete session.tabs[extra.id];
+    await chrome.storage.session.set({ dashboardTabs: session.tabs });
+    await chrome.tabs.remove(ours.slice(1).map((t) => t.id)).catch(() => {});
+  }
+  const keep = ours[0];
+  if (keep) {
+    if (!keep.pinned) { session.dismissed[win.id] = true; return; }
+    if (keep.index !== 0) await chrome.tabs.move(keep.id, { index: 0 }).catch(() => {});
+    session.tabs[keep.id] = win.id;
+    return;
+  }
+  if (session.dismissed[win.id]) return;
+  const made = await chrome.tabs.create({ windowId: win.id, url: DASHBOARD_URL, pinned: true, index: 0, active: false });
+  session.tabs[made.id] = win.id;
+}
+// While herdr itself adds or removes dashboard tabs the listeners stay quiet:
+// Chrome reports a removed pinned tab as an unpin first.
+async function suppressed() {
+  const { dashboardBusyUntil } = await chrome.storage.session.get('dashboardBusyUntil');
+  return typeof dashboardBusyUntil === 'number' && Date.now() < dashboardBusyUntil;
+}
+async function ensureDashboards(pin) {
+  const session = pin ? await dashboardSession() : { dismissed: {}, tabs: {} };
+  await chrome.storage.session.set({ dashboardBusyUntil: Date.now() + 3000 });
+  // Forget the tracked tabs before removing any: a removal herdr does must not
+  // read as the user closing it.
+  if (!pin) await chrome.storage.session.set({ dashboardDismissed: {}, dashboardTabs: {} });
+  const wins = await chrome.windows.getAll({ windowTypes: ['normal'] });
+  for (const win of wins) await ensureDashboardWindow(win, pin, session).catch(() => {});
+  await chrome.storage.session.set({ dashboardDismissed: session.dismissed, dashboardTabs: session.tabs, dashboardBusyUntil: Date.now() + 1000 });
+  return { windows: wins.length, pin };
+}
+self.herdrDashboard = async ({ pin }) => {
+  await chrome.storage.local.set({ dashboardPin: Boolean(pin) });
+  return ensureDashboards(Boolean(pin));
+};
+chrome.windows.onCreated.addListener(async (win) => {
+  if (!(await dashboardPinned())) return;
+  setTimeout(async () => {
+    const session = await dashboardSession();
+    await ensureDashboardWindow(win, true, session).catch(() => {});
+    await chrome.storage.session.set({ dashboardDismissed: session.dismissed, dashboardTabs: session.tabs });
+  }, 400);
+});
+chrome.tabs.onRemoved.addListener(async (tabId, info) => {
+  if (info.isWindowClosing || await suppressed()) return;
+  const session = await dashboardSession();
+  const windowId = session.tabs[tabId];
+  if (windowId === undefined) return;
+  delete session.tabs[tabId];
+  session.dismissed[windowId] = true; // the user closed it: not again this session
+  await chrome.storage.session.set({ dashboardDismissed: session.dismissed, dashboardTabs: session.tabs });
+});
+chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
+  if (change.pinned !== false || !isOurDashboard(tab) || await suppressed()) return;
+  // A closing pinned tab reports an unpin first: only a tab still there, still unpinned, counts.
+  setTimeout(async () => {
+    try {
+      const still = await chrome.tabs.get(tabId);
+      if (still.pinned || !isOurDashboard(still)) return;
+      const session = await dashboardSession();
+      session.dismissed[still.windowId] = true; // unpinned by the user
+      await chrome.storage.session.set({ dashboardDismissed: session.dismissed });
+    } catch {}
+  }, 600);
+});
+// At every worker start (browser launch included): what the last attach said, default on.
+dashboardPinned().then((pin) => ensureDashboards(pin)).catch(() => {});
+

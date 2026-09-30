@@ -158,7 +158,34 @@ impl BrowserHub {
     }
 
     pub fn apply_config(&self, config: &BrowserConfig) {
+        let before = self.config();
         *self.inner.config.write().unwrap() = config.clone();
+        // The pinned dashboard follows the config live: the companion adds or
+        // removes it in every window of every attached profile.
+        let pin_before = before.show_activity && before.pin_dashboard;
+        let pin_now = config.show_activity && config.pin_dashboard;
+        if pin_before != pin_now {
+            self.push_dashboard(pin_now);
+        }
+    }
+
+    /// Tell the sidecar (every attached profile) whether the dashboard is pinned; off the caller's thread.
+    fn push_dashboard(&self, pin: bool) {
+        if self.inner.host.lock().unwrap().is_none() {
+            return;
+        }
+        let hub = self.clone();
+        let _ = std::thread::Builder::new()
+            .name("herdr-browser-dashboard".into())
+            .spawn(move || {
+                let _ = hub.request(
+                    "dashboard",
+                    None,
+                    None,
+                    json!({ "pin": pin }),
+                    Duration::from_secs(5),
+                );
+            });
     }
 
     /// Persist the ledger next to `session.json` in `data_dir` and load what
@@ -2068,7 +2095,7 @@ impl BrowserHub {
                 "attach",
                 Some(name),
                 None,
-                json!({ "port": record.port }),
+                json!({ "port": record.port, "pin_dashboard": config.show_activity && config.pin_dashboard }),
                 ATTACH_TIMEOUT,
             ) {
                 Ok(reply) => break reply,

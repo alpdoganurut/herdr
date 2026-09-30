@@ -182,7 +182,7 @@ async function track(profile, page, initiator) {
   return promise;
 }
 
-async function attach(profile, port, deadlineMs) {
+async function attach(profile, port, deadlineMs, pinDashboard) {
   if (profile.browser && profile.browser.isConnected()) {
     return tabs(profile);
   }
@@ -231,6 +231,9 @@ async function attach(profile, port, deadlineMs) {
   // The companion extension (tab groups): loaded or not, bounded.
   const companion = await withTimeout(profile.companion.probe(), 3000, 'x', 'x').catch(() => ({ state: 'missing', detail: 'probe timed out' }));
   log('debug', `${stamp()} companion ${companion.state}${companion.detail ? ' (' + companion.detail + ')' : ''}`);
+  if (companion.state === 'ready' && pinDashboard !== undefined) {
+    await withTimeout(profile.companion.dashboard(pinDashboard), 3000, 'x', 'x').catch((err) => log('debug', `dashboard: ${err.message}`));
+  }
   return Object.assign(await tabs(profile), { companion });
 }
 
@@ -335,7 +338,7 @@ const ops = {
   async attach({ profile: name, args, deadline_ms }) {
     let profile = profiles.get(name);
     if (!profile) { profile = new Profile(name); profiles.set(name, profile); }
-    return attach(profile, args.port, deadline_ms);
+    return attach(profile, args.port, deadline_ms, args.pin_dashboard);
   },
   async detach({ profile: name }) {
     const profile = profiles.get(name);
@@ -734,6 +737,17 @@ const ops = {
       state.inflight--;
     }
     return { result: { kind, role: info.role, name: info.name, navigated: navigated || page.url() !== urlBefore, url_before: urlBefore, dispatched }, page: await pageInfo(state) };
+  },
+
+  // The pinned dashboard follows [browser] pin_dashboard live.
+  async dashboard({ args }) {
+    let applied = 0;
+    for (const profile of profiles.values()) {
+      if (profile.companion.state !== 'ready') continue;
+      try { await profile.companion.dashboard(Boolean(args.pin)); applied++; }
+      catch (err) { log('debug', `dashboard: ${err.message}`); }
+    }
+    return { applied };
   },
 
   // The new tab page's snapshot (herdr pushes it debounced): into every

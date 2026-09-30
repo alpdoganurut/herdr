@@ -1723,6 +1723,12 @@
           "description": "Whether plain `codex` and `claude` in herdr+ panes run through `herdr browser wrap` (the shell hook `herdr browser setup --shell` installs). `false` runs them unchanged — except Codex still gets `--no-daemon`, since a shared Codex daemon would attribute every session to the pane that started it. Read at each launch, so the hook can stay installed."
         },
         {
+          "key": "browser.pin_dashboard",
+          "type": "boolean",
+          "default": "true",
+          "description": "Keep the herdr+ dashboard (the new tab page) as a pinned first tab in every normal browser window: the companion extension adds exactly one per window at launch, when a window opens and when herdr attaches, and removes duplicates and leftovers. A user who unpins or closes it is left alone for that browser session; it comes back at the next launch. `false` removes herdr's dashboard tabs. Applies live after `herdr server reload-config`; needs `show_activity`. The dashboard is never a tab in the ledger (not listed, grouped, overlaid or made current)."
+        },
+        {
           "key": "browser.activity_color",
           "type": "string",
           "default": "\"#aa6eff\"",

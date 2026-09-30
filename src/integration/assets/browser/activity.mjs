@@ -7,7 +7,7 @@
 export const WORLD = 'herdr';
 export const HOST_ATTR = 'data-herdr-overlay';
 /** The companion worker code this sidecar expects (VERSION in companion/sw.js); an older running worker is reloaded. */
-export const COMPANION_VERSION = 4;
+export const COMPANION_VERSION = 7;
 /** The frame stays this long after the last operation. */
 export const LINGER_MS = 3000;
 /** The cursor's glide (matches the CSS transition). */
@@ -348,6 +348,10 @@ export class Companion {
       this.call('herdrCollapse', String(group.key)).catch((err) => this.log(`companion collapse: ${err.message}`));
     }, ms);
     if (g.timer.unref) g.timer.unref();
+  }
+  /** The pinned dashboard: on in every normal window, or removed. */
+  dashboard(pin) {
+    return this.call('herdrDashboard', { pin: Boolean(pin) });
   }
   /** Panes that are gone: the group recorded for each key dissolves (only
    *  that group; a same-named group of the user's or another pane's is never
