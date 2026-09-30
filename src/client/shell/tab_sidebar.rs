@@ -176,9 +176,16 @@ pub(super) fn render_tab_sidebar(
     let status_lines = status_footer_lines(snapshot);
     // Rows left under the toolbar and above the menu row; the status keeps
     // one of them for the list once it has more than one line, and the
-    // pinned News row takes one more while it shows.
+    // pinned rows (Browser above News) take one each while they show.
     let available = content.height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS);
-    let news_rows = u16::from(state.news_row.is_some()).min(available.saturating_sub(1));
+    let pinned: Vec<PinnedRow<'_>> = state
+        .browser_row
+        .as_ref()
+        .map(PinnedRow::Browser)
+        .into_iter()
+        .chain(state.news_row.as_ref().map(PinnedRow::News))
+        .collect();
+    let news_rows = (pinned.len() as u16).min(available.saturating_sub(1));
     let available = available.saturating_sub(news_rows);
     let status_rows = (status_lines.len().min(usize::from(u16::MAX)) as u16)
         .min(available.saturating_sub(1).max(1))
@@ -191,11 +198,23 @@ pub(super) fn render_tab_sidebar(
             .height
             .saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS + status_rows + news_rows),
     );
-    if news_rows > 0 {
-        if let Some(row) = state.news_row.as_ref() {
-            let rect = Rect::new(content.x, body.bottom(), content.width, 1);
-            render_news_row(buffer, rect, row, config);
-            hits.news_row = rect;
+    // Top-down from the list's bottom edge: Browser, then News.
+    for (offset, row) in pinned.iter().take(usize::from(news_rows)).enumerate() {
+        let rect = Rect::new(
+            content.x,
+            body.bottom().saturating_add(offset as u16),
+            content.width,
+            1,
+        );
+        match row {
+            PinnedRow::Browser(row) => {
+                render_browser_row(buffer, rect, row, config);
+                hits.browser_row = rect;
+            }
+            PinnedRow::News(row) => {
+                render_news_row(buffer, rect, row, config);
+                hits.news_row = rect;
+            }
         }
     }
     if status_rows > 0 {
@@ -401,6 +420,49 @@ pub(super) fn render_tab_sidebar(
         "«",
         Style::default().fg(palette.overlay0),
     );
+}
+
+/// The pinned rows under the list, in drawing order.
+enum PinnedRow<'a> {
+    Browser(&'a super::browser::BrowserRow),
+    News(&'a super::news::NewsRow),
+}
+
+/// The pinned Browser row: ` <glyph> Browser … <status> `, the glyph lit
+/// (accent) while an agent uses a tab, the status dim and right-aligned.
+fn render_browser_row(
+    buffer: &mut Buffer,
+    rect: Rect,
+    row: &super::browser::BrowserRow,
+    config: &ClientShellConfig,
+) {
+    let palette = &config.palette;
+    let glyph = row.state.glyph();
+    let lead = 1 + display_width(glyph) as u16 + 1;
+    // The label wins over the status in a narrow sidebar: the status is
+    // truncated first, the label only when nothing else is left.
+    let label_width = display_width(super::browser::BROWSER_ROW_LABEL) as u16;
+    let status_room = rect.width.saturating_sub(lead + label_width + 2) as usize;
+    let status = crate::ui::truncate_end(&row.status, status_room);
+    let status_cells = display_width(&status) as u16 + 1;
+    let available = rect.width.saturating_sub(lead + status_cells + 1) as usize;
+    let label = crate::ui::truncate_end(super::browser::BROWSER_ROW_LABEL, available);
+    let pad = rect
+        .width
+        .saturating_sub(lead + display_width(&label) as u16 + status_cells);
+    let spans = vec![
+        Span::raw(" "),
+        Span::styled(
+            glyph,
+            Style::default().fg(row.state.color(palette, row.active)),
+        ),
+        Span::raw(" "),
+        Span::styled(label, Style::default().fg(palette.subtext0)),
+        Span::raw(" ".repeat(usize::from(pad))),
+        Span::styled(status, Style::default().fg(palette.overlay1)),
+        Span::raw(" "),
+    ];
+    Paragraph::new(Line::from(spans)).render(rect, buffer);
 }
 
 /// The pinned News row: ` <glyph> News … <status> `, the label bold on the
@@ -787,6 +849,10 @@ fn reminder_markers(
 ) -> Vec<(&'static str, ratatui::style::Color)> {
     let key = (state.active_endpoint_id.clone(), tab.tab_id.clone());
     let mut markers = Vec::new();
+    // A pane of this tab used the herdr browser recently.
+    if state.browser_marked_tabs.contains(&tab.tab_id) {
+        markers.push((super::browser::TAB_BROWSER_MARKER, palette.accent));
+    }
     if tab.important {
         let lit = state
             .idle_reminders

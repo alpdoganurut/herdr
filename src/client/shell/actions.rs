@@ -82,6 +82,10 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                if action == crate::input::KeybindAction::OpenBrowser {
+                    self.open_browser_overlay(outcome);
+                    return;
+                }
                 if action == crate::input::KeybindAction::OpenNotificationTarget {
                     self.focus_visible_notification(outcome);
                     return;
@@ -858,6 +862,12 @@ impl ClientShellState {
             | PendingEndpointKind::NewsSetEnabled
             | PendingEndpointKind::NewsSetTimes) => {
                 return self.handle_news_endpoint_result(kind, result);
+            }
+            kind @ (PendingEndpointKind::BrowserGet
+            | PendingEndpointKind::BrowserFocus
+            | PendingEndpointKind::BrowserStart
+            | PendingEndpointKind::BrowserStop) => {
+                return self.handle_browser_endpoint_result(kind, result);
             }
             kind => {
                 let mut outcome = ClientShellInput::default();

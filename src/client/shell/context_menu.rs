@@ -97,6 +97,19 @@ impl ClientContextMenuOverlay {
                     Action::NewsToggleSchedule,
                 ),
             ],
+            ClientContextMenuTarget::Browser { running, local, .. } => {
+                let mut items = Vec::new();
+                if *local {
+                    if *running {
+                        items.push(item("Focus window", Action::BrowserFocusWindow));
+                        items.push(item("Stop profile", Action::BrowserToggleProfile));
+                    } else {
+                        items.push(item("Start profile", Action::BrowserToggleProfile));
+                    }
+                }
+                items.push(item("Open overlay", Action::BrowserOpenOverlay));
+                items
+            }
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -309,6 +322,9 @@ impl ClientShellState {
             ClientContextMenuTarget::News { enabled, .. } => {
                 self.activate_news_context_action(enabled, action, outcome)
             }
+            ClientContextMenuTarget::Browser {
+                profile, running, ..
+            } => self.activate_browser_context_action(profile, running, action, outcome),
             ClientContextMenuTarget::Tab {
                 tab_id,
                 workspace_id,

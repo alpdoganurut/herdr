@@ -542,6 +542,10 @@ impl ClientShellState {
                 | PendingEndpointKind::NewsOpen
                 | PendingEndpointKind::NewsSetEnabled
                 | PendingEndpointKind::NewsSetTimes
+                | PendingEndpointKind::BrowserGet
+                | PendingEndpointKind::BrowserFocus
+                | PendingEndpointKind::BrowserStart
+                | PendingEndpointKind::BrowserStop
                 | PendingEndpointKind::SelectionCopy
                 | PendingEndpointKind::PaneScroll { .. }
                 | PendingEndpointKind::WordSelection { .. }

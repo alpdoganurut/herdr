@@ -57,6 +57,8 @@ impl ClientShellState {
         let news_row = self.news_row();
         let breathe_phase = self.breathe_phase();
         let breathe_reset_rgb = self.breathe_reset_rgb();
+        let browser_row = self.browser_row();
+        let browser_marked_tabs = self.browser_marked_tabs();
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
@@ -68,6 +70,8 @@ impl ClientShellState {
             idle_reminders: &self.idle_reminders,
             scheduled_reminders: &self.scheduled_reminders,
             news_row,
+            browser_row,
+            browser_marked_tabs,
             remote_collapsed_groups: &self.remote_collapsed_groups,
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
@@ -212,6 +216,8 @@ impl ClientShellState {
         let news_row = self.news_row();
         let breathe_phase = self.breathe_phase();
         let breathe_reset_rgb = self.breathe_reset_rgb();
+        let browser_row = self.browser_row();
+        let browser_marked_tabs = self.browser_marked_tabs();
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
         self.hits = render::render_shell(
             &mut buffer,
@@ -229,6 +235,8 @@ impl ClientShellState {
                 idle_reminders: &self.idle_reminders,
                 scheduled_reminders: &self.scheduled_reminders,
                 news_row,
+                browser_row,
+                browser_marked_tabs,
                 remote_collapsed_groups: &self.remote_collapsed_groups,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,

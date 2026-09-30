@@ -246,6 +246,10 @@ pub(super) struct ShellRenderState<'a> {
         &'a HashMap<(ClientEndpointId, String), super::idle_reminders::ClientScheduledReminder>,
     /// The `tabs` layout's pinned News row, when there is one.
     pub(super) news_row: Option<super::news::NewsRow>,
+    /// The `tabs` layout's pinned Browser row, drawn above the News row.
+    pub(super) browser_row: Option<super::browser::BrowserRow>,
+    /// Herdr tabs whose panes used the browser recently: the `◎` marker.
+    pub(super) browser_marked_tabs: HashSet<String>,
     pub(super) remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) workspace_scroll: &'a mut usize,
     pub(super) agent_scroll: &'a mut usize,

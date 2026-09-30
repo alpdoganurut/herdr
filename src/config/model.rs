@@ -539,6 +539,8 @@ pub struct KeysConfig {
     pub toggle_tab_important: BindingConfig,
     /// Focus the News tab (news.open), creating it with the page viewer when it is gone. Unset by default.
     pub open_news: BindingConfig,
+    /// Open the Browser overlay (the herdr browser's tabs and who uses them). Unset by default.
+    pub open_browser: BindingConfig,
     /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
     pub copy_mode: BindingConfig,
     /// Focus the pane to the left. Default: "prefix+h".
@@ -686,6 +688,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     open_news: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    open_browser: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     copy_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus_pane_left: Option<BindingConfig>,
@@ -803,6 +807,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(cycle_tab_color);
         apply_field!(toggle_tab_important);
         apply_field!(open_news);
+        apply_field!(open_browser);
         apply_field!(copy_mode);
         apply_field!(focus_pane_left);
         apply_field!(focus_pane_down);
@@ -915,6 +920,7 @@ impl KeysConfig {
         copy_effective_action_field!(cycle_tab_color, keybinds.cycle_tab_color);
         copy_effective_action_field!(toggle_tab_important, keybinds.toggle_tab_important);
         copy_effective_action_field!(open_news, keybinds.open_news);
+        copy_effective_action_field!(open_browser, keybinds.open_browser);
         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
         copy_effective_action_field!(focus_pane_left, keybinds.focus_pane_left);
         copy_effective_action_field!(focus_pane_down, keybinds.focus_pane_down);
@@ -1308,6 +1314,7 @@ impl Default for KeysConfig {
             cycle_tab_color: BindingConfig::default(),
             toggle_tab_important: BindingConfig::default(),
             open_news: BindingConfig::default(),
+            open_browser: BindingConfig::default(),
             copy_mode: BindingConfig::one("prefix+["),
             focus_pane_left: BindingConfig::one("prefix+h"),
             focus_pane_down: BindingConfig::one("prefix+j"),

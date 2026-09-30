@@ -44,6 +44,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) idle_reminder_minutes: u32,
     /// `ui.daily_reminder_time` as minutes past local midnight.
     pub(super) daily_reminder_minutes: u32,
+    /// `[browser] active_glyph_secs`: the `◎` marker window on tab rows.
+    pub(super) browser_active_glyph_secs: u64,
     pub(super) copy_on_select: bool,
     pub(super) clipboard_toast_enabled: bool,
     pub(super) clipboard_toast_position: crate::config::ToastClipboardPosition,
@@ -120,6 +122,8 @@ pub(super) struct ShellHitMap {
     pub(super) group_new: Rect,
     /// The `tabs` layout's pinned News row (not a `sidebar_tabs` row: no drag).
     pub(super) news_row: Rect,
+    /// The `tabs` layout's pinned Browser row, directly above the News row.
+    pub(super) browser_row: Rect,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
@@ -356,6 +360,7 @@ pub(super) enum ClientShellOverlayKind {
     ContextMenu,
     GlobalMenu,
     Settings,
+    Browser,
 }
 
 #[derive(Debug)]
@@ -659,6 +664,12 @@ pub(super) enum ClientContextMenuAction {
     NewsOpen,
     /// News row menu: `news.set_enabled` with the opposite of the current value.
     NewsToggleSchedule,
+    /// Browser row menu: `browser.focus` on the profile's selected tab.
+    BrowserFocusWindow,
+    /// Browser row menu: `browser.start` / `browser.stop` for the profile.
+    BrowserToggleProfile,
+    /// Browser row menu: the Browser overlay.
+    BrowserOpenOverlay,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -721,6 +732,13 @@ pub(super) enum ClientContextMenuTarget {
     /// The `tabs` layout's pinned News row; `enabled` is the schedule state
     /// when the menu opened (the toggle item flips it).
     News { enabled: bool },
+    /// The `tabs` layout's pinned Browser row: the profile the items act on,
+    /// whether it runs, and whether the endpoint is local (focus/start/stop).
+    Browser {
+        profile: String,
+        running: bool,
+        local: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -767,6 +785,8 @@ pub(super) enum ClientShellOverlay {
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
+    /// The herdr browser's profiles and tabs (`browser.rs`, client-local).
+    Browser(super::browser::ClientBrowserOverlay),
 }
 
 impl ClientShellOverlay {
@@ -785,6 +805,7 @@ impl ClientShellOverlay {
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
+            Self::Browser(_) => ClientShellOverlayKind::Browser,
         }
     }
 }
@@ -810,6 +831,10 @@ pub(super) enum PendingEndpointKind {
     NewsOpen,
     NewsSetEnabled,
     NewsSetTimes,
+    BrowserGet,
+    BrowserFocus,
+    BrowserStart,
+    BrowserStop,
     PrepareWorktreeCreate {
         workspace_id: String,
     },
@@ -1129,6 +1154,8 @@ pub(crate) struct ClientShellState {
         HashMap<(ClientEndpointId, String), super::idle_reminders::ClientIdleReminder>,
     /// The news desk as `news.get` last reported it (`news.rs`).
     pub(super) news: super::news::ClientNewsState,
+    /// The herdr browser as `browser.get` last reported it (`browser.rs`).
+    pub(super) browser: super::browser::ClientBrowserState,
     /// Tabs with a scheduled reminder, keyed like `idle_reminders`.
     pub(super) scheduled_reminders:
         HashMap<(ClientEndpointId, String), super::idle_reminders::ClientScheduledReminder>,
@@ -1312,6 +1339,7 @@ impl ClientShellState {
             idle_reminders: HashMap::new(),
             scheduled_reminders: HashMap::new(),
             news: super::news::ClientNewsState::default(),
+            browser: super::browser::ClientBrowserState::default(),
             reminder_epochs: HashMap::new(),
             reminder_local_time: None,
             reminder_daily_minutes: None,
@@ -2090,6 +2118,7 @@ impl ClientShellState {
             .chain(self.next_idle_reminder_deadline())
             .chain(self.next_news_deadline(now))
             .chain(self.next_breathe_deadline())
+            .chain(self.next_browser_deadline(now))
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)

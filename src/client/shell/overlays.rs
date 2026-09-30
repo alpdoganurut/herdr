@@ -84,6 +84,8 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::WorktreeRemove(v) => {
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
+        ClientShellOverlay::Browser(v) => super::browser_overlay::render_browser_overlay(b, v, p)
+            .map(|()| OverlayRender::default()),
         ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }
 }
