@@ -24,6 +24,8 @@ macro_rules! println {
 
 mod agent;
 mod api;
+mod browser;
+mod browser_mcp;
 mod completion;
 mod integration;
 mod machine;
@@ -133,6 +135,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "integration" => integration::run_integration_command(&args[2..])?,
         "session" => run_session_command(&args[2..])?,
         "news" => news::run_news_command(&args[2..])?,
+        "browser" => browser::run_browser_command(&args[2..])?,
         _ => return Ok(CommandOutcome::NotCli),
     };
 

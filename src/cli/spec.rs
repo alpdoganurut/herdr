@@ -46,6 +46,7 @@ pub(super) fn command() -> Command {
         .subcommand(terminal_command())
         .subcommand(session_command())
         .subcommand(news_command())
+        .subcommand(browser_command())
         .subcommand(integration_command())
         .subcommand(plugin_command());
     configure_help(command, 0)
@@ -824,6 +825,180 @@ fn terminal_command() -> Command {
         )
 }
 
+fn browser_tab_arg() -> Arg {
+    Arg::new("tab")
+        .value_name("TAB")
+        .required(false)
+        .help("Tab id (t3 or main:t3); default: this pane's current tab")
+}
+
+fn browser_common(command: Command) -> Command {
+    browser_common_without_timeout(command)
+        .arg(option("timeout", "MS").help("Deadline for this operation"))
+}
+
+fn browser_common_without_timeout(command: Command) -> Command {
+    command
+        .arg(option("profile", "NAME").help("Browser profile (new = a fresh temporary one)"))
+        .arg(
+            option("pane", "PANE_ID")
+                .help("Attribute the call to this pane instead of HERDR_PANE_ID"),
+        )
+        .arg(json_flag())
+}
+
+/// Verbs whose positional is required take the tab as `--tab` in the spec
+/// (the parser also accepts a leading `t3`, but clap forbids an optional
+/// positional before a required one).
+fn browser_tab_option() -> Arg {
+    option("tab", "TAB").help("Tab id (t3 or main:t3); default: this pane's current tab")
+}
+
+fn browser_command() -> Command {
+    let verb =
+        |name: &'static str, about: &'static str| browser_common(Command::new(name).about(about));
+    Command::new("browser")
+        .about("Drive the herdr-owned Chromium (shared with the user); browser.run and friends")
+        .long_about(
+            "A Chromium window herdr launches for agents and the user shares. Read loop: `browser open URL` (page card), then `browser read` (paged markdown, follow the next: offset) or `browser find TEXT`; `browser snapshot` for structure (refs eN); `browser screenshot` to see it. Each pane has a current tab (set by open/use or --tab). The user logs in by hand (`browser focus`, then ask). Every call is logged with the calling pane (`browser status`, `browser log`).",
+        )
+        .subcommand(
+            verb("open", "Open a URL in a new background tab and make it the current tab")
+                .arg(Arg::new("url").value_name("URL").required(true))
+                .arg(flag("focus").help("Also select the tab and raise the window"))
+                .arg(option("wait", "STATE").value_parser(["domcontentloaded", "load", "networkidle"])),
+        )
+        .subcommand(
+            verb("navigate", "Navigate the current tab to a URL")
+                .arg(browser_tab_option())
+                .arg(Arg::new("url").value_name("URL").required(true))
+                .arg(option("wait", "STATE").value_parser(["domcontentloaded", "load", "networkidle"])),
+        )
+        .subcommand(verb("back", "Go back in the current tab").arg(browser_tab_arg()))
+        .subcommand(verb("forward", "Go forward in the current tab").arg(browser_tab_arg()))
+        .subcommand(verb("reload", "Reload the current tab").arg(browser_tab_arg()))
+        .subcommand(
+            verb("read", "Read the current tab as paged markdown, text, an aria snapshot or html")
+                .arg(browser_tab_arg())
+                .arg(option("format", "FORMAT").value_parser(["markdown", "text", "snapshot", "html"]))
+                .arg(option("selector", "CSS"))
+                .arg(option("ref", "REF").help("Aria ref (e12) from a snapshot"))
+                .arg(option("offset", "N"))
+                .arg(option("max", "N").help("Characters per page"))
+                .arg(flag("all").help("Everything, no paging"))
+                .arg(flag("interactive").help("Snapshot: only actionable nodes"))
+                .arg(option("out", "FILE").help("Write everything to FILE")),
+        )
+        .subcommand(
+            verb("snapshot", "Aria snapshot with refs (read --format snapshot)")
+                .arg(browser_tab_arg())
+                .arg(flag("interactive"))
+                .arg(option("selector", "CSS"))
+                .arg(option("ref", "REF"))
+                .arg(option("offset", "N"))
+                .arg(option("max", "N")),
+        )
+        .subcommand(
+            verb("find", "Find text or /regex/ in the current tab's markdown")
+                .arg(browser_tab_option())
+                .arg(Arg::new("query").value_name("TEXT").required(true).num_args(1..))
+                .arg(option("max", "N"))
+                .arg(option("context", "CHARS")),
+        )
+        .subcommand(
+            verb("links", "List the current tab's links")
+                .arg(browser_tab_arg())
+                .arg(option("filter", "TEXT"))
+                .arg(option("max", "N")),
+        )
+        .subcommand(
+            verb("screenshot", "Screenshot the current tab to shots/ (or --out)")
+                .arg(browser_tab_arg())
+                .arg(flag("full"))
+                .arg(option("ref", "REF"))
+                .arg(option("selector", "CSS"))
+                .arg(option("format", "FORMAT").value_parser(["jpeg", "png"]))
+                .arg(option("out", "PATH"))
+                .arg(flag("front").help("Select the tab and raise the window first")),
+        )
+        .subcommand(
+            verb("console", "Console messages since attach")
+                .arg(browser_tab_arg())
+                .arg(option("level", "LEVEL").value_parser(["error", "warn", "all"]))
+                .arg(option("since", "SEQ"))
+                .arg(option("max", "N")),
+        )
+        .subcommand(
+            verb("network", "Network requests since attach (no bodies)")
+                .arg(browser_tab_arg())
+                .arg(flag("failed"))
+                .arg(option("match", "SUBSTR"))
+                .arg(option("type", "TYPE"))
+                .arg(option("since", "SEQ"))
+                .arg(option("max", "N")),
+        )
+        .subcommand(
+            browser_common_without_timeout(
+                Command::new("wait").about("Wait for text, a selector, a URL or a load state"),
+            )
+                .arg(browser_tab_arg())
+                .arg(option("text", "TEXT"))
+                .arg(option("gone", "TEXT"))
+                .arg(option("selector", "CSS"))
+                .arg(option("url", "GLOB"))
+                .arg(option("load", "STATE").value_parser(["domcontentloaded", "load", "networkidle"]))
+                .arg(option("timeout", "SECONDS")),
+        )
+        .subcommand(
+            verb("scroll", "Scroll the current tab")
+                .arg(browser_tab_arg())
+                .arg(option("to", "WHERE").help("top, bottom or a ref eN"))
+                .arg(option("by", "PX")),
+        )
+        .subcommand(
+            verb("eval", "Evaluate a JavaScript expression in the current tab")
+                .arg(browser_tab_option())
+                .arg(Arg::new("expr").value_name("EXPR").required(true).num_args(1..))
+                .arg(option("max", "N")),
+        )
+        .subcommand(
+            verb("dialog", "Accept or dismiss the open dialog")
+                .arg(browser_tab_option())
+                .arg(Arg::new("action").value_name("ACTION").required(true).value_parser(["accept", "dismiss"]))
+                .arg(Arg::new("text").value_name("TEXT").required(false).num_args(0..)),
+        )
+        .subcommand(verb("tabs", "List open tabs with who opened and last used them").arg(flag("mine")))
+        .subcommand(verb("use", "Make a tab the current tab").arg(Arg::new("tab").value_name("TAB").required(true)))
+        .subcommand(verb("close", "Close the current tab").arg(browser_tab_arg()))
+        .subcommand(verb("focus", "Select the tab and raise the window for the user").arg(browser_tab_arg()))
+        .subcommand(Command::new("status").about("Browser, sidecar, profiles, tabs and recent activity").arg(json_flag()))
+        .subcommand(
+            Command::new("log")
+                .about("Browser activity, newest first")
+                .arg(Arg::new("count").short('n').value_name("N").required(false))
+                .arg(option("pane", "PANE_ID"))
+                .arg(option("tab", "TAB"))
+                .arg(json_flag()),
+        )
+        .subcommand(Command::new("start").about("Start a profile's browser now").arg(option("profile", "NAME")).arg(json_flag()))
+        .subcommand(Command::new("stop").about("Close a profile's browser (or every running one)").arg(option("profile", "NAME")).arg(flag("all")).arg(json_flag()))
+        .subcommand(
+            Command::new("profile")
+                .about("List, create or delete browser profiles")
+                .subcommand(Command::new("list").about("List profiles").arg(json_flag()))
+                .subcommand(Command::new("create").about("Create a profile (--temp marks it temporary)").arg(Arg::new("name").value_name("NAME").required(true)).arg(flag("temp")))
+                .subcommand(Command::new("delete").about("Move a profile to the Trash (not the default, not a running one)").arg(Arg::new("name").value_name("NAME").required(true))),
+        )
+        .subcommand(
+            Command::new("setup")
+                .about("Install the Playwright sidecar (npm ci) and register the MCP server for Claude Code")
+                .arg(flag("no-mcp"))
+                .arg(option("node", "PATH")),
+        )
+        .subcommand(Command::new("doctor").about("Check the browser setup: executable, node, sidecar, MCP registration, server"))
+        .subcommand(Command::new("mcp").about("Serve the browser tools over stdio MCP (started by Claude Code)"))
+}
+
 fn news_command() -> Command {
     Command::new("news")
         .about("Run and inspect the AI news desk")
@@ -1579,6 +1754,32 @@ mod tests {
         assert!(times
             .get_arguments()
             .any(|arg| arg.get_id() == "times" && !arg.is_required_set()));
+    }
+
+    #[test]
+    fn spec_models_browser_verbs_and_lifecycle() {
+        let cmd = super::command();
+        let open = command_path(&cmd, &["browser", "open"]);
+        assert!(open
+            .get_arguments()
+            .any(|arg| arg.get_id() == "url" && arg.is_required_set()));
+        assert!(has_option(open, "profile"));
+        assert!(has_option(open, "json"));
+        let read = command_path(&cmd, &["browser", "read"]);
+        assert!(has_option(read, "offset"));
+        assert!(has_option(read, "format"));
+        assert!(read
+            .get_arguments()
+            .any(|arg| arg.get_id() == "tab" && !arg.is_required_set()));
+        assert!(has_option(command_path(&cmd, &["browser", "wait"]), "text"));
+        assert!(has_option(command_path(&cmd, &["browser", "log"]), "pane"));
+        assert!(has_option(
+            command_path(&cmd, &["browser", "setup"]),
+            "node"
+        ));
+        command_path(&cmd, &["browser", "profile", "delete"]);
+        command_path(&cmd, &["browser", "mcp"]);
+        command_path(&cmd, &["browser", "doctor"]);
     }
 
     #[test]
