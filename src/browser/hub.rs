@@ -1946,15 +1946,19 @@ impl BrowserHub {
         // A running profile this server has not attached yet (a fresh server
         // with the last one's run record, adopted on first use): attach first,
         // so Browser.close reaches it instead of a signal.
-        let recorded = launch::read_run_record(&self.inner.home, name)
-            .filter(|record| crate::platform::process_exists(record.pid));
-        let needs_attach = {
+        // Only a live browser is attached to (a Running state whose process is
+        // gone must not make this launch one in order to stop it).
+        let live_pid = {
             let state = self.inner.state.lock().unwrap();
+            state.profile(name).pid()
+        }
+        .or_else(|| launch::read_run_record(&self.inner.home, name).map(|record| record.pid))
+        .filter(|pid| crate::platform::process_exists(*pid));
+        let needs_attach = live_pid.is_some() && {
             let host = self.inner.host.lock().unwrap();
-            (state.profile(name).is_running() || recorded.is_some())
-                && !host
-                    .as_ref()
-                    .is_some_and(|link| link.attached.contains(name))
+            !host
+                .as_ref()
+                .is_some_and(|link| link.attached.contains(name))
         };
         if needs_attach {
             let _ = self.ensure_running(name);
@@ -1962,7 +1966,7 @@ impl BrowserHub {
         let lock = self.profile_lock(name);
         let _guard = lock.lock().unwrap();
         let status = self.inner.state.lock().unwrap().profile(name);
-        let pid = status.pid().or(recorded.map(|record| record.pid));
+        let pid = status.pid().or(live_pid);
         let closed = self
             .request("close_browser", Some(name), None, Value::Null, STOP_GRACE)
             .is_ok();
