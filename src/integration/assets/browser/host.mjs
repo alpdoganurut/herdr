@@ -167,7 +167,17 @@ async function attach(profile, port, deadlineMs) {
     return tabs(profile);
   }
   profile.port = port;
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { noDefaults: true, timeout: Math.max(1000, deadlineMs - 500) });
+  const t0 = Date.now();
+  const stamp = () => `${new Date().toISOString()} attach ${profile.name}:${port}`;
+  process.stderr.write(`${stamp()} connectOverCDP…\n`);
+  let browser;
+  try {
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { noDefaults: true, timeout: Math.max(1000, deadlineMs - 500) });
+  } catch (err) {
+    process.stderr.write(`${stamp()} connectOverCDP failed after ${Date.now() - t0} ms: ${String(err.message).split('\n')[0]}\n`);
+    throw err;
+  }
+  process.stderr.write(`${stamp()} connected in ${Date.now() - t0} ms, pages ${browser.contexts()[0] ? browser.contexts()[0].pages().length : 'none'}\n`);
   profile.browser = browser;
   const ctx = browser.contexts()[0];
   if (!ctx) fail('browser_start_failed', 'the browser has no default context');
@@ -192,6 +202,7 @@ async function attach(profile, port, deadlineMs) {
     event('browser', { profile: profile.name, kind: 'disconnected', detail: 'CDP connection closed' });
   });
   await Promise.all(ctx.pages().map(page => track(profile, page, null).catch((err) => log('warn', `track failed: ${err.message}`))));
+  process.stderr.write(`${stamp()} tracked in ${Date.now() - t0} ms\n`);
   event('browser', { profile: profile.name, kind: 'attached', detail: browser.version() });
   return tabs(profile);
 }

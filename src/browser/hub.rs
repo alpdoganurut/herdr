@@ -29,8 +29,10 @@ use crate::integration::browser_assets;
 
 /// Grace the hub adds to the sidecar's own deadline before giving up on a reply.
 pub const REPLY_GRACE: Duration = Duration::from_secs(5);
-/// Deadline of the attach handshake (a page dialog can block it).
-pub const ATTACH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Deadline of the attach handshake: a page dialog can block it, and the
+/// first attach to a freshly launched browser restoring its session has
+/// been seen to take seconds while the restored tabs come up.
+pub const ATTACH_TIMEOUT: Duration = Duration::from_secs(15);
 /// Deadline of `hello` and pings.
 pub const PING_TIMEOUT: Duration = Duration::from_secs(2);
 pub const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(5);
