@@ -158,18 +158,19 @@ impl App {
         if terminal.state == crate::detect::AgentState::Blocked {
             return Err(AgentSuspendError::Blocked(target.to_string()));
         }
-        // A working agent would lose its turn; wait for it to go idle.
-        if terminal.state == crate::detect::AgentState::Working {
-            return Err(AgentSuspendError::Working(target.to_string()));
-        }
         // Exiting stops the agent's background subagents and loses their
-        // work; wait until the count reaches zero (no override).
+        // work; wait until the count reaches zero (no override). Checked before
+        // Working: live subagents also hold the agent Working.
         let subagents = terminal.active_subagent_count();
         if subagents > 0 {
             return Err(AgentSuspendError::SubagentsRunning {
                 target: target.to_string(),
                 count: subagents,
             });
+        }
+        // A working agent would lose its turn; wait for it to go idle.
+        if terminal.state == crate::detect::AgentState::Working {
+            return Err(AgentSuspendError::Working(target.to_string()));
         }
         let Some(expected_agent) = terminal.effective_known_agent() else {
             return Err(AgentSuspendError::NotRunning(target.to_string()));

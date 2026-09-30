@@ -511,8 +511,14 @@ async fn claude_subagent_hooks_reach_the_client_shell_snapshot() {
         .set_detected_state(Some(Agent::Claude), AgentState::Idle);
     assert_eq!(
         client_subagents(&server),
-        (1, AgentStatus::Idle),
-        "an idle agent keeps its background agent"
+        (1, AgentStatus::Working),
+        "live background agents keep the agent working after its turn ends"
+    );
+    assert!(
+        server.app.state.terminals[&terminal_id]
+            .last_agent_completion_seq
+            .is_none(),
+        "not finished while an agent is out"
     );
 
     // A Stop without background_tasks (an older Claude Code) or from a
@@ -531,7 +537,18 @@ async fn claude_subagent_hooks_reach_the_client_shell_snapshot() {
     // The last agent reports back: the next Stop lists none.
     let request = run_claude_hook_asset(&dir, &pane_id, "stop", stop(serde_json::json!([])));
     api(&mut server, request.method);
-    assert_eq!(client_subagents(&server).0, 0);
+    let (subagents, status) = client_subagents(&server);
+    assert_eq!(subagents, 0);
+    assert!(
+        matches!(status, AgentStatus::Idle | AgentStatus::Done),
+        "finished when the last agent ends: {status:?}"
+    );
+    assert!(
+        server.app.state.terminals[&terminal_id]
+            .last_agent_completion_seq
+            .is_some(),
+        "the finish is a completion"
+    );
 
     shutdown_test_runtimes(&mut server);
     let _ = fs::remove_dir_all(&dir);

@@ -52,33 +52,40 @@ impl App {
         let Some(agent) = crate::detect::parse_agent_label(params.agent.trim()) else {
             return encode_error(id, "invalid_agent", "unknown agent label");
         };
-        let terminal_id = self
+        if self
             .state
             .workspaces
             .get(ws_idx)
             .and_then(|ws| ws.pane_state(pane_id))
-            .map(|pane| pane.attached_terminal_id.clone());
-        let Some(terminal) = terminal_id.and_then(|id| self.state.terminals.get_mut(&id)) else {
+            .is_none()
+        {
             return encode_error(
                 id,
                 "pane_not_found",
                 format!("pane {} not found", params.pane_id),
             );
-        };
-        // A late report from an agent the pane no longer runs is dropped.
-        if terminal.effective_known_agent() == Some(agent) {
-            match params.event {
-                SubagentEvent::Start => {
-                    terminal.record_subagent(true, subagent_id);
-                }
-                SubagentEvent::Stop => {
-                    terminal.record_subagent(false, subagent_id);
-                }
-                SubagentEvent::Snapshot => {
-                    terminal.replace_subagents(snapshot_ids);
-                }
-            }
         }
+        // Through the effective state, so the agent's status follows its
+        // subagents (Working while they run, finishing when the last ends)
+        // with the usual completion, seen and event handling.
+        let previous_toast = self.state.toast.clone();
+        let event = match params.event {
+            SubagentEvent::Start => Some((true, subagent_id)),
+            SubagentEvent::Stop => Some((false, subagent_id)),
+            SubagentEvent::Snapshot => None,
+        };
+        let update = self.state.update_terminal_state(pane_id, |terminal| {
+            // A late report from an agent the pane no longer runs is dropped.
+            if terminal.effective_known_agent() != Some(agent) {
+                return None;
+            }
+            terminal.report_subagents_with_mutation(event, snapshot_ids)
+        });
+        if let Some(update) = update {
+            self.refresh_new_herdr_toast_context_for_update(&update, &previous_toast);
+            self.emit_pane_state_update(&update);
+        }
+        self.sync_toast_deadline(previous_toast);
         encode_success(id, ResponseResult::Ok {})
     }
 }
@@ -356,6 +363,124 @@ mod tests {
         }
         // 05:59:15: the final Stop with background_tasks [] -> none.
         assert_eq!(agent_subagents(&app), 0);
+    }
+
+    fn root_pane(app: &App) -> crate::layout::PaneId {
+        app.state.workspaces[0].tabs[0].root_pane
+    }
+
+    /// A detection pass through the app (completion and seen tracking).
+    fn observe(app: &mut App, state: AgentState) -> Vec<crate::app::actions::PaneStateUpdate> {
+        let pane_id = root_pane(app);
+        app.state
+            .handle_app_event(crate::events::AppEvent::StateChanged {
+                pane_id,
+                agent: Some(Agent::Claude),
+                state,
+                visible_blocker: state == AgentState::Blocked,
+                visible_working: state == AgentState::Working,
+                process_exited: false,
+                observed_at: std::time::Instant::now(),
+            })
+    }
+
+    fn status(app: &App) -> crate::api::schema::AgentStatus {
+        app.agent_info(0, root_pane(app))
+            .map(|agent| agent.agent_status)
+            .expect("agent")
+    }
+
+    fn completion(app: &mut App) -> Option<u64> {
+        terminal(app).last_agent_completion_seq
+    }
+
+    /// A Claude that sends snapshots, working with background agents out.
+    fn claude_with_background_agents(ids: &[&str]) -> App {
+        let mut app = app();
+        observe(&mut app, AgentState::Working);
+        snapshot(&mut app, &[]);
+        for id in ids {
+            report(&mut app, SubagentEvent::Start, id);
+        }
+        app
+    }
+
+    #[test]
+    fn live_background_agents_keep_the_agent_working_past_its_turn() {
+        use crate::api::schema::AgentStatus;
+        let mut app = claude_with_background_agents(&["b1", "b2"]);
+        // The main turn ends (the prompt is back) with both agents out.
+        let updates = observe(&mut app, AgentState::Idle);
+        assert!(updates.is_empty(), "no transition: {updates:?}");
+        snapshot(&mut app, &["b1", "b2"]);
+        assert_eq!(status(&app), AgentStatus::Working);
+        assert_eq!(terminal(&mut app).state, AgentState::Working);
+        assert_eq!(completion(&mut app), None, "not finished yet");
+        // Later detection passes and hand-back turns keep it Working.
+        observe(&mut app, AgentState::Idle);
+        observe(&mut app, AgentState::Working);
+        observe(&mut app, AgentState::Idle);
+        snapshot(&mut app, &["b2"]);
+        assert_eq!(status(&app), AgentStatus::Working);
+        assert_eq!(completion(&mut app), None);
+    }
+
+    #[test]
+    fn the_last_agent_ending_finishes_the_agent_exactly_once() {
+        use crate::api::schema::AgentStatus;
+        let mut app = claude_with_background_agents(&["b1"]);
+        observe(&mut app, AgentState::Idle);
+        snapshot(&mut app, &["b1"]);
+        assert_eq!(completion(&mut app), None);
+
+        // The last agent reports back: the Stop snapshot lists none.
+        let pane_id = root_pane(&app);
+        let update = app.state.update_terminal_state(pane_id, |terminal| {
+            terminal.report_subagents_with_mutation(None, [])
+        });
+        let update = update.expect("a transition");
+        assert_eq!(
+            (update.previous_state, update.state),
+            (AgentState::Working, AgentState::Idle)
+        );
+        let finished = completion(&mut app);
+        assert!(finished.is_some(), "a completion");
+        assert!(matches!(
+            status(&app),
+            AgentStatus::Idle | AgentStatus::Done
+        ));
+        // Nothing more happens on later passes or an empty snapshot again.
+        assert!(observe(&mut app, AgentState::Idle).is_empty());
+        let again = app.state.update_terminal_state(pane_id, |terminal| {
+            terminal.report_subagents_with_mutation(None, [])
+        });
+        assert!(again.is_none(), "{again:?}");
+        assert_eq!(completion(&mut app), finished, "one completion");
+    }
+
+    #[test]
+    fn blocked_wins_over_live_background_agents() {
+        use crate::api::schema::AgentStatus;
+        let mut app = claude_with_background_agents(&["b1"]);
+        observe(&mut app, AgentState::Blocked);
+        assert_eq!(status(&app), AgentStatus::Blocked);
+        observe(&mut app, AgentState::Idle);
+        assert_eq!(status(&app), AgentStatus::Working, "back to held working");
+    }
+
+    #[test]
+    fn without_snapshots_the_old_rule_stands() {
+        use crate::api::schema::AgentStatus;
+        let mut app = app();
+        observe(&mut app, AgentState::Working);
+        report(&mut app, SubagentEvent::Start, "a1");
+        observe(&mut app, AgentState::Idle);
+        assert!(matches!(
+            status(&app),
+            AgentStatus::Idle | AgentStatus::Done
+        ));
+        assert_eq!(agent_subagents(&app), 0);
+        assert!(completion(&mut app).is_some(), "finished at the turn end");
     }
 
     #[test]

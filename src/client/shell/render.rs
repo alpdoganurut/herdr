@@ -235,6 +235,10 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) active_endpoint_id: &'a ClientEndpointId,
     pub(super) collapsed_endpoints: &'a HashSet<ClientEndpointId>,
     pub(super) collapsed_groups: &'a HashSet<String>,
+    /// Fork: the breathing glyph's phase and the RGB of the terminal's
+    /// default background (`breathe.rs`).
+    pub(super) breathe_phase: f32,
+    pub(super) breathe_reset_rgb: Option<(u8, u8, u8)>,
     /// Reminder clocks, for the `tabs` layout's lit `★` / `◷` markers.
     pub(super) idle_reminders:
         &'a HashMap<(ClientEndpointId, String), super::idle_reminders::ClientIdleReminder>,

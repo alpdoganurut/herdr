@@ -280,8 +280,19 @@ pub struct TerminalState {
     active_subagents: std::collections::HashSet<String>,
     /// Whether this agent has sent a subagent snapshot (a Claude Code that
     /// reports `background_tasks` on Stop). Until then an idle agent drops
-    /// its set, since nothing else would heal a missed SubagentStop.
+    /// its set, since nothing else would heal a missed SubagentStop. Once
+    /// seen, a non-empty set holds the agent Working (see
+    /// `subagents_hold_working`).
     subagent_snapshot_seen: bool,
+    /// The agent session the set belongs to, taken when it became non-empty:
+    /// a different session (/clear, a resume of another conversation) has
+    /// none of its subagents.
+    subagent_session: Option<(
+        String,
+        String,
+        crate::agent_resume::AgentSessionRefKind,
+        String,
+    )>,
 }
 
 /// Most subagents a pane tracks; further starts are ignored until some stop.
@@ -330,6 +341,7 @@ impl TerminalState {
             agent_transcript_paths: HashMap::new(),
             active_subagents: std::collections::HashSet::new(),
             subagent_snapshot_seen: false,
+            subagent_session: None,
         }
     }
 
@@ -2730,7 +2742,7 @@ impl TerminalState {
         previous_presentation: EffectivePresentation,
         now: Instant,
     ) -> Option<EffectiveStateChange> {
-        let state = if self.visible_blocker_overrides_hook() {
+        let detected_state = if self.visible_blocker_overrides_hook() {
             AgentState::Blocked
         } else {
             self.hook_authority
@@ -2742,18 +2754,35 @@ impl TerminalState {
         let agent_label = self.effective_agent_label().map(str::to_string);
         let known_agent = self.effective_known_agent();
 
-        let presentation = self.effective_presentation_for_state_at(state, now);
-        self.clear_expiry_pending_for_hidden_metadata();
         // Background subagents outlive the main turn, so a turn end keeps
         // them (the Stop hook's snapshot corrects the set) and so does a
-        // transient Unknown with the same label. A replaced or gone agent has
-        // none left. A Claude Code without snapshots keeps the old rule: idle
-        // drops them, since nothing else would heal a missed SubagentStop.
+        // transient Unknown with the same label. A replaced or gone agent, or
+        // another session, has none left. A Claude Code without snapshots
+        // keeps the old rule: idle drops them, since nothing else would heal
+        // a missed SubagentStop.
         if previous_agent_label != agent_label {
             self.forget_subagents();
-        } else if state == AgentState::Idle && !self.subagent_snapshot_seen {
+        } else if detected_state == AgentState::Idle && !self.subagent_snapshot_seen {
             self.clear_subagents();
+        } else if !self.active_subagents.is_empty() {
+            let session = self.current_session_identity_for_persistence();
+            if self.subagent_session.is_some()
+                && session.is_some()
+                && self.subagent_session != session
+            {
+                self.clear_subagents();
+            }
         }
+        // Fork: live background agents keep the agent Working everywhere; it
+        // finishes when the last one ends. Blocked still wins.
+        let state = if self.subagents_hold_working(detected_state, agent_label.as_deref()) {
+            AgentState::Working
+        } else {
+            detected_state
+        };
+
+        let presentation = self.effective_presentation_for_state_at(state, now);
+        self.clear_expiry_pending_for_hidden_metadata();
 
         if previous_agent_label == agent_label
             && previous_state == state
@@ -2777,9 +2806,55 @@ impl TerminalState {
 }
 
 impl TerminalState {
+    /// Whether the agent's subagents hold it Working over a `detected` idle
+    /// (or same-label unknown) state: only once it sends snapshots, while the
+    /// set is not empty and the agent is live and not parked.
+    fn subagents_hold_working(&self, detected: AgentState, agent_label: Option<&str>) -> bool {
+        self.subagent_snapshot_seen
+            && !self.active_subagents.is_empty()
+            && self.suspended_agent.is_none()
+            && agent_label.is_some()
+            && matches!(detected, AgentState::Idle | AgentState::Unknown)
+    }
+
+    /// Apply a subagent report through the effective state (so the agent's
+    /// status follows its subagents): `start` / `stop` one (`Some(start)`),
+    /// or replace the set with a snapshot (`None`).
+    pub fn report_subagents_with_mutation<'a>(
+        &mut self,
+        event: Option<(bool, &str)>,
+        snapshot: impl IntoIterator<Item = &'a str>,
+    ) -> Option<TerminalStateMutation> {
+        let now = Instant::now();
+        let previous_agent_label = self.effective_agent_label().map(str::to_string);
+        let previous_known_agent = self.effective_known_agent();
+        let previous_state = self.state;
+        let previous_presentation = self.effective_presentation_for_state_at(previous_state, now);
+        match event {
+            Some((start, subagent_id)) => {
+                self.record_subagent(start, subagent_id);
+            }
+            None => {
+                self.replace_subagents(snapshot);
+            }
+        }
+        Some(TerminalStateMutation {
+            effective_state_change: self.recompute_effective_state(
+                previous_agent_label,
+                previous_known_agent,
+                previous_state,
+                previous_presentation,
+                now,
+            ),
+            session_ref_changed: false,
+            agent_released: false,
+        })
+    }
+
     /// Record a subagent starting (`start`) or stopping. Returns whether the
     /// set changed. Starts beyond `SUBAGENT_LIMIT` are ignored.
     pub fn record_subagent(&mut self, start: bool, subagent_id: &str) -> bool {
+        let was_empty = self.active_subagents.is_empty();
         let changed = if start {
             self.active_subagents.len() < SUBAGENT_LIMIT
                 && self.active_subagents.insert(subagent_id.to_owned())
@@ -2788,8 +2863,16 @@ impl TerminalState {
         };
         if changed {
             self.revision = self.revision.saturating_add(1);
+            self.note_subagent_session(was_empty);
         }
         changed
+    }
+
+    /// The set just became non-empty: remember the session it belongs to.
+    fn note_subagent_session(&mut self, was_empty: bool) {
+        if was_empty && !self.active_subagents.is_empty() {
+            self.subagent_session = self.current_session_identity_for_persistence();
+        }
     }
 
     /// Replace the set with a snapshot of every running subagent (the main
@@ -2808,8 +2891,10 @@ impl TerminalState {
         if next == self.active_subagents {
             return false;
         }
+        let was_empty = self.active_subagents.is_empty();
         self.active_subagents = next;
         self.revision = self.revision.saturating_add(1);
+        self.note_subagent_session(was_empty);
         true
     }
 
@@ -2829,7 +2914,7 @@ impl TerminalState {
         self.clear_subagents();
     }
 
-    pub(crate) fn clear_subagents(&mut self) {
+    fn clear_subagents(&mut self) {
         if !self.active_subagents.is_empty() {
             self.active_subagents.clear();
             self.revision = self.revision.saturating_add(1);
