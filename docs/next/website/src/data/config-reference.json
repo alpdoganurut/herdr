@@ -1546,7 +1546,7 @@
           "key": "news.enabled",
           "type": "boolean",
           "default": "false",
-          "description": "Run the AI news desk on a schedule: the server starts the bundled runner in a `News` tab at each local time in `news.times`. Off by default; `herdr news run` starts a run by hand either way."
+          "description": "Run the AI news desk on a schedule: the server starts the bundled runner in a `News` tab at each local time in `news.times`. A desk that has never run (no run record, no edition) starts its first run as soon as news is enabled, at server start or when a config reload or `herdr news enable` turns it on, then follows the schedule. In the `tabs` sidebar layout the pinned News row shows whenever news is enabled, even before the News tab exists (a click creates it). Off by default; `herdr news run` starts a run by hand either way."
         },
         {
           "key": "news.times",

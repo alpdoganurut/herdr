@@ -432,6 +432,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 
 [news]
 # Run the AI news desk on a schedule in a News tab (fork feature). Off by default;
+# a desk that has never run starts its first run as soon as this is on.
 # `herdr news run` starts a run by hand either way.
 # enabled = false
 # Local times (HH:MM, 24-hour) of the scheduled runs; an empty list schedules none.

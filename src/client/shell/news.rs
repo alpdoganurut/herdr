@@ -8,11 +8,14 @@
 //! snapshot). Nothing is pulled from a server that does not advertise
 //! `news.get`.
 //!
-//! The row (`news_row`) exists only while `news.get` named a tab and the
-//! active snapshot still lists it: a state glyph, `News`, and a short
-//! status, in priority order `running 2m` (a run in flight), `unread` (the
-//! tab is important), `failed` (the last run did not succeed), `paused`
-//! (scheduling off), else the last run's local time.
+//! The row (`news_row`) exists whenever `news.get` reports news enabled,
+//! with or without a News tab (a left click then asks `news.open`, which
+//! creates it); while news is disabled only while `news.get` named a tab
+//! the active snapshot still lists. It shows a state glyph, `News`, and a
+//! short status, in priority order `running 2m` (a run in flight), `unread`
+//! (the tab is important), `failed` (the last run did not succeed),
+//! `paused` (scheduling off), else `next 13:00` (the next scheduled run,
+//! local), or without one the last run's local time or `never run`.
 
 use super::*;
 use crate::api::schema::{EmptyParams, Method, NewsGetInfo, NewsOpenParams, NewsSetEnabledParams};
@@ -81,9 +84,12 @@ impl NewsRowState {
 /// The pinned row, as drawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NewsRow {
-    pub(crate) tab_id: String,
+    /// The News tab, while the snapshot lists it; `None` with news enabled
+    /// and no tab (a click creates it through `news.open`).
+    pub(crate) tab_id: Option<String>,
     pub(crate) state: NewsRowState,
-    /// `running 2m`, `unread`, `failed`, `paused` or the last run's `HH:MM`.
+    /// `running 2m`, `unread`, `failed`, `paused`/`3h ago`, `next HH:MM`,
+    /// `due`, the last run's `HH:MM` or `never run`.
     pub(crate) status: String,
     pub(crate) focused: bool,
 }
@@ -157,11 +163,13 @@ pub(crate) fn news_row_state(
             None => (NewsRowState::Paused, "paused".into()),
         };
     }
-    // Scheduled: the useful fact is when the next page comes.
-    let status = match info.next_run_at {
-        Some(next) if next > now => format!("next {}", local_hhmm(next)),
-        Some(_) => "due".into(),
-        None => "—".into(),
+    // Scheduled: the useful fact is when the next page comes; without a
+    // slot, when the last one came (or that none has yet).
+    let status = match (info.next_run_at, info.last_run.as_ref()) {
+        (Some(next), _) if next > now => format!("next {}", local_hhmm(next)),
+        (Some(_), _) => "due".into(),
+        (None, Some(last)) => local_hhmm(last.ended_at.unwrap_or(last.started_at)),
+        (None, None) => "never run".into(),
     };
     (NewsRowState::Idle, status)
 }
@@ -178,24 +186,50 @@ pub(super) fn ago(then: u64, now: u64) -> String {
 }
 
 impl ClientShellState {
-    /// The pinned row, while `news.get` named a tab the active snapshot
-    /// still lists.
+    /// The pinned row: whenever `news.get` reports news enabled (with the
+    /// News tab while the active snapshot lists it), else only while it
+    /// named a tab the snapshot still lists.
     pub(crate) fn news_row(&self) -> Option<NewsRow> {
         let info = self.news.info.as_ref()?;
-        let tab_id = info.tab_id.as_deref()?;
-        let tab = self
-            .snapshot
-            .as_deref()?
-            .tabs
-            .iter()
-            .find(|tab| tab.tab_id == tab_id)?;
-        let (state, status) = news_row_state(info, tab.important, unix_now());
+        let snapshot = self.snapshot.as_deref()?;
+        let tab = info
+            .tab_id
+            .as_deref()
+            .and_then(|tab_id| snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id));
+        if tab.is_none() && !info.enabled {
+            return None;
+        }
+        let important = tab.is_some_and(|tab| tab.important);
+        let (state, status) = news_row_state(info, important, unix_now());
         Some(NewsRow {
-            tab_id: tab.tab_id.clone(),
+            tab_id: tab.map(|tab| tab.tab_id.clone()),
             state,
             status,
-            focused: tab.focused,
+            focused: tab.is_some_and(|tab| tab.focused),
         })
+    }
+
+    /// A left click on the row: focus the News tab, or without one create
+    /// and focus it (`news.open`, as the menu's Open).
+    pub(super) fn activate_news_row(&mut self, outcome: &mut ClientShellInput) {
+        let Some(row) = self.news_row() else {
+            return;
+        };
+        match row.tab_id {
+            Some(tab_id) => {
+                self.push_endpoint_method(
+                    Method::TabFocus(crate::api::schema::TabTarget { tab_id }),
+                    outcome,
+                );
+            }
+            None => {
+                self.push_endpoint_method_with_kind(
+                    Method::NewsOpen(NewsOpenParams::default()),
+                    PendingEndpointKind::NewsOpen,
+                    outcome,
+                );
+            }
+        }
     }
 
     fn news_snapshot_signature(&self) -> Option<NewsSnapshotSignature> {

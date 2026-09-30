@@ -26,7 +26,8 @@
 //!
 //! The News tab (`news.rs`) is pinned: it leaves the scrolling list and takes
 //! one row between the list and the status footer (`hits.news_row`), with a
-//! state glyph, `News` and a short status.
+//! state glyph, `News` and a short status. With news enabled the row stays
+//! when there is no News tab (a click creates it).
 
 use ratatui::{
     buffer::Buffer,
@@ -175,7 +176,7 @@ pub(super) fn render_tab_sidebar(
     let status_lines = status_footer_lines(snapshot);
     // Rows left under the toolbar and above the menu row; the status keeps
     // one of them for the list once it has more than one line, and the
-    // pinned News row takes one more when there is a News tab.
+    // pinned News row takes one more while it shows.
     let available = content.height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS);
     let news_rows = u16::from(state.news_row.is_some()).min(available.saturating_sub(1));
     let available = available.saturating_sub(news_rows);
@@ -229,7 +230,10 @@ pub(super) fn render_tab_sidebar(
     let rows = entries(
         snapshot,
         state.collapsed_groups,
-        state.news_row.as_ref().map(|row| row.tab_id.as_str()),
+        state
+            .news_row
+            .as_ref()
+            .and_then(|row| row.tab_id.as_deref()),
     );
     let row_heights = vec![1u16; rows.len()];
     let gaps = vec![0u16; rows.len()];

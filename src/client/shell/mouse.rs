@@ -2185,15 +2185,9 @@ impl ClientShellState {
                     return;
                 }
                 if super::contains(self.hits.news_row, point) {
-                    // The pinned row is never dragged: it focuses on the press.
-                    if let Some(row) = self.news_row() {
-                        self.push_endpoint_method(
-                            crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
-                                tab_id: row.tab_id,
-                            }),
-                            outcome,
-                        );
-                    }
+                    // The pinned row is never dragged: it focuses (or opens
+                    // the News tab) on the press.
+                    self.activate_news_row(outcome);
                     return;
                 }
                 let sidebar_tab_press = self

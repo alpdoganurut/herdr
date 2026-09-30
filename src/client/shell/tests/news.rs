@@ -281,19 +281,189 @@ fn the_row_sits_above_the_status_footer_and_goes_with_the_tab() {
     );
     assert_eq!(row.y, state.hits.agent_body.bottom());
 
-    // The tab is closed: the row disappears and the list grows back.
+    // The tab is closed with news enabled: the row stays, without a tab.
     let mut snapshot = news_snapshot();
     snapshot.tabs.remove(1);
+    snapshot.tab_bar_right = vec![crate::protocol::ClientShellTabStatusSegment {
+        text: "cpu 12%".into(),
+        accent: false,
+    }];
     state.set_snapshot(Box::new(snapshot));
     state.set_pane_surface(surface());
     let outcome = tick(&mut state);
-    assert!(
-        matches!(&endpoint_requests(&outcome)[..], [(_, Method::NewsGet(_))]),
-        "a tab set change pulls again"
+    let requests = endpoint_requests(&outcome);
+    let [(request_id, Method::NewsGet(_))] = &requests[..] else {
+        panic!("a tab set change pulls again: {requests:?}");
+    };
+    state.compose(106, 20).expect("composed frame");
+    assert_eq!(state.hits.news_row, row, "the row stays while enabled");
+    assert_eq!(state.news_row().unwrap().tab_id, None);
+    assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_3"]);
+
+    // With news disabled and no tab the row disappears and the list grows
+    // back.
+    let mut disabled = info(None);
+    disabled.enabled = false;
+    state.handle_endpoint_result(
+        "boot-1",
+        request_id,
+        Ok(ResponseResult::NewsGet { news: disabled }),
     );
     state.compose(106, 20).expect("composed frame");
     assert_eq!(state.hits.news_row, ratatui::layout::Rect::default());
+    assert_eq!(state.hits.agent_body.bottom(), row.y + 1);
     assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_3"]);
+}
+
+/// A snapshot without a News tab.
+fn snapshot_without_news() -> ClientShellSnapshot {
+    let mut snapshot = news_snapshot();
+    snapshot.tabs.remove(1);
+    snapshot
+}
+
+#[test]
+fn with_news_enabled_the_row_shows_without_a_tab() {
+    let mut state = tabs_state(snapshot_without_news());
+    state.compose(106, 20).expect("composed frame");
+    let list_height = state.hits.agent_body.height;
+    assert_eq!(state.hits.news_row, ratatui::layout::Rect::default());
+
+    deliver(&mut state, info(None));
+    let frame = state.compose(106, 20).expect("composed frame");
+    let row = state.hits.news_row;
+    assert_ne!(row, ratatui::layout::Rect::default(), "the row shows");
+    assert_eq!(state.hits.agent_body.height, list_height - 1);
+    assert_eq!(row.y, state.hits.agent_body.bottom());
+    assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_3"]);
+    let text = row_text(&frame, row);
+    assert!(text.contains("News"), "{text:?}");
+    assert!(
+        text.contains(&format!(
+            "next {}",
+            super::super::news::local_hhmm(1_800_000_000)
+        )),
+        "the next scheduled run: {text:?}"
+    );
+    let news_row = state.news_row().expect("row");
+    assert_eq!(news_row.tab_id, None);
+    assert!(!news_row.focused);
+
+    // No slot scheduled: the last run's time, else `never run`.
+    let mut unscheduled = info(None);
+    unscheduled.next_run_at = None;
+    state.news.info = Some(unscheduled.clone());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let text = row_text(&frame, state.hits.news_row);
+    assert!(
+        text.contains(&super::super::news::local_hhmm(1_790_000_300)),
+        "{text:?}"
+    );
+    unscheduled.last_run = None;
+    state.news.info = Some(unscheduled);
+    let frame = state.compose(106, 20).expect("composed frame");
+    let text = row_text(&frame, state.hits.news_row);
+    assert!(text.contains("never run"), "{text:?}");
+    assert!(text.trim_start().starts_with('○'), "{text:?}");
+
+    // A run in flight before the tab exists still reads `running`.
+    let mut running = info(None);
+    running.run = Some(NewsRunInfo {
+        started_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 60,
+        trigger: "scheduled".into(),
+        phase: "starting".into(),
+    });
+    state.news.info = Some(running);
+    let frame = state.compose(106, 20).expect("composed frame");
+    let text = row_text(&frame, state.hits.news_row);
+    assert!(text.contains("running 1m"), "{text:?}");
+}
+
+#[test]
+fn with_news_disabled_and_no_tab_there_is_no_row() {
+    let mut state = tabs_state(snapshot_without_news());
+    state.compose(106, 20).expect("composed frame");
+    let mut disabled = info(None);
+    disabled.enabled = false;
+    deliver(&mut state, disabled.clone());
+    state.compose(106, 20).expect("composed frame");
+    assert_eq!(state.hits.news_row, ratatui::layout::Rect::default());
+    assert!(state.news_row().is_none());
+
+    // A stale tab id (the snapshot no longer lists it) is no tab either.
+    disabled.tab_id = Some("tab_2".into());
+    state.news.info = Some(disabled);
+    assert!(state.news_row().is_none());
+}
+
+#[test]
+fn a_click_on_the_row_without_a_tab_opens_news_and_its_menu_works() {
+    let mut state = tabs_state(snapshot_without_news());
+    state.compose(106, 20).expect("composed frame");
+    deliver(&mut state, info(None));
+    state.compose(106, 20).expect("composed frame");
+    let row = state.hits.news_row;
+    assert_ne!(row, ratatui::layout::Rect::default());
+
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: row.x + 2,
+        row: row.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let requests = endpoint_requests(&outcome);
+    assert!(
+        matches!(&requests[..], [(_, Method::NewsOpen(params))] if params.edition.is_none()),
+        "{requests:?}"
+    );
+    assert!(state.tab_press.is_none(), "the pinned row is not dragged");
+
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: row.x + 2,
+        row: row.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let labels = match &state.overlay {
+        Some(ClientShellOverlay::ContextMenu(menu)) => {
+            assert!(matches!(
+                &menu.target,
+                ClientContextMenuTarget::News { enabled: true }
+            ));
+            menu.items()
+                .iter()
+                .map(|item| item.label)
+                .collect::<Vec<_>>()
+        }
+        other => panic!("expected the News menu, got {other:?}"),
+    };
+    assert_eq!(labels, ["Run now", "Open", "Pause schedule"]);
+    let mut outcome = ClientShellInput::default();
+    state.activate_context_menu_item(0, &mut outcome);
+    assert!(matches!(
+        &endpoint_requests(&outcome)[..],
+        [(_, Method::NewsRun(_))]
+    ));
+
+    state.open_news_context_menu(row.x, row.y);
+    let mut outcome = ClientShellInput::default();
+    state.activate_context_menu_item(1, &mut outcome);
+    assert!(matches!(
+        &endpoint_requests(&outcome)[..],
+        [(_, Method::NewsOpen(params))] if params.edition.is_none()
+    ));
+
+    state.open_news_context_menu(row.x, row.y);
+    let mut outcome = ClientShellInput::default();
+    state.activate_context_menu_item(2, &mut outcome);
+    assert!(matches!(
+        &endpoint_requests(&outcome)[..],
+        [(_, Method::NewsSetEnabled(params))] if !params.enabled
+    ));
 }
 
 #[test]
