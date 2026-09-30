@@ -1606,7 +1606,7 @@
           "key": "browser.executable",
           "type": "string",
           "default": "\"auto\"",
-          "description": "`auto` looks for `~/Applications/Chromium.app`, then `/Applications/Chromium.app`; otherwise an absolute path to a `Chromium.app` bundle or its inner binary. Google Chrome is not a fallback (different keychain item, different login store). A missing executable answers `browser_executable_missing` with a hint."
+          "description": "`auto` looks for `~/Applications/herdr+ Browser.app` (the branded copy `herdr browser install-chromium` makes), then `~/Applications/Chromium.app`, then `/Applications/Chromium.app`; otherwise an absolute path to a `Chromium.app` bundle or its inner binary. Google Chrome is not a fallback (different keychain item, different login store). A missing executable answers `browser_executable_missing` with a hint."
         },
         {
           "key": "browser.node",

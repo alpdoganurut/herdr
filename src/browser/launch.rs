@@ -36,7 +36,8 @@ pub struct Executable {
     pub bundle: Option<PathBuf>,
     /// The binary inside the bundle, or the binary itself elsewhere.
     pub binary: PathBuf,
-    /// `config`, `home` (`~/Applications`), `system` (`/Applications`), `path`.
+    /// `config`, `home (branded)` (`~/Applications/herdr+ Browser.app`), `home`
+    /// (`~/Applications/Chromium.app`), `system` (`/Applications`), `path`.
     pub source: &'static str,
 }
 
@@ -70,6 +71,13 @@ pub fn resolve_executable(
     let configured = configured.trim();
     if configured == crate::config::AUTO_EXECUTABLE || configured.is_empty() {
         if let Some(home) = home {
+            // The branded install (`herdr browser install-chromium`) first.
+            let branded = home
+                .join("Applications")
+                .join(format!("{}.app", super::brand::DEFAULT_APP_NAME));
+            if let Some(exe) = bundle_executable(&branded, "home (branded)") {
+                return Ok(exe);
+            }
             if let Some(exe) =
                 bundle_executable(&home.join("Applications").join("Chromium.app"), "home")
             {
@@ -95,7 +103,7 @@ pub fn resolve_executable(
         }
         return Err(BrowserError::new(
             "browser_executable_missing",
-            "no Chromium.app in ~/Applications or /Applications; install the herdr Chromium build there or set [browser] executable to its path",
+            "no herdr+ Browser.app or Chromium.app in ~/Applications, no /Applications/Chromium.app; run `herdr browser install-chromium <Chromium.app>` or set [browser] executable to a bundle path",
         ));
     }
     let path = PathBuf::from(configured);
@@ -551,6 +559,14 @@ mod tests {
         assert_eq!(exe.bundle.as_deref(), Some(bundle.as_path()));
         assert_eq!(exe.source, "home");
         assert_eq!(exe.display(), bundle.display().to_string());
+        // The branded install wins over a plain Chromium.app next to it.
+        let branded = fake_bundle(&home.join("Applications"), "herdr+ Browser.app");
+        let exe = resolve_executable("auto", Some(&home)).unwrap();
+        assert_eq!(exe.bundle.as_deref(), Some(branded.as_path()));
+        assert_eq!(exe.source, "home (branded)");
+        assert!(exe
+            .binary
+            .ends_with("herdr+ Browser.app/Contents/MacOS/Chromium"));
 
         let configured = fake_bundle(&root, "Other.app");
         let exe = resolve_executable(configured.to_str().unwrap(), Some(&home)).unwrap();

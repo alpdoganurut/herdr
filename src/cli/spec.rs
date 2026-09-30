@@ -1048,6 +1048,14 @@ fn browser_command() -> Command {
                 .arg(flag("no-mcp"))
                 .arg(option("node", "PATH")),
         )
+        .subcommand(
+            Command::new("install-chromium")
+                .about("Install a branded copy of a built Chromium.app (name, icon; ad-hoc signed) that \"auto\" finds first")
+                .arg(Arg::new("app").value_name("CHROMIUM_APP").required(true))
+                .arg(option("icon", "PNG|ICNS"))
+                .arg(option("name", "NAME"))
+                .arg(option("dest", "DIR")),
+        )
         .subcommand(Command::new("doctor").about("Check the browser setup: executable, node, sidecar, MCP registration, server"))
         .subcommand(Command::new("mcp").about("Serve the browser tools over stdio MCP (started by Claude Code)"))
 }

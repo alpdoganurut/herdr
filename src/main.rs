@@ -454,8 +454,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Not yet honoured in v1a.
 # stop_with_server = false
 # default_profile = "main"
-# "auto" looks for ~/Applications/Chromium.app then /Applications/Chromium.app;
-# or an absolute path to a Chromium.app bundle (Google Chrome is not used).
+# "auto" looks for "~/Applications/herdr+ Browser.app" (herdr browser install-chromium),
+# then ~/Applications/Chromium.app, then /Applications/Chromium.app; or an absolute
+# path to a Chromium.app bundle (Google Chrome is not used).
 # executable = "auto"
 # The node binary that runs the Playwright sidecar; empty = the one `herdr browser setup` recorded.
 # node = ""

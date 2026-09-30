@@ -36,7 +36,7 @@ pub struct BrowserConfig {
     pub stop_with_server: bool,
     /// The profile used when a call names none. Default: `main`.
     pub default_profile: String,
-    /// `"auto"` (`~/Applications/Chromium.app`, then `/Applications/Chromium.app`) or an
+    /// `"auto"` (`~/Applications/herdr+ Browser.app`, `~/Applications/Chromium.app`, then `/Applications/Chromium.app`) or an
     /// absolute path to a `Chromium.app` bundle or its inner binary.
     pub executable: String,
     /// The node binary that runs the sidecar; empty = the one recorded by `herdr browser

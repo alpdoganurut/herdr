@@ -14,6 +14,7 @@
 //! `src/app/browser.rs`) share it.
 
 pub mod activity;
+pub mod brand;
 pub mod host;
 pub mod hub;
 pub mod launch;

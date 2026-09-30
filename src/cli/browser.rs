@@ -49,6 +49,8 @@ Act (refs from browser snapshot; a password field is refused, ask the user):
   status [--json]   log [-n 50] [--pane ID] [--tab T] [--json]   start|stop [--profile P] [--all]
   profile list | create [--temp] NAME | delete NAME
   setup [--claude] [--codex] [--no-mcp] [--node PATH]   doctor   mcp
+  install-chromium <Chromium.app> [--icon PNG|ICNS] [--name 'herdr+ Browser'] [--dest ~/Applications]
+        a branded copy (name, the herdr+ icon or --icon; bundle id and keychain item unchanged), ad-hoc signed; \"auto\" finds it first
 
 Flags on every verb: --profile P (new = a fresh temporary profile), --tab T, --pane ID, --timeout MS, --json";
 
@@ -67,6 +69,7 @@ pub(super) fn run_browser_command(args: &[String]) -> std::io::Result<i32> {
         }
         "setup" => setup(rest),
         "doctor" => doctor(rest),
+        "install-chromium" => install_chromium(rest),
         "mcp" => super::browser_mcp::run(rest),
         "status" => status(rest),
         "log" => log(rest),
@@ -1385,6 +1388,85 @@ fn codex_on_path() -> Option<PathBuf> {
     std::env::split_paths(&path)
         .map(|dir| dir.join("codex"))
         .find(|candidate| candidate.is_file())
+}
+
+fn install_chromium(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr browser install-chromium <Chromium.app> [--icon PNG|ICNS] [--name NAME] [--dest DIR]\nCopies the built Chromium.app to <dest>/<name>.app (default ~/Applications/herdr+ Browser.app), sets its name in Info.plist and every InfoPlist.strings, replaces the icon (the embedded herdr+ icon, or --icon), ad-hoc signs and verifies the copy, refreshes LaunchServices. The bundle id stays org.chromium.Chromium (the keychain item keeps working).";
+    let mut source: Option<PathBuf> = None;
+    let mut icon: Option<PathBuf> = None;
+    let mut name = crate::browser::brand::DEFAULT_APP_NAME.to_string();
+    let mut dest: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        let value = |i: &mut usize| -> Option<String> {
+            *i += 1;
+            args.get(*i).cloned()
+        };
+        match arg {
+            "--icon" => icon = value(&mut i).map(PathBuf::from),
+            "--name" => {
+                if let Some(v) = value(&mut i) {
+                    name = v;
+                }
+            }
+            "--dest" => dest = value(&mut i).map(PathBuf::from),
+            "help" | "--help" | "-h" => {
+                println!("{USAGE}");
+                return Ok(0);
+            }
+            other if other.starts_with('-') => {
+                eprintln!("unknown flag {other}\n{USAGE}");
+                return Ok(2);
+            }
+            other => source = Some(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    let Some(source) = source else {
+        eprintln!("{USAGE}");
+        return Ok(2);
+    };
+    let dest_dir = match dest {
+        Some(dest) => dest,
+        None => match std::env::var_os("HOME") {
+            Some(home) => PathBuf::from(home).join("Applications"),
+            None => {
+                eprintln!("no HOME; give --dest");
+                return Ok(2);
+            }
+        },
+    };
+    let absolute = |p: PathBuf| -> PathBuf {
+        if p.is_absolute() {
+            p
+        } else {
+            std::env::current_dir().map(|cwd| cwd.join(&p)).unwrap_or(p)
+        }
+    };
+    let options = crate::browser::brand::InstallOptions {
+        source: absolute(source),
+        dest_dir: absolute(dest_dir),
+        name,
+        icon: icon.map(absolute),
+    };
+    println!("herdr browser install-chromium");
+    match crate::browser::brand::install(&options) {
+        Ok(report) => {
+            for step in &report.steps {
+                println!("  {step}");
+            }
+            println!(
+                "installed {} — [browser] executable = \"auto\" finds it first; `herdr browser doctor` shows which",
+                report.target.display()
+            );
+            Ok(0)
+        }
+        Err(err) => {
+            eprintln!("error {}: {}", err.code, err.message);
+            Ok(1)
+        }
+    }
 }
 
 fn doctor(args: &[String]) -> std::io::Result<i32> {
