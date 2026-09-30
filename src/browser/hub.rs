@@ -1416,9 +1416,12 @@ impl BrowserHub {
         let mut last_key: Option<TabKey> = None;
         let mut last_header = String::new();
         let mut failed = false;
+        // `track`: the step's header and tab become the batch result's
+        // (false for the tidy-up closes of close_opened).
         let mut run_step = |op: &BrowserOp,
                             tab: Option<String>,
                             index: usize,
+                            track: bool,
                             lines: &mut Vec<shape::BatchStepLine>|
          -> Result<BrowserRunResult, BrowserError> {
             let remaining = deadline.saturating_sub(started.elapsed());
@@ -1451,10 +1454,12 @@ impl BrowserHub {
             self.record_outcome(actor, profile, pane, &step_params, op.name(), &result, ms);
             match result {
                 Ok((result, key, detail)) => {
-                    if key.is_some() {
-                        last_key = key;
+                    if track {
+                        if key.is_some() {
+                            last_key = key;
+                        }
+                        last_header = result.header.clone();
                     }
-                    last_header = result.header.clone();
                     // A snapshot step's refs serve the next steps; its output
                     // travels with the step (already paged to snapshot_max_chars).
                     // The final snapshot is a read, shown once as the final result.
@@ -1504,7 +1509,7 @@ impl BrowserHub {
                     current_tab.clone()
                 }
             });
-            match run_step(&step.op, tab, index, &mut lines) {
+            match run_step(&step.op, tab, index, true, &mut lines) {
                 Ok(result) => {
                     if matches!(step.op, BrowserOp::Open { .. }) {
                         if let Some(tab) = result.tab.clone() {
@@ -1527,21 +1532,37 @@ impl BrowserHub {
                 } else {
                     current_tab.clone()
                 };
-                run_step(&op, tab, ops.len(), &mut lines).ok()
+                run_step(&op, tab, ops.len(), true, &mut lines).ok()
             }
             _ => None,
         };
         // close_opened: the tabs this batch opened go after the final step;
         // the pane's cursor returns to where it was.
         if close_opened && !opened.is_empty() {
+            // The result keeps the final step's header; its tab is the one the
+            // caller is left on (the restored cursor), never a closed one.
             let first = lines.len();
             for (index, tab) in (first..).zip(opened.iter()) {
-                let _ = run_step(&BrowserOp::Close, Some(tab.clone()), index, &mut lines);
+                let _ = run_step(
+                    &BrowserOp::Close,
+                    Some(tab.clone()),
+                    index,
+                    false,
+                    &mut lines,
+                );
             }
-            if let (Some(pane), Some(key)) = (pane, cursor_before.as_ref()) {
-                let mut state = self.inner.state.lock().unwrap();
-                if state.tabs.get(key).is_some_and(|record| record.is_open()) {
+            let mut state = self.inner.state.lock().unwrap();
+            let restored = cursor_before
+                .as_ref()
+                .filter(|key| state.tabs.get(key).is_some_and(|record| record.is_open()));
+            match (pane, restored) {
+                (Some(pane), Some(key)) => {
                     state.set_cursor(pane, key, actor.tab_id(), unix_now());
+                    last_key = Some(key.clone());
+                }
+                _ => {
+                    last_key = last_key
+                        .filter(|key| state.tabs.get(key).is_some_and(|record| record.is_open()));
                 }
             }
         }

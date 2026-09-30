@@ -532,15 +532,19 @@ fn the_overlay_lists_profiles_and_tabs_and_its_keys_focus_and_toggle() {
         .lines()
         .find(|line| line.contains("planner · claude read 12s"))
         .unwrap();
+    // the widest row's title follows one cell after its actor text
     let after = t2_line.split("read 12s").nth(1).unwrap();
-    assert!(
-        after.starts_with("  PR #1") || after.starts_with(" PR #1"),
-        "{t2_line:?}"
-    );
+    assert!(after.starts_with(" PR #1"), "{t2_line:?}");
+    // a narrower row is padded to the widest one (plus the two-cell title gap)
+    let widest = "planner · claude read 12s".chars().count();
     let t1_line = text.lines().find(|line| line.contains("t1  you")).unwrap();
     let after = t1_line.split("t1  you").nth(1).unwrap();
     assert!(after.trim_start().starts_with("about:blank"), "{t1_line:?}");
-    assert!(after.len() - after.trim_start().len() <= 28, "{t1_line:?}");
+    assert_eq!(
+        after.len() - after.trim_start().len(),
+        widest - "you".len() + 1 + 2,
+        "{t1_line:?}"
+    );
     assert!(text.contains("enter focus window"), "{text}");
 
     let key = |code: crossterm::event::KeyCode| TerminalKey::new(code, KeyModifiers::empty());

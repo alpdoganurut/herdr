@@ -1429,6 +1429,17 @@ fn a_snapshot_step_serves_the_next_steps_and_close_opened_tidies_up() {
         batch.data["steps"][4]["output"].is_null(),
         "the final snapshot is not duplicated into its step"
     );
+    assert!(
+        !batch.header.contains("closed"),
+        "the header is the final step's, not the close's: {}",
+        batch.header
+    );
+    let home_id = hub.with_state(|state| state.tabs.get(&home_key).unwrap().id());
+    assert_eq!(
+        batch.tab.as_deref(),
+        Some(home_id.as_str()),
+        "the result's tab is the one the pane is back on"
+    );
     // the snapshot step ran on the opened tab, with interactive
     let snapshot_call = shared
         .lock()
