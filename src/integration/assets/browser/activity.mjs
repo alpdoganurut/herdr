@@ -25,25 +25,38 @@ function withTimeout(promise, ms, what) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-// Installed in the isolated world: `(OVERLAY_JS)(cursor)`; idempotent per document.
-export const OVERLAY_JS = `((cursor) => {
-  if (window.__herdrOverlay && window.__herdrOverlay.alive) { window.__herdrOverlay.show(); return 'present'; }
+/** The approved purple; `[browser] activity_color` overrides it per directive. */
+export const DEFAULT_COLOR = '#aa6eff';
+export function normalizeColor(value) {
+  const text = String(value || '').trim().toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(text) ? text : DEFAULT_COLOR;
+}
+
+// Installed in the isolated world: `(OVERLAY_JS)(cursor, color)`; idempotent per
+// document, re-installed when the colour changed. The alpha values are the
+// approved look; only the rgb comes from the colour.
+export const OVERLAY_JS = `((cursor, color) => {
+  const rgb = [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16)).join(',');
+  const live = window.__herdrOverlay;
+  if (live && live.alive && live.color === color) { live.show(); return 'present'; }
+  if (live && live.alive) { cursor = live.cursor || cursor; live.alive = false; }
   document.querySelectorAll('div[${HOST_ATTR}]').forEach((n) => n.remove());
   const host = document.createElement('div');
   host.setAttribute('${HOST_ATTR}', '');
+  host.setAttribute('data-herdr-color', color);
   host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;opacity:0;transition:opacity .25s';
   const root = host.attachShadow({ mode: 'closed' });
   root.innerHTML = \`<style>
-    .frame{position:fixed;inset:0;border:2px solid rgba(170,110,255,.9);box-shadow:inset 0 0 14px 3px rgba(170,110,255,.42);
+    .frame{position:fixed;inset:0;border:2px solid rgba(\${rgb},.9);box-shadow:inset 0 0 14px 3px rgba(\${rgb},.42);
       border-radius:6px;animation:pulse 2s ease-in-out infinite}
-    @keyframes pulse{50%{box-shadow:inset 0 0 22px 6px rgba(170,110,255,.62)}}
+    @keyframes pulse{50%{box-shadow:inset 0 0 22px 6px rgba(\${rgb},.62)}}
     .cur{position:fixed;left:-5px;top:-2.5px;width:24px;height:24px;transition:transform .35s cubic-bezier(.2,.8,.2,1);
       filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}
-    .ripple{position:fixed;width:28px;height:28px;margin:-14px 0 0 -14px;border-radius:50%;border:2px solid rgba(170,110,255,.9);
+    .ripple{position:fixed;width:28px;height:28px;margin:-14px 0 0 -14px;border-radius:50%;border:2px solid rgba(\${rgb},.9);
       animation:rip .5s ease-out forwards}
     @keyframes rip{from{transform:scale(.3);opacity:1}to{transform:scale(1.6);opacity:0}}
   </style><div class="frame"></div>
-  <svg class="cur" viewBox="0 0 24 24"><path d="M5 2.5v17.2l4.3-4.2 2.9 6.6 2.6-1.1-2.9-6.5h6.1z" fill="#aa6eff" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg>\`;
+  <svg class="cur" viewBox="0 0 24 24"><path d="M5 2.5v17.2l4.3-4.2 2.9 6.6 2.6-1.1-2.9-6.5h6.1z" fill="\${color}" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg>\`;
   (document.documentElement || document).appendChild(host);
   const cur = root.querySelector('.cur');
   if (cursor) {
@@ -58,6 +71,8 @@ export const OVERLAY_JS = `((cursor) => {
   let hideTimer = null;
   const api = {
     alive: true,
+    color,
+    cursor: cursor || null,
     show() { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } host.style.opacity = '1'; },
     hide() {
       host.style.opacity = '0';
@@ -65,6 +80,7 @@ export const OVERLAY_JS = `((cursor) => {
     },
     suspend(on) { host.style.visibility = on ? 'hidden' : ''; },
     moveTo(x, y, animate) {
+      api.cursor = { x, y };
       cur.style.opacity = '1';
       if (!animate) cur.style.transition = 'none';
       cur.style.transform = 'translate(' + x + 'px,' + y + 'px)';
@@ -86,6 +102,7 @@ export class Overlay {
     this.state = state;
     this.ctx = null;
     this.cursor = null;
+    this.color = DEFAULT_COLOR;
     this.hideTimer = null;
     this.until = 0;
     this.log = () => {};
@@ -113,11 +130,12 @@ export class Overlay {
     }
     return undefined;
   }
-  /** The frame is up (installed if needed) and stays until `linger`. */
-  async show() {
+  /** The frame is up (installed if needed, re-installed on a colour change) and stays until `linger`. */
+  async show(color) {
+    if (color) this.color = normalizeColor(color);
     if (this.hideTimer) { clearTimeout(this.hideTimer); this.hideTimer = null; }
     this.until = Infinity;
-    return this.eval(`(${OVERLAY_JS})(${JSON.stringify(this.cursor)})`);
+    return this.eval(`(${OVERLAY_JS})(${JSON.stringify(this.cursor)}, ${JSON.stringify(this.color)})`);
   }
   /** The op is done: fade out after `ms`. */
   linger(ms = LINGER_MS) {

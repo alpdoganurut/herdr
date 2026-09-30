@@ -1697,6 +1697,12 @@
           "type": "boolean",
           "default": "true",
           "description": "Show agent activity in the Chromium window: the tabs an agent pane opens or acts on sit in a tab group named after the agent and its herdr tab (the companion extension, loaded with `--load-extension`; expanded while the pane is active, collapsed after `active_glyph_secs`), and a purple glow frame with a gliding cursor is injected into the page while an operation runs and for a few seconds after. `false` turns all three off; a running profile needs a restart to load or drop the extension."
+        },
+        {
+          "key": "browser.activity_color",
+          "type": "string",
+          "default": "\"#aa6eff\"",
+          "description": "The activity overlay's colour as `#rrggbb`: the frame border and glow, the cursor fill and the click ripple (the glow's transparency is fixed). Applies live after `herdr server reload-config` (the next overlay refresh uses it); an invalid value reports a config diagnostic and keeps the default purple. Tab-group colours are not affected: Chrome only offers its own nine named colours, and herdr picks one per pane."
         }
       ]
     },

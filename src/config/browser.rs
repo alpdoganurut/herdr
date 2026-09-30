@@ -75,6 +75,20 @@ pub struct BrowserConfig {
     /// extension), the glow frame and the cursor on tabs an agent works on.
     /// Default: true.
     pub show_activity: bool,
+    /// The activity overlay's colour (frame border and glow, cursor fill,
+    /// ripple), `#rrggbb`. Default: `#aa6eff`. Invalid → the default.
+    pub activity_color: String,
+}
+
+/// The activity overlay's default colour (the approved purple).
+pub const DEFAULT_ACTIVITY_COLOR: &str = "#aa6eff";
+
+/// A `#rrggbb` colour, case-insensitive.
+pub fn valid_hex_color(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix('#') else {
+        return false;
+    };
+    hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 impl Default for BrowserConfig {
@@ -100,11 +114,22 @@ impl Default for BrowserConfig {
             launch_timeout_ms: 15_000,
             op_timeout_ms: 30_000,
             show_activity: true,
+            activity_color: DEFAULT_ACTIVITY_COLOR.into(),
         }
     }
 }
 
 impl BrowserConfig {
+    /// The overlay colour, lower-case `#rrggbb`; the default when invalid.
+    pub fn activity_color(&self) -> String {
+        let value = self.activity_color.trim();
+        if valid_hex_color(value) {
+            value.to_ascii_lowercase()
+        } else {
+            DEFAULT_ACTIVITY_COLOR.to_string()
+        }
+    }
+
     /// The default profile name: the configured one when valid, else `main`.
     pub fn default_profile(&self) -> &str {
         if valid_profile_name(&self.default_profile) {
@@ -216,6 +241,12 @@ impl BrowserConfig {
             diagnostics.push(format!(
                 "browser.executable = {:?} is neither \"auto\" nor an absolute path; the browser will not start",
                 self.executable
+            ));
+        }
+        if !valid_hex_color(self.activity_color.trim()) {
+            diagnostics.push(format!(
+                "browser.activity_color = {:?} is not a #rrggbb colour; using {DEFAULT_ACTIVITY_COLOR}",
+                self.activity_color
             ));
         }
         for arg in &self.extra_args {
@@ -375,6 +406,32 @@ mod tests {
         assert!(is_forbidden_switch("--disable-extensions"));
         assert!(!is_forbidden_switch("headless"));
         assert!(!is_forbidden_switch("--lang"));
+    }
+
+    #[test]
+    fn activity_color_parses_hex_and_falls_back_with_a_diagnostic() {
+        let config = BrowserConfig {
+            activity_color: " #00C8FF ".into(),
+            ..BrowserConfig::default()
+        };
+        assert_eq!(config.activity_color(), "#00c8ff");
+        assert!(config.diagnostics().is_empty());
+        assert_eq!(BrowserConfig::default().activity_color(), "#aa6eff");
+        for bad in ["aa6eff", "#aa6ef", "#aa6efg", "#aa6eff00", "purple", ""] {
+            let config = BrowserConfig {
+                activity_color: bad.into(),
+                ..BrowserConfig::default()
+            };
+            assert_eq!(config.activity_color(), DEFAULT_ACTIVITY_COLOR, "{bad:?}");
+            let diagnostics = config.diagnostics();
+            assert_eq!(diagnostics.len(), 1, "{bad:?}: {diagnostics:?}");
+            assert!(
+                diagnostics[0].contains("browser.activity_color"),
+                "{diagnostics:?}"
+            );
+        }
+        assert!(valid_hex_color("#AbCdEf"));
+        assert!(!valid_hex_color("#abcdeff"));
     }
 
     #[test]

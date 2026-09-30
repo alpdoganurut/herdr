@@ -4,7 +4,7 @@
 // durable state: ring buffers and refs are "since attach".
 //
 // Request  {"id":1,"op":"read","profile":"main","target":"<targetId>","args":{...},"deadline_ms":30000,
-//           "activity":{"frame":true,"animate":true,"group":{"key":"w2:p7","title":"claude · planner","color":"purple","collapse_ms":120000}}}
+//           "activity":{"frame":true,"animate":true,"color":"#aa6eff","group":{"key":"w2:p7","title":"claude · planner","color":"purple","collapse_ms":120000}}}
 //          (activity: an agent pane's call; the frame/cursor overlay and the tab group; absent for the user)
 // Reply    {"id":1,"ok":true,"result":{...},"page":{"url":"…","title":"…","dialog_open":false}}
 //          {"id":1,"ok":false,"error":{"code":"…","message":"…"}}
@@ -741,7 +741,7 @@ function activityPage(name, target) {
 }
 async function activityBegin(state, activity) {
   if (!activity.frame) return;
-  await state.overlay.show().catch((err) => log('debug', `overlay: ${err.message}`));
+  await state.overlay.show(activity.color).catch((err) => log('debug', `overlay: ${err.message}`));
 }
 function activityEnd(state, activity) {
   if (activity.frame) state.overlay.linger();

@@ -54,6 +54,7 @@ pub fn directive(actor: &BrowserActor, config: &BrowserConfig) -> Option<Value> 
     Some(json!({
         "frame": true,
         "animate": true,
+        "color": config.activity_color(),
         "group": {
             "key": pane_id,
             "title": group_title(agent.as_deref(), tab_label, pane_id),
@@ -110,6 +111,24 @@ mod tests {
         let d = directive(&pane(Some("claude"), "planner"), &config).unwrap();
         assert_eq!(d["frame"], true);
         assert_eq!(d["animate"], true);
+        assert_eq!(d["color"], "#aa6eff", "the default overlay colour");
+        let teal = BrowserConfig {
+            activity_color: "#00C8FF".into(),
+            ..BrowserConfig::default()
+        };
+        assert_eq!(
+            directive(&pane(Some("claude"), "planner"), &teal).unwrap()["color"],
+            "#00c8ff"
+        );
+        let bad = BrowserConfig {
+            activity_color: "purple".into(),
+            ..BrowserConfig::default()
+        };
+        assert_eq!(
+            directive(&pane(Some("claude"), "planner"), &bad).unwrap()["color"],
+            "#aa6eff",
+            "an invalid colour falls back to the default"
+        );
         assert_eq!(d["group"]["key"], "w2:p7");
         assert_eq!(d["group"]["title"], "claude · planner");
         assert_eq!(d["group"]["color"], group_color("w2:p7"));

@@ -484,6 +484,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Show agent activity in the window: per-pane tab groups (the companion
 # extension), the glow frame and the cursor on the tabs an agent works on.
 # show_activity = true
+# The overlay's colour (frame glow, cursor, ripple), #rrggbb; applies on reload-config.
+# activity_color = "#aa6eff"
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.
