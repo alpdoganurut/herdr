@@ -52,6 +52,8 @@ struct FakeHostState {
     next_target: u32,
     /// What `attach` reports about the companion extension (default: ready).
     companion: Option<Value>,
+    /// New tab page pushes (`ntp` ops), kept apart so op indices stay stable.
+    ntp: Vec<Value>,
 }
 
 type Shared = Arc<Mutex<FakeHostState>>;
@@ -82,7 +84,11 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
             }
             let (reply, events, delay) = {
                 let mut state = state.lock().unwrap();
-                state.ops.push((op.clone(), target.clone(), args.clone()));
+                if op == "ntp" {
+                    state.ntp.push(args.clone());
+                } else {
+                    state.ops.push((op.clone(), target.clone(), args.clone()));
+                }
                 let mut events: Vec<String> = state.events.drain(..).collect();
                 let delay = state
                     .delays
@@ -190,6 +196,7 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                             json!({ "id": id, "ok": true, "result": {}, "page": { "url": args["url"].as_str().unwrap_or("https://site.test/after"), "title": "After", "status": 200 } })
                         }
                         "close" | "close_browser" => json!({ "id": id, "ok": true, "result": {} }),
+                        "ntp" => json!({ "id": id, "ok": true, "result": { "pushed": 1 } }),
                         "release" => {
                             // Keys with "fail" in them are reported back as failed.
                             let keys: Vec<String> = args["keys"]
@@ -2019,5 +2026,58 @@ fn eval_is_guarded_by_the_password_rule_and_logs_the_code_not_the_result() {
         .map(|(_, _, a)| a.clone())
         .unwrap();
     assert_eq!(last["guard_passwords"], false);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn the_new_tab_page_snapshot_is_pushed_after_changes_at_most_once_a_second() {
+    let (hub, shared, _stream, home) = hub("ntp-push");
+    let actor = pane("w2:pH");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/page".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    for _ in 0..4 {
+        hub.run(
+            &actor,
+            params(BrowserOp::Click {
+                ref_: Some("e11".into()),
+                selector: None,
+            }),
+        )
+        .unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(1400));
+    let pushes: Vec<Value> = shared.lock().unwrap().ntp.clone();
+    assert!(!pushes.is_empty(), "a push went out");
+    assert!(
+        pushes.len() <= 3,
+        "five changes in a burst are at most a few pushes: {}",
+        pushes.len()
+    );
+    let last = &pushes[pushes.len() - 1]["snapshot"];
+    assert_eq!(last["version"], crate::browser::ntp::NTP_SNAPSHOT_VERSION);
+    assert_eq!(last["show_activity"], true);
+    let agents = last["agents"].as_array().unwrap();
+    assert_eq!(agents.len(), 1, "{last}");
+    assert_eq!(agents[0]["label"], "planner");
+    assert_eq!(agents[0]["symbol"], "✻");
+    let tabs = agents[0]["tabs"].as_array().unwrap();
+    assert_eq!(tabs.len(), 1, "{last}");
+    assert_eq!(tabs[0]["current"], true);
+    assert!(tabs[0]["short"]
+        .as_str()
+        .is_some_and(|s| s.starts_with('t')));
+    assert_eq!(agents[0]["last_op"], "act:click");
+    assert_eq!(agents[0]["active"], true);
+    assert!(
+        pushes.iter().all(|p| p.get("_activity").is_none()),
+        "a push carries no directive"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }

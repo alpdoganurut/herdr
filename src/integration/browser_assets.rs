@@ -20,6 +20,14 @@ pub const HOST_DIR: &str = "host";
 pub const ENTRY: &str = "host.mjs";
 /// The companion extension directory under `HOST_DIR` (`--load-extension`).
 pub const COMPANION_DIR: &str = "companion";
+/// The companion worker's code version (`VERSION` in companion.js, the
+/// manifest's `0.<n>.0`, `COMPANION_VERSION` in activity.mjs). Chrome keeps an
+/// unpacked command-line extension's worker script for good — a manifest
+/// version bump, a browser restart, `chrome.runtime.reload()` or
+/// `importScripts` of a new URL do not refresh it — so a profile that last
+/// ran another version has its `Default/Service Worker` store cleared
+/// before the launch (`launch::refresh_companion_worker`).
+pub const COMPANION_VERSION: u32 = 4;
 pub const RUNTIME_FILE: &str = "runtime.json";
 pub const RUNTIME_VERSION: u32 = 1;
 /// The playwright-core version `package.json` pins.
@@ -47,6 +55,14 @@ pub const BROWSER_ASSETS: &[(&str, &str)] = &[
     (
         "companion/companion.js",
         include_str!("assets/browser/companion/companion.js"),
+    ),
+    (
+        "companion/newtab.html",
+        include_str!("assets/browser/companion/newtab.html"),
+    ),
+    (
+        "companion/newtab.js",
+        include_str!("assets/browser/companion/newtab.js"),
     ),
 ];
 
@@ -175,7 +191,9 @@ mod tests {
                 "smoke.mjs",
                 "companion/manifest.json",
                 "companion/sw.js",
-                "companion/companion.js"
+                "companion/companion.js",
+                "companion/newtab.html",
+                "companion/newtab.js"
             ]
         );
         let manifest: serde_json::Value = serde_json::from_str(
@@ -192,6 +210,16 @@ mod tests {
             serde_json::json!(["tabs", "tabGroups", "alarms", "storage"])
         );
         assert_eq!(manifest["background"]["service_worker"], "sw.js");
+        assert_eq!(manifest["chrome_url_overrides"]["newtab"], "newtab.html");
+        let page = BROWSER_ASSETS
+            .iter()
+            .find(|(n, _)| *n == "companion/newtab.js")
+            .unwrap()
+            .1;
+        assert!(
+            !page.contains("innerHTML"),
+            "the page renders untrusted text with textContent only"
+        );
         // sw.js is the never-changing bootstrap; the worker's VERSION (in
         // companion.js) and the sidecar's COMPANION_VERSION move together.
         let bootstrap = BROWSER_ASSETS
@@ -200,10 +228,8 @@ mod tests {
             .unwrap()
             .1;
         assert!(
-            bootstrap.contains(
-                "importScripts('companion.js?v=' + chrome.runtime.getManifest().version)"
-            ),
-            "sw.js is the stable bootstrap"
+            bootstrap.contains("importScripts('companion.js')"),
+            "sw.js imports the worker code"
         );
         let sw = BROWSER_ASSETS
             .iter()
@@ -228,6 +254,15 @@ mod tests {
             after(sw, "const VERSION ="),
             after(activity, "export const COMPANION_VERSION ="),
             "bump VERSION in companion/companion.js and COMPANION_VERSION in activity.mjs together"
+        );
+        assert_eq!(
+            after(sw, "const VERSION ="),
+            COMPANION_VERSION,
+            "bump COMPANION_VERSION in browser_assets.rs with them (it drives the worker refresh)"
+        );
+        assert!(
+            manifest["key"].as_str().is_some_and(|k| k.len() > 300),
+            "the manifest pins the extension id with a public key"
         );
         // Chrome refreshes an unpacked extension's worker only on a manifest
         // version change: the manifest is 0.<VERSION>.0.
@@ -281,6 +316,7 @@ mod tests {
         assert_eq!(install(&dir).unwrap(), 1);
         assert!(dir.join(COMPANION_DIR).join("sw.js").is_file());
         assert!(dir.join(COMPANION_DIR).join("manifest.json").is_file());
+        assert!(dir.join(COMPANION_DIR).join("newtab.html").is_file());
         assert!(read_runtime(&dir).is_none());
         let runtime = BrowserRuntimeInfo {
             version: RUNTIME_VERSION,

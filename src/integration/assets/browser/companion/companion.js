@@ -5,11 +5,18 @@ chrome.alarms.onAlarm.addListener(() => {});
 chrome.alarms.create('herdr-keepalive', { periodInMinutes: 0.5 });
 
 // Bumped with every change to this file, together with the manifest's
-// version (0.<VERSION>.0, which is what makes sw.js import a fresh copy) and
-// COMPANION_VERSION in activity.mjs; the sidecar reports a running worker
-// that still answers an older number.
-const VERSION = 3;
+// version (0.<VERSION>.0), COMPANION_VERSION in activity.mjs and
+// COMPANION_VERSION in browser_assets.rs (herdr clears a profile's worker
+// store before launching it with a new version, so the new code loads).
+const VERSION = 4;
 self.herdrPing = () => 'herdr-companion/' + VERSION;
+
+// The new tab page's data: herdr's compact snapshot, kept in session storage
+// (the page renders it and follows storage.onChanged).
+self.herdrSnapshot = async (snapshot) => {
+  await chrome.storage.session.set({ snapshot });
+  return { ok: true };
+};
 
 self.herdrTabs = async () => (await chrome.tabs.query({})).map((t) => ({
   id: t.id, url: t.url || t.pendingUrl || '', title: t.title || '', windowId: t.windowId, groupId: t.groupId, active: t.active,

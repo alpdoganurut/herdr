@@ -736,6 +736,18 @@ const ops = {
     return { result: { kind, role: info.role, name: info.name, navigated: navigated || page.url() !== urlBefore, url_before: urlBefore, dispatched }, page: await pageInfo(state) };
   },
 
+  // The new tab page's snapshot (herdr pushes it debounced): into every
+  // ready companion's session storage; best effort.
+  async ntp({ args }) {
+    let pushed = 0;
+    for (const profile of profiles.values()) {
+      if (profile.companion.state !== 'ready') continue;
+      try { await profile.companion.call('herdrSnapshot', args.snapshot || null); pushed++; }
+      catch (err) { log('debug', `ntp push: ${err.message}`); }
+    }
+    return { pushed };
+  },
+
   // Panes that are gone: their tab groups dissolve, in every attached profile.
   // Keys that could not be released (no companion, an error) come back as
   // `failed`, for herdr to retry later.

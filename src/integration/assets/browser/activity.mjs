@@ -7,7 +7,7 @@
 export const WORLD = 'herdr';
 export const HOST_ATTR = 'data-herdr-overlay';
 /** The companion worker code this sidecar expects (VERSION in companion/sw.js); an older running worker is reloaded. */
-export const COMPANION_VERSION = 3;
+export const COMPANION_VERSION = 4;
 /** The frame stays this long after the last operation. */
 export const LINGER_MS = 3000;
 /** The cursor's glide (matches the CSS transition). */

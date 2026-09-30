@@ -19,6 +19,7 @@ pub mod host;
 pub mod hub;
 pub mod launch;
 pub mod node;
+pub mod ntp;
 pub mod profiles;
 pub mod serve;
 pub mod shape;

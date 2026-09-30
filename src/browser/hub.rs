@@ -86,7 +86,12 @@ struct Inner {
     released: Mutex<HashSet<String>>,
     /// Panes whose release failed: attempts so far and when to try again.
     release_backoff: Mutex<HashMap<String, (u32, Instant)>>,
+    /// The new tab page push: when the last one went out, whether one is armed.
+    ntp_push: Mutex<(Option<Instant>, bool)>,
 }
+
+/// The new tab page's snapshot goes out at most this often.
+const NTP_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A failed release is retried this many times, each wait one step longer.
 const RELEASE_MAX_ATTEMPTS: u32 = 5;
@@ -143,6 +148,7 @@ impl BrowserHub {
                 companion: Mutex::new(HashMap::new()),
                 released: Mutex::new(HashSet::new()),
                 release_backoff: Mutex::new(HashMap::new()),
+                ntp_push: Mutex::new((None, false)),
             }),
         }
     }
@@ -326,6 +332,47 @@ impl BrowserHub {
                         backoff.insert(key, (attempts, Instant::now() + RELEASE_BACKOFF * attempts));
                     }
                 }
+            });
+    }
+
+    /// The new tab page's snapshot: pushed to the companion after the ledger
+    /// changed, debounced to one per NTP_MIN_INTERVAL, off the caller's
+    /// thread. Nothing when no sidecar runs.
+    pub fn schedule_ntp_push(&self) {
+        if self.inner.host.lock().unwrap().is_none() {
+            return;
+        }
+        let wait = {
+            let mut push = self.inner.ntp_push.lock().unwrap();
+            if push.1 {
+                return;
+            }
+            push.1 = true;
+            push.0
+                .map(|last| NTP_MIN_INTERVAL.saturating_sub(last.elapsed()))
+                .unwrap_or(Duration::ZERO)
+        };
+        let hub = self.clone();
+        let _ = std::thread::Builder::new()
+            .name("herdr-browser-ntp".into())
+            .spawn(move || {
+                if !wait.is_zero() {
+                    std::thread::sleep(wait);
+                }
+                {
+                    let mut push = hub.inner.ntp_push.lock().unwrap();
+                    push.0 = Some(Instant::now());
+                    push.1 = false;
+                }
+                let config = hub.config();
+                let snapshot = super::ntp::snapshot(&hub.get(None), &config, unix_now());
+                let _ = hub.request(
+                    "ntp",
+                    None,
+                    None,
+                    json!({ "snapshot": snapshot }),
+                    Duration::from_secs(3),
+                );
             });
     }
 
@@ -697,6 +744,7 @@ impl BrowserHub {
             ms,
         );
         self.flush();
+        self.schedule_ntp_push();
         match result {
             Ok((mut result, _, _)) => {
                 result.ms = ms;
@@ -1941,6 +1989,20 @@ impl BrowserHub {
                 } else {
                     None
                 };
+                if extension_dir.is_some() {
+                    match launch::refresh_companion_worker(
+                        &profile_dir,
+                        browser_assets::COMPANION_VERSION,
+                    ) {
+                        Ok(true) => {
+                            tracing::info!(event = "browser.companion.refresh", profile = %name, version = browser_assets::COMPANION_VERSION, "companion worker store cleared for the new version")
+                        }
+                        Ok(false) => {}
+                        Err(err) => {
+                            tracing::warn!(event = "browser.companion.refresh", profile = %name, error = %err, "could not refresh the companion worker")
+                        }
+                    }
+                }
                 let options = LaunchOptions {
                     restore: config.restore_tabs && self.inner.profiles.has_launched(name),
                     extra_args: config.extra_args(),
@@ -2053,6 +2115,7 @@ impl BrowserHub {
             .unwrap()
             .insert(name.to_string(), companion);
         self.flush();
+        self.schedule_ntp_push();
         Ok(())
     }
 
@@ -2383,6 +2446,7 @@ impl BrowserHub {
         }
         if persist_now {
             self.flush();
+            self.schedule_ntp_push();
         }
     }
 

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>New Tab</title>
+<style>
+  /* News "Dusk" almanac palette */
+  :root {
+    --page: #17181e; --ink: #cfd2de; --body: #a6aabb; --note: #888c9d; --dim: #6b6f80;
+    --rule: #363947; --gold: #a5a9cf; --rust: #d09a8a; --sel: #22242e; --accent: #aa6eff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--page); color: var(--body); }
+  body { font: 14.5px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", sans-serif; display: flex; justify-content: center; }
+  main { width: min(760px, 92vw); padding: 9vh 0 6vh; }
+  .mono { font-family: "JetBrainsMono Nerd Font", "SF Mono", Menlo, monospace; font-size: 12.5px; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 1px solid var(--rule); padding-bottom: 10px; }
+  h1 { margin: 0; font-weight: 600; font-size: 28px; letter-spacing: -.01em; color: var(--ink); }
+  h1 .dot { color: var(--accent); }
+  .dateline { color: var(--note); }
+  .standing { margin: 8px 0 34px; color: var(--note); }
+  .standing b { color: var(--ink); font-weight: 500; }
+
+  section.agent { margin: 0 0 30px; }
+  .agent-head { display: flex; align-items: baseline; gap: 10px; }
+  .sym { color: var(--accent); font-size: 18px; width: 18px; text-align: center; }
+  .agent-head .name { color: var(--ink); font-size: 17px; font-weight: 600; }
+  .agent-head .where { color: var(--dim); }
+  .agent-head .state { margin-left: auto; color: var(--note); }
+  .agent.live .state { color: var(--accent); }
+  .agent.live .sym { text-shadow: 0 0 10px rgba(170,110,255,.55); animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 50% { text-shadow: 0 0 16px rgba(170,110,255,.8); } }
+
+  ul.tabs { list-style: none; margin: 8px 0 0 28px; padding: 0; border-left: 1px solid var(--rule); }
+  ul.tabs li { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; padding: 5px 0 5px 14px; border-radius: 3px; cursor: pointer; }
+  ul.tabs li:hover { background: var(--sel); }
+  .tid { color: var(--dim); }
+  .title { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .host { color: var(--note); font-size: 12.5px; }
+  .when { color: var(--dim); white-space: nowrap; }
+  li.current .tid { color: var(--accent); }
+  li.current .title::after { content: "  ·  current"; color: var(--accent); font-size: 11.5px; }
+
+  section.yours h2, section.agents-title h2 { font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--gold); font-size: 11.5px; margin: 0 0 10px; }
+  .empty { color: var(--dim); font-style: italic; margin: 0 0 30px 28px; }
+  footer { margin-top: 42px; border-top: 1px solid var(--rule); padding-top: 10px; display: flex; justify-content: space-between; color: var(--dim); }
+  body.plain #body, body.plain footer { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>herdr<span class="dot">+</span> browser</h1>
+    <span class="dateline" id="dateline"></span>
+  </header>
+  <div id="body"></div>
+  <footer class="mono"><span>click a tab to switch · agents' tabs are grouped by pane</span><span>herdr</span></footer>
+</main>
+<script src="newtab.js"></script>
+</body>
+</html>
