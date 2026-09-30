@@ -527,6 +527,20 @@ fn the_overlay_lists_profiles_and_tabs_and_its_keys_focus_and_toggle() {
     assert!(text.contains("planner · claude read 12s"), "{text}");
     assert!(text.contains("github.com/x/pull/1"), "{text}");
     assert!(text.contains("t1  you"), "{text}");
+    // the actor column is as wide as its widest row, not a fixed gap
+    let t2_line = text
+        .lines()
+        .find(|line| line.contains("planner · claude read 12s"))
+        .unwrap();
+    let after = t2_line.split("read 12s").nth(1).unwrap();
+    assert!(
+        after.starts_with("  PR #1") || after.starts_with(" PR #1"),
+        "{t2_line:?}"
+    );
+    let t1_line = text.lines().find(|line| line.contains("t1  you")).unwrap();
+    let after = t1_line.split("t1  you").nth(1).unwrap();
+    assert!(after.trim_start().starts_with("about:blank"), "{t1_line:?}");
+    assert!(after.len() - after.trim_start().len() <= 28, "{t1_line:?}");
     assert!(text.contains("enter focus window"), "{text}");
 
     let key = |code: crossterm::event::KeyCode| TerminalKey::new(code, KeyModifiers::empty());

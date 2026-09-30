@@ -784,10 +784,33 @@ impl BrowserHub {
                 );
                 Ok((result, Some(key), record.short.clone()))
             }
+            BrowserOp::Snapshot {
+                selector,
+                ref_,
+                offset,
+                max,
+                interactive,
+            } => {
+                // The read path with the snapshot format; the ledger keeps "snapshot".
+                let read = BrowserRunParams {
+                    op: BrowserOp::Read {
+                        format: Some("snapshot".into()),
+                        selector: selector.clone(),
+                        ref_: ref_.clone(),
+                        offset: *offset,
+                        max: *max,
+                        all: false,
+                        interactive: *interactive,
+                    },
+                    ..params.clone()
+                };
+                self.execute(actor, profile, pane, &read, config, deadline, now)
+            }
             BrowserOp::Batch {
                 ops,
                 stop_on_error,
                 final_,
+                close_opened,
             } => self.execute_batch(
                 actor,
                 profile,
@@ -796,6 +819,7 @@ impl BrowserHub {
                 ops,
                 *stop_on_error,
                 final_.as_deref(),
+                *close_opened,
                 config,
                 deadline,
                 now,
@@ -1291,6 +1315,7 @@ impl BrowserHub {
                     BrowserOp::Open { .. }
                     | BrowserOp::Tabs { .. }
                     | BrowserOp::Use
+                    | BrowserOp::Snapshot { .. }
                     | BrowserOp::Batch { .. }
                     | BrowserOp::Unknown => unreachable!(),
                 };
@@ -1312,6 +1337,7 @@ impl BrowserHub {
         ops: &[crate::api::schema::BrowserBatchStep],
         stop_on_error: bool,
         final_: Option<&str>,
+        close_opened: bool,
         config: &BrowserConfig,
         deadline: Duration,
         now: u64,
@@ -1366,6 +1392,15 @@ impl BrowserHub {
         };
         // The batch's own tab becomes the cursor (or, without a pane, the
         // tab every step follows until one switches it).
+        let cursor_before = pane.and_then(|pane| {
+            self.inner
+                .state
+                .lock()
+                .unwrap()
+                .cursor(pane)
+                .map(|record| record.key())
+        });
+        let mut opened: Vec<String> = Vec::new();
         let mut current_tab: Option<String> = params.tab.clone();
         if let (Some(pane), Some(tab)) = (pane, params.tab.as_deref()) {
             let record = self.resolve_target(profile, Some(tab), None)?;
@@ -1420,12 +1455,20 @@ impl BrowserHub {
                         last_key = key;
                     }
                     last_header = result.header.clone();
+                    // A snapshot step's refs serve the next steps; its output
+                    // travels with the step (already paged to snapshot_max_chars).
+                    // The final snapshot is a read, shown once as the final result.
+                    let output = match op {
+                        BrowserOp::Snapshot { .. } => Some(result.text.clone()),
+                        _ => None,
+                    };
                     lines.push(shape::BatchStepLine {
                         index,
                         op: op.name().to_string(),
                         outcome: detail,
                         ok: true,
                         skipped: false,
+                        output,
                     });
                     Ok(result)
                 }
@@ -1436,6 +1479,7 @@ impl BrowserHub {
                         outcome: format!("{}: {}", err.code, err.message),
                         ok: false,
                         skipped: false,
+                        output: None,
                     });
                     Err(err)
                 }
@@ -1449,6 +1493,7 @@ impl BrowserHub {
                     outcome: String::new(),
                     ok: false,
                     skipped: true,
+                    output: None,
                 });
                 continue;
             }
@@ -1461,6 +1506,11 @@ impl BrowserHub {
             });
             match run_step(&step.op, tab, index, &mut lines) {
                 Ok(result) => {
+                    if matches!(step.op, BrowserOp::Open { .. }) {
+                        if let Some(tab) = result.tab.clone() {
+                            opened.push(tab);
+                        }
+                    }
                     if pane.is_none() {
                         if let Some(tab) = result.tab.clone() {
                             current_tab = Some(tab);
@@ -1481,6 +1531,20 @@ impl BrowserHub {
             }
             _ => None,
         };
+        // close_opened: the tabs this batch opened go after the final step;
+        // the pane's cursor returns to where it was.
+        if close_opened && !opened.is_empty() {
+            let first = lines.len();
+            for (index, tab) in (first..).zip(opened.iter()) {
+                let _ = run_step(&BrowserOp::Close, Some(tab.clone()), index, &mut lines);
+            }
+            if let (Some(pane), Some(key)) = (pane, cursor_before.as_ref()) {
+                let mut state = self.inner.state.lock().unwrap();
+                if state.tabs.get(key).is_some_and(|record| record.is_open()) {
+                    state.set_cursor(pane, key, actor.tab_id(), unix_now());
+                }
+            }
+        }
         let ok = lines.iter().filter(|line| line.ok).count();
         let failed_count = lines
             .iter()

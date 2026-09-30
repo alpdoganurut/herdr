@@ -1016,7 +1016,8 @@ fn browser_command() -> Command {
                 .arg(browser_tab_arg())
                 .arg(option("file", "FILE").help("Steps file; default: stdin"))
                 .arg(flag("continue").help("Keep going after a failing step"))
-                .arg(option("final", "WHAT").value_parser(["snapshot", "screenshot"])),
+                .arg(option("final", "WHAT").value_parser(["snapshot", "screenshot"]))
+                .arg(flag("close-opened").help("Close the tabs the batch opened after the final step")),
         )
         .subcommand(verb("close", "Close the current tab").arg(browser_tab_arg()))
         .subcommand(verb("focus", "Select the tab and raise the window for the user").arg(browser_tab_arg()))

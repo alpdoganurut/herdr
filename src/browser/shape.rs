@@ -676,6 +676,8 @@ pub struct BatchStepLine {
     pub outcome: String,
     pub ok: bool,
     pub skipped: bool,
+    /// A snapshot step's output, shown under its line (already size-capped).
+    pub output: Option<String>,
 }
 
 pub fn batch_result(
@@ -694,12 +696,19 @@ pub fn batch_result(
             } else {
                 "error"
             };
-            format!(
+            let mut line = format!(
                 "{:>2}. {:<10} {mark:<7} {}",
                 step.index + 1,
                 step.op,
                 sanitize(&step.outcome)
-            )
+            );
+            if let Some(output) = step.output.as_deref().filter(|o| !o.is_empty()) {
+                for row in sanitize(output).lines() {
+                    line.push_str("\n      ");
+                    line.push_str(row);
+                }
+            }
+            line
         })
         .collect();
     let ok = steps.iter().filter(|s| s.ok).count();
@@ -710,7 +719,7 @@ pub fn batch_result(
         steps.len()
     ));
     let mut data = json!({
-        "steps": steps.iter().map(|s| json!({ "index": s.index, "op": s.op, "ok": s.ok, "skipped": s.skipped, "outcome": s.outcome })).collect::<Vec<_>>(),
+        "steps": steps.iter().map(|s| json!({ "index": s.index, "op": s.op, "ok": s.ok, "skipped": s.skipped, "outcome": s.outcome, "output": s.output })).collect::<Vec<_>>(),
         "ok": ok, "failed": failed, "skipped": skipped,
     });
     let mut result = BrowserRunResult {

@@ -2458,8 +2458,56 @@
               "type": "object"
             },
             {
+              "description": "An aria snapshot with refs (`read --format snapshot`); as a batch step\nits refs serve the following steps and its output is kept.",
+              "properties": {
+                "interactive": {
+                  "type": "boolean"
+                },
+                "max": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "snapshot",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Several steps on one tab, in order, under one deadline.",
               "properties": {
+                "close_opened": {
+                  "description": "Close the tabs this batch opened, after the final step (default false).",
+                  "type": "boolean"
+                },
                 "final": {
                   "description": "`snapshot` or `screenshot` after the steps.",
                   "type": [
@@ -3255,8 +3303,56 @@
               "type": "object"
             },
             {
+              "description": "An aria snapshot with refs (`read --format snapshot`); as a batch step\nits refs serve the following steps and its output is kept.",
+              "properties": {
+                "interactive": {
+                  "type": "boolean"
+                },
+                "max": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "snapshot",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Several steps on one tab, in order, under one deadline.",
               "properties": {
+                "close_opened": {
+                  "description": "Close the tabs this batch opened, after the final step (default false).",
+                  "type": "boolean"
+                },
                 "final": {
                   "description": "`snapshot` or `screenshot` after the steps.",
                   "type": [

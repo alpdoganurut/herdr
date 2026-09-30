@@ -285,6 +285,20 @@ pub enum BrowserOp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selector: Option<String>,
     },
+    /// An aria snapshot with refs (`read --format snapshot`); as a batch step
+    /// its refs serve the following steps and its output is kept.
+    Snapshot {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<String>,
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        ref_: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<u64>,
+        #[serde(default, skip_serializing_if = "super::is_false")]
+        interactive: bool,
+    },
     /// Several steps on one tab, in order, under one deadline.
     Batch {
         ops: Vec<BrowserBatchStep>,
@@ -294,6 +308,9 @@ pub enum BrowserOp {
         /// `snapshot` or `screenshot` after the steps.
         #[serde(default, rename = "final", skip_serializing_if = "Option::is_none")]
         final_: Option<String>,
+        /// Close the tabs this batch opened, after the final step (default false).
+        #[serde(default, skip_serializing_if = "super::is_false")]
+        close_opened: bool,
     },
     #[serde(other)]
     Unknown,
@@ -347,6 +364,7 @@ impl BrowserOp {
             BrowserOp::Select { .. } => "act:select",
             BrowserOp::Fill { .. } => "act:fill",
             BrowserOp::Hover { .. } => "act:hover",
+            BrowserOp::Snapshot { .. } => "snapshot",
             BrowserOp::Batch { .. } => "batch",
             BrowserOp::Unknown => "unknown",
         }
@@ -703,9 +721,11 @@ mod tests {
                 ops,
                 stop_on_error,
                 final_,
+                close_opened,
             } => {
                 assert_eq!(ops.len(), 3);
                 assert!(*stop_on_error, "defaults to true");
+                assert!(!*close_opened, "defaults to false");
                 assert_eq!(final_.as_deref(), Some("snapshot"));
                 assert!(matches!(ops[0].op, BrowserOp::Fill { .. }));
                 assert_eq!(ops[2].tab.as_deref(), Some("t2"));
@@ -735,6 +755,16 @@ mod tests {
             let again: BrowserRunParams = serde_json::from_str(&back).unwrap();
             assert_eq!(again, params);
         }
+        let snap: BrowserRunParams =
+            serde_json::from_str(r#"{"op":"snapshot","interactive":true}"#).unwrap();
+        assert!(matches!(
+            snap.op,
+            BrowserOp::Snapshot {
+                interactive: true,
+                ..
+            }
+        ));
+        assert_eq!(snap.op.name(), "snapshot");
         let bare: BrowserRunParams = serde_json::from_str(r#"{"op":"use"}"#).unwrap();
         assert_eq!(bare.op, BrowserOp::Use);
         assert!(

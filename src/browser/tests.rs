@@ -1099,6 +1099,7 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                 ],
                 stop_on_error: true,
                 final_: Some("snapshot".into()),
+                close_opened: false,
             }),
         )
         .unwrap();
@@ -1160,6 +1161,7 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                 ],
                 stop_on_error: false,
                 final_: Some("snapshot".into()),
+                close_opened: false,
             }),
         )
         .unwrap();
@@ -1186,7 +1188,8 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
             params(BrowserOp::Batch {
                 ops: long,
                 stop_on_error: true,
-                final_: None
+                final_: None,
+                close_opened: false
             })
         )
         .unwrap_err()
@@ -1197,6 +1200,7 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
         ops: vec![],
         stop_on_error: true,
         final_: None,
+        close_opened: false,
     })];
     assert_eq!(
         hub.run(
@@ -1204,7 +1208,8 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
             params(BrowserOp::Batch {
                 ops: nested,
                 stop_on_error: true,
-                final_: None
+                final_: None,
+                close_opened: false
             })
         )
         .unwrap_err()
@@ -1217,7 +1222,8 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
             params(BrowserOp::Batch {
                 ops: vec![],
                 stop_on_error: true,
-                final_: None
+                final_: None,
+                close_opened: false
             })
         )
         .unwrap_err()
@@ -1233,7 +1239,8 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                     max: None
                 })],
                 stop_on_error: true,
-                final_: Some("video".into())
+                final_: Some("video".into()),
+                close_opened: false
             })
         )
         .unwrap_err()
@@ -1259,6 +1266,7 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                 ],
                 stop_on_error: true,
                 final_: None,
+                close_opened: false,
             }),
         )
         .unwrap();
@@ -1295,6 +1303,7 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                 ],
                 stop_on_error: true,
                 final_: None,
+                close_opened: false,
             }),
         )
         .unwrap();
@@ -1322,5 +1331,141 @@ fn cursors_remember_the_pane_s_herdr_tab() {
     assert_eq!(info.recent_panes[0].pane_id, "w2:pD");
     assert_eq!(info.recent_panes[0].tab_id.as_deref(), Some("w2:tD"));
     assert_eq!(info.recent_panes[0].current, "main:t2");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_snapshot_step_serves_the_next_steps_and_close_opened_tidies_up() {
+    let (hub, shared, _stream, home) = hub("batch-snapshot");
+    let actor = pane("w2:pD");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://home.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    let home_key = hub.with_state(|state| state.cursor("w2:pD").unwrap().key());
+    let tabs_before = hub.with_state(|state| state.open_tabs("main").count());
+    let batch = hub
+        .run(
+            &actor,
+            params(BrowserOp::Batch {
+                ops: vec![
+                    step(BrowserOp::Open {
+                        url: "https://form.test/".into(),
+                        focus: false,
+                        wait: None,
+                    }),
+                    step(BrowserOp::Snapshot {
+                        selector: None,
+                        ref_: None,
+                        offset: None,
+                        max: Some(300),
+                        interactive: true,
+                    }),
+                    step(BrowserOp::Fill {
+                        ref_: Some("e14".into()),
+                        selector: None,
+                        text: "x".into(),
+                    }),
+                    step(BrowserOp::Click {
+                        ref_: Some("e11".into()),
+                        selector: None,
+                    }),
+                ],
+                stop_on_error: true,
+                final_: Some("snapshot".into()),
+                close_opened: true,
+            }),
+        )
+        .unwrap();
+    assert!(batch.text.contains(" 1. open       ok"), "{}", batch.text);
+    assert!(
+        batch
+            .text
+            .contains(" 2. snapshot   ok      snapshot 0–300/500"),
+        "{}",
+        batch.text
+    );
+    assert!(
+        batch.text.contains("\n      abcdefghij"),
+        "the snapshot's output sits under its line: {}",
+        batch.text
+    );
+    assert!(batch.text.contains(" 3. act:fill   ok"), "{}", batch.text);
+    assert!(batch.text.contains(" 4. act:click  ok"), "{}", batch.text);
+    assert!(
+        batch.text.contains(" 5. read       ok      snapshot"),
+        "the final snapshot: {}",
+        batch.text
+    );
+    assert!(
+        batch.text.contains(" 6. close      ok"),
+        "close_opened after the final step: {}",
+        batch.text
+    );
+    assert_eq!(
+        batch.data["steps"][1]["output"]
+            .as_str()
+            .map(|o| o.starts_with("abcdefghij")),
+        Some(true)
+    );
+    assert_eq!(
+        batch.text.matches("[chars 0–300 of 500").count(),
+        1,
+        "the step snapshot once, under its line: {}",
+        batch.text
+    );
+    assert_eq!(
+        batch.text.matches("[500 chars]").count(),
+        1,
+        "the final snapshot once, at the end: {}",
+        batch.text
+    );
+    assert!(
+        batch.data["steps"][4]["output"].is_null(),
+        "the final snapshot is not duplicated into its step"
+    );
+    // the snapshot step ran on the opened tab, with interactive
+    let snapshot_call = shared
+        .lock()
+        .unwrap()
+        .ops
+        .iter()
+        .find(|(op, _, args)| {
+            op == "read" && args["format"] == "snapshot" && args["interactive"] == true
+        })
+        .cloned();
+    let (_, target, _) = snapshot_call.expect("a snapshot read");
+    let fill_call = shared
+        .lock()
+        .unwrap()
+        .ops
+        .iter()
+        .find(|(op, _, args)| op == "act" && args["kind"] == "fill")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        fill_call.1, target,
+        "the fill ran on the same tab the snapshot was taken on"
+    );
+    hub.with_state(|state| {
+        assert_eq!(
+            state.open_tabs("main").count(),
+            tabs_before,
+            "the opened tab was closed again"
+        );
+        assert_eq!(
+            state.cursor("w2:pD").unwrap().key(),
+            home_key,
+            "the cursor is back on the tab from before the batch"
+        );
+        let log = state.activity(3, None, None);
+        assert_eq!(log[0].op, "batch");
+        assert_eq!(log[1].op, "close");
+    });
     let _ = std::fs::remove_dir_all(&home);
 }

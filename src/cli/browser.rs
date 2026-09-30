@@ -40,7 +40,10 @@ Act (refs from browser snapshot; a password field is refused, ask the user):
   type [TAB] (--ref eN | --selector CSS) TEXT [--submit] [--clear]
   fill [TAB] (--ref eN | --selector CSS) TEXT      select [TAB] (--ref eN | --selector CSS) VALUE
   press [TAB] KEY [--ref eN | --selector CSS]      (no target: the focused element)
-  batch [TAB] [--file steps.json] [--continue] [--final snapshot|screenshot]   steps as a JSON array (stdin)
+  batch [TAB] [--file steps.json] [--continue] [--final snapshot|screenshot] [--close-opened]
+        steps as a JSON array (stdin); a snapshot step gives the steps after it their refs,
+        --close-opened closes the tabs the batch opened after the final step
+  Reuse your current tab with navigate; open only for a separate tab, and close what you opened.
 
   status [--json]   log [-n 50] [--pane ID] [--tab T] [--json]   start|stop [--profile P] [--all]
   profile list | create [--temp] NAME | delete NAME
@@ -503,7 +506,12 @@ pub(crate) fn build_op(verb: &str, args: &[String]) -> Result<(BrowserOp, Common
             )
         }
         "batch" => {
-            let c = parse_common(args, &["file", "final"], &["continue"], true)?;
+            let c = parse_common(
+                args,
+                &["file", "final"],
+                &["continue", "close-opened"],
+                true,
+            )?;
             let source = match c.value("file") {
                 Some(file) => {
                     std::fs::read_to_string(file).map_err(|err| format!("--file {file}: {err}"))?
@@ -526,6 +534,7 @@ pub(crate) fn build_op(verb: &str, args: &[String]) -> Result<(BrowserOp, Common
                     ops,
                     stop_on_error: !c.flag("continue"),
                     final_: c.value("final").map(str::to_string),
+                    close_opened: c.flag("close-opened"),
                 },
                 c,
             )
@@ -1453,7 +1462,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            matches!(op, BrowserOp::Batch { ref ops, stop_on_error: false, final_: Some(ref f) } if ops.len() == 2 && f == "snapshot")
+            matches!(op, BrowserOp::Batch { ref ops, stop_on_error: false, final_: Some(ref f), close_opened: false } if ops.len() == 2 && f == "snapshot")
         );
         std::fs::write(&file, "not json").unwrap();
         assert!(build_op("batch", &s(&["--file", file.to_str().unwrap()]))

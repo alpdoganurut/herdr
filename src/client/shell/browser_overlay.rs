@@ -135,6 +135,20 @@ pub(crate) fn render_browser_overlay(
     } else {
         overlay.scroll
     };
+    // The actor/op/age column is as wide as its widest visible row (capped),
+    // so the title follows it instead of a fixed gap.
+    let who_cap = (list.width as usize / 2).max(8);
+    let who_cells = rows
+        .iter()
+        .skip(scroll)
+        .take(visible)
+        .filter_map(|row| match row {
+            BrowserOverlayRow::Tab { .. } => Some(who_text(row).chars().count()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(8)
+        .clamp(8, who_cap);
     for (line, row) in rows.iter().skip(scroll).take(visible).enumerate() {
         let index = scroll + line;
         let y = list.y + line as u16;
@@ -164,15 +178,12 @@ pub(crate) fn render_browser_overlay(
                     short,
                     title,
                     url,
-                    opener,
-                    last,
                     dialog,
                     active,
                     ..
                 } => {
                     let width = list.width as usize;
                     let id_cells = 5;
-                    let who_cells = 28.min(width / 3);
                     let url_cells = width.saturating_sub(id_cells + who_cells + 3);
                     let url_text = clip(
                         &display_url(url),
@@ -181,14 +192,7 @@ pub(crate) fn render_browser_overlay(
                             .max(8),
                     );
                     let title_text = clip(title, 24);
-                    let mut who = if last.is_empty() {
-                        format!("opened by {opener}")
-                    } else {
-                        last.clone()
-                    };
-                    if *dialog {
-                        who.push_str(" · dialog");
-                    }
+                    let who = who_text(row);
                     vec![
                         Span::styled(
                             format!("  {short:<4}"),
@@ -222,4 +226,27 @@ fn display_url(url: &str) -> String {
         .or_else(|| url.strip_prefix("http://"))
         .unwrap_or(url);
     stripped.strip_suffix('/').unwrap_or(stripped).to_string()
+}
+
+/// The actor/op/age column of a tab row (`opened by …` until something ran).
+fn who_text(row: &BrowserOverlayRow) -> String {
+    match row {
+        BrowserOverlayRow::Tab {
+            opener,
+            last,
+            dialog,
+            ..
+        } => {
+            let mut who = if last.is_empty() {
+                format!("opened by {opener}")
+            } else {
+                last.clone()
+            };
+            if *dialog {
+                who.push_str(" · dialog");
+            }
+            who
+        }
+        _ => String::new(),
+    }
 }
