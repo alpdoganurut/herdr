@@ -132,6 +132,7 @@ impl ProfileStore {
         self.dir(name).is_dir()
     }
 
+    #[cfg(test)]
     pub fn is_temporary(&self, name: &str) -> bool {
         self.entry(name).is_some_and(|entry| entry.temporary)
     }
@@ -147,18 +148,7 @@ impl ProfileStore {
 
     /// `tmp-YYYYMMDD-HHMMSS` (local time).
     pub fn temporary_name(&self, now: u64) -> String {
-        let stamp = time::OffsetDateTime::from_unix_timestamp(now as i64)
-            .ok()
-            .and_then(|t| {
-                let offset =
-                    time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-                let local = t.to_offset(offset);
-                let format =
-                    time::format_description::parse("[year][month][day]-[hour][minute][second]")
-                        .ok()?;
-                local.format(&format).ok()
-            })
-            .unwrap_or_else(|| now.to_string());
+        let stamp = super::shots::stamp(now);
         let base = format!("{TEMPORARY_PREFIX}{stamp}");
         if !self.exists(&base) {
             return base;

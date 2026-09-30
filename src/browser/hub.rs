@@ -70,6 +70,21 @@ struct Inner {
     supervisor: AtomicBool,
     /// Skip the executable check and the `hello` node checks (fake host tests).
     test_mode: AtomicBool,
+    /// Serializes the whole persistence transaction (snapshot, save, append,
+    /// bookkeeping).
+    flush_lock: Mutex<()>,
+    /// The last extraction per tab, so paging and `find` are stable and cheap.
+    read_cache: Mutex<HashMap<TabKey, ReadCache>>,
+}
+
+/// One cached extraction: what was asked and the page it came from.
+struct ReadCache {
+    format: &'static str,
+    scope: String,
+    interactive: bool,
+    url: String,
+    content: String,
+    page: PageInfo,
 }
 
 #[derive(Clone)]
@@ -101,6 +116,8 @@ impl BrowserHub {
                 respawns: Mutex::new(VecDeque::new()),
                 supervisor: AtomicBool::new(false),
                 test_mode: AtomicBool::new(false),
+                flush_lock: Mutex::new(()),
+                read_cache: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -165,8 +182,16 @@ impl BrowserHub {
 
     pub fn get(&self, since_seq: Option<u64>) -> BrowserGetInfo {
         let config = self.config();
-        let profiles = &self.inner.profiles;
-        let temporary = |name: &str| profiles.is_temporary(name);
+        // One profiles.json read before the lock, not one per profile under it.
+        let temporary_names: HashSet<String> = self
+            .inner
+            .profiles
+            .list()
+            .into_iter()
+            .filter(|entry| entry.temporary)
+            .map(|entry| entry.name)
+            .collect();
+        let temporary = |name: &str| temporary_names.contains(name);
         let state = self.inner.state.lock().unwrap();
         state.get_info(
             since_seq,
@@ -291,10 +316,41 @@ impl BrowserHub {
                 format!("{name:?} is the default profile; change [browser] default_profile first"),
             ));
         }
-        if self.inner.state.lock().unwrap().profile(name).is_running() {
+        // Never a blocking lock here: this runs on the App thread.
+        let lock = self.profile_lock(name);
+        let Ok(_guard) = lock.try_lock() else {
+            return Err(BrowserError::new(
+                "profile_busy",
+                format!("profile {name:?} is starting or stopping; retry in a moment"),
+            ));
+        };
+        let status = self.inner.state.lock().unwrap().profile(name);
+        if matches!(
+            status,
+            ProfileStatus::Running { .. }
+                | ProfileStatus::Starting { .. }
+                | ProfileStatus::InUse { .. }
+        ) {
             return Err(BrowserError::new(
                 "profile_running",
-                format!("profile {name:?} is running; `herdr browser stop --profile {name}` first"),
+                format!(
+                    "profile {name:?} is {}; `herdr browser stop --profile {name}` first",
+                    status.name()
+                ),
+            ));
+        }
+        let profile_dir = self.inner.profiles.dir(name);
+        let live_pid = launch::read_run_record(&self.inner.home, name)
+            .map(|record| record.pid)
+            .filter(|pid| crate::platform::process_exists(*pid))
+            .or_else(|| {
+                launch::singleton_lock_pid(&profile_dir)
+                    .filter(|pid| crate::platform::process_exists(*pid))
+            });
+        if let Some(pid) = live_pid {
+            return Err(BrowserError::new(
+                "profile_running",
+                format!("a Chromium (pid {pid}) still holds profile {name:?}; close it first"),
             ));
         }
         self.inner.profiles.delete(name, unix_now())?;
@@ -430,11 +486,50 @@ impl BrowserHub {
             ));
         }
         let pane = actor.pane_id().map(str::to_string);
-        let profile = self.profile_name(params.profile.as_deref(), pane.as_deref(), &config)?;
+        // A qualified tab (`work:t3`) names its profile; it must agree with --profile.
+        let tab_profile = match params.tab.as_deref().and_then(|tab| tab.split_once(':')) {
+            Some((prefix, _)) => {
+                if !valid_profile_name(prefix) {
+                    return Err(BrowserError::new(
+                        "invalid_request",
+                        format!(
+                            "tab {:?}: {prefix:?} is not a profile name",
+                            params.tab.as_deref().unwrap_or("")
+                        ),
+                    ));
+                }
+                Some(prefix)
+            }
+            None => None,
+        };
+        let explicit_profile = match (
+            params
+                .profile
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty()),
+            tab_profile,
+        ) {
+            (Some(explicit), Some(prefix)) if explicit != prefix => {
+                return Err(BrowserError::new(
+                    "invalid_request",
+                    format!(
+                        "--profile {explicit} disagrees with tab {}",
+                        params.tab.as_deref().unwrap_or("")
+                    ),
+                ));
+            }
+            (Some(explicit), _) => Some(explicit),
+            (None, prefix) => prefix,
+        };
+        let profile = self.profile_name(explicit_profile, pane.as_deref(), &config)?;
         self.ensure_running(&profile)?;
         let deadline = Duration::from_millis(match &params.op {
             BrowserOp::Wait { timeout_s, .. } => timeout_s.unwrap_or(30).clamp(1, 300) * 1000 + 500,
-            _ => params.timeout_ms.unwrap_or(config.op_timeout_ms()),
+            _ => params
+                .timeout_ms
+                .map(BrowserConfig::clamp_op_timeout_ms)
+                .unwrap_or(config.op_timeout_ms()),
         });
         let op_name = params.op.name();
         let now = unix_now();
@@ -635,7 +730,18 @@ impl BrowserHub {
                 );
                 Ok((result, None, format!("{} tabs", records.len())))
             }
-            BrowserOp::Use { tab } => {
+            BrowserOp::Use => {
+                let tab = params
+                    .tab
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|tab| !tab.is_empty())
+                    .ok_or_else(|| {
+                        BrowserError::new(
+                            "invalid_request",
+                            "use needs a tab (t3 or main:t3); see `herdr browser tabs`",
+                        )
+                    })?;
                 let record = self.resolve_target(profile, Some(tab), None)?;
                 let key = record.key();
                 if let Some(pane) = pane {
@@ -709,14 +815,44 @@ impl BrowserHub {
                         interactive,
                     } => {
                         let format = shape::read_format(format.as_deref())?;
-                        let reply = self.request(
-                            "read",
-                            Some(profile),
-                            Some(target),
-                            json!({ "format": format, "selector": selector, "ref": ref_, "interactive": interactive }),
-                            deadline,
-                        )?;
-                        let page = reply.page.clone().unwrap_or_default();
+                        let scope = ref_
+                            .as_deref()
+                            .map(|r| format!("ref:{r}"))
+                            .or_else(|| selector.as_deref().map(|s| format!("sel:{s}")))
+                            .unwrap_or_default();
+                        // Paging (offset > 0) reuses the last extraction of the same
+                        // format/scope/URL; a fresh read at offset 0 re-extracts.
+                        let cached = if offset.unwrap_or(0) > 0 {
+                            self.cached_read(&key, format, &scope, *interactive, &record.url)
+                        } else {
+                            None
+                        };
+                        let (content, page) = match cached {
+                            Some((content, page)) => (content, page),
+                            None => {
+                                let reply = self.request(
+                                    "read",
+                                    Some(profile),
+                                    Some(target),
+                                    json!({ "format": format, "selector": selector, "ref": ref_, "interactive": interactive }),
+                                    deadline,
+                                )?;
+                                let page = reply.page.clone().unwrap_or_default();
+                                let content = reply.result["content"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_string();
+                                self.store_read(
+                                    &key,
+                                    format,
+                                    &scope,
+                                    *interactive,
+                                    &page,
+                                    &content,
+                                );
+                                (content, page)
+                            }
+                        };
                         self.note_page(&key, &page);
                         let record = self.record(&key)?;
                         let default_max = if format == "snapshot" {
@@ -725,7 +861,7 @@ impl BrowserHub {
                             config.read_max_chars()
                         };
                         let paged = shape::page_text(
-                            reply.result["content"].as_str().unwrap_or_default(),
+                            &content,
                             offset.unwrap_or(0),
                             if *all {
                                 None
@@ -751,17 +887,30 @@ impl BrowserHub {
                         max,
                         context,
                     } => {
-                        let reply = self.request(
-                            "read",
-                            Some(profile),
-                            Some(target),
-                            json!({ "format": "markdown" }),
-                            deadline,
-                        )?;
-                        let page = reply.page.clone().unwrap_or_default();
+                        // `find` reuses the last whole-page markdown of this URL.
+                        let (content, page) =
+                            match self.cached_read(&key, "markdown", "", false, &record.url) {
+                                Some(hit) => hit,
+                                None => {
+                                    let reply = self.request(
+                                        "read",
+                                        Some(profile),
+                                        Some(target),
+                                        json!({ "format": "markdown" }),
+                                        deadline,
+                                    )?;
+                                    let page = reply.page.clone().unwrap_or_default();
+                                    let content = reply.result["content"]
+                                        .as_str()
+                                        .unwrap_or_default()
+                                        .to_string();
+                                    self.store_read(&key, "markdown", "", false, &page, &content);
+                                    (content, page)
+                                }
+                            };
                         self.note_page(&key, &page);
                         let record = self.record(&key)?;
-                        let content = reply.result["content"].as_str().unwrap_or_default();
+                        let content = content.as_str();
                         let matches = shape::find_matches(
                             content,
                             query,
@@ -845,7 +994,7 @@ impl BrowserHub {
                         let page = reply.page.clone().unwrap_or_default();
                         self.note_page(&key, &page);
                         let record = self.record(&key)?;
-                        super::shots::prune(&shots_dir, config.screenshot_keep as usize);
+                        super::shots::prune(&shots_dir, config.screenshot_keep() as usize);
                         let detail = format!(
                             "{} {}x{}",
                             if *full { "full" } else { "viewport" },
@@ -1009,7 +1158,7 @@ impl BrowserHub {
                             action.clone(),
                         )
                     }
-                    BrowserOp::Close { .. } => {
+                    BrowserOp::Close => {
                         let _ = self.request(
                             "close",
                             Some(profile),
@@ -1028,7 +1177,7 @@ impl BrowserHub {
                         };
                         (result, record.short.clone())
                     }
-                    BrowserOp::Focus { .. } => {
+                    BrowserOp::Focus => {
                         let reply = self.request(
                             "focus",
                             Some(profile),
@@ -1050,7 +1199,7 @@ impl BrowserHub {
                     }
                     BrowserOp::Open { .. }
                     | BrowserOp::Tabs { .. }
-                    | BrowserOp::Use { .. }
+                    | BrowserOp::Use
                     | BrowserOp::Unknown => unreachable!(),
                 };
                 Ok((result, Some(key), detail))
@@ -1348,6 +1497,19 @@ impl BrowserHub {
             // Refresh the assets in place: only the node_modules need npm.
             match browser_assets::install(&host_dir) {
                 Ok(_) => {
+                    // Scripts refreshed in place; node_modules only npm can. A pin
+                    // bump means the installed playwright-core no longer matches.
+                    let installed = browser_assets::playwright_installed(&host_dir);
+                    if installed.as_deref() != Some(browser_assets::PLAYWRIGHT_CORE_VERSION) {
+                        return Err(BrowserError::new(
+                            "browser_runtime_outdated",
+                            format!(
+                                "the installed playwright-core is {}, this herdr expects {}; run `herdr browser setup`",
+                                installed.as_deref().unwrap_or("missing"),
+                                browser_assets::PLAYWRIGHT_CORE_VERSION
+                            ),
+                        ));
+                    }
                     if let Some(mut r) = runtime.clone() {
                         r.assets_sha256 = browser_assets::assets_sha256();
                         let _ = browser_assets::write_runtime(&host_dir, &r);
@@ -1482,6 +1644,9 @@ impl BrowserHub {
 
     fn handle_event(&self, event: HostEvent) {
         let now = unix_now();
+        // Console-error counts only mark the ledger dirty; the supervisor's next
+        // pass persists them (an error-looping page must not write per event).
+        let persist_now = !matches!(&event, HostEvent::Tab(tab) if tab.kind == "console_error");
         match event {
             HostEvent::Tab(tab) => {
                 self.inner.state.lock().unwrap().apply_tab_event(&tab, now);
@@ -1522,7 +1687,9 @@ impl BrowserHub {
             }
             HostEvent::Unknown => {}
         }
-        self.flush();
+        if persist_now {
+            self.flush();
+        }
     }
 
     /// The sidecar went away (EOF, kill): fail its pending calls, forget it.
@@ -1717,6 +1884,9 @@ impl BrowserHub {
         let Some(ledger) = ledger else {
             return;
         };
+        // One persistence transaction at a time: concurrent flushes would
+        // append the same activity twice and race on the temp file.
+        let _flushing = self.inner.flush_lock.lock().unwrap();
         let (snapshot, new_entries) = {
             let mut state = self.inner.state.lock().unwrap();
             if !state.dirty {
@@ -1734,17 +1904,95 @@ impl BrowserHub {
         };
         if let Err(err) = crate::persist::browser::save(&ledger, &snapshot) {
             tracing::warn!(event = "browser.ledger.save", err = %err, "failed to write browser.json");
+            self.inner.state.lock().unwrap().dirty = true;
         }
         if let Some(last) = new_entries.last() {
             let activity = self.inner.activity_path.lock().unwrap().clone();
-            if let Some(activity) = activity {
-                if let Err(err) = crate::persist::browser::append_activity(&activity, &new_entries)
-                {
-                    tracing::warn!(event = "browser.activity.append", err = %err, "failed to append browser activity");
+            let appended = match activity {
+                Some(activity) => {
+                    match crate::persist::browser::append_activity(&activity, &new_entries) {
+                        Ok(()) => true,
+                        Err(err) => {
+                            tracing::warn!(event = "browser.activity.append", err = %err, "failed to append browser activity");
+                            false
+                        }
+                    }
                 }
+                None => true,
+            };
+            if appended {
+                self.inner.flushed_seq.store(last.seq, Ordering::Relaxed);
+            } else {
+                self.inner.state.lock().unwrap().dirty = true;
             }
-            self.inner.flushed_seq.store(last.seq, Ordering::Relaxed);
         }
+    }
+
+    fn cached_read(
+        &self,
+        key: &TabKey,
+        format: &'static str,
+        scope: &str,
+        interactive: bool,
+        url: &str,
+    ) -> Option<(String, PageInfo)> {
+        let cache = self.inner.read_cache.lock().unwrap();
+        let entry = cache.get(key)?;
+        (entry.format == format
+            && entry.scope == scope
+            && entry.interactive == interactive
+            && entry.url == url)
+            .then(|| (entry.content.clone(), entry.page.clone()))
+    }
+
+    fn store_read(
+        &self,
+        key: &TabKey,
+        format: &'static str,
+        scope: &str,
+        interactive: bool,
+        page: &PageInfo,
+        content: &str,
+    ) {
+        let url = if page.url.is_empty() {
+            self.inner
+                .state
+                .lock()
+                .unwrap()
+                .tabs
+                .get(key)
+                .map(|record| record.url.clone())
+                .unwrap_or_default()
+        } else {
+            page.url.clone()
+        };
+        self.inner.read_cache.lock().unwrap().insert(
+            key.clone(),
+            ReadCache {
+                format,
+                scope: scope.to_string(),
+                interactive,
+                url,
+                content: content.to_string(),
+                page: page.clone(),
+            },
+        );
+    }
+
+    /// Tests: the profile store and home.
+    #[cfg(test)]
+    pub fn profiles_store_for_test(&self) -> &ProfileStore {
+        &self.inner.profiles
+    }
+
+    #[cfg(test)]
+    pub fn home_for_test(&self) -> &Path {
+        &self.inner.home
+    }
+
+    #[cfg(test)]
+    pub fn profile_lock_for_test(&self, name: &str) -> Arc<Mutex<()>> {
+        self.profile_lock(name)
     }
 
     /// Tests: a look at the state.

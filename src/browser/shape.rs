@@ -17,10 +17,26 @@ const HEADER_URL_CHARS: usize = 80;
 /// Characters of main-content markdown the `open` card shows.
 const CARD_PREVIEW_CHARS: usize = 1500;
 
+/// Page-controlled text (titles, URLs, body) without C0/C1 control
+/// characters, so nothing a page says can reach the terminal as an escape
+/// sequence (OSC 52 clipboard writes, cursor games). `\n` and `\t` stay.
+pub fn sanitize(text: &str) -> String {
+    if !text
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return text.to_string();
+    }
+    text.chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect()
+}
+
 fn clip(text: &str, max: usize) -> String {
+    let text = sanitize(text);
     let count = text.chars().count();
     if count <= max {
-        return text.to_string();
+        return text;
     }
     let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
     out.push('…');
@@ -28,7 +44,10 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    sanitize(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `[t3 · 200 · github.com/foo/bar · "title" · dialog open]`
@@ -68,10 +87,16 @@ pub fn normalize_url(url: &str) -> Result<String, BrowserError> {
     if lower.starts_with("http://")
         || lower.starts_with("https://")
         || lower.starts_with("file://")
-        || lower.starts_with("about:")
+        || lower == "about:blank"
         || lower.starts_with("data:")
     {
         return Ok(url.to_string());
+    }
+    if lower.starts_with("about:") {
+        return Err(BrowserError::new(
+            "invalid_request",
+            "only about:blank is allowed among about: URLs",
+        ));
     }
     if let Some((scheme, _)) = url.split_once("://") {
         return Err(BrowserError::new(
@@ -271,7 +296,7 @@ pub fn read_result(
     if let Some(s) = selector {
         hint.push_str(&format!(" --selector {s:?}"));
     }
-    result.text = format!("{}\n{}", paged.text, paged.footer(&hint));
+    result.text = format!("{}\n{}", sanitize(&paged.text), paged.footer(&hint));
     result.data = json!({
         "tab": record.id(),
         "format": format,
@@ -415,7 +440,7 @@ pub fn links_result(record: &BrowserTabRecord, page: &PageInfo, host: &Value) ->
             format!(
                 "{} → {}",
                 clip(&one_line(link["text"].as_str().unwrap_or("")), 80),
-                link["href"].as_str().unwrap_or("")
+                sanitize(link["href"].as_str().unwrap_or(""))
             )
         })
         .collect();
@@ -568,7 +593,7 @@ pub fn eval_result(
         Value::String(s) => s.clone(),
         other => serde_json::to_string_pretty(other).unwrap_or_default(),
     };
-    let paged = page_text(&rendered, 0, Some(max as u64));
+    let paged = page_text(&sanitize(&rendered), 0, Some(max as u64));
     result.text = if paged.truncated {
         format!(
             "{}\n[{} of {} chars · --max N for more]",
@@ -714,6 +739,32 @@ mod tests {
     }
 
     #[test]
+    fn page_text_reaches_the_terminal_without_escapes() {
+        let mut r = record();
+        r.title = "PR \u{1b}]52;c;ZXZpbA==\u{7}#412\u{9b}x".into();
+        r.url = "https://a/\u{1b}[2J".into();
+        let header = header(&r, None);
+        assert!(
+            !header.contains('\u{1b}') && !header.contains('\u{7}') && !header.contains('\u{9b}'),
+            "{header:?}"
+        );
+        assert!(header.contains("PR ]52;c;ZXZpbA==#412x"), "{header}");
+        let page = PageInfo::default();
+        let paged = page_text("line\u{1b}[31mred\u{7}\n\tkeep", 0, None);
+        let read = read_result(&r, &page, "markdown", &paged, None, None);
+        assert!(
+            read.text.starts_with("line[31mred\n\tkeep"),
+            "{:?}",
+            read.text
+        );
+        assert_eq!(sanitize("plain"), "plain");
+        let table = tabs_result("main", &[r.clone()], None, 0, 120);
+        assert!(!table.text.contains('\u{1b}'));
+        let ev = eval_result(&r, &page, &json!({ "value": "\u{1b}]0;t\u{7}v" }), 100);
+        assert_eq!(ev.text, "]0;tv");
+    }
+
+    #[test]
     fn urls_normalize_and_bad_schemes_are_refused() {
         assert_eq!(
             normalize_url("example.com/x").unwrap(),
@@ -721,6 +772,9 @@ mod tests {
         );
         assert_eq!(normalize_url(" https://a/ ").unwrap(), "https://a/");
         assert_eq!(normalize_url("about:blank").unwrap(), "about:blank");
+        assert_eq!(normalize_url("ABOUT:BLANK").unwrap(), "ABOUT:BLANK");
+        assert!(normalize_url("about:settings").is_err());
+        assert!(normalize_url("about:blank#x").is_err());
         assert!(normalize_url("javascript:alert(1)").is_err());
         assert!(normalize_url("ftp://x").is_err());
         assert!(normalize_url("").is_err());

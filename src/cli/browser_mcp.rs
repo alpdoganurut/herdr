@@ -52,16 +52,11 @@ impl Transport for SocketTransport {
 pub struct Session<T: Transport> {
     transport: T,
     caller: Option<BrowserCaller>,
-    initialized: bool,
 }
 
 impl<T: Transport> Session<T> {
     pub fn new(transport: T, caller: Option<BrowserCaller>) -> Self {
-        Self {
-            transport,
-            caller,
-            initialized: false,
-        }
+        Self { transport, caller }
     }
 
     /// Handle one incoming JSON-RPC message; `None` for notifications.
@@ -75,7 +70,6 @@ impl<T: Transport> Session<T> {
         }
         let result = match method {
             "initialize" => {
-                self.initialized = true;
                 let requested = params["protocolVersion"]
                     .as_str()
                     .unwrap_or(PROTOCOL_VERSION);
@@ -263,9 +257,12 @@ pub fn op_for_tool(
         "browser_tabs" => BrowserOp::Tabs {
             mine: flag(a, "mine"),
         },
-        "browser_use" => BrowserOp::Use { tab: need("tab")? },
-        "browser_close" => BrowserOp::Close { tab: None },
-        "browser_focus" => BrowserOp::Focus { tab: None },
+        "browser_use" => {
+            need("tab")?;
+            BrowserOp::Use
+        }
+        "browser_close" => BrowserOp::Close,
+        "browser_focus" => BrowserOp::Focus,
         other => return Err(format!("unknown tool {other}")),
     };
     Ok((op, profile, tab))

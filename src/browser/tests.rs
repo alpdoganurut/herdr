@@ -495,9 +495,8 @@ fn explicit_tab_moves_the_cursor_and_unknown_tabs_error() {
     });
     p.tab = Some("t9".into());
     assert_eq!(hub.run(&actor, p).unwrap_err().code, "tab_not_found");
-    let mut p = params(BrowserOp::Use {
-        tab: "main:t2".into(),
-    });
+    let mut p = params(BrowserOp::Use);
+    p.tab = Some("main:t2".into());
     p.caller = None;
     let used = hub.run(&actor, p).unwrap();
     assert!(used.text.contains("current tab is now main:t2"));
@@ -635,5 +634,277 @@ fn profiles_new_is_a_fresh_temporary_and_protected_ones_refuse_delete() {
     let names: Vec<String> = hub.profiles().into_iter().map(|p| p.name).collect();
     assert!(names.contains(&"main".to_string()));
     assert!(names.contains(&created.name));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_qualified_tab_selects_its_profile_and_disagreeing_flags_are_refused() {
+    let (hub, shared, _stream, home) = hub("qualified");
+    hub.set_profile_running_for_test("work", 0, 4322);
+    let actor = pane("w2:pD");
+    let mut p = params(BrowserOp::Open {
+        url: "https://w.test/".into(),
+        focus: false,
+        wait: None,
+    });
+    p.profile = Some("work".into());
+    let opened = hub.run(&actor, p).unwrap();
+    assert_eq!(opened.tab.as_deref(), Some("work:t2"));
+    // another pane, cursor on main, reads the work tab by its qualified id
+    let other = pane("w2:pE");
+    hub.run(
+        &other,
+        params(BrowserOp::Open {
+            url: "https://m.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    let mut p = params(BrowserOp::Links {
+        filter: None,
+        max: None,
+    });
+    p.tab = Some("work:t2".into());
+    let links = hub.run(&other, p).unwrap();
+    assert_eq!(links.tab.as_deref(), Some("work:t2"));
+    let (_, target, _) = shared.lock().unwrap().ops.last().cloned().unwrap();
+    assert_eq!(target.as_deref(), Some("T1"), "the work tab's target");
+    let mut p = params(BrowserOp::Links {
+        filter: None,
+        max: None,
+    });
+    p.tab = Some("work:t2".into());
+    p.profile = Some("main".into());
+    let err = hub.run(&other, p).unwrap_err();
+    assert_eq!(err.code, "invalid_request");
+    assert!(err.message.contains("disagrees"));
+    let mut p = params(BrowserOp::Links {
+        filter: None,
+        max: None,
+    });
+    p.tab = Some("Bad Profile:t2".into());
+    assert_eq!(hub.run(&other, p).unwrap_err().code, "invalid_request");
+    // use without a tab is refused; with a qualified tab it moves the cursor
+    assert_eq!(
+        hub.run(&other, params(BrowserOp::Use)).unwrap_err().code,
+        "invalid_request"
+    );
+    let mut p = params(BrowserOp::Use);
+    p.tab = Some("work:t2".into());
+    hub.run(&other, p).unwrap();
+    hub.with_state(|state| assert_eq!(state.cursor_profile("w2:pE"), Some("work")));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn profile_delete_refuses_starting_in_use_live_lock_and_busy() {
+    let (hub, _shared, _stream, home) = hub("delete-guards");
+    let store = hub.profiles_store_for_test();
+    store.ensure("scratch", true, 1).unwrap();
+    hub.with_state_mut(|state| {
+        state.set_profile(
+            "scratch",
+            super::state::ProfileStatus::Starting { since: 1 },
+        )
+    });
+    assert_eq!(
+        hub.profile_delete("scratch").unwrap_err().code,
+        "profile_running"
+    );
+    hub.with_state_mut(|state| {
+        state.set_profile(
+            "scratch",
+            super::state::ProfileStatus::InUse {
+                pid: Some(1),
+                at: 1,
+            },
+        )
+    });
+    assert_eq!(
+        hub.profile_delete("scratch").unwrap_err().code,
+        "profile_running"
+    );
+    hub.with_state_mut(|state| state.set_profile("scratch", super::state::ProfileStatus::Stopped));
+    // a live SingletonLock pid herdr did not record
+    std::os::unix::fs::symlink(
+        format!("host-{}", std::process::id()),
+        store.dir("scratch").join("SingletonLock"),
+    )
+    .unwrap();
+    let err = hub.profile_delete("scratch").unwrap_err();
+    assert_eq!(err.code, "profile_running");
+    assert!(err.message.contains("still holds"));
+    std::fs::remove_file(store.dir("scratch").join("SingletonLock")).unwrap();
+    // a stale run record with a live pid
+    super::launch::write_run_record(
+        hub_home(&hub),
+        "scratch",
+        &super::launch::RunRecord {
+            pid: std::process::id(),
+            port: 1,
+            exe: String::new(),
+            launched_at: 0,
+            server_pid: 0,
+            argv: vec![],
+            browser: String::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        hub.profile_delete("scratch").unwrap_err().code,
+        "profile_running"
+    );
+    super::launch::clear_run_record(hub_home(&hub), "scratch");
+    // the profile lock held by a lifecycle op: busy, never a blocking wait
+    let lock = hub.profile_lock_for_test("scratch");
+    let guard = lock.lock().unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(
+        hub.profile_delete("scratch").unwrap_err().code,
+        "profile_busy"
+    );
+    assert!(started.elapsed() < Duration::from_millis(200));
+    drop(guard);
+    hub.profile_delete("scratch").unwrap();
+    assert!(!store.exists("scratch"));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+fn hub_home(hub: &BrowserHub) -> &std::path::Path {
+    hub.home_for_test()
+}
+
+#[test]
+fn concurrent_flushes_never_duplicate_activity_lines() {
+    let (hub, _shared, _stream, home) = hub("flush");
+    let data_dir = home.join("session");
+    hub.enable_persistence(&data_dir);
+    let key = TabKey::new("main", "F");
+    hub.with_state_mut(|state| {
+        state.adopt_tab(
+            &key,
+            &super::state::HostTab {
+                target: "F".into(),
+                ..Default::default()
+            },
+            &BrowserActor::User,
+            1,
+        )
+    });
+    let threads: Vec<_> = (0..8)
+        .map(|i| {
+            let hub = hub.clone();
+            let key = key.clone();
+            std::thread::spawn(move || {
+                for j in 0..25 {
+                    hub.with_state_mut(|state| {
+                        state.touch(
+                            "main",
+                            Some(&key),
+                            &pane(&format!("p{i}")),
+                            "eval",
+                            &format!("{j}"),
+                            true,
+                            0,
+                            2,
+                        )
+                    });
+                    hub.flush();
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    hub.flush();
+    let lines = std::fs::read_to_string(data_dir.join("browser-activity.jsonl")).unwrap();
+    let seqs: Vec<u64> = lines
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["seq"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(seqs.len(), 200, "every touch once");
+    let mut dedup = seqs.clone();
+    dedup.sort_unstable();
+    dedup.dedup();
+    assert_eq!(dedup.len(), seqs.len(), "no duplicate lines");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn paging_reuses_the_last_extraction_and_a_fresh_read_re_extracts() {
+    let (hub, shared, _stream, home) = hub("read-cache");
+    let actor = pane("w2:pD");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    let reads = |shared: &Shared| {
+        shared
+            .lock()
+            .unwrap()
+            .ops
+            .iter()
+            .filter(|(op, _, _)| op == "read")
+            .count()
+    };
+    let read = |offset: u64| {
+        params(BrowserOp::Read {
+            format: None,
+            selector: None,
+            ref_: None,
+            offset: Some(offset),
+            max: Some(100),
+            all: false,
+            interactive: false,
+        })
+    };
+    let first = hub.run(&actor, read(0)).unwrap();
+    assert_eq!(reads(&shared), 1);
+    let second = hub.run(&actor, read(100)).unwrap();
+    assert_eq!(reads(&shared), 1, "paging reuses the extraction");
+    assert_eq!(second.data["offset"], 100);
+    assert_ne!(first.data["content"], second.data["content"]);
+    // find on the same page reuses the markdown too
+    hub.run(
+        &actor,
+        params(BrowserOp::Find {
+            query: "abc".into(),
+            max: None,
+            context: None,
+        }),
+    )
+    .unwrap();
+    assert_eq!(reads(&shared), 1);
+    // a fresh read at offset 0 re-extracts; a different format too
+    hub.run(&actor, read(0)).unwrap();
+    assert_eq!(reads(&shared), 2);
+    let mut text = read(50);
+    if let BrowserOp::Read { format, .. } = &mut text.op {
+        *format = Some("text".into());
+    }
+    hub.run(&actor, text).unwrap();
+    assert_eq!(reads(&shared), 3, "another format is another extraction");
+    // a navigation changes the URL: the cache no longer matches
+    hub.run(
+        &actor,
+        params(BrowserOp::Navigate {
+            url: "https://b.test/".into(),
+            wait: None,
+        }),
+    )
+    .unwrap();
+    hub.run(&actor, read(100)).unwrap();
+    assert_eq!(reads(&shared), 4);
     let _ = std::fs::remove_dir_all(&home);
 }

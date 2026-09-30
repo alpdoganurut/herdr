@@ -20,6 +20,9 @@ pub const MIN_LAUNCH_TIMEOUT_MS: u64 = 3_000;
 pub const MAX_LAUNCH_TIMEOUT_MS: u64 = 120_000;
 pub const MIN_OP_TIMEOUT_MS: u64 = 1_000;
 pub const MAX_OP_TIMEOUT_MS: u64 = 600_000;
+/// Fewer kept screenshots than this would prune the file just written before
+/// the MCP copy is read.
+pub const MIN_SCREENSHOT_KEEP: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
@@ -119,6 +122,15 @@ impl BrowserConfig {
             .clamp(MIN_OP_TIMEOUT_MS, MAX_OP_TIMEOUT_MS)
     }
 
+    /// A caller-supplied per-call deadline, kept within the same bounds.
+    pub fn clamp_op_timeout_ms(ms: u64) -> u64 {
+        ms.clamp(MIN_OP_TIMEOUT_MS, MAX_OP_TIMEOUT_MS)
+    }
+
+    pub fn screenshot_keep(&self) -> u32 {
+        self.screenshot_keep.max(MIN_SCREENSHOT_KEEP)
+    }
+
     /// The configured node path, if any.
     pub fn node(&self) -> Option<&str> {
         let node = self.node.trim();
@@ -177,6 +189,12 @@ impl BrowserConfig {
             MAX_OP_TIMEOUT_MS,
             &mut diagnostics,
         );
+        if self.screenshot_keep < MIN_SCREENSHOT_KEEP {
+            diagnostics.push(format!(
+                "browser.screenshot_keep = {} is below {MIN_SCREENSHOT_KEEP}; clamped to {MIN_SCREENSHOT_KEEP}",
+                self.screenshot_keep
+            ));
+        }
         if self.executable != AUTO_EXECUTABLE && !self.executable.starts_with('/') {
             diagnostics.push(format!(
                 "browser.executable = {:?} is neither \"auto\" nor an absolute path; the browser will not start",
@@ -184,10 +202,7 @@ impl BrowserConfig {
             ));
         }
         for arg in &self.extra_args {
-            if FORBIDDEN_SWITCHES
-                .iter()
-                .any(|switch| arg == switch || arg.starts_with(&format!("{switch}=")))
-            {
+            if is_forbidden_switch(arg) {
                 diagnostics.push(format!(
                     "browser.extra_args entry {arg:?} is never passed (it marks the browser as automated or weakens it); dropped"
                 ));
@@ -200,17 +215,15 @@ impl BrowserConfig {
     pub fn extra_args(&self) -> Vec<String> {
         self.extra_args
             .iter()
-            .filter(|arg| {
-                !FORBIDDEN_SWITCHES
-                    .iter()
-                    .any(|switch| *arg == switch || arg.starts_with(&format!("{switch}=")))
-            })
+            .filter(|arg| !is_forbidden_switch(arg))
             .cloned()
             .collect()
     }
 }
 
-/// Switches that are never passed to Chromium, whatever the config says.
+/// Switches that are never passed to Chromium, whatever the config says: they
+/// mark the browser as automated, weaken it, or belong to herdr (the port and
+/// the profile dir). The one list the argv filter and the diagnostics share.
 pub const FORBIDDEN_SWITCHES: &[&str] = &[
     "--enable-automation",
     "--remote-allow-origins",
@@ -220,8 +233,22 @@ pub const FORBIDDEN_SWITCHES: &[&str] = &[
     "--remote-debugging-pipe",
     "--remote-debugging-port",
     "--no-sandbox",
+    "--use-mock-keychain",
     "--user-data-dir",
 ];
+
+/// Whether `arg` is a forbidden switch, in its `--switch`, `--switch=value`,
+/// `-switch` or `-switch=value` form.
+pub fn is_forbidden_switch(arg: &str) -> bool {
+    let Some(body) = arg.strip_prefix('-') else {
+        return false;
+    };
+    let body = body.strip_prefix('-').unwrap_or(body);
+    let name = body.split_once('=').map(|(name, _)| name).unwrap_or(body);
+    FORBIDDEN_SWITCHES
+        .iter()
+        .any(|switch| switch.trim_start_matches('-') == name)
+}
 
 /// A profile name: `[a-z][a-z0-9-]{0,31}`.
 pub fn valid_profile_name(name: &str) -> bool {
@@ -266,17 +293,26 @@ mod tests {
             screenshot_max_px: 1,
             launch_timeout_ms: 1,
             op_timeout_ms: 10_000_000,
+            screenshot_keep: 0,
             ..BrowserConfig::default()
         };
+        assert_eq!(config.screenshot_keep(), MIN_SCREENSHOT_KEEP);
+        assert_eq!(BrowserConfig::clamp_op_timeout_ms(1), MIN_OP_TIMEOUT_MS);
+        assert_eq!(
+            BrowserConfig::clamp_op_timeout_ms(u64::MAX),
+            MAX_OP_TIMEOUT_MS
+        );
+        assert_eq!(BrowserConfig::clamp_op_timeout_ms(5_000), 5_000);
         assert_eq!(config.read_max_chars(), MIN_READ_MAX_CHARS);
         assert_eq!(config.snapshot_max_chars(), MAX_READ_MAX_CHARS);
         assert_eq!(config.screenshot_max_px(), MIN_SCREENSHOT_MAX_PX);
         assert_eq!(config.launch_timeout_ms(), MIN_LAUNCH_TIMEOUT_MS);
         assert_eq!(config.op_timeout_ms(), MAX_OP_TIMEOUT_MS);
         let diagnostics = config.diagnostics();
-        assert_eq!(diagnostics.len(), 5, "{diagnostics:?}");
+        assert_eq!(diagnostics.len(), 6, "{diagnostics:?}");
         assert!(diagnostics[0].contains("browser.read_max_chars = 10"));
         assert!(diagnostics[4].contains("clamped to 600000"));
+        assert!(diagnostics[5].contains("browser.screenshot_keep = 0"));
     }
 
     #[test]
@@ -301,11 +337,19 @@ mod tests {
                 "--enable-automation".into(),
                 "--remote-debugging-port=9222".into(),
                 "--headless=new".into(),
+                "-no-sandbox".into(),
+                "--use-mock-keychain".into(),
+                "-user-data-dir=/x".into(),
+                "--no-sandboxing-extra".into(),
             ],
             ..BrowserConfig::default()
         };
-        assert_eq!(config.extra_args(), ["--lang=en"]);
-        assert_eq!(config.diagnostics().len(), 3);
+        assert_eq!(config.extra_args(), ["--lang=en", "--no-sandboxing-extra"]);
+        assert_eq!(config.diagnostics().len(), 6);
+        assert!(is_forbidden_switch("-headless"));
+        assert!(is_forbidden_switch("--remote-debugging-pipe"));
+        assert!(!is_forbidden_switch("headless"));
+        assert!(!is_forbidden_switch("--lang"));
     }
 
     #[test]

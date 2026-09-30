@@ -39,13 +39,21 @@ pub fn paths(
     let full = match out {
         Some(out) => {
             let out = PathBuf::from(out);
-            let out = if out.is_absolute() {
-                out
-            } else {
-                std::env::current_dir()
-                    .map(|cwd| cwd.join(&out))
-                    .unwrap_or(out)
-            };
+            if !out.is_absolute() {
+                return Err(BrowserError::new(
+                    "invalid_request",
+                    format!("--out must be an absolute path, got {}", out.display()),
+                ));
+            }
+            if out.exists() {
+                return Err(BrowserError::new(
+                    "invalid_request",
+                    format!(
+                        "--out: {} exists; screenshots never overwrite",
+                        out.display()
+                    ),
+                ));
+            }
             if let Some(parent) = out.parent() {
                 if !parent.is_dir() {
                     return Err(BrowserError::new(
@@ -138,6 +146,13 @@ mod tests {
         let out = dir.join("custom.png");
         let (full, _) = paths(&dir, "t1", "png", Some(out.to_str().unwrap()), 1).unwrap();
         assert_eq!(full, out.display().to_string());
+        fs::write(&out, "x").unwrap();
+        assert!(
+            matches!(paths(&dir, "t1", "png", Some(out.to_str().unwrap()), 1), Err(err) if err.code == "invalid_request" && err.message.contains("never overwrite"))
+        );
+        assert!(
+            matches!(paths(&dir, "t1", "png", Some("relative/shot.png"), 1), Err(err) if err.code == "invalid_request" && err.message.contains("absolute"))
+        );
         assert!(
             matches!(paths(&dir, "t1", "png", Some("/nope/dir/x.png"), 1), Err(err) if err.code == "invalid_request")
         );

@@ -1255,12 +1255,14 @@ fn browser_launch_argv_carries_no_automation_switches() {
     assert!(argv.contains(&"--disable-blink-features=AutomationControlled".to_string()));
     assert!(argv.contains(&"--restore-last-session".to_string()));
     assert!(argv.contains(&"--lang=tr".to_string()));
-    for never in crate::browser::launch::NEVER_PASSED {
-        assert!(
-            !argv.iter().any(|arg| arg.starts_with(never)),
-            "{never} in {argv:?}"
-        );
-    }
+    let own: Vec<&String> = argv
+        .iter()
+        .filter(|arg| crate::config::is_forbidden_switch(arg))
+        .collect();
+    assert_eq!(own.len(), 2, "only herdr's profile dir and port: {own:?}");
+    assert!(own.iter().all(|arg| {
+        arg.starts_with("--user-data-dir=") || arg.starts_with("--remote-debugging-port=")
+    }));
     assert!(!argv.iter().any(|arg| arg == "--remote-debugging-port=0"));
     assert!(!argv
         .iter()

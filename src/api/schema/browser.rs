@@ -222,17 +222,12 @@ pub enum BrowserOp {
         #[serde(default, skip_serializing_if = "super::is_false")]
         mine: bool,
     },
-    /// Make `tab` the caller's current tab.
-    Use { tab: String },
-    Close {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tab: Option<String>,
-    },
+    /// Make the tab in `BrowserRunParams.tab` the caller's current tab.
+    Use,
+    /// Close the current (or `BrowserRunParams.tab`) tab.
+    Close,
     /// Select the tab and raise the window (for the human).
-    Focus {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tab: Option<String>,
-    },
+    Focus,
     #[serde(other)]
     Unknown,
 }
@@ -259,9 +254,9 @@ impl BrowserOp {
             BrowserOp::Eval { .. } => "eval",
             BrowserOp::Dialog { .. } => "dialog",
             BrowserOp::Tabs { .. } => "tabs",
-            BrowserOp::Use { .. } => "use",
-            BrowserOp::Close { .. } => "close",
-            BrowserOp::Focus { .. } => "focus",
+            BrowserOp::Use => "use",
+            BrowserOp::Close => "close",
+            BrowserOp::Focus => "focus",
             BrowserOp::Unknown => "unknown",
         }
     }
@@ -596,6 +591,29 @@ mod tests {
             serde_json::from_str(r#"{"op":"screenshot","ref":"e4"}"#).unwrap();
         assert!(
             matches!(params.op, BrowserOp::Screenshot { ref ref_, .. } if ref_.as_deref() == Some("e4"))
+        );
+    }
+
+    #[test]
+    fn tab_targets_travel_in_params_for_use_close_and_focus() {
+        for (json, op) in [
+            (r#"{"op":"use","tab":"t4"}"#, BrowserOp::Use),
+            (r#"{"op":"close","tab":"t1"}"#, BrowserOp::Close),
+            (r#"{"op":"focus","tab":"main:t2"}"#, BrowserOp::Focus),
+        ] {
+            let params: BrowserRunParams = serde_json::from_str(json).unwrap();
+            assert_eq!(params.op, op, "{json}");
+            assert!(params.tab.is_some(), "{json}");
+            let back = serde_json::to_string(&params).unwrap();
+            assert_eq!(back.matches("\"tab\"").count(), 1, "{back}");
+            let again: BrowserRunParams = serde_json::from_str(&back).unwrap();
+            assert_eq!(again, params);
+        }
+        let bare: BrowserRunParams = serde_json::from_str(r#"{"op":"use"}"#).unwrap();
+        assert_eq!(bare.op, BrowserOp::Use);
+        assert!(
+            bare.tab.is_none(),
+            "the handler refuses it, the schema accepts it"
         );
     }
 

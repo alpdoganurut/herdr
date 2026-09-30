@@ -2335,33 +2335,24 @@
               "type": "object"
             },
             {
-              "description": "Make `tab` the caller's current tab.",
+              "description": "Make the tab in `BrowserRunParams.tab` the caller's current tab.",
               "properties": {
                 "op": {
                   "const": "use",
                   "type": "string"
-                },
-                "tab": {
-                  "type": "string"
                 }
               },
               "required": [
-                "op",
-                "tab"
+                "op"
               ],
               "type": "object"
             },
             {
+              "description": "Close the current (or `BrowserRunParams.tab`) tab.",
               "properties": {
                 "op": {
                   "const": "close",
                   "type": "string"
-                },
-                "tab": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
                 }
               },
               "required": [
@@ -2375,12 +2366,6 @@
                 "op": {
                   "const": "focus",
                   "type": "string"
-                },
-                "tab": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
                 }
               },
               "required": [

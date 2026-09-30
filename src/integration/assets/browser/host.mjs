@@ -239,8 +239,9 @@ async function pageInfo(state) {
   return { url: state.page.url(), title, dialog_open: dialogOpen, status: state.lastStatus || null };
 }
 function waitUntilOf(wait) {
-  if (wait === 'load' || wait === 'networkidle' || wait === 'commit') return wait;
-  return 'domcontentloaded';
+  if (wait === undefined || wait === null || wait === '') return 'domcontentloaded';
+  if (wait === 'domcontentloaded' || wait === 'load' || wait === 'networkidle' || wait === 'commit') return wait;
+  fail('invalid_request', `unknown wait state ${JSON.stringify(wait)}; expected domcontentloaded, load or networkidle`);
 }
 async function settle(state, wait) {
   if (wait === 'networkidle' || wait === 'load') return;
@@ -453,17 +454,26 @@ const ops = {
     let inlinePath = null;
     const maxPx = args.max_px || 1568;
     const longEdge = Math.max(size.width, size.height);
-    if (longEdge > maxPx && args.inline_path && !scope) {
-      // Downscale with CDP's clip.scale (no image library needed).
+    if (longEdge > maxPx && args.inline_path) {
+      // Downscale with CDP's clip.scale (no image library needed). Element shots
+      // clip to the element's box in page coordinates (viewport box + scroll).
       const session = state.session;
       const scale = maxPx / longEdge;
       const metrics = await session.send('Page.getLayoutMetrics');
       const vis = metrics.cssVisualViewport || metrics.visualViewport;
       const content = metrics.cssContentSize || metrics.contentSize;
-      const clip = args.full
-        ? { x: 0, y: 0, width: content.width, height: content.height, scale }
-        : { x: vis.pageX, y: vis.pageY, width: vis.clientWidth, height: vis.clientHeight, scale };
-      const shot = await session.send('Page.captureScreenshot', { format: type, quality: type === 'jpeg' ? (args.quality || 70) : undefined, clip, captureBeyondViewport: Boolean(args.full) });
+      let clip;
+      if (scope) {
+        const box = await scope.boundingBox();
+        if (!box) fail('stale_ref', 'the element has no box any more; take a new snapshot');
+        const scroll = await state.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+        clip = { x: box.x + scroll.x, y: box.y + scroll.y, width: box.width, height: box.height, scale };
+      } else if (args.full) {
+        clip = { x: 0, y: 0, width: content.width, height: content.height, scale };
+      } else {
+        clip = { x: vis.pageX, y: vis.pageY, width: vis.clientWidth, height: vis.clientHeight, scale };
+      }
+      const shot = await session.send('Page.captureScreenshot', { format: type, quality: type === 'jpeg' ? (args.quality || 70) : undefined, clip, captureBeyondViewport: Boolean(args.full || scope) });
       fs.writeFileSync(args.inline_path, Buffer.from(shot.data, 'base64'));
       inlinePath = args.inline_path;
     }

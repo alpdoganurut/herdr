@@ -424,21 +424,22 @@ pub(crate) fn build_op(verb: &str, args: &[String]) -> Result<(BrowserOp, Common
             )
         }
         "use" => {
-            let c = parse_common(args, &[], &[], false)?;
-            let tab = c
-                .tab
-                .clone()
-                .or_else(|| c.positionals.first().cloned())
-                .ok_or_else(|| usage("use TAB"))?;
-            (BrowserOp::Use { tab }, c)
+            let mut c = parse_common(args, &[], &[], true)?;
+            if c.tab.is_none() {
+                c.tab = c.positionals.first().cloned();
+            }
+            if c.tab.as_deref().is_none_or(str::is_empty) {
+                return Err(usage("use TAB"));
+            }
+            (BrowserOp::Use, c)
         }
         "close" => {
             let c = parse_common(args, &[], &[], true)?;
-            (BrowserOp::Close { tab: None }, c)
+            (BrowserOp::Close, c)
         }
         "focus" => {
             let c = parse_common(args, &[], &[], true)?;
-            (BrowserOp::Focus { tab: None }, c)
+            (BrowserOp::Focus, c)
         }
         other => return Err(format!("unknown browser verb {other:?}\n{USAGE}")),
     })
@@ -534,7 +535,7 @@ fn status(args: &[String]) -> std::io::Result<i32> {
 }
 
 pub(crate) fn format_status(status: &BrowserStatusInfo, now: u64) -> String {
-    use crate::browser::shape::age;
+    use crate::browser::shape::{age, sanitize};
     let mut out = String::new();
     let get = &status.get;
     out.push_str(&format!(
@@ -625,16 +626,16 @@ pub(crate) fn format_status(status: &BrowserStatusInfo, now: u64) -> String {
         let who = match &tab.last {
             Some(touch) => format!(
                 "{} {} {} ago",
-                touch.actor.label(),
+                sanitize(&touch.actor.label()),
                 touch.op,
                 age(now.saturating_sub(touch.at))
             ),
-            None => format!("opened by {}", tab.opened_by.label()),
+            None => format!("opened by {}", sanitize(&tab.opened_by.label())),
         };
         out.push_str(&format!(
             "  {:<9} {:<50} {}{}{}\n",
             tab.id,
-            crate::browser::state::display_url(&tab.url)
+            sanitize(&crate::browser::state::display_url(&tab.url))
                 .chars()
                 .take(50)
                 .collect::<String>(),
@@ -673,9 +674,12 @@ pub(crate) fn format_activity(entry: &BrowserActivity, now: u64) -> String {
         "{:>5} {:<10} {:<22} {:<10} {}{}",
         crate::browser::shape::age(now.saturating_sub(entry.at)),
         entry.tab.as_deref().unwrap_or(&entry.profile),
-        entry.actor.label().chars().take(22).collect::<String>(),
+        crate::browser::shape::sanitize(&entry.actor.label())
+            .chars()
+            .take(22)
+            .collect::<String>(),
         entry.op,
-        entry.detail,
+        crate::browser::shape::sanitize(&entry.detail),
         if entry.ok {
             String::new()
         } else {
@@ -1265,8 +1269,18 @@ mod tests {
         let (op, c) = build_op("read", &s(&["--out", "/tmp/page.md"])).unwrap();
         assert!(matches!(op, BrowserOp::Read { all: true, .. }));
         assert_eq!(c.value("out"), Some("/tmp/page.md"));
-        let (op, _) = build_op("use", &s(&["t4"])).unwrap();
-        assert!(matches!(op, BrowserOp::Use { ref tab } if tab == "t4"));
+        let (op, c) = build_op("use", &s(&["t4"])).unwrap();
+        assert_eq!(op, BrowserOp::Use);
+        assert_eq!(c.tab.as_deref(), Some("t4"));
+        let (op, c) = build_op("use", &s(&["work:t2"])).unwrap();
+        assert_eq!(op, BrowserOp::Use);
+        assert_eq!(c.tab.as_deref(), Some("work:t2"));
+        assert!(build_op("use", &s(&[]))
+            .unwrap_err()
+            .starts_with("usage: herdr browser use"));
+        let (op, c) = build_op("close", &s(&["t7"])).unwrap();
+        assert_eq!(op, BrowserOp::Close);
+        assert_eq!(c.tab.as_deref(), Some("t7"));
         let (_, c) = build_op("tabs", &s(&["--mine"])).unwrap();
         assert!(c.flag("mine"));
     }

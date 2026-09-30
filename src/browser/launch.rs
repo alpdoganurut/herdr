@@ -27,18 +27,8 @@ pub const MAX_PROFILE_LOG_BYTES: u64 = 5 * 1024 * 1024;
 pub const LAUNCH_ATTEMPTS: u32 = 3;
 const DEVTOOLS_POLL: Duration = Duration::from_millis(100);
 const HTTP_TIMEOUT: Duration = Duration::from_millis(1500);
-
-/// Switches that mark the browser as automated or weaken it; never passed.
-pub const NEVER_PASSED: &[&str] = &[
-    "--enable-automation",
-    "--remote-allow-origins",
-    "--headless",
-    "--disable-web-security",
-    "--remote-debugging-address",
-    "--remote-debugging-pipe",
-    "--no-sandbox",
-    "--use-mock-keychain",
-];
+/// `/json/version` is a few hundred bytes; anything past this is not Chromium.
+const MAX_VERSION_RESPONSE_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Executable {
@@ -165,10 +155,7 @@ pub fn argv(
         argv.push("--restore-last-session".to_string());
     }
     for arg in extra {
-        if NEVER_PASSED
-            .iter()
-            .any(|never| arg == never || arg.starts_with(&format!("{never}=")))
-        {
+        if crate::config::is_forbidden_switch(arg) {
             continue;
         }
         argv.push(arg.clone());
@@ -195,7 +182,9 @@ pub fn json_version(port: u16, timeout: Duration) -> Option<serde_json::Value> {
         )
         .ok()?;
     let mut response = Vec::new();
-    let _ = stream.read_to_end(&mut response);
+    let _ = (&mut stream)
+        .take(MAX_VERSION_RESPONSE_BYTES)
+        .read_to_end(&mut response);
     let text = String::from_utf8_lossy(&response);
     let (head, body) = text.split_once("\r\n\r\n")?;
     if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
@@ -224,7 +213,9 @@ pub fn singleton_lock_pid(profile_dir: &Path) -> Option<u32> {
 }
 
 pub fn parse_singleton_lock(target: &str) -> Option<u32> {
-    target.rsplit_once('-')?.1.trim().parse().ok()
+    let pid: u32 = target.rsplit_once('-')?.1.trim().parse().ok()?;
+    // A pid is a positive i32; anything else is garbage, never signalled.
+    (1..=i32::MAX as u32).contains(&pid).then_some(pid)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -586,6 +577,9 @@ mod tests {
                 "--enable-automation".into(),
                 "--headless=new".into(),
                 "--no-sandbox".into(),
+                "-remote-debugging-pipe".into(),
+                "-use-mock-keychain".into(),
+                "--user-data-dir=/elsewhere".into(),
             ],
             true,
         );
@@ -595,9 +589,27 @@ mod tests {
         assert!(args.contains(&"--restore-last-session".to_string()));
         assert!(args.contains(&"--lang=tr".to_string()));
         assert_eq!(args.last().unwrap(), "about:blank");
-        for never in NEVER_PASSED {
-            assert!(!args.iter().any(|a| a.starts_with(never)), "{never}");
-        }
+        // herdr's own two (profile dir, port) are the only forbidden switches present
+        let own: Vec<&String> = args
+            .iter()
+            .filter(|a| crate::config::is_forbidden_switch(a))
+            .collect();
+        assert_eq!(own.len(), 2, "{own:?}");
+        assert!(own.iter().all(|a| {
+            a.starts_with("--user-data-dir=") || a.starts_with("--remote-debugging-port=")
+        }));
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.starts_with('-') && !a.starts_with("--")),
+            "{args:?}"
+        );
+        assert_eq!(
+            args.iter()
+                .filter(|a| a.starts_with("--user-data-dir="))
+                .count(),
+            1
+        );
         assert!(!args.iter().any(|a| a == "--remote-debugging-port=0"));
         let again = argv(profile, 1, false, &[], false);
         assert!(!again.contains(&"--restore-last-session".to_string()));
@@ -644,6 +656,8 @@ mod tests {
         }
         assert_eq!(parse_singleton_lock("my-host-name-4242"), Some(4242));
         assert_eq!(parse_singleton_lock("garbage"), None);
+        assert_eq!(parse_singleton_lock("host-4294967295"), None, "not a pid");
+        assert_eq!(parse_singleton_lock("host-0"), None);
 
         assert!(read_run_record(&root, "main").is_none());
         let record = RunRecord {

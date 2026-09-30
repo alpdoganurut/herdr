@@ -354,11 +354,22 @@ impl BrowserState {
     /// Adopt a tab herdr opened: the caller is `opened_by`.
     pub fn adopt_tab(&mut self, key: &TabKey, tab: &HostTab, actor: &BrowserActor, now: u64) {
         if let Some(existing) = self.tabs.get_mut(key) {
+            // Only an agent `open` adopts: the target may already be tracked
+            // because the sidecar's `opened` event (initiator other) arrived
+            // before the open reply, so the opener is this actor.
             existing.state = TabState::Open;
             existing.closed_at = None;
             existing.url = tab.url.clone();
             existing.title = tab.title.clone();
             existing.selected = tab.selected;
+            existing.opened_by = actor.clone();
+            existing.opened_at = now;
+            existing.last_actor = actor.clone();
+            existing.last_at = now;
+            existing.users = actor
+                .pane_id()
+                .map(|p| vec![p.to_string()])
+                .unwrap_or_default();
             self.bump();
             return;
         }
@@ -955,6 +966,33 @@ mod tests {
             "the counter survived the reload"
         );
         assert!(reloaded.tabs[&c].opened_by.is_user());
+    }
+
+    #[test]
+    fn an_opened_event_that_beats_the_open_reply_still_attributes_the_agent() {
+        let mut state = BrowserState::new();
+        state.apply_tab_event(
+            &HostTabEvent {
+                profile: "main".into(),
+                target: "T".into(),
+                kind: "opened".into(),
+                url: "https://a/".into(),
+                title: String::new(),
+                opener: None,
+                initiator: "other".into(),
+                selected: None,
+            },
+            5,
+        );
+        let key = TabKey::new("main", "T");
+        assert!(state.tabs[&key].opened_by.is_user());
+        state.adopt_tab(&key, &host_tab("T", "https://a/"), &pane("w2:pD"), 6);
+        let record = &state.tabs[&key];
+        assert_eq!(record.opened_by.pane_id(), Some("w2:pD"));
+        assert_eq!(record.last_actor.pane_id(), Some("w2:pD"));
+        assert_eq!(record.opened_at, 6);
+        assert_eq!(record.users, ["w2:pD"]);
+        assert_eq!(record.short, "t1", "the id allocated for the event is kept");
     }
 
     #[test]
