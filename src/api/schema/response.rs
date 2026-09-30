@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::agents::{AgentInfo, AgentTranscriptBackupPass};
+use super::browser::{
+    BrowserActivity, BrowserActor, BrowserGetInfo, BrowserProfileRecord, BrowserRunResult,
+    BrowserStatusInfo,
+};
 use super::closed_sessions::ClosedSessionInfo;
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
 use super::events::EventEnvelope;
@@ -137,6 +141,24 @@ pub enum ResponseResult {
     },
     NewsHistory {
         editions: Vec<NewsEditionInfo>,
+    },
+    BrowserRun {
+        result: BrowserRunResult,
+    },
+    BrowserGet {
+        browser: BrowserGetInfo,
+    },
+    BrowserStatus {
+        status: BrowserStatusInfo,
+    },
+    BrowserLog {
+        entries: Vec<BrowserActivity>,
+    },
+    BrowserActor {
+        actor: BrowserActor,
+    },
+    BrowserProfiles {
+        profiles: Vec<BrowserProfileRecord>,
     },
     AgentPrompted {
         agent: AgentInfo,

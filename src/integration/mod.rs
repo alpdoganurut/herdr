@@ -1,4 +1,5 @@
 mod actions;
+pub(crate) mod browser_assets;
 mod claude_settings;
 mod claude_subagent_hooks;
 mod command;

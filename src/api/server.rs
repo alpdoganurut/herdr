@@ -372,6 +372,10 @@ fn handle_connection_with_stop(
                 wait_for_output(request_id.clone(), params, &mut stream, api_tx, running)?;
             finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
         }
+        Method::BrowserRun(params) => {
+            let response = crate::browser::serve::run(request_id.clone(), params, api_tx);
+            finish_wait_response(&mut stream, Some(response), &request_id, method, changes_ui)
+        }
         method_body => {
             let (response_write_tx, response_write_rx) = std::sync::mpsc::channel();
             let response = handle_request(
@@ -546,6 +550,17 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::NewsOpen(_) => "news.open",
         Method::NewsSetEnabled(_) => "news.set_enabled",
         Method::NewsSetTimes(_) => "news.set_times",
+        Method::BrowserRun(_) => "browser.run",
+        Method::BrowserGet(_) => "browser.get",
+        Method::BrowserStatus(_) => "browser.status",
+        Method::BrowserFocus(_) => "browser.focus",
+        Method::BrowserStart(_) => "browser.start",
+        Method::BrowserStop(_) => "browser.stop",
+        Method::BrowserLog(_) => "browser.log",
+        Method::BrowserResolveCaller(_) => "browser.resolve_caller",
+        Method::BrowserProfiles(_) => "browser.profiles",
+        Method::BrowserProfileCreate(_) => "browser.profile_create",
+        Method::BrowserProfileDelete(_) => "browser.profile_delete",
         Method::AgentPrompt(_) => "agent.prompt",
         Method::AgentWait(_) => "agent.wait",
         Method::PaneSplit(_) => "pane.split",
@@ -941,7 +956,7 @@ pub(super) fn should_stop_connection(
     local_stream_peer_closed(stream)
 }
 
-pub(super) fn dispatch_to_app_with_timeout(
+pub(crate) fn dispatch_to_app_with_timeout(
     request: Request,
     api_tx: &ApiRequestSender,
     timeout: Option<Duration>,

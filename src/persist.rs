@@ -8,6 +8,7 @@
 //! The AI news desk's schedule and run in flight live in `news.json`.
 
 pub mod agent_transcripts;
+pub mod browser;
 pub mod closed_sessions;
 mod io;
 pub mod news;

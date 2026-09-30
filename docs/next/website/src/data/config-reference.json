@@ -1569,6 +1569,108 @@
       ]
     },
     {
+      "id": "browser",
+      "title": "Browser",
+      "keys": [
+        {
+          "key": "browser.enabled",
+          "type": "boolean",
+          "default": "true",
+          "description": "Whether the herdr browser answers at all. When false every `browser.*` method returns `browser_disabled` and no Chromium is launched."
+        },
+        {
+          "key": "browser.autostart",
+          "type": "boolean",
+          "default": "false",
+          "description": "Start the default profile's Chromium with the server. Off by default: the browser starts on the first `browser.run` or `herdr browser start`."
+        },
+        {
+          "key": "browser.stop_with_server",
+          "type": "boolean",
+          "default": "false",
+          "description": "Close the running browsers when the server stops. Off by default: Chromium is launched detached and survives herdr restarts and handoffs; the next server reattaches."
+        },
+        {
+          "key": "browser.default_profile",
+          "type": "string",
+          "default": "\"main\"",
+          "description": "The profile a call without `--profile` uses. Profile names are `[a-z][a-z0-9-]{0,31}`; an invalid value reports a config warning and `main` is used."
+        },
+        {
+          "key": "browser.executable",
+          "type": "string",
+          "default": "\"auto\"",
+          "description": "`auto` looks for `~/Applications/Chromium.app`, then `/Applications/Chromium.app`; otherwise an absolute path to a `Chromium.app` bundle or its inner binary. Google Chrome is not a fallback (different keychain item, different login store). A missing executable answers `browser_executable_missing` with a hint."
+        },
+        {
+          "key": "browser.node",
+          "type": "string",
+          "default": "\"\"",
+          "description": "The node binary that runs the Playwright sidecar. Empty uses the one `herdr browser setup` recorded in `host/runtime.json`, then `node` on the server's PATH, the newest nvm node, then Homebrew's."
+        },
+        {
+          "key": "browser.extra_args",
+          "type": "array",
+          "default": "[]",
+          "description": "Extra switches appended to the Chromium command line. Automation and debugging switches (`--enable-automation`, `--headless`, `--remote-debugging-*`, `--remote-allow-origins`, `--no-sandbox`, `--disable-web-security`, `--user-data-dir`) are dropped with a config warning."
+        },
+        {
+          "key": "browser.restore_tabs",
+          "type": "boolean",
+          "default": "true",
+          "description": "Relaunch a profile that has run before with `--restore-last-session`, so the tabs from before a quit come back."
+        },
+        {
+          "key": "browser.read_max_chars",
+          "type": "integer",
+          "default": "20000",
+          "description": "Characters one page of `browser read` returns when `--max` is not given (2000 to 200000, clamped with a config warning). The footer names the offset of the next page."
+        },
+        {
+          "key": "browser.snapshot_max_chars",
+          "type": "integer",
+          "default": "16000",
+          "description": "Characters one page of `browser snapshot` returns when `--max` is not given (2000 to 200000, clamped with a config warning)."
+        },
+        {
+          "key": "browser.screenshot_max_px",
+          "type": "integer",
+          "default": "1568",
+          "description": "Long edge, in pixels, of the screenshot copy returned inline over MCP (256 to 8192). The full-size file is always kept."
+        },
+        {
+          "key": "browser.screenshot_keep",
+          "type": "integer",
+          "default": "300",
+          "description": "How many herdr-named screenshot files are kept per profile under `shots/`; older ones are pruned. Files written with `--out` are never touched."
+        },
+        {
+          "key": "browser.active_seconds",
+          "type": "integer",
+          "default": "120",
+          "description": "A browser tab or herdr pane touched within this many seconds counts as active in `browser.get` and `herdr browser status`."
+        },
+        {
+          "key": "browser.allow_eval",
+          "type": "boolean",
+          "default": "true",
+          "description": "Whether `browser eval` (arbitrary JavaScript in a tab) is allowed. When false it answers `eval_disabled`."
+        },
+        {
+          "key": "browser.launch_timeout_ms",
+          "type": "integer",
+          "default": "15000",
+          "description": "How long a launch may take before Chromium answers on its DevTools port (3000 to 120000 ms). A launch that times out is terminated and retried once with a new port."
+        },
+        {
+          "key": "browser.op_timeout_ms",
+          "type": "integer",
+          "default": "30000",
+          "description": "The default deadline of one browser operation (1000 to 600000 ms); `--timeout` and `browser wait` override it per call."
+        }
+      ]
+    },
+    {
       "id": "worktrees",
       "title": "Worktrees",
       "keys": [

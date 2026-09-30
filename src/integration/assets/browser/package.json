@@ -1,0 +1,12 @@
+{
+  "name": "herdr-browser-host",
+  "version": "1.0.0",
+  "private": true,
+  "description": "herdr browser sidecar: playwright-core over CDP, installed by `herdr browser setup`",
+  "type": "module",
+  "main": "host.mjs",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

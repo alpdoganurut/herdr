@@ -15,6 +15,7 @@ mod agent_resume;
 mod agent_view_eval;
 mod api;
 mod app;
+mod browser;
 mod build_info;
 mod checksum;
 mod cli;
@@ -441,6 +442,37 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # quiet_hours = "00:00-08:00"
 # Model handed to the runner (`claude -p --model`); unset uses the runner's default.
 # model = "opus"
+
+[browser]
+# The Chromium herdr launches for agents (fork feature). Nothing runs until an agent
+# or `herdr browser start` asks for it; the window is the user's, herdr only attaches.
+# enabled = true
+# Start the default profile with the server instead of on first use.
+# autostart = false
+# `herdr server stop` also closes the browser (by default the window survives herdr).
+# stop_with_server = false
+# default_profile = "main"
+# "auto" looks for ~/Applications/Chromium.app then /Applications/Chromium.app;
+# or an absolute path to a Chromium.app bundle (Google Chrome is not used).
+# executable = "auto"
+# The node binary that runs the Playwright sidecar; empty = the one `herdr browser setup` recorded.
+# node = ""
+# Extra Chromium switches (automation and debugging switches are dropped).
+# extra_args = []
+# Relaunch a profile that has run before with --restore-last-session.
+# restore_tabs = true
+# Characters per page of `browser read` / `browser snapshot` (2000..200000).
+# read_max_chars = 20000
+# snapshot_max_chars = 16000
+# Long edge in pixels of the screenshot copy returned inline over MCP.
+# screenshot_max_px = 1568
+# Herdr-named screenshot files kept per profile.
+# screenshot_keep = 300
+# A tab or pane touched within this many seconds counts as active.
+# active_seconds = 120
+# allow_eval = true
+# launch_timeout_ms = 15000
+# op_timeout_ms = 30000
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

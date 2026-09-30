@@ -1,0 +1,1773 @@
+//! The browser hub: one per server process. Attach-or-launch per profile
+//! (under a per-profile mutex), the sidecar link (spawn, `hello`, ping,
+//! kill, respawn), request/reply correlation, the ledger, and the operations
+//! `browser.run` executes.
+//!
+//! Lock order: `host` and `pending` are held only for a line write or a map
+//! touch; `state` is never held across a sidecar request.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
+
+use serde_json::{json, Value};
+
+use super::host::{self, HostEvent, HostMessage, HostReply, HostRequest, HostWriter, PageInfo};
+use super::launch::{self, AttachDecision, Executable, LaunchOptions, RunRecord};
+use super::profiles::{self, ProfileStore};
+use super::shape;
+use super::state::{BrowserState, HostStatus, HostTab, ProfileStatus, TabKey};
+use super::{unix_now, BrowserError};
+use crate::api::schema::{
+    BrowserActivity, BrowserActor, BrowserGetInfo, BrowserLogParams, BrowserOp,
+    BrowserProfileRecord, BrowserRunParams, BrowserRunResult, BrowserStatusInfo,
+};
+use crate::config::{valid_profile_name, BrowserConfig};
+use crate::integration::browser_assets;
+
+/// Grace the hub adds to the sidecar's own deadline before giving up on a reply.
+pub const REPLY_GRACE: Duration = Duration::from_secs(5);
+/// Deadline of the attach handshake (a page dialog can block it).
+pub const ATTACH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Deadline of `hello` and pings.
+pub const PING_TIMEOUT: Duration = Duration::from_secs(2);
+pub const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(5);
+/// Pings missed in a row before the sidecar counts as wedged.
+pub const PING_MISSES: u32 = 2;
+/// Respawns within [`RESPAWN_WINDOW`] before the host is marked failed.
+pub const RESPAWN_LIMIT: usize = 5;
+pub const RESPAWN_WINDOW: Duration = Duration::from_secs(60);
+/// How long `stop` waits for a graceful exit before SIGTERM.
+pub const STOP_GRACE: Duration = Duration::from_secs(5);
+
+struct HostLink {
+    generation: u64,
+    pid: u32,
+    child: Option<std::process::Child>,
+    writer: Box<dyn HostWriter>,
+    playwright: String,
+    attached: HashSet<String>,
+    missed_pings: u32,
+}
+
+struct Inner {
+    config: RwLock<BrowserConfig>,
+    home: PathBuf,
+    profiles: ProfileStore,
+    ledger_path: Mutex<Option<PathBuf>>,
+    activity_path: Mutex<Option<PathBuf>>,
+    flushed_seq: AtomicU64,
+    state: Mutex<BrowserState>,
+    host: Mutex<Option<HostLink>>,
+    pending: Mutex<HashMap<u64, mpsc::Sender<HostReply>>>,
+    next_id: AtomicU64,
+    generation: AtomicU64,
+    profile_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    host_lock: Mutex<()>,
+    respawns: Mutex<VecDeque<Instant>>,
+    supervisor: AtomicBool,
+    /// Skip the executable check and the `hello` node checks (fake host tests).
+    test_mode: AtomicBool,
+}
+
+#[derive(Clone)]
+pub struct BrowserHub {
+    inner: Arc<Inner>,
+}
+
+impl BrowserHub {
+    pub fn new(config: BrowserConfig) -> Self {
+        Self::with_home(config, super::browser_home())
+    }
+
+    pub fn with_home(config: BrowserConfig, home: PathBuf) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                config: RwLock::new(config),
+                profiles: ProfileStore::new(&home),
+                home,
+                ledger_path: Mutex::new(None),
+                activity_path: Mutex::new(None),
+                flushed_seq: AtomicU64::new(0),
+                state: Mutex::new(BrowserState::new()),
+                host: Mutex::new(None),
+                pending: Mutex::new(HashMap::new()),
+                next_id: AtomicU64::new(1),
+                generation: AtomicU64::new(0),
+                profile_locks: Mutex::new(HashMap::new()),
+                host_lock: Mutex::new(()),
+                respawns: Mutex::new(VecDeque::new()),
+                supervisor: AtomicBool::new(false),
+                test_mode: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    pub fn config(&self) -> BrowserConfig {
+        self.inner.config.read().unwrap().clone()
+    }
+
+    pub fn apply_config(&self, config: &BrowserConfig) {
+        *self.inner.config.write().unwrap() = config.clone();
+    }
+
+    /// Persist the ledger next to `session.json` in `data_dir` and load what
+    /// is there.
+    pub fn enable_persistence(&self, data_dir: &Path) {
+        let ledger = data_dir.join(crate::persist::browser::LEDGER_FILE);
+        let activity = data_dir.join(crate::persist::browser::ACTIVITY_FILE);
+        if let Some(snapshot) = crate::persist::browser::load(&ledger) {
+            let mut state = self.inner.state.lock().unwrap();
+            state.restore(snapshot, unix_now());
+            self.inner.flushed_seq.store(
+                state.log.back().map(|e| e.seq).unwrap_or(0),
+                Ordering::Relaxed,
+            );
+        }
+        *self.inner.ledger_path.lock().unwrap() = Some(ledger);
+        *self.inner.activity_path.lock().unwrap() = Some(activity);
+    }
+
+    /// Tests: a sidecar on the far end of a pipe, no child process.
+    #[cfg(test)]
+    pub fn install_fake_host(
+        &self,
+        writer: Box<dyn HostWriter>,
+        reader: Box<dyn std::io::BufRead + Send>,
+    ) -> u64 {
+        self.inner.test_mode.store(true, Ordering::Relaxed);
+        let generation = self.inner.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        *self.inner.host.lock().unwrap() = Some(HostLink {
+            generation,
+            pid: 0,
+            child: None,
+            writer,
+            playwright: "fake".into(),
+            attached: HashSet::new(),
+            missed_pings: 0,
+        });
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .set_host(HostStatus::Running {
+                pid: 0,
+                playwright: "fake".into(),
+                node: "fake".into(),
+            });
+        self.spawn_reader(generation, reader);
+        generation
+    }
+
+    // ----- App lane -------------------------------------------------------
+
+    pub fn get(&self, since_seq: Option<u64>) -> BrowserGetInfo {
+        let config = self.config();
+        let profiles = &self.inner.profiles;
+        let temporary = |name: &str| profiles.is_temporary(name);
+        let state = self.inner.state.lock().unwrap();
+        state.get_info(
+            since_seq,
+            unix_now(),
+            config.active_seconds,
+            config.enabled,
+            &temporary,
+        )
+    }
+
+    pub fn status(&self) -> BrowserStatusInfo {
+        let config = self.config();
+        let get = self.get(None);
+        let home_env = std::env::var_os("HOME").map(PathBuf::from);
+        let (executable, executable_error) =
+            match launch::resolve_executable(&config.executable, home_env.as_deref()) {
+                Ok(exe) => (Some(exe.display()), None),
+                Err(err) => (None, Some(err.message)),
+            };
+        let host_dir = self.host_dir();
+        let runtime = browser_assets::read_runtime(&host_dir);
+        let runtime_outdated = runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.assets_sha256 != browser_assets::assets_sha256());
+        let node = super::node::discover_default(
+            config.node(),
+            runtime.as_ref().map(|r| Path::new(&r.node)),
+        )
+        .map(|choice| choice.path.display().to_string());
+        let log = self.inner.state.lock().unwrap().activity(50, None, None);
+        BrowserStatusInfo {
+            get,
+            home: self.inner.home.display().to_string(),
+            ledger: self
+                .inner
+                .ledger_path
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            executable,
+            executable_error,
+            node,
+            runtime,
+            runtime_outdated,
+            default_profile: config.default_profile().to_string(),
+            autostart: config.autostart,
+            log,
+        }
+    }
+
+    pub fn log(&self, params: &BrowserLogParams) -> Vec<BrowserActivity> {
+        let limit = params.limit.unwrap_or(50).clamp(1, 500) as usize;
+        let config = self.config();
+        let state = self.inner.state.lock().unwrap();
+        let tab = params.tab.as_deref().map(|tab| {
+            state
+                .resolve_tab(config.default_profile(), tab)
+                .map(|record| record.id())
+                .unwrap_or_else(|| tab.to_string())
+        });
+        state.activity(limit, params.pane_id.as_deref(), tab.as_deref())
+    }
+
+    pub fn profiles(&self) -> Vec<BrowserProfileRecord> {
+        let state = self.inner.state.lock().unwrap();
+        let mut records: Vec<BrowserProfileRecord> = self
+            .inner
+            .profiles
+            .list()
+            .into_iter()
+            .map(|entry| BrowserProfileRecord {
+                state: state.profile(&entry.name).name().into(),
+                exists: self.inner.profiles.exists(&entry.name),
+                name: entry.name,
+                created_at: entry.created_at,
+                temporary: entry.temporary,
+            })
+            .collect();
+        let config = self.config();
+        if !records.iter().any(|r| r.name == config.default_profile()) {
+            records.push(BrowserProfileRecord {
+                name: config.default_profile().to_string(),
+                created_at: 0,
+                temporary: false,
+                exists: false,
+                state: "stopped".into(),
+            });
+            records.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        records
+    }
+
+    pub fn profile_create(
+        &self,
+        name: &str,
+        temporary: bool,
+    ) -> Result<BrowserProfileRecord, BrowserError> {
+        let name = if profiles::is_new_request(name) {
+            self.inner.profiles.temporary_name(unix_now())
+        } else {
+            name.to_string()
+        };
+        self.inner.profiles.ensure(
+            &name,
+            temporary || name.starts_with(profiles::TEMPORARY_PREFIX),
+            unix_now(),
+        )?;
+        Ok(self
+            .profiles()
+            .into_iter()
+            .find(|record| record.name == name)
+            .unwrap_or_default())
+    }
+
+    pub fn profile_delete(&self, name: &str) -> Result<(), BrowserError> {
+        let config = self.config();
+        if name == config.default_profile() {
+            return Err(BrowserError::new(
+                "profile_protected",
+                format!("{name:?} is the default profile; change [browser] default_profile first"),
+            ));
+        }
+        if self.inner.state.lock().unwrap().profile(name).is_running() {
+            return Err(BrowserError::new(
+                "profile_running",
+                format!("profile {name:?} is running; `herdr browser stop --profile {name}` first"),
+            ));
+        }
+        self.inner.profiles.delete(name, unix_now())?;
+        let mut state = self.inner.state.lock().unwrap();
+        state.profiles.remove(name);
+        state.close_profile_tabs(name, unix_now());
+        Ok(())
+    }
+
+    /// Start a profile in the background; answers the current state.
+    pub fn start(&self, profile: Option<&str>) -> Result<BrowserGetInfo, BrowserError> {
+        let config = self.config();
+        if !config.enabled {
+            return Err(BrowserError::disabled());
+        }
+        let name = self.profile_name(profile, None, &config)?;
+        {
+            let mut state = self.inner.state.lock().unwrap();
+            if !state.profile(&name).is_running() {
+                state.set_profile(&name, ProfileStatus::Starting { since: unix_now() });
+            }
+            if matches!(state.host, HostStatus::Failed { .. }) {
+                state.set_host(HostStatus::Absent);
+                self.inner.respawns.lock().unwrap().clear();
+            }
+        }
+        let hub = self.clone();
+        std::thread::Builder::new()
+            .name("herdr-browser-start".into())
+            .spawn(move || {
+                if let Err(err) = hub.ensure_running(&name) {
+                    tracing::warn!(event = "browser.start", profile = %name, code = %err.code, message = %err.message, "browser start failed");
+                }
+            })
+            .map_err(|err| BrowserError::unavailable(err.to_string()))?;
+        Ok(self.get(None))
+    }
+
+    /// Stop a profile (or every running one) in the background.
+    pub fn stop(&self, profile: Option<&str>, all: bool) -> Result<BrowserGetInfo, BrowserError> {
+        let config = self.config();
+        let names: Vec<String> = if all {
+            self.inner
+                .state
+                .lock()
+                .unwrap()
+                .profiles
+                .iter()
+                .filter(|(_, status)| {
+                    status.is_running() || matches!(status, ProfileStatus::Starting { .. })
+                })
+                .map(|(name, _)| name.clone())
+                .collect()
+        } else {
+            vec![self.profile_name(profile, None, &config)?]
+        };
+        for name in names {
+            let hub = self.clone();
+            std::thread::Builder::new()
+                .name("herdr-browser-stop".into())
+                .spawn(move || hub.stop_profile(&name))
+                .map_err(|err| BrowserError::unavailable(err.to_string()))?;
+        }
+        Ok(self.get(None))
+    }
+
+    /// Select a tab and raise the window, as the user (overlay / row).
+    pub fn focus(&self, profile: Option<&str>, tab: &str) -> Result<(), BrowserError> {
+        let config = self.config();
+        if !config.enabled {
+            return Err(BrowserError::disabled());
+        }
+        let default_profile = profile.unwrap_or(config.default_profile()).to_string();
+        let record = {
+            let state = self.inner.state.lock().unwrap();
+            state
+                .resolve_tab(&default_profile, tab)
+                .cloned()
+                .ok_or_else(|| BrowserError::tab_not_found(tab))?
+        };
+        if !record.is_open() {
+            return Err(BrowserError::tab_closed(&record.id()));
+        }
+        self.request(
+            "focus",
+            Some(&record.profile),
+            Some(&record.target_id),
+            Value::Null,
+            Duration::from_secs(3),
+        )?;
+        let mut state = self.inner.state.lock().unwrap();
+        state.touch(
+            &record.profile,
+            Some(&record.key()),
+            &BrowserActor::User,
+            "focus",
+            &record.short,
+            true,
+            0,
+            unix_now(),
+        );
+        drop(state);
+        self.flush();
+        Ok(())
+    }
+
+    // ----- Connection lane ------------------------------------------------
+
+    /// Execute one `browser.run`. Blocking; called on the connection thread.
+    pub fn run(
+        &self,
+        actor: &BrowserActor,
+        params: BrowserRunParams,
+    ) -> Result<BrowserRunResult, BrowserError> {
+        let started = Instant::now();
+        let config = self.config();
+        if !config.enabled {
+            return Err(BrowserError::disabled());
+        }
+        if matches!(params.op, BrowserOp::Unknown) {
+            return Err(BrowserError::new(
+                "unknown_op",
+                "this server does not know that browser operation; restart the Claude session or update herdr",
+            ));
+        }
+        let pane = actor.pane_id().map(str::to_string);
+        let profile = self.profile_name(params.profile.as_deref(), pane.as_deref(), &config)?;
+        self.ensure_running(&profile)?;
+        let deadline = Duration::from_millis(match &params.op {
+            BrowserOp::Wait { timeout_s, .. } => timeout_s.unwrap_or(30).clamp(1, 300) * 1000 + 500,
+            _ => params.timeout_ms.unwrap_or(config.op_timeout_ms()),
+        });
+        let op_name = params.op.name();
+        let now = unix_now();
+        let result = self.execute(
+            actor,
+            &profile,
+            pane.as_deref(),
+            &params,
+            &config,
+            deadline,
+            now,
+        );
+        let ms = started.elapsed().as_millis() as u64;
+        match result {
+            Ok((mut result, key, detail)) => {
+                result.ms = ms;
+                if !matches!(params.op, BrowserOp::Tabs { .. }) {
+                    let mut state = self.inner.state.lock().unwrap();
+                    state.touch(
+                        &profile,
+                        key.as_ref(),
+                        actor,
+                        op_name,
+                        &detail,
+                        true,
+                        ms,
+                        unix_now(),
+                    );
+                    if let Some(pane) = pane.as_deref() {
+                        state.touch_cursor(pane, unix_now());
+                    }
+                }
+                self.flush();
+                Ok(result)
+            }
+            Err(err) => {
+                let mut state = self.inner.state.lock().unwrap();
+                let key = params
+                    .tab
+                    .as_deref()
+                    .and_then(|tab| state.resolve_tab(&profile, tab).map(|r| r.key()))
+                    .or_else(|| {
+                        pane.as_deref()
+                            .and_then(|pane| state.cursor(pane).map(|r| r.key()))
+                    });
+                state.touch(
+                    &profile,
+                    key.as_ref(),
+                    actor,
+                    op_name,
+                    &format!("{}: {}", err.code, err.message),
+                    false,
+                    ms,
+                    unix_now(),
+                );
+                drop(state);
+                self.flush();
+                Err(err)
+            }
+        }
+    }
+
+    /// Resolve the profile a call uses: explicit (`new` = fresh temporary),
+    /// else the pane's cursor profile, else the default.
+    fn profile_name(
+        &self,
+        explicit: Option<&str>,
+        pane: Option<&str>,
+        config: &BrowserConfig,
+    ) -> Result<String, BrowserError> {
+        if let Some(name) = explicit.map(str::trim).filter(|n| !n.is_empty()) {
+            if profiles::is_new_request(name) {
+                let fresh = self.inner.profiles.temporary_name(unix_now());
+                self.inner.profiles.ensure(&fresh, true, unix_now())?;
+                return Ok(fresh);
+            }
+            if !valid_profile_name(name) {
+                return Err(BrowserError::invalid_profile(name));
+            }
+            return Ok(name.to_string());
+        }
+        if let Some(pane) = pane {
+            if let Some(profile) = self.inner.state.lock().unwrap().cursor_profile(pane) {
+                return Ok(profile.to_string());
+            }
+        }
+        Ok(config.default_profile().to_string())
+    }
+
+    fn resolve_target(
+        &self,
+        profile: &str,
+        explicit: Option<&str>,
+        pane: Option<&str>,
+    ) -> Result<super::state::BrowserTabRecord, BrowserError> {
+        let state = self.inner.state.lock().unwrap();
+        if let Some(tab) = explicit.map(str::trim).filter(|t| !t.is_empty()) {
+            let record = state
+                .resolve_tab(profile, tab)
+                .ok_or_else(|| BrowserError::tab_not_found(tab))?;
+            if !record.is_open() {
+                return Err(BrowserError::tab_closed(&record.id()));
+            }
+            return Ok(record.clone());
+        }
+        if let Some(pane) = pane {
+            if let Some(record) = state.cursor(pane) {
+                if record.profile == profile {
+                    return Ok(record.clone());
+                }
+            }
+        }
+        Err(BrowserError::no_current_tab())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute(
+        &self,
+        actor: &BrowserActor,
+        profile: &str,
+        pane: Option<&str>,
+        params: &BrowserRunParams,
+        config: &BrowserConfig,
+        deadline: Duration,
+        now: u64,
+    ) -> Result<(BrowserRunResult, Option<TabKey>, String), BrowserError> {
+        match &params.op {
+            BrowserOp::Open { url, focus, wait } => {
+                let url = shape::normalize_url(url)?;
+                let reply = self.request(
+                    "open",
+                    Some(profile),
+                    None,
+                    json!({ "url": url, "background": !focus, "wait": wait }),
+                    deadline,
+                )?;
+                let target = reply.result["target"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                if target.is_empty() {
+                    return Err(BrowserError::host_failed("open returned no target"));
+                }
+                let key = TabKey::new(profile, &target);
+                let page = reply.page.clone().unwrap_or_default();
+                {
+                    let mut state = self.inner.state.lock().unwrap();
+                    state.adopt_tab(
+                        &key,
+                        &HostTab {
+                            target: target.clone(),
+                            url: page.url.clone(),
+                            title: page.title.clone(),
+                            selected: *focus,
+                            dialog_open: page.dialog_open,
+                        },
+                        actor,
+                        now,
+                    );
+                    if let Some(pane) = pane {
+                        state.set_cursor(pane, &key, now);
+                    }
+                }
+                if *focus {
+                    let _ = self.request(
+                        "focus",
+                        Some(profile),
+                        Some(&target),
+                        Value::Null,
+                        Duration::from_secs(3),
+                    );
+                }
+                let record = self.record(&key)?;
+                let result = shape::open_result(&record, &page, &reply.result);
+                let detail = super::state::display_url(&page.url);
+                Ok((result, Some(key), detail))
+            }
+            BrowserOp::Tabs { mine } => {
+                let reply = self.request("tabs", Some(profile), None, Value::Null, deadline)?;
+                let tabs: Vec<HostTab> =
+                    serde_json::from_value(reply.result["tabs"].clone()).unwrap_or_default();
+                let mut state = self.inner.state.lock().unwrap();
+                state.reconcile(profile, &tabs, now);
+                let cursor = pane.and_then(|pane| state.cursor(pane).map(|r| r.key()));
+                let records: Vec<super::state::BrowserTabRecord> = state
+                    .open_tabs(profile)
+                    .filter(|record| {
+                        !*mine || pane.is_some_and(|pane| record.users.iter().any(|u| u == pane))
+                    })
+                    .cloned()
+                    .collect();
+                let result = shape::tabs_result(
+                    profile,
+                    &records,
+                    cursor.as_ref(),
+                    now,
+                    config.active_seconds,
+                );
+                Ok((result, None, format!("{} tabs", records.len())))
+            }
+            BrowserOp::Use { tab } => {
+                let record = self.resolve_target(profile, Some(tab), None)?;
+                let key = record.key();
+                if let Some(pane) = pane {
+                    self.inner.state.lock().unwrap().set_cursor(pane, &key, now);
+                }
+                let result = shape::simple_result(
+                    &record,
+                    None,
+                    &format!("current tab is now {}", record.id()),
+                    json!({ "tab": record.id() }),
+                );
+                Ok((result, Some(key), record.short.clone()))
+            }
+            op => {
+                let record = self.resolve_target(profile, params.tab.as_deref(), pane)?;
+                let key = record.key();
+                if let Some(pane) = pane {
+                    // Following an explicit --tab moves the cursor there.
+                    if params.tab.is_some() {
+                        self.inner.state.lock().unwrap().set_cursor(pane, &key, now);
+                    }
+                }
+                let target = record.target_id.as_str();
+                let (result, detail) = match op {
+                    BrowserOp::Navigate { url, wait } => {
+                        let url = shape::normalize_url(url)?;
+                        let reply = self.request(
+                            "navigate",
+                            Some(profile),
+                            Some(target),
+                            json!({ "url": url, "wait": wait }),
+                            deadline,
+                        )?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        self.note_page(&key, &page);
+                        let record = self.record(&key)?;
+                        (
+                            shape::nav_result(&record, &page, &reply.result),
+                            super::state::display_url(&page.url),
+                        )
+                    }
+                    BrowserOp::History { action } => {
+                        let action = match action.as_str() {
+                            "back" | "forward" | "reload" => action.as_str(),
+                            other => {
+                                return Err(BrowserError::new("invalid_request", format!("history action {other:?}: expected back, forward or reload")));
+                            }
+                        };
+                        let reply = self.request(
+                            "history",
+                            Some(profile),
+                            Some(target),
+                            json!({ "action": action }),
+                            deadline,
+                        )?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        self.note_page(&key, &page);
+                        let record = self.record(&key)?;
+                        (
+                            shape::nav_result(&record, &page, &reply.result),
+                            action.to_string(),
+                        )
+                    }
+                    BrowserOp::Read {
+                        format,
+                        selector,
+                        ref_,
+                        offset,
+                        max,
+                        all,
+                        interactive,
+                    } => {
+                        let format = shape::read_format(format.as_deref())?;
+                        let reply = self.request(
+                            "read",
+                            Some(profile),
+                            Some(target),
+                            json!({ "format": format, "selector": selector, "ref": ref_, "interactive": interactive }),
+                            deadline,
+                        )?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        self.note_page(&key, &page);
+                        let record = self.record(&key)?;
+                        let default_max = if format == "snapshot" {
+                            config.snapshot_max_chars()
+                        } else {
+                            config.read_max_chars()
+                        };
+                        let paged = shape::page_text(
+                            reply.result["content"].as_str().unwrap_or_default(),
+                            offset.unwrap_or(0),
+                            if *all {
+                                None
+                            } else {
+                                Some(max.unwrap_or(default_max).max(200))
+                            },
+                        );
+                        let detail = format!("{format} {}", paged.detail());
+                        (
+                            shape::read_result(
+                                &record,
+                                &page,
+                                format,
+                                &paged,
+                                ref_.as_deref(),
+                                selector.as_deref(),
+                            ),
+                            detail,
+                        )
+                    }
+                    BrowserOp::Find {
+                        query,
+                        max,
+                        context,
+                    } => {
+                        let reply = self.request(
+                            "read",
+                            Some(profile),
+                            Some(target),
+                            json!({ "format": "markdown" }),
+                            deadline,
+                        )?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        self.note_page(&key, &page);
+                        let record = self.record(&key)?;
+                        let content = reply.result["content"].as_str().unwrap_or_default();
+                        let matches = shape::find_matches(
+                            content,
+                            query,
+                            max.unwrap_or(20).clamp(1, 200) as usize,
+                            context.unwrap_or(120).clamp(20, 2000) as usize,
+                        )?;
+                        let detail = format!("{query:?} {} matches", matches.len());
+                        (
+                            shape::find_result(
+                                &record,
+                                &page,
+                                query,
+                                &matches,
+                                content.chars().count(),
+                            ),
+                            detail,
+                        )
+                    }
+                    BrowserOp::Links { filter, max } => {
+                        let reply = self.request(
+                            "links",
+                            Some(profile),
+                            Some(target),
+                            json!({ "filter": filter, "max": max.unwrap_or(100).clamp(1, 2000) }),
+                            deadline,
+                        )?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        self.note_page(&key, &page);
+                        let record = self.record(&key)?;
+                        let count = reply.result["links"].as_array().map(Vec::len).unwrap_or(0);
+                        (
+                            shape::links_result(&record, &page, &reply.result),
+                            format!("{count} links"),
+                        )
+                    }
+                    BrowserOp::Screenshot {
+                        full,
+                        ref_,
+                        selector,
+                        format,
+                        out,
+                        front,
+                    } => {
+                        let format = match format.as_deref().unwrap_or("jpeg") {
+                            "jpeg" | "jpg" => "jpeg",
+                            "png" => "png",
+                            other => {
+                                return Err(BrowserError::new(
+                                    "invalid_request",
+                                    format!("screenshot format {other:?}: expected jpeg or png"),
+                                ))
+                            }
+                        };
+                        let shots_dir = self.inner.home.join(super::shots::SHOTS_DIR).join(profile);
+                        let (path, inline_path) = super::shots::paths(
+                            &shots_dir,
+                            &record.short,
+                            format,
+                            out.as_deref(),
+                            now,
+                        )?;
+                        if *front {
+                            self.request(
+                                "focus",
+                                Some(profile),
+                                Some(target),
+                                Value::Null,
+                                Duration::from_secs(3),
+                            )?;
+                        }
+                        let reply = self.request(
+                            "screenshot",
+                            Some(profile),
+                            Some(target),
+                            json!({
+                                "path": path, "inline_path": inline_path, "full": full, "ref": ref_, "selector": selector,
+                                "format": format, "quality": 70, "max_px": config.screenshot_max_px(),
+                            }),
+                            deadline,
+                        )?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        self.note_page(&key, &page);
+                        let record = self.record(&key)?;
+                        super::shots::prune(&shots_dir, config.screenshot_keep as usize);
+                        let detail = format!(
+                            "{} {}x{}",
+                            if *full { "full" } else { "viewport" },
+                            reply.result["width"].as_u64().unwrap_or(0),
+                            reply.result["height"].as_u64().unwrap_or(0)
+                        );
+                        (
+                            shape::screenshot_result(&record, &page, &reply.result, format),
+                            detail,
+                        )
+                    }
+                    BrowserOp::Console { level, since, max } => {
+                        let reply = self.request("console", Some(profile), Some(target), json!({ "level": level.as_deref().unwrap_or("all"), "since": since, "max": max.unwrap_or(50).clamp(1, 1000) }), deadline)?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        let record = self.record(&key)?;
+                        let count = reply.result["entries"]
+                            .as_array()
+                            .map(Vec::len)
+                            .unwrap_or(0);
+                        (
+                            shape::console_result(&record, &page, &reply.result),
+                            format!("{count} entries"),
+                        )
+                    }
+                    BrowserOp::Network {
+                        failed,
+                        match_,
+                        type_,
+                        since,
+                        max,
+                    } => {
+                        let reply = self.request("network", Some(profile), Some(target), json!({ "failed": failed, "match": match_, "type": type_, "since": since, "max": max.unwrap_or(50).clamp(1, 1000) }), deadline)?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        let record = self.record(&key)?;
+                        let count = reply.result["entries"]
+                            .as_array()
+                            .map(Vec::len)
+                            .unwrap_or(0);
+                        (
+                            shape::network_result(&record, &page, &reply.result),
+                            format!("{count} requests"),
+                        )
+                    }
+                    BrowserOp::Wait {
+                        text,
+                        gone,
+                        selector,
+                        url,
+                        load,
+                        timeout_s,
+                    } => {
+                        if text.is_none()
+                            && gone.is_none()
+                            && selector.is_none()
+                            && url.is_none()
+                            && load.is_none()
+                        {
+                            return Err(BrowserError::new(
+                                "invalid_request",
+                                "wait needs one of --text, --gone, --selector, --url or --load",
+                            ));
+                        }
+                        let timeout_ms = timeout_s.unwrap_or(30).clamp(1, 300) * 1000;
+                        let reply = self.request("wait", Some(profile), Some(target), json!({ "text": text, "gone": gone, "selector": selector, "url": url, "load": load, "timeout_ms": timeout_ms }), deadline)?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        self.note_page(&key, &page);
+                        let record = self.record(&key)?;
+                        let what = text
+                            .as_deref()
+                            .or(gone.as_deref())
+                            .or(selector.as_deref())
+                            .or(url.as_deref())
+                            .or(load.as_deref())
+                            .unwrap_or("");
+                        (
+                            shape::wait_result(&record, &page, &reply.result),
+                            format!(
+                                "{what:?} {} ms",
+                                reply.result["elapsed_ms"].as_u64().unwrap_or(0)
+                            ),
+                        )
+                    }
+                    BrowserOp::Scroll { to, by } => {
+                        if to.is_none() && by.is_none() {
+                            return Err(BrowserError::new(
+                                "invalid_request",
+                                "scroll needs --to top|bottom|eN or --by PX",
+                            ));
+                        }
+                        let reply = self.request(
+                            "scroll",
+                            Some(profile),
+                            Some(target),
+                            json!({ "to": to, "by": by }),
+                            deadline,
+                        )?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        let record = self.record(&key)?;
+                        (
+                            shape::scroll_result(&record, &page, &reply.result),
+                            to.clone()
+                                .unwrap_or_else(|| format!("by {}", by.unwrap_or(0))),
+                        )
+                    }
+                    BrowserOp::Eval { expr, max } => {
+                        if !config.allow_eval {
+                            return Err(BrowserError::new(
+                                "eval_disabled",
+                                "browser eval is disabled ([browser] allow_eval = false)",
+                            ));
+                        }
+                        let reply = self.request(
+                            "eval",
+                            Some(profile),
+                            Some(target),
+                            json!({ "expr": expr }),
+                            deadline,
+                        )?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        self.note_page(&key, &page);
+                        let record = self.record(&key)?;
+                        (
+                            shape::eval_result(
+                                &record,
+                                &page,
+                                &reply.result,
+                                max.unwrap_or(4000).clamp(100, 200_000) as usize,
+                            ),
+                            format!("eval {} chars", expr.chars().count()),
+                        )
+                    }
+                    BrowserOp::Dialog { action, text } => {
+                        let accept = match action.as_str() {
+                            "accept" => true,
+                            "dismiss" => false,
+                            other => {
+                                return Err(BrowserError::new(
+                                    "invalid_request",
+                                    format!("dialog action {other:?}: expected accept or dismiss"),
+                                ))
+                            }
+                        };
+                        let reply = self.request(
+                            "dialog",
+                            Some(profile),
+                            Some(target),
+                            json!({ "accept": accept, "text": text }),
+                            deadline,
+                        )?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        self.note_page(&key, &page);
+                        self.inner.state.lock().unwrap().set_dialog(&key, false);
+                        let record = self.record(&key)?;
+                        (
+                            shape::simple_result(
+                                &record,
+                                Some(&page),
+                                &format!("dialog {action}ed"),
+                                reply.result,
+                            ),
+                            action.clone(),
+                        )
+                    }
+                    BrowserOp::Close { .. } => {
+                        let _ = self.request(
+                            "close",
+                            Some(profile),
+                            Some(target),
+                            Value::Null,
+                            deadline,
+                        )?;
+                        let id = record.id();
+                        self.inner.state.lock().unwrap().close_tab(&key, now);
+                        let result = BrowserRunResult {
+                            header: format!("[{id} · closed]"),
+                            text: format!("closed {id}"),
+                            tab: Some(id.clone()),
+                            data: json!({ "tab": id, "closed": true }),
+                            ..Default::default()
+                        };
+                        (result, record.short.clone())
+                    }
+                    BrowserOp::Focus { .. } => {
+                        let reply = self.request(
+                            "focus",
+                            Some(profile),
+                            Some(target),
+                            Value::Null,
+                            deadline,
+                        )?;
+                        let page = reply.page.clone().unwrap_or_default();
+                        let record = self.record(&key)?;
+                        (
+                            shape::simple_result(
+                                &record,
+                                Some(&page),
+                                &format!("{} selected and the window raised", record.id()),
+                                json!({ "tab": record.id() }),
+                            ),
+                            record.short.clone(),
+                        )
+                    }
+                    BrowserOp::Open { .. }
+                    | BrowserOp::Tabs { .. }
+                    | BrowserOp::Use { .. }
+                    | BrowserOp::Unknown => unreachable!(),
+                };
+                Ok((result, Some(key), detail))
+            }
+        }
+    }
+
+    fn record(&self, key: &TabKey) -> Result<super::state::BrowserTabRecord, BrowserError> {
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .tabs
+            .get(key)
+            .cloned()
+            .ok_or_else(|| BrowserError::tab_closed(&key.target_id))
+    }
+
+    fn note_page(&self, key: &TabKey, page: &PageInfo) {
+        let mut state = self.inner.state.lock().unwrap();
+        if let Some(record) = state.tabs.get_mut(key) {
+            if !page.url.is_empty() {
+                record.url = page.url.clone();
+            }
+            if !page.title.is_empty() {
+                record.title = page.title.clone();
+            }
+            record.dialog_open = page.dialog_open;
+            state.dirty = true;
+        }
+    }
+
+    // ----- Lifecycle ------------------------------------------------------
+
+    fn profile_lock(&self, name: &str) -> Arc<Mutex<()>> {
+        self.inner
+            .profile_locks
+            .lock()
+            .unwrap()
+            .entry(name.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// Attach-or-launch the profile, make sure the sidecar runs and is
+    /// attached to it, reconcile its tabs.
+    pub fn ensure_running(&self, name: &str) -> Result<(), BrowserError> {
+        let lock = self.profile_lock(name);
+        let _guard = lock.lock().unwrap();
+        self.start_supervisor();
+        let config = self.config();
+        let profile_dir = self.inner.profiles.dir(name);
+        let log_path = self.inner.profiles.log_path(name);
+
+        let already_attached = {
+            let state = self.inner.state.lock().unwrap();
+            let running = state.profile(name).is_running();
+            let host = self.inner.host.lock().unwrap();
+            running
+                && host
+                    .as_ref()
+                    .is_some_and(|link| link.attached.contains(name))
+        };
+        if already_attached {
+            return Ok(());
+        }
+
+        let alive = |pid: u32| crate::platform::process_exists(pid);
+        let answers = |port: u16| launch::json_version(port, Duration::from_millis(1500)).is_some();
+        let decision = if self.inner.test_mode.load(Ordering::Relaxed) {
+            match self.inner.state.lock().unwrap().profile(name) {
+                ProfileStatus::Running { pid, port, exe, .. } => {
+                    AttachDecision::Attach(RunRecord {
+                        pid,
+                        port,
+                        exe,
+                        launched_at: 0,
+                        server_pid: 0,
+                        argv: vec![],
+                        browser: String::new(),
+                    })
+                }
+                _ => AttachDecision::Launch,
+            }
+        } else {
+            launch::attach_decision(&self.inner.home, name, &profile_dir, &alive, &answers)
+        };
+        let record = match decision {
+            AttachDecision::Attach(record) => record,
+            AttachDecision::InUse { pid } => {
+                self.inner.state.lock().unwrap().set_profile(
+                    name,
+                    ProfileStatus::InUse {
+                        pid: Some(pid),
+                        at: unix_now(),
+                    },
+                );
+                return Err(BrowserError::new(
+                    "profile_in_use",
+                    format!("profile {name:?} is open in another Chromium (pid {pid}) that herdr did not launch; close it or use another profile"),
+                ));
+            }
+            AttachDecision::Launch => {
+                self.inner.profiles.ensure(
+                    name,
+                    name.starts_with(profiles::TEMPORARY_PREFIX),
+                    unix_now(),
+                )?;
+                self.inner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .set_profile(name, ProfileStatus::Starting { since: unix_now() });
+                let options = LaunchOptions {
+                    restore: config.restore_tabs && self.inner.profiles.has_launched(name),
+                    extra_args: config.extra_args(),
+                    first_launch: !self.inner.profiles.has_launched(name),
+                    timeout: Duration::from_millis(config.launch_timeout_ms()),
+                    server_pid: std::process::id(),
+                };
+                let launched = {
+                    let home_env = std::env::var_os("HOME").map(PathBuf::from);
+                    launch::resolve_executable(&config.executable, home_env.as_deref()).and_then(
+                        |exe: Executable| {
+                            launch::launch(
+                                &self.inner.home,
+                                name,
+                                &profile_dir,
+                                &log_path,
+                                &exe,
+                                &options,
+                            )
+                        },
+                    )
+                };
+                match launched {
+                    Ok(record) => {
+                        let _ = self.inner.profiles.mark_launched(name);
+                        record
+                    }
+                    Err(err) => {
+                        self.inner
+                            .state
+                            .lock()
+                            .unwrap()
+                            .set_profile(name, ProfileStatus::Stopped);
+                        return Err(err);
+                    }
+                }
+            }
+        };
+        self.inner.state.lock().unwrap().set_profile(
+            name,
+            ProfileStatus::Running {
+                pid: record.pid,
+                port: record.port,
+                since: unix_now(),
+                exe: if record.browser.is_empty() {
+                    record.exe.clone()
+                } else {
+                    record.browser.clone()
+                },
+            },
+        );
+        self.ensure_host()?;
+        let reply = match self.request(
+            "attach",
+            Some(name),
+            None,
+            json!({ "port": record.port }),
+            ATTACH_TIMEOUT,
+        ) {
+            Ok(reply) => reply,
+            Err(err) if err.code == "browser_timeout" => {
+                return Err(BrowserError::new(
+                    "attach_blocked",
+                    format!(
+                        "the browser did not accept the attach within {} s; a page dialog may be waiting in the Chromium window — answer it and retry",
+                        ATTACH_TIMEOUT.as_secs()
+                    ),
+                ));
+            }
+            Err(err) => return Err(err),
+        };
+        let tabs: Vec<HostTab> =
+            serde_json::from_value(reply.result["tabs"].clone()).unwrap_or_default();
+        {
+            let mut state = self.inner.state.lock().unwrap();
+            state.reconcile(name, &tabs, unix_now());
+        }
+        if let Some(link) = self.inner.host.lock().unwrap().as_mut() {
+            link.attached.insert(name.to_string());
+        }
+        self.flush();
+        Ok(())
+    }
+
+    fn stop_profile(&self, name: &str) {
+        let lock = self.profile_lock(name);
+        let _guard = lock.lock().unwrap();
+        let status = self.inner.state.lock().unwrap().profile(name);
+        let pid = status.pid();
+        let closed = self
+            .request("close_browser", Some(name), None, Value::Null, STOP_GRACE)
+            .is_ok();
+        if let Some(pid) = pid {
+            let deadline = Instant::now() + STOP_GRACE;
+            while crate::platform::process_exists(pid) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if crate::platform::process_exists(pid) {
+                launch::terminate(pid);
+                let deadline = Instant::now() + STOP_GRACE;
+                while crate::platform::process_exists(pid) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        if let Some(link) = self.inner.host.lock().unwrap().as_mut() {
+            link.attached.remove(name);
+        }
+        launch::clear_run_record(&self.inner.home, name);
+        let mut state = self.inner.state.lock().unwrap();
+        state.close_profile_tabs(name, unix_now());
+        state.set_profile(name, ProfileStatus::Stopped);
+        tracing::info!(event = "browser.stop", profile = %name, graceful = closed, "browser profile stopped");
+        drop(state);
+        self.flush();
+    }
+
+    fn host_dir(&self) -> PathBuf {
+        self.inner.home.join(browser_assets::HOST_DIR)
+    }
+
+    /// Make sure a sidecar runs (spawn + `hello` when needed).
+    fn ensure_host(&self) -> Result<(), BrowserError> {
+        let _guard = self.inner.host_lock.lock().unwrap();
+        if self.inner.host.lock().unwrap().is_some() {
+            return Ok(());
+        }
+        if self.inner.test_mode.load(Ordering::Relaxed) {
+            return Err(BrowserError::host_failed("no fake host installed"));
+        }
+        if let HostStatus::Failed { error, .. } = &self.inner.state.lock().unwrap().host {
+            return Err(BrowserError::host_failed(format!(
+                "the browser sidecar keeps failing ({error}); `herdr browser start` retries, `herdr browser doctor` explains"
+            )));
+        }
+        {
+            let mut respawns = self.inner.respawns.lock().unwrap();
+            let now = Instant::now();
+            while respawns
+                .front()
+                .is_some_and(|at| now.duration_since(*at) > RESPAWN_WINDOW)
+            {
+                respawns.pop_front();
+            }
+            if respawns.len() >= RESPAWN_LIMIT {
+                let tail = host::log_tail(&self.host_dir().join("host.log"), 20);
+                self.inner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .set_host(HostStatus::Failed {
+                        error: format!(
+                            "{RESPAWN_LIMIT} sidecar restarts in {} s",
+                            RESPAWN_WINDOW.as_secs()
+                        ),
+                        log_tail: tail.clone(),
+                    });
+                return Err(BrowserError::host_failed(format!(
+                    "the browser sidecar restarted {RESPAWN_LIMIT} times in a minute; last log lines:\n{tail}"
+                )));
+            }
+            respawns.push_back(now);
+        }
+        let config = self.config();
+        let host_dir = self.host_dir();
+        let runtime = browser_assets::read_runtime(&host_dir);
+        if runtime.is_none()
+            || !host_dir
+                .join("node_modules")
+                .join("playwright-core")
+                .is_dir()
+        {
+            return Err(BrowserError::new(
+                "browser_runtime_missing",
+                "the browser sidecar is not installed; run `herdr browser setup`",
+            ));
+        }
+        if runtime
+            .as_ref()
+            .is_some_and(|r| r.assets_sha256 != browser_assets::assets_sha256())
+        {
+            // Refresh the assets in place: only the node_modules need npm.
+            match browser_assets::install(&host_dir) {
+                Ok(_) => {
+                    if let Some(mut r) = runtime.clone() {
+                        r.assets_sha256 = browser_assets::assets_sha256();
+                        let _ = browser_assets::write_runtime(&host_dir, &r);
+                    }
+                }
+                Err(err) => {
+                    return Err(BrowserError::new(
+                        "browser_runtime_outdated",
+                        format!("the browser sidecar assets are outdated and could not be refreshed ({err}); run `herdr browser setup`"),
+                    ));
+                }
+            }
+        }
+        let node = super::node::discover_default(
+            config.node(),
+            runtime.as_ref().map(|r| Path::new(&r.node)),
+        )
+        .ok_or_else(|| {
+            BrowserError::new(
+                "browser_runtime_missing",
+                "no node binary found; run `herdr browser setup` or set [browser] node",
+            )
+        })?;
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .set_host(HostStatus::Starting);
+        let spawned = host::spawn(&node.path, &host_dir, browser_assets::ENTRY).map_err(|err| {
+            self.inner
+                .state
+                .lock()
+                .unwrap()
+                .set_host(HostStatus::Absent);
+            BrowserError::host_failed(format!(
+                "failed to start the browser sidecar with {}: {err}",
+                node.path.display()
+            ))
+        })?;
+        let generation = self.inner.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let pid = spawned.pid;
+        *self.inner.host.lock().unwrap() = Some(HostLink {
+            generation,
+            pid,
+            child: Some(spawned.child),
+            writer: spawned.writer,
+            playwright: String::new(),
+            attached: HashSet::new(),
+            missed_pings: 0,
+        });
+        self.spawn_reader(generation, spawned.reader);
+        drop(_guard);
+        let hello = match self.request("hello", None, None, Value::Null, Duration::from_secs(10)) {
+            Ok(reply) => reply,
+            Err(err) => {
+                let tail = host::log_tail(&host_dir.join("host.log"), 20);
+                self.drop_host(generation, Some(format!("hello failed: {}", err.message)));
+                return Err(BrowserError::host_failed(format!(
+                    "the browser sidecar did not answer hello ({}); host.log:\n{tail}",
+                    err.message
+                )));
+            }
+        };
+        let protocol = hello.result["host_protocol"].as_u64().unwrap_or(0) as u32;
+        if protocol != host::HOST_PROTOCOL {
+            self.drop_host(
+                generation,
+                Some(format!(
+                    "host protocol {protocol}, expected {}",
+                    host::HOST_PROTOCOL
+                )),
+            );
+            return Err(BrowserError::new(
+                "browser_runtime_outdated",
+                format!("the installed sidecar speaks protocol {protocol}, this herdr expects {}; run `herdr browser setup`", host::HOST_PROTOCOL),
+            ));
+        }
+        let playwright = hello.result["playwright_version"]
+            .as_str()
+            .unwrap_or("?")
+            .to_string();
+        if let Some(link) = self.inner.host.lock().unwrap().as_mut() {
+            if link.generation == generation {
+                link.playwright = playwright.clone();
+            }
+        }
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .set_host(HostStatus::Running {
+                pid,
+                playwright,
+                node: node.path.display().to_string(),
+            });
+        tracing::info!(event = "browser.host.start", pid, node = %node.path.display(), "browser sidecar started");
+        Ok(())
+    }
+
+    fn spawn_reader(&self, generation: u64, mut reader: Box<dyn std::io::BufRead + Send>) {
+        let hub = self.clone();
+        let _ = std::thread::Builder::new()
+            .name("herdr-browser-host-reader".into())
+            .spawn(move || {
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            if let Some(message) = host::parse_line(&line) {
+                                hub.handle_message(message);
+                            }
+                        }
+                    }
+                }
+                hub.drop_host(generation, None);
+            });
+    }
+
+    fn handle_message(&self, message: HostMessage) {
+        match message {
+            HostMessage::Reply(reply) => {
+                let sender = self.inner.pending.lock().unwrap().remove(&reply.id);
+                if let Some(sender) = sender {
+                    let _ = sender.send(reply);
+                }
+            }
+            HostMessage::Event(event) => self.handle_event(event),
+        }
+    }
+
+    fn handle_event(&self, event: HostEvent) {
+        let now = unix_now();
+        match event {
+            HostEvent::Tab(tab) => {
+                self.inner.state.lock().unwrap().apply_tab_event(&tab, now);
+            }
+            HostEvent::Dialog {
+                profile,
+                target,
+                state: dialog_state,
+                ..
+            } => {
+                let key = TabKey::new(&profile, &target);
+                self.inner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .set_dialog(&key, dialog_state == "open");
+            }
+            HostEvent::Browser {
+                profile,
+                kind,
+                detail,
+            } => {
+                if kind == "disconnected" {
+                    if let Some(link) = self.inner.host.lock().unwrap().as_mut() {
+                        link.attached.remove(&profile);
+                    }
+                    let hub = self.clone();
+                    // The pid usually goes a moment later; let the supervisor classify
+                    // it (crash vs quit) after a short grace.
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(1500));
+                        hub.check_profile_alive(&profile, Some(&detail));
+                    });
+                }
+            }
+            HostEvent::Log { level, text } => {
+                tracing::debug!(event = "browser.host.log", level = %level, "{text}");
+            }
+            HostEvent::Unknown => {}
+        }
+        self.flush();
+    }
+
+    /// The sidecar went away (EOF, kill): fail its pending calls, forget it.
+    fn drop_host(&self, generation: u64, error: Option<String>) {
+        let mut host = self.inner.host.lock().unwrap();
+        let Some(link) = host.as_mut() else {
+            return;
+        };
+        if link.generation != generation {
+            return;
+        }
+        if let Some(mut child) = link.child.take() {
+            host::kill_group(link.pid);
+            let _ = child.wait();
+        }
+        let pid = link.pid;
+        *host = None;
+        drop(host);
+        self.inner.pending.lock().unwrap().clear();
+        let mut state = self.inner.state.lock().unwrap();
+        match error {
+            Some(error) => {
+                tracing::warn!(event = "browser.host.exit", pid, %error, "browser sidecar dropped")
+            }
+            None => tracing::info!(event = "browser.host.exit", pid, "browser sidecar exited"),
+        }
+        if !matches!(state.host, HostStatus::Failed { .. }) {
+            state.set_host(HostStatus::Absent);
+        }
+    }
+
+    /// Send one request and wait for its reply.
+    pub fn request(
+        &self,
+        op: &str,
+        profile: Option<&str>,
+        target: Option<&str>,
+        args: Value,
+        deadline: Duration,
+    ) -> Result<HostReply, BrowserError> {
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::channel();
+        self.inner.pending.lock().unwrap().insert(id, tx);
+        let line = serde_json::to_string(&HostRequest {
+            id,
+            op,
+            profile,
+            target,
+            args,
+            deadline_ms: deadline.as_millis() as u64,
+        })
+        .map_err(|err| BrowserError::host_failed(err.to_string()))?;
+        {
+            let mut host = self.inner.host.lock().unwrap();
+            let Some(link) = host.as_mut() else {
+                self.inner.pending.lock().unwrap().remove(&id);
+                return Err(BrowserError::new(
+                    "browser_host_restarted",
+                    "the browser sidecar is not running; retry (it restarts on demand)",
+                ));
+            };
+            if let Err(err) = link.writer.write_line(&line) {
+                self.inner.pending.lock().unwrap().remove(&id);
+                let generation = link.generation;
+                drop(host);
+                self.drop_host(generation, Some(err.to_string()));
+                return Err(BrowserError::new(
+                    "browser_host_restarted",
+                    "the browser sidecar went away while sending; retry",
+                ));
+            }
+        }
+        match rx.recv_timeout(deadline + REPLY_GRACE) {
+            Ok(reply) => {
+                if reply.ok {
+                    Ok(reply)
+                } else {
+                    let error = reply.error.unwrap_or_default();
+                    let code = if error.code.is_empty() { "browser_error".to_string() } else { error.code };
+                    Err(BrowserError::new(&code, error.message))
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.inner.pending.lock().unwrap().remove(&id);
+                Err(BrowserError::timeout(format!(
+                    "{op} exceeded {} ms (the page may still be loading; try `herdr browser read`)",
+                    deadline.as_millis()
+                )))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(BrowserError::new(
+                "browser_host_restarted",
+                "the browser sidecar restarted during the call; retry (refs are lost, take a new snapshot)",
+            )),
+        }
+    }
+
+    fn start_supervisor(&self) {
+        if self.inner.supervisor.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let hub = self.clone();
+        let _ = std::thread::Builder::new()
+            .name("herdr-browser-supervisor".into())
+            .spawn(move || loop {
+                std::thread::sleep(SUPERVISOR_INTERVAL);
+                hub.supervise();
+            });
+    }
+
+    /// One supervisor pass: dead browsers, wedged sidecar, pruning, flush.
+    pub fn supervise(&self) {
+        let running: Vec<String> = self
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .profiles
+            .iter()
+            .filter(|(_, status)| status.is_running())
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in running {
+            self.check_profile_alive(&name, None);
+        }
+        let has_host = self.inner.host.lock().unwrap().is_some();
+        if has_host && !self.inner.test_mode.load(Ordering::Relaxed) {
+            match self.request("ping", None, None, Value::Null, PING_TIMEOUT) {
+                Ok(_) => {
+                    if let Some(link) = self.inner.host.lock().unwrap().as_mut() {
+                        link.missed_pings = 0;
+                    }
+                }
+                Err(err) if err.code == "browser_timeout" => {
+                    let wedged = {
+                        let mut host = self.inner.host.lock().unwrap();
+                        match host.as_mut() {
+                            Some(link) => {
+                                link.missed_pings += 1;
+                                (link.missed_pings >= PING_MISSES).then_some(link.generation)
+                            }
+                            None => None,
+                        }
+                    };
+                    if let Some(generation) = wedged {
+                        self.drop_host(generation, Some("sidecar missed two pings; killed".into()));
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+        self.inner.state.lock().unwrap().prune(unix_now());
+        self.flush();
+    }
+
+    /// Reclassify a running profile whose process is gone.
+    fn check_profile_alive(&self, name: &str, detail: Option<&str>) {
+        let status = self.inner.state.lock().unwrap().profile(name);
+        let ProfileStatus::Running { pid, .. } = status else {
+            return;
+        };
+        if self.inner.test_mode.load(Ordering::Relaxed) && pid == 0 {
+            return;
+        }
+        if crate::platform::process_exists(pid) {
+            return;
+        }
+        let exit_type = crate::persist::browser::profile_exit_type(&self.inner.profiles.dir(name));
+        let now = unix_now();
+        let new_status = if exit_type.as_deref() == Some("Crashed") {
+            ProfileStatus::Crashed {
+                at: now,
+                detail: detail
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "the browser process exited unexpectedly".into()),
+            }
+        } else {
+            ProfileStatus::UserQuit { at: now }
+        };
+        if let Some(link) = self.inner.host.lock().unwrap().as_mut() {
+            link.attached.remove(name);
+        }
+        launch::clear_run_record(&self.inner.home, name);
+        let mut state = self.inner.state.lock().unwrap();
+        state.close_profile_tabs(name, now);
+        state.set_profile(name, new_status);
+        tracing::info!(event = "browser.profile.exit", profile = %name, pid, exit_type = exit_type.as_deref().unwrap_or("?"), "browser process is gone");
+    }
+
+    /// Write the ledger and append new activity when something changed.
+    pub fn flush(&self) {
+        let ledger = self.inner.ledger_path.lock().unwrap().clone();
+        let Some(ledger) = ledger else {
+            return;
+        };
+        let (snapshot, new_entries) = {
+            let mut state = self.inner.state.lock().unwrap();
+            if !state.dirty {
+                return;
+            }
+            state.dirty = false;
+            let flushed = self.inner.flushed_seq.load(Ordering::Relaxed);
+            let new_entries: Vec<BrowserActivity> = state
+                .log
+                .iter()
+                .filter(|entry| entry.seq > flushed)
+                .cloned()
+                .collect();
+            (state.snapshot(), new_entries)
+        };
+        if let Err(err) = crate::persist::browser::save(&ledger, &snapshot) {
+            tracing::warn!(event = "browser.ledger.save", err = %err, "failed to write browser.json");
+        }
+        if let Some(last) = new_entries.last() {
+            let activity = self.inner.activity_path.lock().unwrap().clone();
+            if let Some(activity) = activity {
+                if let Err(err) = crate::persist::browser::append_activity(&activity, &new_entries)
+                {
+                    tracing::warn!(event = "browser.activity.append", err = %err, "failed to append browser activity");
+                }
+            }
+            self.inner.flushed_seq.store(last.seq, Ordering::Relaxed);
+        }
+    }
+
+    /// Tests: a look at the state.
+    #[cfg(test)]
+    pub fn with_state<R>(&self, f: impl FnOnce(&BrowserState) -> R) -> R {
+        f(&self.inner.state.lock().unwrap())
+    }
+
+    /// Tests: mutate the ledger directly (fork smoke tests seed a tab).
+    #[cfg(test)]
+    pub fn with_state_mut<R>(&self, f: impl FnOnce(&mut BrowserState) -> R) -> R {
+        f(&mut self.inner.state.lock().unwrap())
+    }
+
+    /// Tests: mark a profile running without a launch.
+    #[cfg(test)]
+    pub fn set_profile_running_for_test(&self, name: &str, pid: u32, port: u16) {
+        self.inner.test_mode.store(true, Ordering::Relaxed);
+        self.inner.state.lock().unwrap().set_profile(
+            name,
+            ProfileStatus::Running {
+                pid,
+                port,
+                since: unix_now(),
+                exe: "fake".into(),
+            },
+        );
+    }
+
+    /// Whether a sidecar link exists (tests).
+    #[cfg(test)]
+    pub fn has_host(&self) -> bool {
+        self.inner.host.lock().unwrap().is_some()
+    }
+}

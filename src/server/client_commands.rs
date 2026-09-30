@@ -17,6 +17,10 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "agent.restart",
     "agent.suspend",
     "agent.transcripts",
+    "browser.focus",
+    "browser.get",
+    "browser.start",
+    "browser.stop",
     "client_shell.surface.set",
     "command.invoke",
     "integration.install",
@@ -376,6 +380,22 @@ mod tests {
         assert_eq!(
             actual.remove("news.set_times").as_deref(),
             Some("7962b61c93c83ef9e9cdd0b42a433ae171891fc11b1df42a5120417d9cb9d805")
+        );
+        assert_eq!(
+            actual.remove("browser.focus").as_deref(),
+            Some("8e5a572a95b7e84c5c9802ce81f6a18ff723ad2574247981627afd04383ab9a4")
+        );
+        assert_eq!(
+            actual.remove("browser.get").as_deref(),
+            Some("9957cef2770129f543c007b2ae28b61b960e7c8c060f287c0fe0cdbb64a08fb8")
+        );
+        assert_eq!(
+            actual.remove("browser.start").as_deref(),
+            Some("cfcaeeee2210fdf0d9425d462b0947b389be24d1357bbcdd39dd99608b150f51")
+        );
+        assert_eq!(
+            actual.remove("browser.stop").as_deref(),
+            Some("7b8ec002e4def703fdb73643a82bb087e2afa69f56629f371a4c79b56a631e41")
         );
 
         assert_eq!(

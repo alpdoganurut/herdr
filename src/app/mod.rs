@@ -11,6 +11,7 @@ pub(crate) mod agent_view;
 #[cfg(unix)]
 pub(crate) use agent_suspend::SUSPEND_GRACEFUL_EXIT_GRACE;
 mod agents;
+mod browser;
 mod closed_sessions;
 pub(crate) mod news;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
@@ -669,6 +670,7 @@ impl App {
         };
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
+        app.install_browser_hub(&config.browser);
         app
     }
 
@@ -913,6 +915,10 @@ impl App {
 
         if !invalid_section("news") {
             self.news.apply_config(&config.news);
+        }
+
+        if !invalid_section("browser") {
+            crate::browser::hub().apply_config(&config.browser);
         }
 
         let graphics_config_valid = !invalid_section("terminal")

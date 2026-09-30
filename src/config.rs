@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
+mod browser;
 mod io;
 mod keybinds;
 mod model;
@@ -12,6 +13,7 @@ mod window_title;
 mod write;
 
 pub use self::{
+    browser::{valid_profile_name, BrowserConfig, AUTO_EXECUTABLE},
     io::{
         config_diagnostic_summary, config_dir, config_path, load_live_config,
         remove_keybinding_config_sections, remove_section_key, state_dir, upsert_section_bool,
@@ -134,6 +136,7 @@ impl Config {
             .chain(self.ui.idle_reminder_diagnostic())
             .chain(self.ui.daily_reminder_diagnostic())
             .chain(self.news.diagnostics())
+            .chain(self.browser.diagnostics())
             .collect()
     }
 

@@ -1802,6 +1802,673 @@
           ],
           "type": "object"
         },
+        "BrowserCaller": {
+          "description": "Who is calling: the pane whose environment the CLI or the MCP server ran\nin (`HERDR_PANE_ID`), or `--pane`.",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        "BrowserGetParams": {
+          "properties": {
+            "since_seq": {
+              "description": "Answer `{unchanged: true}` when nothing changed since this sequence number.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "BrowserLogParams": {
+          "properties": {
+            "limit": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "BrowserProfileCreateParams": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "temporary": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "BrowserProfileName": {
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "BrowserProfileTarget": {
+          "properties": {
+            "profile": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "BrowserRunParams": {
+          "description": "One operation of `browser.run`. Unknown operations (an older server) map\nto `Unknown`, which answers `unknown_op`.",
+          "oneOf": [
+            {
+              "description": "Open a new background tab and make it the caller's current tab.",
+              "properties": {
+                "focus": {
+                  "description": "Also select the tab and raise the window.",
+                  "type": "boolean"
+                },
+                "op": {
+                  "const": "open",
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "wait": {
+                  "description": "`domcontentloaded` (default), `load` or `networkidle`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "url"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "navigate",
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "wait": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "url"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`back`, `forward` or `reload`.",
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "op": {
+                  "const": "history",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "action"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "all": {
+                  "description": "Return everything (no paging).",
+                  "type": "boolean"
+                },
+                "format": {
+                  "description": "`markdown` (default), `text`, `snapshot` or `html`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "interactive": {
+                  "description": "Only actionable nodes and their headings (snapshot only).",
+                  "type": "boolean"
+                },
+                "max": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "read",
+                  "type": "string"
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "context": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "max": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "find",
+                  "type": "string"
+                },
+                "query": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "query"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "filter": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "max": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "links",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "format": {
+                  "description": "`jpeg` (default) or `png`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "front": {
+                  "description": "Select the tab and raise the window first (logged as `focus`).",
+                  "type": "boolean"
+                },
+                "full": {
+                  "type": "boolean"
+                },
+                "op": {
+                  "const": "screenshot",
+                  "type": "string"
+                },
+                "out": {
+                  "description": "Write the full-size file here instead of `shots/`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "level": {
+                  "description": "`error`, `warn` or `all` (default).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "max": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "console",
+                  "type": "string"
+                },
+                "since": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "failed": {
+                  "type": "boolean"
+                },
+                "match": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "max": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "network",
+                  "type": "string"
+                },
+                "since": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "gone": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "load": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "wait",
+                  "type": "string"
+                },
+                "selector": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "timeout_s": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "by": {
+                  "description": "Pixels (negative scrolls up).",
+                  "format": "int64",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "scroll",
+                  "type": "string"
+                },
+                "to": {
+                  "description": "`top`, `bottom` or a ref `eN`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "expr": {
+                  "type": "string"
+                },
+                "max": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "const": "eval",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "expr"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`accept` (with optional prompt text) or `dismiss` an open dialog.",
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "op": {
+                  "const": "dialog",
+                  "type": "string"
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op",
+                "action"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "mine": {
+                  "type": "boolean"
+                },
+                "op": {
+                  "const": "tabs",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Make `tab` the caller's current tab.",
+              "properties": {
+                "op": {
+                  "const": "use",
+                  "type": "string"
+                },
+                "tab": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "tab"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "close",
+                  "type": "string"
+                },
+                "tab": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Select the tab and raise the window (for the human).",
+              "properties": {
+                "op": {
+                  "const": "focus",
+                  "type": "string"
+                },
+                "tab": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "unknown",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "properties": {
+            "caller": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/BrowserCaller"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "profile": {
+              "description": "The profile to use; switches the caller's cursor to it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab": {
+              "description": "`main:t3` or `t3`; unset = the caller's current tab.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "timeout_ms": {
+              "description": "Overrides `[browser] op_timeout_ms` for this call.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "BrowserStopParams": {
+          "properties": {
+            "all": {
+              "type": "boolean"
+            },
+            "profile": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "BrowserTabTarget": {
+          "properties": {
+            "profile": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab"
+          ],
+          "type": "object"
+        },
         "ClientShellSurfaceSetParams": {
           "description": "Updates whether the requesting client shell receives and controls pane presentation.",
           "properties": {
@@ -6092,6 +6759,182 @@
         {
           "properties": {
             "method": {
+              "const": "browser.run",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserRunParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.get",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserGetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.status",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.focus",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserTabTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.start",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserProfileTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.stop",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserStopParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.log",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserLogParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.resolve_caller",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserCaller"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.profiles",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.profile_create",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserProfileCreateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.profile_delete",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserProfileName"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -7581,6 +8424,676 @@
             "unchanged",
             "skipped",
             "failed"
+          ],
+          "type": "object"
+        },
+        "BrowserActivity": {
+          "properties": {
+            "actor": {
+              "$ref": "#/schemas/success_response/$defs/BrowserActor"
+            },
+            "at": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "detail": {
+              "default": "",
+              "type": "string"
+            },
+            "ms": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ok": {
+              "default": false,
+              "type": "boolean"
+            },
+            "op": {
+              "type": "string"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tab": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "seq",
+            "at",
+            "profile",
+            "actor",
+            "op"
+          ],
+          "type": "object"
+        },
+        "BrowserActor": {
+          "description": "Who did something to a browser tab.",
+          "oneOf": [
+            {
+              "description": "A herdr pane, as it looked when the call was made.",
+              "properties": {
+                "agent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "gone": {
+                  "description": "The pane no longer exists (re-resolved by `browser.get`).",
+                  "type": "boolean"
+                },
+                "kind": {
+                  "const": "pane",
+                  "type": "string"
+                },
+                "pane_id": {
+                  "type": "string"
+                },
+                "session": {
+                  "default": "",
+                  "description": "The herdr session name (`default` for the unnamed one).",
+                  "type": "string"
+                },
+                "tab_id": {
+                  "type": "string"
+                },
+                "tab_label": {
+                  "default": "",
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "type": "string"
+                },
+                "workspace_label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "pane_id",
+                "tab_id",
+                "workspace_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The human, in the Chromium window.",
+              "properties": {
+                "kind": {
+                  "const": "user",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A caller outside any herdr pane (or another herdr server).",
+              "properties": {
+                "kind": {
+                  "const": "external",
+                  "type": "string"
+                },
+                "raw": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "BrowserGetInfo": {
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "host": {
+              "$ref": "#/schemas/success_response/$defs/BrowserHostInfo",
+              "default": {
+                "state": ""
+              }
+            },
+            "profiles": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserProfileInfo"
+              },
+              "type": "array"
+            },
+            "recent_panes": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserPaneCursor"
+              },
+              "type": "array"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tabs": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserTabInfo"
+              },
+              "type": "array"
+            },
+            "unchanged": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "seq"
+          ],
+          "type": "object"
+        },
+        "BrowserHostInfo": {
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "node": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "playwright": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "description": "`absent`, `starting`, `running` or `failed`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        "BrowserPaneCursor": {
+          "description": "A pane's current browser tab.",
+          "properties": {
+            "current": {
+              "description": "`profile:tN`.",
+              "type": "string"
+            },
+            "last_at": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id",
+            "current",
+            "last_at"
+          ],
+          "type": "object"
+        },
+        "BrowserProfileInfo": {
+          "properties": {
+            "agents": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "dialogs": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "exe": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "pid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "port": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "since": {
+              "description": "Seconds since the Unix epoch when the state was entered.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "state": {
+              "description": "`stopped`, `starting`, `running`, `crashed`, `user_quit` or `in_use`.",
+              "type": "string"
+            },
+            "tabs": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "temporary": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name",
+            "state"
+          ],
+          "type": "object"
+        },
+        "BrowserProfileRecord": {
+          "properties": {
+            "created_at": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "exists": {
+              "default": false,
+              "description": "The profile directory exists on disk.",
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "state": {
+              "default": "",
+              "type": "string"
+            },
+            "temporary": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "BrowserRunResult": {
+          "description": "What `browser.run` answers: one header line, the shaped text, and the\nstructured payload the same call would print as JSON.",
+          "properties": {
+            "data": {
+              "description": "Structured payload, operation-specific."
+            },
+            "header": {
+              "description": "`[t3 · github.com/… · \"title\"]`, plus hints.",
+              "type": "string"
+            },
+            "image_inline_path": {
+              "description": "The downscaled copy for inline return, when it differs from `image_path`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "image_mime": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "image_path": {
+              "description": "A screenshot file (full size).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ms": {
+              "default": 0,
+              "description": "Milliseconds the operation took.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tab": {
+              "description": "The tab the operation ran on, `profile:tN`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "default": "",
+              "description": "The shaped body (paged content, table, matches…); may be empty.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "header"
+          ],
+          "type": "object"
+        },
+        "BrowserRuntimeInfo": {
+          "description": "`herdr browser setup`'s record of the installed runtime.",
+          "properties": {
+            "assets_sha256": {
+              "default": "",
+              "type": "string"
+            },
+            "installed_at": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "node": {
+              "default": "",
+              "type": "string"
+            },
+            "node_version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "npm": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "playwright_core": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "BrowserStatusInfo": {
+          "properties": {
+            "autostart": {
+              "default": false,
+              "type": "boolean"
+            },
+            "default_profile": {
+              "default": "",
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "executable": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "executable_error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "home": {
+              "description": "`state_dir()/browser`.",
+              "type": "string"
+            },
+            "host": {
+              "$ref": "#/schemas/success_response/$defs/BrowserHostInfo",
+              "default": {
+                "state": ""
+              }
+            },
+            "ledger": {
+              "default": "",
+              "description": "Where the ledger lives (the session data directory).",
+              "type": "string"
+            },
+            "log": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserActivity"
+              },
+              "type": "array"
+            },
+            "node": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "profiles": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserProfileInfo"
+              },
+              "type": "array"
+            },
+            "recent_panes": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserPaneCursor"
+              },
+              "type": "array"
+            },
+            "runtime": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/BrowserRuntimeInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "runtime_outdated": {
+              "description": "The embedded assets differ from the installed ones.",
+              "type": "boolean"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tabs": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserTabInfo"
+              },
+              "type": "array"
+            },
+            "unchanged": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "seq",
+            "home"
+          ],
+          "type": "object"
+        },
+        "BrowserTabInfo": {
+          "properties": {
+            "active": {
+              "description": "Touched within `[browser] active_seconds`.",
+              "type": "boolean"
+            },
+            "closed_at": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "console_errors": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "dialog_open": {
+              "type": "boolean"
+            },
+            "id": {
+              "description": "`profile:tN`.",
+              "type": "string"
+            },
+            "last": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/BrowserTouch"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "last_actor": {
+              "$ref": "#/schemas/success_response/$defs/BrowserActor"
+            },
+            "opened_by": {
+              "$ref": "#/schemas/success_response/$defs/BrowserActor"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "selected": {
+              "default": false,
+              "description": "The selected tab of its window.",
+              "type": "boolean"
+            },
+            "state": {
+              "default": "",
+              "description": "`open` or `closed`.",
+              "type": "string"
+            },
+            "target_id": {
+              "type": "string"
+            },
+            "title": {
+              "default": "",
+              "type": "string"
+            },
+            "url": {
+              "default": "",
+              "type": "string"
+            },
+            "users": {
+              "description": "Pane ids that touched it, most recent first.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "profile",
+            "target_id",
+            "opened_by",
+            "last_actor"
+          ],
+          "type": "object"
+        },
+        "BrowserTouch": {
+          "description": "The last agent touch of a tab.",
+          "properties": {
+            "actor": {
+              "$ref": "#/schemas/success_response/$defs/BrowserActor"
+            },
+            "at": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "detail": {
+              "default": "",
+              "type": "string"
+            },
+            "ok": {
+              "default": false,
+              "type": "boolean"
+            },
+            "op": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "actor",
+            "op",
+            "at"
           ],
           "type": "object"
         },
@@ -10980,6 +12493,108 @@
               "required": [
                 "type",
                 "editions"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "result": {
+                  "$ref": "#/schemas/success_response/$defs/BrowserRunResult"
+                },
+                "type": {
+                  "const": "browser_run",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "result"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "browser": {
+                  "$ref": "#/schemas/success_response/$defs/BrowserGetInfo"
+                },
+                "type": {
+                  "const": "browser_get",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "browser"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "status": {
+                  "$ref": "#/schemas/success_response/$defs/BrowserStatusInfo"
+                },
+                "type": {
+                  "const": "browser_status",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "entries": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/BrowserActivity"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "browser_log",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "entries"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "actor": {
+                  "$ref": "#/schemas/success_response/$defs/BrowserActor"
+                },
+                "type": {
+                  "const": "browser_actor",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "actor"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "profiles": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/BrowserProfileRecord"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "browser_profiles",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "profiles"
               ],
               "type": "object"
             },

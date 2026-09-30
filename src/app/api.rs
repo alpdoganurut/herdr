@@ -1129,6 +1129,29 @@ impl App {
                 return self.handle_news_set_enabled(request.id, params)
             }
             Method::NewsSetTimes(params) => return self.handle_news_set_times(request.id, params),
+            Method::BrowserRun(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "browser_lane",
+                    "browser.run is handled on its connection thread, not by the app runtime",
+                );
+            }
+            Method::BrowserGet(params) => return self.handle_browser_get(request.id, params),
+            Method::BrowserStatus(_) => return self.handle_browser_status(request.id),
+            Method::BrowserFocus(params) => return self.handle_browser_focus(request.id, params),
+            Method::BrowserStart(params) => return self.handle_browser_start(request.id, params),
+            Method::BrowserStop(params) => return self.handle_browser_stop(request.id, params),
+            Method::BrowserLog(params) => return self.handle_browser_log(request.id, params),
+            Method::BrowserResolveCaller(params) => {
+                return self.handle_browser_resolve_caller(request.id, params)
+            }
+            Method::BrowserProfiles(_) => return self.handle_browser_profiles(request.id),
+            Method::BrowserProfileCreate(params) => {
+                return self.handle_browser_profile_create(request.id, params)
+            }
+            Method::BrowserProfileDelete(params) => {
+                return self.handle_browser_profile_delete(request.id, params)
+            }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

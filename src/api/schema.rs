@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod agents;
+pub mod browser;
 pub mod closed_sessions;
 pub mod commands;
 pub mod common;
@@ -17,6 +18,7 @@ pub mod workspaces;
 pub mod worktrees;
 
 pub use agents::*;
+pub use browser::*;
 pub use closed_sessions::*;
 pub use commands::*;
 pub use common::*;
@@ -179,6 +181,28 @@ pub enum Method {
     NewsSetEnabled(NewsSetEnabledParams),
     #[serde(rename = "news.set_times")]
     NewsSetTimes(NewsSetTimesParams),
+    #[serde(rename = "browser.run")]
+    BrowserRun(BrowserRunParams),
+    #[serde(rename = "browser.get")]
+    BrowserGet(BrowserGetParams),
+    #[serde(rename = "browser.status")]
+    BrowserStatus(EmptyParams),
+    #[serde(rename = "browser.focus")]
+    BrowserFocus(BrowserTabTarget),
+    #[serde(rename = "browser.start")]
+    BrowserStart(BrowserProfileTarget),
+    #[serde(rename = "browser.stop")]
+    BrowserStop(BrowserStopParams),
+    #[serde(rename = "browser.log")]
+    BrowserLog(BrowserLogParams),
+    #[serde(rename = "browser.resolve_caller")]
+    BrowserResolveCaller(BrowserCaller),
+    #[serde(rename = "browser.profiles")]
+    BrowserProfiles(EmptyParams),
+    #[serde(rename = "browser.profile_create")]
+    BrowserProfileCreate(BrowserProfileCreateParams),
+    #[serde(rename = "browser.profile_delete")]
+    BrowserProfileDelete(BrowserProfileName),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]
