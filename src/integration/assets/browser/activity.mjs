@@ -7,7 +7,7 @@
 export const WORLD = 'herdr';
 export const HOST_ATTR = 'data-herdr-overlay';
 /** The companion worker code this sidecar expects (VERSION in companion/sw.js); an older running worker is reloaded. */
-export const COMPANION_VERSION = 7;
+export const COMPANION_VERSION = 9;
 /** The frame stays this long after the last operation. */
 export const LINGER_MS = 3000;
 /** The cursor's glide (matches the CSS transition). */
@@ -251,8 +251,12 @@ export class Companion {
     return this.connecting;
   }
   async _connect() {
+    // A worker Chrome idled out between the keep-alive alarms is a transient
+    // miss: the call fails, `state` stays what `probe` found, the next call
+    // retries (a latched 'missing' here once turned every group and page
+    // push off until the next attach).
     const sw = await this.worker(true);
-    if (!sw) { this.state = 'missing'; throw new Error('companion: no service worker'); }
+    if (!sw) throw new Error('companion: no service worker right now (idle?); retrying on the next call');
     const ws = new WebSocket(sw.webSocketDebuggerUrl);
     try {
       await withTimeout(new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error('companion: websocket failed')); }), COMPANION_CALL_MS, 'companion connect');

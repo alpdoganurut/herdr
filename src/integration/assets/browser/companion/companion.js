@@ -8,7 +8,7 @@ chrome.alarms.create('herdr-keepalive', { periodInMinutes: 0.5 });
 // version (0.<VERSION>.0), COMPANION_VERSION in activity.mjs and
 // COMPANION_VERSION in browser_assets.rs (herdr clears a profile's worker
 // store before launching it with a new version, so the new code loads).
-const VERSION = 7;
+const VERSION = 9;
 self.herdrPing = () => 'herdr-companion/' + VERSION;
 
 // The new tab page's data: herdr's compact snapshot, kept in session storage
@@ -33,6 +33,18 @@ const store = {
     if (id == null) delete groups[key]; else groups[key] = id;
     await chrome.storage.session.set({ groups });
   },
+  // Titles herdr itself gave to groups, across browser restarts: a restored
+  // group carrying one of them is herdr's own (group ids do not survive a
+  // restart, titles do); no other group is ever adopted by its name.
+  async ownTitle(title) {
+    const r = await chrome.storage.local.get('ownedTitles');
+    const owned = r.ownedTitles || {};
+    if (!owned[title]) { owned[title] = true; await chrome.storage.local.set({ ownedTitles: owned }); }
+  },
+  async owns(title) {
+    const r = await chrome.storage.local.get('ownedTitles');
+    return Boolean((r.ownedTitles || {})[title]);
+  },
 };
 
 // Put a tab into the pane's group (creating it when the pane has none),
@@ -45,10 +57,26 @@ self.herdrGroup = async ({ key, tabId, title, color, wasGrouped }) => {
   if (g != null) {
     try { if ((await chrome.tabGroups.get(g)).windowId !== tab.windowId) g = null; } catch { g = null; }
   }
-  if (tab.groupId !== -1 && tab.groupId !== g) return { skipped: 'other_group', groupId: tab.groupId };
+  if (tab.groupId !== -1 && tab.groupId !== g) {
+    // A tab that came back from session restore inside a group carrying this
+    // pane's exact title (one herdr gave) is that pane's group from before the
+    // restart: adopt it. Any other group — the user's, another pane's — is
+    // left alone.
+    let info = null;
+    try { info = await chrome.tabGroups.get(tab.groupId); } catch {}
+    if (!info || info.title !== title || g != null || !(await store.owns(title))) return { skipped: 'other_group', groupId: tab.groupId };
+    g = tab.groupId;
+  }
+  if (g == null && await store.owns(title)) {
+    // After a restart the pane's group is back with a new id: the one in this
+    // window with the pane's own title, before any new one is made.
+    const restored = await chrome.tabGroups.query({ title, windowId: tab.windowId }).catch(() => []);
+    if (restored.length) g = restored[0].id;
+  }
   if (g == null) g = await chrome.tabs.group({ tabIds: [tabId] });
   else if (tab.groupId !== g) await chrome.tabs.group({ tabIds: [tabId], groupId: g });
   await store.set(key, g);
+  await store.ownTitle(title);
   await chrome.tabGroups.update(g, { title, color, collapsed: false });
   return { groupId: g };
 };

@@ -27,7 +27,7 @@ pub const COMPANION_DIR: &str = "companion";
 /// `importScripts` of a new URL do not refresh it — so a profile that last
 /// ran another version has its `Default/Service Worker` store cleared
 /// before the launch (`launch::refresh_companion_worker`).
-pub const COMPANION_VERSION: u32 = 7;
+pub const COMPANION_VERSION: u32 = 9;
 pub const RUNTIME_FILE: &str = "runtime.json";
 pub const RUNTIME_VERSION: u32 = 1;
 /// The playwright-core version `package.json` pins.
@@ -310,6 +310,33 @@ mod tests {
         assert!(host.contains("noDefaults: true"));
         assert!(host.contains("host_protocol"));
         assert_eq!(assets_sha256().len(), 64);
+    }
+
+    /// The companion driver's JS-level regression check (scripts/test_browser_companion.mjs),
+    /// when a node is around; skipped otherwise.
+    #[test]
+    fn companion_driver_survives_a_transient_worker_miss() {
+        let node = std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("node"))
+                .find(|candidate| candidate.is_file())
+        });
+        let Some(node) = node else {
+            eprintln!("node not on PATH; companion driver check skipped");
+            return;
+        };
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test_browser_companion.mjs");
+        let output = std::process::Command::new(node)
+            .arg(&script)
+            .output()
+            .expect("run node");
+        assert!(
+            output.status.success(),
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

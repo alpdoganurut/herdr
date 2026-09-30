@@ -44,7 +44,8 @@ Act (refs from browser snapshot; a password field is refused, ask the user):
   batch [TAB] [--file steps.json] [--continue] [--final snapshot|screenshot] [--close-opened] [--no-animate]
         steps as a JSON array (stdin); a snapshot step gives the steps after it their refs,
         --close-opened closes the tabs the batch opened after the final step
-  Reuse your current tab with navigate; open only for a separate tab, and close what you opened.
+  Reuse your current tab with navigate; open only for a separate tab. Close tabs you opened when the whole
+  task is done, unless the user may want to look at them.
 
   status [--json]   log [-n 50] [--pane ID] [--tab T] [--json]   start|stop [--profile P] [--all]
   profile list | create [--temp] NAME | delete NAME
