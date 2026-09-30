@@ -36,6 +36,10 @@ pub enum BrowserActor {
         /// The pane no longer exists (re-resolved by `browser.get`).
         #[serde(default, skip_serializing_if = "super::is_false")]
         gone: bool,
+        /// The pane's shell process (the PTY child) when the call is
+        /// resolved: an MCP server checks it is among its own ancestors.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell_pid: Option<u32>,
     },
     /// The human, in the Chromium window.
     User,
@@ -799,6 +803,7 @@ mod tests {
             agent: Some("claude".into()),
             session: "default".into(),
             gone: false,
+            shell_pid: None,
         };
         assert_eq!(pane.label(), "planner · claude");
         assert_eq!(pane.pane_id(), Some("w2:pD"));

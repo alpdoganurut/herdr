@@ -1375,12 +1375,31 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
             codex_on_path().is_some() || codex_config_path().is_some_and(|p| p.exists());
         if codex_present || !both {
             println!("  {}", register_codex(&fallback));
+            println!("  codex:  interactive codex hands sessions to a shared app-server daemon that spawns MCP servers with ITS environment\n          (another pane's HERDR_PANE_ID, another herdr's socket): inside herdr+ run codex with --no-daemon. herdr does not\n          edit your shell files; add this to ~/.zshrc (or the bash equivalent):\n{}", codex_wrapper_function().lines().map(|l| format!("          {l}")).collect::<Vec<_>>().join("\n"));
         } else {
             println!("  codex:  not found (no `codex` on PATH, no ~/.codex/config.toml); `herdr browser setup --codex` registers it anyway");
         }
     }
     println!("done. Try: herdr browser open https://example.com && herdr browser read");
     Ok(0)
+}
+
+/// The shell function `setup --codex` suggests: `--no-daemon` inside a herdr pane only.
+pub(crate) fn codex_wrapper_function() -> &'static str {
+    "codex() { if [ -n \"$HERDR_PANE_ID\" ]; then command codex --no-daemon \"$@\"; else command codex \"$@\"; fi }"
+}
+
+/// Whether a Codex app-server daemon runs (it spawns MCP servers with its own environment).
+fn codex_daemon_running() -> bool {
+    std::process::Command::new("ps")
+        .args(["-axo", "command="])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|line| line.contains("app-server") && line.contains("--managed-daemon"))
+        })
+        .unwrap_or(false)
 }
 
 fn codex_on_path() -> Option<PathBuf> {
@@ -1593,6 +1612,9 @@ fn doctor(args: &[String]) -> std::io::Result<i32> {
         }
         Some(Err(problem)) => check(false, format!("codex mcp: {MCP_SERVER_NAME} {problem}")),
         None => println!("info codex: no config.toml (registration skipped)"),
+    }
+    if codex_daemon_running() {
+        println!("info codex: an app-server daemon is running (codex app-server --managed-daemon); it spawns MCP servers with its own environment, so inside herdr+ run `codex --no-daemon` — `herdr browser setup --codex` prints a shell function for it");
     }
     match super::send_request_unchecked(&Request {
         id: "cli:browser:doctor".into(),
@@ -1934,6 +1956,7 @@ mod tests {
                     agent: Some("claude".into()),
                     session: "default".into(),
                     gone: false,
+                    shell_pid: None,
                 },
                 op: "read".into(),
                 detail: "markdown".into(),

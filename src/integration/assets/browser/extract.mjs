@@ -81,8 +81,17 @@ export const EXTRACT_SOURCE = String.raw`(function (args) {
       return t ? '\n\n' + t.split('\n').map(l => '> ' + l).join('\n') + '\n\n' : '';
     }
     if (tag === 'TABLE') {
-      const rows = Array.from(el.querySelectorAll(':scope > thead > tr, :scope > tbody > tr, :scope > tr'));
+      const rows = Array.from(el.querySelectorAll(':scope > thead > tr, :scope > tbody > tr, :scope > tfoot > tr, :scope > tr'));
       if (!rows.length) return '';
+      // A layout table (nested tables or forms, a presentation role, ragged
+      // rows without any header, or the page's wrapper) is not a table:
+      // its rows become lines, cells joined with " · ", links kept.
+      if (!isDataTable(el, rows)) {
+        // A cell keeps its own lines (a nested layout table's rows); spaces collapse.
+        const lines = rows.map(r => Array.from(r.children).filter(c => c.tagName === 'TD' || c.tagName === 'TH')
+          .map(c => Array.from(c.childNodes).map(n => render(n, ctx)).join('').replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim()).filter(Boolean).join(' · ')).filter(Boolean);
+        return lines.length ? '\n\n' + lines.join('\n') + '\n\n' : '';
+      }
       const cells = rows.map(r => Array.from(r.children).filter(c => c.tagName === 'TD' || c.tagName === 'TH').map(c => escapeCell(Array.from(c.childNodes).map(n => render(n, ctx)).join('').replace(/\s+/g, ' '))));
       const width = Math.max(...cells.map(r => r.length));
       if (!width) return '';
@@ -100,6 +109,20 @@ export const EXTRACT_SOURCE = String.raw`(function (args) {
     }
     const t = children();
     return BLOCK.has(tag) ? '\n' + t + '\n' : t;
+  }
+  // Data tables get the pipe syntax; everything else is layout.
+  function isDataTable(el, rows) {
+    if (el.getAttribute('role') === 'presentation' || el.getAttribute('role') === 'none') return false;
+    if (el.querySelector('table, form, iframe')) return false;
+    if (el.querySelector(':scope > thead, :scope > tr > th, :scope > tbody > tr > th')) return true;
+    if (rows.length < 2) return false;
+    const widths = rows.map(r => Array.from(r.children).filter(c => c.tagName === 'TD' || c.tagName === 'TH').length);
+    const width = widths[0];
+    if (width < 2 || widths.some(w => w !== width)) return false;
+    // The wrapper of (nearly) the whole page is layout, whatever its shape.
+    const bodyText = (document.body && document.body.textContent || '').replace(/\s+/g, ' ').length;
+    const ownText = (el.textContent || '').replace(/\s+/g, ' ').length;
+    return !(bodyText > 0 && ownText / bodyText > 0.85);
   }
   function tidy(md) {
     return md.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/^\s+|\s+$/g, '');

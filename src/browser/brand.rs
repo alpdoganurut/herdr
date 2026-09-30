@@ -95,6 +95,11 @@ pub fn plist_set(file: &Path, key: &str, value: &str) -> Result<(), String> {
     }
 }
 
+/// `plutil -remove key file`; a missing key is fine.
+pub fn plist_remove(file: &Path, key: &str) {
+    let _ = run("plutil", &["-remove", key, &file.display().to_string()]);
+}
+
 pub fn plist_get(file: &Path, key: &str) -> Option<String> {
     run(
         "plutil",
@@ -123,6 +128,9 @@ pub fn brand_bundle(bundle: &Path, name: &str) -> Result<usize, String> {
     for key in ["CFBundleName", "CFBundleDisplayName"] {
         plist_set(&plist, key, name)?;
     }
+    // macOS prefers the asset catalog's `CFBundleIconName` (Assets.car) over
+    // `CFBundleIconFile`; without the key the replaced app.icns is used.
+    plist_remove(&plist, "CFBundleIconName");
     let mut edited = 0;
     let resources = contents.join("Resources");
     let mut lprojs: Vec<PathBuf> = std::fs::read_dir(&resources)
@@ -386,6 +394,7 @@ mod tests {
 <key>CFBundleDisplayName</key><string>Chromium</string>
 <key>CFBundleIdentifier</key><string>org.chromium.Chromium</string>
 <key>CFBundleIconFile</key><string>app.icns</string>
+<key>CFBundleIconName</key><string>AppIcon</string>
 </dict></plist>
 "#,
         )
@@ -428,6 +437,15 @@ mod tests {
             plist_get(&plist, "CFBundleIdentifier").as_deref(),
             Some("org.chromium.Chromium"),
             "the bundle id is never touched"
+        );
+        assert_eq!(
+            plist_get(&plist, "CFBundleIconName"),
+            None,
+            "the asset-catalog icon name goes, so app.icns is used"
+        );
+        assert_eq!(
+            plist_get(&plist, "CFBundleIconFile").as_deref(),
+            Some("app.icns")
         );
         let en = contents.join("Resources/en.lproj/InfoPlist.strings");
         assert_eq!(

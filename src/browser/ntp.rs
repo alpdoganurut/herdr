@@ -186,6 +186,7 @@ mod tests {
             agent: agent.map(str::to_string),
             session: "default".into(),
             gone: false,
+            shell_pid: None,
         }
     }
 

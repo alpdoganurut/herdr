@@ -65,6 +65,7 @@ fn pane_actor(pane_id: &str, tab_id: &str) -> BrowserActor {
         agent: Some("claude".into()),
         session: "default".into(),
         gone: false,
+        shell_pid: None,
     }
 }
 

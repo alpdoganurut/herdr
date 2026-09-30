@@ -1216,6 +1216,7 @@ async fn browser_get_reports_a_fake_host_tab_with_its_actor() {
             agent: None,
             session: "default".into(),
             gone: false,
+            shell_pid: None,
         };
         let key = TabKey::new("main", "SMOKE-GONE");
         state.adopt_tab(

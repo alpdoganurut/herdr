@@ -9508,6 +9508,15 @@
                   "description": "The herdr session name (`default` for the unnamed one).",
                   "type": "string"
                 },
+                "shell_pid": {
+                  "description": "The pane's shell process (the PTY child) when the call is\nresolved: an MCP server checks it is among its own ancestors.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
                 "tab_id": {
                   "type": "string"
                 },

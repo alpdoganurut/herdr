@@ -24,6 +24,7 @@ fn pane(id: &str) -> BrowserActor {
         agent: Some("claude".into()),
         session: "default".into(),
         gone: false,
+        shell_pid: None,
     }
 }
 

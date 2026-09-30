@@ -53,11 +53,23 @@ impl Transport for SocketTransport {
 pub struct Session<T: Transport> {
     transport: T,
     caller: Option<BrowserCaller>,
+    /// Set when this server was not started from the pane its environment
+    /// names (a Codex daemon spawned it): every tool answers this instead of
+    /// misattributing the work.
+    refusal: Option<String>,
 }
 
 impl<T: Transport> Session<T> {
     pub fn new(transport: T, caller: Option<BrowserCaller>) -> Self {
-        Self { transport, caller }
+        Self {
+            transport,
+            caller,
+            refusal: None,
+        }
+    }
+
+    pub fn refuse(&mut self, reason: impl Into<String>) {
+        self.refusal = Some(reason.into());
     }
 
     /// Handle one incoming JSON-RPC message; `None` for notifications.
@@ -101,6 +113,9 @@ impl<T: Transport> Session<T> {
     }
 
     fn call(&self, params: &Value) -> Value {
+        if let Some(reason) = &self.refusal {
+            return error_content(&format!("error wrong_pane: {reason}"));
+        }
         let name = params["name"].as_str().unwrap_or("");
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
         let (op, profile, tab) = match op_for_tool(name, &arguments) {
@@ -383,7 +398,10 @@ pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
         return Ok(0);
     }
     let caller = super::browser::caller(None);
-    let mut session = Session::new(SocketTransport, caller);
+    let mut session = Session::new(SocketTransport, caller.clone());
+    if let Some(reason) = caller.as_ref().and_then(wrong_pane) {
+        session.refuse(reason);
+    }
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -412,6 +430,65 @@ pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
         }
     }
     Ok(0)
+}
+
+/// The pids above `pid`, nearest first (`ps` on unix; empty elsewhere).
+pub(crate) fn ancestors(pid: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut current = pid;
+    for _ in 0..64 {
+        let parent = std::process::Command::new("ps")
+            .args(["-o", "ppid=", "-p", &current.to_string()])
+            .output()
+            .ok()
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+            });
+        match parent {
+            Some(parent) if parent > 1 => {
+                out.push(parent);
+                current = parent;
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Whether the pane's shell is among these ancestors (`None` = cannot tell).
+pub(crate) fn started_from_pane(shell_pid: Option<u32>, ancestors: &[u32]) -> Option<bool> {
+    shell_pid.map(|pid| ancestors.contains(&pid))
+}
+
+/// The refusal for a server whose environment names a pane it was not
+/// started from: `HERDR_PANE_ID` came from another pane's environment (a
+/// Codex daemon started there hands its environment to every session).
+fn wrong_pane(caller: &BrowserCaller) -> Option<String> {
+    let response = super::send_request(&Request {
+        id: "mcp:browser.resolve_caller".into(),
+        method: Method::BrowserResolveCaller(caller.clone()),
+    })
+    .ok()?;
+    if response.get("error").is_some() {
+        return None;
+    }
+    let actor: crate::api::schema::BrowserActor =
+        serde_json::from_value(response["result"]["actor"].clone()).ok()?;
+    let crate::api::schema::BrowserActor::Pane {
+        pane_id, shell_pid, ..
+    } = actor
+    else {
+        return None;
+    };
+    match started_from_pane(shell_pid, &ancestors(std::process::id())) {
+        Some(false) => Some(format!(
+            "this browser MCP server was started through a Codex daemon (or another process) from outside pane {pane_id}, so its work cannot be attributed to your pane; run `codex --no-daemon` inside herdr+ (herdr browser setup --codex prints a shell function that does it)"
+        )),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -600,6 +677,41 @@ mod tests {
         assert!(op_for_tool("browser_batch", &json!({ "ops": "nope" }))
             .unwrap_err()
             .contains("array"));
+    }
+
+    #[test]
+    fn a_server_from_the_wrong_pane_refuses_tools_but_still_lists_them() {
+        let transport = fake(Ok(BrowserRunResult::default()));
+        let mut session = Session::new(
+            transport,
+            Some(BrowserCaller {
+                pane_id: "w2:pD".into(),
+            }),
+        );
+        session.refuse("started through a Codex daemon from another pane; run codex with --no-daemon inside herdr+");
+        let list = session
+            .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+            .unwrap();
+        assert!(list["result"]["tools"].as_array().unwrap().len() >= 25);
+        let call = session.handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "browser_read", "arguments": {} } })).unwrap();
+        assert_eq!(call["result"]["isError"], true);
+        assert!(call["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("wrong_pane"));
+        assert!(call["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("--no-daemon"));
+        assert!(
+            session.transport.calls.borrow().is_empty(),
+            "nothing reaches the server"
+        );
+        assert_eq!(started_from_pane(Some(7), &[3, 7, 1]), Some(true));
+        assert_eq!(started_from_pane(Some(9), &[3, 7, 1]), Some(false));
+        assert_eq!(started_from_pane(None, &[3]), None);
+        let mine = ancestors(std::process::id());
+        assert!(!mine.is_empty(), "a test process has a parent");
     }
 
     #[test]

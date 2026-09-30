@@ -917,6 +917,7 @@ mod tests {
             agent: Some("claude".into()),
             session: "default".into(),
             gone: false,
+            shell_pid: None,
         }
     }
 

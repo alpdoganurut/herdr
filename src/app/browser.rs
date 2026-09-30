@@ -171,6 +171,10 @@ impl App {
         let tab_idx = ws.find_tab_index_for_pane(raw)?;
         let tab = self.tab_info(ws_idx, tab_idx)?;
         let workspace = self.workspace_info(ws_idx);
+        let shell_pid = ws
+            .pane_state(raw)
+            .and_then(|state| self.terminal_runtimes.get(&state.attached_terminal_id))
+            .and_then(|runtime| runtime.child_pid());
         Some(BrowserActor::Pane {
             pane_id: pane.pane_id,
             tab_id: pane.tab_id,
@@ -180,6 +184,7 @@ impl App {
             agent: pane.agent,
             session: crate::session::active_name().unwrap_or_else(|| "default".into()),
             gone: false,
+            shell_pid,
         })
     }
 }
