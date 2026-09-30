@@ -40,7 +40,7 @@ Act (refs from browser snapshot; a password field is refused, ask the user):
   type [TAB] (--ref eN | --selector CSS) TEXT [--submit] [--clear]
   fill [TAB] (--ref eN | --selector CSS) TEXT      select [TAB] (--ref eN | --selector CSS) VALUE
   press [TAB] KEY [--ref eN | --selector CSS]      (no target: the focused element)
-  batch [TAB] [--file steps.json] [--continue] [--final snapshot|screenshot] [--close-opened]
+  batch [TAB] [--file steps.json] [--continue] [--final snapshot|screenshot] [--close-opened] [--no-animate]
         steps as a JSON array (stdin); a snapshot step gives the steps after it their refs,
         --close-opened closes the tabs the batch opened after the final step
   Reuse your current tab with navigate; open only for a separate tab, and close what you opened.
@@ -509,7 +509,7 @@ pub(crate) fn build_op(verb: &str, args: &[String]) -> Result<(BrowserOp, Common
             let c = parse_common(
                 args,
                 &["file", "final"],
-                &["continue", "close-opened"],
+                &["continue", "close-opened", "no-animate"],
                 true,
             )?;
             let source = match c.value("file") {
@@ -535,6 +535,7 @@ pub(crate) fn build_op(verb: &str, args: &[String]) -> Result<(BrowserOp, Common
                     stop_on_error: !c.flag("continue"),
                     final_: c.value("final").map(str::to_string),
                     close_opened: c.flag("close-opened"),
+                    animate: !c.flag("no-animate"),
                 },
                 c,
             )
@@ -749,6 +750,11 @@ pub(crate) fn format_status(status: &BrowserStatusInfo, now: u64) -> String {
                 .map(|d| format!(" · {d}"))
                 .unwrap_or_default()
         ));
+        if let Some(companion) = &profile.companion {
+            out.push_str(&format!(
+                "  tab groups (companion extension): {companion}\n"
+            ));
+        }
     }
     for tab in &get.tabs {
         let who = match &tab.last {
@@ -1300,6 +1306,24 @@ fn doctor(args: &[String]) -> std::io::Result<i32> {
                 true,
                 format!("server: reachable · sidecar {host} · {profiles} profile(s) known"),
             );
+            for profile in response["result"]["browser"]["profiles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                if let (Some(name), Some(companion)) =
+                    (profile["name"].as_str(), profile["companion"].as_str())
+                {
+                    println!(
+                        "info profile {name}: tab groups (companion extension) {companion}{}",
+                        if companion.starts_with("missing") {
+                            " — Chromium ignored --load-extension; the frame and cursor still work"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
         }
         Ok(response) => check(
             false,
@@ -1462,7 +1486,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            matches!(op, BrowserOp::Batch { ref ops, stop_on_error: false, final_: Some(ref f), close_opened: false } if ops.len() == 2 && f == "snapshot")
+            matches!(op, BrowserOp::Batch { ref ops, stop_on_error: false, final_: Some(ref f), close_opened: false, animate: true } if ops.len() == 2 && f == "snapshot")
         );
         std::fs::write(&file, "not json").unwrap();
         assert!(build_op("batch", &s(&["--file", file.to_str().unwrap()]))

@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -50,6 +50,8 @@ struct FakeHostState {
     /// Delay per op name, ms.
     delays: Vec<(String, u64)>,
     next_target: u32,
+    /// What `attach` reports about the companion extension (default: ready).
+    companion: Option<Value>,
 }
 
 type Shared = Arc<Mutex<FakeHostState>>;
@@ -70,7 +72,14 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
             let op = request["op"].as_str().unwrap().to_string();
             let target = request["target"].as_str().map(str::to_string);
             let id = request["id"].as_u64().unwrap();
-            let args = request["args"].clone();
+            let mut args = request["args"].clone();
+            // The envelope's activity directive, kept with the args for assertions.
+            if let Some(activity) = request.get("activity") {
+                if args.is_null() {
+                    args = json!({});
+                }
+                args["_activity"] = activity.clone();
+            }
             let (reply, events, delay) = {
                 let mut state = state.lock().unwrap();
                 state.ops.push((op.clone(), target.clone(), args.clone()));
@@ -101,7 +110,11 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                         }
                         "ping" => json!({ "id": id, "ok": true, "result": {} }),
                         "attach" => {
-                            json!({ "id": id, "ok": true, "result": { "tabs": [ { "target": "U1", "url": "https://user.test/", "title": "User tab", "selected": true } ] } })
+                            let companion = state
+                                .companion
+                                .clone()
+                                .unwrap_or_else(|| json!({ "state": "ready", "detail": "" }));
+                            json!({ "id": id, "ok": true, "result": { "tabs": [ { "target": "U1", "url": "https://user.test/", "title": "User tab", "selected": true } ], "companion": companion } })
                         }
                         "tabs" => {
                             json!({ "id": id, "ok": true, "result": { "tabs": [ { "target": "U1", "url": "https://user.test/", "title": "User tab", "selected": true } ] } })
@@ -164,6 +177,9 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                             json!({ "id": id, "ok": true, "result": {}, "page": { "url": args["url"].as_str().unwrap_or("https://site.test/after"), "title": "After", "status": 200 } })
                         }
                         "close" | "close_browser" => json!({ "id": id, "ok": true, "result": {} }),
+                        "release" => {
+                            json!({ "id": id, "ok": true, "result": { "released": args["keys"].as_array().map(Vec::len).unwrap_or(0) } })
+                        }
                         other => {
                             json!({ "id": id, "ok": false, "error": { "code": "unknown_op", "message": other } })
                         }
@@ -1100,6 +1116,7 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                 stop_on_error: true,
                 final_: Some("snapshot".into()),
                 close_opened: false,
+                animate: true,
             }),
         )
         .unwrap();
@@ -1162,6 +1179,7 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                 stop_on_error: false,
                 final_: Some("snapshot".into()),
                 close_opened: false,
+                animate: true,
             }),
         )
         .unwrap();
@@ -1189,7 +1207,8 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                 ops: long,
                 stop_on_error: true,
                 final_: None,
-                close_opened: false
+                close_opened: false,
+                animate: true
             })
         )
         .unwrap_err()
@@ -1201,6 +1220,7 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
         stop_on_error: true,
         final_: None,
         close_opened: false,
+        animate: true,
     })];
     assert_eq!(
         hub.run(
@@ -1209,7 +1229,8 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                 ops: nested,
                 stop_on_error: true,
                 final_: None,
-                close_opened: false
+                close_opened: false,
+                animate: true
             })
         )
         .unwrap_err()
@@ -1223,7 +1244,8 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                 ops: vec![],
                 stop_on_error: true,
                 final_: None,
-                close_opened: false
+                close_opened: false,
+                animate: true
             })
         )
         .unwrap_err()
@@ -1240,7 +1262,8 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                 })],
                 stop_on_error: true,
                 final_: Some("video".into()),
-                close_opened: false
+                close_opened: false,
+                animate: true
             })
         )
         .unwrap_err()
@@ -1267,6 +1290,7 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                 stop_on_error: true,
                 final_: None,
                 close_opened: false,
+                animate: true,
             }),
         )
         .unwrap();
@@ -1304,6 +1328,7 @@ fn batch_runs_steps_in_order_stops_on_error_and_logs_each() {
                 stop_on_error: true,
                 final_: None,
                 close_opened: false,
+                animate: true,
             }),
         )
         .unwrap();
@@ -1379,6 +1404,7 @@ fn a_snapshot_step_serves_the_next_steps_and_close_opened_tidies_up() {
                 stop_on_error: true,
                 final_: Some("snapshot".into()),
                 close_opened: true,
+                animate: true,
             }),
         )
         .unwrap();
@@ -1478,5 +1504,274 @@ fn a_snapshot_step_serves_the_next_steps_and_close_opened_tidies_up() {
         assert_eq!(log[0].op, "batch");
         assert_eq!(log[1].op, "close");
     });
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn an_agent_call_carries_the_activity_directive_and_the_user_s_does_not() {
+    let (hub, shared, _stream, home) = hub("activity-directive");
+    let actor = pane("w2:pA");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    hub.run(
+        &actor,
+        params(BrowserOp::Click {
+            ref_: Some("e11".into()),
+            selector: None,
+        }),
+    )
+    .unwrap();
+    {
+        let ops = shared.lock().unwrap().ops.clone();
+        let open = ops.iter().find(|(op, _, _)| op == "open").unwrap();
+        let directive = &open.2["_activity"];
+        assert_eq!(directive["frame"], true, "{directive}");
+        assert_eq!(directive["animate"], true);
+        assert_eq!(directive["group"]["key"], "w2:pA");
+        assert_eq!(directive["group"]["title"], "claude · planner");
+        assert_eq!(
+            directive["group"]["color"],
+            crate::browser::activity::group_color("w2:pA")
+        );
+        assert_eq!(directive["group"]["collapse_ms"], 120_000);
+        let act = ops.iter().find(|(op, _, _)| op == "act").unwrap();
+        assert_eq!(
+            act.2["_activity"]["frame"], true,
+            "every request of the call carries it"
+        );
+        assert!(
+            ops.iter()
+                .filter(|(op, _, _)| op == "attach" || op == "hello")
+                .all(|(_, _, a)| a.get("_activity").is_none()),
+            "housekeeping never does"
+        );
+    }
+    // The user's own call draws nothing.
+    let user_tab = hub.with_state(|state| state.open_tabs("main").next().unwrap().id());
+    let read = BrowserRunParams {
+        tab: Some(user_tab),
+        ..params(BrowserOp::Read {
+            format: None,
+            selector: None,
+            ref_: None,
+            offset: None,
+            max: None,
+            all: false,
+            interactive: false,
+        })
+    };
+    hub.run(&BrowserActor::User, read).unwrap();
+    {
+        let ops = shared.lock().unwrap().ops.clone();
+        let read = ops.iter().rev().find(|(op, _, _)| op == "read").unwrap();
+        assert!(read.2.get("_activity").is_none(), "{:?}", read.2);
+    }
+    // Off by config: nothing, even for a pane.
+    hub.apply_config(&BrowserConfig {
+        show_activity: false,
+        ..BrowserConfig::default()
+    });
+    hub.run(
+        &actor,
+        params(BrowserOp::Click {
+            ref_: Some("e11".into()),
+            selector: None,
+        }),
+    )
+    .unwrap();
+    {
+        let ops = shared.lock().unwrap().ops.clone();
+        let act = ops.iter().rev().find(|(op, _, _)| op == "act").unwrap();
+        assert!(act.2.get("_activity").is_none(), "{:?}", act.2);
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_batch_without_animate_keeps_the_frame_and_group_but_not_the_glide() {
+    let (hub, shared, _stream, home) = hub("activity-batch");
+    let actor = pane("w2:pB");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    hub.run(
+        &actor,
+        params(BrowserOp::Batch {
+            ops: vec![
+                step(BrowserOp::Click {
+                    ref_: Some("e11".into()),
+                    selector: None,
+                }),
+                step(BrowserOp::Fill {
+                    ref_: Some("e17".into()),
+                    selector: None,
+                    text: "x".into(),
+                }),
+            ],
+            stop_on_error: true,
+            final_: None,
+            close_opened: false,
+            animate: false,
+        }),
+    )
+    .unwrap();
+    let ops = shared.lock().unwrap().ops.clone();
+    let acts: Vec<&Value> = ops
+        .iter()
+        .filter(|(op, _, _)| op == "act")
+        .map(|(_, _, a)| a)
+        .collect();
+    assert_eq!(acts.len(), 2);
+    for act in acts {
+        assert_eq!(act["_activity"]["frame"], true, "{act}");
+        assert_eq!(act["_activity"]["animate"], false, "{act}");
+        assert_eq!(act["_activity"]["group"]["key"], "w2:pB");
+    }
+    // The next single call animates again (the directive is per call).
+    hub.run(
+        &actor,
+        params(BrowserOp::Click {
+            ref_: Some("e11".into()),
+            selector: None,
+        }),
+    )
+    .unwrap();
+    let ops = shared.lock().unwrap().ops.clone();
+    let last = ops.iter().rev().find(|(op, _, _)| op == "act").unwrap();
+    assert_eq!(last.2["_activity"]["animate"], true);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn gone_panes_release_their_groups_once() {
+    let (hub, shared, _stream, home) = hub("activity-release");
+    let actor = pane("w2:pC");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    hub.release_panes(vec!["w2:pC".into(), "w2:pZ".into()]);
+    hub.release_panes(vec!["w2:pC".into()]);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut releases: Vec<Value> = Vec::new();
+    while Instant::now() < deadline {
+        releases = shared
+            .lock()
+            .unwrap()
+            .ops
+            .iter()
+            .filter(|(op, _, _)| op == "release")
+            .map(|(_, _, a)| a.clone())
+            .collect();
+        if !releases.is_empty() {
+            std::thread::sleep(Duration::from_millis(150));
+            releases = shared
+                .lock()
+                .unwrap()
+                .ops
+                .iter()
+                .filter(|(op, _, _)| op == "release")
+                .map(|(_, _, a)| a.clone())
+                .collect();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        releases.len(),
+        1,
+        "one release for the two panes, none for the repeat: {releases:?}"
+    );
+    assert_eq!(
+        releases[0]["keys"],
+        json!([{ "key": "w2:pC", "title": "claude · planner" }, { "key": "w2:pZ", "title": null }]),
+        "the ledger's title travels with a known pane"
+    );
+    assert!(
+        releases[0].get("_activity").is_none(),
+        "a release carries no directive"
+    );
+    // The pane seen again in a call is armed again.
+    hub.run(
+        &actor,
+        params(BrowserOp::Click {
+            ref_: Some("e11".into()),
+            selector: None,
+        }),
+    )
+    .unwrap();
+    hub.release_panes(vec!["w2:pC".into()]);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let n = shared
+            .lock()
+            .unwrap()
+            .ops
+            .iter()
+            .filter(|(op, _, _)| op == "release")
+            .count();
+        if n == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        shared
+            .lock()
+            .unwrap()
+            .ops
+            .iter()
+            .filter(|(op, _, _)| op == "release")
+            .count(),
+        2
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn attach_records_the_companion_state_for_status() {
+    let (hub, shared, _stream, home) = hub("activity-companion");
+    shared.lock().unwrap().companion = Some(
+        json!({ "state": "missing", "detail": "no companion service worker on the DevTools port" }),
+    );
+    let actor = pane("w2:pD");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/".into(),
+            focus: false,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    let status = hub.status();
+    let main = status
+        .get
+        .profiles
+        .iter()
+        .find(|p| p.name == "main")
+        .unwrap();
+    assert_eq!(
+        main.companion.as_deref(),
+        Some("missing (no companion service worker on the DevTools port)")
+    );
     let _ = std::fs::remove_dir_all(&home);
 }

@@ -304,6 +304,7 @@ pub fn op_for_tool(
                 stop_on_error: a["stop_on_error"].as_bool().unwrap_or(true),
                 final_: opt_str(a, "final"),
                 close_opened: flag(a, "close_opened"),
+                animate: a["animate"].as_bool().unwrap_or(true),
             }
         }
         other => return Err(format!("unknown tool {other}")),
@@ -368,7 +369,7 @@ pub fn tools() -> Vec<Value> {
         json!({ "name": "browser_select", "description": "Pick an option of a <select> (ref or selector) by value or visible label.", "inputSchema": schema(target_props(json!({ "value": { "type": "string" } })), &["value"]) }),
         json!({ "name": "browser_hover", "description": "Hover an element (ref or selector); on a background tab the hover events are dispatched to the element.", "inputSchema": schema(target_props(json!({})), &[]) }),
         json!({ "name": "browser_batch", "description": "Run up to 20 steps on the current tab in order under one deadline: each step is an op object like the other tools' arguments plus \"op\" (e.g. {\"op\":\"open\",\"url\":\"…\"}, {\"op\":\"snapshot\",\"interactive\":true}, {\"op\":\"fill\",\"ref\":\"e3\",\"text\":\"x\"}, {\"op\":\"click\",\"ref\":\"e5\"}, {\"op\":\"wait\",\"text\":\"Done\"}, {\"op\":\"read\"}); a step may carry its own \"tab\". A snapshot step's refs are valid for the steps after it (take one after an open or a navigation before using refs) and its output (capped like browser_read) is included in the step result. Stops at the first error unless stop_on_error is false; `final` adds a snapshot or screenshot at the end; close_opened closes the tabs this batch opened after the final step and returns to your previous tab. Every step is checked and logged like a single call.",
-            "inputSchema": schema(json!({ "ops": { "type": "array", "items": { "type": "object", "properties": { "op": { "type": "string", "enum": ["open", "navigate", "history", "read", "snapshot", "find", "links", "screenshot", "console", "network", "wait", "scroll", "eval", "dialog", "tabs", "use", "close", "focus", "click", "type", "press", "select", "fill", "hover"] }, "tab": { "type": "string" }, "interactive": { "type": "boolean", "description": "snapshot: only actionable nodes" } }, "required": ["op"], "additionalProperties": true }, "minItems": 1, "maxItems": 20 }, "stop_on_error": { "type": "boolean", "description": "Default true" }, "final": { "type": "string", "enum": ["snapshot", "screenshot"] }, "close_opened": { "type": "boolean", "description": "Close the tabs this batch opened after the final step (default false)" } }), &["ops"]), "_meta": big }),
+            "inputSchema": schema(json!({ "ops": { "type": "array", "items": { "type": "object", "properties": { "op": { "type": "string", "enum": ["open", "navigate", "history", "read", "snapshot", "find", "links", "screenshot", "console", "network", "wait", "scroll", "eval", "dialog", "tabs", "use", "close", "focus", "click", "type", "press", "select", "fill", "hover"] }, "tab": { "type": "string" }, "interactive": { "type": "boolean", "description": "snapshot: only actionable nodes" } }, "required": ["op"], "additionalProperties": true }, "minItems": 1, "maxItems": 20 }, "stop_on_error": { "type": "boolean", "description": "Default true" }, "final": { "type": "string", "enum": ["snapshot", "screenshot"] }, "close_opened": { "type": "boolean", "description": "Close the tabs this batch opened after the final step (default false)" }, "animate": { "type": "boolean", "description": "Glide the activity cursor before each act step (default true)" } }), &["ops"]), "_meta": big }),
     ]
 }
 
@@ -594,7 +595,7 @@ mod tests {
             .contains("needs \"text\""));
         let (op, _, _) = op_for_tool("browser_batch", &json!({ "ops": [ { "op": "fill", "ref": "e1", "text": "x" }, { "op": "click", "ref": "e2" } ], "stop_on_error": false, "final": "snapshot" })).unwrap();
         assert!(
-            matches!(op, BrowserOp::Batch { ref ops, stop_on_error: false, final_: Some(ref f), close_opened: false } if ops.len() == 2 && f == "snapshot")
+            matches!(op, BrowserOp::Batch { ref ops, stop_on_error: false, final_: Some(ref f), close_opened: false, animate: true } if ops.len() == 2 && f == "snapshot")
         );
         assert!(op_for_tool("browser_batch", &json!({ "ops": "nope" }))
             .unwrap_err()

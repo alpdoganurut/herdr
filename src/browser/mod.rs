@@ -13,6 +13,7 @@
 //! (`browser.run`, [`serve`]) and the App lane (`browser.get` and friends,
 //! `src/app/browser.rs`) share it.
 
+pub mod activity;
 pub mod host;
 pub mod hub;
 pub mod launch;

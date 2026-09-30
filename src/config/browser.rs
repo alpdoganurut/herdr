@@ -71,6 +71,10 @@ pub struct BrowserConfig {
     pub launch_timeout_ms: u64,
     /// The default deadline of one browser operation. 1000..=600000 ms.
     pub op_timeout_ms: u64,
+    /// Show agent activity in the window: per-pane tab groups (the companion
+    /// extension), the glow frame and the cursor on tabs an agent works on.
+    /// Default: true.
+    pub show_activity: bool,
 }
 
 impl Default for BrowserConfig {
@@ -95,6 +99,7 @@ impl Default for BrowserConfig {
             active_glyph_secs: 120,
             launch_timeout_ms: 15_000,
             op_timeout_ms: 30_000,
+            show_activity: true,
         }
     }
 }
@@ -234,8 +239,9 @@ impl BrowserConfig {
 }
 
 /// Switches that are never passed to Chromium, whatever the config says: they
-/// mark the browser as automated, weaken it, or belong to herdr (the port and
-/// the profile dir). The one list the argv filter and the diagnostics share.
+/// mark the browser as automated, weaken it, or belong to herdr (the port, the
+/// profile dir and the companion extension). The one list the argv filter and
+/// the diagnostics share.
 pub const FORBIDDEN_SWITCHES: &[&str] = &[
     "--enable-automation",
     "--remote-allow-origins",
@@ -247,6 +253,8 @@ pub const FORBIDDEN_SWITCHES: &[&str] = &[
     "--no-sandbox",
     "--use-mock-keychain",
     "--user-data-dir",
+    "--load-extension",
+    "--disable-extensions",
 ];
 
 /// Whether `arg` is a forbidden switch, in its `--switch`, `--switch=value`,
@@ -363,6 +371,8 @@ mod tests {
         assert_eq!(config.diagnostics().len(), 6);
         assert!(is_forbidden_switch("-headless"));
         assert!(is_forbidden_switch("--remote-debugging-pipe"));
+        assert!(is_forbidden_switch("--load-extension=/x"));
+        assert!(is_forbidden_switch("--disable-extensions"));
         assert!(!is_forbidden_switch("headless"));
         assert!(!is_forbidden_switch("--lang"));
     }

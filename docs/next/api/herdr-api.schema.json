@@ -2504,6 +2504,10 @@
             {
               "description": "Several steps on one tab, in order, under one deadline.",
               "properties": {
+                "animate": {
+                  "description": "Glide the activity cursor before each act step (default true; false\nskips the glide, the frame and the tab group stay).",
+                  "type": "boolean"
+                },
                 "close_opened": {
                   "description": "Close the tabs this batch opened, after the final step (default false).",
                   "type": "boolean"
@@ -3349,6 +3353,10 @@
             {
               "description": "Several steps on one tab, in order, under one deadline.",
               "properties": {
+                "animate": {
+                  "description": "Glide the activity cursor before each act step (default true; false\nskips the glide, the frame and the tab group stay).",
+                  "type": "boolean"
+                },
                 "close_opened": {
                   "description": "Close the tabs this batch opened, after the final step (default false).",
                   "type": "boolean"
@@ -9679,6 +9687,13 @@
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "companion": {
+              "description": "The companion extension (tab groups) on a running profile: `ready`,\n`missing` (Chromium ignored --load-extension), `off` (show_activity =\nfalse) or `unsupported (…)`.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "detail": {
               "type": [

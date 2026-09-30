@@ -311,6 +311,10 @@ pub enum BrowserOp {
         /// Close the tabs this batch opened, after the final step (default false).
         #[serde(default, skip_serializing_if = "super::is_false")]
         close_opened: bool,
+        /// Glide the activity cursor before each act step (default true; false
+        /// skips the glide, the frame and the tab group stay).
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        animate: bool,
     },
     #[serde(other)]
     Unknown,
@@ -318,6 +322,10 @@ pub enum BrowserOp {
 
 fn default_true() -> bool {
     true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 /// One step of a batch: the operation plus, when it needs one, its tab
@@ -461,6 +469,11 @@ pub struct BrowserProfileInfo {
     pub temporary: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// The companion extension (tab groups) on a running profile: `ready`,
+    /// `missing` (Chromium ignored --load-extension), `off` (show_activity =
+    /// false) or `unsupported (…)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion: Option<String>,
 }
 
 /// The last agent touch of a tab.
@@ -722,10 +735,12 @@ mod tests {
                 stop_on_error,
                 final_,
                 close_opened,
+                animate,
             } => {
                 assert_eq!(ops.len(), 3);
                 assert!(*stop_on_error, "defaults to true");
                 assert!(!*close_opened, "defaults to false");
+                assert!(*animate, "defaults to true");
                 assert_eq!(final_.as_deref(), Some("snapshot"));
                 assert!(matches!(ops[0].op, BrowserOp::Fill { .. }));
                 assert_eq!(ops[2].tab.as_deref(), Some("t2"));

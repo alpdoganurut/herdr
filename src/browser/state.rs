@@ -845,6 +845,7 @@ impl BrowserState {
                     dialogs: open.iter().filter(|record| record.dialog_open).count() as u32,
                     temporary: temporary(name),
                     detail,
+                    companion: None,
                 }
             })
             .collect();

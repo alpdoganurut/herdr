@@ -6,6 +6,7 @@
 //! Lock order: `host` and `pending` are held only for a line write or a map
 //! touch; `state` is never held across a sidecar request.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -77,6 +78,19 @@ struct Inner {
     flush_lock: Mutex<()>,
     /// The last extraction per tab, so paging and `find` are stable and cheap.
     read_cache: Mutex<HashMap<TabKey, ReadCache>>,
+    /// The companion extension's state per attached profile (`ready`,
+    /// `missing`, `off`, …) for status and doctor.
+    companion: Mutex<HashMap<String, String>>,
+    /// Panes whose tab groups were released (gone panes), so a poll does not
+    /// ask again.
+    released: Mutex<HashSet<String>>,
+}
+
+thread_local! {
+    /// The activity directive of the call running on this thread (set by
+    /// `run`, `animate` cleared by a batch that asks), attached to every
+    /// sidecar request the call makes.
+    static ACTIVITY: RefCell<Option<Value>> = const { RefCell::new(None) };
 }
 
 /// One cached extraction: what was asked and the page it came from.
@@ -120,6 +134,8 @@ impl BrowserHub {
                 test_mode: AtomicBool::new(false),
                 flush_lock: Mutex::new(()),
                 read_cache: Mutex::new(HashMap::new()),
+                companion: Mutex::new(HashMap::new()),
+                released: Mutex::new(HashSet::new()),
             }),
         }
     }
@@ -195,13 +211,73 @@ impl BrowserHub {
             .collect();
         let temporary = |name: &str| temporary_names.contains(name);
         let state = self.inner.state.lock().unwrap();
-        state.get_info(
+        let mut info = state.get_info(
             since_seq,
             unix_now(),
             config.active_seconds,
             config.enabled,
             &temporary,
-        )
+        );
+        drop(state);
+        let companion = self.inner.companion.lock().unwrap();
+        for profile in &mut info.profiles {
+            profile.companion = companion.get(&profile.name).cloned();
+        }
+        info
+    }
+
+    /// Panes that are gone: their tab groups are dissolved (once per pane;
+    /// a pane id seen again in a call is armed again). Never blocks the caller.
+    pub fn release_panes(&self, panes: Vec<String>) {
+        // No sidecar, nothing to tidy yet: asked again once it runs.
+        if panes.is_empty() || self.inner.host.lock().unwrap().is_none() {
+            return;
+        }
+        let fresh: Vec<Value> = {
+            let mut released = self.inner.released.lock().unwrap();
+            let state = self.inner.state.lock().unwrap();
+            panes
+                .into_iter()
+                .filter(|pane| released.insert(pane.clone()))
+                .map(|pane| {
+                    // The group's title as the ledger last saw the pane, so a
+                    // sidecar that restarted since can still find the group.
+                    let title = state
+                        .tabs
+                        .values()
+                        .flat_map(|record| [&record.opened_by, &record.last_actor])
+                        .find_map(|actor| match actor {
+                            BrowserActor::Pane {
+                                pane_id,
+                                tab_label,
+                                agent,
+                                ..
+                            } if pane_id == &pane => Some(super::activity::group_title(
+                                agent.as_deref(),
+                                tab_label,
+                                pane_id,
+                            )),
+                            _ => None,
+                        });
+                    json!({ "key": pane, "title": title })
+                })
+                .collect()
+        };
+        if fresh.is_empty() {
+            return;
+        }
+        let hub = self.clone();
+        let _ = std::thread::Builder::new()
+            .name("herdr-browser-release".into())
+            .spawn(move || {
+                let _ = hub.request(
+                    "release",
+                    None,
+                    None,
+                    json!({ "keys": fresh }),
+                    Duration::from_secs(5),
+                );
+            });
     }
 
     pub fn status(&self) -> BrowserStatusInfo {
@@ -535,6 +611,11 @@ impl BrowserHub {
         });
         let op_name = params.op.name();
         let now = unix_now();
+        // The activity directive rides on this call's sidecar requests.
+        if let Some(pane) = &pane {
+            self.inner.released.lock().unwrap().remove(pane);
+        }
+        ACTIVITY.with(|slot| *slot.borrow_mut() = super::activity::directive(actor, &config));
         let result = self.execute(
             actor,
             &profile,
@@ -544,6 +625,7 @@ impl BrowserHub {
             deadline,
             now,
         );
+        ACTIVITY.with(|slot| *slot.borrow_mut() = None);
         let ms = started.elapsed().as_millis() as u64;
         self.record_outcome(
             actor,
@@ -811,19 +893,30 @@ impl BrowserHub {
                 stop_on_error,
                 final_,
                 close_opened,
-            } => self.execute_batch(
-                actor,
-                profile,
-                pane,
-                params,
-                ops,
-                *stop_on_error,
-                final_.as_deref(),
-                *close_opened,
-                config,
-                deadline,
-                now,
-            ),
+                animate,
+            } => {
+                if !*animate {
+                    // The steps run without the cursor glide (frame and group stay).
+                    ACTIVITY.with(|slot| {
+                        if let Some(directive) = slot.borrow_mut().as_mut() {
+                            directive["animate"] = json!(false);
+                        }
+                    });
+                }
+                self.execute_batch(
+                    actor,
+                    profile,
+                    pane,
+                    params,
+                    ops,
+                    *stop_on_error,
+                    final_.as_deref(),
+                    *close_opened,
+                    config,
+                    deadline,
+                    now,
+                )
+            }
             op => {
                 let record = self.resolve_target(profile, params.tab.as_deref(), pane)?;
                 let key = record.key();
@@ -1719,12 +1812,27 @@ impl BrowserHub {
                     .lock()
                     .unwrap()
                     .set_profile(name, ProfileStatus::Starting { since: unix_now() });
+                // The companion extension is installed with the sidecar assets;
+                // a fresh server may launch before its first host start.
+                let host_dir = self.host_dir();
+                let extension_dir = if config.show_activity {
+                    match browser_assets::install(&host_dir) {
+                        Ok(_) => Some(host_dir.join(browser_assets::COMPANION_DIR)),
+                        Err(err) => {
+                            tracing::warn!(event = "browser.companion.install", error = %err, "companion extension not installed; tab groups off");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
                 let options = LaunchOptions {
                     restore: config.restore_tabs && self.inner.profiles.has_launched(name),
                     extra_args: config.extra_args(),
                     first_launch: !self.inner.profiles.has_launched(name),
                     timeout: Duration::from_millis(config.launch_timeout_ms()),
                     server_pid: std::process::id(),
+                    extension_dir,
                 };
                 let launched = {
                     let home_env = std::env::var_os("HOME").map(PathBuf::from);
@@ -1813,15 +1921,48 @@ impl BrowserHub {
         if let Some(link) = self.inner.host.lock().unwrap().as_mut() {
             link.attached.insert(name.to_string());
         }
+        // The companion extension (tab groups): what the sidecar found.
+        let companion = if !config.show_activity {
+            "off".to_string()
+        } else {
+            let state = reply.result["companion"]["state"]
+                .as_str()
+                .unwrap_or("unknown");
+            match reply.result["companion"]["detail"].as_str() {
+                Some(detail) if !detail.is_empty() => format!("{state} ({detail})"),
+                _ => state.to_string(),
+            }
+        };
+        self.inner
+            .companion
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), companion);
         self.flush();
         Ok(())
     }
 
     fn stop_profile(&self, name: &str) {
+        // A running profile this server has not attached yet (a fresh server
+        // with the last one's run record, adopted on first use): attach first,
+        // so Browser.close reaches it instead of a signal.
+        let recorded = launch::read_run_record(&self.inner.home, name)
+            .filter(|record| crate::platform::process_exists(record.pid));
+        let needs_attach = {
+            let state = self.inner.state.lock().unwrap();
+            let host = self.inner.host.lock().unwrap();
+            (state.profile(name).is_running() || recorded.is_some())
+                && !host
+                    .as_ref()
+                    .is_some_and(|link| link.attached.contains(name))
+        };
+        if needs_attach {
+            let _ = self.ensure_running(name);
+        }
         let lock = self.profile_lock(name);
         let _guard = lock.lock().unwrap();
         let status = self.inner.state.lock().unwrap().profile(name);
-        let pid = status.pid();
+        let pid = status.pid().or(recorded.map(|record| record.pid));
         let closed = self
             .request("close_browser", Some(name), None, Value::Null, STOP_GRACE)
             .is_ok();
@@ -1837,11 +1978,18 @@ impl BrowserHub {
                     std::thread::sleep(Duration::from_millis(100));
                 }
             }
+            if crate::platform::process_exists(pid) {
+                // Still up (a page asked the user before closing): it stays
+                // ours; the run record and the state keep saying so.
+                tracing::warn!(event = "browser.stop.survived", profile = %name, pid, "browser did not exit; profile left running");
+                return;
+            }
         }
         if let Some(link) = self.inner.host.lock().unwrap().as_mut() {
             link.attached.remove(name);
         }
         launch::clear_run_record(&self.inner.home, name);
+        self.inner.companion.lock().unwrap().remove(name);
         let mut state = self.inner.state.lock().unwrap();
         state.close_profile_tabs(name, unix_now());
         state.set_profile(name, ProfileStatus::Stopped);
@@ -2160,6 +2308,7 @@ impl BrowserHub {
             target,
             args,
             deadline_ms: deadline.as_millis() as u64,
+            activity: ACTIVITY.with(|slot| slot.borrow().clone()),
         })
         .map_err(|err| BrowserError::host_failed(err.to_string()))?;
         {

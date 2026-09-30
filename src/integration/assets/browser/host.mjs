@@ -3,7 +3,9 @@
 // (connectOverCDP, noDefaults) and runs read operations on its tabs. Holds no
 // durable state: ring buffers and refs are "since attach".
 //
-// Request  {"id":1,"op":"read","profile":"main","target":"<targetId>","args":{...},"deadline_ms":30000}
+// Request  {"id":1,"op":"read","profile":"main","target":"<targetId>","args":{...},"deadline_ms":30000,
+//           "activity":{"frame":true,"animate":true,"group":{"key":"w2:p7","title":"claude · planner","color":"purple","collapse_ms":120000}}}
+//          (activity: an agent pane's call; the frame/cursor overlay and the tab group; absent for the user)
 // Reply    {"id":1,"ok":true,"result":{...},"page":{"url":"…","title":"…","dialog_open":false}}
 //          {"id":1,"ok":false,"error":{"code":"…","message":"…"}}
 // Events   {"event":"tab"|"dialog"|"browser"|"log", ...}
@@ -12,6 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
+import { Overlay, Companion, NUDGE_URL } from './activity.mjs';
 
 const require = createRequire(import.meta.url);
 // Real functions for page.evaluate: a string would be evaluated as an expression (yielding the function,
@@ -61,6 +64,8 @@ class PageState {
     this.dialog = null;
     this.inflight = 0;
     this.closed = false;
+    this.overlay = new Overlay(this);
+    this.overlay.log = (text) => log('debug', text);
   }
   pushConsole(entry) {
     entry.seq = ++this.consoleSeq;
@@ -82,6 +87,15 @@ class Profile {
     this.port = null;
     this.pages = new Map(); // targetId -> PageState
     this.pending = new Map(); // page -> Promise<PageState> while the target id is looked up
+    this.companion = new Companion(this);
+    this.companion.log = (text) => log('debug', text);
+    this.chain = Promise.resolve();
+  }
+  // One at a time per profile (tab creation and its extension-tab adoption must not interleave).
+  serial(fn) {
+    const run = this.chain.then(fn, fn);
+    this.chain = run.catch(() => {});
+    return run;
   }
 }
 
@@ -100,6 +114,7 @@ async function targetIdOf(profile, page) {
 }
 
 async function track(profile, page, initiator) {
+  if (page.url() === NUDGE_URL) return null; // the companion's wake-up tab: never a herdr tab
   if (profile.pending.has(page)) return profile.pending.get(page);
   const promise = (async () => {
     const { targetId, session } = await targetIdOf(profile, page);
@@ -138,14 +153,19 @@ async function track(profile, page, initiator) {
     });
     page.on('framenavigated', (frame) => {
       if (frame !== page.mainFrame()) return;
+      state.overlay.navigated();
       event('tab', { profile: profile.name, target: targetId, kind: 'navigated', url: frame.url(), title: '', initiator: state.inflight > 0 ? 'command' : 'other' });
     });
+    // A new document while the frame should be up: the overlay comes back with it.
+    page.on('domcontentloaded', () => { state.overlay.reapply().catch(() => {}); });
     page.on('load', async () => {
       const title = await page.title().catch(() => '');
       if (title) event('tab', { profile: profile.name, target: targetId, kind: 'title', title });
     });
     page.on('close', () => {
       state.closed = true;
+      state.overlay.dispose();
+      profile.companion.forget(targetId);
       profile.pages.delete(targetId);
       profile.pending.delete(page);
       event('tab', { profile: profile.name, target: targetId, kind: 'closed' });
@@ -198,13 +218,17 @@ async function attach(profile, port, deadlineMs) {
   browser.on('disconnected', () => {
     profile.browser = null;
     profile.ctx = null;
+    profile.companion.close();
     for (const [target] of profile.pages) profile.pages.delete(target);
     event('browser', { profile: profile.name, kind: 'disconnected', detail: 'CDP connection closed' });
   });
   await Promise.all(ctx.pages().map(page => track(profile, page, null).catch((err) => log('warn', `track failed: ${err.message}`))));
   process.stderr.write(`${stamp()} tracked in ${Date.now() - t0} ms\n`);
   event('browser', { profile: profile.name, kind: 'attached', detail: browser.version() });
-  return tabs(profile);
+  // The companion extension (tab groups): loaded or not, bounded.
+  const companion = await withTimeout(profile.companion.probe(), 3000, 'x', 'x').catch(() => ({ state: 'missing', detail: 'probe timed out' }));
+  process.stderr.write(`${stamp()} companion ${companion.state}${companion.detail ? ' (' + companion.detail + ')' : ''}\n`);
+  return Object.assign(await tabs(profile), { companion });
 }
 
 async function tabs(profile) {
@@ -326,12 +350,20 @@ const ops = {
     return tabs(needProfile(name));
   },
 
-  async open({ profile: name, args, deadline_ms }) {
+  async open({ profile: name, args, deadline_ms, activity }) {
     const profile = needProfile(name);
     const waitUntil = waitUntilOf(args.wait);
     // A blank target first: the page is tracked (listeners on, the first
-    // document's status included) before the navigation starts.
-    const targetId = await createTarget(profile, 'about:blank', args.background !== false);
+    // document's status included) before the navigation starts. An agent's
+    // tab is adopted by the companion (its extension tab id) while it is
+    // still the newest blank tab.
+    const targetId = await profile.serial(async () => {
+      const id = await createTarget(profile, 'about:blank', args.background !== false);
+      if (activity && activity.group && profile.companion.state === 'ready') {
+        await withTimeout(profile.companion.adoptNew(id), 1500, 'x', 'x').catch((err) => log('debug', `companion adopt: ${err.message}`));
+      }
+      return id;
+    });
     const deadline = Date.now() + Math.min(deadline_ms, 10000);
     let state = profile.pages.get(targetId);
     while (!state && Date.now() < deadline) { await sleep(50); state = profile.pages.get(targetId); }
@@ -459,12 +491,16 @@ const ops = {
     if (type === 'jpeg') options.quality = args.quality || 70;
     const scope = scopeLocator(state, args);
     let buffer;
+    // The agent's picture is the page: the activity overlay steps aside.
+    await state.overlay.suspend(true);
     try {
       buffer = scope ? await scope.screenshot(options) : await state.page.screenshot(options);
     } catch (err) {
       if (/Timeout/i.test(err.message)) fail('tab_not_rendered', 'the tab did not paint within 5 s (background tab); rerun with --front to select it first');
       if (args.ref && /aria-ref|resolve/i.test(err.message)) fail('stale_ref', `ref ${args.ref} no longer resolves; take a new snapshot`);
       throw err;
+    } finally {
+      await state.overlay.suspend(false);
     }
     const size = imageSize(buffer, type);
     let inlinePath = null;
@@ -559,7 +595,7 @@ const ops = {
     return { result: { value: r.value, navigated_during: r.navigated_during }, page: await pageInfo(state) };
   },
 
-  async act({ profile: name, target, args, deadline_ms }) {
+  async act({ profile: name, target, args, deadline_ms, activity }) {
     const state = needPage(needProfile(name), target);
     await guardDialog(state);
     const kind = args.kind;
@@ -592,6 +628,23 @@ const ops = {
       fail('password_field_refused', `that is a password field (${info.role} "${info.name}"); ask the user to type it — \`herdr browser focus\` brings the window up ([browser] type_into_password_fields = false)`);
     }
     const urlBefore = page.url();
+    // The activity cursor glides to the element first (the ripple lands with the click).
+    if (activity && activity.frame && handle && !state.dialog) {
+      const t0 = Date.now();
+      try {
+        await handle.scrollIntoViewIfNeeded({ timeout: 1000 }).catch(() => {});
+        const box = await handle.boundingBox();
+        if (box) {
+          const x = Math.round(box.x + box.width / 2);
+          const y = Math.round(box.y + box.height / 2);
+          await state.overlay.moveTo(x, y, activity.animate !== false && !hidden);
+          if (kind === 'click') state.overlay.ripple(x, y);
+        }
+      } catch (err) {
+        log('debug', `overlay glide: ${err.message}`);
+      }
+      process.stderr.write(`activity act:${kind} overlay ${Date.now() - t0} ms\n`);
+    }
     state.inflight++;
     let navigated = false;
     let dispatched = false;
@@ -632,6 +685,15 @@ const ops = {
     return { result: { kind, role: info.role, name: info.name, navigated: navigated || page.url() !== urlBefore, url_before: urlBefore, dispatched }, page: await pageInfo(state) };
   },
 
+  // Panes that are gone: their tab groups dissolve, in every attached profile.
+  async release({ args }) {
+    const keys = Array.isArray(args.keys) ? args.keys.filter((k) => k && (typeof k === 'string' || typeof k === 'object')) : [];
+    for (const profile of profiles.values()) {
+      if (profile.companion.state === 'ready') await profile.companion.release(keys).catch((err) => log('debug', `release: ${err.message}`));
+    }
+    return { released: keys.length };
+  },
+
   async dialog({ profile: name, target, args }) {
     const state = needPage(needProfile(name), target);
     if (!(await dialogStillOpen(state))) fail('no_dialog', 'no dialog is open on this tab');
@@ -670,17 +732,43 @@ function imageSize(buffer, type) {
 // ---------------------------------------------------------------------------
 // Main loop
 
+// Ops that work on a page: the activity frame is up while they run.
+const PAGE_OPS = new Set(['navigate', 'history', 'read', 'links', 'screenshot', 'console', 'network', 'wait', 'scroll', 'eval', 'act', 'dialog', 'focus']);
+function activityPage(name, target) {
+  const profile = profiles.get(name);
+  const state = profile && target ? profile.pages.get(target) : null;
+  return state && !state.closed && !state.dialog ? state : null;
+}
+async function activityBegin(state, activity) {
+  if (!activity.frame) return;
+  await state.overlay.show().catch((err) => log('debug', `overlay: ${err.message}`));
+}
+function activityEnd(state, activity) {
+  if (activity.frame) state.overlay.linger();
+  if (activity.group && state.profile.companion.state === 'ready') state.profile.companion.touch(state, activity.group);
+}
+
 async function handle(req) {
   const op = ops[req.op];
   if (!op) return send({ id: req.id, ok: false, error: { code: 'unknown_op', message: `unknown op ${req.op}; run herdr browser setup` } });
   const deadline = Number(req.deadline_ms || 30000);
+  const activity = req.activity && typeof req.activity === 'object' ? req.activity : null;
+  let state = activity && PAGE_OPS.has(req.op) ? activityPage(req.profile, req.target) : null;
+  if (state) await activityBegin(state, activity);
   try {
-    const out = await withTimeout(op({ profile: req.profile, target: req.target, args: req.args || {}, deadline_ms: deadline }), deadline, 'browser_timeout', `${req.op} exceeded ${deadline} ms`);
+    const out = await withTimeout(op({ profile: req.profile, target: req.target, args: req.args || {}, deadline_ms: deadline, activity }), deadline, 'browser_timeout', `${req.op} exceeded ${deadline} ms`);
+    if (activity && req.op === 'open' && out && out.result && out.result.target) {
+      // The tab an agent just opened: frame up, grouped.
+      state = activityPage(req.profile, out.result.target);
+      if (state) await activityBegin(state, activity);
+    }
     if (out && typeof out === 'object' && 'result' in out && 'page' in out) send({ id: req.id, ok: true, result: out.result, page: out.page });
     else send({ id: req.id, ok: true, result: out || {} });
   } catch (err) {
     const code = err instanceof OpError ? err.code : (/Target closed|has been closed/i.test(err.message) ? 'tab_closed' : 'browser_error');
     send({ id: req.id, ok: false, error: { code, message: String(err && err.message || err).split('\n')[0].slice(0, 500) } });
+  } finally {
+    if (state && !state.closed) activityEnd(state, activity);
   }
 }
 

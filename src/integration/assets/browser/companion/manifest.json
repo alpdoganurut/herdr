@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "herdr companion",
+  "version": "0.1.0",
+  "description": "Tab groups for herdr's agent panes. Driven by herdr over the DevTools port; nothing runs on its own.",
+  "permissions": ["tabs", "tabGroups", "alarms"],
+  "background": { "service_worker": "sw.js" }
+}

@@ -1,7 +1,8 @@
 //! The bundled browser sidecar (fork): `host.mjs` (the Playwright driver),
-//! `extract.mjs` (main-content → markdown), `package.json` +
-//! `package-lock.json` (playwright-core pinned) and `smoke.mjs` (a live
-//! check), embedded in the binary and installed into
+//! `extract.mjs` (main-content → markdown), `activity.mjs` (the activity
+//! overlay and the companion driver), `package.json` + `package-lock.json`
+//! (playwright-core pinned), `smoke.mjs` (a live check) and the companion
+//! extension (`companion/`: tab groups), embedded in the binary and installed into
 //! `state_dir()/browser/host/` by `herdr browser setup` (which then runs
 //! `npm ci`) and refreshed by the server when only the scripts changed.
 
@@ -17,6 +18,8 @@ use crate::api::schema::BrowserRuntimeInfo;
 pub const HOST_DIR: &str = "host";
 /// The sidecar entry point.
 pub const ENTRY: &str = "host.mjs";
+/// The companion extension directory under `HOST_DIR` (`--load-extension`).
+pub const COMPANION_DIR: &str = "companion";
 pub const RUNTIME_FILE: &str = "runtime.json";
 pub const RUNTIME_VERSION: u32 = 1;
 /// The playwright-core version `package.json` pins.
@@ -26,12 +29,21 @@ pub const PLAYWRIGHT_CORE_VERSION: &str = "1.63.0";
 pub const BROWSER_ASSETS: &[(&str, &str)] = &[
     (ENTRY, include_str!("assets/browser/host.mjs")),
     ("extract.mjs", include_str!("assets/browser/extract.mjs")),
+    ("activity.mjs", include_str!("assets/browser/activity.mjs")),
     ("package.json", include_str!("assets/browser/package.json")),
     (
         "package-lock.json",
         include_str!("assets/browser/package-lock.json"),
     ),
     ("smoke.mjs", include_str!("assets/browser/smoke.mjs")),
+    (
+        "companion/manifest.json",
+        include_str!("assets/browser/companion/manifest.json"),
+    ),
+    (
+        "companion/sw.js",
+        include_str!("assets/browser/companion/sw.js"),
+    ),
 ];
 
 /// SHA-256 over every embedded asset (name and content), hex.
@@ -84,6 +96,9 @@ pub fn install(host_dir: &Path) -> io::Result<usize> {
     let mut written = 0;
     for (name, content) in BROWSER_ASSETS {
         let path = host_dir.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let current = match fs::read(&path) {
             Ok(bytes) => Some(bytes),
             Err(err) if err.kind() == io::ErrorKind::NotFound => None,
@@ -92,7 +107,11 @@ pub fn install(host_dir: &Path) -> io::Result<usize> {
         if current.as_deref() == Some(content.as_bytes()) {
             continue;
         }
-        let tmp = host_dir.join(format!(".{name}.tmp-{}", std::process::id()));
+        let file = path
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let tmp = path.with_file_name(format!(".{file}.tmp-{}", std::process::id()));
         let result = fs::write(&tmp, content).and_then(|()| fs::rename(&tmp, &path));
         if result.is_err() {
             let _ = fs::remove_file(&tmp);
@@ -139,17 +158,59 @@ mod tests {
     }
 
     #[test]
-    fn assets_are_the_five_files_pinned_to_one_playwright() {
+    fn assets_are_the_bundled_files_pinned_to_one_playwright() {
         let names: Vec<&str> = BROWSER_ASSETS.iter().map(|(name, _)| *name).collect();
         assert_eq!(
             names,
             [
                 "host.mjs",
                 "extract.mjs",
+                "activity.mjs",
                 "package.json",
                 "package-lock.json",
-                "smoke.mjs"
+                "smoke.mjs",
+                "companion/manifest.json",
+                "companion/sw.js"
             ]
+        );
+        let manifest: serde_json::Value = serde_json::from_str(
+            BROWSER_ASSETS
+                .iter()
+                .find(|(n, _)| *n == "companion/manifest.json")
+                .unwrap()
+                .1,
+        )
+        .unwrap();
+        assert_eq!(manifest["manifest_version"], 3);
+        assert_eq!(
+            manifest["permissions"],
+            serde_json::json!(["tabs", "tabGroups", "alarms"])
+        );
+        assert_eq!(manifest["background"]["service_worker"], "sw.js");
+        // The worker's VERSION and the sidecar's COMPANION_VERSION move together.
+        let sw = BROWSER_ASSETS
+            .iter()
+            .find(|(n, _)| *n == "companion/sw.js")
+            .unwrap()
+            .1;
+        let activity = BROWSER_ASSETS
+            .iter()
+            .find(|(n, _)| *n == "activity.mjs")
+            .unwrap()
+            .1;
+        let after = |text: &str, marker: &str| -> u32 {
+            let rest = &text[text.find(marker).expect(marker) + marker.len()..];
+            rest.trim_start()
+                .split(|c: char| !c.is_ascii_digit())
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        assert_eq!(
+            after(sw, "const VERSION ="),
+            after(activity, "export const COMPANION_VERSION ="),
+            "bump VERSION in companion/sw.js and COMPANION_VERSION in activity.mjs together"
         );
         let package: serde_json::Value = serde_json::from_str(
             BROWSER_ASSETS
@@ -194,6 +255,8 @@ mod tests {
         assert_eq!(install(&dir).unwrap(), 0);
         fs::write(dir.join("extract.mjs"), "edited").unwrap();
         assert_eq!(install(&dir).unwrap(), 1);
+        assert!(dir.join(COMPANION_DIR).join("sw.js").is_file());
+        assert!(dir.join(COMPANION_DIR).join("manifest.json").is_file());
         assert!(read_runtime(&dir).is_none());
         let runtime = BrowserRuntimeInfo {
             version: RUNTIME_VERSION,

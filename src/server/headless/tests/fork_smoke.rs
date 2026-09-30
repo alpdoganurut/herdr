@@ -1260,8 +1260,10 @@ fn browser_launch_argv_carries_no_automation_switches() {
         true,
         &config.extra_args(),
         false,
+        Some(std::path::Path::new("/tmp/host/companion")),
     );
     assert!(argv.contains(&"--remote-debugging-port=43210".to_string()));
+    assert!(argv.contains(&"--load-extension=/tmp/host/companion".to_string()));
     assert!(argv.contains(&"--disable-blink-features=AutomationControlled".to_string()));
     assert!(argv.contains(&"--restore-last-session".to_string()));
     assert!(argv.contains(&"--lang=tr".to_string()));
@@ -1269,9 +1271,15 @@ fn browser_launch_argv_carries_no_automation_switches() {
         .iter()
         .filter(|arg| crate::config::is_forbidden_switch(arg))
         .collect();
-    assert_eq!(own.len(), 2, "only herdr's profile dir and port: {own:?}");
+    assert_eq!(
+        own.len(),
+        3,
+        "only herdr's profile dir, port and companion: {own:?}"
+    );
     assert!(own.iter().all(|arg| {
-        arg.starts_with("--user-data-dir=") || arg.starts_with("--remote-debugging-port=")
+        arg.starts_with("--user-data-dir=")
+            || arg.starts_with("--remote-debugging-port=")
+            || arg.starts_with("--load-extension=")
     }));
     assert!(!argv.iter().any(|arg| arg == "--remote-debugging-port=0"));
     assert!(!argv

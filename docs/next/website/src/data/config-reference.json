@@ -1691,6 +1691,12 @@
           "type": "integer",
           "default": "30000",
           "description": "The default deadline of one browser operation (1000 to 600000 ms); `--timeout` and `browser wait` override it per call."
+        },
+        {
+          "key": "browser.show_activity",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show agent activity in the Chromium window: the tabs an agent pane opens or acts on sit in a tab group named after the agent and its herdr tab (the companion extension, loaded with `--load-extension`; expanded while the pane is active, collapsed after `active_glyph_secs`), and a purple glow frame with a gliding cursor is injected into the page while an operation runs and for a few seconds after. `false` turns all three off; a running profile needs a restart to load or drop the extension."
         }
       ]
     },

@@ -481,6 +481,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # active_glyph_secs = 120
 # launch_timeout_ms = 15000
 # op_timeout_ms = 30000
+# Show agent activity in the window: per-pane tab groups (the companion
+# extension), the glow frame and the cursor on the tabs an agent works on.
+# show_activity = true
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

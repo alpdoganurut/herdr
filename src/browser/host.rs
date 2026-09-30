@@ -33,6 +33,10 @@ pub struct HostRequest<'a> {
     #[serde(skip_serializing_if = "serde_json::Value::is_null")]
     pub args: serde_json::Value,
     pub deadline_ms: u64,
+    /// The activity overlay directive of the calling agent (frame, cursor,
+    /// tab group); absent for the user, external callers and housekeeping.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -259,6 +263,7 @@ mod tests {
             target: Some("T"),
             args: serde_json::json!({"format": "markdown"}),
             deadline_ms: 30000,
+            activity: None,
         };
         let json = serde_json::to_string(&request).unwrap();
         assert_eq!(
@@ -272,10 +277,24 @@ mod tests {
             target: None,
             args: serde_json::Value::Null,
             deadline_ms: 5000,
+            activity: None,
         };
         assert_eq!(
             serde_json::to_string(&hello).unwrap(),
             r#"{"id":2,"op":"hello","deadline_ms":5000}"#
+        );
+        let act = HostRequest {
+            id: 3,
+            op: "act",
+            profile: Some("main"),
+            target: Some("T"),
+            args: serde_json::json!({"kind": "click"}),
+            deadline_ms: 5000,
+            activity: Some(serde_json::json!({"frame": true, "animate": false})),
+        };
+        assert_eq!(
+            serde_json::to_string(&act).unwrap(),
+            r#"{"id":3,"op":"act","profile":"main","target":"T","args":{"kind":"click"},"deadline_ms":5000,"activity":{"animate":false,"frame":true}}"#
         );
     }
 }

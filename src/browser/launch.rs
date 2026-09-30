@@ -140,6 +140,7 @@ pub fn argv(
     restore: bool,
     extra: &[String],
     first_launch: bool,
+    extension_dir: Option<&Path>,
 ) -> Vec<String> {
     let mut argv = vec![
         format!("--user-data-dir={}", profile_dir.display()),
@@ -153,6 +154,11 @@ pub fn argv(
     ];
     if restore {
         argv.push("--restore-last-session".to_string());
+    }
+    // The companion extension (tab groups): herdr's own switch, like the
+    // profile dir; a user copy in extra_args is dropped by the filter below.
+    if let Some(dir) = extension_dir {
+        argv.push(format!("--load-extension={}", dir.display()));
     }
     for arg in extra {
         if crate::config::is_forbidden_switch(arg) {
@@ -407,6 +413,8 @@ pub struct LaunchOptions {
     pub first_launch: bool,
     pub timeout: Duration,
     pub server_pid: u32,
+    /// The companion extension to load (`[browser] show_activity`).
+    pub extension_dir: Option<PathBuf>,
 }
 
 /// Launch Chromium on the profile and wait for its DevTools port; retries
@@ -429,6 +437,7 @@ pub fn launch(
             options.restore,
             &options.extra_args,
             options.first_launch,
+            options.extension_dir.as_deref(),
         );
         let _ = fs::remove_file(profile_dir.join("DevToolsActivePort"));
         let spawned_pid = spawn_chromium(exe, &argv, log_path)?;
@@ -580,8 +589,11 @@ mod tests {
                 "-remote-debugging-pipe".into(),
                 "-use-mock-keychain".into(),
                 "--user-data-dir=/elsewhere".into(),
+                "--load-extension=/evil".into(),
+                "--disable-extensions".into(),
             ],
             true,
+            Some(Path::new("/tmp/host/companion")),
         );
         assert_eq!(args[0], "--user-data-dir=/tmp/p");
         assert_eq!(args[1], "--remote-debugging-port=4321");
@@ -589,15 +601,18 @@ mod tests {
         assert!(args.contains(&"--restore-last-session".to_string()));
         assert!(args.contains(&"--lang=tr".to_string()));
         assert_eq!(args.last().unwrap(), "about:blank");
-        // herdr's own two (profile dir, port) are the only forbidden switches present
+        // herdr's own three (profile dir, port, companion) are the only forbidden switches present
         let own: Vec<&String> = args
             .iter()
             .filter(|a| crate::config::is_forbidden_switch(a))
             .collect();
-        assert_eq!(own.len(), 2, "{own:?}");
+        assert_eq!(own.len(), 3, "{own:?}");
         assert!(own.iter().all(|a| {
-            a.starts_with("--user-data-dir=") || a.starts_with("--remote-debugging-port=")
+            a.starts_with("--user-data-dir=")
+                || a.starts_with("--remote-debugging-port=")
+                || a == &"--load-extension=/tmp/host/companion"
         }));
+        assert!(!args.contains(&"--disable-extensions".to_string()));
         assert!(
             !args
                 .iter()
@@ -611,8 +626,9 @@ mod tests {
             1
         );
         assert!(!args.iter().any(|a| a == "--remote-debugging-port=0"));
-        let again = argv(profile, 1, false, &[], false);
+        let again = argv(profile, 1, false, &[], false, None);
         assert!(!again.contains(&"--restore-last-session".to_string()));
+        assert!(!again.iter().any(|a| a.starts_with("--load-extension")));
         assert_ne!(again.last().unwrap(), "about:blank");
     }
 
