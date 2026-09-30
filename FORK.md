@@ -25,6 +25,7 @@ src/app/tab_color.rs
 src/app/tab_remind.rs
 src/cli/news.rs
 src/cli/tab_closed.rs
+src/client/shell/breathe.rs
 src/client/shell/idle_reminders.rs
 src/client/shell/news.rs
 src/client/shell/notification_format.rs
@@ -36,6 +37,7 @@ src/client/shell/suspended_pane.rs
 src/client/shell/tab_color.rs
 src/client/shell/tab_remind_menu.rs
 src/client/shell/tab_sidebar.rs
+src/client/shell/tests/breathe.rs
 src/client/shell/tests/idle_reminders.rs
 src/client/shell/tests/news.rs
 src/client/shell/tests/notification_format.rs
@@ -74,6 +76,7 @@ src/server/headless/tests/fork_smoke.rs
 | TerminalState | agent_transcript_paths | std::collections::HashMap::new() |
 | TerminalState | active_subagents | std::collections::HashSet::new() |
 | TerminalState | subagent_snapshot_seen | false |
+| TerminalState | subagent_session | None |
 | PaneReportSubagentParams | subagent_ids | Vec::new() |
 | AgentInfo | subagents | 0 |
 | ClientShellAgent | subagents | 0 |
@@ -133,6 +136,11 @@ src/server/headless/tests/fork_smoke.rs
 | ClientPendingNotification | reminder | None |
 | ClientVisibleNotification | reminder | None |
 | ShellHitMap | sidebar_tabs | Vec::new() |
+| ShellHitMap | breathing | false |
+| ClientShellState | breathe_epoch | std::time::Instant::now() |
+| ClientShellState | breathe_clock | None |
+| ShellRenderState | breathe_phase | 0.0 |
+| ShellRenderState | breathe_reset_rgb | None |
 | ShellHitMap | sidebar_groups | Vec::new() |
 | ShellHitMap | group_toggle_all | Rect::default() |
 | ShellHitMap | group_new | Rect::default() |
@@ -190,6 +198,7 @@ client::shell::overlays::render_client_overlay(b, o, s, endpoints, active_endpoi
 client::shell::settings::save_settings_edit -> pub(super) (settings_sounds.rs calls it)
 app::tab_bar_status::spawn_status_command(7 args) -> #[cfg(test)] wrapper passing StatusOutputFormat::UPSTREAM; production code calls spawn_status_command_with_format(.., format: StatusOutputFormat) (a new upstream non-test call site = E0425: switch it to the _with_format form)
 client::shell::ClientShellState::receive_notification -> kept; its replace-by-pane block moved into replace_pane_notifications(endpoint_id, pane_id, now) -> bool (cleared a visible card), shared with the idle reminder engine
+app::actions::AppState::update_terminal_state -> pub(crate) (was private; src/app/subagents.rs calls it)
 Visibility widened by the fork (upstream renaming or narrowing one breaks fork code): app::agents::DEFAULT_AGENT_START_TIMEOUT, app::agents::available_shell_name, app::api::agents::AGENT_PROMPT_SUBMIT_DELAY, app::terminal_targets::{terminal_targets, terminal_target_candidate}, integration::home_dir, client::shell::notification_policy::{notification_target_is_active, COMPLETION_EVIDENCE_GRACE} (pub(super)), app::agent_resume::shell_command_from_argv (pub(super); the closed-session reopen types it), app::api::sanitized_notification_text (pub(super); app::news sanitizes the editor's notification text with it)
 
 ## 4. Owned enum variants (append last; E0004 in upstream match = deny)
@@ -359,9 +368,9 @@ src/server/headless/tests/mod.rs  additive: the fork_smoke module line; test lit
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
 src/client/shell/notifications.rs  mid-logic: render_visible_notification and render_mobile_notification_banner swap the drawn `●` for notification_glyph (reminder marker, `✓` finished, `×` needs attention) via put_notification_glyph after the upstream render; render_notification_card and render_mobile_notice_banner are unchanged
-src/terminal/state.rs  mid-logic: set_detected_state_with_screen_signals_at (suspend reconcile, hook-clear durable session, name kept on exit), clear_full_lifecycle_hook_suppression_for_detected_agent (replacement sessions), set_agent_session_ref_for_session_start (launch-session identity), release_agent_with_mutation, managed_agent_launch_pending, managed_agent_interactive_ready, managed_agent_kind, reconcile_managed_agent_at, clear_agent_name, clear_agent_runtime_identity_after_respawn; active_subagents (with subagent_snapshot_seen) is forgotten in recompute_effective_state on an agent label change (before the early return; before the first snapshot an Idle state also clears the set, the older Claude rule), release_agent_with_mutation, begin_agent_suspend and clear_agent_runtime_identity_after_respawn; a turn end and an Unknown with the same label keep it; replace_subagents takes the Stop snapshot; active_subagent_count is len() in any state, 0 while suspended
-src/app/actions.rs  mid-logic: expire_agent_metadata_at, handle_app_event (transcript path before session routing), update_terminal_state_with_completion_policy (suspended in the captured tuple, dirty and completion suppression; clear_subagents when mutation.session_ref_changed)
-src/app/agent_suspend.rs  mid-logic: suspend_resolved_agent refuses with SubagentsRunning after the Working check (no input written)
+src/terminal/state.rs  mid-logic: set_detected_state_with_screen_signals_at (suspend reconcile, hook-clear durable session, name kept on exit), clear_full_lifecycle_hook_suppression_for_detected_agent (replacement sessions), set_agent_session_ref_for_session_start (launch-session identity), release_agent_with_mutation, managed_agent_launch_pending, managed_agent_interactive_ready, managed_agent_kind, reconcile_managed_agent_at, clear_agent_name, clear_agent_runtime_identity_after_respawn; active_subagents (with subagent_snapshot_seen) is forgotten in recompute_effective_state on an agent label change (before the early return; before the first snapshot an Idle state also clears the set, the older Claude rule; a session other than subagent_session clears it too), release_agent_with_mutation, begin_agent_suspend and clear_agent_runtime_identity_after_respawn; a turn end and an Unknown with the same label keep it; recompute_effective_state then holds a detected Idle or same-label Unknown at Working while subagents_hold_working (snapshot seen, set non-empty, not suspended; Blocked wins), and computes the presentation from that state; report_subagents_with_mutation (start / stop / snapshot through the effective state) is the only path the API uses; active_subagent_count is len() in any state, 0 while suspended
+src/app/actions.rs  mid-logic: expire_agent_metadata_at, handle_app_event (transcript path before session routing), update_terminal_state_with_completion_policy (suspended in the captured tuple, dirty and completion suppression); update_terminal_state is pub(crate) (src/app/subagents.rs routes subagent reports through it, so the finish when the last background agent ends gets the usual completion, seen and event handling)
+src/app/agent_suspend.rs  mid-logic: suspend_resolved_agent refuses with SubagentsRunning before the Working check (live subagents also hold the agent Working) (no input written)
 src/app/api.rs  mid-logic: emit_pane_state_update (status computed with suspended on both sides); handle_api_request dispatches Method::NewsRun / NewsStatus / NewsGet / NewsHistory / NewsOpen / NewsSetEnabled / NewsSetTimes directly after the SessionClosedRemove arm
 src/app/api/agents.rs  mid-logic: queue_agent_prompt and handle_agent_send_keys refuse suspended panes; any new upstream input method does not
 src/app/api/panes.rs  mid-logic: handle_pane_report_agent and handle_pane_report_agent_session derive transcript_path
@@ -388,13 +397,14 @@ src/app/actions.rs  mid-logic: the client notification kind match treats Sound::
 src/client/shell_runtime.rs  mid-logic: the action loop plays ClientShellAction::PreviewSound
 src/client/shell/mouse.rs  mid-logic: handle_mouse (the News row: a left press on hits.news_row goes to activate_news_row before the sidebar tab press is taken (tab.focus on the News tab, or news.open while the row shows without one), and a right-click opens the News menu before the tab-row lookup; sidebar tab drag, group menu, locked-pane gestures, notification card hits: timed left-click keeps the upstream pane_id gate, sticky left focuses / right dismisses / the fold line swallows), push_pane_mouse_event; the ContextMenu block asks route_tab_color_swatch_mouse, then route_tab_remind_option_mouse first (swatch / reminder option hover and click); a settings choice click also applies at once when reminders_click_applies (the reminders tab's daily time row and picker) or news_click_applies (every row of the news tab)
 src/client/shell/surface_patch.rs  mid-logic: fast_path_blocker else-if for suspended panes; the notification arm calls notification_blocks_patch (timed: any card blocks, as upstream; sticky: only patch rows over a drawn card)
-src/client/shell/composition.rs  mid-logic: both ShellRenderState literals pass news_row (computed by news_row() before the mutable borrows); compose paints the suspended card and occludes graphics; compose draws the sticky notification stack (render_notification_stack), occludes every card rect, fills hits.notification_toasts, and hands the stack bounds to copy_feedback_offset_for_toast; the context menu branch copies rendered.menu_swatches and menu_remind_options into the hit map; both ShellRenderState literals pass idle_reminders and scheduled_reminders; render_client_overlay gets &self.config
+src/client/shell/composition.rs  mid-logic: both ShellRenderState literals pass news_row (computed by news_row() before the mutable borrows); compose paints the suspended card and occludes graphics; compose draws the sticky notification stack (render_notification_stack), occludes every card rect, fills hits.notification_toasts, and hands the stack bounds to copy_feedback_offset_for_toast; the context menu branch copies rendered.menu_swatches and menu_remind_options into the hit map; both ShellRenderState literals pass idle_reminders, scheduled_reminders, breathe_phase and breathe_reset_rgb (computed before the mutable borrows); render_client_overlay gets &self.config
 src/client/shell/render.rs  mid-logic: render_shell else-if for the tabs layout
 src/client/shell/config.rs  mid-logic: layout (show_tab_bar), from_config, apply_live_config (sound_files, daily_reminder_minutes), reload_client_config (rebalance_notification_cards after a sticky flip)
 src/client/shell/notification_policy.rs  mid-logic: retire_endpoint_notifications, queue_visible_notification (sticky push), promote_queued_notification, focus_visible_notification (split into focus_notification_at), receive_notification (replace-by-pane moved into replace_pane_notifications), tick_notifications (starts with tick_idle_reminders, whose due reminders it delivers from the pending list; a pending reminder's sound becomes Sound::Reminder; a validated pending event is passed through format_agent_notification before the target/sound/delivery code, so every path gets the `tabs` layout text; expiry gated on !toast_sticky); notification_validation is reused by sticky_notification_is_stale; notification_target_is_active is the idle reminders' focus test
 src/client/shell/endpoints.rs  mid-logic: cache_endpoint_snapshot_with_surface ends with prune_sticky_notifications
 src/client/shell/machine_diagnostics.rs  mid-logic: handle_machine_badge_event also yields to hits.notification_toasts
-src/client/shell/state.rs  mid-logic: ClientShellState::new initialises visible_notifications, the reminder maps and news; timer_delay chains next_idle_reminder_deadline then next_news_deadline (the running row's minute clock)
+src/client/shell/state.rs  mid-logic: ClientShellState::new initialises visible_notifications, the reminder maps and news; timer_delay chains next_idle_reminder_deadline, next_news_deadline (the running row's minute clock) and next_breathe_deadline (while a breathing glyph was drawn); ClientShellState::new sets breathe_epoch (and a fixed breathe_clock under cfg(test))
+src/client/mod.rs  mid-logic: the Timer arm's repaint chain ends with shell.tick_breathing(now)
 src/config.rs  mid-logic: Config::collect_diagnostics chains tab_agent_glyph_color_diagnostics and HerdrToastConfig::diagnostic
 src/client/shell/tests/graphics.rs  depends: assert_graphics_cover is pub(super) for tests/sticky_notifications.rs; its ClientContextMenuTarget::Tab literal carries `color: Default::default()` and its ClientSettingsOverlay literal `news: Box::default()` (section 2)
 src/client/shell/actions.rs  mid-logic: record_binding (topology lock, group keys), endpoint_method_for_action (SwitchTab/NextTab scope, CycleTabColor, ToggleTabImportant, OpenNews -> news.open)
@@ -565,6 +575,14 @@ agent_subagents_running
 SubagentsRunning
 shows_subagents
 SUBAGENT_HOOKS
+subagents_hold_working
+report_subagents_with_mutation
+subagent_session
+breathe_phase
+breathe_epoch
+breathe_clock
+next_breathe_deadline
+tick_breathing
 remind_marker
 TAB_REMIND_HOURS_MARKER
 TAB_REMIND_DAILY_MARKER
@@ -624,6 +642,7 @@ client::shell::tests::tab_sidebar::fork_smoke::locked_suspended_pane_emits_no_pa
 client::shell::tests::settings_backups::fork_smoke::every_settings_section_fits_the_76_column_popup
 client::shell::tests::sticky_notifications::fork_smoke::three_cards_stack_newest_nearest_the_corner
 client::shell::tests::tab_sidebar::fork_smoke::colored_tab_label_reaches_the_renderer_in_its_color
+client::shell::tests::breathe::fork_smoke::a_working_tab_glyph_breathes_and_schedules_frames
 client::shell::tests::idle_reminders::fork_smoke::marked_done_tab_reminds_after_the_interval
 client::shell::tests::tab_sidebar::fork_smoke::tab_bar_status_reaches_the_tabs_sidebar_footer
 client::shell::tests::tab_sidebar::fork_smoke::colored_multi_line_status_reaches_the_footer_in_color
@@ -639,6 +658,7 @@ server::headless::tests::fork_smoke::news_enabled_on_a_desk_that_never_ran_start
 - Suspend refuses agents that are blocked on a prompt, prompts and send-keys refuse suspended panes, activation waits for the observed exit, a failed process probe retries instead of ending the exit wait, and dropping a suspended record emits a status event. The tabs-layout input lock now also covers mouse gestures and selections on a suspended pane, the card occludes graphics, and `ui.tab_agent_glyphs` honours an `other` override.
 
 ### Changed
+- A Claude Code agent with live background agents is `working` everywhere (agent records, events, the client snapshot, tab and space rollups, sorting): once it has sent a subagent snapshot, its non-empty set holds a detected idle at working, and the finish (done, the finished notification and sound, the important reminder's trigger) happens when the last background agent ends, exactly once. Blocked still wins; an older Claude Code without snapshots keeps the detected status. In the `tabs` sidebar every working tab's agent glyph breathes: a cosine-eased RGB fade between its color and a dim one about every two seconds, focused and unfocused rows alike, redrawn at about 10 fps only while a visible tab is working (a two-step toggle when the colors cannot be resolved to RGB; no terminal blink).
 - AI news desk: the first run no longer waits for a slot, and the `tabs` sidebar's pinned News row is always there while news is enabled. When news is enabled on a desk that has never run (no record in `runs/index.jsonl` and no edition in `editions/index.json`, what `herdr news status` / `news.history` read), the server starts one run (trigger `scheduled`) on the next scheduler pass: at server start with `news.enabled = true`, or when a config reload (so `news.set_enabled` and `herdr news enable` too) turns it on (`NewsState::first_run_pending`, set on the off-to-on switch, dropped on a switch-off, consumed once; the check waits while a run is in flight, whose record then makes the desk one that ran). A failed first run is a run; a first start that fails (no record) stands for it like a slot's, so nothing retries every tick; quiet hours still only hold notifications; afterwards the fixed times apply. The pinned row now shows whenever `news.get` reports news enabled, also without a News tab (the list gives it the row either way): the status keeps its order (`running`, `unread`, `failed`, `paused`) and otherwise reads `next 13:00`, `due`, or without a scheduled slot the last run's local time or `never run` (was `—`); a left click focuses the News tab, or without one sends `news.open` (which creates it in the first space with the page viewer and focuses it); the right-click menu (Run now, Open, Pause / Resume schedule) works with or without the tab. With news disabled the row still shows only while the News tab exists. No wire change, no new method.
 - AI news desk: fixed local times instead of an interval. `[news] times = ["08:00", "13:00", "19:00"]` (24-hour `HH:MM`, local; invalid entries dropped with a config diagnostic, duplicates collapsed, kept sorted; an empty list schedules nothing while `enabled` stays a separate switch) replaces `interval_hours`, which now only reports a diagnostic ("replaced by news.times"). The next run is the next listed time later today, else the first one tomorrow; a manual run does not move the schedule (`news.json` remembers when the last run of any trigger started instead of a next-run time, so `next_run_at` is derived on every read); a scheduled run stands for its slot; a slot missed while herdr was off runs once on return when it was earlier today (local) and no run has started since it, several missed slots collapsing to one; a scheduled start that fails counts as the slot's attempt (the next listed time tries again). A `news.json` without that memory (written before this change) starts from the next slot. `quiet_hours` no longer affects scheduling and only holds a notification until the window ends. New socket method `news.set_times` ({ times: [String] }, validates `HH:MM`, writes `news.times` and reloads, answers `news.get`'s record); `news.status` and `news.get` carry `times` (sorted `HH:MM`) instead of `interval_hours` and keep `next_run_at`. CLI: `herdr news times` lists the times with the next one marked, `herdr news times 08:00 13:00 19:00` sets them, `--clear` empties the list; `herdr news status` prints `times 08:00 13:00 19:00` instead of `every 6 h`. The settings news tab shows `scheduled runs: on|off`, one row per time (Enter edits it with the daily reminder's time picker, Delete or Backspace removes it), `add time`, `quiet hours … (notifications)` and `run now`, every time change going to the active server as `news.set_times`; the facts below are the next run, the last run and the model. The sidebar row (`next 13:00`) and the runner's `--next-run` are unchanged. No wire change beyond the new method.
 - Background Claude Code subagents stay counted after the main turn ends: the Claude integration (v11) adds a `Stop` hook that reports every subagent still running from Claude's `background_tasks` (`pane.report_subagent` `snapshot`, which replaces the pane's set), the set survives idle and finished turns and a transient unknown state (cleared on exit, another agent, a new conversation, suspend or release; an older Claude Code without the field keeps the old clear-on-idle), and Claude's internal helper agents (no agent type) are no longer reported. The `tabs` sidebar shows `⚭` for a working, idle or finished agent with subagents running, in its status color (blocked keeps `×`), and `agent.suspend` / `agent.restart` (so the menu items and keys too) refuse such an agent with `agent_subagents_running`, since exiting would stop them. Agent status, finished notifications, important reminders and the sort order are unchanged.

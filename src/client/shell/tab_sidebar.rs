@@ -303,6 +303,11 @@ pub(super) fn render_tab_sidebar(
                 });
                 let subagents = tab_subagents.get(tab.tab_id.as_str()).copied().unwrap_or(0);
                 let markers = reminder_markers(tab, state, &config.palette);
+                // Fork: a working tab's glyph breathes (`breathe.rs`).
+                let breathe = (tab.agent_status == crate::api::schema::AgentStatus::Working
+                    && !glyph.is_empty())
+                .then_some((state.breathe_phase, state.breathe_reset_rgb));
+                hits.breathing |= breathe.is_some();
                 render_tab_row(
                     buffer,
                     rect,
@@ -311,6 +316,7 @@ pub(super) fn render_tab_sidebar(
                     glyph_color.flatten(),
                     subagents,
                     &markers,
+                    breathe,
                     config,
                 );
                 hits.sidebar_tabs.push((rect, tab.tab_id.clone()));
@@ -852,6 +858,9 @@ pub(super) fn remind_marker(every: crate::api::schema::TabRemindInterval) -> &'s
     }
 }
 
+/// A breathing glyph's phase and the terminal default background's RGB.
+type Breath = (f32, Option<(u8, u8, u8)>);
+
 fn render_tab_row(
     buffer: &mut Buffer,
     rect: Rect,
@@ -860,6 +869,7 @@ fn render_tab_row(
     glyph_color: Option<ratatui::style::Color>,
     subagents: u32,
     markers: &[(&str, ratatui::style::Color)],
+    breathe: Option<Breath>,
     config: &ClientShellConfig,
 ) {
     let palette = &config.palette;
@@ -929,10 +939,19 @@ fn render_tab_row(
             usize::from(pad) + 1
         };
         spans.push(Span::raw(" ".repeat(gap)));
-        spans.push(Span::styled(
-            glyph.to_string(),
-            Style::default().fg(glyph_color.unwrap_or(palette.overlay0)),
-        ));
+        let normal = glyph_color.unwrap_or(palette.overlay0);
+        let fg = match breathe {
+            Some((phase, reset)) => {
+                let background = if tab.focused {
+                    palette.active_row_bg
+                } else {
+                    palette.sidebar_bg
+                };
+                super::breathe::glyph_color(normal, background, reset, phase)
+            }
+            None => normal,
+        };
+        spans.push(Span::styled(glyph.to_string(), Style::default().fg(fg)));
         spans.push(Span::raw(" "));
     }
     Paragraph::new(Line::from(spans))

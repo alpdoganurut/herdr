@@ -55,12 +55,16 @@ impl ClientShellState {
                     == Some(ClientEndpointStatus::Online)
         });
         let news_row = self.news_row();
+        let breathe_phase = self.breathe_phase();
+        let breathe_reset_rgb = self.breathe_reset_rgb();
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
             active_endpoint_id: &self.active_endpoint_id,
             collapsed_endpoints: &self.collapsed_endpoints,
             collapsed_groups: &self.collapsed_groups,
+            breathe_phase,
+            breathe_reset_rgb,
             idle_reminders: &self.idle_reminders,
             scheduled_reminders: &self.scheduled_reminders,
             news_row,
@@ -206,6 +210,8 @@ impl ClientShellState {
             _ => (None, None),
         };
         let news_row = self.news_row();
+        let breathe_phase = self.breathe_phase();
+        let breathe_reset_rgb = self.breathe_reset_rgb();
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
         self.hits = render::render_shell(
             &mut buffer,
@@ -218,6 +224,8 @@ impl ClientShellState {
                 active_endpoint_id: &self.active_endpoint_id,
                 collapsed_endpoints: &self.collapsed_endpoints,
                 collapsed_groups: &self.collapsed_groups,
+                breathe_phase,
+                breathe_reset_rgb,
                 idle_reminders: &self.idle_reminders,
                 scheduled_reminders: &self.scheduled_reminders,
                 news_row,

@@ -108,6 +108,9 @@ pub(super) struct ShellHitMap {
     /// Tab rows drawn by the `tabs` sidebar layout, separate from the tab bar's `tabs`
     /// so tab-bar drag/drop and mode-bar clearing keep their single-row assumptions.
     pub(super) sidebar_tabs: Vec<(Rect, String)>,
+    /// Fork: the frame drew a breathing agent glyph (`breathe.rs`), so the
+    /// client loop schedules the next animation frame.
+    pub(super) breathing: bool,
     /// Group header rows of the `tabs` layout (rect, workspace id). Headers are also
     /// registered in `workspaces` so the space drag machinery reorders groups.
     pub(super) sidebar_groups: Vec<(Rect, String)>,
@@ -1071,6 +1074,10 @@ pub(crate) struct ClientShellState {
     pub(super) last_tab_bar_width: Option<u16>,
     pub(super) last_composed_size: Option<(u16, u16)>,
     pub(super) last_composed_at: Option<std::time::Instant>,
+    /// Fork: when the breathing glyph animation's cycle started.
+    pub(super) breathe_epoch: std::time::Instant,
+    /// Fork: test override of the clock the breathing phase is read from.
+    pub(super) breathe_clock: Option<std::time::Instant>,
     pub(super) selection_repaint_deadline: Option<std::time::Instant>,
     pub(super) hits: ShellHitMap,
     pub(super) endpoints: Vec<ClientShellEndpoint>,
@@ -1180,6 +1187,7 @@ pub(super) struct WorkspaceEntry {
 
 impl ClientShellState {
     pub(crate) fn new(mut config: ClientShellConfig) -> Self {
+        let breathe_epoch = std::time::Instant::now();
         let preferences = config.preferences.clone();
         let local_config_diagnostic = config.startup_config_diagnostic.take();
         let overlay = config
@@ -1255,6 +1263,9 @@ impl ClientShellState {
             last_tab_bar_width: None,
             last_composed_size: None,
             last_composed_at: None,
+            breathe_epoch,
+            // Tests draw the breath's first frame unless they move the clock.
+            breathe_clock: cfg!(test).then_some(breathe_epoch),
             selection_repaint_deadline: None,
             hits: ShellHitMap::default(),
             endpoints: vec![local_endpoint()],
@@ -2078,6 +2089,7 @@ impl ClientShellState {
             .chain(self.selection_repaint_deadline)
             .chain(self.next_idle_reminder_deadline())
             .chain(self.next_news_deadline(now))
+            .chain(self.next_breathe_deadline())
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)
