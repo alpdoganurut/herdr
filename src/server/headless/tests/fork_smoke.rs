@@ -750,6 +750,64 @@ async fn news_status_and_run_reach_the_news_tab() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Turning news on for a desk that has never run (no run log, no editions)
+/// starts a first run on the next scheduled-tasks pass of the headless
+/// loop, before any listed time: the News tab appears and the run is in
+/// flight as `scheduled`; the next pass starts nothing more.
+#[cfg(unix)]
+#[tokio::test]
+async fn news_enabled_on_a_desk_that_never_ran_starts_a_first_run() {
+    let dir = std::env::temp_dir().join(format!(
+        "herdr-fork-smoke-news-first-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    let (mut server, _rx) = server_with_claude(None);
+    server.app.state.default_shell = "/bin/cat".into();
+    server.app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
+    server.app.news.home = Some(dir.join("news"));
+    // Noon, a start a minute ago: no listed time is owed.
+    server.app.news.local_override = Some((
+        crate::app::news::LocalClock {
+            minute_of_day: 12 * 60,
+            second: 0,
+        },
+        "2026-09-29",
+    ));
+    server.app.news.last_started_at = Some(crate::app::news::unix_now() - 60);
+    let now = std::time::Instant::now();
+    server.handle_scheduled_tasks_headless(now, false);
+    assert!(server.app.news.run.is_none(), "news is off");
+
+    server.app.news.apply_config(&crate::config::NewsConfig {
+        enabled: true,
+        ..crate::config::NewsConfig::default()
+    });
+    assert!(
+        server
+            .app
+            .next_news_deadline(now)
+            .is_some_and(|at| at <= now),
+        "the loop wakes at once"
+    );
+    assert!(server.handle_scheduled_tasks_headless(now, false));
+    let run = server.app.news.run.as_ref().expect("the first run started");
+    assert_eq!(run.trigger, crate::app::news::NewsTrigger::Scheduled);
+    let workspace = &server.app.state.workspaces[0];
+    assert_eq!(workspace.tabs.len(), 2);
+    assert_eq!(workspace.tabs[1].custom_name.as_deref(), Some("News"));
+
+    server.app.news.run = None;
+    server.handle_scheduled_tasks_headless(std::time::Instant::now(), false);
+    assert!(server.app.news.run.is_none(), "only one first run");
+    assert_eq!(server.app.state.workspaces[0].tabs.len(), 2);
+
+    shutdown_test_runtimes(&mut server);
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// A finished run's `decision.notify` becomes a `SemanticNotification` of
 /// kind Custom, sent through the same client-shell path as
 /// `notification.show`, carrying the News pane so a click focuses it. With

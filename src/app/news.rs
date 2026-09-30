@@ -17,7 +17,12 @@
 //! since it, so a slot missed while the server was down runs once on return
 //! when it was earlier today, several missed slots collapse to one run, and
 //! a manual run leaves the schedule alone (`schedule_action`). Quiet hours
-//! only hold notifications. A run
+//! only hold notifications. A desk that has never run (no record in the run
+//! log and no published edition) does not wait for the first slot: when the
+//! server starts with news enabled, or a config reload (`news.set_enabled`
+//! included) turns it on, the next scheduler pass starts one run at once
+//! (`NewsState::first_run_pending`, consumed once; a failed start stands for
+//! it like a slot's). A run
 //! is in flight from its start until the run log gains a record started at
 //! or after it (polled every five seconds). The runner gets one budget for
 //! the whole run on its command line (`--deadline-min`, [`RUN_BUDGET_MIN`]);
@@ -542,6 +547,10 @@ pub(crate) struct NewsState {
     /// Consecutive run-log polls that found the News pane back at a shell
     /// prompt while a run was in flight (the runner was interrupted).
     pub(crate) shell_polls: u8,
+    /// News was just enabled (server start, a config reload turning it on):
+    /// the next scheduler pass without a run in flight starts a first run
+    /// when the desk has never run, then clears this either way.
+    pub(crate) first_run_pending: bool,
     /// Tests: the local clock and day the policy goes by.
     #[cfg(test)]
     pub(crate) local_override: Option<(LocalClock, &'static str)>,
@@ -565,6 +574,7 @@ impl NewsState {
             (None, None)
         };
         let mut state = Self::in_memory(config, home);
+        state.first_run_pending = config.enabled;
         state.store = store;
         if let Some(store_path) = state.store.as_deref() {
             state.load_record(store::load(store_path), now);
@@ -603,6 +613,7 @@ impl NewsState {
             notify_retry_at: None,
             was_focused: false,
             shell_polls: 0,
+            first_run_pending: false,
             #[cfg(test)]
             local_override: None,
             #[cfg(test)]
@@ -611,11 +622,13 @@ impl NewsState {
             assume_shell_busy: false,
         };
         state.apply_config(config);
+        // Only a server start (`new`) or a later switch-on owes a first run.
+        state.first_run_pending = false;
         state
     }
 
     pub(crate) fn apply_config(&mut self, config: &NewsConfig) {
-        self.enabled = config.enabled;
+        self.set_enabled(config.enabled);
         self.times = config.times();
         self.quiet = config.quiet_hours();
         self.quiet_text = config.quiet_hours.trim().to_string();
@@ -625,6 +638,24 @@ impl NewsState {
             .map(str::trim)
             .filter(|model| !model.is_empty())
             .map(str::to_string);
+    }
+
+    /// Turn scheduling on or off; switching it on owes a first run to a
+    /// desk that has never run (checked on the next scheduler pass).
+    pub(crate) fn set_enabled(&mut self, enabled: bool) {
+        if enabled != self.enabled {
+            self.first_run_pending = enabled;
+        }
+        self.enabled = enabled;
+    }
+
+    /// Whether the desk has never run: no record in the run log and no
+    /// published edition (what `news.status` and `news.history` read).
+    /// Without a news home nothing can run, so it has not "never run".
+    pub(crate) fn never_ran(&self) -> bool {
+        self.home.as_deref().is_some_and(|home| {
+            store::read_history(home, 1).is_empty() && store::read_editions(home).is_empty()
+        })
     }
 
     fn load_record(&mut self, record: store::NewsRecord, now: Instant) {
@@ -752,7 +783,10 @@ impl NewsState {
         now_unix: u64,
         local: Option<LocalClock>,
     ) -> Option<Instant> {
-        let mut deadlines = Vec::with_capacity(4);
+        let mut deadlines = Vec::with_capacity(5);
+        if self.first_run_pending && self.run.is_none() {
+            deadlines.push(now);
+        }
         if let Some(pending) = &self.pending_command {
             deadlines.push(pending.next_check);
         }
@@ -1020,7 +1054,7 @@ impl App {
                 status = ?report.status,
                 "config reload did not apply news.enabled; applying it in memory"
             );
-            self.news.enabled = enabled;
+            self.news.set_enabled(enabled);
         }
         tracing::info!(
             event = "news.set_enabled",
@@ -1209,8 +1243,9 @@ impl App {
 
     /// One scheduler pass: clear the unread mark of a focused News tab,
     /// drive the run in flight (launch, poll, watchdog) or the pending
-    /// viewer command, or start a due scheduled run. Returns whether shared
-    /// state changed.
+    /// viewer command, or start a first run (news just enabled on a desk
+    /// that never ran) or a due scheduled run. Returns whether shared state
+    /// changed.
     pub(crate) fn handle_news_tasks(&mut self, now: Instant) -> bool {
         let unread_cleared = self.clear_news_unread_when_focused();
         let restored = self.show_page_when_news_focused(now);
@@ -1220,26 +1255,43 @@ impl App {
             return self.drive_news_run(now) || changed;
         }
         self.drive_news_pending_command(now);
+        if std::mem::take(&mut self.news.first_run_pending)
+            && self.news.enabled
+            && self.news.never_ran()
+        {
+            tracing::info!(
+                event = "news.schedule",
+                outcome = "first_run",
+                "news enabled on a desk that never ran; starting the first run"
+            );
+            return self.start_scheduled_news_run(now, "first") || changed;
+        }
         let (local, _day) = self.news.local_now();
         match self.news.schedule_action(unix_now(), local) {
             ScheduleAction::Wait => changed,
-            ScheduleAction::Run => match self.start_news_run(NewsTrigger::Scheduled, now) {
-                Ok(_) => true,
-                Err(err) => {
-                    tracing::warn!(
-                        event = "news.schedule",
-                        outcome = "start_failed",
-                        code = err.code(),
-                        err = %err.message(),
-                        "scheduled news run did not start; the slot counts as attempted"
-                    );
-                    // The attempt stands for the slot: the next listed time
-                    // tries again, not every tick.
-                    self.news.last_started_at = Some(unix_now());
-                    self.news.persist();
-                    changed
-                }
-            },
+            ScheduleAction::Run => self.start_scheduled_news_run(now, "slot") || changed,
+        }
+    }
+
+    /// Start a run the server decided on (`reason`: the first run or a due
+    /// slot). A start that fails stands for the attempt: the next listed
+    /// time tries again, not every tick.
+    fn start_scheduled_news_run(&mut self, now: Instant, reason: &'static str) -> bool {
+        match self.start_news_run(NewsTrigger::Scheduled, now) {
+            Ok(_) => true,
+            Err(err) => {
+                tracing::warn!(
+                    event = "news.schedule",
+                    outcome = "start_failed",
+                    reason,
+                    code = err.code(),
+                    err = %err.message(),
+                    "scheduled news run did not start; the slot counts as attempted"
+                );
+                self.news.last_started_at = Some(unix_now());
+                self.news.persist();
+                false
+            }
         }
     }
 
@@ -2330,6 +2382,172 @@ mod tests {
         );
         let next = app.news.next_run_at(unix_now(), two_pm).expect("19:00");
         assert!(next.abs_diff(unix_now() + 5 * 3600) <= 2, "{next}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An app whose schedule owes nothing (noon, a start a minute ago), so
+    /// only the first-run rule can start a run.
+    fn first_run_app(home: Option<PathBuf>) -> App {
+        let mut app = news_app(home, false);
+        app.news.assume_shell_ready = true;
+        app.news.local_override = Some((clock(12, 0, 0).unwrap(), "2026-09-29"));
+        app.news.last_started_at = Some(unix_now() - 60);
+        app
+    }
+
+    fn enabled_config() -> NewsConfig {
+        NewsConfig {
+            enabled: true,
+            ..NewsConfig::default()
+        }
+    }
+
+    /// Server start with news enabled owes a first run; `in_memory` (tests)
+    /// and a disabled start do not.
+    #[test]
+    fn a_server_start_with_news_enabled_owes_a_first_run() {
+        let now = Instant::now();
+        assert!(NewsState::new(&enabled_config(), false, now).first_run_pending);
+        assert!(!NewsState::new(&NewsConfig::default(), false, now).first_run_pending);
+        assert!(!NewsState::in_memory(&enabled_config(), None).first_run_pending);
+    }
+
+    /// Enabling news on a desk that never ran starts a run on the next
+    /// pass, before any listed time, and only once.
+    #[tokio::test]
+    async fn enabling_news_on_a_desk_that_never_ran_starts_a_first_run_once() {
+        let home = temp_home("first-run");
+        let mut app = first_run_app(Some(home.clone()));
+        let (local, _) = app.news.local_now();
+        assert_eq!(
+            app.news.schedule_action(unix_now(), local),
+            ScheduleAction::Wait,
+            "no slot is owed at noon"
+        );
+        app.news.apply_config(&enabled_config());
+        assert!(app.news.first_run_pending);
+        let now = Instant::now();
+        assert_eq!(
+            app.next_news_deadline(now),
+            Some(now),
+            "the loop wakes at once"
+        );
+        assert!(app.handle_news_tasks(now));
+        let run = app.news.run.as_ref().expect("the first run started");
+        assert_eq!(run.trigger, NewsTrigger::Scheduled);
+        assert!(!app.news.first_run_pending);
+
+        // The run ends without a record reaching the log yet: nothing
+        // starts again (the rule is consumed, the slot not due).
+        app.news.run = None;
+        assert!(!app.handle_news_tasks(Instant::now()));
+        assert!(app.news.run.is_none(), "not twice");
+        // A reload that keeps news on owes nothing either.
+        app.news.apply_config(&enabled_config());
+        assert!(!app.news.first_run_pending);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A desk with a run record, or with a published edition, waits for its
+    /// schedule after being enabled.
+    #[tokio::test]
+    async fn enabling_news_after_a_run_waits_for_the_schedule() {
+        let ran = temp_home("first-run-ran");
+        std::fs::create_dir_all(ran.join("runs")).unwrap();
+        std::fs::write(
+            store::index_path(&ran),
+            "{\"started\":\"2026-09-21T09:00:00+00:00\",\"trigger\":\"manual\",\"outcome\":\"failed\"}\n",
+        )
+        .unwrap();
+        let mut app = first_run_app(Some(ran.clone()));
+        app.news.apply_config(&enabled_config());
+        assert!(!app.handle_news_tasks(Instant::now()));
+        assert!(app.news.run.is_none(), "a failed run counts as a run");
+        assert!(!app.news.first_run_pending, "checked once");
+
+        let home = temp_home("first-run-edition");
+        editions_index(&home, &[1]);
+        let mut app = first_run_app(Some(home.clone()));
+        app.news.apply_config(&enabled_config());
+        assert!(!app.handle_news_tasks(Instant::now()));
+        assert!(app.news.run.is_none(), "an edition counts as a run");
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&ran);
+    }
+
+    /// A run in flight keeps the first run owed until it ends; its record
+    /// then makes the desk one that ran.
+    #[test]
+    fn a_run_in_flight_holds_the_first_run_and_its_record_ends_it() {
+        let home = temp_home("first-run-inflight");
+        let mut app = first_run_app(Some(home.clone()));
+        app.news.apply_config(&enabled_config());
+        let now = Instant::now();
+        app.news.run = Some(in_flight(NOW, now));
+        assert!(!app.handle_news_tasks(now - Duration::from_secs(1)));
+        assert!(app.news.first_run_pending, "still owed while in flight");
+        assert_eq!(app.news.run.as_ref().unwrap().started_at, NOW);
+
+        std::fs::create_dir_all(home.join("runs")).unwrap();
+        std::fs::write(
+            store::index_path(&home),
+            "{\"started\":\"2026-09-21T09:00:00+00:00\",\"trigger\":\"manual\",\"outcome\":\"ok\"}\n",
+        )
+        .unwrap();
+        app.news.run = None;
+        assert!(!app.handle_news_tasks(Instant::now()));
+        assert!(app.news.run.is_none(), "the desk ran meanwhile");
+        assert!(!app.news.first_run_pending);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Turning news off drops an owed first run; a failed first start stands
+    /// for it like a slot's (no retry every tick).
+    #[test]
+    fn switching_off_drops_the_first_run_and_a_failed_start_is_not_retried() {
+        let home = temp_home("first-run-off");
+        let mut app = first_run_app(Some(home.clone()));
+        app.news.apply_config(&enabled_config());
+        app.news.apply_config(&NewsConfig::default());
+        assert!(!app.news.first_run_pending);
+        assert!(!app.handle_news_tasks(Instant::now()));
+        assert!(app.news.run.is_none());
+        let _ = std::fs::remove_dir_all(&home);
+
+        let dir = temp_home("first-run-fails");
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let mut app = first_run_app(Some(blocker.join("news")));
+        app.news.apply_config(&enabled_config());
+        assert!(!app.handle_news_tasks(Instant::now()), "nothing started");
+        assert!(!app.news.first_run_pending);
+        let attempted = app.news.last_started_at.expect("the attempt is remembered");
+        assert!(attempted.abs_diff(unix_now()) <= 2, "{attempted}");
+        assert!(!app.handle_news_tasks(Instant::now()));
+        assert!(app.news.run.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `news.set_enabled` (a config write and reload) turns news on and
+    /// the next pass starts the first run.
+    #[tokio::test]
+    async fn set_enabled_on_a_desk_that_never_ran_starts_the_first_run() {
+        let dir = temp_home("first-run-reload");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[news]\nenabled = false\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+        let mut app = first_run_app(Some(dir.join("news")));
+        let response = request(
+            &mut app,
+            crate::api::schema::Method::NewsSetEnabled(crate::api::schema::NewsSetEnabledParams {
+                enabled: true,
+            }),
+        );
+        assert_eq!(response["result"]["news"]["enabled"], true, "{response}");
+        assert!(app.news.first_run_pending, "the reload flipped it on");
+        assert!(app.handle_news_tasks(Instant::now()));
+        assert!(app.news.run.is_some());
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

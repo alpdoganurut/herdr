@@ -1,7 +1,9 @@
 //! `[news]`: the AI news desk the server schedules and runs (fork).
 //!
 //! Scheduling is off by default, so upstream behaviour is unchanged unless
-//! `enabled = true`. A manual `herdr news run` works either way.
+//! `enabled = true`. A manual `herdr news run` works either way. A desk that
+//! has never run starts its first run as soon as it is enabled (server start
+//! or a reload turning it on), then follows `times`.
 
 use serde::Deserialize;
 
@@ -14,7 +16,8 @@ pub const DEFAULT_NEWS_QUIET_HOURS: &str = "00:00-08:00";
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct NewsConfig {
-    /// Run the news desk on a schedule (the server's headless loop). Default: false.
+    /// Run the news desk on a schedule (the server's headless loop); a desk
+    /// that never ran runs once right away. Default: false.
     pub enabled: bool,
     /// Local times of day (`HH:MM`, 24-hour) at which a scheduled run
     /// starts. Default: `08:00`, `13:00`, `19:00`. An invalid entry is
