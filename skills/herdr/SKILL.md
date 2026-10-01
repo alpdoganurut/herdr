@@ -210,6 +210,24 @@ Use `--format ansi` when colors and terminal styling are evidence. Otherwise use
 
 If a larger recent read still does not reveal the completed response, ask the agent to write it as Markdown in a temporary directory and reply only with the file path, then read that file on the same machine. Use this only as a fallback; do not request file output in the initial prompt.
 
+## Use the browser
+
+herdr+ owns a shared Chromium window that the user can see, use and sign in to. Inside herdr+, prefer the `herdr-browser` MCP tools (`browser_open`, `browser_read`, `browser_find`, `browser_snapshot`, `browser_click`, `browser_fill`, `browser_screenshot`, …) for any browser work. Without them, the CLI drives the same window:
+
+```bash
+herdr browser open https://example.com
+herdr browser read
+herdr browser find "pricing"
+herdr browser snapshot
+herdr browser click --ref e12
+herdr browser fill --ref e7 "text"
+herdr browser screenshot
+herdr browser tabs
+herdr browser close
+```
+
+`herdr browser help` lists every operation and flag. A session that started before the MCP server was registered (`herdr browser setup`) does not have the tools until it restarts; the CLI works meanwhile. When a page needs a login, `herdr browser focus` brings the window up for the user. Close the tabs you opened when the task is done unless the user may want to look at them.
+
 ## Safety and coordination rules
 
 - Use `--no-focus` for background work unless the user asked to switch context.
