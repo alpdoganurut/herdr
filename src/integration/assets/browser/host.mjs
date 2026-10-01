@@ -4,8 +4,8 @@
 // durable state: ring buffers and refs are "since attach".
 //
 // Request  {"id":1,"op":"read","profile":"main","target":"<targetId>","args":{...},"deadline_ms":30000,
-//           "activity":{"frame":true,"animate":true,"color":"#aa6eff","group":{"key":"w2:p7","title":"claude · planner","color":"purple","collapse_ms":120000}}}
-//          (activity: an agent pane's call; the frame/cursor overlay and the tab group; absent for the user)
+//           "activity":{"frame":true,"animate":true,"color":"#aa6eff","linger_ms":120000,"group":{"key":"w2:p7","title":"✻ planner","color":"purple","collapse_ms":120000}}}
+//          (activity: an agent pane's call; the frame/cursor overlay — up for linger_ms after the op — and the tab group; absent for the user)
 // Reply    {"id":1,"ok":true,"result":{...},"page":{"url":"…","title":"…","dialog_open":false}}
 //          {"id":1,"ok":false,"error":{"code":"…","message":"…"}}
 // Events   {"event":"tab"|"dialog"|"browser"|"log", ...}
@@ -892,7 +892,7 @@ function imageSize(buffer, type) {
 // ---------------------------------------------------------------------------
 // Main loop
 
-// Ops that work on a page: the activity frame is up while they run.
+// Ops that work on a page: the activity frame pulses while they run and stays, calmer, for the directive's window after.
 const PAGE_OPS = new Set(['navigate', 'history', 'read', 'links', 'screenshot', 'console', 'network', 'wait', 'scroll', 'eval', 'act', 'dialog', 'focus']);
 function activityPage(name, target) {
   const profile = profiles.get(name);
@@ -904,7 +904,7 @@ async function activityBegin(state, activity) {
   await state.overlay.show(activity.color).catch((err) => log('debug', `overlay: ${err.message}`));
 }
 function activityEnd(state, activity) {
-  if (activity.frame) state.overlay.linger();
+  if (activity.frame) state.overlay.linger(activity.linger_ms);
   if (activity.group && state.profile.companion.state === 'ready') state.profile.companion.touch(state, activity.group);
 }
 

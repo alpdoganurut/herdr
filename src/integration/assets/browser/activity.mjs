@@ -7,9 +7,9 @@
 export const WORLD = 'herdr';
 export const HOST_ATTR = 'data-herdr-overlay';
 /** The companion worker code this sidecar expects (VERSION in companion/sw.js); an older running worker is reloaded. */
-export const COMPANION_VERSION = 10;
-/** The frame stays this long after the last operation. */
-export const LINGER_MS = 3000;
+export const COMPANION_VERSION = 11;
+/** The frame stays this long after the last operation when the directive names no window (`linger_ms`, [browser] active_glyph_secs). */
+export const LINGER_MS = 120000;
 /** The cursor's glide (matches the CSS transition). */
 export const GLIDE_MS = 350;
 /** One overlay evaluate may take at most this long; the op never waits longer. */
@@ -32,13 +32,15 @@ export function normalizeColor(value) {
   return /^#[0-9a-f]{6}$/.test(text) ? text : DEFAULT_COLOR;
 }
 
-// Installed in the isolated world: `(OVERLAY_JS)(cursor, color)`; idempotent per
-// document, re-installed when the colour changed. The alpha values are the
-// approved look; only the rgb comes from the colour.
-export const OVERLAY_JS = `((cursor, color) => {
+// Installed in the isolated world: `(OVERLAY_JS)(cursor, color, busy)`; idempotent
+// per document, re-installed when the colour changed. `busy` is the look: the
+// pulse while an operation runs, the calmer steady glow for the rest of the
+// activity window. The alpha values are the approved look; only the rgb comes
+// from the colour.
+export const OVERLAY_JS = `((cursor, color, busy) => {
   const rgb = [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16)).join(',');
   const live = window.__herdrOverlay;
-  if (live && live.alive && live.color === color) { live.show(); return 'present'; }
+  if (live && live.alive && live.color === color) { live.show(); live.busy(busy); return 'present'; }
   if (live && live.alive) { cursor = live.cursor || cursor; live.alive = false; }
   document.querySelectorAll('div[${HOST_ATTR}]').forEach((n) => n.remove());
   const host = document.createElement('div');
@@ -48,16 +50,18 @@ export const OVERLAY_JS = `((cursor, color) => {
   const root = host.attachShadow({ mode: 'closed' });
   root.innerHTML = \`<style>
     .frame{position:fixed;inset:0;border:2px solid rgba(\${rgb},.9);box-shadow:inset 0 0 14px 3px rgba(\${rgb},.42);
-      border-radius:6px;animation:pulse 2s ease-in-out infinite}
+      border-radius:6px;animation:pulse 2s ease-in-out infinite;transition:box-shadow .6s,border-color .6s}
+    .frame.idle{animation:none;border-color:rgba(\${rgb},.7);box-shadow:inset 0 0 10px 2px rgba(\${rgb},.28)}
     @keyframes pulse{50%{box-shadow:inset 0 0 22px 6px rgba(\${rgb},.62)}}
     .cur{position:fixed;left:-5px;top:-2.5px;width:24px;height:24px;transition:transform .35s cubic-bezier(.2,.8,.2,1);
       filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}
     .ripple{position:fixed;width:28px;height:28px;margin:-14px 0 0 -14px;border-radius:50%;border:2px solid rgba(\${rgb},.9);
       animation:rip .5s ease-out forwards}
     @keyframes rip{from{transform:scale(.3);opacity:1}to{transform:scale(1.6);opacity:0}}
-  </style><div class="frame"></div>
+  </style><div class="frame\${busy ? '' : ' idle'}"></div>
   <svg class="cur" viewBox="0 0 24 24"><path d="M5 2.5v17.2l4.3-4.2 2.9 6.6 2.6-1.1-2.9-6.5h6.1z" fill="\${color}" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg>\`;
   (document.documentElement || document).appendChild(host);
+  const frame = root.querySelector('.frame');
   const cur = root.querySelector('.cur');
   if (cursor) {
     cur.style.transition = 'none';
@@ -73,10 +77,13 @@ export const OVERLAY_JS = `((cursor, color) => {
     alive: true,
     color,
     cursor: cursor || null,
-    show() { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } host.style.opacity = '1'; },
-    hide() {
+    show() { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } host.style.transition = 'opacity .25s'; host.style.opacity = '1'; },
+    busy(on) { frame.classList.toggle('idle', !on); },
+    hide(fast) {
+      // the window's end is a slow fade; a gone pane or a dismissed frame goes at once
+      host.style.transition = fast ? 'opacity .25s' : 'opacity 1.2s';
       host.style.opacity = '0';
-      hideTimer = setTimeout(() => { api.alive = false; host.remove(); if (window.__herdrOverlay === api) delete window.__herdrOverlay; }, 300);
+      hideTimer = setTimeout(() => { api.alive = false; host.remove(); if (window.__herdrOverlay === api) delete window.__herdrOverlay; }, fast ? 300 : 1300);
     },
     suspend(on) { host.style.visibility = on ? 'hidden' : ''; },
     moveTo(x, y, animate) {
@@ -96,7 +103,13 @@ export const OVERLAY_JS = `((cursor, color) => {
   return 'installed';
 })`;
 
-/** The overlay of one page: an isolated-world context per document, the cursor's last position, the linger timer. */
+/** The overlay of one page: an isolated-world context per document, the
+ *  cursor's last position, the activity window. The frame pulses while an op
+ *  runs (`show`), settles to the calmer look when it is done (`linger`) and
+ *  fades at the end of the window — `[browser] active_glyph_secs`, the same
+ *  window as the sidebar's ◎ — or at once when the pane is gone (`dismiss`).
+ *  The cursor stays where the last op left it for the whole window; a new
+ *  document in the window gets the frame back in the same state (`reapply`). */
 export class Overlay {
   constructor(state) {
     this.state = state;
@@ -105,6 +118,7 @@ export class Overlay {
     this.color = DEFAULT_COLOR;
     this.hideTimer = null;
     this.until = 0;
+    this.active = false; // an op is running on the page
     this.log = () => {};
   }
   async context() {
@@ -130,23 +144,40 @@ export class Overlay {
     }
     return undefined;
   }
-  /** The frame is up (installed if needed, re-installed on a colour change) and stays until `linger`. */
+  /** Put the frame into the current document (idempotent; re-installed on a colour change), in the `busy` look or the idle one, the cursor where it was. */
+  install(busy) {
+    return this.eval(`(${OVERLAY_JS})(${JSON.stringify(this.cursor)}, ${JSON.stringify(this.color)}, ${busy ? 'true' : 'false'})`);
+  }
+  /** An op began: the frame is up and pulsing until `linger`. */
   async show(color) {
     if (color) this.color = normalizeColor(color);
     if (this.hideTimer) { clearTimeout(this.hideTimer); this.hideTimer = null; }
+    this.active = true;
     this.until = Infinity;
-    return this.eval(`(${OVERLAY_JS})(${JSON.stringify(this.cursor)}, ${JSON.stringify(this.color)})`);
+    return this.install(true);
   }
-  /** The op is done: fade out after `ms`. */
-  linger(ms = LINGER_MS) {
+  /** The op is done: the calmer look now, the fade at the end of the window (`ms`, the directive's `linger_ms`). */
+  linger(ms) {
+    ms = Math.max(0, Number(ms) || LINGER_MS);
+    this.active = false;
     this.until = Date.now() + ms;
+    this.eval('window.__herdrOverlay ? (__herdrOverlay.busy(false), "idle") : "absent"').catch(() => {});
     if (this.hideTimer) clearTimeout(this.hideTimer);
     this.hideTimer = setTimeout(() => {
       this.hideTimer = null;
       this.until = 0;
-      this.eval('window.__herdrOverlay ? (__herdrOverlay.hide(), "hidden") : "absent"').catch(() => {});
+      this.eval('window.__herdrOverlay ? (__herdrOverlay.hide(false), "hidden") : "absent"').catch(() => {});
     }, ms);
     if (this.hideTimer.unref) this.hideTimer.unref();
+  }
+  /** The pane is gone: the frame goes now, whatever is left of the window. */
+  dismiss() {
+    if (this.hideTimer) { clearTimeout(this.hideTimer); this.hideTimer = null; }
+    const up = this.until > Date.now();
+    this.active = false;
+    this.until = 0;
+    if (!up) return Promise.resolve();
+    return this.eval('window.__herdrOverlay ? (__herdrOverlay.hide(true), "hidden") : "absent"').catch(() => {});
   }
   /** Glide the cursor to a viewport point (and wait for the glide when animating). */
   async moveTo(x, y, animate) {
@@ -164,12 +195,13 @@ export class Overlay {
   }
   /** The main frame navigated: the world is gone with the document. */
   navigated() { this.ctx = null; }
-  /** A new document while the frame should be up: put it back. */
+  /** A new document while the frame should be up: put it back in the same state (the window is not stretched). */
   async reapply() {
-    if (this.until > Date.now()) await this.show().catch((err) => this.log(`overlay reapply: ${err.message}`));
+    if (this.until > Date.now()) await this.install(this.active).catch((err) => this.log(`overlay reapply: ${err.message}`));
   }
   dispose() {
     if (this.hideTimer) { clearTimeout(this.hideTimer); this.hideTimer = null; }
+    this.active = false;
     this.until = 0;
   }
 }
@@ -390,7 +422,9 @@ export class Companion {
     this.tabIds.delete(targetId);
     if (tabId != null) for (const g of this.groups.values()) g.tabs.delete(tabId);
   }
-  /** An agent pane touched a tab: it sits in the pane's group, expanded; the group collapses after `collapse_ms` of quiet. */
+  /** An agent pane touched a tab: it sits in the pane's group, expanded and
+   *  marked active in its title (`● <title>`, by the worker); after
+   *  `collapse_ms` of quiet the group collapses and the mark goes. */
   touch(state, group) {
     const run = this.chain.then(() => this._touch(state, group));
     this.chain = run.catch((err) => this.log(`companion: ${err.message}`));
@@ -406,7 +440,7 @@ export class Companion {
     let reply;
     try {
       // The group is the pane's (keyed by its id in the worker's session storage), never one found by title.
-      reply = await this.call('herdrGroup', { key: String(group.key), tabId, title: String(group.title || group.key), color: String(group.color || 'purple'), wasGrouped });
+      reply = await this.call('herdrGroup', { key: String(group.key), tabId, title: String(group.title || group.key), color: String(group.color || 'purple'), wasGrouped, active: true });
     } catch (err) {
       if (/No tab with id/i.test(err.message)) { this.tabIds.delete(state.target); g.tabs.delete(tabId); }
       throw err;
@@ -418,7 +452,9 @@ export class Companion {
     const ms = Math.max(1000, Number(group.collapse_ms) || 120000);
     g.timer = setTimeout(() => {
       g.timer = null;
-      this.call('herdrCollapse', String(group.key)).catch((err) => this.log(`companion collapse: ${err.message}`));
+      // (a stale v10 worker reads a bare key only; it keeps the plain title anyway)
+      const arg = this.stale ? String(group.key) : { key: String(group.key), title: String(group.title || group.key) };
+      this.call('herdrCollapse', arg).catch((err) => this.log(`companion collapse: ${err.message}`));
     }, ms);
     if (g.timer.unref) g.timer.unref();
   }
@@ -426,14 +462,22 @@ export class Companion {
   dashboard(pin) {
     return this.call('herdrDashboard', { pin: Boolean(pin) });
   }
-  /** Panes that are gone: the group recorded for each key dissolves (only
-   *  that group; a same-named group of the user's or another pane's is never
-   *  touched). Throws when the worker could not do it. */
+  /** Panes that are gone: the overlay on each of the pane's tabs goes now and
+   *  the group recorded for each key dissolves (only that group; a same-named
+   *  group of the user's or another pane's is never touched). Throws when the
+   *  worker could not do it. */
   async release(keys) {
     for (const key of keys) {
       const g = this.groups.get(String(key));
       if (g) {
         if (g.timer) clearTimeout(g.timer);
+        const pages = this.profile.pages;
+        if (pages) {
+          for (const [target, tabId] of this.tabIds) {
+            const state = g.tabs.has(tabId) ? pages.get(target) : null;
+            if (state && state.overlay) state.overlay.dismiss();
+          }
+        }
         this.groups.delete(String(key));
       }
       await this.call('herdrRelease', String(key));

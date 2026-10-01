@@ -33,7 +33,7 @@ pub const COMPANION_EXTENSION_ID: &str = "jmegdddadjhcnkdfpmeeockadkdbfpop";
 /// `Companion.stopStaleWorker` retires it right before herdr closes the
 /// browser (unregister + stop over a fresh page-target CDP session), so the
 /// next start registers the new files; nothing on disk is deleted for it.
-pub const COMPANION_VERSION: u32 = 10;
+pub const COMPANION_VERSION: u32 = 11;
 pub const RUNTIME_FILE: &str = "runtime.json";
 pub const RUNTIME_VERSION: u32 = 1;
 /// The playwright-core version `package.json` pins.
@@ -342,19 +342,18 @@ mod tests {
         assert_eq!(id, COMPANION_EXTENSION_ID);
     }
 
-    #[test]
-    fn companion_driver_survives_a_transient_worker_miss() {
+    /// Run one of the JS-level checks under scripts/ with the node on PATH; skipped without one.
+    fn run_node_check(script: &str) {
         let node = std::env::var_os("PATH").and_then(|path| {
             std::env::split_paths(&path)
                 .map(|dir| dir.join("node"))
                 .find(|candidate| candidate.is_file())
         });
         let Some(node) = node else {
-            eprintln!("node not on PATH; companion driver check skipped");
+            eprintln!("node not on PATH; {script} skipped");
             return;
         };
-        let script =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test_browser_companion.mjs");
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join(script);
         let output = std::process::Command::new(node)
             .arg(&script)
             .output()
@@ -365,6 +364,19 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn companion_driver_survives_a_transient_worker_miss() {
+        run_node_check("scripts/test_browser_companion.mjs");
+    }
+
+    /// The overlay's lifetime (the activity window, the calmer idle look, a
+    /// navigation mid-window, dismiss on a gone pane), the cursor staying put
+    /// and the group's activity mark (scripts/test_browser_overlay.mjs).
+    #[test]
+    fn activity_overlay_lives_for_the_window_and_marks_the_group() {
+        run_node_check("scripts/test_browser_overlay.mjs");
     }
 
     #[test]

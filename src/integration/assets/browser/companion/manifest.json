@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "herdr companion",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Tab groups for herdr's agent panes. Driven by herdr over the DevTools port; nothing runs on its own.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4kusXWuL+IMYzJvfzzgQv0Z48NW8TudW4haF5xZqMERb6dWgeQOhj6ksEQmw20m4tu0uZ9DDTGeK+XjFJLWlkCWTLoIC3QM6bSzICQX58PTIuskFu2pu3JHZ61lp0pdGLZO8KMnQEL1oV8NnpWkbX6IB8x+LUiHnnmlIfZB4HxKE7lr6ZelmvhI0mSZA/5WPlt/FyvpuR+Dx44mcE9hjk1igCQ9GWSBKRYidRR1uFQezcaNEzoeIA+Mj2DmIQH/PzNUsEDmOAdBF6INZ77W6k89Kq+ETrHYe+B+9aCGOKJeHMlvIrF3yu69lot6yl0MSDLNKP4EaY3LZFkICKjjO4QIDAQAB",
   "permissions": [

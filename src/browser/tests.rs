@@ -1576,6 +1576,7 @@ fn an_agent_call_carries_the_activity_directive_and_the_user_s_does_not() {
             crate::browser::activity::group_color("w2:pA")
         );
         assert_eq!(directive["group"]["collapse_ms"], 120_000);
+        assert_eq!(directive["linger_ms"], 120_000);
         let act = ops.iter().find(|(op, _, _)| op == "act").unwrap();
         assert_eq!(
             act.2["_activity"]["frame"], true,

@@ -8,7 +8,7 @@ chrome.alarms.create('herdr-keepalive', { periodInMinutes: 0.5 });
 // version (0.<VERSION>.0), COMPANION_VERSION in activity.mjs and
 // COMPANION_VERSION in browser_assets.rs (herdr clears a profile's worker
 // store before launching it with a new version, so the new code loads).
-const VERSION = 10;
+const VERSION = 11;
 self.herdrPing = () => 'herdr-companion/' + VERSION;
 
 // The new tab page's data: herdr's compact snapshot, kept in session storage
@@ -47,10 +47,18 @@ const store = {
   },
 };
 
+// The activity mark in front of a group's title while its pane is active
+// (removed at the collapse). Ownership and restores go by the plain title.
+const ACTIVE_MARK = '● ';
+const plain = (title) => (String(title || '').startsWith(ACTIVE_MARK) ? String(title).slice(ACTIVE_MARK.length) : String(title || ''));
+self.herdrPlainTitle = plain;
+
 // Put a tab into the pane's group (creating it when the pane has none),
-// expanded. A tab the user pulled out of our group (wasGrouped, now
-// ungrouped) or that sits in any other group is left alone.
-self.herdrGroup = async ({ key, tabId, title, color, wasGrouped }) => {
+// expanded, the title marked active when asked. A tab the user pulled out of
+// our group (wasGrouped, now ungrouped) or that sits in any other group is
+// left alone.
+self.herdrGroup = async ({ key, tabId, title, color, wasGrouped, active }) => {
+  title = plain(title);
   const tab = await chrome.tabs.get(tabId);
   if (wasGrouped && tab.groupId === -1) return { skipped: 'user_ungrouped' };
   let g = await store.get(key);
@@ -64,27 +72,36 @@ self.herdrGroup = async ({ key, tabId, title, color, wasGrouped }) => {
     // left alone.
     let info = null;
     try { info = await chrome.tabGroups.get(tab.groupId); } catch {}
-    if (!info || info.title !== title || g != null || !(await store.owns(title))) return { skipped: 'other_group', groupId: tab.groupId };
+    if (!info || plain(info.title) !== title || g != null || !(await store.owns(title))) return { skipped: 'other_group', groupId: tab.groupId };
     g = tab.groupId;
   }
   if (g == null && await store.owns(title)) {
     // After a restart the pane's group is back with a new id: the one in this
     // window with the pane's own title, before any new one is made.
-    const restored = await chrome.tabGroups.query({ title, windowId: tab.windowId }).catch(() => []);
+    // (restored under the plain title, or the marked one when the browser went down mid-window)
+    const restored = [
+      ...await chrome.tabGroups.query({ title, windowId: tab.windowId }).catch(() => []),
+      ...await chrome.tabGroups.query({ title: ACTIVE_MARK + title, windowId: tab.windowId }).catch(() => []),
+    ];
     if (restored.length) g = restored[0].id;
   }
   if (g == null) g = await chrome.tabs.group({ tabIds: [tabId] });
   else if (tab.groupId !== g) await chrome.tabs.group({ tabIds: [tabId], groupId: g });
   await store.set(key, g);
   await store.ownTitle(title);
-  await chrome.tabGroups.update(g, { title, color, collapsed: false });
+  await chrome.tabGroups.update(g, { title: active ? ACTIVE_MARK + title : title, color, collapsed: false });
   return { groupId: g };
 };
 
-self.herdrCollapse = async (key) => {
+// The pane went quiet: its group collapses and the activity mark goes (the
+// plain title comes with the call; an older sidecar's bare key keeps the title).
+self.herdrCollapse = async (arg) => {
+  const { key, title } = typeof arg === 'string' ? { key: arg } : (arg || {});
   const g = await store.get(key);
   if (g == null) return { collapsed: false };
-  try { await chrome.tabGroups.update(g, { collapsed: true }); return { collapsed: true }; }
+  const update = { collapsed: true };
+  if (title) update.title = plain(title);
+  try { await chrome.tabGroups.update(g, update); return { collapsed: true }; }
   catch (err) { return { collapsed: false, error: String(err && err.message || err) }; }
 };
 

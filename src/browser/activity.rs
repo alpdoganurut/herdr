@@ -40,7 +40,10 @@ pub fn group_title(symbol: &str, tab_label: &str, pane_id: &str) -> String {
 
 /// The directive for a call: only a pane's calls draw anything (the user's
 /// and external callers' never touch the page), and only while
-/// `[browser] show_activity` is on.
+/// `[browser] show_activity` is on. `linger_ms` is how long the frame (and
+/// the cursor where the last op left it) stays after the op — the
+/// `active_glyph_secs` window, the same one the sidebar's ◎ and the group's
+/// activity mark follow.
 pub fn directive(actor: &BrowserActor, config: &BrowserConfig) -> Option<Value> {
     if !config.show_activity {
         return None;
@@ -54,15 +57,17 @@ pub fn directive(actor: &BrowserActor, config: &BrowserConfig) -> Option<Value> 
     else {
         return None;
     };
+    let window_ms = config.active_glyph_secs.saturating_mul(1000);
     Some(json!({
         "frame": true,
         "animate": true,
         "color": config.activity_color(),
+        "linger_ms": window_ms,
         "group": {
             "key": pane_id,
             "title": group_title(&config.group_symbol(agent.as_deref()), tab_label, pane_id),
             "color": group_color(pane_id),
-            "collapse_ms": config.active_glyph_secs.saturating_mul(1000),
+            "collapse_ms": window_ms,
         },
     }))
 }
@@ -155,6 +160,10 @@ mod tests {
         );
         assert_eq!(d["group"]["color"], group_color("w2:p7"));
         assert_eq!(d["group"]["collapse_ms"], 90_000);
+        assert_eq!(
+            d["linger_ms"], 90_000,
+            "the frame's window is the active-glyph window"
+        );
         assert!(directive(&BrowserActor::User, &config).is_none());
         assert!(directive(&BrowserActor::External { raw: None }, &config).is_none());
         let off = BrowserConfig {
