@@ -79,6 +79,12 @@ pub(crate) const NEWS_HOOK_SOURCE: &str = "herdr:news";
 pub(crate) const NEWS_AGENT_LABEL: &str = "news";
 /// How often the run log is polled while a run is in flight.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// How often a focused News tab's viewer state is checked for the read mark.
+const READ_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+/// The error the runner records when the reader interrupted it (two Ctrl-C):
+/// `news_run.py`, the `record["errors"] = [...]` line of its interrupt
+/// handler. A run cancelled that way is not a failure of the desk.
+const USER_INTERRUPT_ERROR: &str = "interrupted by the user";
 /// Minutes the runner may spend on the whole run (anchors, the editor and
 /// its fix-up call together): passed as `--deadline-min`.
 pub(crate) const RUN_BUDGET_MIN: u64 = 60;
@@ -550,8 +556,16 @@ pub(crate) struct NewsState {
     /// The last edition the reader looked at (persisted; mirrored to the
     /// news home's read.json for the viewer).
     pub(crate) last_read_edition: Option<u32>,
-    /// `new_stories` for news.get, cached per (latest edition, last read).
-    pub(crate) new_count_cache: Option<((u32, u32), Option<u32>)>,
+    /// `new_stories` for news.get: stories of the latest edition absent from
+    /// the last one read. Computed when the read mark moves, a run finishes
+    /// and at load (`refresh_new_story_count`), never on the request path.
+    pub(crate) new_stories: Option<u32>,
+    /// The read check (`note_news_read_when_focused`) runs at most once per
+    /// `READ_CHECK_INTERVAL`: not before this instant.
+    pub(crate) read_check_after: Option<Instant>,
+    /// The `viewer-state.json` write the read check last judged; the same
+    /// one again is not read or parsed a second time.
+    pub(crate) viewer_state_seen: Option<std::time::SystemTime>,
     /// Whether the News tab was the focused tab on the previous pass
     /// (not persisted: a restart sees the focus as new).
     pub(crate) was_focused: bool,
@@ -623,7 +637,9 @@ impl NewsState {
             notify: store::NewsNotifyRecord::default(),
             notify_retry_at: None,
             last_read_edition: None,
-            new_count_cache: None,
+            new_stories: None,
+            read_check_after: None,
+            viewer_state_seen: None,
             was_focused: false,
             shell_polls: 0,
             first_run_pending: false,
@@ -678,6 +694,7 @@ impl NewsState {
         self.consecutive_failures = record.consecutive_failures;
         self.notify = record.notify;
         self.last_read_edition = record.last_read_edition;
+        self.refresh_new_story_count();
         self.run = record.run.map(|run| NewsRun {
             started_at: run.started_at,
             started: run.started,
@@ -686,6 +703,18 @@ impl NewsState {
             watch_from: now,
             phase: NewsPhase::Running { next_poll: now },
         });
+    }
+
+    /// Recompute `new_stories` (one read of the editions index, the two
+    /// edition files); `None` without a home, a read mark or an index.
+    pub(crate) fn refresh_new_story_count(&mut self) {
+        self.new_stories = (|| {
+            let home = self.home.as_deref()?;
+            let read = self.last_read_edition?;
+            let editions = store::read_editions(home);
+            let latest = editions.last()?.edition;
+            store::new_story_count_in(home, &editions, latest, read)
+        })();
     }
 
     fn record(&self) -> store::NewsRecord {
@@ -1069,7 +1098,7 @@ impl App {
             consecutive_failures: self.news.consecutive_failures,
             pending_notifications: self.news.notify.pending.len() as u32,
             last_read_edition: self.news.last_read_edition,
-            new_stories: self.news_new_story_count(),
+            new_stories: self.news.new_stories,
         }
     }
 
@@ -1312,24 +1341,40 @@ impl App {
     }
 
     /// "Since you read": while the News tab is the focused tab of the focused
-    /// space and its pane shows the viewer (not a shell prompt), the edition
-    /// the viewer reports on screen (`viewer-state.json`) becomes the last
-    /// read edition — never moving backwards — persisted in news.json and
-    /// mirrored to `read.json` for the viewer's baseline. Returns whether it
-    /// moved.
-    fn note_news_read_when_focused(&mut self) -> bool {
+    /// space and its pane shows the viewer (not a shell prompt, and not a run
+    /// or a pending viewer command, which own the pane while viewer-state.json
+    /// still names the edition shown before), the edition the viewer reports
+    /// on screen (`viewer-state.json`) becomes the last read edition — never
+    /// moving backwards — persisted in news.json and mirrored to `read.json`
+    /// for the viewer's baseline. Checked at most once per
+    /// `READ_CHECK_INTERVAL`, and the file is read only when it changed since
+    /// the last judgement. Returns whether the mark moved.
+    fn note_news_read_when_focused(&mut self, now: Instant) -> bool {
+        if self.news.read_check_after.is_some_and(|at| now < at) {
+            return false;
+        }
         let Some(pane) = self.focused_news_pane() else {
             return false;
         };
         let Some(home) = self.news.home.clone() else {
             return false;
         };
+        if self.news.run.is_some() || self.news.pending_command.is_some() {
+            return false;
+        }
+        self.news.read_check_after = Some(now + READ_CHECK_INTERVAL);
+        let mtime = store::viewer_state_mtime(&home);
+        if mtime.is_some() && mtime == self.news.viewer_state_seen {
+            return false;
+        }
         if self.news_pane_at_shell(&pane) {
             return false;
         }
         let Some(showing) = store::viewer_showing(&home) else {
+            self.news.viewer_state_seen = mtime;
             return false;
         };
+        self.news.viewer_state_seen = mtime;
         if self
             .news
             .last_read_edition
@@ -1338,27 +1383,13 @@ impl App {
             return false;
         }
         self.news.last_read_edition = Some(showing);
-        self.news.new_count_cache = None;
+        self.news.refresh_new_story_count();
         if let Err(err) = store::write_read_record(&home, showing) {
             tracing::warn!(event = "news.read", outcome = "mirror_failed", err = %err, "could not write read.json");
         }
         tracing::info!(event = "news.read", edition = showing, "News edition read");
         self.news.persist();
         true
-    }
-
-    /// `new_stories` for news.get: stories in the latest edition that were
-    /// not in the last one read; cached per pair.
-    fn news_new_story_count(&self) -> Option<u32> {
-        let home = self.news.home.as_deref()?;
-        let read = self.news.last_read_edition?;
-        let latest = store::read_editions(home).last()?.edition;
-        if let Some((key, count)) = self.news.new_count_cache {
-            if key == (latest, read) {
-                return count;
-            }
-        }
-        store::new_story_count(home, latest, read)
     }
 
     /// The scheduler's contribution to the headless loop deadline.
@@ -1374,7 +1405,7 @@ impl App {
     /// changed.
     pub(crate) fn handle_news_tasks(&mut self, now: Instant) -> bool {
         let unread_cleared = self.clear_news_unread_when_focused();
-        let read = self.note_news_read_when_focused();
+        let read = self.note_news_read_when_focused(now);
         let restored = self.show_page_when_news_focused(now);
         let changed = unread_cleared || read || restored;
         if self.news.run.is_some() {
@@ -2026,13 +2057,13 @@ impl App {
         // is the reader's double Ctrl-C; herdr's records and a watchdog stop
         // keep counting.
         let user_cancel = record.outcome == "interrupted"
-            && record.errors.iter().any(|e| e == "interrupted by the user")
+            && record.errors.iter().any(|e| e == USER_INTERRUPT_ERROR)
             && !matches!(
                 self.news.run.as_ref().map(|run| &run.phase),
                 Some(NewsPhase::Stopping { .. })
             );
         self.news.finish(&record, now_unix, quiet_end, user_cancel);
-        self.news.new_count_cache = None;
+        self.news.refresh_new_story_count();
         if record.outcome == "ok" && record.changed {
             self.mark_news_tab_important();
             if let Some(notify) = record.notify.as_ref() {
@@ -3139,7 +3170,12 @@ mod tests {
         news_tab_at(&mut app, 1);
         app.state.switch_workspace_tab(0, 1);
         app.news.assume_shell_busy = true;
-        let now = Instant::now();
+        // (the read check runs at most once a second: every step is a second later)
+        let mut now = Instant::now();
+        let later = |now: &mut Instant| {
+            *now += READ_CHECK_INTERVAL;
+            *now
+        };
         assert!(
             !app.handle_news_tasks(now),
             "no viewer state yet: nothing read"
@@ -3156,17 +3192,28 @@ mod tests {
         )
         .unwrap();
         app.state.switch_workspace_tab(0, 0);
-        assert!(!app.handle_news_tasks(now), "unfocused: not read");
+        assert!(
+            !app.handle_news_tasks(later(&mut now)),
+            "unfocused: not read"
+        );
         app.state.switch_workspace_tab(0, 1);
         app.news.assume_shell_busy = false;
         app.news.assume_shell_ready = true;
         assert!(
-            !app.handle_news_tasks(now),
+            !app.handle_news_tasks(later(&mut now)),
             "at a shell prompt: the viewer is not up"
         );
         app.news.assume_shell_ready = false;
         app.news.assume_shell_busy = true;
-        assert!(app.handle_news_tasks(now), "focused and showing: read");
+        assert!(
+            !app.handle_news_tasks(now),
+            "within a second of the last check: not looked at again"
+        );
+        assert_eq!(app.news.last_read_edition, None);
+        assert!(
+            app.handle_news_tasks(later(&mut now)),
+            "focused and showing: read"
+        );
         assert_eq!(app.news.last_read_edition, Some(1));
         let read: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(store::read_record_path(&home)).unwrap())
@@ -3180,7 +3227,10 @@ mod tests {
         let info = app.news_get_info();
         assert_eq!(info.last_read_edition, Some(1));
         assert_eq!(info.new_stories, Some(2), "b and c are new since edition 1");
-        assert!(!app.handle_news_tasks(now), "and nothing changes after");
+        assert!(
+            !app.handle_news_tasks(later(&mut now)),
+            "and nothing changes after"
+        );
 
         // Opening an older edition never moves the mark backwards; the newest does.
         std::fs::write(
@@ -3188,7 +3238,7 @@ mod tests {
             r#"{"version":1,"showing":2,"at":"2026-09-02T07:00:00+00:00"}"#,
         )
         .unwrap();
-        assert!(app.handle_news_tasks(now));
+        assert!(app.handle_news_tasks(later(&mut now)));
         assert_eq!(app.news.last_read_edition, Some(2));
         assert_eq!(app.news_get_info().new_stories, Some(0));
         std::fs::write(
@@ -3196,7 +3246,7 @@ mod tests {
             r#"{"version":1,"showing":1,"at":"2026-09-02T08:00:00+00:00"}"#,
         )
         .unwrap();
-        assert!(!app.handle_news_tasks(now));
+        assert!(!app.handle_news_tasks(later(&mut now)));
         assert_eq!(app.news.last_read_edition, Some(2));
 
         // A fresh server restores the mark from news.json.
@@ -3204,6 +3254,40 @@ mod tests {
         restarted.news.store = Some(store_path.clone());
         restarted.news.load_record(store::load(&store_path), now);
         assert_eq!(restarted.news.last_read_edition, Some(2));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_run_in_the_news_pane_does_not_record_the_edition_shown_before_it() {
+        let home = temp_home("read-during-run");
+        std::fs::create_dir_all(home.join("runs")).unwrap();
+        editions_with_stories(&home, &[(1, &["https://x/lead", "https://x/a"])]);
+        // viewer-state.json survives the viewer's exit: it names the edition
+        // shown before the run took the pane
+        std::fs::write(
+            store::viewer_state_path(&home),
+            r#"{"version":1,"showing":1,"at":"2026-09-01T07:00:00+00:00"}"#,
+        )
+        .unwrap();
+        let mut app = news_app(Some(home.clone()), false);
+        app.state.workspaces[0].test_add_tab(Some("other"));
+        news_tab_at(&mut app, 1);
+        app.state.switch_workspace_tab(0, 1);
+        app.news.assume_shell_busy = true;
+        let now = Instant::now();
+        app.news.run = Some(in_flight(NOW, now));
+        app.handle_news_tasks(now);
+        assert_eq!(
+            app.news.last_read_edition, None,
+            "the busy pane is the runner's, not the viewer's"
+        );
+        app.news.run = None;
+        assert!(app.handle_news_tasks(now + READ_CHECK_INTERVAL));
+        assert_eq!(
+            app.news.last_read_edition,
+            Some(1),
+            "read once the pane is the viewer's again"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 

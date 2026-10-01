@@ -45,6 +45,7 @@ nothing (ISIG is off), so the tab cannot be quit by accident; only herdr's priva
 CSI 9999 ~ (HERDR_QUIT) ends the viewer, and herdr sends it before typing the next command.
 """
 import difflib, json, os, re, select, signal, subprocess, sys, termios, time, tty, unicodedata
+from collections import OrderedDict
 from datetime import datetime, timedelta
 
 # ------------------------------------------------------------------ arguments
@@ -164,7 +165,7 @@ def compute_marks(page, baseline, history, first_seen=None):
                 state, old = "upd", item_text(prev[key])
                 note = norm(it.get("what_changed", "")) if isinstance(it.get("what_changed"), str) else None
         t, rank = first.get(key, (None, None))
-        if state == "new": t, rank = at, 0              # new to the reader = this edition, whatever the log says
+        if state == "new" and key not in first: t, rank = at, 0   # no first-seen record: new to the reader = this edition
         MK[key] = dict(state=state, first=t, rank=rank, old=old, note=note)
     META["new"] = sum(1 for m in MK.values() if m["state"] == "new")
     META["upd"] = sum(1 for m in MK.values() if m["state"] == "upd")
@@ -788,12 +789,17 @@ def load_history(path):
         with open(idx) as f: return d, json.load(f).get("editions", [])
     except (OSError, json.JSONDecodeError): return d, []
 
-PAGES = {}
+PAGES = OrderedDict()   # path -> page, most recently used last
+PAGES_MAX = 8           # the shown and baseline pages plus a few neighbours; a history scan streams through
 def read_page(path):
-    """An edition file, cached by path (edition files never change once written)."""
-    if path not in PAGES:
-        with open(path) as f: PAGES[path] = json.load(f)
-    return PAGES[path]
+    """An edition file, cached by path (edition files never change once written); the cache is bounded."""
+    if path in PAGES:
+        PAGES.move_to_end(path)
+        return PAGES[path]
+    with open(path) as f: pg = json.load(f)
+    PAGES[path] = pg
+    while len(PAGES) > PAGES_MAX: PAGES.popitem(last=False)
+    return pg
 
 def edition_page(i):
     e = HIST["eds"][i]
@@ -869,11 +875,15 @@ def open_edition(i):
     page = edition_page(i)
     j = baseline_index(i)
     base = edition_page(j) if j is not None else None
-    history = []
-    for k in range(i + 1):
-        try: history.append((ed_time(eds[k]), edition_page(k)))
-        except (OSError, json.JSONDecodeError): pass
-    compute_marks(page, base, history, first_seen_map(i))
+    first = first_seen_map(i)
+    if first:
+        history = [(ed_time(eds[i]), page)]          # the runner's log ranks the stories: no scan
+    else:
+        history = []                                 # no first_seen.json: scan the editions up to this one
+        for k in range(i + 1):
+            try: history.append((ed_time(eds[k]), edition_page(k)))
+            except (OSError, json.JSONDecodeError): pass
+    compute_marks(page, base, history, first)
     HIST["cur"] = i
     note_showing(eds[i].get("edition"))
     return page

@@ -9,7 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { Overlay, Companion, OVERLAY_JS } from '../src/integration/assets/browser/activity.mjs';
+import { Overlay, Companion, OVERLAY_JS, dismissPanes } from '../src/integration/assets/browser/activity.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function check(cond, msg) { if (!cond) { console.error(`FAIL: ${msg}`); process.exit(1); } }
@@ -59,6 +59,30 @@ evals.length = 0;
 await overlay.dismiss();
 check(evals.length === 0, 'a second dismiss has nothing to do');
 check(overlay.linger.length === 1 && (() => { const o = new Overlay({ session }); o.linger(undefined); const ok = o.until > Date.now() + 100000; o.dispose(); return ok; })(), 'no window in the directive: the default one');
+check((() => { const o = new Overlay({ session }); o.linger('x'); const ok = o.until > Date.now() + 100000; o.dispose(); return ok; })(), 'a window that is not a number: the default one');
+{
+  // an explicit 0 is no linger: the frame goes right after the op
+  const zero = new Overlay({ session });
+  await zero.show();
+  evals.length = 0;
+  zero.linger(0);
+  check(zero.until <= Date.now(), 'linger(0) ends the window now');
+  await sleep(20);
+  check(evals.some((e) => e.includes('hide(false)')), 'and the frame is hidden at once');
+  zero.dispose();
+}
+{
+  // a pane is gone while the companion is not ready and its tab was never grouped: the overlay still goes
+  const gone = [];
+  const page = (key, closed = false) => ({ paneKey: key, closed, overlay: { dismiss() { gone.push(key); return Promise.resolve(); } } });
+  const profiles = [
+    { companion: { state: 'missing' }, pages: new Map([['t1', page('w1:p1')], ['t2', page('w1:p2')], ['t3', page('w1:p1', true)], ['t4', page(null)]]) },
+    { companion: { state: 'ready' }, pages: new Map([['t5', page('w1:p1')]]) },
+    { companion: { state: 'ready' } },
+  ];
+  const n = dismissPanes(profiles, ['w1:p1']);
+  check(n === 2 && gone.length === 2 && gone.every((k) => k === 'w1:p1'), `release dismisses the pane's pages in every profile, grouped or not, companion or not: ${n} ${JSON.stringify(gone)}`);
+}
 
 // ------------------------------------------------------------- the companion
 const calls = [];

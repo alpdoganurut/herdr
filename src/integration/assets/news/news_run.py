@@ -458,7 +458,7 @@ def main(argv=None):
         return desk(a, home, run_dir, stamp, started, record, finish)
     except KeyboardInterrupt:
         print()
-        record["errors"] = ["interrupted by the user"]
+        record["errors"] = ["interrupted by the user"]  # USER_INTERRUPT_ERROR in src/app/news.rs: not counted as a failure
         finish("interrupted", 130)
         view(home, a)
         return 130

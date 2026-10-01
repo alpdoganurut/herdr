@@ -68,8 +68,11 @@ pub struct BrowserConfig {
     /// Whether agents may type into password fields. Default: false (the user
     /// logs in by hand).
     pub type_into_password_fields: bool,
-    /// A herdr tab whose pane touched the browser within this many seconds
-    /// wears the `◎` glyph in the tabs sidebar. Default: 120.
+    /// The activity window: a herdr tab whose pane used the browser within
+    /// this many seconds wears the `◎` glyph in the tabs sidebar, the page
+    /// frame and cursor stay on the tabs that pane worked on for as long, and
+    /// its tab group keeps the `●` mark in its title and stays expanded for
+    /// as long. Default: 120.
     pub active_glyph_secs: u64,
     /// How long a launch may take to answer `/json/version`. 3000..=120000 ms.
     pub launch_timeout_ms: u64,

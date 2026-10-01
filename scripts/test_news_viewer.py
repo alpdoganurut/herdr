@@ -121,6 +121,45 @@ class MarkerLogic(unittest.TestCase):
         self.assertEqual(v.MK["https://ex.test/a"]["rank"], 2)
         self.assertEqual(v.MK["https://ex.test/b"]["rank"], 1)
 
+    def test_a_new_story_keeps_its_real_first_seen_time(self):
+        # last read = edition 1: b (first seen in edition 2) and c (edition 3) are both new on edition 3,
+        # but b's chip and rank come from the runner's log, not from the edition on screen
+        v = self.v
+        with open(os.path.join(self.dir, "read.json"), "w") as f: json.dump({"version": 1, "last_read_edition": 1}, f)
+        v.open_edition(2)
+        eds = v.HIST["eds"]
+        b, c = v.MK["https://ex.test/b"], v.MK["https://ex.test/c"]
+        self.assertEqual((b["state"], c["state"]), ("new", "new"))
+        self.assertEqual(b["first"], v.local(eds[1]["at"]))
+        self.assertEqual(b["rank"], 1)
+        self.assertEqual(c["first"], v.local(eds[2]["at"]))
+        self.assertEqual(c["rank"], 0)
+        # without a first-seen record the shown edition stands in
+        os.remove(os.path.join(self.dir, "first_seen.json"))
+        v.open_edition(2)
+        self.assertEqual(v.MK["https://ex.test/b"]["rank"], 1, "the history scan also knows b")
+
+    def test_open_edition_loads_only_what_it_needs_and_the_page_cache_is_bounded(self):
+        v = self.v
+        eds = v.HIST["eds"]
+        path = lambda k: os.path.join(v.HIST["dir"], eds[k]["path"])
+        v.PAGES.clear()
+        v.open_edition(2)
+        self.assertEqual(set(v.PAGES), {path(2), path(1)}, "the shown and the baseline page only (first_seen.json ranks the rest)")
+        os.remove(os.path.join(self.dir, "first_seen.json"))
+        v.PAGES.clear()
+        v.open_edition(2)
+        self.assertEqual(set(v.PAGES), {path(0), path(1), path(2)}, "no log: every edition up to the shown one")
+        saved = v.PAGES_MAX
+        try:
+            v.PAGES_MAX = 2
+            v.PAGES.clear()
+            v.open_edition(2)
+            self.assertLessEqual(len(v.PAGES), 2, "the cache never grows past PAGES_MAX")
+            self.assertEqual(v.MK["https://ex.test/a"]["rank"], 2, "the scan still ranked every story")
+        finally:
+            v.PAGES_MAX = saved
+
     def test_chips_and_buckets_follow_the_first_seen_time(self):
         v = self.v
         v.open_edition(2)

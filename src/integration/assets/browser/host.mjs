@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes } from './activity.mjs';
 
 const require = createRequire(import.meta.url);
 // Real functions for page.evaluate: a string would be evaluated as an expression (yielding the function,
@@ -64,6 +64,7 @@ class PageState {
     this.dialog = null;
     this.inflight = 0;
     this.closed = false;
+    this.paneKey = null; // the agent pane whose directive last touched this page
     this.overlay = new Overlay(this);
     this.overlay.log = (text) => log('debug', text);
   }
@@ -786,11 +787,14 @@ const ops = {
     return { pushed };
   },
 
-  // Panes that are gone: their tab groups dissolve, in every attached profile.
-  // Keys that could not be released (no companion, an error) come back as
-  // `failed`, for herdr to retry later.
+  // Panes that are gone: the overlays on their pages go now (whatever the
+  // companion's state) and their tab groups dissolve, in every attached
+  // profile. Keys whose group could not be released (no companion, an
+  // error) come back as `failed`, for herdr to retry later.
   async release({ args }) {
     const keys = Array.isArray(args.keys) ? args.keys.filter((k) => typeof k === 'string' && k).map(String) : [];
+    const dismissed = dismissPanes(profiles.values(), keys);
+    if (dismissed) log('debug', `release: ${dismissed} overlay(s) dismissed`);
     const ready = [...profiles.values()].filter((profile) => profile.companion.state === 'ready');
     if (!ready.length) return { released: [], failed: keys, reason: 'companion not ready' };
     const failed = new Set();
@@ -900,6 +904,8 @@ function activityPage(name, target) {
   return state && !state.closed && !state.dialog ? state : null;
 }
 async function activityBegin(state, activity) {
+  // the pane this page belongs to, for `release` (independent of the companion's groups)
+  if (activity.group && activity.group.key) state.paneKey = String(activity.group.key);
   if (!activity.frame) return;
   await state.overlay.show(activity.color).catch((err) => log('debug', `overlay: ${err.message}`));
 }

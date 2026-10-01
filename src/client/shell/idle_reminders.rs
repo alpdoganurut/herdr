@@ -153,7 +153,6 @@ impl ClientShellState {
             .or_else(crate::platform::local_datetime)
     }
 
-    /// Important tabs that are waiting and unfocused, across every endpoint.
     /// The News tab's `important` is the desk's unread mark, not an agent
     /// waiting for the reader: reminders leave it alone. (Known only for the
     /// active endpoint, where `news.get` names the tab.)
@@ -171,6 +170,7 @@ impl ClientShellState {
                 == Some(tab_id)
     }
 
+    /// Important tabs that are waiting and unfocused, across every endpoint.
     fn waiting_important_tabs(&self) -> Vec<WaitingTab> {
         let mut waiting = Vec::new();
         for endpoint in &self.endpoints {

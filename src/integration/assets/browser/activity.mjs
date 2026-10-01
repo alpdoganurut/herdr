@@ -158,7 +158,8 @@ export class Overlay {
   }
   /** The op is done: the calmer look now, the fade at the end of the window (`ms`, the directive's `linger_ms`). */
   linger(ms) {
-    ms = Math.max(0, Number(ms) || LINGER_MS);
+    const n = Number(ms);
+    ms = Number.isFinite(n) && n >= 0 ? n : LINGER_MS; // an explicit 0 means no linger
     this.active = false;
     this.until = Date.now() + ms;
     this.eval('window.__herdrOverlay ? (__herdrOverlay.busy(false), "idle") : "absent"').catch(() => {});
@@ -204,6 +205,24 @@ export class Overlay {
     this.active = false;
     this.until = 0;
   }
+}
+
+/** Panes that are gone: the overlay of every page a pane's directive touched
+ *  (`state.paneKey`, recorded by the host when the directive arrived) goes
+ *  now — whatever the companion's state, grouped or not. Answers how many. */
+export function dismissPanes(profiles, keys) {
+  const wanted = new Set(keys.map(String));
+  let dismissed = 0;
+  for (const profile of profiles) {
+    if (!profile.pages) continue;
+    for (const state of profile.pages.values()) {
+      if (!state.closed && state.paneKey && wanted.has(state.paneKey) && state.overlay) {
+        state.overlay.dismiss();
+        dismissed++;
+      }
+    }
+  }
+  return dismissed;
 }
 
 /** The companion extension of one profile: the worker connection, target → tab ids, the pane groups. */

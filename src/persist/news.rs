@@ -39,7 +39,6 @@ pub const PAGE_FILE: &str = "page.json";
 pub const MAX_HISTORY: usize = 50;
 const FILE_VERSION: u32 = 1;
 
-/// The record for the active session: next to its `session.json`.
 /// The current time as an ISO 8601 UTC string (seconds).
 pub fn unix_now_iso() -> String {
     let secs = std::time::SystemTime::now()
@@ -49,6 +48,7 @@ pub fn unix_now_iso() -> String {
     crate::app::news::iso_utc(secs)
 }
 
+/// The record for the active session: next to its `session.json`.
 pub fn store_path() -> PathBuf {
     crate::session::data_dir().join(FILE_NAME)
 }
@@ -344,12 +344,23 @@ pub fn viewer_showing(home: &Path) -> Option<u32> {
         .and_then(|n| u32::try_from(n).ok())
 }
 
+/// When `viewer-state.json` was last written (`None` without the file).
+pub fn viewer_state_mtime(home: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(viewer_state_path(home))
+        .and_then(|m| m.modified())
+        .ok()
+}
+
 /// The story keys (url, else the headline) of an edition file, by edition
-/// number; `None` when the index has no such edition or the file is unreadable.
-pub fn edition_story_keys(home: &Path, edition: u32) -> Option<std::collections::HashSet<String>> {
-    let entry = read_editions(home)
-        .into_iter()
-        .find(|e| e.edition == edition)?;
+/// number, against an index already read (one read serves both editions of
+/// a count); `None` when the index has no such edition or the file is
+/// unreadable.
+pub fn edition_story_keys_in(
+    home: &Path,
+    editions: &[NewsEditionInfo],
+    edition: u32,
+) -> Option<std::collections::HashSet<String>> {
+    let entry = editions.iter().find(|e| e.edition == edition)?;
     let path = home.join("editions").join(&entry.path);
     let text = fs::read_to_string(path).ok()?;
     let page: serde_json::Value = serde_json::from_str(&text).ok()?;
@@ -397,8 +408,21 @@ pub fn new_story_count(home: &Path, latest: u32, baseline: u32) -> Option<u32> {
     if baseline >= latest {
         return Some(0);
     }
-    let now = edition_story_keys(home, latest)?;
-    let before = edition_story_keys(home, baseline)?;
+    new_story_count_in(home, &read_editions(home), latest, baseline)
+}
+
+/// `new_story_count` against an index already read.
+pub fn new_story_count_in(
+    home: &Path,
+    editions: &[NewsEditionInfo],
+    latest: u32,
+    baseline: u32,
+) -> Option<u32> {
+    if baseline >= latest {
+        return Some(0);
+    }
+    let now = edition_story_keys_in(home, editions, latest)?;
+    let before = edition_story_keys_in(home, editions, baseline)?;
     Some(now.difference(&before).count() as u32)
 }
 
@@ -824,7 +848,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            edition_story_keys(home, 2)
+            edition_story_keys_in(home, &read_editions(home), 2)
                 .unwrap()
                 .into_iter()
                 .collect::<Vec<_>>(),
