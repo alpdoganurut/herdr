@@ -468,7 +468,9 @@ export class Companion {
     if (!reply || reply.skipped) return;
     g.tabs.add(tabId);
     if (g.timer) clearTimeout(g.timer);
-    const ms = Math.max(1000, Number(group.collapse_ms) || 120000);
+    // the directive's window as it is (0: the group collapses and loses its mark right after the touch); missing or not a number: the default
+    const n = Number(group.collapse_ms);
+    const ms = Number.isFinite(n) && n >= 0 ? n : 120000;
     g.timer = setTimeout(() => {
       g.timer = null;
       // (a stale v10 worker reads a bare key only; it keeps the plain title anyway)
