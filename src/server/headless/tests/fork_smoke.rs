@@ -844,6 +844,15 @@ async fn news_notification_waits_for_a_client_shell_and_reaches_it_on_attach() {
 
     let (mut server, _rx) = server_with_claude(None);
     server.app.news.home = Some(home.clone());
+    // A fixed local clock (noon): the real one would land inside the default
+    // quiet hours 00:00-08:00 at night and hold the notification.
+    server.app.news.local_override = Some((
+        crate::app::news::LocalClock {
+            minute_of_day: 12 * 60,
+            second: 0,
+        },
+        "2026-09-29",
+    ));
     server.app.state.workspaces[0].tabs[0].set_custom_name("News".into());
     server.app.news.tab_id = server.app.public_tab_id(0, 0);
     let news_pane = server.app.public_pane_id(0, root_pane(&server)).unwrap();
