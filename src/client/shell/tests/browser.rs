@@ -337,6 +337,8 @@ fn the_browser_row_sits_above_the_news_row_and_news_keeps_its_row() {
         unread: false,
         consecutive_failures: 0,
         pending_notifications: 0,
+        last_read_edition: None,
+        new_stories: None,
     });
     let frame = state.compose(106, 20).expect("composed frame");
     let browser = state.hits.browser_row;
@@ -675,6 +677,8 @@ fn with_room_for_one_pinned_row_news_keeps_it() {
         unread: false,
         consecutive_failures: 0,
         pending_notifications: 0,
+        last_read_edition: None,
+        new_stories: None,
     };
     // Growing heights: the first that shows a pinned row shows News alone.
     let mut seen_single = false;

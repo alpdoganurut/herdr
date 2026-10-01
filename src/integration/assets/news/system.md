@@ -40,7 +40,8 @@ paper each time: you are revising a living page and keeping notes for your next 
   "sections": [
     {"title": "Top", "items": [
       {"head": "...", "text": "...", "url": "https://...", "source": "Publisher",
-       "time": "ISO 8601 with offset", "read": true}
+       "time": "ISO 8601 with offset", "read": true,
+       "changed": true, "what_changed": "one line: what is different since the last edition"}
     ]}
   ]
 }
@@ -55,6 +56,10 @@ paper each time: you are revising a living page and keeping notes for your next 
 - `source`: the publisher's name as a reader would say it.
 - `time`: when the story was published, ISO 8601 with offset.
 - `since_last_run`: 0 to 6 short lines on what changed versus `previous-page.json`, newest first.
+- `changed` + `what_changed` (optional, carried-over stories only): when a story that was already in
+  `previous-page.json` has new substance — a correction, a new number, a development — set
+  `"changed": true` and say in one line (up to 30 words) what is different. Leave both out for a story
+  that merely moved or was reworded; the reader's page marks such stories as updated on its own.
 
 ### `out/notes.md`
 

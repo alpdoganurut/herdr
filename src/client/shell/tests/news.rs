@@ -62,6 +62,8 @@ fn info(tab_id: Option<&str>) -> NewsGetInfo {
         unread: false,
         consecutive_failures: 0,
         pending_notifications: 0,
+        last_read_edition: None,
+        new_stories: None,
     }
 }
 
@@ -257,6 +259,31 @@ fn the_row_shows_running_unread_failed_and_paused_in_that_order() {
     let frame = state.compose(106, 20).expect("composed frame");
     let text = row_text(&frame, state.hits.news_row);
     assert!(text.contains("paused"), "no run yet: {text:?}");
+}
+
+#[test]
+fn the_unread_row_counts_new_stories_when_news_get_has_them() {
+    let mut state = tabs_state(news_snapshot());
+    state.compose(106, 20).expect("composed frame");
+    let mut snapshot = news_snapshot();
+    snapshot.tabs[1].important = true;
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let mut counted = info(Some("tab_2"));
+    counted.last_read_edition = Some(2);
+    counted.new_stories = Some(3);
+    deliver(&mut state, counted);
+    let frame = state.compose(106, 20).expect("composed frame");
+    let text = row_text(&frame, state.hits.news_row);
+    assert!(text.contains("3 new"), "{text:?}");
+    assert!(text.trim_start().starts_with('●'), "{text:?}");
+    // zero new (the important mark is older than the count) falls back to "unread"
+    let mut zero = info(Some("tab_2"));
+    zero.new_stories = Some(0);
+    state.news.info = Some(zero);
+    let frame = state.compose(106, 20).expect("composed frame");
+    let text = row_text(&frame, state.hits.news_row);
+    assert!(text.contains("unread"), "{text:?}");
 }
 
 #[test]

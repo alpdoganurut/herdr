@@ -166,6 +166,14 @@ pub struct NewsGetInfo {
     /// Notifications waiting for a client shell or the end of quiet hours.
     #[serde(default)]
     pub pending_notifications: u32,
+    /// The last edition the reader looked at in the News tab (recorded when
+    /// the tab is focused with the viewer showing it); absent until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_read_edition: Option<u32>,
+    /// Stories in the latest edition that were not in `last_read_edition`
+    /// (by url); absent without a last-read edition or an index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_stories: Option<u32>,
 }
 
 /// `news.open`: focus the News tab; with `edition`, show that edition.
@@ -391,6 +399,8 @@ mod tests {
             unread: true,
             consecutive_failures: 0,
             pending_notifications: 1,
+            last_read_edition: None,
+            new_stories: None,
         };
         let result = ResponseResult::NewsGet { news: info.clone() };
         let json = serde_json::to_value(&result).unwrap();

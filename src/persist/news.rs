@@ -40,6 +40,15 @@ pub const MAX_HISTORY: usize = 50;
 const FILE_VERSION: u32 = 1;
 
 /// The record for the active session: next to its `session.json`.
+/// The current time as an ISO 8601 UTC string (seconds).
+pub fn unix_now_iso() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    crate::app::news::iso_utc(secs)
+}
+
 pub fn store_path() -> PathBuf {
     crate::session::data_dir().join(FILE_NAME)
 }
@@ -201,6 +210,10 @@ pub struct NewsRecord {
     pub run: Option<PersistedNewsRun>,
     pub consecutive_failures: u32,
     pub notify: NewsNotifyRecord,
+    /// The last edition the reader looked at (the News tab focused with the
+    /// viewer showing it). Absent in files written before the markers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_read_edition: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -219,6 +232,7 @@ struct StoreFileIn {
     run: Option<serde_json::Value>,
     consecutive_failures: u32,
     notify: Option<serde_json::Value>,
+    last_read_edition: Option<u32>,
 }
 
 /// Load the record. Never fails: a missing, unreadable or corrupt file is
@@ -297,7 +311,95 @@ pub fn load(path: &Path) -> NewsRecord {
         run,
         consecutive_failures: file.consecutive_failures,
         notify,
+        last_read_edition: file.last_read_edition,
     }
+}
+
+/// `<home>/read.json`: herdr's record of the last edition read, mirrored
+/// beside the editions for the viewer (its "since you read" baseline).
+pub fn read_record_path(home: &Path) -> PathBuf {
+    home.join("read.json")
+}
+
+/// `<home>/viewer-state.json`: what the viewer has on screen.
+pub fn viewer_state_path(home: &Path) -> PathBuf {
+    home.join("viewer-state.json")
+}
+
+pub fn write_read_record(home: &Path, edition: u32) -> io::Result<()> {
+    let path = read_record_path(home);
+    let tmp = home.join(".read.json.tmp");
+    let text = serde_json::json!({ "version": 1, "last_read_edition": edition, "at": super::news::unix_now_iso() }).to_string();
+    fs::write(&tmp, text)?;
+    fs::rename(&tmp, &path)
+}
+
+/// The edition the viewer says it is showing (`viewer-state.json`), if any.
+pub fn viewer_showing(home: &Path) -> Option<u32> {
+    let text = fs::read_to_string(viewer_state_path(home)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value
+        .get("showing")?
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+}
+
+/// The story keys (url, else the headline) of an edition file, by edition
+/// number; `None` when the index has no such edition or the file is unreadable.
+pub fn edition_story_keys(home: &Path, edition: u32) -> Option<std::collections::HashSet<String>> {
+    let entry = read_editions(home)
+        .into_iter()
+        .find(|e| e.edition == edition)?;
+    let path = home.join("editions").join(&entry.path);
+    let text = fs::read_to_string(path).ok()?;
+    let page: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let key = |item: &serde_json::Value| -> Option<String> {
+        if let Some(url) = item
+            .get("url")
+            .and_then(|u| u.as_str())
+            .filter(|u| !u.is_empty())
+        {
+            return Some(url.to_string());
+        }
+        let head = item.get("head")?.as_str()?;
+        let head = head
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        (!head.is_empty()).then_some(head)
+    };
+    let mut keys = std::collections::HashSet::new();
+    if let Some(lead) = page.get("lead").filter(|l| l.is_object()) {
+        keys.extend(key(lead));
+    }
+    for section in page
+        .get("sections")
+        .and_then(|s| s.as_array())
+        .into_iter()
+        .flatten()
+    {
+        for item in section
+            .get("items")
+            .and_then(|i| i.as_array())
+            .into_iter()
+            .flatten()
+        {
+            keys.extend(key(item));
+        }
+    }
+    Some(keys)
+}
+
+/// Stories in `latest` that are not in `baseline` (by key); `None` when either
+/// edition cannot be read.
+pub fn new_story_count(home: &Path, latest: u32, baseline: u32) -> Option<u32> {
+    if baseline >= latest {
+        return Some(0);
+    }
+    let now = edition_story_keys(home, latest)?;
+    let before = edition_story_keys(home, baseline)?;
+    Some(now.difference(&before).count() as u32)
 }
 
 /// Write the record atomically (a temporary file in the same directory,
@@ -516,6 +618,7 @@ mod tests {
 
     fn record() -> NewsRecord {
         NewsRecord {
+            last_read_edition: None,
             last_started_at: Some(1_799_990_000),
             tab_id: Some("w_1:t_3".into()),
             pane_id: Some("w_1:p_4".into()),
@@ -672,6 +775,87 @@ mod tests {
         let back = read_history(&home, 1);
         assert_eq!(back[0].notify, record.notify);
         assert_eq!(back[0].summary.as_deref(), Some("One launch."));
+    }
+
+    #[test]
+    fn new_story_count_reads_both_edition_files_and_the_read_record_round_trips() {
+        let dir = TempDir::new("new-count");
+        let home = dir.0.as_path();
+        std::fs::create_dir_all(home.join("editions/2026-10-01")).unwrap();
+        let page = |urls: &[&str]| {
+            serde_json::json!({
+                "edition": 1,
+                "lead": { "head": "Lead", "url": urls[0] },
+                "sections": [{ "title": "T", "items": urls[1..].iter().map(|u| serde_json::json!({ "head": "H", "url": u })).collect::<Vec<_>>() }]
+            })
+            .to_string()
+        };
+        std::fs::write(
+            home.join("editions/2026-10-01/0800-e0001.json"),
+            page(&["https://x/lead", "https://x/a"]),
+        )
+        .unwrap();
+        std::fs::write(
+            home.join("editions/2026-10-01/1300-e0002.json"),
+            page(&["https://x/lead", "https://x/b", "https://x/c"]),
+        )
+        .unwrap();
+        std::fs::write(
+            editions_index_path(home),
+            r#"{"version":1,"editions":[{"edition":1,"path":"2026-10-01/0800-e0001.json","at":"2026-10-01T05:00:00+00:00","day":"2026-10-01"},{"edition":2,"path":"2026-10-01/1300-e0002.json","at":"2026-10-01T10:00:00+00:00","day":"2026-10-01"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            new_story_count(home, 2, 1),
+            Some(2),
+            "b and c are new; the lead carried over"
+        );
+        assert_eq!(new_story_count(home, 1, 1), Some(0));
+        assert_eq!(
+            new_story_count(home, 1, 2),
+            Some(0),
+            "an older edition has nothing new"
+        );
+        assert_eq!(new_story_count(home, 3, 1), None, "no such edition");
+        // a headline keys a story without a url
+        std::fs::write(
+            home.join("editions/2026-10-01/1300-e0002.json"),
+            r#"{"lead":{"head":" Two  Words "},"sections":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            edition_story_keys(home, 2)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["two words".to_string()]
+        );
+        // read.json and viewer-state.json
+        assert_eq!(viewer_showing(home), None);
+        std::fs::write(
+            viewer_state_path(home),
+            r#"{"version":1,"showing":2,"at":"x"}"#,
+        )
+        .unwrap();
+        assert_eq!(viewer_showing(home), Some(2));
+        write_read_record(home, 2).unwrap();
+        let text = std::fs::read_to_string(read_record_path(home)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["last_read_edition"], 2);
+        assert_eq!(value["version"], 1);
+        // the persisted record carries last_read_edition and tolerates its absence
+        let mut record = record();
+        record.last_read_edition = Some(7);
+        save(&home.join("news.json"), &record).unwrap();
+        assert_eq!(load(&home.join("news.json")).last_read_edition, Some(7));
+        std::fs::write(
+            home.join("news.json"),
+            r#"{"version":1,"consecutive_failures":2}"#,
+        )
+        .unwrap();
+        let loaded = load(&home.join("news.json"));
+        assert_eq!(loaded.last_read_edition, None);
+        assert_eq!(loaded.consecutive_failures, 2);
     }
 
     #[test]

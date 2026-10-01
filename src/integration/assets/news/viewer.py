@@ -1,23 +1,41 @@
 #!/usr/bin/env python3
-"""herdr AI news viewer: the page set like a leaf from an old almanac.
+"""herdr AI news viewer: the page set like a leaf from an old almanac, with a timeline spine.
 
 One idea: marginalia. At 100+ columns the source and time of every story are
 set as side notes in the outer margin, aligned with the headline; at 160+ the
 page opens into a two-page spread with a gutter, notes in the outer margins of
 each leaf. Below 100 columns the notes fall inline under each story.
 
+What's new since you read: every story carries a chip in a left-hand spine saying
+when it first appeared in the paper (13:03, 11:18 … yest.), so newness reads as a
+gradient — this edition in rust on a tinted ground, the one you last read in gold,
+older ones fading into the rule colour. Stories that were not in the edition you
+last read get a ● node and a rust rail beside the whole story; stories whose text
+changed (or that the editor flagged `changed`) get a ◑ node, the editor's "what
+changed" note and a one-line word diff (old words struck, new ones gold). The title
+page says "● N new ◑ M updated since you read the HH:MM edition" over a first-seen
+ribbon with its legend; section rules carry per-section counts; the footer keeps
+the tally.
+
+Data beside page.json (the news home): editions/index.json and the edition files;
+first_seen.json (the runner's url → first edition/time map; without it the spine
+falls back to scanning the editions); read.json (herdr's record of the last edition
+you read: {"last_read_edition": N}); viewer-state.json (written here: the edition on
+screen, so herdr can record what you read when the News tab is focused).
+
 Everything else is quiet: a title page with fleurons, a rust drop cap on the
 lead, justified body text, ornamental section rules, a manicule (☞) pointing at
 the selected story, and a folio line at the bottom (theme, edition, leaf).
 
-Editions: editions/index.json beside page.json. Left/right step days, up/down step editions,
-l jumps to the latest; j/k, the mouse wheel, space/b and PgUp/PgDn scroll.
+Editions: left/right step days, up/down step editions, l jumps to the latest;
+j/k, the mouse wheel, space/b and PgUp/PgDn scroll.
 
 Usage: python3 viewer.py page.json [--edition N] [--theme T]   interactive
        python3 viewer.py page.json --pinned                     in herdr's News tab (see below)
        python3 viewer.py page.json --dump W                     print the page at width W
 
 Keys: j/k or the mouse wheel scroll, space/b or PgDn/PgUp leaf forward/back, g/G top/bottom,
+n/N next/previous new-or-updated story, u new-only on/off (folded count shown),
 left/right previous/next day, up/down previous/next edition, l the latest edition,
 tab/shift-tab select a story, enter opens it in the browser, t cycles the theme (saved
 beside page.json), r reloads, q quits. The page re-reads itself when a new edition lands.
@@ -26,8 +44,8 @@ Pinned (--pinned, how herdr runs it in the News tab): q, Esc and Ctrl-C/Ctrl-Z/C
 nothing (ISIG is off), so the tab cannot be quit by accident; only herdr's private sequence
 CSI 9999 ~ (HERDR_QUIT) ends the viewer, and herdr sends it before typing the next command.
 """
-import json, os, re, select, signal, subprocess, sys, termios, time, tty, unicodedata
-from datetime import datetime
+import difflib, json, os, re, select, signal, subprocess, sys, termios, time, tty, unicodedata
+from datetime import datetime, timedelta
 
 # ------------------------------------------------------------------ arguments
 def parse_args(argv):
@@ -88,15 +106,148 @@ def save_theme(name):
         with open(THEME_FILE[0], "w") as f: f.write(name)
     except OSError: pass
 
-def sgr(fg=None, bold=False, italic=False, bg=None):
+def col(c): return C[c] if isinstance(c, str) else c
+
+def mix(a, b, t):
+    """Blend two colours (palette keys or rgb tuples), t=0 -> a, t=1 -> b."""
+    a, b = col(a), col(b)
+    return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
+
+def sgr(fg=None, bold=False, italic=False, bg=None, strike=False):
     p = ["0"]
     if bold: p.append("1")
     if italic: p.append("3")
-    if fg: p.append("38;2;%d;%d;%d" % C[fg])
-    if bg: p.append("48;2;%d;%d;%d" % C[bg])
+    if strike: p.append("9")
+    if fg: p.append("38;2;%d;%d;%d" % col(fg))
+    if bg: p.append("48;2;%d;%d;%d" % col(bg))
     elif "page" in C: p.append("48;2;%d;%d;%d" % C["page"])
     return "\x1b[" + ";".join(p) + "m"
 
+# ------------------------------------------------------------------ the "new" layer: first-seen times
+# MK: story key -> dict(state='new'|'upd'|None, first=datetime|None, rank=editions ago (0 = this one),
+#     old=previous text for 'upd', note=the editor's "what changed" line). META: since (datetime of the
+#     baseline), ref (date of this edition), at (datetime of this edition), buckets [(label, rank, count)].
+MK = {}
+META = {"since": None, "ref": None, "at": None, "buckets": [], "new": 0, "upd": 0}
+FILTER = [False]                              # u: show only new + updated
+STATES = []                                   # per displayed story index, filled by build()
+
+def item_key(it):
+    """A story's identity across editions: its url, else its headline without spacing/case noise."""
+    return it.get("url") or norm(it.get("head", "")).lower()
+def norm(t): return " ".join((t or "").split())
+def all_items(page):
+    out = [page["lead"]] if page.get("lead") else []
+    for s in page.get("sections", []): out += s.get("items", [])
+    return out
+def item_text(it): return norm(it.get("standfirst", "") + " " + it.get("text", ""))
+
+def compute_marks(page, baseline, history, first_seen=None):
+    """page: the edition shown. baseline: the page last read (None: nothing is new).
+    history: [(datetime, page)] for editions up to and including this one, oldest first (the
+    fallback source of first-seen times). first_seen: {key: (datetime, rank)} from the runner's
+    first_seen.json, when it is there."""
+    MK.clear()
+    at = local(page.get("updated", "")) or (history[-1][0] if history else None)
+    META.update(at=at, ref=at.date() if at else None, since=local(baseline.get("updated", "")) if baseline else None)
+    first = dict(first_seen or {})
+    if not first:
+        for k, (t, pg) in enumerate(history):
+            for it in all_items(pg): first.setdefault(item_key(it), (t, len(history) - 1 - k))
+    prev = {item_key(it): it for it in all_items(baseline)} if baseline else None
+    for it in all_items(page):
+        key = item_key(it)
+        state, old, note = None, None, None
+        if prev is not None:
+            if key not in prev: state = "new"
+            elif item_text(prev[key]) != item_text(it) or it.get("changed") is True:
+                state, old = "upd", item_text(prev[key])
+                note = norm(it.get("what_changed", "")) if isinstance(it.get("what_changed"), str) else None
+        t, rank = first.get(key, (None, None))
+        if state == "new": t, rank = at, 0              # new to the reader = this edition, whatever the log says
+        MK[key] = dict(state=state, first=t, rank=rank, old=old, note=note)
+    META["new"] = sum(1 for m in MK.values() if m["state"] == "new")
+    META["upd"] = sum(1 for m in MK.values() if m["state"] == "upd")
+    # first-seen buckets: each edition of this day on its own, everything older in one "yest." / "older"
+    b = {}
+    for m in MK.values():
+        lab = chip_label(m["first"])
+        r = m["rank"] if m["rank"] is not None else 99
+        lab0, r0, n0 = b.get(lab, (lab, r, 0))
+        b[lab] = (lab, min(r, r0), n0 + 1)
+    META["buckets"] = sorted(b.values(), key=lambda x: x[1])
+
+def chip_label(t):
+    if t is None: return "older"
+    ref = META["ref"]
+    if ref is None or t.date() == ref: return t.strftime("%H:%M")
+    if t.date() == ref - timedelta(days=1): return "yest."
+    return t.strftime("%a")
+
+def age_colour(m):
+    """The gradient: this edition rust, the last-read one gold, then note, dim, rule."""
+    r = m.get("rank")
+    if m.get("state") == "new" or r == 0: return col("rust")
+    if r is None: return col("rule")
+    if META["ref"] and m["first"] and m["first"].date() < META["ref"]:
+        return mix("dim", "rule", 0.55)
+    stops = [col("rust"), col("gold"), mix("gold", "note", 0.6), col("note"), mix("note", "dim", 0.6), col("dim")]
+    return stops[min(r, len(stops) - 1)]
+
+CHIP = 6                                      # chip cells; the spine is CHIP + " " + node + " "
+SPINE = CHIP + 3
+
+def spine(m, n, body):
+    """The spine segments for row n of a story (n=0: headline row). body: row belongs to the story."""
+    if m is None: return [seg(" " * (CHIP + 1)), seg("│", sgr("rule")), seg(" ")]
+    st = m.get("state")
+    c = age_colour(m)
+    if n == 0:
+        if st == "new":
+            lab = chip_label(m["first"])
+            chip = [seg(" " * (CHIP - width(lab))), seg(lab, sgr(c, bold=True, bg=mix("page", "rust", 0.20)))]
+            node = seg("●", sgr("rust", bold=True))
+        elif st == "upd":
+            lab = "↻" + (META["at"].strftime("%H:%M") if META["at"] else "")
+            chip = [seg(" " * (CHIP - width(lab))), seg(lab, sgr("gold", bg=mix("page", "gold", 0.14)))]
+            node = seg("◑", sgr("gold", bold=True))
+        else:
+            lab = chip_label(m["first"])
+            chip = [seg(" " * (CHIP - width(lab))), seg(lab, sgr(c))]
+            node = seg("○" if (m.get("rank") or 0) > 1 or lab == "yest." else "◦", sgr(c))
+            if m.get("rank") == 1: node = seg("○", sgr("gold"))
+        return chip + [seg(" "), node, seg(" ")]
+    if body and st == "new": rail = seg("┃", sgr(mix("rust", "page", 0.25)))
+    elif body and st == "upd": rail = seg("┃", sgr(mix("gold", "page", 0.35)))
+    else: rail = seg("│", sgr("rule"))
+    return [seg(" " * (CHIP + 1)), rail, seg(" ")]
+
+def word_diff(old, new, T):
+    """One line: a little context, the removed words struck through, the added words in gold."""
+    a, b = old.split(), new.split()
+    ops = [o for o in difflib.SequenceMatcher(None, a, b).get_opcodes() if o[0] != "equal"]
+    if not ops: return []
+    i1, j1 = ops[0][1], ops[0][3]
+    i2, j2 = ops[-1][2], ops[-1][4]
+    if (i2 - i1) + (j2 - j1) > 24:            # a rewrite, not an edit: show the first change only
+        i2, j2 = ops[0][2], ops[0][4]
+    ctx = 2
+    out = []
+    if i1 - ctx > 0: out.append(seg("… ", sgr("dim")))
+    out.append(seg(" ".join(a[max(0, i1 - ctx):i1]) + " ", sgr("dim", italic=True)))
+    for tag, x1, x2, y1, y2 in difflib.SequenceMatcher(None, a[i1:i2], b[j1:j2]).get_opcodes():
+        if tag == "equal": out.append(seg(" ".join(a[i1 + x1:i1 + x2]) + " ", sgr("dim", italic=True))); continue
+        if x2 > x1: out.append(seg(" ".join(a[i1 + x1:i1 + x2]), sgr("dim", strike=True))); out.append(seg(" "))
+        if y2 > y1: out.append(seg(" ".join(b[j1 + y1:j1 + y2]), sgr("gold"))); out.append(seg(" "))
+    out.append(seg(" ".join(b[j2:j2 + ctx]), sgr("dim", italic=True)))
+    if j2 + ctx < len(b): out.append(seg(" …", sgr("dim")))
+    # fit to T cells
+    fit, used = [], 0
+    for t, st, u in out:
+        if used + width(t) > T:
+            fit.append((cut_cells(t, max(0, T - used - 1)) + "…", st, u)); break
+        fit.append((t, st, u)); used += width(t)
+    return fit
 
 # ------------------------------------------------------------------ cells
 def width(s):
@@ -220,7 +371,7 @@ def wrap_plain(text, w):
 
 # ------------------------------------------------------------------ geometry
 def geometry(W):
-    gut = 2                                   # manicule gutter beside the text
+    gut = 2 + SPINE                           # timeline spine + manicule gutter beside the text
     if W >= 160:
         G = 7                                 # binding gutter between the leaves
         P = (W - 2 - G) // 2
@@ -252,6 +403,7 @@ def story_block(item, g, sel, idx, lead=False, sec=-1):
     hs = sgr("gold", bold=True, bg="sel") if selected else sgr("ink", bold=True)
     head = item.get("head", "")
     head_lines = [spaced(head)] if lead and width(spaced(head)) <= T else wrap_plain(head, T)
+    m = MK.get(item_key(item))
     for n, line in enumerate(head_lines):
         gutter = "☞ " if (selected and n == 0) else "  "
         if n == 0: heads.append((idx, len(rows)))
@@ -271,7 +423,20 @@ def story_block(item, g, sel, idx, lead=False, sec=-1):
     elif body:
         for line in paragraph(body, T):
             rows.append(("  ", [seg(line, sgr("body"))], None))
-    src, t = item.get("source", "").strip(), fmt_story_time(item.get("time", ""))
+    src, t = item.get("source", "").strip(), fmt_story_time(item.get("time", ""), META["ref"])
+    if m and m.get("state") == "upd":
+        # before/after hint: the editor's one-line note, then the word diff against the last-read text
+        note = m.get("note") or "Text revised since %s." % (META["since"].strftime("%H:%M") if META["since"] else "the last edition")
+        fl = chip_label(m["first"]) if m.get("first") else ""
+        lead_s = "↻ revised %s" % (META["at"].strftime("%H:%M") if META["at"] else "")
+        tail = ("  ·  first seen " + fl) if fl else ""
+        for k, l in enumerate(wrap_plain(lead_s + "  " + note + tail, T)):
+            if k == 0 and l.startswith(lead_s):
+                rows.append(("  ", [seg(lead_s, sgr("gold", bold=True)), seg(l[len(lead_s):], sgr("note", italic=True))], None))
+            else:
+                rows.append(("  ", [seg(l, sgr("note", italic=True))], None))
+        d = word_diff(m["old"] or "", item_text(item), T - 2)
+        if d: rows.append(("  ", [seg("Δ ", sgr("gold"))] + d, None))
     if mode == "inline":
         meta = src + (", " + t if src and t else t)
         if meta: rows.append(("  ", [seg("— " + meta, sgr("dim", italic=True))], None))
@@ -282,6 +447,7 @@ def story_block(item, g, sel, idx, lead=False, sec=-1):
         if notes:
             r0 = rows[0]
             rows[0] = (r0[0], r0[1], notes)
+    rows = [([*spine(m, n, True), seg(g_, sgr("rust"))], tx, nt) for n, (g_, tx, nt) in enumerate(rows)]
     rows.append(("  ", [], None))                        # breathing room after the story
     return block(rows, heads, sec=sec)
 
@@ -293,21 +459,27 @@ def margin_name(src, w):
         src = cut_cells(src, max(1, w - 1)).rstrip() + "…"
     return src
 
-def section_block(title, n, g, first):
+def section_block(title, n, g, first, counts=None):
     T = g["T"]
+    tag = []
+    if counts and counts[0]: tag += [seg(" ●%d new" % counts[0], sgr("rust"))]
+    if counts and counts[1]: tag += [seg(" ◑%d upd" % counts[1], sgr("gold"))]
+    if tag: tag += [seg(" ")]
     label = spaced(title)
-    if width(label) + 10 > T: label = title.upper()
+    if width(label) + 16 + row_width(tag) > T: label = title.upper()
     mid = [seg("  ✦  ", sgr("gold")), seg(label, sgr("gold")), seg("  ✦  ", sgr("gold"))]
-    fill = T - row_width(mid)
-    l = max(0, fill // 2); r = max(0, fill - l)
-    rule = [seg("─" * l, sgr("rule"))] + mid + [seg("─" * r, sgr("rule"))]
+    fill = T - row_width(mid) - row_width(tag) - (1 if tag else 0)
+    l = max(0, (T - row_width(mid)) // 2)
+    if l > fill - 3: l = max(0, fill // 2)       # narrow leaf: give the tag room, keep both rules
+    r = max(0, fill - l)
+    rule = [seg("─" * l, sgr("rule"))] + mid + [seg("─" * r, sgr("rule"))] + tag + ([seg("─", sgr("rule"))] if tag else [])
     rows = [] if first else [("  ", [], None)]
     rows += [("  ", rule, None), ("  ", [], None)]
     return block(rows, sec=n, keep=True)
 
 # ------------------------------------------------------------------ title page and colophon
 def title_rows(page, tw):
-    """Full-width rows for the title page. Returns (rows, secs, ornament_row_index)."""
+    """Full-width rows for the title page. Returns (rows, ornament_row_index)."""
     rows = []
     def add(r): rows.append(center(r, tw))
     ed = page.get("edition", 1)
@@ -325,6 +497,7 @@ def title_rows(page, tw):
         date_s = page.get("updated", "")
     for l in wrap_plain(date_s, tw): add([seg(l, sgr("dim"))])
     add([])
+    for r in summary_rows(tw): add(r)
     orn = len(rows)
     add(ornament(tw, 1.0))
     add([])
@@ -338,6 +511,40 @@ def title_rows(page, tw):
                 rows.append(center(pad([seg(lead, sgr("gold")), seg(l, sgr("body", italic=True))], nw), tw))
         add([])
     return rows, orn
+
+def summary_rows(tw):
+    """The compact header: counts since the last read, then a first-seen ribbon and its legend."""
+    rows = []
+    if META["since"] is None and not META["buckets"]: return rows
+    if META["since"] is not None:
+        line = [seg("●", sgr("rust", bold=True)), seg(" %d new" % META["new"], sgr("ink", bold=True)),
+                seg("   ◑", sgr("gold", bold=True)), seg(" %d updated" % META["upd"], sgr("ink")),
+                seg("   since you read the %s edition" % META["since"].strftime("%H:%M"), sgr("note", italic=True))]
+        rows.append(line)
+    bk = META["buckets"]
+    total = sum(n for _, _, n in bk) or 1
+    rw = min(tw - 4, 56)
+    # ribbon: one run of ▬ per first-seen bucket, newest on the left, widths by share (min 1)
+    widths = [max(1, round(rw * n / total)) for _, _, n in bk]
+    while sum(widths) > rw: widths[widths.index(max(widths))] -= 1
+    ribbon = []
+    for (lab, r, n), w in zip(bk, widths):
+        c = age_colour(dict(rank=r, first=None, state=None)) if lab not in ("yest.", "older") and not re.match(r"^[A-Z][a-z]{2}$", lab) else mix("dim", "rule", 0.55)
+        ribbon.append(seg("▬" * w, sgr(c)))
+    rows.append([])
+    rows.append([seg("first seen  ", sgr("dim", italic=True))] + ribbon)
+    legend, used = [], 0
+    for k, (lab, r, n) in enumerate(bk):
+        c = age_colour(dict(rank=r, first=None, state=None)) if lab not in ("yest.", "older") and not re.match(r"^[A-Z][a-z]{2}$", lab) else mix("dim", "rule", 0.55)
+        piece = [seg(lab, sgr(c, bold=(r == 0))), seg(" %d" % n, sgr("dim"))]
+        pw = row_width(piece) + (3 if legend else 0)
+        if used + pw > tw - 4 and legend:
+            rows.append(legend); legend, used = [], 0; pw = row_width(piece)
+        if legend: legend.append(seg(" · ", sgr("rule")))
+        legend += piece; used += pw
+    if legend: rows.append(legend)
+    rows.append([])
+    return rows
 
 def ornament(tw, frac):
     """The title rule, drawn outward from its fleuron by `frac` (for the intro)."""
@@ -397,32 +604,40 @@ def place(blocks, g, side):
             if notes:
                 for j, nl in enumerate(notes): note_at[k + j] = nl
         for k, (gutter, text, _) in enumerate(rows):
-            gs = seg(gutter, sgr("rust"))
+            gs = list(gutter) if isinstance(gutter, list) else spine(None, 1, False) + [seg(gutter, sgr("rust"))]
             nl = note_at.get(k)
             if side == "inline":
-                out.append([gs] + text)
+                out.append(gs + text)
             elif side == "right":
-                r = [gs] + pad(text, T)
+                r = gs + pad(text, T)
                 if nl: r += [seg("   ")] + nl
                 out.append(r)
             else:
                 n = rjust(nl, MW) if nl else [seg(" " * MW)]
-                out.append(n + [seg("   "), gs] + pad(text, T))
+                out.append(n + [seg("   ")] + gs + pad(text, T))
             secs.append(b["sec"])
         for i, off in b["heads"]:
             targets.append((i, base + off - skipped))
     return out, secs, targets
 
-def split_blocks(blocks):
-    """Split the block stream near the middle for a two-leaf spread, never after a section opener."""
-    total = sum(len(b["rows"]) for b in blocks)
-    best, best_d, cum = len(blocks), None, 0
-    for i in range(1, len(blocks)):
-        cum += len(blocks[i - 1]["rows"])
-        if blocks[i - 1]["keep"]: continue
-        d = abs(cum - total / 2)
-        if best_d is None or d < best_d: best, best_d = i, d
-    return blocks[:best], blocks[best:]
+def deal_sections(blocks):
+    """Deal whole sections onto the two leaves like a newspaper: left, right, left, right…, each
+    section going to the leaf that is shorter so far (ties go left). Anything before the first
+    section (the lead, the new-only notice) opens the left leaf. A section never splits."""
+    groups, cur = [], []
+    for b in blocks:
+        if b["keep"] and b["sec"] is not None and cur:
+            groups.append(cur); cur = []
+        cur.append(b)
+    if cur: groups.append(cur)
+    left, right = [], []
+    for k, grp in enumerate(groups):
+        opens_with_section = grp[0]["keep"] and grp[0]["sec"] is not None
+        if k == 0 and not opens_with_section:
+            left += grp; continue
+        lh = sum(len(b["rows"]) for b in left); rh = sum(len(b["rows"]) for b in right)
+        (left if lh <= rh else right).extend(grp)
+    return left, right
 
 # ------------------------------------------------------------------ the page
 def build(page, W, sel):
@@ -439,18 +654,29 @@ def build(page, W, sel):
 
     # story blocks in reading order
     blocks, urls = [], []
+    STATES.clear()
+    def st(it): return (MK.get(item_key(it)) or {}).get("state")
+    def shown(it): return not FILTER[0] or st(it) is not None
     idx = 0
-    if page.get("lead"):
+    if page.get("lead") and shown(page["lead"]):
         blocks.append(story_block(page["lead"], g, sel, idx, lead=True, sec=-1)); urls.append(page["lead"].get("url")); idx += 1
+        STATES.append(st(page["lead"]))
     for n, sec in enumerate(page.get("sections", [])):
-        blocks.append(section_block(sec.get("title", ""), n, g, first=not blocks))
-        for it in sec.get("items", []):
+        its = [it for it in sec.get("items", []) if shown(it)]
+        if not its: continue
+        counts = (sum(1 for it in its if st(it) == "new"), sum(1 for it in its if st(it) == "upd"))
+        blocks.append(section_block(sec.get("title", ""), n, g, first=not blocks, counts=counts))
+        for it in its:
             blocks.append(story_block(it, g, sel, idx, sec=n)); urls.append(it.get("url")); idx += 1
+            STATES.append(st(it))
+    if FILTER[0]:
+        hidden = len(all_items(page)) - idx
+        blocks.insert(0, block([("  ", [seg("new only  ·  %d older stories folded  ·  u shows all" % hidden, sgr("note", italic=True))], None), ("  ", [], None)], keep=True))
 
     targets = []
     top = len(rows)
     if g["mode"] == "spread":
-        lb, rb = split_blocks(blocks)
+        lb, rb = deal_sections(blocks)
         lrows, lsecs, lt = place(lb, g, "left")
         rrows, rsecs, rt = place(rb, g, "right")
         P, G = g["P"], g["G"]
@@ -506,9 +732,14 @@ def chrome(page, off, H, W, nrows, secs):
     leaf = min(leaves, off // max(1, H) + 1)
     hl = history_label()
     folio = "%s  ·  %sleaf %d of %d  " % (THEME[0], (hl + "  ·  ") if hl else "", leaf, leaves)
-    keys = "j/k scroll · ←/→ day · ↑/↓ edition · tab select · enter open · t theme" + ("" if PINNED else " · q quit") if W >= 96 else "j/k · ←→ day · ↑↓ ed · tab · enter · t" + ("" if PINNED else " · q")
-    keys = cut_cells("  " + keys, max(0, W - width(folio) - 1))
-    foot = "\x1b[%d;1H" % (H + 1) + sgr() + "\x1b[2K" + sgr("dim") + keys + " " * max(0, W - width(keys) - width(folio)) + folio + sgr()
+    tally = ""
+    if META["since"] is not None:
+        tally = "  ● %d new ◑ %d since %s%s" % (META["new"], META["upd"], META["since"].strftime("%H:%M"), " · NEW ONLY" if FILTER[0] else "")
+    quit_key = "" if PINNED else " · q quit"
+    keys = ("n/N next new · u new only · j/k · ←/→ day · ↑/↓ edition · tab select · enter open · t theme" + quit_key) if W >= 120 else ("n/N new · u only · j/k · ←→ ↑↓ · tab · t" + ("" if PINNED else " · q"))
+    keys = cut_cells("  " + keys, max(0, W - width(folio) - width(tally) - 1))
+    foot = ("\x1b[%d;1H" % (H + 1) + sgr() + "\x1b[2K" + sgr("rust", bold=True) + tally + sgr("dim") + keys
+            + " " * max(0, W - width(tally) - width(keys) - width(folio)) + folio + sgr())
     return head, foot
 
 def emit(page, rows, secs, off, H, W):
@@ -546,7 +777,7 @@ def load(path):
     with open(path) as f: return json.load(f)
 
 # ------------------------------------------------------------------ edition history
-HIST = {"dir": None, "eds": [], "cur": -1}
+HIST = {"dir": None, "eds": [], "cur": -1, "home": None}
 
 def load_history(path):
     """editions/index.json beside page.json -> list of editions, oldest first."""
@@ -557,9 +788,16 @@ def load_history(path):
         with open(idx) as f: return d, json.load(f).get("editions", [])
     except (OSError, json.JSONDecodeError): return d, []
 
+PAGES = {}
+def read_page(path):
+    """An edition file, cached by path (edition files never change once written)."""
+    if path not in PAGES:
+        with open(path) as f: PAGES[path] = json.load(f)
+    return PAGES[path]
+
 def edition_page(i):
     e = HIST["eds"][i]
-    with open(os.path.join(HIST["dir"], e["path"])) as f: return json.load(f)
+    return read_page(os.path.join(HIST["dir"], e["path"]))
 
 def step_day(i, delta):
     """Last edition of the previous/next day that has editions."""
@@ -578,6 +816,90 @@ def history_label():
     tag = "" if i == len(eds) - 1 else "  (l: latest)"
     return "%s  ·  %s of %s%s" % (at, roman(e["edition"]), roman(eds[-1]["edition"]), tag)
 
+def ed_time(e):
+    try: return datetime.fromisoformat(e["at"]).astimezone()
+    except Exception: return None
+
+def read_json_soft(path, default):
+    try:
+        with open(path) as f: return json.load(f)
+    except (OSError, json.JSONDecodeError, ValueError): return default
+
+def last_read_edition():
+    """herdr's record of the last edition the reader actually looked at (read.json beside page.json)."""
+    if not HIST["home"]: return None
+    v = read_json_soft(os.path.join(HIST["home"], "read.json"), {})
+    v = v.get("last_read_edition") if isinstance(v, dict) else None
+    return v if isinstance(v, int) and v > 0 else None
+
+def first_seen_map(upto):
+    """{story key: (datetime, rank)} from the runner's first_seen.json, ranked against the editions
+    up to and including index `upto` (0 = that edition, 1 = the one before, …). None when the
+    file is missing or empty, so the caller falls back to scanning the editions."""
+    if not HIST["home"]: return None
+    raw = read_json_soft(os.path.join(HIST["home"], "first_seen.json"), {})
+    entries = raw.get("stories") if isinstance(raw, dict) else None
+    if not isinstance(entries, dict) or not entries: return None
+    order = [e.get("edition") for e in HIST["eds"][:upto + 1]]
+    rank_of = {n: len(order) - 1 - k for k, n in enumerate(order)}
+    known = [x for x in order if isinstance(x, int)]
+    out = {}
+    for key, v in entries.items():
+        if not isinstance(v, dict): continue
+        n = v.get("edition")
+        t = local(v.get("at", "")) if isinstance(v.get("at"), str) else None
+        if n in rank_of: out[key] = (t, rank_of[n])
+        elif isinstance(n, int) and known and n < min(known):
+            out[key] = (t, len(order))               # before the first edition we know: "older"
+    return out or None
+
+def baseline_index(i):
+    """The edition to compare edition i against: the one herdr says you last read, when that is
+    older than i and in the history; otherwise the edition just before i (None for the first)."""
+    eds = HIST["eds"]
+    lr = last_read_edition()
+    if lr is not None and eds[i].get("edition", 0) > lr:
+        j = next((k for k, e in enumerate(eds) if e.get("edition") == lr), None)
+        if j is not None and j < i: return j
+    return i - 1 if i > 0 else None
+
+def open_edition(i):
+    """Load edition i of the history, compute its marks and remember it as the one on screen."""
+    eds = HIST["eds"]
+    page = edition_page(i)
+    j = baseline_index(i)
+    base = edition_page(j) if j is not None else None
+    history = []
+    for k in range(i + 1):
+        try: history.append((ed_time(eds[k]), edition_page(k)))
+        except (OSError, json.JSONDecodeError): pass
+    compute_marks(page, base, history, first_seen_map(i))
+    HIST["cur"] = i
+    note_showing(eds[i].get("edition"))
+    return page
+
+def note_showing(edition):
+    """viewer-state.json beside page.json: what is on screen, for herdr's "last read" record.
+    Fail-soft (a read-only home just loses the record)."""
+    if not HIST["home"] or not isinstance(edition, int): return
+    path = os.path.join(HIST["home"], "viewer-state.json")
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"version": 1, "showing": edition, "at": datetime.now().astimezone().isoformat(timespec="seconds")}, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+def jump_new(sel, targets, d):
+    """Next/previous story (in reading order) that is new or updated; wraps."""
+    marked = [i for i, _, _ in targets if i < len(STATES) and STATES[i]]
+    if not marked: return sel
+    if sel < 0: return marked[0] if d > 0 else marked[-1]
+    later = [i for i in marked if (i > sel if d > 0 else i < sel)]
+    if later: return later[0] if d > 0 else later[-1]
+    return marked[0] if d > 0 else marked[-1]
+
 # herdr ends a pinned viewer with this sequence (CSI 9999 ~), which no key produces.
 HERDR_QUIT = "\x1b[9999~"
 UP, DOWN = ("\x1b[A", "\x1bOA"), ("\x1b[B", "\x1bOB")
@@ -588,17 +910,20 @@ def main():
     global PINNED
     path, dump_w = parse_args(sys.argv[1:])
     PINNED = os.environ.get("ALMANAC_PINNED") == "1"
-    THEME_FILE[0] = os.path.join(os.path.dirname(os.path.abspath(path)), "viewer-theme")
+    home = os.path.dirname(os.path.abspath(path))
+    HIST["home"] = home
+    THEME_FILE[0] = os.path.join(home, "viewer-theme")
     set_theme(os.environ.get("ALMANAC_THEME") or saved_theme() or THEME_ORDER[0])
     try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception: pass
     HIST["dir"], HIST["eds"] = load_history(path)
     if HIST["eds"]:
         want = os.environ.get("ALMANAC_EDITION")
-        HIST["cur"] = next((i for i, e in enumerate(HIST["eds"]) if str(e["edition"]) == want), len(HIST["eds"]) - 1)
-        page = edition_page(HIST["cur"])
+        start = next((i for i, e in enumerate(HIST["eds"]) if str(e["edition"]) == want), len(HIST["eds"]) - 1)
+        page = open_edition(start)
     else:
         page = load(path)
+        compute_marks(page, None, [])
     if dump_w is not None:
         dump(page, max(20, dump_w)); return
 
@@ -651,8 +976,8 @@ def main():
                         at_latest = HIST["cur"] == len(HIST["eds"]) - 1
                         HIST["dir"], eds = load_history(path)
                         if eds: HIST["eds"] = eds
-                        if at_latest: HIST["cur"] = len(HIST["eds"]) - 1
-                        page = edition_page(HIST["cur"])
+                        # a new edition: the baseline (what you had read) is re-read with it
+                        page = open_edition(len(HIST["eds"]) - 1 if at_latest else min(HIST["cur"], len(HIST["eds"]) - 1))
                     else:
                         page = load(path)
                     sel = min(sel, len(targets) - 1)
@@ -670,6 +995,13 @@ def main():
                 elif k == "t":
                     i = THEME_ORDER.index(THEME[0])
                     set_theme(THEME_ORDER[(i + 1) % len(THEME_ORDER)]); save_theme(THEME[0])
+                elif k == "u":
+                    FILTER[0] = not FILTER[0]; sel, off = -1, 0
+                    rows, secs, targets, orn = build(page, W, sel); maxoff = max(0, len(rows) - H)
+                elif k in ("n", "N") and targets:
+                    sel = jump_new(sel, targets, 1 if k == "n" else -1)
+                    row = next((y for i, y, _ in targets if i == sel), None)
+                    if row is not None: off = max(0, row - H // 3)
                 elif (k in LEFT + RIGHT + UP + DOWN or k == "l") and HIST["eds"]:
                     # left/right: previous/next day; up/down: previous/next edition; l: latest
                     i = HIST["cur"]
@@ -679,12 +1011,20 @@ def main():
                     elif k in DOWN: j = min(len(HIST["eds"]) - 1, i + 1)
                     else: j = len(HIST["eds"]) - 1
                     if j != i:
-                        try: page = edition_page(j); HIST["cur"] = j; off, sel = 0, -1
+                        try: page = open_edition(j); off, sel = 0, -1
                         except (OSError, json.JSONDecodeError): pass
                 elif k == "g": off = 0
                 elif k == "G": off = maxoff
                 elif k == "r":
-                    try: page, mtime = load(path), os.path.getmtime(path)
+                    try:
+                        PAGES.clear()
+                        if HIST["eds"]:
+                            HIST["dir"], eds = load_history(path)
+                            if eds: HIST["eds"] = eds
+                            page = open_edition(min(HIST["cur"], len(HIST["eds"]) - 1))
+                        else:
+                            page = load(path)
+                        mtime = os.path.getmtime(watch)
                     except (OSError, json.JSONDecodeError): pass
                 elif k in ("\t", "\x1b[Z") and targets:
                     n = len(targets)

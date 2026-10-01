@@ -100,6 +100,47 @@ mod tests {
         assert!(runner.contains("--trigger"));
     }
 
+    /// The viewer and runner checks (scripts/test_news_viewer.py,
+    /// scripts/test_news_run.py): marker logic, the two-leaf dealing, the
+    /// validator's optional fields, the first-seen index, and a pty run of
+    /// the pinned viewer. Skipped without python3 on PATH.
+    #[test]
+    fn python_asset_checks_pass() {
+        let python = std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("python3"))
+                .find(|candidate| candidate.is_file())
+        });
+        let Some(python) = python else {
+            eprintln!("python3 not on PATH; news asset checks skipped");
+            return;
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let output = std::process::Command::new(python)
+            .args([
+                "-m",
+                "unittest",
+                "scripts/test_news_viewer.py",
+                "scripts/test_news_run.py",
+            ])
+            .current_dir(root)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .expect("run python3");
+        assert!(
+            output.status.success(),
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !root
+                .join("src/integration/assets/news/__pycache__")
+                .exists(),
+            "the asset directory stays free of bytecode"
+        );
+    }
+
     #[test]
     fn install_writes_missing_files_then_only_stale_ones() {
         let home = temp_home("install");

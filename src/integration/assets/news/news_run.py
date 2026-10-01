@@ -117,6 +117,31 @@ def seed(home):
 def editions_index(home):
     return read_json(os.path.join(home, "editions", "index.json"), {"version": 1, "editions": []})
 
+def story_key(it):
+    """A story's identity across editions: its url, else its headline without spacing/case noise."""
+    return it.get("url") or " ".join((it.get("head") or "").split()).lower()
+
+def first_seen_index(home, idx, edition, at, items):
+    """first_seen.json: {"version": 1, "stories": {key: {"edition": n, "at": iso}}} — the edition a
+    story first appeared in (never moved later). Missing or unreadable: backfilled once from every
+    edition in the index (oldest first), then the new edition's stories are added. The viewer
+    reads it for the timeline spine; nothing here needs a model call."""
+    doc = read_json(os.path.join(home, "first_seen.json"), None)
+    stories = doc.get("stories") if isinstance(doc, dict) and isinstance(doc.get("stories"), dict) else None
+    if stories is None:
+        stories = {}
+        for e in idx.get("editions", []):
+            if e.get("edition") == edition: continue
+            ed = read_json(os.path.join(home, "editions", e.get("path", "")), None)
+            if not ed: continue
+            for it in [ed.get("lead")] + [i for s in ed.get("sections", []) for i in s.get("items", [])]:
+                if isinstance(it, dict) and story_key(it):
+                    stories.setdefault(story_key(it), {"edition": e.get("edition"), "at": e.get("at")})
+    for it in items:
+        k = story_key(it)
+        if k: stories.setdefault(k, {"edition": edition, "at": at})
+    return {"version": 1, "stories": stories}
+
 def history_digest(home, days=7):
     idx = editions_index(home)["editions"]
     cutoff = now_utc() - timedelta(days=days)
@@ -149,6 +174,14 @@ def check_item(where, it, notes, errors, lead=False):
         elif CONTROL.search(v): errors.append("%s: %s contains control characters" % (where, k))
     if not lead and isinstance(it.get("standfirst"), str) and CONTROL.search(it["standfirst"]):
         errors.append("%s: standfirst contains control characters" % where)
+    # optional: a carried-over story whose substance changed, with a one-line note (the viewer's ◑)
+    if "changed" in it and not isinstance(it["changed"], bool):
+        errors.append("%s: changed must be true or false" % where)
+    if "what_changed" in it:
+        wc = it["what_changed"]
+        if not isinstance(wc, str): errors.append("%s: what_changed must be a string" % where)
+        elif CONTROL.search(wc): errors.append("%s: what_changed contains control characters" % where)
+        elif words(wc) > 30: errors.append("%s: what_changed is %d words (want one line, up to 30)" % (where, words(wc)))
     head, t, url, sf = (it.get(k) if isinstance(it.get(k), str) else "" for k in ("head", "text", "url", "standfirst"))
     if head and words(head) > 16: errors.append("%s: head over 12 words" % where)
     if t.rstrip().endswith(("…", "...")): errors.append("%s: text ends with an ellipsis" % where)
@@ -339,6 +372,7 @@ def publish(home, run_dir, page, decision, trigger, anchors_doc, started, next_r
     seen = {u: t for u, t in seen.items() if t >= cutoff}
     for i in items: seen.setdefault(i["url"], iso(at))
     write_json(os.path.join(home, "seen.json"), seen)
+    write_json(os.path.join(home, "first_seen.json"), first_seen_index(home, idx, n, iso(at), items))
     new_sources = os.path.join(run_dir, "out", "sources.json")
     if os.path.exists(new_sources): shutil.copy(new_sources, os.path.join(home, "sources.json"))
     return n

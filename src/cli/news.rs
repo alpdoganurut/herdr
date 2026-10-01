@@ -759,6 +759,8 @@ mod tests {
             unread: false,
             consecutive_failures: 0,
             pending_notifications: 0,
+            last_read_edition: None,
+            new_stories: None,
         }
     }
 

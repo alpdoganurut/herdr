@@ -11499,6 +11499,15 @@
               "description": "Whether scheduled runs are on (`news.enabled`).",
               "type": "boolean"
             },
+            "last_read_edition": {
+              "description": "The last edition the reader looked at in the News tab (recorded when\nthe tab is focused with the viewer showing it); absent until then.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "last_run": {
               "anyOf": [
                 {
@@ -11513,6 +11522,15 @@
             "model": {
               "type": [
                 "string",
+                "null"
+              ]
+            },
+            "new_stories": {
+              "description": "Stories in the latest edition that were not in `last_read_edition`\n(by url); absent without a last-read edition or an index.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
                 "null"
               ]
             },

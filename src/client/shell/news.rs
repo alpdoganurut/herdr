@@ -144,7 +144,12 @@ pub(crate) fn news_row_state(
         );
     }
     if important {
-        return (NewsRowState::Unread, "unread".into());
+        // "N new": stories in the latest edition the reader has not seen
+        // (news.get counts them against the last edition read).
+        return match info.new_stories {
+            Some(n) if n > 0 => (NewsRowState::Unread, format!("{n} new")),
+            _ => (NewsRowState::Unread, "unread".into()),
+        };
     }
     if info
         .last_run
