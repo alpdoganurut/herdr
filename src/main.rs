@@ -502,6 +502,12 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Keep the herdr+ dashboard as a pinned first tab in every browser window (a user who
 # unpins or closes it is left alone until the next launch). Needs show_activity.
 # pin_dashboard = true
+# The agents `herdr browser setup` (and settings → browser) keep the herdr-browser MCP server
+# registered for: "claude" (Claude Code, user scope) and/or "codex" (~/.codex/config.toml).
+# mcp_agents = ["claude", "codex"]
+# Keep the guarded herdr+ line in ~/.zshrc so plain codex / claude in herdr+ panes run through
+# `herdr browser wrap` (the managed file under <config dir>/shell). `setup` adds or removes it.
+# shell_hook = true
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

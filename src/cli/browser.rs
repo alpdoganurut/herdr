@@ -56,7 +56,7 @@ Act (refs from browser snapshot; a password field is refused, ask the user):
 
 Flags on every verb: --profile P (new = a fresh temporary profile), --tab T, --pane ID, --timeout MS, --json";
 
-const MCP_SERVER_NAME: &str = "herdr-browser";
+use crate::browser::setup::{self, is_executable, mcp_entry_json, SetupEnv, MCP_SERVER_NAME};
 
 pub(super) fn run_browser_command(args: &[String]) -> std::io::Result<i32> {
     let Some(verb) = args.first().map(String::as_str) else {
@@ -981,250 +981,9 @@ fn profile(args: &[String]) -> std::io::Result<i32> {
 
 // ----- setup / doctor ----------------------------------------------------
 
-fn run_capture(program: &Path, args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
-    let mut command = std::process::Command::new(program);
-    command.args(args);
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
-    }
-    let output = command
-        .output()
-        .map_err(|err| format!("{}: {err}", program.display()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "{} {} failed: {}",
-            program.display(),
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn claude_on_path() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("claude"))
-        .find(|candidate| candidate.is_file())
-}
-
-/// The shell line both registrations run: `HERDR_BIN_PATH` expands inside a
-/// herdr pane (so the dev instance reaches its own binary); outside herdr the
-/// absolute fallback keeps the server from showing as failed.
-pub(crate) fn mcp_shell_command(fallback_binary: &Path) -> String {
-    format!(
-        "exec \"${{HERDR_BIN_PATH:-{}}}\" browser mcp",
-        fallback_binary.display()
-    )
-}
-
-/// The MCP entry `setup` registers with Claude Code.
-pub(crate) fn mcp_entry_json(fallback_binary: &Path) -> String {
-    serde_json::json!({
-        "type": "stdio",
-        "command": "sh",
-        "args": ["-c", mcp_shell_command(fallback_binary)],
-    })
-    .to_string()
-}
-
-/// The pane variables Codex must forward to the server: Codex starts MCP
-/// servers with a minimal environment (HOME, PATH, …), so without this list
-/// the server cannot find the pane's herdr socket or attribute the caller.
-pub(crate) const CODEX_FORWARDED_ENV: [&str; 7] = [
-    "HERDR_PANE_ID",
-    "HERDR_BIN_PATH",
-    "HERDR_SOCKET_PATH",
-    "HERDR_SESSION",
-    "HERDR_ENV",
-    "HERDR_TAB_ID",
-    "HERDR_WORKSPACE_ID",
-];
-
-/// The `[mcp_servers.herdr-browser]` table `setup --codex` writes.
-pub(crate) fn codex_mcp_block(fallback_binary: &Path) -> String {
-    let mut table = toml::value::Table::new();
-    table.insert("command".into(), toml::Value::String("sh".into()));
-    table.insert(
-        "args".into(),
-        toml::Value::Array(vec![
-            toml::Value::String("-c".into()),
-            toml::Value::String(mcp_shell_command(fallback_binary)),
-        ]),
-    );
-    table.insert(
-        "env_vars".into(),
-        toml::Value::Array(
-            CODEX_FORWARDED_ENV
-                .iter()
-                .map(|v| toml::Value::String((*v).into()))
-                .collect(),
-        ),
-    );
-    let body = toml::to_string(&toml::Value::Table(table)).unwrap_or_default();
-    format!("[mcp_servers.{MCP_SERVER_NAME}]\n{body}")
-}
-
-/// Put `block` (a `[mcp_servers.herdr-browser]` table) into a Codex
-/// `config.toml`, edited as a document: an existing entry in any shape
-/// (a table, a dotted key, an inline `herdr-browser = {…}`) is replaced,
-/// everything else — other tables, comments, spacing — stays. A file that
-/// does not parse is refused.
-pub(crate) fn upsert_codex_block(config: &str, block: &str) -> Result<String, String> {
-    use toml_edit::{DocumentMut, Item, Table};
-    let mut doc: DocumentMut = config
-        .parse()
-        .map_err(|err| format!("config.toml does not parse, left untouched: {err}"))?;
-    let fresh: DocumentMut = block
-        .parse()
-        .map_err(|err| format!("herdr's block does not parse: {err}"))?;
-    let entry: Table = fresh["mcp_servers"][MCP_SERVER_NAME]
-        .as_table()
-        .cloned()
-        .ok_or_else(|| "herdr's block has no table".to_string())?;
-    if doc.get("mcp_servers").is_none() {
-        let mut servers = Table::new();
-        servers.set_implicit(true);
-        doc["mcp_servers"] = Item::Table(servers);
-    }
-    let inline = doc["mcp_servers"].is_inline_table();
-    let servers = doc
-        .get_mut("mcp_servers")
-        .and_then(Item::as_table_like_mut)
-        .ok_or_else(|| "`mcp_servers` is not a table; left untouched".to_string())?;
-    servers.remove(MCP_SERVER_NAME);
-    if inline {
-        servers.insert(MCP_SERVER_NAME, toml_edit::value(entry.into_inline_table()));
-    } else {
-        servers.insert(MCP_SERVER_NAME, Item::Table(entry));
-    }
-    Ok(doc.to_string())
-}
-
-/// Write `contents` over `path` in place: through the symlink to the real
-/// file, via a temp file in the same directory, keeping the file's mode.
-fn write_in_place(path: &Path, contents: &str) -> std::io::Result<PathBuf> {
-    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    if let Some(parent) = real.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let name = real
-        .file_name()
-        .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_else(|| "file".into());
-    let tmp = real.with_file_name(format!(".{name}.herdr-{}", std::process::id()));
-    let mode = std::fs::metadata(&real).ok().map(|m| m.permissions());
-    let result = std::fs::write(&tmp, contents).and_then(|()| {
-        if let Some(mode) = mode {
-            std::fs::set_permissions(&tmp, mode)?;
-        }
-        std::fs::rename(&tmp, &real)
-    });
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result.map(|()| real)
-}
-
-/// A one-time copy of `path` as `<name>.herdr-backup` next to it (never overwritten).
-fn backup_once(path: &Path) -> std::io::Result<Option<PathBuf>> {
-    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    if !real.exists() {
-        return Ok(None);
-    }
-    let name = real
-        .file_name()
-        .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_else(|| "file".into());
-    let backup = real.with_file_name(format!("{name}.herdr-backup"));
-    if backup.exists() {
-        return Ok(None);
-    }
-    std::fs::copy(&real, &backup)?;
-    Ok(Some(backup))
-}
-
-/// Codex's `config.toml` (`$CODEX_HOME`, else `~/.codex`).
-fn codex_config_path() -> Option<PathBuf> {
-    let dir = match std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty()) {
-        Some(home) => PathBuf::from(home),
-        None => PathBuf::from(std::env::var_os("HOME")?).join(".codex"),
-    };
-    Some(dir.join("config.toml"))
-}
-
-/// What Codex's config says about the server: `Ok(true)` registered with the
-/// forwarded pane variables, `Ok(false)` absent, `Err` registered without them.
-fn codex_registration(path: &Path) -> Option<Result<bool, String>> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let value: toml::Value = toml::from_str(&text).ok()?;
-    let entry = value.get("mcp_servers")?.get(MCP_SERVER_NAME);
-    let Some(entry) = entry else {
-        return Some(Ok(false));
-    };
-    let forwarded = entry
-        .get("env_vars")
-        .and_then(toml::Value::as_array)
-        .is_some_and(|vars| {
-            CODEX_FORWARDED_ENV
-                .iter()
-                .all(|v| vars.iter().any(|x| x.as_str() == Some(v)))
-        });
-    if forwarded {
-        Some(Ok(true))
-    } else {
-        Some(Err(
-            "registered without the forwarded pane variables (env_vars); rerun `herdr browser setup --codex`"
-                .into(),
-        ))
-    }
-}
-
-fn register_codex(fallback: &Path) -> String {
-    let Some(path) = codex_config_path() else {
-        return "codex: no home directory".into();
-    };
-    let current = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => return format!("codex: cannot read {} ({err})", path.display()),
-    };
-    let block = codex_mcp_block(fallback);
-    let next = match upsert_codex_block(&current, &block) {
-        Ok(next) => next,
-        Err(err) => return format!("codex: {} {err}", path.display()),
-    };
-    if next == current {
-        return format!(
-            "codex: {} already registers {MCP_SERVER_NAME}",
-            path.display()
-        );
-    }
-    let backup = match backup_once(&path) {
-        Ok(backup) => backup,
-        Err(err) => return format!("codex: cannot back up {} ({err})", path.display()),
-    };
-    match write_in_place(&path, &next) {
-        Ok(real) => format!(
-            "codex: wrote [mcp_servers.{MCP_SERVER_NAME}] to {}{}:\n{}",
-            real.display(),
-            backup
-                .map(|b| format!(" (backup {})", b.display()))
-                .unwrap_or_default(),
-            block
-                .lines()
-                .map(|l| format!("          {l}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ),
-        Err(err) => format!("codex: cannot write {} ({err})", path.display()),
-    }
-}
-
 fn setup(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: herdr browser setup [--claude] [--codex] [--shell [--remove]] [--no-mcp] [--node PATH]\nApplies [browser] mcp_agents and shell_hook: installs the Playwright sidecar under the browser home (npm ci), registers — or removes — the herdr-browser MCP server for Claude Code (user scope) and Codex (~/.codex/config.toml), and keeps the guarded herdr+ line in ~/.zshrc (the managed shell file routes plain codex / claude in herdr+ panes through `herdr browser wrap`).\n--claude / --codex register that agent only (whatever the config says); --shell [--remove] only adds (or takes out) the shell hook; --no-mcp skips the registrations. The settings overlay's browser section runs the same steps (\"fix all\").";
     let mut register_mcp = true;
-    // Which agents to register the MCP server for: none named = both, each
-    // when its tool is around.
     let mut want_claude = false;
     let mut want_codex = false;
     let mut shell = false;
@@ -1243,355 +1002,96 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
                 node_override = args.get(i).cloned();
             }
             "help" | "--help" | "-h" => {
-                println!("usage: herdr browser setup [--claude] [--codex] [--no-mcp] [--node PATH] | --shell [--remove]\nInstalls the Playwright sidecar under the browser home (npm ci), records the node used, and registers the herdr-browser MCP server for Claude Code (user scope) and/or Codex (~/.codex/config.toml); with neither flag, both when found.\n--shell writes the managed shell file (codex/claude run through `herdr browser wrap` inside herdr+ panes) and adds one guarded line to ~/.zshrc; --shell --remove takes the line out again.");
+                println!("{USAGE}");
                 return Ok(0);
             }
             other => {
-                eprintln!(
-                    "unknown flag {other}\nusage: herdr browser setup [--claude] [--codex] [--no-mcp] [--node PATH] | --shell [--remove]"
-                );
+                eprintln!("unknown flag {other}\n{USAGE}");
                 return Ok(2);
             }
         }
         i += 1;
     }
-    if shell || shell_remove {
-        println!("herdr browser setup --shell");
-        return setup_shell(shell_remove);
-    }
-    let both = !want_claude && !want_codex;
-    let (want_claude, want_codex) = (want_claude || both, want_codex || both);
+    let only_mcp = want_claude || want_codex;
+    let only_shell = shell || shell_remove;
     let config = crate::config::Config::load().config.browser;
-    let home = crate::browser::browser_home();
-    let host_dir = home.join(crate::integration::browser_assets::HOST_DIR);
+    let mut env = SetupEnv::from_process();
+    env.node_override = node_override;
     println!("herdr browser setup");
-    println!("  home:   {}", home.display());
-
-    // 1. assets
-    let written = crate::integration::browser_assets::install(&host_dir)?;
-    println!(
-        "  assets: {} ({} file(s) written)",
-        host_dir.display(),
-        written
-    );
-
-    // 2. node
-    let recorded = crate::integration::browser_assets::read_runtime(&host_dir);
-    let node = crate::browser::node::discover_default(
-        node_override.as_deref().or(config.node()),
-        recorded.as_ref().map(|r| Path::new(&r.node)),
-    );
-    let Some(node) = node else {
-        eprintln!("  node:   not found. Install Node.js 20+ (nvm, Homebrew) or pass --node PATH / set [browser] node.");
-        return Ok(1);
-    };
-    let node_version = match run_capture(&node.path, &["--version"], None) {
-        Ok(v) => v,
-        Err(err) => {
-            eprintln!("  node:   {} does not run ({err})", node.path.display());
-            return Ok(1);
+    println!("  home:   {}", env.browser_home.display());
+    let mut failed = false;
+    let mut report = |outcome: Result<String, String>| match outcome {
+        Ok(line) => println!("  {line}"),
+        Err(line) => {
+            failed = true;
+            println!("  {line}");
         }
     };
-    if !crate::browser::node::version_ok(&node_version) {
-        eprintln!(
-            "  node:   {} is {node_version}; 20 or newer is required",
-            node.path.display()
-        );
-        return Ok(1);
-    }
-    println!(
-        "  node:   {} ({node_version}, from {})",
-        node.path.display(),
-        node.source
-    );
+    let wants = |agent: &str| config.mcp_agents.iter().any(|a| a == agent);
 
-    // 3. npm ci
-    let npm = crate::browser::node::npm_beside(&node.path).or_else(|| {
-        std::env::var_os("PATH").and_then(|path| {
-            std::env::split_paths(&path)
-                .map(|d| d.join("npm"))
-                .find(|p| p.is_file())
-        })
-    });
-    let Some(npm) = npm else {
-        eprintln!(
-            "  npm:    not found beside {} or on PATH",
-            node.path.display()
-        );
-        return Ok(1);
-    };
-    println!(
-        "  npm:    {} · running npm ci in {}",
-        npm.display(),
-        host_dir.display()
-    );
-    let mut command = std::process::Command::new(&npm);
-    command
-        .args([
-            "ci",
-            "--omit=dev",
-            "--no-audit",
-            "--no-fund",
-            "--ignore-scripts",
-        ])
-        .current_dir(&host_dir)
-        .env("PATH", {
-            let mut paths = vec![node
-                .path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_default()];
-            if let Some(path) = std::env::var_os("PATH") {
-                paths.extend(std::env::split_paths(&path));
-            }
-            std::env::join_paths(paths).unwrap_or_default()
-        })
-        .stdin(std::process::Stdio::null());
-    let status = command.status()?;
-    if !status.success() {
-        eprintln!(
-            "  npm ci failed ({status}); fix the error above and rerun `herdr browser setup`"
-        );
-        return Ok(1);
-    }
-    let Some(playwright) = crate::integration::browser_assets::playwright_installed(&host_dir)
-    else {
-        eprintln!("  npm ci finished but node_modules/playwright-core is missing");
-        return Ok(1);
-    };
-    println!("  playwright-core: {playwright}");
-
-    // 4. runtime.json
-    let runtime = crate::api::schema::BrowserRuntimeInfo {
-        version: crate::integration::browser_assets::RUNTIME_VERSION,
-        node: node.path.display().to_string(),
-        node_version: Some(node_version),
-        npm: Some(npm.display().to_string()),
-        playwright_core: Some(playwright),
-        assets_sha256: crate::integration::browser_assets::assets_sha256(),
-        installed_at: crate::browser::unix_now(),
-    };
-    crate::integration::browser_assets::write_runtime(&host_dir, &runtime)?;
-    println!("  runtime.json written");
-
-    // 5. executable
-    let home_env = std::env::var_os("HOME").map(PathBuf::from);
-    match crate::browser::launch::resolve_executable(&config.executable, home_env.as_deref()) {
-        Ok(exe) => println!("  chromium: {} ({})", exe.display(), exe.source),
-        Err(err) => println!(
-            "  chromium: {} — set [browser] executable before the first `browser open`",
-            err.message
-        ),
-    }
-
-    // 6. MCP registration
-    let fallback = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("herdr"));
-    let entry = mcp_entry_json(&fallback);
-    if !register_mcp {
-        println!("  mcp:    skipped (--no-mcp). To register by hand:\n          claude mcp add-json --scope user {MCP_SERVER_NAME} '{entry}'\n          or add this to ~/.codex/config.toml:\n{}", codex_mcp_block(&fallback).lines().map(|l| format!("          {l}")).collect::<Vec<_>>().join("\n"));
-    } else if !want_claude {
-        // --codex alone
-    } else if let Some(claude) = claude_on_path() {
-        let _ = std::process::Command::new(&claude)
-            .args(["mcp", "remove", "-s", "user", MCP_SERVER_NAME])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        match run_capture(&claude, &["mcp", "add-json", "--scope", "user", MCP_SERVER_NAME, &entry], None) {
-            Ok(_) => println!("  mcp:    registered {MCP_SERVER_NAME} (user scope) → {entry}"),
-            Err(err) => println!("  mcp:    registration failed ({err}); run by hand:\n          claude mcp add-json --scope user {MCP_SERVER_NAME} '{entry}'"),
+    if !only_mcp && !only_shell {
+        report(setup::install_helper(&env, &config, false));
+        match crate::browser::launch::resolve_executable(&config.executable, env.home.as_deref()) {
+            Ok(exe) => println!("  chromium: {} ({})", exe.display(), exe.source),
+            Err(err) => println!(
+                "  chromium: {} — set [browser] executable (or `herdr browser install-chromium <Chromium.app>`) before the first `browser open`",
+                err.message
+            ),
         }
-    } else {
-        println!("  mcp:    `claude` not on PATH; when it is:\n          claude mcp add-json --scope user {MCP_SERVER_NAME} '{entry}'");
     }
-    if register_mcp {
-        println!("  shell:  `herdr browser setup --shell` installs the shell hook so plain codex / claude in herdr+ panes go through\n          `herdr browser wrap` ([browser] wrap_agents); this setup did not touch ~/.zshrc");
-    }
-    if register_mcp && want_claude {
-        println!("  claude: inside herdr+ run Claude Code through `herdr browser wrap claude` (the browser steering as an appended system\n          prompt, --no-chrome, per [browser] steer_agents / disable_native_browser; execs claude-z when present so session\n          UUIDs keep working). herdr does not edit your shell files; add this to ~/.zshrc:\n{}", claude_wrapper_function().lines().map(|l| format!("          {l}")).collect::<Vec<_>>().join("\n"));
-    }
-    if register_mcp && want_codex {
-        let codex_present =
-            codex_on_path().is_some() || codex_config_path().is_some_and(|p| p.exists());
-        if codex_present || !both {
-            println!("  {}", register_codex(&fallback));
-            println!("  codex:  interactive codex hands sessions to a shared app-server daemon that spawns MCP servers with ITS environment\n          (another pane's HERDR_PANE_ID, another herdr's socket): inside herdr+ run codex through `herdr browser wrap codex`\n          (--no-daemon, the browser steering, the native-browser switches per [browser] steer_agents / disable_native_browser).\n          herdr does not edit your shell files; add this to ~/.zshrc (or the bash equivalent):\n{}", codex_wrapper_function().lines().map(|l| format!("          {l}")).collect::<Vec<_>>().join("\n"));
+    if !only_shell && register_mcp {
+        let claude_wanted = if only_mcp {
+            want_claude
         } else {
-            println!("  codex:  not found (no `codex` on PATH, no ~/.codex/config.toml); `herdr browser setup --codex` registers it anyway");
-        }
-    }
-    println!("done. Try: herdr browser open https://example.com && herdr browser read");
-    Ok(0)
-}
-
-/// The managed shell file: `<config dir>/herdr/shell/herdr-plus.zsh`.
-pub(crate) fn shell_file_path() -> PathBuf {
-    crate::config::config_dir()
-        .join("shell")
-        .join("herdr-plus.zsh")
-}
-
-/// What `setup --shell` writes (overwritten every time).
-pub(crate) fn shell_file_contents() -> String {
-    "# managed by herdr browser setup — rewritten by every `herdr browser setup --shell`; do not edit\n\
-# Inside a herdr+ pane, codex and claude run through `herdr browser wrap` ([browser] wrap_agents,\n\
-# steer_agents and disable_native_browser decide what it adds); elsewhere the real commands run.\n\
-_herdr_plus_wrap() { [ -n \"$HERDR_PANE_ID\" ] && [ -n \"$HERDR_BIN_PATH\" ]; }\n\
-function codex { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }\n\
-function claude-z { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap claude -- \"$@\"; else command claude-z \"$@\"; fi }\n\
-# `claude` itself only when it is not an alias (an alias claude='claude-z' reaches the function above);\n\
-# the `function` form keeps zsh from expanding such an alias while parsing this file.\n\
-if ! alias claude >/dev/null 2>&1; then\n\
-  function claude { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap claude -- \"$@\"; else command claude \"$@\"; fi }\n\
-fi\n"
-    .to_string()
-}
-
-pub(crate) const ZSHRC_MARKER: &str = "# herdr+";
-
-/// The one line `setup --shell` adds to `~/.zshrc`.
-/// A single-quoted shell word (`'` inside becomes `'\''`).
-pub(crate) fn shell_single_quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "'\\''"))
-}
-
-pub(crate) fn zshrc_hook_line(file: &Path) -> String {
-    let quoted = shell_single_quote(&file.display().to_string());
-    format!("[ -n \"$HERDR_PANE_ID\" ] && [ -f {quoted} ] && source {quoted}  {ZSHRC_MARKER}")
-}
-
-/// The line is ours when it is live (not commented out) and carries the marker and the file name.
-fn is_hook_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    !trimmed.starts_with('#')
-        && trimmed.ends_with(ZSHRC_MARKER)
-        && trimmed.contains("herdr-plus.zsh")
-}
-
-fn has_hook_line(text: &str) -> bool {
-    text.lines().any(is_hook_line)
-}
-
-/// Add the hook line when absent. Returns whether it was added.
-pub(crate) fn add_hook_line(text: &str, line: &str) -> (String, bool) {
-    if has_hook_line(text) {
-        return (text.to_string(), false);
-    }
-    let mut out = text.to_string();
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str(line);
-    out.push('\n');
-    (out, true)
-}
-
-/// Drop the hook line (only lines carrying the marker and the file name). Returns whether one went.
-pub(crate) fn remove_hook_line(text: &str) -> (String, bool) {
-    let mut removed = false;
-    let mut out = String::new();
-    for line in text.split_inclusive('\n') {
-        if is_hook_line(line) {
-            removed = true;
-            continue;
-        }
-        out.push_str(line);
-    }
-    (out, removed)
-}
-
-fn zshrc_path() -> Option<PathBuf> {
-    let home = std::env::var_os("ZDOTDIR")
-        .filter(|v| !v.is_empty())
-        .or_else(|| std::env::var_os("HOME"))?;
-    Some(PathBuf::from(home).join(".zshrc"))
-}
-
-/// `setup --shell [--remove]`: the managed file and the guarded line in .zshrc.
-fn setup_shell(remove: bool) -> std::io::Result<i32> {
-    let file = shell_file_path();
-    let Some(zshrc) = zshrc_path() else {
-        eprintln!("no HOME (or ZDOTDIR); cannot find .zshrc");
-        return Ok(2);
-    };
-    let line = zshrc_hook_line(&file);
-    if remove {
-        let text = match std::fs::read_to_string(&zshrc) {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(err) => {
-                eprintln!("cannot read {}: {err}", zshrc.display());
-                return Ok(1);
-            }
+            wants("claude")
         };
-        let (next, removed) = remove_hook_line(&text);
-        if removed {
-            if let Some(backup) = backup_once(&zshrc)? {
-                println!(
-                    "  shell:  backed up {} to {}",
-                    zshrc.display(),
-                    backup.display()
-                );
+        if !only_mcp || want_claude {
+            match (claude_wanted, env.claude_bin.is_some()) {
+                (false, false) => println!("  claude: not on PATH; nothing to remove"),
+                (true, false) => println!(
+                    "  claude: not on PATH; when it is: claude mcp add-json --scope user {MCP_SERVER_NAME} '{}'",
+                    mcp_entry_json(&env.binary)
+                ),
+                (wanted, true) => report(setup::register_claude(&env, wanted)),
             }
-            let real = write_in_place(&zshrc, &next)?;
-            println!(
-                "  shell:  removed the herdr+ line from {} ({} stays, harmless)",
-                real.display(),
-                file.display()
-            );
+        }
+        let codex_wanted = if only_mcp { want_codex } else { wants("codex") };
+        if !only_mcp || want_codex {
+            report(setup::register_codex(&env, codex_wanted));
+            if codex_wanted {
+                println!("  codex:  interactive codex hands sessions to a shared app-server daemon that spawns MCP servers with ITS environment;\n          inside herdr+ run codex through `herdr browser wrap codex` (the shell hook does that for plain `codex`)");
+            }
+        }
+    } else if !only_shell {
+        println!(
+            "  mcp:    skipped (--no-mcp). To register by hand:\n          claude mcp add-json --scope user {MCP_SERVER_NAME} '{}'\n          or add this to ~/.codex/config.toml:\n{}",
+            mcp_entry_json(&env.binary),
+            setup::codex_mcp_block(&env.binary)
+                .lines()
+                .map(|l| format!("          {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    if !only_mcp {
+        let hook_wanted = if only_shell {
+            !shell_remove
         } else {
-            println!("  shell:  {} has no herdr+ line", zshrc.display());
-        }
-        return Ok(0);
-    }
-    if let Some(parent) = file.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&file, shell_file_contents())?;
-    println!("  shell:  wrote {}", file.display());
-    let text = match std::fs::read_to_string(&zshrc) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => {
-            eprintln!("cannot read {}: {err}", zshrc.display());
-            return Ok(1);
-        }
-    };
-    let (next, added) = add_hook_line(&text, &line);
-    if added {
-        if let Some(backup) = backup_once(&zshrc)? {
+            config.shell_hook
+        };
+        report(setup::install_shell_hook(&env, hook_wanted));
+        if hook_wanted {
             println!(
-                "  shell:  backed up {} to {}",
-                zshrc.display(),
-                backup.display()
+                "  shell:  new panes pick it up; in an open one: source {}",
+                env.shell_file.display()
             );
         }
-        let real = write_in_place(&zshrc, &next)?;
-        println!("  shell:  added to {}:\n          {line}", real.display());
-    } else {
-        println!("  shell:  {} already has the herdr+ line", zshrc.display());
     }
-    println!(
-        "  shell:  new panes pick it up; in an open one: source {}",
-        file.display()
-    );
-    Ok(0)
-}
-
-/// The shell functions `setup` suggests: inside a herdr pane the agent runs
-/// through `herdr browser wrap` (which adds --no-daemon for Codex, the
-/// steering instruction and the native-browser switches per config);
-/// elsewhere the real binary. `claude-z` is wrapped rather than `claude`
-/// because an alias `claude='claude-z'` expands before any `claude`
-/// function would run; `command claude-z` inside the function is the
-/// script itself, and `wrap claude` execs that script so session UUIDs
-/// keep working.
-pub(crate) fn codex_wrapper_function() -> &'static str {
-    "function codex { if [ -n \"$HERDR_PANE_ID\" ] && [ -n \"$HERDR_BIN_PATH\" ]; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }"
-}
-
-pub(crate) fn claude_wrapper_function() -> &'static str {
-    "function claude-z { if [ -n \"$HERDR_PANE_ID\" ] && [ -n \"$HERDR_BIN_PATH\" ]; then \"$HERDR_BIN_PATH\" browser wrap claude -- \"$@\"; else command claude-z \"$@\"; fi }\n# without a claude='claude-z' alias, the same function named claude with `command claude` instead"
+    if !only_mcp && !only_shell && !failed {
+        setup::mark_set_up(&env);
+        println!("done. Try: herdr browser open https://example.com && herdr browser read");
+    }
+    Ok(if failed { 1 } else { 0 })
 }
 
 /// A TOML basic string for `-c key=value` (Codex parses the value as TOML).
@@ -1676,30 +1176,12 @@ pub(crate) fn wrap_args(
 
 /// The user's own top-level `developer_instructions` from Codex's config.toml.
 fn codex_developer_instructions() -> Option<String> {
-    let text = std::fs::read_to_string(codex_config_path()?).ok()?;
+    let text = std::fs::read_to_string(SetupEnv::from_process().codex_config?).ok()?;
     let value: toml::Value = toml::from_str(&text).ok()?;
     value
         .get("developer_instructions")
         .and_then(|v| v.as_str())
         .map(str::to_string)
-}
-
-/// Whether `path` is a file the current user may execute.
-pub(crate) fn is_executable(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path)
-            .map(|m| m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
 }
 
 /// The binary `wrap` execs: the first executable of `names` on PATH.
@@ -1807,13 +1289,6 @@ fn codex_daemon_running() -> bool {
         .unwrap_or(false)
 }
 
-fn codex_on_path() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("codex"))
-        .find(|candidate| candidate.is_file())
-}
-
 fn install_chromium(args: &[String]) -> std::io::Result<i32> {
     const USAGE: &str = "usage: herdr browser install-chromium <Chromium.app> [--icon PNG|ICNS] [--name NAME] [--dest DIR]\nCopies the built Chromium.app to <dest>/<name>.app (default ~/Applications/herdr+ Browser.app), sets its name in Info.plist and every InfoPlist.strings, replaces the icon (the embedded herdr+ icon, or --icon), ad-hoc signs and verifies the copy, refreshes LaunchServices. The bundle id stays org.chromium.Chromium (the keychain item keeps working).";
     if !cfg!(target_os = "macos") {
@@ -1905,196 +1380,87 @@ fn install_chromium(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn doctor(args: &[String]) -> std::io::Result<i32> {
-    if !args.is_empty() && args[0] != "--json" {
-        eprintln!("usage: herdr browser doctor");
+    let json = args.first().is_some_and(|a| a == "--json");
+    if !args.is_empty() && !json {
+        eprintln!("usage: herdr browser doctor [--json]");
         return Ok(2);
     }
     let config = crate::config::Config::load().config.browser;
-    let home = crate::browser::browser_home();
-    let host_dir = home.join(crate::integration::browser_assets::HOST_DIR);
-    let mut problems = 0;
-    let mut check = |ok: bool, line: String| {
-        println!("{} {line}", if ok { "ok  " } else { "FAIL" });
-        if !ok {
-            problems += 1;
-        }
-    };
-    check(
-        config.enabled,
-        format!("[browser] enabled = {}", config.enabled),
-    );
-    println!(
-        "info [browser] wrap_agents = {} · steer_agents = {} · disable_native_browser = {} (herdr browser wrap)",
-        config.wrap_agents, config.steer_agents, config.disable_native_browser
-    );
-    match zshrc_path() {
-        Some(zshrc) => {
-            let hooked = std::fs::read_to_string(&zshrc)
-                .map(|text| has_hook_line(&text))
-                .unwrap_or(false);
-            println!(
-                "info shell hook: {} {} (plain codex / claude in herdr+ panes → herdr browser wrap; `herdr browser setup --shell` adds it, `--shell --remove` takes it out); file {}{}",
-                zshrc.display(),
-                if hooked { "has the herdr+ line" } else { "has no herdr+ line" },
-                shell_file_path().display(),
-                if shell_file_path().is_file() { "" } else { " (missing)" }
-            );
-        }
-        None => println!("info shell hook: no HOME; skipped"),
-    }
-    let home_env = std::env::var_os("HOME").map(PathBuf::from);
-    match crate::browser::launch::resolve_executable(&config.executable, home_env.as_deref()) {
-        Ok(exe) => check(
-            true,
-            format!("chromium: {} ({})", exe.display(), exe.source),
-        ),
-        Err(err) => check(false, format!("chromium: {}", err.message)),
-    }
-    let runtime = crate::integration::browser_assets::read_runtime(&host_dir);
-    check(
-        runtime.is_some(),
-        format!(
-            "runtime.json: {}",
-            if runtime.is_some() {
-                "present"
-            } else {
-                "missing — run `herdr browser setup`"
-            }
-        ),
-    );
-    if let Some(runtime) = &runtime {
-        let fresh = runtime.assets_sha256 == crate::integration::browser_assets::assets_sha256();
-        check(
-            fresh,
-            format!(
-                "sidecar assets: {}",
-                if fresh {
-                    "current"
-                } else {
-                    "outdated — run `herdr browser setup`"
-                }
-            ),
-        );
-    }
-    match crate::integration::browser_assets::playwright_installed(&host_dir) {
-        Some(version) => check(
-            version == crate::integration::browser_assets::PLAYWRIGHT_CORE_VERSION,
-            format!(
-                "playwright-core: {version} (expected {})",
-                crate::integration::browser_assets::PLAYWRIGHT_CORE_VERSION
-            ),
-        ),
-        None => check(
-            false,
-            "playwright-core: not installed — run `herdr browser setup`".into(),
-        ),
-    }
-    match crate::browser::node::discover_default(
-        config.node(),
-        runtime.as_ref().map(|r| Path::new(&r.node)),
-    ) {
-        Some(node) => {
-            let version = run_capture(&node.path, &["--version"], None).unwrap_or_else(|err| err);
-            check(
-                crate::browser::node::version_ok(&version),
-                format!(
-                    "node: {} {} ({})",
-                    node.path.display(),
-                    version,
-                    node.source
-                ),
-            );
-        }
-        None => check(false, "node: not found".into()),
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let manager =
-            run_capture(Path::new("/bin/launchctl"), &["managername"], None).unwrap_or_default();
-        println!("info launch context: {manager} (Chromium is started through LaunchServices, so a Background-context server still gets a window)");
-    }
-    match claude_on_path() {
-        Some(claude) => {
-            let registered = run_capture(&claude, &["mcp", "get", MCP_SERVER_NAME], None).is_ok();
-            check(
-                registered,
-                format!(
-                    "claude mcp: {MCP_SERVER_NAME} {}",
-                    if registered {
-                        "registered"
-                    } else {
-                        "not registered — run `herdr browser setup`"
-                    }
-                ),
-            );
-        }
-        None => println!("info claude: not on PATH (MCP registration skipped)"),
-    }
-    match codex_config_path().and_then(|path| codex_registration(&path)) {
-        Some(Ok(true)) => check(
-            true,
-            format!("codex mcp: {MCP_SERVER_NAME} registered (pane variables forwarded)"),
-        ),
-        Some(Ok(false)) => {
-            if codex_on_path().is_some() {
-                check(
-                    false,
-                    format!("codex mcp: {MCP_SERVER_NAME} not registered — run `herdr browser setup --codex`"),
-                );
-            } else {
-                println!("info codex mcp: {MCP_SERVER_NAME} not registered (no `codex` on PATH)");
-            }
-        }
-        Some(Err(problem)) => check(false, format!("codex mcp: {MCP_SERVER_NAME} {problem}")),
-        None => println!("info codex: no config.toml (registration skipped)"),
-    }
-    if codex_daemon_running() {
-        println!("info codex: an app-server daemon is running (codex app-server --managed-daemon); it spawns MCP servers with its own environment, so inside herdr+ run `codex --no-daemon` — `herdr browser setup --codex` prints a shell function for it");
-    }
-    match super::send_request_unchecked(&Request {
+    let env = SetupEnv::from_process();
+    // The server's picture (a running profile's companion version); the CLI
+    // can only ask over the socket.
+    let server = super::send_request_unchecked(&Request {
         id: "cli:browser:doctor".into(),
         method: Method::BrowserGet(BrowserGetParams::default()),
-    }) {
+    });
+    let live: Option<crate::api::schema::BrowserGetInfo> = match &server {
         Ok(response) if response.get("error").is_none() => {
-            let host = response["result"]["browser"]["host"]["state"]
-                .as_str()
-                .unwrap_or("?");
-            let profiles = response["result"]["browser"]["profiles"]
-                .as_array()
-                .map(Vec::len)
-                .unwrap_or(0);
-            check(
-                true,
-                format!("server: reachable · sidecar {host} · {profiles} profile(s) known"),
+            serde_json::from_value(response["result"]["browser"].clone()).ok()
+        }
+        _ => None,
+    };
+    let checks = setup::checks(&config, &env, live.as_ref());
+    let problems = checks.iter().filter(|c| !c.ok).count() + usize::from(!config.enabled);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&checks)?);
+        return Ok(if problems == 0 { 0 } else { 1 });
+    }
+    println!(
+        "{} [browser] enabled = {}",
+        if config.enabled { "ok  " } else { "FAIL" },
+        config.enabled
+    );
+    for c in &checks {
+        let hint = match (c.ok, c.fix_kind) {
+            (false, crate::api::schema::BrowserFixKind::Safe) => {
+                " — `herdr browser setup` (runs by itself after a herdr update)"
+            }
+            (false, crate::api::schema::BrowserFixKind::EditsFiles) => {
+                " — `herdr browser setup`, or settings → browser → fix all"
+            }
+            _ => "",
+        };
+        println!(
+            "{} {}: {}{hint}",
+            if c.ok { "ok  " } else { "FAIL" },
+            c.id,
+            c.detail
+        );
+    }
+    println!(
+        "info [browser] wrap_agents = {} · steer_agents = {} · disable_native_browser = {} · mcp_agents = {:?} · shell_hook = {} (herdr browser wrap)",
+        config.wrap_agents, config.steer_agents, config.disable_native_browser, config.mcp_agents, config.shell_hook
+    );
+    match (&server, &live) {
+        (_, Some(live)) => {
+            println!(
+                "info server: reachable · sidecar {} · {} profile(s) known · this herdr bundles companion v{}",
+                live.host.state,
+                live.profiles.len(),
+                crate::integration::browser_assets::COMPANION_VERSION
             );
-            for profile in response["result"]["browser"]["profiles"]
-                .as_array()
-                .into_iter()
-                .flatten()
-            {
-                if let (Some(name), Some(companion)) =
-                    (profile["name"].as_str(), profile["companion"].as_str())
-                {
+            for profile in &live.profiles {
+                if let Some(companion) = profile.companion.as_deref() {
                     println!(
-                        "info profile {name}: tab groups (companion extension) {companion}{} · this herdr bundles companion v{}",
+                        "info profile {}: tab groups (companion extension) {companion}{}",
+                        profile.name,
                         if companion.starts_with("missing") {
                             " — Chromium ignored --load-extension; the frame and cursor still work"
                         } else {
                             ""
-                        },
-                        crate::integration::browser_assets::COMPANION_VERSION
+                        }
                     );
                 }
             }
         }
-        Ok(response) => check(
-            false,
-            format!(
-                "server: {}",
-                response["error"]["message"].as_str().unwrap_or("error")
-            ),
+        (Ok(response), None) => println!(
+            "info server: {}",
+            response["error"]["message"].as_str().unwrap_or("error")
         ),
-        Err(err) => println!("info server: not reachable ({err}); start herdr first"),
+        (Err(err), None) => println!("info server: not reachable ({err}); start herdr first"),
+    }
+    if codex_daemon_running() {
+        println!("info codex: an app-server daemon is running (codex app-server --managed-daemon); it spawns MCP servers with its own environment, so inside herdr+ run `codex --no-daemon` — the shell hook's `codex` function does that");
     }
     println!(
         "{}",
@@ -2106,57 +1472,12 @@ fn doctor(args: &[String]) -> std::io::Result<i32> {
     );
     Ok(if problems == 0 { 0 } else { 1 })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn s(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| a.to_string()).collect()
-    }
-
-    #[test]
-    fn the_shell_hook_line_is_added_once_and_removed_cleanly() {
-        let file = Path::new("/Users/me/.config/herdr/shell/herdr-plus.zsh");
-        let line = zshrc_hook_line(file);
-        assert_eq!(line, "[ -n \"$HERDR_PANE_ID\" ] && [ -f '/Users/me/.config/herdr/shell/herdr-plus.zsh' ] && source '/Users/me/.config/herdr/shell/herdr-plus.zsh'  # herdr+");
-        assert_eq!(shell_single_quote("it's"), "'it'\\''s'");
-        // a commented-out copy is neither "present" nor removed
-        let commented = format!("#{line}\nexport Y=2\n");
-        assert!(!has_hook_line(&commented));
-        let (kept, removed) = remove_hook_line(&commented);
-        assert!(!removed);
-        assert_eq!(kept, commented);
-        let (added_again, added) = add_hook_line(&commented, &line);
-        assert!(added);
-        assert_eq!(added_again, format!("{commented}{line}\n"));
-        let (once, added) = add_hook_line("alias claude='claude-z'\nexport X=1", &line);
-        assert!(added);
-        assert_eq!(
-            once,
-            format!("alias claude='claude-z'\nexport X=1\n{line}\n")
-        );
-        let (twice, added) = add_hook_line(&once, &line);
-        assert!(!added);
-        assert_eq!(twice, once);
-        let (gone, removed) = remove_hook_line(&once);
-        assert!(removed);
-        assert_eq!(gone, "alias claude='claude-z'\nexport X=1\n");
-        let (same, removed) = remove_hook_line(&gone);
-        assert!(!removed);
-        assert_eq!(same, gone);
-        let (empty, added) = add_hook_line("", &line);
-        assert!(added);
-        assert_eq!(empty, format!("{line}\n"));
-        let contents = shell_file_contents();
-        assert!(contents.starts_with("# managed by herdr browser setup"));
-        assert!(contents.contains("function codex { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }"));
-        assert!(contents.contains("function claude-z {"));
-        assert!(
-            !contents.contains("codex() {"),
-            "every wrapper uses the function form"
-        );
-        assert!(contents.contains("if ! alias claude >/dev/null 2>&1; then"));
     }
 
     #[test]
@@ -2243,8 +1564,6 @@ mod tests {
             toml_basic_string("a \"q\" \\ \n"),
             "\"a \\\"q\\\" \\\\ \\n\""
         );
-        assert!(codex_wrapper_function().contains("browser wrap codex -- \"$@\""));
-        assert!(claude_wrapper_function().starts_with("function claude-z {"));
     }
 
     #[test]
@@ -2286,80 +1605,6 @@ mod tests {
         assert!(!hint.contains("finds it first"));
         let hint = install_hint("Other", home, Some(home), &home.join("Other.app"));
         assert!(hint.contains("executable = \"/Users/me/Applications/Other.app\""));
-    }
-
-    #[test]
-    fn codex_block_is_upserted_without_touching_the_rest() {
-        let block = codex_mcp_block(Path::new("/opt/herdr"));
-        assert!(block.starts_with("[mcp_servers.herdr-browser]\n"));
-        assert!(block.contains("command = \"sh\""));
-        let parsed: toml::Value = toml::from_str(&block).unwrap();
-        let entry = &parsed["mcp_servers"]["herdr-browser"];
-        assert_eq!(
-            entry["args"][1].as_str(),
-            Some("exec \"${HERDR_BIN_PATH:-/opt/herdr}\" browser mcp")
-        );
-        let vars: Vec<&str> = entry["env_vars"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert_eq!(vars, CODEX_FORWARDED_ENV);
-        let herdr = |text: &str| -> toml::Value {
-            let value: toml::Value = toml::from_str(text).unwrap();
-            value["mcp_servers"]["herdr-browser"].clone()
-        };
-        let expected = herdr(&block);
-        // header comments, spaced brackets, a sub-table: all kept, ours appended
-        let other = "# my codex config\nmodel = \"x\" # keep\n\n[ mcp_servers . node_repl ]\ncommand = \"node\"\n\n[mcp_servers.node_repl.env]\nA = \"1\"\n";
-        let once = upsert_codex_block(other, &block).unwrap();
-        assert!(
-            once.starts_with("# my codex config\nmodel = \"x\" # keep\n"),
-            "{once}"
-        );
-        assert!(
-            once.contains("[ mcp_servers . node_repl ]"),
-            "untouched spacing: {once}"
-        );
-        let value: toml::Value = toml::from_str(&once).unwrap();
-        assert_eq!(herdr(&once), expected);
-        assert_eq!(value["model"].as_str(), Some("x"));
-        assert_eq!(
-            value["mcp_servers"]["node_repl"]["env"]["A"].as_str(),
-            Some("1")
-        );
-        // idempotent
-        assert_eq!(upsert_codex_block(&once, &block).unwrap(), once);
-        // an old table with a sub-table in the middle is replaced, neighbours stay
-        let stale = "a = 1\n[mcp_servers.herdr-browser]\ncommand = \"old\"\n[mcp_servers.herdr-browser.env]\nX = \"1\"\n[features]\nrmcp_client = true # trailing\n";
-        let fixed = upsert_codex_block(stale, &block).unwrap();
-        let value: toml::Value = toml::from_str(&fixed).unwrap();
-        assert_eq!(herdr(&fixed), expected);
-        assert!(value["mcp_servers"]["herdr-browser"].get("env").is_none());
-        assert_eq!(value["features"]["rmcp_client"].as_bool(), Some(true));
-        assert_eq!(value["a"].as_integer(), Some(1));
-        assert!(fixed.contains("# trailing"));
-        // an inline entry under [mcp_servers] is replaced; its sibling stays inline
-        let inline =
-            "[mcp_servers]\nherdr-browser = { command = \"old\" }\nother = { command = \"o\" }\n";
-        let fixed = upsert_codex_block(inline, &block).unwrap();
-        let value: toml::Value = toml::from_str(&fixed).unwrap();
-        assert_eq!(herdr(&fixed), expected);
-        assert_eq!(value["mcp_servers"]["other"]["command"].as_str(), Some("o"));
-        assert!(fixed.contains("other = { command = \"o\" }"), "{fixed}");
-        // dotted keys
-        let dotted =
-            "mcp_servers.herdr-browser.command = \"old\"\nmcp_servers.other.command = \"o\"\n";
-        let fixed = upsert_codex_block(dotted, &block).unwrap();
-        let value: toml::Value = toml::from_str(&fixed).unwrap();
-        assert_eq!(herdr(&fixed), expected);
-        assert_eq!(value["mcp_servers"]["other"]["command"].as_str(), Some("o"));
-        // a file that does not parse is refused
-        let err = upsert_codex_block("model = \"x\n[broken", &block).unwrap_err();
-        assert!(err.contains("does not parse"), "{err}");
-        // an empty file gets just the block
-        assert_eq!(herdr(&upsert_codex_block("", &block).unwrap()), expected);
     }
 
     #[test]

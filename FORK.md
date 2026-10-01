@@ -72,6 +72,7 @@ src/browser/mod.rs
 src/browser/node.rs
 src/browser/profiles.rs
 src/browser/serve.rs
+src/browser/setup.rs
 src/browser/shape.rs
 src/browser/shots.rs
 src/browser/state.rs
@@ -398,7 +399,7 @@ ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors, session.backu
 keys.toggle_agent_suspend, keys.move_tab_to_group, keys.toggle_groups_folded, keys.restart_agent, keys.cycle_tab_color, keys.toggle_tab_important, keys.open_news (keys.open_browser directly after it, in every list),
 ui.toast.herdr.sticky, ui.toast.herdr.max_stack, ui.idle_reminder_minutes, ui.daily_reminder_time, ui.sound.reminder_path,
 news.enabled, news.times, news.quiet_hours, news.model,
-browser.enabled, browser.autostart, browser.stop_with_server, browser.default_profile, browser.executable, browser.node, browser.extra_args, browser.restore_tabs, browser.read_max_chars, browser.snapshot_max_chars, browser.screenshot_max_px, browser.screenshot_keep, browser.active_seconds, browser.allow_eval, browser.allow_act, browser.type_into_password_fields, browser.active_glyph_secs, browser.launch_timeout_ms, browser.op_timeout_ms, browser.show_activity, browser.activity_color, browser.group_symbols, browser.steer_agents, browser.disable_native_browser, browser.wrap_agents, browser.pin_dashboard, keys.open_browser
+browser.enabled, browser.autostart, browser.stop_with_server, browser.default_profile, browser.executable, browser.node, browser.extra_args, browser.restore_tabs, browser.read_max_chars, browser.snapshot_max_chars, browser.screenshot_max_px, browser.screenshot_keep, browser.active_seconds, browser.allow_eval, browser.allow_act, browser.type_into_password_fields, browser.active_glyph_secs, browser.launch_timeout_ms, browser.op_timeout_ms, browser.show_activity, browser.activity_color, browser.group_symbols, browser.steer_agents, browser.disable_native_browser, browser.wrap_agents, browser.pin_dashboard, browser.mcp_agents, browser.shell_hook, keys.open_browser
 ui.tab_bar_right command entry fields `lines` (u8, default 1, clamped to 1..=4 with a config warning) and `ansi` (bool, default false) are not separate keys: they are documented in the ui.tab_bar_right entry's description in config-reference.json (appended after upstream's sentences) and in configuration.mdx in the paragraph plus example directly after upstream's "Separators appear only between visible entries" paragraph.
 Placement in docs/next/website/src/data/config-reference.json: keys.* directly after keys.clear_pane, ui.* directly after ui.sidebar_collapsed_mode (in the order ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors, ui.idle_reminder_minutes, ui.daily_reminder_time), ui.sound.reminder_path directly after ui.sound.request_path, session.backup_agent_transcripts last in the session group, ui.toast.herdr.sticky and ui.toast.herdr.max_stack directly after ui.toast.herdr.position in the notifications group. The same keys appear as commented defaults in src/main.rs DEFAULT_CONFIG (after clear_pane, sidebar_collapsed_mode, startup_per_agent_delay_ms) and in docs/next/website/src/content/docs/configuration.mdx.
 The news.* keys form their own group (id `news`, title News) directly after the session group in config-reference.json and a `[news]` block directly after the `[session]` block in DEFAULT_CONFIG; they are not in configuration.mdx (fork-only feature, no release docs).
@@ -817,6 +818,7 @@ server::headless::tests::fork_smoke::news_notification_waits_for_a_client_shell_
 server::headless::tests::fork_smoke::news_enabled_on_a_desk_that_never_ran_starts_a_first_run
 server::headless::tests::fork_smoke::browser_get_reports_a_fake_host_tab_with_its_actor
 server::headless::tests::fork_smoke::browser_launch_argv_carries_no_automation_switches
+server::headless::tests::fork_smoke::browser_settings_write_the_config_and_fix_the_hook_and_codex_entries
 client::shell::tests::browser::fork_smoke::browser_row_shows_the_running_browser_above_the_footer
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)

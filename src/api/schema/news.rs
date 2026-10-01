@@ -274,6 +274,23 @@ mod tests {
                 }),
                 "news.set_times",
             ),
+            (
+                Method::BrowserSettings(EmptyParams::default()),
+                "browser.settings",
+            ),
+            (
+                Method::BrowserSettingsSet(crate::api::schema::BrowserSettingsSetParams {
+                    key: "pin_dashboard".into(),
+                    value: serde_json::Value::Bool(false),
+                }),
+                "browser.settings.set",
+            ),
+            (
+                Method::BrowserFix(crate::api::schema::BrowserFixParams {
+                    ids: vec!["shell_hook".into()],
+                }),
+                "browser.fix",
+            ),
         ] {
             let request = Request {
                 id: "req".into(),

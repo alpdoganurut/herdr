@@ -902,6 +902,8 @@ impl BrowserState {
             profiles,
             tabs,
             recent_panes,
+            // the hub fills this in from its cached checks
+            setup_needed: false,
         }
     }
 

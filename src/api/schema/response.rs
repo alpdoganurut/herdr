@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::agents::{AgentInfo, AgentTranscriptBackupPass};
 use super::browser::{
     BrowserActivity, BrowserActor, BrowserGetInfo, BrowserProfileRecord, BrowserRunResult,
-    BrowserStatusInfo,
+    BrowserSettingsInfo, BrowserStatusInfo,
 };
 use super::closed_sessions::ClosedSessionInfo;
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
@@ -159,6 +159,9 @@ pub enum ResponseResult {
     },
     BrowserProfiles {
         profiles: Vec<BrowserProfileRecord>,
+    },
+    BrowserSettings {
+        settings: BrowserSettingsInfo,
     },
     AgentPrompted {
         agent: AgentInfo,

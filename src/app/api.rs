@@ -1152,6 +1152,11 @@ impl App {
             Method::BrowserProfileDelete(params) => {
                 return self.handle_browser_profile_delete(request.id, params)
             }
+            Method::BrowserSettings(_) => return self.handle_browser_settings(request.id),
+            Method::BrowserSettingsSet(params) => {
+                return self.handle_browser_settings_set(request.id, params)
+            }
+            Method::BrowserFix(params) => return self.handle_browser_fix(request.id, params),
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

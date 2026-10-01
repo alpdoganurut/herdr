@@ -13,7 +13,9 @@ mod window_title;
 mod write;
 
 pub use self::{
-    browser::{is_forbidden_switch, valid_profile_name, BrowserConfig, AUTO_EXECUTABLE},
+    browser::{
+        is_forbidden_switch, valid_profile_name, BrowserConfig, AUTO_EXECUTABLE, MCP_AGENTS,
+    },
     io::{
         config_diagnostic_summary, config_dir, config_path, load_live_config,
         remove_keybinding_config_sections, remove_section_key, state_dir, upsert_section_bool,

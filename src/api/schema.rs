@@ -203,6 +203,12 @@ pub enum Method {
     BrowserProfileCreate(BrowserProfileCreateParams),
     #[serde(rename = "browser.profile_delete")]
     BrowserProfileDelete(BrowserProfileName),
+    #[serde(rename = "browser.settings")]
+    BrowserSettings(EmptyParams),
+    #[serde(rename = "browser.settings.set")]
+    BrowserSettingsSet(BrowserSettingsSetParams),
+    #[serde(rename = "browser.fix")]
+    BrowserFix(BrowserFixParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

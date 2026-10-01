@@ -17,8 +17,11 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "agent.restart",
     "agent.suspend",
     "agent.transcripts",
+    "browser.fix",
     "browser.focus",
     "browser.get",
+    "browser.settings",
+    "browser.settings.set",
     "browser.start",
     "browser.stop",
     "client_shell.surface.set",
@@ -396,6 +399,18 @@ mod tests {
         assert_eq!(
             actual.remove("browser.stop").as_deref(),
             Some("7b8ec002e4def703fdb73643a82bb087e2afa69f56629f371a4c79b56a631e41")
+        );
+        assert_eq!(
+            actual.remove("browser.settings").as_deref(),
+            Some("3c10d3f5d952a2f78ea6536fc0730f87833b6bd41385ba2c9a208451bfff2cf8")
+        );
+        assert_eq!(
+            actual.remove("browser.settings.set").as_deref(),
+            Some("6460c5c56d7e1e241ed59c4d76174e7fc4b7ab03b53c50fed717d359fddea833")
+        );
+        assert_eq!(
+            actual.remove("browser.fix").as_deref(),
+            Some("71558d5a9cf80cc82952b6bc1330776bce901118546e242640bf2384f51f5a8c")
         );
 
         assert_eq!(

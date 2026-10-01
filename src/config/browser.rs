@@ -10,6 +10,10 @@ use serde::Deserialize;
 /// The profile a call without `--profile` uses when `default_profile` is unset.
 pub const DEFAULT_BROWSER_PROFILE: &str = "main";
 /// `executable = "auto"`: look for `Chromium.app` in the usual places.
+/// The agents whose MCP registration is kept by default.
+pub const DEFAULT_MCP_AGENTS: [&str; 2] = ["claude", "codex"];
+/// The agents `[browser] mcp_agents` may name.
+pub const MCP_AGENTS: [&str; 2] = DEFAULT_MCP_AGENTS;
 pub const AUTO_EXECUTABLE: &str = "auto";
 
 pub const MIN_READ_MAX_CHARS: u64 = 2_000;
@@ -101,6 +105,13 @@ pub struct BrowserConfig {
     /// every browser window; a user who unpins or closes it is left alone
     /// until the next browser launch. Default: true.
     pub pin_dashboard: bool,
+    /// The agents whose MCP registration herdr keeps (`claude`: Claude Code's
+    /// user scope; `codex`: `~/.codex/config.toml`); `setup` and the settings
+    /// overlay register or remove accordingly. Default: both.
+    pub mcp_agents: Vec<String>,
+    /// Keep the guarded herdr+ line in `~/.zshrc` (plain `codex` / `claude`
+    /// in herdr+ panes go through `herdr browser wrap`). Default: true.
+    pub shell_hook: bool,
 }
 
 /// The tab group title symbols keys omit fall back to.
@@ -147,6 +158,11 @@ impl Default for BrowserConfig {
             disable_native_browser: true,
             wrap_agents: true,
             pin_dashboard: true,
+            mcp_agents: DEFAULT_MCP_AGENTS
+                .iter()
+                .map(|a| (*a).to_string())
+                .collect(),
+            shell_hook: true,
         }
     }
 }
@@ -237,6 +253,13 @@ impl BrowserConfig {
 
     pub fn diagnostics(&self) -> Vec<String> {
         let mut diagnostics = Vec::new();
+        for agent in &self.mcp_agents {
+            if !MCP_AGENTS.contains(&agent.as_str()) {
+                diagnostics.push(format!(
+                    "browser.mcp_agents names {agent:?}; only \"claude\" and \"codex\" have an MCP registration; ignored"
+                ));
+            }
+        }
         if !valid_profile_name(&self.default_profile) {
             diagnostics.push(format!(
                 "browser.default_profile = {:?} is not a profile name ([a-z][a-z0-9-]{{0,31}}); using \"main\"",

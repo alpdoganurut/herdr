@@ -22,6 +22,7 @@ pub mod node;
 pub mod ntp;
 pub mod profiles;
 pub mod serve;
+pub mod setup;
 pub mod shape;
 pub mod shots;
 pub mod state;

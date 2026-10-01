@@ -552,6 +552,10 @@ pub struct BrowserGetInfo {
     pub tabs: Vec<BrowserTabInfo>,
     #[serde(default)]
     pub recent_panes: Vec<BrowserPaneCursor>,
+    /// A check that only an explicit request may fix (an MCP registration,
+    /// the shell hook) is failing: the Browser row shows a `!` hint.
+    #[serde(default)]
+    pub setup_needed: bool,
 }
 
 /// `herdr browser setup`'s record of the installed runtime.
@@ -673,6 +677,96 @@ pub struct BrowserProfileRecord {
     pub exists: bool,
     #[serde(default)]
     pub state: String,
+}
+
+/// How a failing check gets fixed: `safe` fixes (the sidecar's assets and
+/// `npm ci`, the companion) also run automatically after a herdr update;
+/// `edits_files` fixes (`~/.zshrc`, `~/.claude.json`, Codex's config.toml)
+/// only on an explicit request (`browser.fix`, `herdr browser setup`).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserFixKind {
+    #[default]
+    None,
+    Safe,
+    EditsFiles,
+}
+
+/// One doctor check (`browser.settings`, `herdr browser doctor --json`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserCheckInfo {
+    /// `executable`, `helper`, `extension`, `mcp_claude`, `mcp_codex`, `shell_hook`, `launch_context`.
+    pub id: String,
+    pub ok: bool,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub fixable: bool,
+    #[serde(default)]
+    pub fix_kind: BrowserFixKind,
+}
+
+/// What a fix did (`browser.settings` after `browser.fix`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserFixResult {
+    pub id: String,
+    pub ok: bool,
+    #[serde(default)]
+    pub detail: String,
+}
+
+/// `browser.settings`: the `[browser]` keys the settings overlay edits, the
+/// checks (cached on the server; `checking` while they are being refreshed)
+/// and the last fixes (`fixing` while they run).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserSettingsInfo {
+    pub enabled: bool,
+    pub show_activity: bool,
+    pub pin_dashboard: bool,
+    pub activity_color: String,
+    pub steer_agents: bool,
+    pub wrap_agents: bool,
+    pub disable_native_browser: bool,
+    #[serde(default)]
+    pub mcp_agents: Vec<String>,
+    pub shell_hook: bool,
+    /// The default profile and whether it runs (the `open · stop` row).
+    pub profile: String,
+    pub running: bool,
+    /// `running · 3 tabs · 2 agents · profile main`, `stopped`, `off`.
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub checks: Vec<BrowserCheckInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<u64>,
+    #[serde(default)]
+    pub checking: bool,
+    #[serde(default)]
+    pub fixing: bool,
+    #[serde(default)]
+    pub fixes: Vec<BrowserFixResult>,
+    /// The server host's name (a remote endpoint's rows say where edits land).
+    #[serde(default)]
+    pub host: String,
+}
+
+/// `browser.settings.set`: one `[browser]` key. `value` is a bool for the
+/// toggles, a `#rrggbb` string for `activity_color`, an array of agent names
+/// for `mcp_agents`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserSettingsSetParams {
+    pub key: String,
+    pub value: serde_json::Value,
+}
+
+/// `browser.fix`: the checks to fix; empty = every failing fixable check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserFixParams {
+    #[serde(default)]
+    pub ids: Vec<String>,
 }
 
 #[cfg(test)]

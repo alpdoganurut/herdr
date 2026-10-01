@@ -2576,6 +2576,19 @@
           ],
           "type": "object"
         },
+        "BrowserFixParams": {
+          "description": "`browser.fix`: the checks to fix; empty = every failing fixable check.",
+          "properties": {
+            "ids": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
         "BrowserGetParams": {
           "properties": {
             "since_seq": {
@@ -3438,6 +3451,20 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "BrowserSettingsSetParams": {
+          "description": "`browser.settings.set`: one `[browser]` key. `value` is a bool for the\ntoggles, a `#rrggbb` string for `activity_color`, an array of agent names\nfor `mcp_agents`.",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "key",
+            "value"
+          ],
           "type": "object"
         },
         "BrowserStopParams": {
@@ -7937,6 +7964,54 @@
         {
           "properties": {
             "method": {
+              "const": "browser.settings",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.settings.set",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserSettingsSetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.fix",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserFixParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -9576,6 +9651,64 @@
             }
           ]
         },
+        "BrowserCheckInfo": {
+          "description": "One doctor check (`browser.settings`, `herdr browser doctor --json`).",
+          "properties": {
+            "detail": {
+              "default": "",
+              "type": "string"
+            },
+            "fix_kind": {
+              "$ref": "#/schemas/success_response/$defs/BrowserFixKind",
+              "default": "none"
+            },
+            "fixable": {
+              "default": false,
+              "type": "boolean"
+            },
+            "id": {
+              "description": "`executable`, `helper`, `extension`, `mcp_claude`, `mcp_codex`, `shell_hook`, `launch_context`.",
+              "type": "string"
+            },
+            "ok": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "ok"
+          ],
+          "type": "object"
+        },
+        "BrowserFixKind": {
+          "description": "How a failing check gets fixed: `safe` fixes (the sidecar's assets and\n`npm ci`, the companion) also run automatically after a herdr update;\n`edits_files` fixes (`~/.zshrc`, `~/.claude.json`, Codex's config.toml)\nonly on an explicit request (`browser.fix`, `herdr browser setup`).",
+          "enum": [
+            "none",
+            "safe",
+            "edits_files"
+          ],
+          "type": "string"
+        },
+        "BrowserFixResult": {
+          "description": "What a fix did (`browser.settings` after `browser.fix`).",
+          "properties": {
+            "detail": {
+              "default": "",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "ok": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "ok"
+          ],
+          "type": "object"
+        },
         "BrowserGetInfo": {
           "properties": {
             "enabled": {
@@ -9605,6 +9738,11 @@
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "setup_needed": {
+              "default": false,
+              "description": "A check that only an explicit request may fix (an MCP registration,\nthe shell hook) is failing: the Browser row shows a `!` hint.",
+              "type": "boolean"
             },
             "tabs": {
               "default": [],
@@ -9899,6 +10037,102 @@
           },
           "type": "object"
         },
+        "BrowserSettingsInfo": {
+          "description": "`browser.settings`: the `[browser]` keys the settings overlay edits, the\nchecks (cached on the server; `checking` while they are being refreshed)\nand the last fixes (`fixing` while they run).",
+          "properties": {
+            "activity_color": {
+              "type": "string"
+            },
+            "checked_at": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "checking": {
+              "default": false,
+              "type": "boolean"
+            },
+            "checks": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserCheckInfo"
+              },
+              "type": "array"
+            },
+            "disable_native_browser": {
+              "type": "boolean"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "fixes": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserFixResult"
+              },
+              "type": "array"
+            },
+            "fixing": {
+              "default": false,
+              "type": "boolean"
+            },
+            "host": {
+              "default": "",
+              "description": "The server host's name (a remote endpoint's rows say where edits land).",
+              "type": "string"
+            },
+            "mcp_agents": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pin_dashboard": {
+              "type": "boolean"
+            },
+            "profile": {
+              "description": "The default profile and whether it runs (the `open · stop` row).",
+              "type": "string"
+            },
+            "running": {
+              "type": "boolean"
+            },
+            "shell_hook": {
+              "type": "boolean"
+            },
+            "show_activity": {
+              "type": "boolean"
+            },
+            "status": {
+              "default": "",
+              "description": "`running · 3 tabs · 2 agents · profile main`, `stopped`, `off`.",
+              "type": "string"
+            },
+            "steer_agents": {
+              "type": "boolean"
+            },
+            "wrap_agents": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled",
+            "show_activity",
+            "pin_dashboard",
+            "activity_color",
+            "steer_agents",
+            "wrap_agents",
+            "disable_native_browser",
+            "shell_hook",
+            "profile",
+            "running"
+          ],
+          "type": "object"
+        },
         "BrowserStatusInfo": {
           "properties": {
             "autostart": {
@@ -9984,6 +10218,11 @@
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "setup_needed": {
+              "default": false,
+              "description": "A check that only an explicit request may fix (an MCP registration,\nthe shell hook) is failing: the Browser row shows a `!` hint.",
+              "type": "boolean"
             },
             "tabs": {
               "default": [],
@@ -13613,6 +13852,22 @@
               "required": [
                 "type",
                 "profiles"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "settings": {
+                  "$ref": "#/schemas/success_response/$defs/BrowserSettingsInfo"
+                },
+                "type": {
+                  "const": "browser_settings",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "settings"
               ],
               "type": "object"
             },

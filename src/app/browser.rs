@@ -8,10 +8,11 @@
 use super::api::responses::{encode_error, encode_success};
 use super::App;
 use crate::api::schema::{
-    BrowserActor, BrowserCaller, BrowserGetParams, BrowserLogParams, BrowserProfileCreateParams,
-    BrowserProfileName, BrowserProfileTarget, BrowserStopParams, BrowserTabTarget, ResponseResult,
+    BrowserActor, BrowserCaller, BrowserFixParams, BrowserGetParams, BrowserLogParams,
+    BrowserProfileCreateParams, BrowserProfileName, BrowserProfileTarget, BrowserSettingsSetParams,
+    BrowserStopParams, BrowserTabTarget, ResponseResult,
 };
-use crate::browser::hub;
+use crate::browser::{hub, BrowserError};
 
 impl App {
     pub(crate) fn install_browser_hub(&self, config: &crate::config::BrowserConfig) {
@@ -23,11 +24,168 @@ impl App {
         if config.enabled && config.autostart {
             let _ = hub.start(None);
         }
+        // The checks behind the Browser row's `setup needed` hint, off this
+        // thread (not under cfg(test): every test process would probe the
+        // real home directory).
+        if !cfg!(test) {
+            hub.refresh_checks(false);
+        }
+    }
+
+    /// `browser.settings`: the section's picture; a stale check cache is
+    /// refreshed off this thread and the next pull sees it.
+    pub(super) fn handle_browser_settings(&mut self, id: String) -> String {
+        hub().refresh_checks(false);
+        encode_success(
+            id,
+            ResponseResult::BrowserSettings {
+                settings: hub().setup_info(),
+            },
+        )
+    }
+
+    /// `browser.settings.set`: one `[browser]` key into the server's config
+    /// file (`ConfigEdit`), reloaded live; `mcp_agents` and `shell_hook`
+    /// also run their file-editing fix (the request is the user's explicit
+    /// act), the others refresh the checks.
+    pub(super) fn handle_browser_settings_set(
+        &mut self,
+        id: String,
+        params: BrowserSettingsSetParams,
+    ) -> String {
+        match self.set_browser_setting(&params.key, &params.value) {
+            Ok(()) => encode_success(
+                id,
+                ResponseResult::BrowserSettings {
+                    settings: hub().setup_info(),
+                },
+            ),
+            Err(err) => encode_error(id, err.code(), err.message()),
+        }
+    }
+
+    /// `browser.fix`: the fixes run off this thread; the reply shows `fixing`.
+    pub(super) fn handle_browser_fix(&mut self, id: String, params: BrowserFixParams) -> String {
+        hub().run_fixes(params.ids);
+        encode_success(
+            id,
+            ResponseResult::BrowserSettings {
+                settings: hub().setup_info(),
+            },
+        )
+    }
+
+    fn set_browser_setting(
+        &mut self,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), BrowserError> {
+        use crate::config::ConfigEdit;
+        let invalid = |what: &str| BrowserError::new("invalid_request", what.to_string());
+        let as_bool = || {
+            value.as_bool().ok_or_else(|| {
+                invalid(&format!(
+                    "browser.settings.set {key}: value must be true or false"
+                ))
+            })
+        };
+        let list: Vec<String>;
+        let text: String;
+        let edit = match key {
+            "enabled" => ConfigEdit::BrowserBool {
+                key: "enabled",
+                value: as_bool()?,
+            },
+            "show_activity" => ConfigEdit::BrowserBool {
+                key: "show_activity",
+                value: as_bool()?,
+            },
+            "pin_dashboard" => ConfigEdit::BrowserBool {
+                key: "pin_dashboard",
+                value: as_bool()?,
+            },
+            "steer_agents" => ConfigEdit::BrowserBool {
+                key: "steer_agents",
+                value: as_bool()?,
+            },
+            "wrap_agents" => ConfigEdit::BrowserBool {
+                key: "wrap_agents",
+                value: as_bool()?,
+            },
+            "disable_native_browser" => ConfigEdit::BrowserBool {
+                key: "disable_native_browser",
+                value: as_bool()?,
+            },
+            "shell_hook" => ConfigEdit::BrowserBool {
+                key: "shell_hook",
+                value: as_bool()?,
+            },
+            "activity_color" => {
+                text = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|c| {
+                        c.len() == 7
+                            && c.starts_with('#')
+                            && c[1..].chars().all(|ch| ch.is_ascii_hexdigit())
+                    })
+                    .ok_or_else(|| {
+                        invalid("browser.settings.set activity_color: value must be \"#rrggbb\"")
+                    })?
+                    .to_ascii_lowercase();
+                ConfigEdit::BrowserString {
+                    key: "activity_color",
+                    value: &text,
+                }
+            }
+            "mcp_agents" => {
+                list = value
+                    .as_array()
+                    .ok_or_else(|| invalid("browser.settings.set mcp_agents: value must be an array of agent names"))?
+                    .iter()
+                    .map(|v| v.as_str().map(str::to_string))
+                    .collect::<Option<Vec<String>>>()
+                    .ok_or_else(|| invalid("browser.settings.set mcp_agents: every entry must be a string"))?;
+                if let Some(unknown) = list
+                    .iter()
+                    .find(|a| !crate::config::MCP_AGENTS.contains(&a.as_str()))
+                {
+                    return Err(invalid(&format!(
+                        "browser.settings.set mcp_agents: unknown agent {unknown:?} (claude, codex)"
+                    )));
+                }
+                ConfigEdit::BrowserList {
+                    key: "mcp_agents",
+                    values: &list,
+                }
+            }
+            other => {
+                return Err(invalid(&format!(
+                    "browser.settings.set: unknown key {other:?}"
+                )))
+            }
+        };
+        crate::config::write_edit(edit)
+            .map_err(|err| BrowserError::new("browser_config_write_failed", err))?;
+        let report = self.reload_config();
+        tracing::info!(
+            event = "browser.settings.set",
+            key,
+            status = ?report.status,
+            "browser setting changed"
+        );
+        match key {
+            "mcp_agents" => hub().run_fixes(vec!["mcp_claude".into(), "mcp_codex".into()]),
+            "shell_hook" => hub().run_fixes(vec!["shell_hook".into()]),
+            _ => hub().refresh_checks(true),
+        }
+        Ok(())
     }
 
     pub(super) fn handle_browser_get(&mut self, id: String, params: BrowserGetParams) -> String {
         self.release_gone_panes();
         let mut browser = hub().get(params.since_seq);
+        browser.setup_needed = hub().setup_needed();
         // Actors whose pane is gone: re-resolved here, where the App knows.
         for tab in &mut browser.tabs {
             self.mark_gone(&mut tab.opened_by);

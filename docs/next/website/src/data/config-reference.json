@@ -1729,6 +1729,18 @@
           "description": "Keep the herdr+ dashboard (the new tab page) as a pinned first tab in every normal browser window: the companion extension adds exactly one per window at launch, when a window opens and when herdr attaches, and removes duplicates and leftovers. A user who unpins or closes it is left alone for that browser session; it comes back at the next launch. `false` removes herdr's dashboard tabs. Applies live after `herdr server reload-config`; needs `show_activity`. The dashboard is never a tab in the ledger (not listed, grouped, overlaid or made current)."
         },
         {
+          "key": "browser.mcp_agents",
+          "type": "array",
+          "default": "[\"claude\", \"codex\"]",
+          "description": "The agents whose herdr-browser MCP registration `herdr browser setup` (and the settings overlay's browser section) keeps: `claude` is Claude Code's user scope (`claude mcp add-json`), `codex` the `[mcp_servers.herdr-browser]` table in `~/.codex/config.toml`. An agent taken off the list is unregistered by the next setup or `fix all`; the registration itself is only ever written on that explicit request. Values other than `claude` and `codex` report a config diagnostic and are ignored."
+        },
+        {
+          "key": "browser.shell_hook",
+          "type": "boolean",
+          "default": "true",
+          "description": "Keep the guarded herdr+ line in `~/.zshrc` (`[ -n \"$HERDR_PANE_ID\" ] && … source '<config dir>/shell/herdr-plus.zsh'  # herdr+`), whose managed file routes plain `codex` and `claude` inside herdr+ panes through `herdr browser wrap`. `herdr browser setup` and the settings section add or remove the line to match (backing `.zshrc` up once to `.zshrc.herdr-backup`); nothing edits `.zshrc` without that explicit request. A herdr+ line of another herdr instance is reported by the checks and replaced by `fix all`."
+        },
+        {
           "key": "browser.activity_color",
           "type": "string",
           "default": "\"#aa6eff\"",

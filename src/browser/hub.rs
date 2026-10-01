@@ -18,12 +18,14 @@ use serde_json::{json, Value};
 use super::host::{self, HostEvent, HostMessage, HostReply, HostRequest, HostWriter, PageInfo};
 use super::launch::{self, AttachDecision, Executable, LaunchOptions, RunRecord};
 use super::profiles::{self, ProfileStore};
+use super::setup::{self, SetupEnv};
 use super::shape;
 use super::state::{BrowserState, HostStatus, HostTab, ProfileStatus, TabKey};
 use super::{unix_now, BrowserError};
 use crate::api::schema::{
-    BrowserActivity, BrowserActor, BrowserGetInfo, BrowserLogParams, BrowserOp,
-    BrowserProfileRecord, BrowserRunParams, BrowserRunResult, BrowserStatusInfo,
+    BrowserActivity, BrowserActor, BrowserCheckInfo, BrowserFixResult, BrowserGetInfo,
+    BrowserLogParams, BrowserOp, BrowserProfileRecord, BrowserRunParams, BrowserRunResult,
+    BrowserSettingsInfo, BrowserStatusInfo,
 };
 use crate::config::{valid_profile_name, BrowserConfig};
 use crate::integration::browser_assets;
@@ -54,6 +56,20 @@ struct HostLink {
     attached: HashSet<String>,
     missed_pings: u32,
 }
+
+/// The checks and fixes behind `browser.settings` / `browser.fix`.
+#[derive(Debug, Default)]
+struct SetupState {
+    checks: Vec<BrowserCheckInfo>,
+    checked_at: Option<Instant>,
+    checked_unix: Option<u64>,
+    checking: bool,
+    fixing: bool,
+    fixes: Vec<BrowserFixResult>,
+}
+
+/// Checks older than this are refreshed by the next `browser.settings`.
+const CHECKS_STALE_AFTER: Duration = Duration::from_secs(20);
 
 struct Inner {
     config: RwLock<BrowserConfig>,
@@ -91,6 +107,12 @@ struct Inner {
     push_failing: Mutex<HashMap<&'static str, bool>>,
     /// The new tab page push: when the last one went out, whether one is armed.
     ntp_push: Mutex<(Option<Instant>, bool)>,
+    /// The doctor's checks (cached; refreshed off the caller's thread) and
+    /// the last fixes — the settings overlay's browser section.
+    setup: Mutex<SetupState>,
+    /// Tests: where the checks look and the fixes write (never the real
+    /// home directory).
+    setup_env_override: Mutex<Option<SetupEnv>>,
 }
 
 /// The new tab page's snapshot goes out at most this often.
@@ -153,6 +175,8 @@ impl BrowserHub {
                 release_backoff: Mutex::new(HashMap::new()),
                 push_failing: Mutex::new(HashMap::new()),
                 ntp_push: Mutex::new((None, false)),
+                setup: Mutex::new(SetupState::default()),
+                setup_env_override: Mutex::new(None),
             }),
         }
     }
@@ -268,6 +292,8 @@ impl BrowserHub {
         for profile in &mut info.profiles {
             profile.companion = companion.get(&profile.name).cloned();
         }
+        drop(companion);
+        info.setup_needed = self.setup_needed();
         info
     }
 
@@ -447,6 +473,203 @@ impl BrowserHub {
             .unwrap()
             .get(pane)
             .map(|(attempts, _)| *attempts)
+    }
+
+    /// The process environment with this hub's home (tests run on a temporary one).
+    fn setup_env(&self) -> SetupEnv {
+        if let Some(env) = self.inner.setup_env_override.lock().unwrap().clone() {
+            return env;
+        }
+        let mut env = SetupEnv::from_process();
+        env.browser_home = self.inner.home.clone();
+        env
+    }
+
+    /// Tests: point the checks and fixes at temporary files.
+    #[cfg(test)]
+    pub fn set_setup_env(&self, env: Option<SetupEnv>) {
+        *self.inner.setup_env_override.lock().unwrap() = env;
+        let mut setup = self.inner.setup.lock().unwrap();
+        setup.checks.clear();
+        setup.checked_at = None;
+        setup.checked_unix = None;
+        setup.fixes.clear();
+    }
+
+    /// Tests: wait for a check refresh or a fix in flight.
+    #[cfg(test)]
+    pub fn wait_for_setup_idle(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            {
+                let setup = self.inner.setup.lock().unwrap();
+                if !setup.checking && !setup.fixing {
+                    return true;
+                }
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// A check that only an explicit request may fix is failing (the
+    /// Browser row's `!` hint; `browser.get`'s `setup_needed`).
+    pub fn setup_needed(&self) -> bool {
+        setup::setup_needed(&self.inner.setup.lock().unwrap().checks)
+    }
+
+    /// `browser.settings`: the `[browser]` keys the section edits, the
+    /// default profile's state, the cached checks and the last fixes.
+    pub fn setup_info(&self) -> BrowserSettingsInfo {
+        let config = self.config();
+        let info = self.get(None);
+        let profile = config.default_profile().to_string();
+        let running_profile = info
+            .profiles
+            .iter()
+            .find(|p| p.name == profile && (p.state == "running" || p.state == "starting"));
+        let status = match running_profile {
+            Some(p) if p.state == "starting" => format!("starting · profile {profile}"),
+            Some(p) => format!(
+                "running · {} tab{} · {} agent{} · profile {profile}",
+                p.tabs,
+                if p.tabs == 1 { "" } else { "s" },
+                p.agents,
+                if p.agents == 1 { "" } else { "s" }
+            ),
+            None if !config.enabled => "off".to_string(),
+            None => format!("stopped · profile {profile}"),
+        };
+        let setup = self.inner.setup.lock().unwrap();
+        BrowserSettingsInfo {
+            enabled: config.enabled,
+            show_activity: config.show_activity,
+            pin_dashboard: config.pin_dashboard,
+            activity_color: config.activity_color().to_string(),
+            steer_agents: config.steer_agents,
+            wrap_agents: config.wrap_agents,
+            disable_native_browser: config.disable_native_browser,
+            mcp_agents: config.mcp_agents.clone(),
+            shell_hook: config.shell_hook,
+            profile,
+            running: running_profile.is_some(),
+            status,
+            checks: setup.checks.clone(),
+            checked_at: setup.checked_unix,
+            checking: setup.checking,
+            fixing: setup.fixing,
+            fixes: setup.fixes.clone(),
+            host: crate::platform::hostname().unwrap_or_default(),
+        }
+    }
+
+    /// Refresh the cached checks off the caller's thread (`force`: even
+    /// when they are fresh). One refresh at a time; a fix in flight ends
+    /// with its own.
+    pub fn refresh_checks(&self, force: bool) {
+        {
+            let mut setup = self.inner.setup.lock().unwrap();
+            let fresh = setup
+                .checked_at
+                .is_some_and(|at| at.elapsed() < CHECKS_STALE_AFTER);
+            if setup.checking || setup.fixing || (fresh && !force) {
+                return;
+            }
+            setup.checking = true;
+        }
+        let hub = self.clone();
+        if std::thread::Builder::new()
+            .name("herdr-browser-checks".into())
+            .spawn(move || {
+                hub.compute_checks();
+                hub.inner.setup.lock().unwrap().checking = false;
+            })
+            .is_err()
+        {
+            self.inner.setup.lock().unwrap().checking = false;
+        }
+    }
+
+    fn compute_checks(&self) {
+        let config = self.config();
+        let env = self.setup_env();
+        let live = self.get(None);
+        let checks = setup::checks(&config, &env, Some(&live));
+        let mut setup = self.inner.setup.lock().unwrap();
+        setup.checks = checks;
+        setup.checked_at = Some(Instant::now());
+        setup.checked_unix = Some(unix_now());
+    }
+
+    /// `browser.fix`: run the fixes for `ids` (empty: every failing fixable
+    /// check) off the caller's thread, then refresh the checks. The
+    /// `extension` fix is a browser restart of the default profile.
+    pub fn run_fixes(&self, ids: Vec<String>) {
+        {
+            let mut setup = self.inner.setup.lock().unwrap();
+            if setup.fixing {
+                return;
+            }
+            setup.fixing = true;
+            setup.fixes.clear();
+        }
+        let hub = self.clone();
+        if std::thread::Builder::new()
+            .name("herdr-browser-fix".into())
+            .spawn(move || {
+                hub.compute_checks();
+                let config = hub.config();
+                let env = hub.setup_env();
+                let checks = hub.inner.setup.lock().unwrap().checks.clone();
+                let mut results = setup::fix_all(&ids, &checks, &config, &env);
+                let restart = if ids.is_empty() {
+                    checks
+                        .iter()
+                        .any(|c| c.id == "extension" && !c.ok && c.fixable)
+                } else {
+                    ids.iter().any(|id| id == "extension")
+                };
+                if restart {
+                    let detail = hub
+                        .stop(None, false)
+                        .and_then(|_| hub.start(None))
+                        .map(|_| "browser restarted; the new extension files load".to_string());
+                    results.push(match detail {
+                        Ok(detail) => BrowserFixResult {
+                            id: "extension".into(),
+                            ok: true,
+                            detail,
+                        },
+                        Err(err) => BrowserFixResult {
+                            id: "extension".into(),
+                            ok: false,
+                            detail: err.message,
+                        },
+                    });
+                }
+                if results.iter().any(|r| r.id == "helper" && r.ok) {
+                    setup::mark_set_up(&env);
+                }
+                for result in &results {
+                    tracing::info!(
+                        event = "browser.fix",
+                        id = %result.id,
+                        ok = result.ok,
+                        detail = %result.detail,
+                        "browser setup fix"
+                    );
+                }
+                hub.compute_checks();
+                let mut setup = hub.inner.setup.lock().unwrap();
+                setup.fixes = results;
+                setup.fixing = false;
+            })
+            .is_err()
+        {
+            self.inner.setup.lock().unwrap().fixing = false;
+        }
     }
 
     pub fn status(&self) -> BrowserStatusInfo {
@@ -2284,6 +2507,17 @@ impl BrowserHub {
         }
         let config = self.config();
         let host_dir = self.host_dir();
+        // After a herdr update: the safe fixes (assets, npm ci when the lock
+        // changed) run by themselves, before the sidecar starts.
+        match setup::auto_repair(&config, &self.setup_env()) {
+            Some(Ok(detail)) => {
+                tracing::info!(event = "browser.auto_repair", %detail, "browser helper refreshed after a herdr update")
+            }
+            Some(Err(error)) => {
+                tracing::warn!(event = "browser.auto_repair", %error, "browser helper could not be refreshed; `herdr browser setup`")
+            }
+            None => {}
+        }
         let runtime = browser_assets::read_runtime(&host_dir);
         if runtime.is_none()
             || !host_dir

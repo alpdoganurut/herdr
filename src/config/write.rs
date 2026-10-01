@@ -18,6 +18,21 @@ pub(crate) enum ConfigEdit<'a> {
     NewsTimes(&'a [String]),
     /// Fork: `news.quiet_hours`, `HH:MM-HH:MM` or empty for none.
     NewsQuietHours(&'a str),
+    /// Fork: a `[browser]` toggle (`browser.settings.set`).
+    BrowserBool {
+        key: &'static str,
+        value: bool,
+    },
+    /// Fork: a `[browser]` string key (`activity_color`).
+    BrowserString {
+        key: &'static str,
+        value: &'a str,
+    },
+    /// Fork: a `[browser]` list key (`mcp_agents`).
+    BrowserList {
+        key: &'static str,
+        values: &'a [String],
+    },
 }
 
 /// Fork: minutes past midnight as a 24-hour "HH:MM".
@@ -36,6 +51,9 @@ impl ConfigEdit<'_> {
             Self::DailyReminderTime(_) => "daily reminder time",
             Self::SoundFile { .. } => "sound setting",
             Self::NewsEnabled(_) | Self::NewsTimes(_) | Self::NewsQuietHours(_) => "news setting",
+            Self::BrowserBool { .. } | Self::BrowserString { .. } | Self::BrowserList { .. } => {
+                "browser setting"
+            }
         }
     }
 
@@ -109,6 +127,27 @@ impl ConfigEdit<'_> {
                 "news",
                 "quiet_hours",
                 &toml::Value::String(window.trim().to_owned()).to_string(),
+            ),
+            Self::BrowserBool { key, value } => {
+                super::upsert_section_bool(content, "browser", key, value)
+            }
+            Self::BrowserString { key, value } => super::upsert_section_value(
+                content,
+                "browser",
+                key,
+                &toml::Value::String(value.trim().to_owned()).to_string(),
+            ),
+            Self::BrowserList { key, values } => super::upsert_section_value(
+                content,
+                "browser",
+                key,
+                &toml::Value::Array(
+                    values
+                        .iter()
+                        .map(|v| toml::Value::String(v.clone()))
+                        .collect(),
+                )
+                .to_string(),
             ),
         }
     }

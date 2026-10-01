@@ -1296,3 +1296,204 @@ fn browser_launch_argv_carries_no_automation_switches() {
         .iter()
         .any(|arg| arg.starts_with("--use-mock-keychain")));
 }
+
+/// `browser.settings.set` writes the server's config file and reloads it;
+/// `mcp_agents` and `shell_hook` run their file-editing fix (on temporary
+/// files here); `browser.fix` replaces another instance's hook line; a
+/// failing file-editing check surfaces as `setup_needed` in `browser.get`.
+#[tokio::test(flavor = "current_thread")]
+async fn browser_settings_write_the_config_and_fix_the_hook_and_codex_entries() {
+    use crate::api::schema::{
+        BrowserFixParams, BrowserGetParams, BrowserSettingsSetParams, EmptyParams,
+    };
+    use crate::browser::setup::{self, SetupEnv};
+    use std::time::Duration;
+
+    let dir = std::env::temp_dir().join(format!(
+        "herdr-fork-smoke-browser-settings-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("home/.codex")).unwrap();
+    fs::create_dir_all(dir.join("bin")).unwrap();
+    fs::write(dir.join("bin/herdr"), "herdr").unwrap();
+    let config_path = dir.join("config.toml");
+    fs::write(&config_path, "[ui]\nsidebar_layout = \"tabs\"\n").unwrap();
+    std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &config_path);
+    let env = SetupEnv {
+        browser_home: dir.join("browser"),
+        binary: dir.join("bin/herdr"),
+        shell_file: dir.join("config/shell/herdr-plus.zsh"),
+        zshrc: Some(dir.join("home/.zshrc")),
+        claude_json: Some(dir.join("home/.claude.json")),
+        claude_bin: None,
+        codex_config: Some(dir.join("home/.codex/config.toml")),
+        codex_bin: None,
+        home: Some(dir.join("home")),
+        node_override: None,
+    };
+    let hub = crate::browser::hub();
+    hub.set_setup_env(Some(env.clone()));
+    let (mut server, _rx) = server_with_claude(None);
+
+    // A toggle: the file gets a [browser] section, the running config follows.
+    let set = api(
+        &mut server,
+        Method::BrowserSettingsSet(BrowserSettingsSetParams {
+            key: "pin_dashboard".into(),
+            value: serde_json::Value::Bool(false),
+        }),
+    );
+    assert_eq!(set["result"]["type"], "browser_settings", "{set}");
+    assert_eq!(set["result"]["settings"]["pin_dashboard"], false);
+    let text = fs::read_to_string(&config_path).unwrap();
+    assert!(
+        text.starts_with("[ui]\nsidebar_layout = \"tabs\"\n"),
+        "{text}"
+    );
+    assert!(text.contains("[browser]\npin_dashboard = false"), "{text}");
+    assert!(!hub.config().pin_dashboard, "reloaded live");
+    hub.wait_for_setup_idle(Duration::from_secs(20));
+
+    // The colour is normalised; a bad value and an unknown key are refused.
+    let set = api(
+        &mut server,
+        Method::BrowserSettingsSet(BrowserSettingsSetParams {
+            key: "activity_color".into(),
+            value: serde_json::Value::String("#00C8FF".into()),
+        }),
+    );
+    assert_eq!(
+        set["result"]["settings"]["activity_color"], "#00c8ff",
+        "{set}"
+    );
+    assert!(fs::read_to_string(&config_path)
+        .unwrap()
+        .contains("activity_color = \"#00c8ff\""));
+    let bad = api(
+        &mut server,
+        Method::BrowserSettingsSet(BrowserSettingsSetParams {
+            key: "activity_color".into(),
+            value: serde_json::Value::String("purple".into()),
+        }),
+    );
+    assert_eq!(bad["error"]["code"], "invalid_request", "{bad}");
+    let bad = api(
+        &mut server,
+        Method::BrowserSettingsSet(BrowserSettingsSetParams {
+            key: "executable".into(),
+            value: serde_json::Value::String("/x".into()),
+        }),
+    );
+    assert_eq!(bad["error"]["code"], "invalid_request", "{bad}");
+    hub.wait_for_setup_idle(Duration::from_secs(20));
+
+    // mcp_agents = ["codex"]: the Codex entry is written (for this binary), nothing for Claude.
+    let set = api(
+        &mut server,
+        Method::BrowserSettingsSet(BrowserSettingsSetParams {
+            key: "mcp_agents".into(),
+            value: serde_json::json!(["codex"]),
+        }),
+    );
+    assert_eq!(
+        set["result"]["settings"]["mcp_agents"],
+        serde_json::json!(["codex"]),
+        "{set}"
+    );
+    assert!(
+        hub.wait_for_setup_idle(Duration::from_secs(30)),
+        "the fix finishes"
+    );
+    let codex = fs::read_to_string(dir.join("home/.codex/config.toml")).unwrap();
+    assert!(codex.contains("[mcp_servers.herdr-browser]"), "{codex}");
+    assert!(
+        codex.contains(&dir.join("bin/herdr").display().to_string()),
+        "{codex}"
+    );
+    assert!(!dir.join("home/.claude.json").exists());
+    let settings = api(&mut server, Method::BrowserSettings(EmptyParams::default()));
+    let checks = settings["result"]["settings"]["checks"].as_array().unwrap();
+    let check = |id: &str| {
+        checks
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap_or_else(|| panic!("no check {id} in {checks:?}"))
+            .clone()
+    };
+    assert_eq!(check("mcp_codex")["ok"], true, "{}", check("mcp_codex"));
+    assert_eq!(
+        check("mcp_claude")["ok"],
+        true,
+        "off is fine: {}",
+        check("mcp_claude")
+    );
+    let fixes = settings["result"]["settings"]["fixes"].as_array().unwrap();
+    assert!(
+        fixes
+            .iter()
+            .any(|f| f["id"] == "mcp_codex" && f["ok"] == true),
+        "{fixes:?}"
+    );
+    assert_eq!(settings["result"]["settings"]["fixing"], false);
+    assert!(settings["result"]["settings"]["checked_at"].is_u64());
+
+    // shell_hook = true writes the managed file and the guarded line.
+    let set = api(
+        &mut server,
+        Method::BrowserSettingsSet(BrowserSettingsSetParams {
+            key: "shell_hook".into(),
+            value: serde_json::Value::Bool(true),
+        }),
+    );
+    assert_eq!(set["result"]["settings"]["shell_hook"], true, "{set}");
+    assert!(hub.wait_for_setup_idle(Duration::from_secs(30)));
+    let zshrc = fs::read_to_string(dir.join("home/.zshrc")).unwrap();
+    assert_eq!(setup::hook_lines(&zshrc), vec![env.shell_file.clone()]);
+    assert!(env.shell_file.is_file());
+
+    // Another instance's line: reported, `setup_needed`, replaced by fix all (backup first).
+    let other = PathBuf::from("/Users/me/.herdr-dev/config/herdr/shell/herdr-plus.zsh");
+    fs::write(
+        dir.join("home/.zshrc"),
+        format!("alias x=y\n{}\n", setup::zshrc_hook_line(&other)),
+    )
+    .unwrap();
+    hub.refresh_checks(true);
+    assert!(hub.wait_for_setup_idle(Duration::from_secs(20)));
+    let got = api(&mut server, Method::BrowserGet(BrowserGetParams::default()));
+    assert_eq!(got["result"]["browser"]["setup_needed"], true, "{got}");
+    let settings = api(&mut server, Method::BrowserSettings(EmptyParams::default()));
+    let hook = settings["result"]["settings"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "shell_hook")
+        .unwrap()
+        .clone();
+    assert_eq!(hook["ok"], false, "{hook}");
+    assert!(
+        hook["detail"]
+            .as_str()
+            .unwrap()
+            .contains("different instance"),
+        "{hook}"
+    );
+    assert_eq!(hook["fix_kind"], "edits_files");
+    let fix = api(
+        &mut server,
+        Method::BrowserFix(BrowserFixParams { ids: vec![] }),
+    );
+    assert_eq!(fix["result"]["settings"]["fixing"], true, "{fix}");
+    assert!(hub.wait_for_setup_idle(Duration::from_secs(30)));
+    let zshrc = fs::read_to_string(dir.join("home/.zshrc")).unwrap();
+    assert!(zshrc.starts_with("alias x=y\n"), "{zshrc}");
+    assert_eq!(setup::hook_lines(&zshrc), vec![env.shell_file.clone()]);
+    assert!(dir.join("home/.zshrc.herdr-backup").is_file());
+    let got = api(&mut server, Method::BrowserGet(BrowserGetParams::default()));
+    assert_eq!(got["result"]["browser"]["setup_needed"], false, "{got}");
+
+    hub.set_setup_env(None);
+    std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+    let _ = fs::remove_dir_all(&dir);
+}
