@@ -85,6 +85,7 @@ fn info() -> BrowserSettingsInfo {
         profile: "main".into(),
         running: true,
         status: "running · 3 tabs · 2 agents · profile main".into(),
+        agents: 2,
         checks: vec![
             check(
                 "executable",
@@ -191,6 +192,142 @@ fn the_browser_section_pulls_the_record_and_shows_rows_and_facts() {
     // the tab strip holds every section including the new one
     assert!(text.contains(" browser "), "{text}");
     assert_eq!(state.browser_section_rows(), 10);
+}
+
+/// The fixture with every check ok but the extension, whose detail is `detail`.
+fn with_extension(detail: &str, fix_kind: BrowserFixKind, agents: u32) -> BrowserSettingsInfo {
+    let mut info = info();
+    info.agents = agents;
+    for c in &mut info.checks {
+        c.ok = true;
+    }
+    let extension = info
+        .checks
+        .iter_mut()
+        .find(|c| c.id == "extension")
+        .unwrap();
+    extension.ok = false;
+    extension.detail = detail.into();
+    extension.fixable = fix_kind != BrowserFixKind::None;
+    extension.fix_kind = fix_kind;
+    info
+}
+
+#[test]
+fn the_fix_all_row_says_why_there_is_nothing_to_fix() {
+    use crate::client::shell::settings_browser::{row_labels, ROW_FIX};
+    let busy = with_extension(
+        "update waits for 2 agents — stop and reopen when done (worker v10, expects v11)",
+        BrowserFixKind::None,
+        2,
+    );
+    assert_eq!(
+        row_labels(&busy, None)[ROW_FIX],
+        "▸ fix all (extension waits for 2 agents)"
+    );
+    let one = with_extension(
+        "update waits for 1 agent — stop and reopen when done (worker v10, expects v11)",
+        BrowserFixKind::None,
+        1,
+    );
+    assert_eq!(
+        row_labels(&one, None)[ROW_FIX],
+        "▸ fix all (extension waits for 1 agent)"
+    );
+    let idle = with_extension(
+        "update pending — fix all restarts the browser (worker v10, expects v11)",
+        BrowserFixKind::Safe,
+        0,
+    );
+    assert_eq!(row_labels(&idle, None)[ROW_FIX], "▸ fix all (1 issue)");
+    let missing = with_extension(
+        "v11 · missing: no companion service worker on the DevTools port",
+        BrowserFixKind::None,
+        2,
+    );
+    assert_eq!(
+        row_labels(&missing, None)[ROW_FIX],
+        "▸ fix all (nothing fixable here)",
+        "a failing check that is not withheld, just not fixable"
+    );
+    let mut fine = info();
+    for c in &mut fine.checks {
+        c.ok = true;
+    }
+    assert_eq!(
+        row_labels(&fine, None)[ROW_FIX],
+        "▸ fix all (nothing to fix)"
+    );
+    assert_eq!(
+        row_labels(&busy, Some("Build"))[ROW_FIX],
+        "▸ fix all (extension waits for 2 agents) (on Build)"
+    );
+}
+
+#[test]
+fn fact_rows_are_clipped_at_the_panel_edge_with_an_ellipsis() {
+    use crate::client::shell::settings_browser::clip_segments;
+    let seg = |s: &str| (s.to_string(), None);
+    let texts = |out: Vec<(String, Option<ratatui::style::Color>)>| {
+        out.into_iter().map(|(t, _)| t).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        texts(clip_segments(&[seg("✗"), seg(" fits")], 10)),
+        ["✗", " fits"],
+        "nothing is cut when it fits"
+    );
+    assert_eq!(
+        texts(clip_segments(&[seg("✗"), seg(" a long reason here")], 8)),
+        ["✗", " a lon…"],
+        "the cut segment ends in an ellipsis within the width"
+    );
+    assert_eq!(
+        texts(clip_segments(&[seg("12345"), seg("678")], 5)).concat(),
+        "1234…",
+        "a full earlier segment gives a cell back for the ellipsis"
+    );
+    assert_eq!(
+        texts(clip_segments(&[seg("日本語")], 5)),
+        ["日本…"],
+        "wide characters count as two cells"
+    );
+    assert!(clip_segments(&[seg("x")], 0).is_empty());
+
+    // the frame: a long extension reason ends in `…` and never leaves the
+    // panel (the popup is 104 columns wide: the reason is padded with the
+    // sidecar's own words so it overflows the fact column)
+    let mut state = tabs_state();
+    state.compose(110, 34).expect("composed frame");
+    let outcome = open_browser_section(&mut state);
+    let [(request_id, _)] = &endpoint_requests(&outcome)[..] else {
+        panic!("one request");
+    };
+    let busy = with_extension(
+        "update waits for 2 agents — stop and reopen when done (worker v10, expects v11 — extension update pending: `herdr browser stop` and open again)",
+        BrowserFixKind::None,
+        2,
+    );
+    assert!(reply(&mut state, request_id, busy));
+    let text = settings_frame_text(&mut state);
+    let line = text
+        .lines()
+        .find(|l| l.contains("update waits for 2 agents"))
+        .unwrap_or_else(|| panic!("the extension row: {text}"));
+    assert!(
+        line.contains("✗ update waits for 2 agents — stop and reopen when done"),
+        "the actionable part survives: {line}"
+    );
+    // (the popup's right border follows the fact)
+    let inside = line.rsplit_once('│').map_or(line, |(inside, _)| inside);
+    assert!(inside.trim_end().ends_with('…'), "the tail is cut: {line}");
+    assert!(
+        !line.contains("open again)"),
+        "the tail is what goes: {line}"
+    );
+    assert!(
+        text.contains("▸ fix all (extension waits for 2 agents)"),
+        "{text}"
+    );
 }
 
 #[test]

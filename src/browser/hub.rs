@@ -591,6 +591,7 @@ impl BrowserHub {
             profile,
             running: running_profile.is_some(),
             status,
+            agents: running_profile.map_or(0, |p| p.agents),
             checks: setup.checks.clone(),
             checked_at: setup.checked_unix,
             checking: setup.checking,

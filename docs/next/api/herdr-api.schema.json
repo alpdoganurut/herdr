@@ -13937,6 +13937,13 @@
             "activity_color": {
               "type": "string"
             },
+            "agents": {
+              "default": 0,
+              "description": "Agent panes using the default profile right now (0 when it is not\nrunning); the `fix all` row says when the extension update waits\nfor them.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
             "checked_at": {
               "format": "uint64",
               "minimum": 0,

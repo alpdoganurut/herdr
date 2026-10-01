@@ -1051,11 +1051,7 @@ pub fn checks(
                 check(
                     "extension",
                     false,
-                    if idle {
-                        state.to_string()
-                    } else {
-                        format!("{state} — stop and open when the agents are done")
-                    },
+                    extension_update_detail(state, profile.agents),
                     if idle {
                         BrowserFixKind::Safe
                     } else {
@@ -1372,6 +1368,39 @@ pub fn mark_set_up(env: &SetupEnv) {
     let _ = write_setup_record(&env.browser_home, &record);
 }
 
+/// The detail of a failing extension check: the actionable part first (it
+/// is what survives the settings panel's clipping), the versions after.
+/// `state` is the sidecar's companion line (`worker v10, this herdr expects
+/// v11 — extension update pending: …`).
+pub(crate) fn extension_update_detail(state: &str, agents: u32) -> String {
+    let versions = companion_versions(state);
+    if agents == 0 {
+        format!("update pending — fix all restarts the browser ({versions})")
+    } else {
+        format!(
+            "update waits for {agents} agent{} — stop and reopen when done ({versions})",
+            if agents == 1 { "" } else { "s" }
+        )
+    }
+}
+
+/// `worker v10, expects v11` out of the sidecar's companion line; the line
+/// itself when it has no such tokens.
+fn companion_versions(state: &str) -> String {
+    let token = |prefix: &str| -> Option<String> {
+        let start = state.find(prefix)? + prefix.len();
+        let value: String = state[start..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '?')
+            .collect();
+        (!value.is_empty()).then_some(value)
+    };
+    match (token("worker v"), token("expects v")) {
+        (Some(worker), Some(expects)) => format!("worker v{worker}, expects v{expects}"),
+        _ => state.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1413,6 +1442,35 @@ mod tests {
             .iter()
             .find(|c| c.id == id)
             .unwrap_or_else(|| panic!("no check {id}"))
+    }
+
+    #[test]
+    fn the_extension_update_detail_leads_with_what_to_do() {
+        let state = "worker v10, this herdr expects v11 — extension update pending: `herdr browser stop` and open again";
+        assert_eq!(
+            extension_update_detail(state, 0),
+            "update pending — fix all restarts the browser (worker v10, expects v11)"
+        );
+        assert_eq!(
+            extension_update_detail(state, 1),
+            "update waits for 1 agent — stop and reopen when done (worker v10, expects v11)"
+        );
+        assert_eq!(
+            extension_update_detail(state, 3),
+            "update waits for 3 agents — stop and reopen when done (worker v10, expects v11)"
+        );
+        assert_eq!(
+            extension_update_detail(
+                "worker v?, this herdr expects v11 — extension update pending",
+                0
+            ),
+            "update pending — fix all restarts the browser (worker v?, expects v11)"
+        );
+        assert_eq!(
+            companion_versions("something else entirely"),
+            "something else entirely",
+            "no tokens: the line as it came"
+        );
     }
 
     #[test]

@@ -111,6 +111,14 @@ pub(super) fn fixable_issues(info: &BrowserSettingsInfo) -> usize {
     info.checks.iter().filter(|c| !c.ok && c.fixable).count()
 }
 
+/// The extension update is failing but withheld: agents use the browser
+/// (the server's check says so and is not fixable while they do).
+fn extension_update_withheld(info: &BrowserSettingsInfo) -> bool {
+    info.agents > 0
+        && check(info, "extension")
+            .is_some_and(|c| !c.ok && !c.fixable && c.detail.contains("waits for"))
+}
+
 fn check<'a>(info: &'a BrowserSettingsInfo, id: &str) -> Option<&'a BrowserCheckInfo> {
     info.checks.iter().find(|c| c.id == id)
 }
@@ -476,14 +484,71 @@ fn draw_fact(
         dim,
     );
     let mut x = area.x.saturating_add(14);
-    for (segment, color) in segments {
+    // a fact never runs past the panel: what does not fit ends in `…`
+    for (segment, color) in clip_segments(segments, area.right().saturating_sub(x)) {
         if x >= area.right() {
             break;
         }
         let style = color.map_or(text, |c| text.fg(c));
-        put_text(buffer, x, y, area.right().saturating_sub(x), segment, style);
-        x = x.saturating_add(display_width(segment));
+        put_text(
+            buffer,
+            x,
+            y,
+            area.right().saturating_sub(x),
+            &segment,
+            style,
+        );
+        x = x.saturating_add(display_width(&segment));
     }
+}
+
+/// `segments` cut to `width` display cells; a cut segment ends in `…` and
+/// nothing follows it (the mark and the start of the reason survive, the
+/// tail goes).
+pub(super) fn clip_segments(
+    segments: &[(String, Option<ratatui::style::Color>)],
+    width: u16,
+) -> Segments {
+    use unicode_width::UnicodeWidthChar;
+    let mut out: Segments = Vec::new();
+    let mut used: u16 = 0;
+    for (text, color) in segments {
+        let wanted = display_width(text);
+        if used.saturating_add(wanted) <= width {
+            out.push((text.clone(), *color));
+            used = used.saturating_add(wanted);
+            continue;
+        }
+        if width == 0 {
+            return out;
+        }
+        // room for the kept head plus the ellipsis; a full earlier segment
+        // gives a cell back when nothing of this one fits
+        let mut room = width.saturating_sub(used);
+        if room == 0 {
+            if let Some((last, _)) = out.last_mut() {
+                if let Some(ch) = last.pop() {
+                    used = used.saturating_sub(UnicodeWidthChar::width(ch).unwrap_or(0) as u16);
+                    room = width.saturating_sub(used);
+                }
+            }
+        }
+        let head = room.saturating_sub(1);
+        let mut kept = String::new();
+        let mut kept_width: u16 = 0;
+        for ch in text.chars() {
+            let w = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+            if kept_width.saturating_add(w) > head {
+                break;
+            }
+            kept.push(ch);
+            kept_width = kept_width.saturating_add(w);
+        }
+        kept.push('…');
+        out.push((kept, *color));
+        return out;
+    }
+    out
 }
 
 fn mark(ok: bool, palette: &Palette) -> (String, Option<ratatui::style::Color>) {
@@ -505,6 +570,14 @@ pub(super) fn row_labels(info: &BrowserSettingsInfo, remote_label: Option<&str>)
         "▸ fixing…".to_string()
     } else {
         match fixable_issues(info) {
+            0 if extension_update_withheld(info) => format!(
+                "▸ fix all (extension waits for {} agent{})",
+                info.agents,
+                if info.agents == 1 { "" } else { "s" }
+            ),
+            0 if info.checks.iter().any(|c| !c.ok) => {
+                "▸ fix all (nothing fixable here)".to_string()
+            }
             0 => "▸ fix all (nothing to fix)".to_string(),
             1 => "▸ fix all (1 issue)".to_string(),
             n => format!("▸ fix all ({n} issues)"),

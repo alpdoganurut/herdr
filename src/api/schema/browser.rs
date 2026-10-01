@@ -738,6 +738,11 @@ pub struct BrowserSettingsInfo {
     /// `running · 3 tabs · 2 agents · profile main`, `stopped`, `off`.
     #[serde(default)]
     pub status: String,
+    /// Agent panes using the default profile right now (0 when it is not
+    /// running); the `fix all` row says when the extension update waits
+    /// for them.
+    #[serde(default)]
+    pub agents: u32,
     #[serde(default)]
     pub checks: Vec<BrowserCheckInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
