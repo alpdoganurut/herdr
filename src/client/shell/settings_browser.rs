@@ -190,14 +190,9 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         if !self.browser_section_open() {
-            self.pending_browser_wrap = None;
             return;
         }
         if self.browser_settings().is_some_and(|b| b.loading) {
-            return;
-        }
-        // the `steer + wrap` row's second key, once the first reply is in
-        if self.continue_browser_steer_wrap(outcome) {
             return;
         }
         let due = self
@@ -234,12 +229,6 @@ impl ClientShellState {
                 browser.poll_at =
                     (settings.checking || settings.fixing).then_some(now + POLL_INTERVAL);
                 browser.info = Some(settings);
-                if self.pending_browser_wrap.is_some() {
-                    // the second key of the steer + wrap row goes out on the next tick
-                    if let Some(browser) = self.browser_settings_mut() {
-                        browser.poll_at = Some(now);
-                    }
-                }
             }
             Ok(_) => {
                 browser.info = None;
@@ -307,11 +296,9 @@ impl ClientShellState {
                 outcome,
             ),
             ROW_STEER => {
-                // One row for both keys: on when both are on.
+                // One row, both keys, one server-side write: on when both are on.
                 let on = !(info.steer_agents && info.wrap_agents);
-                self.set_browser_setting("steer_agents", on.into(), outcome);
-                // the second write follows the first reply (tick_browser_settings)
-                self.pending_browser_wrap = Some(on);
+                self.set_browser_setting("steer_wrap", on.into(), outcome);
             }
             ROW_HIDE_NATIVE => self.set_browser_setting(
                 "disable_native_browser",
@@ -384,23 +371,6 @@ impl ClientShellState {
             }
             _ => {}
         }
-    }
-
-    /// The second half of the `steer + wrap` row: after `steer_agents` was
-    /// written, `wrap_agents` follows with the same value.
-    pub(super) fn continue_browser_steer_wrap(&mut self, outcome: &mut ClientShellInput) -> bool {
-        let Some(on) = self.pending_browser_wrap.take() else {
-            return false;
-        };
-        if self
-            .browser_settings()
-            .and_then(|b| b.info.as_ref())
-            .is_some_and(|info| info.wrap_agents == on)
-        {
-            return false;
-        }
-        self.set_browser_setting("wrap_agents", on.into(), outcome);
-        true
     }
 
     /// The section's own keys, ahead of the overlay's: → cycles the colour

@@ -692,6 +692,8 @@ impl ClientShellState {
                         if browser.unchanged {
                             if let Some(info) = self.browser.info.as_mut() {
                                 info.enabled = browser.enabled;
+                                // the `!` hint travels with every reply, changed or not
+                                info.setup_needed = browser.setup_needed;
                             }
                         } else {
                             if browser

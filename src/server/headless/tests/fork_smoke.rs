@@ -1493,6 +1493,95 @@ async fn browser_settings_write_the_config_and_fix_the_hook_and_codex_entries() 
     let got = api(&mut server, Method::BrowserGet(BrowserGetParams::default()));
     assert_eq!(got["result"]["browser"]["setup_needed"], false, "{got}");
 
+    // steer + wrap: one request writes both keys in one file write.
+    let set = api(
+        &mut server,
+        Method::BrowserSettingsSet(BrowserSettingsSetParams {
+            key: "steer_wrap".into(),
+            value: serde_json::Value::Bool(false),
+        }),
+    );
+    assert_eq!(set["result"]["settings"]["steer_agents"], false, "{set}");
+    assert_eq!(set["result"]["settings"]["wrap_agents"], false, "{set}");
+    let text = fs::read_to_string(&config_path).unwrap();
+    assert!(
+        text.contains("steer_agents = false") && text.contains("wrap_agents = false"),
+        "{text}"
+    );
+    hub.wait_for_setup_idle(Duration::from_secs(20));
+
+    // A request during a running fix is queued and drained by the same worker.
+    hub.run_fixes(vec!["shell_hook".into()]);
+    hub.run_fixes(vec!["mcp_codex".into()]);
+    let (fixing, pending, _) = hub.setup_test_state();
+    assert!(fixing);
+    assert_eq!(
+        pending.as_deref(),
+        Some(&["mcp_codex".to_string()][..]),
+        "queued behind the running fix"
+    );
+    hub.run_fixes(vec![]);
+    assert_eq!(
+        hub.setup_test_state().1.as_deref(),
+        Some(&[][..]),
+        "an all request absorbs the named ones"
+    );
+    assert!(hub.wait_for_setup_idle(Duration::from_secs(40)));
+    let settings = api(&mut server, Method::BrowserSettings(EmptyParams::default()));
+    let fixes = settings["result"]["settings"]["fixes"].as_array().unwrap();
+    assert!(
+        fixes.iter().any(|f| f["id"] == "shell_hook"),
+        "the first batch: {fixes:?}"
+    );
+    assert!(hub.setup_test_state().1.is_none());
+    // a check result from before a fix is discarded
+    let (_, _, generation) = hub.setup_test_state();
+    hub.setup_test_bump();
+    assert!(
+        !hub.setup_test_store(Vec::new(), Some(generation)),
+        "stale generation dropped"
+    );
+    assert!(hub.setup_test_store(Vec::new(), Some(generation + 1)));
+    hub.refresh_checks(true);
+    assert!(hub.wait_for_setup_idle(Duration::from_secs(20)));
+
+    // A write the reload cannot apply (an invalid [browser] section) is an error and runs no fix.
+    let text = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        &config_path,
+        text.replace("[browser]\n", "[browser]\nenabled = \"maybe\"\n"),
+    )
+    .unwrap();
+    let hook_before = fs::read_to_string(dir.join("home/.zshrc")).unwrap();
+    let refused = api(
+        &mut server,
+        Method::BrowserSettingsSet(BrowserSettingsSetParams {
+            key: "shell_hook".into(),
+            value: serde_json::Value::Bool(false),
+        }),
+    );
+    assert_eq!(
+        refused["error"]["code"], "browser_config_write_failed",
+        "{refused}"
+    );
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("written but not applied"),
+        "{refused}"
+    );
+    assert!(
+        hub.config().shell_hook,
+        "the running config kept the old value"
+    );
+    hub.wait_for_setup_idle(Duration::from_secs(20));
+    assert_eq!(
+        fs::read_to_string(dir.join("home/.zshrc")).unwrap(),
+        hook_before,
+        "no fix ran on the old setting"
+    );
+
     hub.set_setup_env(None);
     std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
     let _ = fs::remove_dir_all(&dir);

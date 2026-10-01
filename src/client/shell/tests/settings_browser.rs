@@ -247,23 +247,13 @@ fn rows_send_the_settings_writes_and_the_actions() {
     assert_eq!(next_color("#123456"), COLOR_PRESETS[0]);
     assert_eq!(next_color(COLOR_PRESETS[4]), COLOR_PRESETS[0]);
 
-    // the steer + wrap row writes both keys, the second after the first reply
+    // the steer + wrap row writes both keys with one request (`steer_wrap`)
     state.handle_input_bytes(b"\x1b[B");
     assert_eq!(selected_row(&state), ROW_STEER);
     let (id, key, value) = one_set(&state.handle_input_bytes(b"\r"));
     assert_eq!(
         (key.as_str(), value),
-        ("steer_agents", serde_json::Value::Bool(false))
-    );
-    let mut half = info();
-    half.steer_agents = false;
-    reply(&mut state, &id, half);
-    let mut outcome = ClientShellInput::default();
-    state.tick_browser(std::time::Instant::now(), &mut outcome);
-    let (id, key, value) = one_set(&outcome);
-    assert_eq!(
-        (key.as_str(), value),
-        ("wrap_agents", serde_json::Value::Bool(false))
+        ("steer_wrap", serde_json::Value::Bool(false))
     );
     let mut both = info();
     both.steer_agents = false;
@@ -584,5 +574,69 @@ fn the_browser_row_hints_at_setup_needed() {
         browser_row_state(&info).1,
         "crashed",
         "a crash outranks the hint"
+    );
+}
+
+#[test]
+fn an_unchanged_browser_get_reply_still_carries_the_setup_hint() {
+    let mut state = tabs_state();
+    state.compose(110, 34).expect("composed frame");
+    let mut outcome = ClientShellInput::default();
+    state.tick_browser(std::time::Instant::now(), &mut outcome);
+    let requests: Vec<_> = outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(request.clone()),
+            _ => None,
+        })
+        .collect();
+    let [request] = &requests[..] else {
+        panic!("one browser.get, got {requests:?}");
+    };
+    let full = crate::api::schema::BrowserGetInfo {
+        seq: 3,
+        enabled: true,
+        ..Default::default()
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        &request.id,
+        Ok(ResponseResult::BrowserGet { browser: full }),
+    );
+    assert_eq!(
+        state.browser_row().map(|row| row.status),
+        Some("stopped".to_string())
+    );
+    state.refresh_browser();
+    let mut outcome = ClientShellInput::default();
+    state.tick_browser(
+        std::time::Instant::now() + std::time::Duration::from_secs(30),
+        &mut outcome,
+    );
+    let request = outcome
+        .actions
+        .iter()
+        .find_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(request.clone()),
+            _ => None,
+        })
+        .expect("a second pull");
+    let unchanged = crate::api::schema::BrowserGetInfo {
+        seq: 3,
+        unchanged: true,
+        enabled: true,
+        setup_needed: true,
+        ..Default::default()
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        &request.id,
+        Ok(ResponseResult::BrowserGet { browser: unchanged }),
+    );
+    assert_eq!(
+        state.browser_row().map(|row| row.status),
+        Some("stopped !".to_string()),
+        "the hint arrives with an unchanged reply"
     );
 }

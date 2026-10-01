@@ -1113,9 +1113,6 @@ pub(crate) struct ClientShellState {
     pub(super) breathe_epoch: std::time::Instant,
     /// Fork: test override of the clock the breathing phase is read from.
     pub(super) breathe_clock: Option<std::time::Instant>,
-    /// Fork: the settings browser section's `steer + wrap` row writes two
-    /// keys; the second follows the first reply.
-    pub(super) pending_browser_wrap: Option<bool>,
     pub(super) selection_repaint_deadline: Option<std::time::Instant>,
     pub(super) hits: ShellHitMap,
     pub(super) endpoints: Vec<ClientShellEndpoint>,
@@ -1306,7 +1303,6 @@ impl ClientShellState {
             breathe_epoch,
             // Tests draw the breath's first frame unless they move the clock.
             breathe_clock: cfg!(test).then_some(breathe_epoch),
-            pending_browser_wrap: None,
             selection_repaint_deadline: None,
             hits: ShellHitMap::default(),
             endpoints: vec![local_endpoint()],

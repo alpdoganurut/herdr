@@ -27,7 +27,7 @@ impl App {
         // The checks behind the Browser row's `setup needed` hint, off this
         // thread (not under cfg(test): every test process would probe the
         // real home directory).
-        if !cfg!(test) {
+        if !cfg!(test) && config.enabled {
             hub.refresh_checks(false);
         }
     }
@@ -91,6 +91,7 @@ impl App {
         };
         let list: Vec<String>;
         let text: String;
+        let pairs: [(&'static str, bool); 2];
         let edit = match key {
             "enabled" => ConfigEdit::BrowserBool {
                 key: "enabled",
@@ -120,6 +121,11 @@ impl App {
                 key: "shell_hook",
                 value: as_bool()?,
             },
+            // the settings row `agents use herdr's browser`: both keys, one write
+            "steer_wrap" => {
+                pairs = [("steer_agents", as_bool()?), ("wrap_agents", as_bool()?)];
+                ConfigEdit::BrowserBools { pairs: &pairs }
+            }
             "activity_color" => {
                 text = value
                     .as_str()
@@ -165,9 +171,40 @@ impl App {
                 )))
             }
         };
+        // What the running config must say afterwards (normalised like the edit).
+        let requested = match &edit {
+            ConfigEdit::BrowserBool { value, .. } => serde_json::Value::Bool(*value),
+            ConfigEdit::BrowserBools { pairs } => serde_json::Value::Bool(pairs[0].1),
+            ConfigEdit::BrowserString { value, .. } => serde_json::Value::String(value.to_string()),
+            ConfigEdit::BrowserList { values, .. } => serde_json::json!(values),
+            _ => serde_json::Value::Null,
+        };
         crate::config::write_edit(edit)
             .map_err(|err| BrowserError::new("browser_config_write_failed", err))?;
         let report = self.reload_config();
+        // The reload keeps an invalid [browser] section's previous values (and
+        // a file that does not parse at all): then the write did not apply,
+        // and a fix would act on the old setting.
+        let applied = hub().config();
+        let actual = browser_config_value(&applied, key);
+        if actual != requested {
+            tracing::warn!(
+                event = "browser.settings.set",
+                key,
+                status = ?report.status,
+                "browser setting written but not applied by the reload"
+            );
+            let why = report
+                .diagnostics
+                .iter()
+                .find(|d| d.contains("browser"))
+                .cloned()
+                .unwrap_or_else(|| "the [browser] section did not reload".to_string());
+            return Err(BrowserError::new(
+                "browser_config_write_failed",
+                format!("written but not applied: {why}"),
+            ));
+        }
         tracing::info!(
             event = "browser.settings.set",
             key,
@@ -184,6 +221,10 @@ impl App {
 
     pub(super) fn handle_browser_get(&mut self, id: String, params: BrowserGetParams) -> String {
         self.release_gone_panes();
+        // The `!` hint notices external changes (a hand-edited .zshrc, a
+        // removed registration) on a slow cadence: node and launchctl are
+        // not worth spawning every 2 s pull.
+        hub().refresh_checks_if_older(std::time::Duration::from_secs(5 * 60));
         let mut browser = hub().get(params.since_seq);
         browser.setup_needed = hub().setup_needed();
         // Actors whose pane is gone: re-resolved here, where the App knows.
@@ -344,5 +385,24 @@ impl App {
             gone: false,
             shell_pid,
         })
+    }
+}
+
+/// The running config's value for a `browser.settings.set` key, in the
+/// shape the request carried (`steer_wrap` is the two toggles' common value,
+/// `Null` when they disagree).
+fn browser_config_value(config: &crate::config::BrowserConfig, key: &str) -> serde_json::Value {
+    match key {
+        "enabled" => config.enabled.into(),
+        "show_activity" => config.show_activity.into(),
+        "pin_dashboard" => config.pin_dashboard.into(),
+        "steer_agents" => config.steer_agents.into(),
+        "wrap_agents" => config.wrap_agents.into(),
+        "disable_native_browser" => config.disable_native_browser.into(),
+        "shell_hook" => config.shell_hook.into(),
+        "steer_wrap" if config.steer_agents == config.wrap_agents => config.steer_agents.into(),
+        "activity_color" => config.activity_color.trim().to_ascii_lowercase().into(),
+        "mcp_agents" => serde_json::json!(config.mcp_agents),
+        _ => serde_json::Value::Null,
     }
 }

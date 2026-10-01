@@ -66,6 +66,12 @@ struct SetupState {
     checking: bool,
     fixing: bool,
     fixes: Vec<BrowserFixResult>,
+    /// Fix requests that arrived while one ran: merged ids (`Some(empty)` =
+    /// every failing fixable check), drained by the worker before it ends.
+    pending: Option<Vec<String>>,
+    /// Bumped by every fix batch: a check refresh started before it is
+    /// discarded instead of overwriting the fresh results.
+    generation: u64,
 }
 
 /// Checks older than this are refreshed by the next `browser.settings`.
@@ -88,7 +94,7 @@ struct Inner {
     respawns: Mutex<VecDeque<Instant>>,
     supervisor: AtomicBool,
     /// The safe fixes after a herdr update ran (once per process, on the first start).
-    auto_repaired: AtomicBool,
+    auto_repaired: std::sync::Once,
     /// Skip the executable check and the `hello` node checks (fake host tests).
     test_mode: AtomicBool,
     /// Serializes the whole persistence transaction (snapshot, save, append,
@@ -169,7 +175,7 @@ impl BrowserHub {
                 host_lock: Mutex::new(()),
                 respawns: Mutex::new(VecDeque::new()),
                 supervisor: AtomicBool::new(false),
-                auto_repaired: AtomicBool::new(false),
+                auto_repaired: std::sync::Once::new(),
                 test_mode: AtomicBool::new(false),
                 flush_lock: Mutex::new(()),
                 read_cache: Mutex::new(HashMap::new()),
@@ -483,20 +489,22 @@ impl BrowserHub {
     /// the start thread — never a user file, never on the App thread (a
     /// `stop` can reach `ensure_host` from there), once per process.
     fn auto_repair_once(&self) {
-        if self.inner.test_mode.load(Ordering::Relaxed)
-            || self.inner.auto_repaired.swap(true, Ordering::SeqCst)
-        {
+        if self.inner.test_mode.load(Ordering::Relaxed) {
             return;
         }
-        match setup::auto_repair(&self.config(), &self.setup_env()) {
-            Some(Ok(detail)) => {
-                tracing::info!(event = "browser.auto_repair", %detail, "browser helper refreshed after a herdr update")
+        // Once: concurrent first uses (an agent's run and a start) wait for
+        // the one that runs it.
+        self.inner.auto_repaired.call_once(|| {
+            match setup::auto_repair(&self.config(), &self.setup_env()) {
+                Some(Ok(detail)) => {
+                    tracing::info!(event = "browser.auto_repair", %detail, "browser helper refreshed after a herdr update")
+                }
+                Some(Err(error)) => {
+                    tracing::warn!(event = "browser.auto_repair", %error, "browser helper could not be refreshed; `herdr browser setup`")
+                }
+                None => {}
             }
-            Some(Err(error)) => {
-                tracing::warn!(event = "browser.auto_repair", %error, "browser helper could not be refreshed; `herdr browser setup`")
-            }
-            None => {}
-        }
+        });
     }
 
     /// The process environment with this hub's home (tests run on a temporary one).
@@ -518,6 +526,7 @@ impl BrowserHub {
         setup.checked_at = None;
         setup.checked_unix = None;
         setup.fixes.clear();
+        setup.pending = None;
     }
 
     /// Tests: wait for a check refresh or a fix in flight.
@@ -527,7 +536,7 @@ impl BrowserHub {
         loop {
             {
                 let setup = self.inner.setup.lock().unwrap();
-                if !setup.checking && !setup.fixing {
+                if !setup.checking && !setup.fixing && setup.pending.is_none() {
                     return true;
                 }
             }
@@ -593,21 +602,31 @@ impl BrowserHub {
     /// when they are fresh). One refresh at a time; a fix in flight ends
     /// with its own.
     pub fn refresh_checks(&self, force: bool) {
-        {
+        self.refresh_checks_if_older(if force {
+            Duration::ZERO
+        } else {
+            CHECKS_STALE_AFTER
+        });
+    }
+
+    /// Refresh the cached checks when they are older than `max_age`, off the
+    /// caller's thread. One refresh at a time; a fix in flight ends with its
+    /// own; a result that a fix overtook is discarded (generation).
+    pub fn refresh_checks_if_older(&self, max_age: Duration) {
+        let generation = {
             let mut setup = self.inner.setup.lock().unwrap();
-            let fresh = setup
-                .checked_at
-                .is_some_and(|at| at.elapsed() < CHECKS_STALE_AFTER);
-            if setup.checking || setup.fixing || (fresh && !force) {
+            let fresh = setup.checked_at.is_some_and(|at| at.elapsed() < max_age);
+            if setup.checking || setup.fixing || fresh {
                 return;
             }
             setup.checking = true;
-        }
+            setup.generation
+        };
         let hub = self.clone();
         if std::thread::Builder::new()
             .name("herdr-browser-checks".into())
             .spawn(move || {
-                hub.compute_checks();
+                hub.compute_checks(Some(generation));
                 hub.inner.setup.lock().unwrap().checking = false;
             })
             .is_err()
@@ -616,84 +635,156 @@ impl BrowserHub {
         }
     }
 
-    fn compute_checks(&self) {
+    /// Compute the checks and store them — unless `expected` names a
+    /// generation a fix has moved past since (its own results are newer).
+    fn compute_checks(&self, expected: Option<u64>) -> bool {
         let config = self.config();
         let env = self.setup_env();
         let live = self.get(None);
         let checks = setup::checks(&config, &env, Some(&live));
+        self.store_checks(checks, expected)
+    }
+
+    fn store_checks(&self, checks: Vec<BrowserCheckInfo>, expected: Option<u64>) -> bool {
         let mut setup = self.inner.setup.lock().unwrap();
+        if expected.is_some_and(|generation| generation != setup.generation) {
+            return false;
+        }
         setup.checks = checks;
         setup.checked_at = Some(Instant::now());
         setup.checked_unix = Some(unix_now());
+        true
     }
 
     /// `browser.fix`: run the fixes for `ids` (empty: every failing fixable
-    /// check) off the caller's thread, then refresh the checks. The
-    /// `extension` fix is a browser restart of the default profile.
+    /// check) off the caller's thread, then refresh the checks. A request
+    /// during a running fix is queued (ids merged; empty wins) and drained by
+    /// the same worker with a fresh config. The `extension` fix is a
+    /// synchronous restart of the default profile.
     pub fn run_fixes(&self, ids: Vec<String>) {
         {
             let mut setup = self.inner.setup.lock().unwrap();
             if setup.fixing {
+                // merge: an "all" request (empty) absorbs named ones
+                match setup.pending.as_mut() {
+                    None => setup.pending = Some(ids),
+                    Some(pending) if pending.is_empty() => {}
+                    Some(pending) if ids.is_empty() => pending.clear(),
+                    Some(pending) => {
+                        for id in ids {
+                            if !pending.contains(&id) {
+                                pending.push(id);
+                            }
+                        }
+                    }
+                }
                 return;
             }
             setup.fixing = true;
             setup.fixes.clear();
+            setup.pending = None;
+            setup.generation += 1;
         }
         let hub = self.clone();
         if std::thread::Builder::new()
             .name("herdr-browser-fix".into())
             .spawn(move || {
-                hub.compute_checks();
-                let config = hub.config();
-                let env = hub.setup_env();
-                let checks = hub.inner.setup.lock().unwrap().checks.clone();
-                let mut results = setup::fix_all(&ids, &checks, &config, &env);
-                let restart = if ids.is_empty() {
-                    checks
-                        .iter()
-                        .any(|c| c.id == "extension" && !c.ok && c.fixable)
-                } else {
-                    ids.iter().any(|id| id == "extension")
-                };
-                if restart {
-                    let detail = hub
-                        .stop(None, false)
-                        .and_then(|_| hub.start(None))
-                        .map(|_| "browser restarted; the new extension files load".to_string());
-                    results.push(match detail {
-                        Ok(detail) => BrowserFixResult {
-                            id: "extension".into(),
-                            ok: true,
-                            detail,
-                        },
-                        Err(err) => BrowserFixResult {
-                            id: "extension".into(),
-                            ok: false,
-                            detail: err.message,
-                        },
-                    });
+                let mut ids = ids;
+                let mut results: Vec<BrowserFixResult> = Vec::new();
+                loop {
+                    results.extend(hub.run_fix_batch(&ids));
+                    let mut setup = hub.inner.setup.lock().unwrap();
+                    match setup.pending.take() {
+                        Some(next) => {
+                            setup.generation += 1;
+                            drop(setup);
+                            ids = next;
+                        }
+                        None => {
+                            setup.fixes = results;
+                            setup.fixing = false;
+                            break;
+                        }
+                    }
                 }
-                if results.iter().any(|r| r.id == "helper" && r.ok) {
-                    setup::mark_set_up(&env);
-                }
-                for result in &results {
-                    tracing::info!(
-                        event = "browser.fix",
-                        id = %result.id,
-                        ok = result.ok,
-                        detail = %result.detail,
-                        "browser setup fix"
-                    );
-                }
-                hub.compute_checks();
-                let mut setup = hub.inner.setup.lock().unwrap();
-                setup.fixes = results;
-                setup.fixing = false;
             })
             .is_err()
         {
-            self.inner.setup.lock().unwrap().fixing = false;
+            let mut setup = self.inner.setup.lock().unwrap();
+            setup.fixing = false;
+            setup.pending = None;
         }
+    }
+
+    /// One batch of fixes with a fresh config; ends with fresh checks.
+    fn run_fix_batch(&self, ids: &[String]) -> Vec<BrowserFixResult> {
+        self.compute_checks(None);
+        let config = self.config();
+        let env = self.setup_env();
+        let checks = self.inner.setup.lock().unwrap().checks.clone();
+        let mut results = setup::fix_all(ids, &checks, &config, &env);
+        let restart = if ids.is_empty() {
+            checks
+                .iter()
+                .any(|c| c.id == "extension" && !c.ok && c.fixable)
+        } else {
+            ids.iter().any(|id| id == "extension")
+        };
+        if restart {
+            let name = config.default_profile().to_string();
+            // Synchronous: stop, mark starting, run — `ok` only when the
+            // profile is up again.
+            self.stop_profile(&name);
+            self.inner
+                .state
+                .lock()
+                .unwrap()
+                .set_profile(&name, ProfileStatus::Starting { since: unix_now() });
+            results.push(match self.ensure_running(&name) {
+                Ok(()) => BrowserFixResult {
+                    id: "extension".into(),
+                    ok: true,
+                    detail: "browser restarted; the new extension files load".into(),
+                },
+                Err(err) => BrowserFixResult {
+                    id: "extension".into(),
+                    ok: false,
+                    detail: err.message,
+                },
+            });
+        }
+        if results.iter().any(|r| r.id == "helper" && r.ok) {
+            setup::mark_set_up(&env);
+        }
+        for result in &results {
+            tracing::info!(
+                event = "browser.fix",
+                id = %result.id,
+                ok = result.ok,
+                detail = %result.detail,
+                "browser setup fix"
+            );
+        }
+        self.compute_checks(None);
+        results
+    }
+
+    /// Tests: what a fix request would do while a fix runs, and whether a
+    /// stale check result is dropped.
+    #[cfg(test)]
+    pub fn setup_test_state(&self) -> (bool, Option<Vec<String>>, u64) {
+        let setup = self.inner.setup.lock().unwrap();
+        (setup.fixing, setup.pending.clone(), setup.generation)
+    }
+
+    #[cfg(test)]
+    pub fn setup_test_bump(&self) {
+        self.inner.setup.lock().unwrap().generation += 1;
+    }
+
+    #[cfg(test)]
+    pub fn setup_test_store(&self, checks: Vec<BrowserCheckInfo>, expected: Option<u64>) -> bool {
+        self.store_checks(checks, expected)
     }
 
     pub fn status(&self) -> BrowserStatusInfo {
@@ -2239,6 +2330,10 @@ impl BrowserHub {
         if already_attached {
             return Ok(());
         }
+        // An agent's first use after a herdr update (autostart is off by
+        // default) repairs the helper before the sidecar starts: once per
+        // process, concurrent first uses wait for it.
+        self.auto_repair_once();
 
         let alive = |pid: u32| crate::platform::process_exists(pid);
         let answers = |port: u16| launch::json_version(port, Duration::from_millis(1500)).is_some();

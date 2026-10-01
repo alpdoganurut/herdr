@@ -33,6 +33,11 @@ pub(crate) enum ConfigEdit<'a> {
         key: &'static str,
         values: &'a [String],
     },
+    /// Fork: several `[browser]` toggles in one write (the settings row
+    /// `agents use herdr's browser` sets steer_agents and wrap_agents).
+    BrowserBools {
+        pairs: &'a [(&'static str, bool)],
+    },
 }
 
 /// Fork: minutes past midnight as a 24-hour "HH:MM".
@@ -51,9 +56,10 @@ impl ConfigEdit<'_> {
             Self::DailyReminderTime(_) => "daily reminder time",
             Self::SoundFile { .. } => "sound setting",
             Self::NewsEnabled(_) | Self::NewsTimes(_) | Self::NewsQuietHours(_) => "news setting",
-            Self::BrowserBool { .. } | Self::BrowserString { .. } | Self::BrowserList { .. } => {
-                "browser setting"
-            }
+            Self::BrowserBool { .. }
+            | Self::BrowserString { .. }
+            | Self::BrowserList { .. }
+            | Self::BrowserBools { .. } => "browser setting",
         }
     }
 
@@ -128,29 +134,121 @@ impl ConfigEdit<'_> {
                 "quiet_hours",
                 &toml::Value::String(window.trim().to_owned()).to_string(),
             ),
-            Self::BrowserBool { key, value } => {
-                super::upsert_section_bool(content, "browser", key, value)
-            }
-            Self::BrowserString { key, value } => super::upsert_section_value(
-                content,
-                "browser",
-                key,
-                &toml::Value::String(value.trim().to_owned()).to_string(),
-            ),
-            Self::BrowserList { key, values } => super::upsert_section_value(
-                content,
-                "browser",
-                key,
-                &toml::Value::Array(
-                    values
-                        .iter()
-                        .map(|v| toml::Value::String(v.clone()))
-                        .collect(),
-                )
-                .to_string(),
-            ),
+            // The browser edits go through toml_edit: `[browser]  # note`,
+            // `[ browser ]`, multi-line arrays and trailing comments survive.
+            Self::BrowserBool { key, value } => browser_table_edit(content, |table| {
+                set_browser_item(table, key, toml_edit::value(value))
+            }),
+            Self::BrowserBools { pairs } => browser_table_edit(content, |table| {
+                for (key, value) in pairs {
+                    set_browser_item(table, key, toml_edit::value(*value));
+                }
+            }),
+            Self::BrowserString { key, value } => browser_table_edit(content, |table| {
+                set_browser_item(table, key, toml_edit::value(value.trim()))
+            }),
+            Self::BrowserList { key, values } => browser_table_edit(content, |table| {
+                let array: toml_edit::Array = values.iter().map(|v| v.as_str()).collect();
+                set_browser_item(table, key, toml_edit::value(array))
+            }),
         }
     }
+}
+
+impl ConfigEdit<'_> {
+    /// The browser edits are written atomically (temp + rename next to the
+    /// real file, mode kept); the others keep the plain write.
+    fn atomic(self) -> bool {
+        matches!(
+            self,
+            Self::BrowserBool { .. }
+                | Self::BrowserBools { .. }
+                | Self::BrowserString { .. }
+                | Self::BrowserList { .. }
+        )
+    }
+}
+
+/// `content` with `edit` applied to its `[browser]` table as a toml_edit
+/// document: comments, spacing and every other table stay; a missing table
+/// is appended; a file that does not parse comes back unchanged (the
+/// caller notices the value did not apply).
+pub(crate) fn browser_table_edit(
+    content: &str,
+    edit: impl FnOnce(&mut dyn toml_edit::TableLike),
+) -> String {
+    use toml_edit::{DocumentMut, Item, Table};
+    let (bom, body) = match content.strip_prefix('\u{feff}') {
+        Some(body) => ("\u{feff}", body),
+        None => ("", content),
+    };
+    let Ok(mut doc) = body.parse::<DocumentMut>() else {
+        return content.to_string();
+    };
+    if doc.get("browser").is_none() {
+        doc.insert("browser", Item::Table(Table::new()));
+    }
+    let Some(table) = doc.get_mut("browser").and_then(Item::as_table_like_mut) else {
+        return content.to_string();
+    };
+    edit(table);
+    format!("{bom}{doc}")
+}
+
+/// Set `key` in a `[browser]` table, keeping an existing value's decor (a
+/// trailing `# comment` stays on its line).
+pub(crate) fn set_browser_item(
+    table: &mut dyn toml_edit::TableLike,
+    key: &str,
+    mut item: toml_edit::Item,
+) {
+    if let Some(old) = table.get(key).and_then(toml_edit::Item::as_value) {
+        if let Some(new) = item.as_value_mut() {
+            *new.decor_mut() = old.decor().clone();
+        }
+    }
+    table.insert(key, item);
+}
+
+/// Like `update_file_at`, through a temp file renamed over the real file
+/// (a symlink is followed; the mode is kept).
+pub(crate) fn update_file_atomic_at(
+    path: &std::path::Path,
+    description: &str,
+    update: impl FnOnce(&str) -> String,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create config directory: {error}"))?;
+    }
+    let content = match super::io::read_optional_config(path) {
+        Ok(Some(content)) => content,
+        Ok(None) => String::new(),
+        Err(error) => {
+            return Err(format!(
+                "failed to read config before saving {description}: {error}"
+            ));
+        }
+    };
+    let next = update(&content);
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let name = real
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| "config.toml".into());
+    let tmp = real.with_file_name(format!(".{name}.herdr-{}", std::process::id()));
+    let mode = std::fs::metadata(&real).ok().map(|m| m.permissions());
+    let written = std::fs::write(&tmp, next).and_then(|()| {
+        if let Some(mode) = mode {
+            std::fs::set_permissions(&tmp, mode)?;
+        }
+        std::fs::rename(&tmp, &real)
+    });
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("failed to save {description}: {error}"));
+    }
+    Ok(())
 }
 
 pub(crate) fn update_file_at(
@@ -176,6 +274,11 @@ pub(crate) fn update_file_at(
 }
 
 pub(crate) fn write_edit(edit: ConfigEdit<'_>) -> Result<(), String> {
+    if edit.atomic() {
+        return update_file_atomic_at(&super::config_path(), edit.description(), |content| {
+            edit.apply(content)
+        });
+    }
     update_file_at(&super::config_path(), edit.description(), |content| {
         edit.apply(content)
     })
@@ -272,6 +375,147 @@ mod tests {
         let config: crate::config::Config = toml::from_str(&edited).unwrap();
         assert_eq!(config.ui.idle_reminder_minutes, 0);
         assert_eq!(edited.matches("idle_reminder_minutes").count(), 1);
+    }
+
+    #[test]
+    fn browser_edits_keep_comments_spacing_and_other_tables() {
+        let original = "# top\n[ui]\nsidebar_layout = \"tabs\" # keep\n\n[ browser ]  # my browser\nexecutable = \"auto\"\npin_dashboard = true  # trailing\nmcp_agents = [\n  \"claude\",\n  \"codex\",\n]\n\n[news]\nenabled = false\n";
+        let edited = ConfigEdit::BrowserBool {
+            key: "pin_dashboard",
+            value: false,
+        }
+        .apply(original);
+        assert!(edited.contains("[ browser ]  # my browser\n"), "{edited}");
+        assert!(
+            edited.contains("pin_dashboard = false  # trailing\n"),
+            "{edited}"
+        );
+        assert!(
+            edited.contains("sidebar_layout = \"tabs\" # keep\n"),
+            "{edited}"
+        );
+        assert!(edited.starts_with("# top\n"), "{edited}");
+        assert!(edited.contains("[news]\nenabled = false\n"), "{edited}");
+        assert!(
+            edited.contains("mcp_agents = [\n  \"claude\",\n  \"codex\",\n]\n"),
+            "untouched keys keep their layout: {edited}"
+        );
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(!config.browser.pin_dashboard);
+        assert_eq!(config.browser.executable, "auto");
+        // a list over a multi-line one, a string, several bools at once
+        let agents = vec!["codex".to_string()];
+        let edited = ConfigEdit::BrowserList {
+            key: "mcp_agents",
+            values: &agents,
+        }
+        .apply(&edited);
+        let edited = ConfigEdit::BrowserString {
+            key: "activity_color",
+            value: " #00c8ff ",
+        }
+        .apply(&edited);
+        let edited = ConfigEdit::BrowserBools {
+            pairs: &[("steer_agents", false), ("wrap_agents", false)],
+        }
+        .apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.browser.mcp_agents, ["codex"]);
+        assert_eq!(config.browser.activity_color, "#00c8ff");
+        assert!(!config.browser.steer_agents && !config.browser.wrap_agents);
+        assert_eq!(
+            edited.matches("[ browser ]").count(),
+            1,
+            "one [browser] header: {edited}"
+        );
+        assert!(!edited.contains("\n[browser]"), "{edited}");
+        assert!(
+            edited.contains("pin_dashboard = false  # trailing\n"),
+            "{edited}"
+        );
+        // no [browser] yet: appended; a commented header is not a header
+        let fresh = ConfigEdit::BrowserBool {
+            key: "enabled",
+            value: false,
+        }
+        .apply("# [browser]\n# enabled = true\n[ui]\nsidebar_layout = \"tabs\"\n");
+        assert!(fresh.contains("\n[browser]\nenabled = false\n"), "{fresh}");
+        assert!(
+            fresh.starts_with("# [browser]\n# enabled = true\n"),
+            "{fresh}"
+        );
+        let config: crate::config::Config = toml::from_str(&fresh).unwrap();
+        assert!(!config.browser.enabled);
+        // a header with a comment and an inline `browser = {}` both take the key
+        let inline = ConfigEdit::BrowserBool {
+            key: "enabled",
+            value: false,
+        }
+        .apply("browser = { executable = \"auto\" }\n");
+        let config: crate::config::Config = toml::from_str(&inline).unwrap();
+        assert!(!config.browser.enabled);
+        assert_eq!(config.browser.executable, "auto");
+        // a file that does not parse comes back unchanged
+        assert_eq!(
+            ConfigEdit::BrowserBool {
+                key: "enabled",
+                value: false
+            }
+            .apply("[broken\n"),
+            "[broken\n"
+        );
+    }
+
+    #[test]
+    fn browser_edits_are_written_atomically_through_a_symlink_keeping_the_mode() {
+        let dir = std::env::temp_dir().join(format!("herdr-config-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::fs::create_dir_all(dir.join("link")).unwrap();
+        let real = dir.join("real/config.toml");
+        std::fs::write(&real, "[browser]\nexecutable = \"auto\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+            std::os::unix::fs::symlink(&real, dir.join("link/config.toml")).unwrap();
+        }
+        #[cfg(not(unix))]
+        std::fs::copy(&real, dir.join("link/config.toml")).unwrap();
+        let edit = ConfigEdit::BrowserBool {
+            key: "pin_dashboard",
+            value: false,
+        };
+        update_file_atomic_at(&dir.join("link/config.toml"), edit.description(), |c| {
+            edit.apply(c)
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(&real).unwrap();
+        assert_eq!(
+            text,
+            "[browser]\nexecutable = \"auto\"\npin_dashboard = false\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert!(
+                dir.join("link/config.toml")
+                    .symlink_metadata()
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "the symlink stays"
+            );
+            assert_eq!(
+                std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert!(
+            std::fs::read_dir(dir.join("real")).unwrap().count() == 1,
+            "no temp file left"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

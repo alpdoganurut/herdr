@@ -457,15 +457,37 @@ pub fn register_claude(env: &SetupEnv, wanted: bool) -> Result<String, String> {
     let Some(claude) = env.claude_bin.as_deref() else {
         return Err("claude: not on PATH; when it is: claude mcp add-json --scope user …".into());
     };
-    // `remove` of an absent entry fails: ignored on purpose.
-    let _ = std::process::Command::new(claude)
-        .args(["mcp", "remove", "-s", "user", MCP_SERVER_NAME])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    let store = env.claude_json.as_deref();
+    let registered = |what: McpRegistration| !matches!(what, McpRegistration::Absent);
+    let before = store
+        .map(claude_registration)
+        .unwrap_or(McpRegistration::Absent);
+    let mut removed = false;
+    if registered(before) {
+        // `remove` of a present entry; its own failure is not trusted (an
+        // absent entry fails the same way), the store is re-read instead.
+        let _ = std::process::Command::new(claude)
+            .args(["mcp", "remove", "-s", "user", MCP_SERVER_NAME])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        let after = store
+            .map(claude_registration)
+            .unwrap_or(McpRegistration::Absent);
+        if registered(after) {
+            return Err(format!(
+                "claude: `claude mcp remove -s user {MCP_SERVER_NAME}` left the entry in place"
+            ));
+        }
+        removed = true;
+    }
     if !wanted {
-        return Ok(format!("claude: {MCP_SERVER_NAME} removed (user scope)"));
+        return Ok(if removed {
+            format!("claude: {MCP_SERVER_NAME} removed (user scope)")
+        } else {
+            format!("claude: no {MCP_SERVER_NAME} entry (user scope)")
+        });
     }
     let entry = mcp_entry_json(&env.binary);
     run_capture(
@@ -481,7 +503,13 @@ pub fn register_claude(env: &SetupEnv, wanted: bool) -> Result<String, String> {
         None,
     )
     .map(|_| format!("claude: registered {MCP_SERVER_NAME} (user scope) → {entry}"))
-    .map_err(|err| format!("claude: registration failed ({err})"))
+    .map_err(|err| {
+        if removed {
+            format!("claude: the old entry was removed, re-adding failed ({err}); run: claude mcp add-json --scope user {MCP_SERVER_NAME} '{entry}'")
+        } else {
+            format!("claude: registration failed ({err})")
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -635,11 +663,55 @@ pub fn install_shell_hook(env: &SetupEnv, wanted: bool) -> Result<String, String
 
 /// Install the sidecar: assets, `npm ci` when the lock or node_modules need
 /// it (`force_npm` always), runtime.json. Answers a one-line summary.
+/// One helper install at a time, across threads (a `static` mutex) and
+/// processes (`flock` on `<browser home>/setup.lock`, next to the setup
+/// record): the server's auto-repair, a fix and the CLI must not run
+/// `npm ci` into the same node_modules together.
+pub struct HelperLock {
+    _thread: std::sync::MutexGuard<'static, ()>,
+    _file: Option<std::fs::File>,
+}
+
+pub fn helper_lock(browser_home: &Path) -> Result<HelperLock, String> {
+    static THREAD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let thread = THREAD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::fs::create_dir_all(browser_home)
+        .map_err(|err| format!("helper: cannot create {} ({err})", browser_home.display()))?;
+    let path = browser_home.join("setup.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|err| format!("helper: cannot open {} ({err})", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: flock on a file descriptor this process owns; it blocks
+        // until the other holder lets go.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if rc != 0 {
+            return Err(format!(
+                "helper: cannot lock {} ({})",
+                path.display(),
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(HelperLock {
+        _thread: thread,
+        _file: Some(file),
+    })
+}
+
 pub fn install_helper(
     env: &SetupEnv,
     config: &BrowserConfig,
     force_npm: bool,
 ) -> Result<String, String> {
+    let _lock = helper_lock(&env.browser_home)?;
     let host_dir = env.host_dir();
     let lock_before = std::fs::read_to_string(host_dir.join("package-lock.json")).ok();
     let written = browser_assets::install(&host_dir)
@@ -1445,13 +1517,123 @@ mod tests {
         assert!(on.ok, "{}", on.detail);
         let off = fix("mcp_claude", &config(&[], false), &env).unwrap();
         assert!(off.ok, "{}", off.detail);
+        // the fake never writes the store: the entry stays absent, so no
+        // remove runs for the registration nor for the removal (A16)
         let log = std::fs::read_to_string(dir.join("argv.log")).unwrap();
         let lines: Vec<&str> = log.lines().collect();
-        assert_eq!(lines.len(), 3, "{log}");
-        assert!(lines[0].starts_with("mcp remove -s user herdr-browser"));
-        assert!(lines[1].starts_with("mcp add-json --scope user herdr-browser {"));
-        assert!(lines[1].contains("browser mcp"));
-        assert!(lines[2].starts_with("mcp remove -s user herdr-browser"));
+        assert_eq!(lines.len(), 1, "{log}");
+        assert!(lines[0].starts_with("mcp add-json --scope user herdr-browser {"));
+        assert!(lines[0].contains("browser mcp"));
+        assert!(
+            off.detail.contains("no herdr-browser entry"),
+            "{}",
+            off.detail
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn claude_registration_skips_the_remove_when_absent_and_reads_the_store_back() {
+        let dir = temp("claude-store");
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        // a fake claude that maintains the store: remove deletes the entry,
+        // add-json writes it (unless FAIL_ADD is set)
+        let script = dir.join("claude");
+        std::fs::write(&script, format!(r#"#!/bin/sh
+echo "$@" >> {log}
+store={store}
+case "$2" in
+  remove) if [ -f "$store" ]; then python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.get('mcpServers',{{}}).pop('herdr-browser', None); json.dump(d, open(p,'w'))" "$store"; else exit 1; fi ;;
+  add-json) if [ -n "$FAIL_ADD" ]; then exit 1; fi; python3 -c "import json,sys,os; p=sys.argv[1]; d=json.load(open(p)) if os.path.exists(p) else {{}}; d.setdefault('mcpServers',{{}})['herdr-browser']=json.loads(sys.argv[2]); json.dump(d, open(p,'w'))" "$store" "$6" ;;
+esac
+"#, log = dir.join("argv.log").display(), store = dir.join("home/.claude.json").display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut env = env_in(&dir);
+        env.claude_bin = Some(script);
+        // absent + wanted: no remove, one add-json; the check then passes
+        let on = register_claude(&env, true).unwrap();
+        assert!(on.starts_with("claude: registered"), "{on}");
+        let log = std::fs::read_to_string(dir.join("argv.log")).unwrap();
+        assert_eq!(
+            log.lines().count(),
+            1,
+            "no remove of an absent entry: {log}"
+        );
+        assert!(log.starts_with("mcp add-json"));
+        assert!(matches!(
+            claude_registration(&dir.join("home/.claude.json")),
+            McpRegistration::Registered { .. }
+        ));
+        // present + wanted: remove, re-read, add-json
+        let again = register_claude(&env, true).unwrap();
+        assert!(again.starts_with("claude: registered"), "{again}");
+        let log = std::fs::read_to_string(dir.join("argv.log")).unwrap();
+        assert_eq!(log.lines().count(), 3, "{log}");
+        // present + not wanted: remove only, verified by the store
+        let off = register_claude(&env, false).unwrap();
+        assert!(off.contains("removed"), "{off}");
+        assert!(matches!(
+            claude_registration(&dir.join("home/.claude.json")),
+            McpRegistration::Absent
+        ));
+        // absent + not wanted: nothing runs
+        let before = std::fs::read_to_string(dir.join("argv.log")).unwrap();
+        let none = register_claude(&env, false).unwrap();
+        assert!(none.contains("no herdr-browser entry"), "{none}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("argv.log")).unwrap(),
+            before
+        );
+        // present + wanted, but add-json fails: the message says removed, re-add failed
+        register_claude(&env, true).unwrap();
+        std::env::set_var("FAIL_ADD", "1");
+        let err = register_claude(&env, true).unwrap_err();
+        std::env::remove_var("FAIL_ADD");
+        assert!(err.contains("removed, re-adding failed"), "{err}");
+        assert!(matches!(
+            claude_registration(&dir.join("home/.claude.json")),
+            McpRegistration::Absent
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_helper_lock_serialises_concurrent_installs() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let dir = temp("helper-lock");
+        let home = dir.join("browser");
+        let inside = Arc::new(AtomicUsize::new(0));
+        let overlaps = Arc::new(AtomicUsize::new(0));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let (home, inside, overlaps) = (home.clone(), inside.clone(), overlaps.clone());
+                std::thread::spawn(move || {
+                    let _lock = helper_lock(&home).unwrap();
+                    if inside.fetch_add(1, Ordering::SeqCst) != 0 {
+                        overlaps.fetch_add(1, Ordering::SeqCst);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    inside.fetch_sub(1, Ordering::SeqCst);
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(
+            overlaps.load(Ordering::SeqCst),
+            0,
+            "the lock lets one install in at a time"
+        );
+        assert!(
+            home.join("setup.lock").is_file(),
+            "the lock file sits next to the setup record"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
