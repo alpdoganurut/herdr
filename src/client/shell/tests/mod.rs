@@ -268,6 +268,7 @@ mod news;
 mod notification_format;
 mod popup_focus_projection;
 mod settings_backups;
+mod settings_browser;
 mod settings_closed;
 mod startup_overlays;
 mod sticky_notifications;

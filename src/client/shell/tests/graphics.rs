@@ -295,6 +295,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
             sound_picker: None,
             daily_time_picker: None,
             news: Box::default(),
+            browser: Box::default(),
         }),
     ];
     for overlay in overlays {

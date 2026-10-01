@@ -766,6 +766,9 @@ pub(crate) fn format_status(status: &BrowserStatusInfo, now: u64) -> String {
             ));
         }
     }
+    if get.setup_needed {
+        out.push_str("setup: needed — an MCP registration or the shell hook is off; settings → browser → fix all, or `herdr browser setup` (`herdr browser doctor` explains)\n");
+    }
     for tab in &get.tabs {
         let who = match &tab.last {
             Some(touch) => format!(

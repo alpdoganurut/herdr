@@ -193,7 +193,7 @@ mod fork_smoke {
     /// badge on, the widest row (the tabs close up their one-cell gaps, then
     /// drop their padding, to fit it). Every tab uses the same form.
     #[test]
-    fn every_settings_section_fits_the_76_column_popup() {
+    fn every_settings_section_fits_the_84_column_popup() {
         let mut snapshot = snapshot();
         snapshot.integration_updates_available = true;
         let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
@@ -211,10 +211,10 @@ mod fork_smoke {
         assert_eq!(
             &ClientSettingsSection::ALL[ClientSettingsSection::ALL.len() - 4..],
             [
-                ClientSettingsSection::Backups,
                 ClientSettingsSection::Reminders,
                 ClientSettingsSection::ClosedSessions,
-                ClientSettingsSection::News
+                ClientSettingsSection::News,
+                ClientSettingsSection::Browser
             ]
         );
         let popup_left = tabs[0].0.x;
@@ -239,7 +239,7 @@ mod fork_smoke {
                 "{section:?} tab is clipped"
             );
             assert!(
-                rect.right() <= popup_left + 74,
+                rect.right() <= popup_left + 82,
                 "{section:?} tab ends past the popup's inner width"
             );
         }
@@ -247,5 +247,7 @@ mod fork_smoke {
         assert!(row.contains(" backups "), "{row}");
         assert!(row.contains("reminders "), "{row}");
         assert!(row.contains(" closed"), "{row}");
+        assert!(row.contains(" news "), "{row}");
+        assert!(row.contains("browser"), "{row}");
     }
 }

@@ -45,10 +45,14 @@ pub(super) fn render_settings_overlay(
         .saturating_add(settings.integration_messages.len().min(6) as u16);
     let height = if settings.section == ClientSettingsSection::Integrations {
         integration_height.max(22)
+    } else if settings.section == ClientSettingsSection::Browser {
+        // eleven rows, a rule and up to seven facts (clamped to the terminal)
+        32
     } else {
         22
     };
-    let popup = popup(buffer.area, 76, height)?;
+    // 84 columns: ten section tabs (the fork's news and browser) in one row.
+    let popup = popup(buffer.area, 84, height)?;
     let inner = panel(buffer, popup, palette.accent, palette.panel_bg)?;
     if inner.width < 20 || inner.height < 8 {
         return None;
@@ -234,6 +238,15 @@ pub(super) fn render_settings_overlay(
                 &mut choice_hits,
             );
         }
+        ClientSettingsSection::Browser => {
+            super::super::settings_browser::render_browser_section(
+                buffer,
+                content,
+                settings,
+                palette,
+                &mut choice_hits,
+            );
+        }
     }
 
     let installable = settings
@@ -247,6 +260,7 @@ pub(super) fn render_settings_overlay(
         ClientSettingsSection::Integrations => installable,
         ClientSettingsSection::Backups => false,
         ClientSettingsSection::News => settings.news.info.is_some(),
+        ClientSettingsSection::Browser => settings.browser.info.is_some(),
         _ => true,
     };
     let labels = if show_primary { vec![10, 12] } else { vec![12] };

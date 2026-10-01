@@ -87,6 +87,8 @@ struct Inner {
     host_lock: Mutex<()>,
     respawns: Mutex<VecDeque<Instant>>,
     supervisor: AtomicBool,
+    /// The safe fixes after a herdr update ran (once per process, on the first start).
+    auto_repaired: AtomicBool,
     /// Skip the executable check and the `hello` node checks (fake host tests).
     test_mode: AtomicBool,
     /// Serializes the whole persistence transaction (snapshot, save, append,
@@ -167,6 +169,7 @@ impl BrowserHub {
                 host_lock: Mutex::new(()),
                 respawns: Mutex::new(VecDeque::new()),
                 supervisor: AtomicBool::new(false),
+                auto_repaired: AtomicBool::new(false),
                 test_mode: AtomicBool::new(false),
                 flush_lock: Mutex::new(()),
                 read_cache: Mutex::new(HashMap::new()),
@@ -473,6 +476,27 @@ impl BrowserHub {
             .unwrap()
             .get(pane)
             .map(|(attempts, _)| *attempts)
+    }
+
+    /// The first browser start after a herdr update: the safe fixes (assets,
+    /// `npm ci` when the lock changed, runtime.json) run by themselves on
+    /// the start thread — never a user file, never on the App thread (a
+    /// `stop` can reach `ensure_host` from there), once per process.
+    fn auto_repair_once(&self) {
+        if self.inner.test_mode.load(Ordering::Relaxed)
+            || self.inner.auto_repaired.swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        match setup::auto_repair(&self.config(), &self.setup_env()) {
+            Some(Ok(detail)) => {
+                tracing::info!(event = "browser.auto_repair", %detail, "browser helper refreshed after a herdr update")
+            }
+            Some(Err(error)) => {
+                tracing::warn!(event = "browser.auto_repair", %error, "browser helper could not be refreshed; `herdr browser setup`")
+            }
+            None => {}
+        }
     }
 
     /// The process environment with this hub's home (tests run on a temporary one).
@@ -851,6 +875,7 @@ impl BrowserHub {
         std::thread::Builder::new()
             .name("herdr-browser-start".into())
             .spawn(move || {
+                hub.auto_repair_once();
                 if let Err(err) = hub.ensure_running(&name) {
                     tracing::warn!(event = "browser.start", profile = %name, code = %err.code, message = %err.message, "browser start failed");
                 }
@@ -2507,17 +2532,6 @@ impl BrowserHub {
         }
         let config = self.config();
         let host_dir = self.host_dir();
-        // After a herdr update: the safe fixes (assets, npm ci when the lock
-        // changed) run by themselves, before the sidecar starts.
-        match setup::auto_repair(&config, &self.setup_env()) {
-            Some(Ok(detail)) => {
-                tracing::info!(event = "browser.auto_repair", %detail, "browser helper refreshed after a herdr update")
-            }
-            Some(Err(error)) => {
-                tracing::warn!(event = "browser.auto_repair", %error, "browser helper could not be refreshed; `herdr browser setup`")
-            }
-            None => {}
-        }
         let runtime = browser_assets::read_runtime(&host_dir);
         if runtime.is_none()
             || !host_dir

@@ -134,7 +134,7 @@ impl ClientShellState {
                 section: ClientSettingsSection::Sound,
                 sound_picker,
                 ..
-            })) => sound_picker.as_ref(),
+            })) => sound_picker.as_deref(),
             _ => None,
         }
     }
@@ -192,7 +192,7 @@ impl ClientShellState {
             .position(|choice| choice.path == current)
             .unwrap_or(0);
         if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
-            settings.sound_picker = Some(ClientSoundPicker { target, choices });
+            settings.sound_picker = Some(Box::new(ClientSoundPicker { target, choices }));
             settings.selected = selected;
         }
         outcome.repaint = true;

@@ -88,8 +88,18 @@ pub(crate) struct BrowserRow {
     pub(crate) running: bool,
 }
 
-/// The row's state and status text for `info`.
+/// The row's state and status text for `info`; a failing check only an
+/// explicit request may fix (an MCP registration, the shell hook) adds a
+/// `!` hint — settings → browser → fix all.
 pub(crate) fn browser_row_state(info: &BrowserGetInfo) -> (BrowserRowState, String) {
+    let (state, status) = browser_row_state_without_hint(info);
+    if info.setup_needed && matches!(state, BrowserRowState::Running | BrowserRowState::Stopped) {
+        return (state, format!("{status} !"));
+    }
+    (state, status)
+}
+
+fn browser_row_state_without_hint(info: &BrowserGetInfo) -> (BrowserRowState, String) {
     if info.profiles.iter().any(|p| p.state == "crashed") {
         return (BrowserRowState::Crashed, "crashed".into());
     }
@@ -359,6 +369,8 @@ impl ClientShellState {
 
     /// The tick: pull `browser.get` when due.
     pub(crate) fn tick_browser(&mut self, now: std::time::Instant, outcome: &mut ClientShellInput) {
+        // The settings browser section's follow-up pulls (fork, settings_browser.rs).
+        self.tick_browser_settings(now, outcome);
         let Some(boot_id) = self.browser_boot_id() else {
             return;
         };

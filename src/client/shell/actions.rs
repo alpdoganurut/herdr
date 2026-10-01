@@ -869,6 +869,11 @@ impl ClientShellState {
             | PendingEndpointKind::BrowserStop) => {
                 return self.handle_browser_endpoint_result(kind, result);
             }
+            PendingEndpointKind::BrowserSettings
+            | PendingEndpointKind::BrowserSettingsSet
+            | PendingEndpointKind::BrowserFix => {
+                return self.handle_browser_settings_endpoint_result(result);
+            }
             kind => {
                 let mut outcome = ClientShellInput::default();
                 let repaint = self.handle_worktree_endpoint_result(kind, result, &mut outcome);

@@ -1152,7 +1152,7 @@ fn open_sound_section(state: &mut ClientShellState) {
 
 fn picker(state: &ClientShellState) -> Option<super::super::settings_sounds::ClientSoundPicker> {
     match state.overlay.as_ref() {
-        Some(ClientShellOverlay::Settings(settings)) => settings.sound_picker.clone(),
+        Some(ClientShellOverlay::Settings(settings)) => settings.sound_picker.as_deref().cloned(),
         _ => None,
     }
 }

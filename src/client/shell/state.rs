@@ -469,6 +469,7 @@ pub(super) enum ClientSettingsSection {
     Reminders,
     ClosedSessions,
     News,
+    Browser,
 }
 
 impl ClientSettingsSection {
@@ -482,6 +483,7 @@ impl ClientSettingsSection {
         Self::Reminders,
         Self::ClosedSessions,
         Self::News,
+        Self::Browser,
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -495,6 +497,7 @@ impl ClientSettingsSection {
             Self::Reminders => "reminders",
             Self::ClosedSessions => "closed",
             Self::News => "news",
+            Self::Browser => "browser",
         }
     }
 }
@@ -534,12 +537,16 @@ pub(super) struct ClientSettingsOverlay {
     /// on entering the section and after applying a choice.
     pub(super) idle_reminder_minutes: u32,
     /// The sound section's open picker, if any.
-    pub(super) sound_picker: Option<super::settings_sounds::ClientSoundPicker>,
+    /// (boxed: the overlay enum stays small)
+    pub(super) sound_picker: Option<Box<super::settings_sounds::ClientSoundPicker>>,
     /// The reminders section's open daily time picker, if any.
     pub(super) daily_time_picker: Option<Vec<super::settings_daily_time::ClientDailyTimeChoice>>,
     /// The news section's record and picker (boxed: the overlay enum stays
     /// small).
     pub(super) news: Box<super::settings_news::ClientNewsSettings>,
+    /// The browser section's record and endpoint (boxed: the overlay enum
+    /// stays small).
+    pub(super) browser: Box<super::settings_browser::ClientBrowserSettings>,
 }
 
 #[derive(Debug)]
@@ -835,6 +842,9 @@ pub(super) enum PendingEndpointKind {
     BrowserFocus,
     BrowserStart,
     BrowserStop,
+    BrowserSettings,
+    BrowserSettingsSet,
+    BrowserFix,
     PrepareWorktreeCreate {
         workspace_id: String,
     },
@@ -1103,6 +1113,9 @@ pub(crate) struct ClientShellState {
     pub(super) breathe_epoch: std::time::Instant,
     /// Fork: test override of the clock the breathing phase is read from.
     pub(super) breathe_clock: Option<std::time::Instant>,
+    /// Fork: the settings browser section's `steer + wrap` row writes two
+    /// keys; the second follows the first reply.
+    pub(super) pending_browser_wrap: Option<bool>,
     pub(super) selection_repaint_deadline: Option<std::time::Instant>,
     pub(super) hits: ShellHitMap,
     pub(super) endpoints: Vec<ClientShellEndpoint>,
@@ -1293,6 +1306,7 @@ impl ClientShellState {
             breathe_epoch,
             // Tests draw the breath's first frame unless they move the clock.
             breathe_clock: cfg!(test).then_some(breathe_epoch),
+            pending_browser_wrap: None,
             selection_repaint_deadline: None,
             hits: ShellHitMap::default(),
             endpoints: vec![local_endpoint()],
@@ -2119,6 +2133,7 @@ impl ClientShellState {
             .chain(self.next_news_deadline(now))
             .chain(self.next_breathe_deadline())
             .chain(self.next_browser_deadline(now))
+            .chain(self.next_browser_settings_deadline())
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)
