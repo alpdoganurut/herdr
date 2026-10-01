@@ -944,6 +944,7 @@ fn check(id: &str, ok: bool, detail: impl Into<String>, fix: BrowserFixKind) -> 
         detail: detail.into(),
         fixable: fix != BrowserFixKind::None,
         fix_kind: fix,
+        waits_for_agents: 0,
     }
 }
 
@@ -1048,7 +1049,7 @@ pub fn checks(
         Some(profile) => match profile.companion.as_deref() {
             Some(state) if state.contains("expects") => {
                 let idle = profile.agents == 0;
-                check(
+                let mut pending = check(
                     "extension",
                     false,
                     extension_update_detail(state, profile.agents),
@@ -1057,7 +1058,10 @@ pub fn checks(
                     } else {
                         BrowserFixKind::None
                     },
-                )
+                );
+                // withheld while agents use the browser: the settings row says for how many
+                pending.waits_for_agents = profile.agents;
+                pending
             }
             Some(state) if state.starts_with("ready") => check(
                 "extension",

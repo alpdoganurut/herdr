@@ -1255,6 +1255,24 @@ fn install_chromium(args: &[String]) -> std::io::Result<i32> {
     }
 }
 
+/// What a failing check's line ends with: how to fix it. The extension's
+/// safe fix is a browser restart (`herdr browser setup` does not touch the
+/// running worker); the others go through setup or the settings section.
+fn doctor_hint(c: &crate::api::schema::BrowserCheckInfo) -> &'static str {
+    use crate::api::schema::BrowserFixKind;
+    match (c.ok, c.fix_kind, c.id.as_str()) {
+        (true, _, _) => "",
+        (false, BrowserFixKind::Safe, "extension") => " — `herdr browser stop` and open again",
+        (false, BrowserFixKind::Safe, _) => {
+            " — `herdr browser setup` (runs by itself after a herdr update)"
+        }
+        (false, BrowserFixKind::EditsFiles, _) => {
+            " — `herdr browser setup`, or settings → browser → fix all"
+        }
+        (false, BrowserFixKind::None, _) => "",
+    }
+}
+
 fn doctor(args: &[String]) -> std::io::Result<i32> {
     let json = args.first().is_some_and(|a| a == "--json");
     if !args.is_empty() && !json {
@@ -1293,20 +1311,12 @@ fn doctor(args: &[String]) -> std::io::Result<i32> {
         config.enabled
     );
     for c in &checks {
-        let hint = match (c.ok, c.fix_kind) {
-            (false, crate::api::schema::BrowserFixKind::Safe) => {
-                " — `herdr browser setup` (runs by itself after a herdr update)"
-            }
-            (false, crate::api::schema::BrowserFixKind::EditsFiles) => {
-                " — `herdr browser setup`, or settings → browser → fix all"
-            }
-            _ => "",
-        };
         println!(
-            "{} {}: {}{hint}",
+            "{} {}: {}{}",
             if c.ok { "ok  " } else { "FAIL" },
             c.id,
-            c.detail
+            c.detail,
+            doctor_hint(c)
         );
     }
     println!(
@@ -1370,6 +1380,41 @@ fn doctor(args: &[String]) -> std::io::Result<i32> {
 }
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_doctor_hint_names_the_fix_a_check_really_has() {
+        use crate::api::schema::{BrowserCheckInfo, BrowserFixKind};
+        let check = |id: &str, ok: bool, fix_kind: BrowserFixKind| BrowserCheckInfo {
+            id: id.into(),
+            ok,
+            detail: String::new(),
+            fixable: fix_kind != BrowserFixKind::None,
+            fix_kind,
+            waits_for_agents: 0,
+        };
+        assert_eq!(
+            doctor_hint(&check("extension", false, BrowserFixKind::Safe)),
+            " — `herdr browser stop` and open again",
+            "setup does not touch the running worker"
+        );
+        assert_eq!(
+            doctor_hint(&check("helper", false, BrowserFixKind::Safe)),
+            " — `herdr browser setup` (runs by itself after a herdr update)"
+        );
+        assert_eq!(
+            doctor_hint(&check("mcp_claude", false, BrowserFixKind::EditsFiles)),
+            " — `herdr browser setup`, or settings → browser → fix all"
+        );
+        assert_eq!(
+            doctor_hint(&check("extension", false, BrowserFixKind::None)),
+            "",
+            "withheld: no hint"
+        );
+        assert_eq!(
+            doctor_hint(&check("extension", true, BrowserFixKind::Safe)),
+            ""
+        );
+    }
     use super::*;
 
     fn s(args: &[&str]) -> Vec<String> {

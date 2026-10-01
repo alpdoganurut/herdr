@@ -12,6 +12,8 @@ export const COMPANION_VERSION = 11;
 export const LINGER_MS = 120000;
 /** The cursor's glide (matches the CSS transition). */
 export const GLIDE_MS = 350;
+/** The longest window a timer takes (Node's setTimeout limit; a longer delay would fire at once). */
+export const MAX_TIMER_MS = 2 ** 31 - 1;
 /** One overlay evaluate may take at most this long; the op never waits longer. */
 const EVAL_TIMEOUT_MS = 1500;
 const COMPANION_CALL_MS = 3000;
@@ -159,7 +161,7 @@ export class Overlay {
   /** The op is done: the calmer look now, the fade at the end of the window (`ms`, the directive's `linger_ms`). */
   linger(ms) {
     const n = Number(ms);
-    ms = Number.isFinite(n) && n >= 0 ? n : LINGER_MS; // an explicit 0 means no linger
+    ms = Math.min(Number.isFinite(n) && n >= 0 ? n : LINGER_MS, MAX_TIMER_MS); // an explicit 0 means no linger
     this.active = false;
     this.until = Date.now() + ms;
     this.eval('window.__herdrOverlay ? (__herdrOverlay.busy(false), "idle") : "absent"').catch(() => {});
@@ -451,6 +453,12 @@ export class Companion {
   }
   async _touch(state, group) {
     if (this.state === 'unsupported' || !group || !group.key) return;
+    // The directive's window as it is; missing or not a number: the default.
+    // 0 is off: no group expanded or marked for the pane, no collapse later
+    // (and, without a companion flag for "join quietly", no grouping either).
+    const n = Number(group.collapse_ms);
+    const ms = Math.min(Number.isFinite(n) && n >= 0 ? n : 120000, MAX_TIMER_MS);
+    if (ms === 0) return;
     const tabId = await this.tabIdFor(state);
     if (tabId == null || this.userUngrouped.has(tabId)) return;
     let g = this.groups.get(group.key);
@@ -468,9 +476,6 @@ export class Companion {
     if (!reply || reply.skipped) return;
     g.tabs.add(tabId);
     if (g.timer) clearTimeout(g.timer);
-    // the directive's window as it is (0: the group collapses and loses its mark right after the touch); missing or not a number: the default
-    const n = Number(group.collapse_ms);
-    const ms = Number.isFinite(n) && n >= 0 ? n : 120000;
     g.timer = setTimeout(() => {
       g.timer = null;
       // (a stale v10 worker reads a bare key only; it keeps the plain title anyway)

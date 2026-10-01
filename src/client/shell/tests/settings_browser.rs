@@ -68,6 +68,7 @@ fn check(id: &str, ok: bool, detail: &str, fix_kind: BrowserFixKind) -> BrowserC
         detail: detail.into(),
         fixable: fix_kind != BrowserFixKind::None,
         fix_kind,
+        waits_for_agents: 0,
     }
 }
 
@@ -85,7 +86,6 @@ fn info() -> BrowserSettingsInfo {
         profile: "main".into(),
         running: true,
         status: "running · 3 tabs · 2 agents · profile main".into(),
-        agents: 2,
         checks: vec![
             check(
                 "executable",
@@ -197,7 +197,6 @@ fn the_browser_section_pulls_the_record_and_shows_rows_and_facts() {
 /// The fixture with every check ok but the extension, whose detail is `detail`.
 fn with_extension(detail: &str, fix_kind: BrowserFixKind, agents: u32) -> BrowserSettingsInfo {
     let mut info = info();
-    info.agents = agents;
     for c in &mut info.checks {
         c.ok = true;
     }
@@ -210,6 +209,7 @@ fn with_extension(detail: &str, fix_kind: BrowserFixKind, agents: u32) -> Browse
     extension.detail = detail.into();
     extension.fixable = fix_kind != BrowserFixKind::None;
     extension.fix_kind = fix_kind;
+    extension.waits_for_agents = agents;
     info
 }
 
@@ -243,12 +243,22 @@ fn the_fix_all_row_says_why_there_is_nothing_to_fix() {
     let missing = with_extension(
         "v11 · missing: no companion service worker on the DevTools port",
         BrowserFixKind::None,
-        2,
+        0,
     );
     assert_eq!(
         row_labels(&missing, None)[ROW_FIX],
         "▸ fix all (nothing fixable here)",
         "a failing check that is not withheld, just not fixable"
+    );
+    let older_server = with_extension(
+        "worker v10, this herdr expects v11 — extension update pending: `herdr browser stop` and open again — stop and open when the agents are done",
+        BrowserFixKind::None,
+        0,
+    );
+    assert_eq!(
+        row_labels(&older_server, None)[ROW_FIX],
+        "▸ fix all (nothing fixable here)",
+        "an older server's check carries no count: no claim about agents"
     );
     let mut fine = info();
     for c in &mut fine.checks {
@@ -282,14 +292,48 @@ fn fact_rows_are_clipped_at_the_panel_edge_with_an_ellipsis() {
         "the cut segment ends in an ellipsis within the width"
     );
     assert_eq!(
-        texts(clip_segments(&[seg("12345"), seg("678")], 5)).concat(),
-        "1234…",
-        "a full earlier segment gives a cell back for the ellipsis"
+        texts(clip_segments(&[seg("12345"), seg("678")], 5)),
+        ["12345"],
+        "the first segment is never cut: alone when nothing else can follow"
     );
     assert_eq!(
-        texts(clip_segments(&[seg("日本語")], 5)),
-        ["日本…"],
+        texts(clip_segments(&[seg("✗"), seg(" reason")], 1)),
+        ["✗"],
+        "width 1: just the mark"
+    );
+    assert_eq!(
+        texts(clip_segments(&[seg("e\u{301}"), seg("x")], 1)),
+        ["e\u{301}"],
+        "a combining mark stays with its base; the mark is not cut into"
+    );
+    assert!(
+        clip_segments(&[seg("日本語")], 5).is_empty(),
+        "a first segment wider than the row: nothing"
+    );
+    assert_eq!(
+        texts(clip_segments(&[seg("✓"), seg(" 日本語")], 5)),
+        ["✓", " 日…"],
         "wide characters count as two cells"
+    );
+    assert_eq!(
+        texts(clip_segments(&[seg("✗"), seg(""), seg(" long reason")], 6)),
+        ["✗", " lon…"],
+        "an empty segment before the cut is dropped"
+    );
+    assert_eq!(
+        texts(clip_segments(&[seg("✗"), seg(""), seg(" ok")], 10)),
+        ["✗", " ok"],
+        "an empty segment is dropped when everything fits too"
+    );
+    assert_eq!(
+        texts(clip_segments(&[seg("✗"), seg(" 👩\u{200d}💻 works")], 4)),
+        ["✗", " …"],
+        "a ZWJ emoji is one cluster: it does not fit in two cells, so it goes"
+    );
+    assert_eq!(
+        texts(clip_segments(&[seg("✗"), seg(" 👩\u{200d}💻 works")], 5)),
+        ["✗", " 👩\u{200d}💻…"],
+        "and it is kept whole when it fits"
     );
     assert!(clip_segments(&[seg("x")], 0).is_empty());
 

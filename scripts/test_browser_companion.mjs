@@ -32,24 +32,26 @@ if (pong !== 'herdr-companion/11') { console.error(`FAIL: second call did not re
 if (fetches < 21) { console.error('FAIL: the second call did not look for the worker again'); process.exit(1); }
 console.log('ok: a transient worker miss fails one call and the next one reconnects');
 
-// The group's collapse timer takes the directive's window as it is: 0 means
-// the group collapses (and loses its ● mark) right after the touch; a missing
-// or non-numeric window means the default, not a collapse within the test.
+// The group's collapse timer takes the directive's window as it is; 0 is
+// off (no group expanded or marked, nothing to collapse); a missing,
+// non-numeric or huge window means the default / the timer's cap, not a
+// collapse within the test.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const collapses = () => sent.filter((e) => e.startsWith('herdrCollapse')).length;
+const calls = (fn) => sent.filter((e) => e.startsWith(fn)).length;
 companion.tabIds.set('t1', 5);
 await companion.touch({ target: 't1' }, { key: 'w1:p1', title: '✻ planner', color: 'blue', collapse_ms: 0 });
 await sleep(30);
-if (collapses() !== 1) { console.error(`FAIL: collapse_ms 0 should collapse right away, got ${collapses()} collapse call(s)`); process.exit(1); }
+if (calls('herdrGroup') !== 0 || calls('herdrCollapse') !== 0) { console.error(`FAIL: collapse_ms 0 is off: no group or collapse calls, got ${calls('herdrGroup')} / ${calls('herdrCollapse')}`); process.exit(1); }
 await companion.touch({ target: 't1' }, { key: 'w1:p1', title: '✻ planner', color: 'blue', collapse_ms: 40 });
+if (calls('herdrGroup') !== 1) { console.error('FAIL: a 40 ms window groups the tab'); process.exit(1); }
 await sleep(15);
-if (collapses() !== 1) { console.error('FAIL: a 40 ms window collapsed before 40 ms'); process.exit(1); }
+if (calls('herdrCollapse') !== 0) { console.error('FAIL: a 40 ms window collapsed before 40 ms'); process.exit(1); }
 await sleep(60);
-if (collapses() !== 2) { console.error(`FAIL: a 40 ms window should have collapsed by now, got ${collapses()}`); process.exit(1); }
-for (const window of [undefined, 'x', -5]) {
+if (calls('herdrCollapse') !== 1) { console.error(`FAIL: a 40 ms window should have collapsed by now, got ${calls('herdrCollapse')}`); process.exit(1); }
+for (const window of [undefined, 'x', -5, 1e12]) {
   await companion.touch({ target: 't1' }, { key: 'w1:p1', title: '✻ planner', color: 'blue', collapse_ms: window });
   await sleep(30);
-  if (collapses() !== 2) { console.error(`FAIL: collapse_ms ${window} should mean the default window, got ${collapses()}`); process.exit(1); }
+  if (calls('herdrCollapse') !== 1) { console.error(`FAIL: collapse_ms ${window} should mean the default window or the cap, got ${calls('herdrCollapse')}`); process.exit(1); }
 }
 companion.close();
-console.log('ok: the group collapse honours the window as given, 0 included');
+console.log('ok: the group collapse honours the window as given, 0 is off, a huge window is capped');

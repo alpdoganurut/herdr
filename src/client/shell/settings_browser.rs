@@ -111,12 +111,13 @@ pub(super) fn fixable_issues(info: &BrowserSettingsInfo) -> usize {
     info.checks.iter().filter(|c| !c.ok && c.fixable).count()
 }
 
-/// The extension update is failing but withheld: agents use the browser
-/// (the server's check says so and is not fixable while they do).
-fn extension_update_withheld(info: &BrowserSettingsInfo) -> bool {
-    info.agents > 0
-        && check(info, "extension")
-            .is_some_and(|c| !c.ok && !c.fixable && c.detail.contains("waits for"))
+/// The extension update is failing but withheld because agents use the
+/// browser: how many (the check recorded it; an older server's check has
+/// no count, so `None`).
+fn extension_update_withheld(info: &BrowserSettingsInfo) -> Option<u32> {
+    check(info, "extension")
+        .filter(|c| !c.ok && !c.fixable && c.waits_for_agents > 0)
+        .map(|c| c.waits_for_agents)
 }
 
 fn check<'a>(info: &'a BrowserSettingsInfo, id: &str) -> Option<&'a BrowserCheckInfo> {
@@ -502,46 +503,68 @@ fn draw_fact(
     }
 }
 
-/// `segments` cut to `width` display cells; a cut segment ends in `…` and
-/// nothing follows it (the mark and the start of the reason survive, the
-/// tail goes).
+/// `segments` cut to `width` display cells, measured and cut per grapheme
+/// cluster (so what is measured is what is cut). When they do not all fit,
+/// one cell is kept for the `…` up front, the first segment — the mark —
+/// is never cut (only the mark when nothing else fits, nothing when not
+/// even that), a cut segment ends in `…` and nothing follows it; empty
+/// segments are dropped.
 pub(super) fn clip_segments(
     segments: &[(String, Option<ratatui::style::Color>)],
     width: u16,
 ) -> Segments {
-    use unicode_width::UnicodeWidthChar;
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    let cell = |g: &str| UnicodeWidthStr::width(g).min(u16::MAX as usize) as u16;
+    let measure = |text: &str| {
+        text.graphemes(true)
+            .fold(0u16, |acc, g| acc.saturating_add(cell(g)))
+    };
+    let widths: Vec<u16> = segments.iter().map(|(text, _)| measure(text)).collect();
+    let total = widths.iter().fold(0u16, |acc, w| acc.saturating_add(*w));
+    let keep = |i: usize| (segments[i].0.clone(), segments[i].1);
+    if total <= width {
+        return (0..segments.len())
+            .filter(|i| widths[*i] > 0)
+            .map(keep)
+            .collect();
+    }
     let mut out: Segments = Vec::new();
+    let budget = width.saturating_sub(1); // the ellipsis cell, reserved
     let mut used: u16 = 0;
-    for (text, color) in segments {
-        let wanted = display_width(text);
-        if used.saturating_add(wanted) <= width {
-            out.push((text.clone(), *color));
+    for (i, (text, color)) in segments.iter().enumerate() {
+        let wanted = widths[i];
+        if i == 0 {
+            // the mark: whole or not at all; alone when nothing else can follow
+            if wanted > width {
+                return out;
+            }
+            if wanted > 0 {
+                out.push(keep(0));
+            }
+            if wanted >= budget {
+                return out;
+            }
+            used = wanted;
+            continue;
+        }
+        if wanted == 0 {
+            continue;
+        }
+        if used.saturating_add(wanted) <= budget {
+            out.push(keep(i));
             used = used.saturating_add(wanted);
             continue;
         }
-        if width == 0 {
-            return out;
-        }
-        // room for the kept head plus the ellipsis; a full earlier segment
-        // gives a cell back when nothing of this one fits
-        let mut room = width.saturating_sub(used);
-        if room == 0 {
-            if let Some((last, _)) = out.last_mut() {
-                if let Some(ch) = last.pop() {
-                    used = used.saturating_sub(UnicodeWidthChar::width(ch).unwrap_or(0) as u16);
-                    room = width.saturating_sub(used);
-                }
-            }
-        }
-        let head = room.saturating_sub(1);
+        let head = budget.saturating_sub(used);
         let mut kept = String::new();
         let mut kept_width: u16 = 0;
-        for ch in text.chars() {
-            let w = UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+        for g in text.graphemes(true) {
+            let w = cell(g);
             if kept_width.saturating_add(w) > head {
                 break;
             }
-            kept.push(ch);
+            kept.push_str(g);
             kept_width = kept_width.saturating_add(w);
         }
         kept.push('…');
@@ -569,18 +592,17 @@ pub(super) fn row_labels(info: &BrowserSettingsInfo, remote_label: Option<&str>)
     let fix = if info.fixing {
         "▸ fixing…".to_string()
     } else {
-        match fixable_issues(info) {
-            0 if extension_update_withheld(info) => format!(
-                "▸ fix all (extension waits for {} agent{})",
-                info.agents,
-                if info.agents == 1 { "" } else { "s" }
+        match (fixable_issues(info), extension_update_withheld(info)) {
+            (0, Some(agents)) => format!(
+                "▸ fix all (extension waits for {agents} agent{})",
+                if agents == 1 { "" } else { "s" }
             ),
-            0 if info.checks.iter().any(|c| !c.ok) => {
+            (0, None) if info.checks.iter().any(|c| !c.ok) => {
                 "▸ fix all (nothing fixable here)".to_string()
             }
-            0 => "▸ fix all (nothing to fix)".to_string(),
-            1 => "▸ fix all (1 issue)".to_string(),
-            n => format!("▸ fix all ({n} issues)"),
+            (0, None) => "▸ fix all (nothing to fix)".to_string(),
+            (1, _) => "▸ fix all (1 issue)".to_string(),
+            (n, _) => format!("▸ fix all ({n} issues)"),
         }
     };
     let has = |agent: &str| info.mcp_agents.iter().any(|a| a == agent);

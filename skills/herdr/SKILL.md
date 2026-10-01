@@ -216,6 +216,7 @@ herdr+ owns a shared Chromium window that the user can see, use and sign in to. 
 
 ```bash
 herdr browser open https://example.com
+herdr browser navigate https://example.com/next
 herdr browser read
 herdr browser find "pricing"
 herdr browser snapshot
@@ -226,7 +227,7 @@ herdr browser tabs
 herdr browser close
 ```
 
-`herdr browser help` lists every operation and flag. A session that started before the MCP server was registered (`herdr browser setup`) does not have the tools until it restarts; the CLI works meanwhile. When a page needs a login, `herdr browser focus` brings the window up for the user. Close the tabs you opened when the task is done unless the user may want to look at them.
+`herdr browser help` lists every operation and flag. Reuse your current tab with `navigate`; `open` only when you need a separate tab. A session that started before the MCP server was registered (`herdr browser setup`) does not have the tools until it restarts; the CLI works meanwhile. When a page needs a login, `herdr browser focus` brings the window up for the user. Close the tabs you opened when the task is done unless the user may want to look at them.
 
 ## Safety and coordination rules
 

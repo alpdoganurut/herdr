@@ -61,6 +61,17 @@ check(evals.length === 0, 'a second dismiss has nothing to do');
 check(overlay.linger.length === 1 && (() => { const o = new Overlay({ session }); o.linger(undefined); const ok = o.until > Date.now() + 100000; o.dispose(); return ok; })(), 'no window in the directive: the default one');
 check((() => { const o = new Overlay({ session }); o.linger('x'); const ok = o.until > Date.now() + 100000; o.dispose(); return ok; })(), 'a window that is not a number: the default one');
 {
+  // a huge window is capped at the timer's limit and does not hide early (an overflowing setTimeout fires at once)
+  const huge = new Overlay({ session });
+  await huge.show();
+  evals.length = 0;
+  huge.linger(1e12);
+  check(huge.until <= Date.now() + 2 ** 31 - 1 && huge.until > Date.now() + 2 ** 31 - 10000, `a huge window is capped: ${huge.until - Date.now()}`);
+  await sleep(20);
+  check(!evals.some((e) => e.includes('hide(')), 'and the frame did not hide early');
+  huge.dispose();
+}
+{
   // an explicit 0 is no linger: the frame goes right after the op
   const zero = new Overlay({ session });
   await zero.show();
