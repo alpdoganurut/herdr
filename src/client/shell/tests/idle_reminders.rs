@@ -323,6 +323,44 @@ fn unmarked_and_idle_tabs_never_remind() {
 }
 
 #[test]
+fn the_news_tab_s_unread_mark_never_reminds() {
+    // tab_2 "planner" important with its agent Done would remind; as the News tab it must not.
+    let mut state = reminder_state(10, waiting_snapshot(AgentStatus::Done, true));
+    state.news.info = Some(crate::api::schema::NewsGetInfo {
+        enabled: true,
+        times: vec!["08:00".into()],
+        quiet_hours: String::new(),
+        model: None,
+        tab_id: Some("tab_2".into()),
+        pane_id: Some("pane_2".into()),
+        next_run_at: None,
+        run: None,
+        last_run: None,
+        unread: true,
+        consecutive_failures: 0,
+        pending_notifications: 0,
+        last_read_edition: None,
+        new_stories: None,
+    });
+    let t0 = Instant::now();
+    for minutes in [0, 10, 20, 30] {
+        let (effects, _) = state.tick_notifications(t0 + minutes * MINUTE);
+        assert!(
+            effects.is_empty(),
+            "no reminder for the News tab at {minutes} min"
+        );
+    }
+    assert!(cards(&state).is_empty());
+    assert_eq!(state.next_idle_reminder_deadline(), None);
+    // the same tab under another id still reminds
+    let mut state = reminder_state(10, waiting_snapshot(AgentStatus::Done, true));
+    state.news.info = None;
+    state.tick_notifications(t0);
+    let (effects, _) = state.tick_notifications(t0 + 10 * MINUTE);
+    assert!(!effects.is_empty(), "the control case reminds");
+}
+
+#[test]
 fn zero_minutes_turns_reminders_off() {
     let mut state = reminder_state(0, waiting_snapshot(AgentStatus::Done, true));
     let t0 = Instant::now();

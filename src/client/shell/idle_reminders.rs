@@ -154,6 +154,23 @@ impl ClientShellState {
     }
 
     /// Important tabs that are waiting and unfocused, across every endpoint.
+    /// The News tab's `important` is the desk's unread mark, not an agent
+    /// waiting for the reader: reminders leave it alone. (Known only for the
+    /// active endpoint, where `news.get` names the tab.)
+    fn is_news_tab(
+        &self,
+        endpoint_id: &crate::client::endpoint::ClientEndpointId,
+        tab_id: &str,
+    ) -> bool {
+        *endpoint_id == self.active_endpoint_id
+            && self
+                .news
+                .info
+                .as_ref()
+                .and_then(|info| info.tab_id.as_deref())
+                == Some(tab_id)
+    }
+
     fn waiting_important_tabs(&self) -> Vec<WaitingTab> {
         let mut waiting = Vec::new();
         for endpoint in &self.endpoints {
@@ -161,6 +178,9 @@ impl ClientShellState {
                 continue;
             };
             for tab in snapshot.tabs.iter().filter(|tab| tab.important) {
+                if self.is_news_tab(&endpoint.endpoint_id, &tab.tab_id) {
+                    continue;
+                }
                 let (kind, sound) = match tab.agent_status {
                     AgentStatus::Done => (
                         SemanticNotificationKind::Finished,
@@ -226,6 +246,9 @@ impl ClientShellState {
                 let Some(every) = known_interval(tab.remind_every) else {
                     continue;
                 };
+                if self.is_news_tab(&endpoint.endpoint_id, &tab.tab_id) {
+                    continue;
+                }
                 // The tab's agent pane, else its first pane (a plain shell).
                 let agent = snapshot
                     .agents
@@ -315,10 +338,11 @@ impl ClientShellState {
         }
         if self.idle_reminders.is_empty()
             && !self.endpoints.iter().any(|endpoint| {
-                endpoint
-                    .snapshot
-                    .as_deref()
-                    .is_some_and(|snapshot| snapshot.tabs.iter().any(|tab| tab.important))
+                endpoint.snapshot.as_deref().is_some_and(|snapshot| {
+                    snapshot.tabs.iter().any(|tab| {
+                        tab.important && !self.is_news_tab(&endpoint.endpoint_id, &tab.tab_id)
+                    })
+                })
             })
         {
             return false;

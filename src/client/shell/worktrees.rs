@@ -542,6 +542,7 @@ impl ClientShellState {
                 | PendingEndpointKind::NewsOpen
                 | PendingEndpointKind::NewsSetEnabled
                 | PendingEndpointKind::NewsSetTimes
+                | PendingEndpointKind::NewsSetQuietHours
                 | PendingEndpointKind::BrowserGet
                 | PendingEndpointKind::BrowserFocus
                 | PendingEndpointKind::BrowserStart

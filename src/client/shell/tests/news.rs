@@ -286,6 +286,67 @@ fn the_unread_row_counts_new_stories_when_news_get_has_them() {
     assert!(text.contains("unread"), "{text:?}");
 }
 
+fn tab_action(state: &mut ClientShellState, action: crate::input::KeybindAction) -> Option<String> {
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(crate::input::KeybindMatch::Action(action), &mut outcome);
+    outcome.actions.iter().find_map(|action| match action {
+        ClientShellAction::Endpoint { request, .. } => match &request.method {
+            Method::TabFocus(target) => Some(target.tab_id.clone()),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+#[test]
+fn keyboard_tab_switching_skips_the_pinned_news_tab_like_the_sidebar() {
+    use crate::input::KeybindAction;
+    // news_snapshot: tab_1 (focused), tab_2 = News, tab_3; the sidebar lists tab_1, tab_3.
+    let mut state = tabs_state(news_snapshot());
+    state.compose(106, 20).expect("composed frame");
+    deliver(&mut state, info(Some("tab_2")));
+    state.compose(106, 20).expect("composed frame");
+    assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_3"]);
+    assert_eq!(
+        tab_action(&mut state, KeybindAction::SwitchTab(1)).as_deref(),
+        Some("tab_3"),
+        "the second key is the second listed row, not the pinned News tab"
+    );
+    assert_eq!(tab_action(&mut state, KeybindAction::SwitchTab(2)), None);
+    assert_eq!(
+        tab_action(&mut state, KeybindAction::NextTab).as_deref(),
+        Some("tab_3"),
+        "next skips the News tab"
+    );
+    assert_eq!(
+        tab_action(&mut state, KeybindAction::PreviousTab).as_deref(),
+        Some("tab_3"),
+        "previous wraps to the last listed row"
+    );
+    // the gate agrees with the action
+    let binding = crate::input::KeybindMatch::Action(KeybindAction::SwitchTab(1));
+    assert!(state.indexed_navigation_target_exists(&binding));
+    let binding = crate::input::KeybindMatch::Action(KeybindAction::SwitchTab(2));
+    assert!(!state.indexed_navigation_target_exists(&binding));
+    // from the News tab itself, next lands on the first listed row, previous on the last
+    let mut snapshot = news_snapshot();
+    snapshot.focused_tab_id = Some("tab_2".into());
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == "tab_2";
+    }
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    assert_eq!(
+        tab_action(&mut state, KeybindAction::NextTab).as_deref(),
+        Some("tab_1")
+    );
+    assert_eq!(
+        tab_action(&mut state, KeybindAction::PreviousTab).as_deref(),
+        Some("tab_3")
+    );
+}
+
 #[test]
 fn the_row_sits_above_the_status_footer_and_goes_with_the_tab() {
     let mut snapshot = news_snapshot();
@@ -721,7 +782,11 @@ fn the_news_settings_section_shows_the_desk_and_edits_the_config() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.toml");
-    std::fs::write(&path, "[news]\nenabled = false\n").unwrap();
+    std::fs::write(
+        &path,
+        "[news]\nenabled = false\nquiet_hours = \"00:00-08:00\"\n",
+    )
+    .unwrap();
     std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
     let written = || -> crate::config::Config {
         toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
@@ -893,7 +958,8 @@ fn the_news_settings_section_shows_the_desk_and_edits_the_config() {
         "Delete does nothing off a time row"
     );
 
-    // Quiet hours (after `add time`): the picker writes the local config.
+    // Quiet hours (after `add time`): the picker asks the active server
+    // (news.set_quiet_hours); the local config is not touched.
     state.handle_input_bytes(b"\x1b[B");
     state.handle_input_bytes(b"\r");
     let text = settings_frame_text(&mut state);
@@ -903,11 +969,33 @@ fn the_news_settings_section_shows_the_desk_and_edits_the_config() {
     assert!(text.contains("00:00-08:00 ✓"), "{text}");
     state.handle_input_bytes(b"\x1b[A");
     let outcome = state.handle_input_bytes(b"\r");
-    assert!(endpoint_requests(&outcome)
+    let requests = endpoint_requests(&outcome);
+    let [(request_id, Method::NewsSetQuietHours(params))] = &requests[..] else {
+        panic!("expected one news.set_quiet_hours, got {requests:?}");
+    };
+    assert_eq!(params.quiet_hours, "");
+    assert!(!requests
         .iter()
         .any(|(_, method)| matches!(method, Method::ServerReloadConfig(_))));
-    assert_eq!(written().news.quiet_hours, "");
+    assert_eq!(
+        written().news.quiet_hours,
+        "00:00-08:00",
+        "the local file is untouched"
+    );
     assert_eq!(selected_row(&state), 4, "back on the quiet-hours row");
+    let mut quiet_off = info(Some("tab_2"));
+    quiet_off.quiet_hours = String::new();
+    quiet_off.times = vec!["08:30".into(), "12:00".into()];
+    state.handle_endpoint_result(
+        "boot-1",
+        request_id,
+        Ok(ResponseResult::NewsGet { news: quiet_off }),
+    );
+    let text = settings_frame_text(&mut state);
+    assert!(
+        text.contains("quiet hours off (notifications)"),
+        "the reply refreshes the row: {text}"
+    );
 
     // Run now, the last row.
     state.handle_input_bytes(b"\x1b[B");

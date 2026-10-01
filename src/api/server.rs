@@ -550,6 +550,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::NewsOpen(_) => "news.open",
         Method::NewsSetEnabled(_) => "news.set_enabled",
         Method::NewsSetTimes(_) => "news.set_times",
+        Method::NewsSetQuietHours(_) => "news.set_quiet_hours",
         Method::BrowserRun(_) => "browser.run",
         Method::BrowserGet(_) => "browser.get",
         Method::BrowserStatus(_) => "browser.status",

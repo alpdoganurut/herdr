@@ -294,6 +294,8 @@ pub(crate) enum NewsError {
     ConfigWrite(String),
     /// `news.set_times`: an entry is not a time of day.
     InvalidTime(String),
+    /// `news.set_quiet_hours`: not a `HH:MM-HH:MM` window.
+    InvalidQuietHours(String),
 }
 
 impl NewsError {
@@ -305,6 +307,7 @@ impl NewsError {
             Self::NoEdition(_) => "news_edition_not_found",
             Self::ConfigWrite(_) => "news_config_write_failed",
             Self::InvalidTime(_) => "news_invalid_time",
+            Self::InvalidQuietHours(_) => "news_invalid_quiet_hours",
         }
     }
 
@@ -316,6 +319,9 @@ impl NewsError {
             Self::InFlight => "a news run is already in flight".into(),
             Self::Failed(message) | Self::ConfigWrite(message) => message.clone(),
             Self::InvalidTime(err) => format!("{err}; expected HH:MM"),
+            Self::InvalidQuietHours(err) => {
+                format!("{err}; expected HH:MM-HH:MM or an empty window")
+            }
             Self::NoEdition(edition) => format!("edition {edition} does not exist"),
         }
     }
@@ -866,11 +872,22 @@ impl NewsState {
     /// Account for a finished run: the failure counter, and the failure
     /// alert once the streak reaches [`FAILURE_ALERT_AFTER`] (queued for the
     /// end of quiet hours, `quiet_end`, when inside them).
-    fn finish(&mut self, record: &NewsRunRecord, now_unix: u64, quiet_end: Option<u64>) {
+    fn finish(
+        &mut self,
+        record: &NewsRunRecord,
+        now_unix: u64,
+        quiet_end: Option<u64>,
+        user_cancel: bool,
+    ) {
         self.run = None;
         if record.succeeded() {
             self.consecutive_failures = 0;
             self.notify.failure_alerted = false;
+            return;
+        }
+        if user_cancel {
+            // The reader stopped it (double Ctrl-C): not a failure of the
+            // desk, the streak is neither reset nor extended.
             return;
         }
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
@@ -980,6 +997,22 @@ impl App {
         params: NewsSetEnabledParams,
     ) -> String {
         match self.set_news_enabled(params.enabled) {
+            Ok(()) => encode_success(
+                id,
+                ResponseResult::NewsGet {
+                    news: self.news_get_info(),
+                },
+            ),
+            Err(err) => encode_error(id, err.code(), err.message()),
+        }
+    }
+
+    pub(super) fn handle_news_set_quiet_hours(
+        &mut self,
+        id: String,
+        params: crate::api::schema::NewsSetQuietHoursParams,
+    ) -> String {
+        match self.set_news_quiet_hours(&params.quiet_hours) {
             Ok(()) => encode_success(
                 id,
                 ResponseResult::NewsGet {
@@ -1102,6 +1135,38 @@ impl App {
             outcome = "ok",
             times = %texts.join(" "),
             "news schedule changed"
+        );
+        Ok(())
+    }
+
+    /// `news.set_quiet_hours`: validate the window, write its canonical form
+    /// (`HH:MM-HH:MM`, or empty for none) to `news.quiet_hours` in the config
+    /// file and reload it — the settings section's quiet-hours row goes
+    /// through here, so a remote server's own config changes.
+    pub(crate) fn set_news_quiet_hours(&mut self, text: &str) -> Result<(), NewsError> {
+        let parsed =
+            crate::config::parse_quiet_hours(text).map_err(NewsError::InvalidQuietHours)?;
+        let canonical = parsed
+            .map(|q| format!("{}-{}", format_hhmm(q.start), format_hhmm(q.end)))
+            .unwrap_or_default();
+        crate::config::write_edit(crate::config::ConfigEdit::NewsQuietHours(&canonical))
+            .map_err(NewsError::ConfigWrite)?;
+        let report = self.reload_config();
+        if self.news.quiet != parsed {
+            tracing::warn!(
+                event = "news.set_quiet_hours",
+                outcome = "applied_directly",
+                status = ?report.status,
+                "config reload did not apply news.quiet_hours; applying it in memory"
+            );
+            self.news.quiet = parsed;
+            self.news.quiet_text = canonical.clone();
+        }
+        tracing::info!(
+            event = "news.set_quiet_hours",
+            outcome = "ok",
+            quiet_hours = %canonical,
+            "news quiet hours changed"
         );
         Ok(())
     }
@@ -1957,7 +2022,16 @@ impl App {
         let now_unix = unix_now();
         let (local, _day) = self.news.local_now();
         let quiet_end = self.news.quiet_end_unix(now_unix, local);
-        self.news.finish(&record, now_unix, quiet_end);
+        // The runner's own `interrupted` outside the watchdog's Stopping phase
+        // is the reader's double Ctrl-C; herdr's records and a watchdog stop
+        // keep counting.
+        let user_cancel = record.outcome == "interrupted"
+            && record.errors.iter().any(|e| e == "interrupted by the user")
+            && !matches!(
+                self.news.run.as_ref().map(|run| &run.phase),
+                Some(NewsPhase::Stopping { .. })
+            );
+        self.news.finish(&record, now_unix, quiet_end, user_cancel);
         self.news.new_count_cache = None;
         if record.outcome == "ok" && record.changed {
             self.mark_news_tab_important();
@@ -3499,6 +3573,106 @@ mod tests {
         app.news.run = Some(in_flight(NOW, now));
         app.handle_news_tasks(now);
         assert!(app.news.pending_command.is_none());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn set_quiet_hours_writes_the_canonical_window_and_applies_it() {
+        let dir = temp_home("set-quiet");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[news]\nenabled = true\ntimes = [\"09:00\"]\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+        let mut app = news_app(Some(dir.join("news")), true);
+        let set = |app: &mut App, window: &str| {
+            request(
+                app,
+                crate::api::schema::Method::NewsSetQuietHours(
+                    crate::api::schema::NewsSetQuietHoursParams {
+                        quiet_hours: window.into(),
+                    },
+                ),
+            )
+        };
+        let response = set(&mut app, " 22:00 - 7:00 ");
+        assert_eq!(response["result"]["type"], "news_get", "{response}");
+        assert_eq!(
+            response["result"]["news"]["quiet_hours"], "22:00-07:00",
+            "canonical"
+        );
+        assert_eq!(app.news.quiet_text, "22:00-07:00");
+        assert_eq!(
+            app.news.quiet.map(|q| (q.start, q.end)),
+            Some((22 * 60, 7 * 60))
+        );
+        let written: crate::config::Config =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written.news.quiet_hours, "22:00-07:00");
+        assert_eq!(written.news.times, ["09:00"], "other keys are kept");
+        let response = set(&mut app, "");
+        assert_eq!(response["result"]["news"]["quiet_hours"], "");
+        assert!(app.news.quiet.is_none());
+        let response = set(&mut app, "25:00-08:00");
+        assert_eq!(
+            response["error"]["code"], "news_invalid_quiet_hours",
+            "{response}"
+        );
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("expected HH:MM-HH:MM"));
+        assert!(app.news.quiet.is_none(), "a refused window changes nothing");
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_run_the_reader_cancelled_does_not_count_toward_the_failure_alert() {
+        let home = temp_home("user-cancel");
+        std::fs::create_dir_all(home.join("runs")).unwrap();
+        let mut app = news_app(Some(home.clone()), false);
+        app.news.local_override = Some((clock(12, 0, 0).unwrap(), "2026-09-29"));
+        let now = Instant::now();
+        let interrupted = |n: u64| NewsRunRecord {
+            started: iso_utc(NOW + n),
+            trigger: "manual".into(),
+            outcome: "interrupted".into(),
+            errors: vec!["interrupted by the user".into()],
+            ..NewsRunRecord::default()
+        };
+        let invalid = NewsRunRecord {
+            started: iso_utc(NOW + 10),
+            trigger: "scheduled".into(),
+            outcome: "invalid".into(),
+            errors: vec!["lead text ends in an ellipsis".into()],
+            ..NewsRunRecord::default()
+        };
+        complete(&mut app, &home, &invalid, now);
+        assert_eq!(app.news.consecutive_failures, 1);
+        // the reader's double Ctrl-C: the runner's own `interrupted`
+        complete(&mut app, &home, &interrupted(1), now);
+        assert_eq!(
+            app.news.consecutive_failures, 1,
+            "a user cancel neither counts nor resets"
+        );
+        complete(&mut app, &home, &interrupted(2), now);
+        complete(&mut app, &home, &interrupted(3), now);
+        assert_eq!(app.news.consecutive_failures, 1);
+        assert!(
+            app.news.notify.pending.is_empty(),
+            "no failure alert from cancels"
+        );
+        // the same runner record during the watchdog's Stopping phase is a real failure
+        let mut run = in_flight(NOW + 4, now);
+        run.index_len = store::index_len(&home);
+        run.phase = NewsPhase::Stopping {
+            next_poll: now,
+            second_interrupt: None,
+        };
+        app.news.run = Some(run);
+        store::append_index_record(&home, &interrupted(4)).unwrap();
+        assert!(app.handle_news_tasks(now + POLL_INTERVAL));
+        assert!(app.news.run.is_none());
+        assert_eq!(app.news.consecutive_failures, 2, "a watchdog stop counts");
         let _ = std::fs::remove_dir_all(&home);
     }
 

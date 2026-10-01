@@ -33,6 +33,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "news.open",
     "news.run",
     "news.set_enabled",
+    "news.set_quiet_hours",
     "news.set_times",
     "pane.clear",
     "pane.close",
@@ -399,6 +400,10 @@ mod tests {
         assert_eq!(
             actual.remove("browser.stop").as_deref(),
             Some("7b8ec002e4def703fdb73643a82bb087e2afa69f56629f371a4c79b56a631e41")
+        );
+        assert_eq!(
+            actual.remove("news.set_quiet_hours").as_deref(),
+            Some("985cacc65cb6e91faef3336f78ae66132ed67d8b2a815805876ea78be3682863")
         );
         assert_eq!(
             actual.remove("browser.settings").as_deref(),

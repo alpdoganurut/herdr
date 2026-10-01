@@ -860,7 +860,8 @@ impl ClientShellState {
             | PendingEndpointKind::NewsRun
             | PendingEndpointKind::NewsOpen
             | PendingEndpointKind::NewsSetEnabled
-            | PendingEndpointKind::NewsSetTimes) => {
+            | PendingEndpointKind::NewsSetTimes
+            | PendingEndpointKind::NewsSetQuietHours) => {
                 return self.handle_news_endpoint_result(kind, result);
             }
             kind @ (PendingEndpointKind::BrowserGet
@@ -1004,38 +1005,36 @@ impl ClientShellState {
             }
             KeybindAction::SwitchTab(index) => {
                 // Same scope rule as next/previous: the tabs layout indexes the
-                // whole list, the spaces layout the focused space.
-                let tabs = snapshot
-                    .tabs
-                    .iter()
-                    .filter(|tab| {
-                        self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
-                            || tab.workspace_id == focused_workspace
-                    })
-                    .collect::<Vec<_>>();
+                // list as the sidebar shows it (the pinned News row left out),
+                // the spaces layout the focused space.
+                let tabs = self.keyboard_tab_list(snapshot, &focused_workspace);
                 Some(Method::TabFocus(TabTarget {
                     tab_id: tabs.get(index)?.tab_id.clone(),
                 }))
             }
             KeybindAction::PreviousTab | KeybindAction::NextTab => {
-                // The tabs sidebar layout cycles the whole list (every space, in
-                // sidebar order); the spaces layout stays within the focused space.
-                let tabs = snapshot
-                    .tabs
-                    .iter()
-                    .filter(|tab| {
-                        self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
-                            || tab.workspace_id == focused_workspace
-                    })
-                    .collect::<Vec<_>>();
+                // The tabs sidebar layout cycles the list as shown (every space,
+                // in sidebar order, the pinned News row left out); the spaces
+                // layout stays within the focused space.
+                let tabs = self.keyboard_tab_list(snapshot, &focused_workspace);
+                if tabs.is_empty() {
+                    return None;
+                }
                 let focused_tab = focused_tab?;
-                let current = tabs.iter().position(|tab| tab.tab_id == focused_tab)?;
                 let delta = if action == KeybindAction::PreviousTab {
                     -1
                 } else {
                     1
                 };
-                let next = (current as isize + delta).rem_euclid(tabs.len() as isize) as usize;
+                // From the pinned News tab (not in the list) the first key
+                // lands on the list's first (next) or last (previous) entry.
+                let next = match tabs.iter().position(|tab| tab.tab_id == focused_tab) {
+                    Some(current) => {
+                        (current as isize + delta).rem_euclid(tabs.len() as isize) as usize
+                    }
+                    None if delta > 0 => 0,
+                    None => tabs.len() - 1,
+                };
                 Some(Method::TabFocus(TabTarget {
                     tab_id: tabs[next].tab_id.clone(),
                 }))
@@ -1273,4 +1272,28 @@ fn pane_topology_action(action: crate::input::KeybindAction) -> bool {
             | A::ResizePaneUp
             | A::ResizePaneRight
     )
+}
+
+impl ClientShellState {
+    /// The tabs keyboard navigation counts, in the order the sidebar shows
+    /// them: the whole list in the `tabs` layout — minus the pinned News tab,
+    /// which sits in its own row and must not shift the numbering — and the
+    /// focused space's tabs in the `spaces` layout (the News tab stays in
+    /// its list there).
+    pub(super) fn keyboard_tab_list<'a>(
+        &self,
+        snapshot: &'a crate::protocol::ClientShellSnapshot,
+        focused_workspace: &str,
+    ) -> Vec<&'a crate::protocol::ClientShellTab> {
+        let tabs_layout = self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs;
+        let pinned = tabs_layout
+            .then(|| self.news_row().and_then(|row| row.tab_id))
+            .flatten();
+        snapshot
+            .tabs
+            .iter()
+            .filter(|tab| tabs_layout || tab.workspace_id == focused_workspace)
+            .filter(|tab| pinned.as_deref() != Some(tab.tab_id.as_str()))
+            .collect()
+    }
 }

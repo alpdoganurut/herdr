@@ -204,6 +204,14 @@ pub struct NewsSetTimesParams {
     pub times: Vec<String>,
 }
 
+/// `news.set_quiet_hours`: the local window in which a news notification
+/// waits, `HH:MM-HH:MM` (written to the config as `news.quiet_hours`), or
+/// empty for none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct NewsSetQuietHoursParams {
+    pub quiet_hours: String,
+}
+
 /// The run in flight.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NewsRunInfo {
@@ -281,6 +289,12 @@ mod tests {
                     times: vec!["08:00".into(), "19:00".into()],
                 }),
                 "news.set_times",
+            ),
+            (
+                Method::NewsSetQuietHours(NewsSetQuietHoursParams {
+                    quiet_hours: "22:00-07:00".into(),
+                }),
+                "news.set_quiet_hours",
             ),
             (
                 Method::BrowserSettings(EmptyParams::default()),

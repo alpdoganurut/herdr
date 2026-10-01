@@ -869,12 +869,12 @@ impl ClientShellState {
                 .snapshot
                 .as_deref()
                 .and_then(|snapshot| {
+                    // the same list the action indexes (tabs layout: the whole
+                    // list minus the pinned News row; spaces: the focused space)
                     let workspace_id = snapshot.focused_workspace_id.as_deref()?;
-                    snapshot
-                        .tabs
-                        .iter()
-                        .filter(|tab| tab.workspace_id == workspace_id)
-                        .nth(*index)
+                    self.keyboard_tab_list(snapshot, workspace_id)
+                        .get(*index)
+                        .map(|_| ())
                 })
                 .is_some(),
             KeybindMatch::Action(KeybindAction::FocusAgent(index)) => {

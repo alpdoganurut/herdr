@@ -838,6 +838,7 @@ pub(super) enum PendingEndpointKind {
     NewsOpen,
     NewsSetEnabled,
     NewsSetTimes,
+    NewsSetQuietHours,
     BrowserGet,
     BrowserFocus,
     BrowserStart,

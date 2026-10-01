@@ -4209,6 +4209,18 @@
           ],
           "type": "object"
         },
+        "NewsSetQuietHoursParams": {
+          "description": "`news.set_quiet_hours`: the local window in which a news notification\nwaits, `HH:MM-HH:MM` (written to the config as `news.quiet_hours`), or\nempty for none.",
+          "properties": {
+            "quiet_hours": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "quiet_hours"
+          ],
+          "type": "object"
+        },
         "NewsSetTimesParams": {
           "description": "`news.set_times`: the local times of the scheduled runs (written to the\nconfig as `news.times`, sorted and without duplicates). Every entry must\nbe `HH:MM`; an empty list means no scheduled runs.",
           "properties": {
@@ -7777,6 +7789,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/NewsSetTimesParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "news.set_quiet_hours",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/NewsSetQuietHoursParams"
             }
           },
           "required": [

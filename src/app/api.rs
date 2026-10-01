@@ -1129,6 +1129,9 @@ impl App {
                 return self.handle_news_set_enabled(request.id, params)
             }
             Method::NewsSetTimes(params) => return self.handle_news_set_times(request.id, params),
+            Method::NewsSetQuietHours(params) => {
+                return self.handle_news_set_quiet_hours(request.id, params)
+            }
             Method::BrowserRun(_) => {
                 return responses::encode_error(
                     request.id,

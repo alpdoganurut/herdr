@@ -9,8 +9,9 @@ use crate::api::schema::{
 };
 use crate::persist::news::iso_to_unix;
 
-const USAGE: &str = "usage: herdr news <run|status [--json]|log [N] [--json]|open [--edition N]|history [--days N] [--json]|enable|disable|times [HH:MM ...|--clear]>";
+const USAGE: &str = "usage: herdr news <run|status [--json]|log [N] [--json]|open [--edition N]|history [--days N] [--json]|enable|disable|times [HH:MM ...|--clear]|quiet [HH:MM-HH:MM|--off]>";
 const TIMES_USAGE: &str = "usage: herdr news times [HH:MM ...] [--clear]";
+const QUIET_USAGE: &str = "usage: herdr news quiet [HH:MM-HH:MM | --off]\nShows or sets the local window in which a news notification waits (news.quiet_hours).";
 const STATUS_USAGE: &str = "usage: herdr news status [--json]";
 const LOG_USAGE: &str = "usage: herdr news log [N] [--json]";
 const OPEN_USAGE: &str = "usage: herdr news open [--edition N]";
@@ -29,6 +30,7 @@ pub(super) fn run_news_command(args: &[String]) -> std::io::Result<i32> {
         Some("enable") => news_set_enabled(&args[1..], true),
         Some("disable") => news_set_enabled(&args[1..], false),
         Some("times") => news_times(&args[1..]),
+        Some("quiet") => news_quiet(&args[1..]),
         Some("help" | "--help" | "-h") => {
             eprintln!("{USAGE}");
             Ok(0)
@@ -372,6 +374,47 @@ fn news_times(args: &[String]) -> std::io::Result<i32> {
         Err(response) => return super::print_response(&response),
     };
     print!("{}", format_times(&news, &LocalClock::now()));
+    Ok(0)
+}
+
+/// `herdr news quiet`: show the quiet window, or set it through the server
+/// (`news.set_quiet_hours`, written to the server's config).
+fn news_quiet(args: &[String]) -> std::io::Result<i32> {
+    let (request_id, method) = match args {
+        [] => ("cli:news:quiet", Method::NewsGet(EmptyParams::default())),
+        [arg] if matches!(arg.as_str(), "help" | "--help" | "-h") => {
+            eprintln!("{QUIET_USAGE}");
+            return Ok(0);
+        }
+        [arg] if arg == "--off" => (
+            "cli:news:set_quiet_hours",
+            Method::NewsSetQuietHours(crate::api::schema::NewsSetQuietHoursParams {
+                quiet_hours: String::new(),
+            }),
+        ),
+        [arg] if !arg.starts_with('-') => (
+            "cli:news:set_quiet_hours",
+            Method::NewsSetQuietHours(crate::api::schema::NewsSetQuietHoursParams {
+                quiet_hours: arg.clone(),
+            }),
+        ),
+        _ => {
+            eprintln!("{QUIET_USAGE}");
+            return Ok(2);
+        }
+    };
+    let news = match fetch_get(request_id, method)? {
+        Ok(news) => news,
+        Err(response) => return super::print_response(&response),
+    };
+    if news.quiet_hours.trim().is_empty() {
+        println!("quiet hours off (a news notification is delivered at once)");
+    } else {
+        println!(
+            "quiet hours {} (a news notification due inside this local window waits for its end)",
+            news.quiet_hours.trim()
+        );
+    }
     Ok(0)
 }
 

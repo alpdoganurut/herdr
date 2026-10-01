@@ -181,6 +181,8 @@ pub enum Method {
     NewsSetEnabled(NewsSetEnabledParams),
     #[serde(rename = "news.set_times")]
     NewsSetTimes(NewsSetTimesParams),
+    #[serde(rename = "news.set_quiet_hours")]
+    NewsSetQuietHours(NewsSetQuietHoursParams),
     #[serde(rename = "browser.run")]
     BrowserRun(BrowserRunParams),
     #[serde(rename = "browser.get")]

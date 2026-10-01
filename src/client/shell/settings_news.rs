@@ -9,11 +9,11 @@
 //! new one, `quiet hours …` picks the window in which a notification waits
 //! (it no longer affects the schedule) and `run now` starts a run
 //! (`news.run`). Every change to the times goes to the active server as
-//! `news.set_times` with the whole sorted list, so a remote server's own
-//! config changes; its reply refreshes the section. The quiet-hours row
-//! persists like the other settings (`ConfigEdit` on the local config +
-//! `server.reload_config`), then the section pulls `news.get` again. Below
-//! the rows the model, the last run and the next run are shown.
+//! `news.set_times` with the whole sorted list, and the quiet-hours row as
+//! `news.set_quiet_hours`, so a remote server's own config changes; the
+//! reply refreshes the section (a server without `news.set_quiet_hours`
+//! gets the local config write of older builds). Below the rows the model,
+//! the last run and the next run are shown.
 
 use super::render::put_text;
 use super::settings_daily_time::{daily_time_choices, ClientDailyTimeChoice};
@@ -224,11 +224,25 @@ impl ClientShellState {
                 return;
             }
             Some(ClientNewsPicker::QuietHours(choices)) => {
-                // Quiet hours only hold notifications; no server method, so
-                // the local config file is written like the other settings.
-                if let Some(window) = choices.get(selected) {
-                    if self.save_settings_edit(
-                        crate::config::ConfigEdit::NewsQuietHours(window),
+                // The active server writes its own config (`news.set_quiet_hours`,
+                // so a remote server's quiet hours change too); a server
+                // without the method gets the local write of older builds.
+                if let Some(window) = choices.get(selected).cloned() {
+                    let method = crate::api::schema::Method::NewsSetQuietHours(
+                        crate::api::schema::NewsSetQuietHoursParams {
+                            quiet_hours: window.clone(),
+                        },
+                    );
+                    if self.supports_endpoint_method(&method) {
+                        self.close_news_picker();
+                        self.push_endpoint_method_with_kind(
+                            method,
+                            PendingEndpointKind::NewsSetQuietHours,
+                            outcome,
+                        );
+                        outcome.repaint = true;
+                    } else if self.save_settings_edit(
+                        crate::config::ConfigEdit::NewsQuietHours(&window),
                         outcome,
                     ) {
                         self.close_news_picker();
