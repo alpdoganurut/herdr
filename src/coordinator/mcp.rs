@@ -2063,7 +2063,7 @@ fn can_drive_tabs(caller: &Caller) -> Result<(), ApiError> {
     } else if caller.team.is_some() {
         Err(err(
             "not_managed",
-            "team members message their teammates; opening, renaming or moving tabs and groups and opting agents in need a managed agent (ask your user)",
+            "team members message their teammates; setting the team's purpose, opening, renaming or moving tabs and groups and opting agents in need a managed agent (ask your user)",
         ))
     } else {
         Err(err(
