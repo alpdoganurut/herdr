@@ -187,3 +187,27 @@ async fn fork_smoke_team_make_and_roles_reach_every_client_but_status_does_not()
     assert_eq!(seeded[0].teams[0].members.len(), 2);
     shutdown_test_runtimes(&mut server);
 }
+
+#[tokio::test]
+async fn fork_smoke_restored_teams_reach_clients_on_the_first_pass() {
+    // A team that came back from session.json or a live handoff: no team
+    // event fires, yet clients must be sent it.
+    let (mut server, group_id, _panes) = teams_server();
+    let mut team = crate::workspace::team::Team::new(Some("fix calendar sync".into()), None, 1);
+    let member = server.app.state.workspaces[1].tabs[0].root_pane;
+    team.join(member, Some("fixer".into()), 1);
+    server.app.state.workspaces[1].team = Some(team);
+    server.app.state.teams_view_rev = 0;
+    server.app.state.rebuild_team_index();
+    server.app.state.assert_invariants_for_test();
+    let (client, _render) = connect_test_shell(&mut server, 54, 80, 23);
+    server.render_and_stream();
+    let payloads = team_payloads(&client);
+    assert_eq!(payloads.len(), 1, "the restored team is pushed");
+    assert_eq!(payloads[0].teams[0].workspace_id, group_id);
+    assert_eq!(
+        payloads[0].teams[0].purpose.as_deref(),
+        Some("fix calendar sync")
+    );
+    shutdown_test_runtimes(&mut server);
+}

@@ -95,6 +95,11 @@ impl AppState {
         let changed = index != self.team_index || count != self.team_count;
         self.team_index = index;
         self.team_count = count;
+        // Restored teams (session restore, live handoff) reach clients on
+        // the first pass: revision 0 means "never had a team".
+        if count > 0 && self.teams_view_rev == 0 {
+            self.teams_view_rev = 1;
+        }
         changed
     }
 }

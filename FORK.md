@@ -652,7 +652,7 @@ src/client/shell/tests/mod.rs  additive: fork module lines (`mod browser;` direc
 src/server/headless/tests/mod.rs  additive: the fork_smoke module line; test literals per section 2 `mod agent_notices_smoke;` next to the fork_smoke module line. `mod teams_smoke;` (with its #[path]) directly after `mod agent_notices_smoke;`.
 src/workspace.rs  additive: `pub mod team;` directly after `mod tab;`; Workspace.team the last field (`team: None` in every literal, section 2); Workspace::assert_invariants_for_test checks the team (members and exclusions live in this workspace, disjoint, unique, one-line caps, change log <= 16); test_adversarial_identity_state adds a team.
 src/persist/snapshot.rs  additive: WorkspaceSnapshot.team (`#[serde(default, skip_serializing_if = "Option::is_none")]`) the last field, TeamSnapshot and TeamMemberSnapshot (old raw pane ids, optional pending_rename) after WorkspaceSnapshot, capture_workspace copies ws.team through TeamSnapshot::capture.
-src/app/state.rs  additive: AppState.team_index, team_count, teams_view_rev directly after coordinator_terminal_id (and test_new); assert_invariants_for_test checks the index, the count and that no member is the coordinator pane.
+src/app/state.rs  additive: AppState.team_index, team_count, teams_view_rev directly after coordinator_terminal_id (and test_new); assert_invariants_for_test checks the index, the count, that no member is the coordinator pane and that teams_view_rev >= 1 while any team exists.
 *  deny: anything that is not a structural additive conflict (zdiff3 base empty, both sides pure insertions)
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
@@ -1255,6 +1255,7 @@ server::headless::tests::agent_notices_smoke::fork_smoke_agent_notice_goes_when_
 server::headless::tests::agent_notices_smoke::fork_smoke_agents_settings_write_the_config_and_the_hook_fix_waits_for_confirm
 client::shell::tests::agent_cards::fork_smoke::a_click_focuses_the_agent_and_x_or_right_click_dismisses
 server::headless::tests::teams_smoke::fork_smoke_team_make_and_roles_reach_every_client_but_status_does_not
+server::headless::tests::teams_smoke::fork_smoke_restored_teams_reach_clients_on_the_first_pass
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 ### Added

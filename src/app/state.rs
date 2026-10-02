@@ -1308,7 +1308,8 @@ impl AppState {
         }
 
         // Fork teams: the index is exactly the members, the count exactly
-        // the teams, and the coordinator's pane is never a member.
+        // the teams, the coordinator's pane is never a member, and teams
+        // that exist have a view revision clients are sent.
         let mut members = std::collections::HashMap::new();
         let mut teams = 0;
         for ws in &self.workspaces {
@@ -1332,6 +1333,10 @@ impl AppState {
             "team_index must equal the union of team members"
         );
         assert_eq!(self.team_count, teams, "team_count must equal the teams");
+        assert!(
+            teams == 0 || self.teams_view_rev >= 1,
+            "teams exist, so clients must be sent them (teams_view_rev >= 1)"
+        );
     }
 
     pub fn insert_test_runtime(
