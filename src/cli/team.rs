@@ -1,12 +1,16 @@
 //! `herdr team` (fork): teams from the command line (`team.*`). The command
 //! line is the user: no caller pane is sent, except that `get` without a
-//! group asks about the group this pane is in. `herdr team hook` is the
-//! Claude per-turn hook the agent wrap installs; it always exits 0.
+//! group asks about the group this pane is in. So the changing verbs refuse
+//! to run from a pane whose agent is running (an agent's shell tool, the
+//! coordinator's included): agents go through `agents_team`, whose guards
+//! the CLI must not get around. `herdr team hook` is the Claude per-turn
+//! hook the agent wrap installs; it always exits 0.
 
 use crate::api::schema::{
     EmptyParams, Method, Request, TeamGetParams, TeamJoinParams, TeamMakeParams, TeamPaneParams,
     TeamSetPurposeParams, TeamSetRoleParams, TeamWorkspaceParams,
 };
+use crate::coordinator::api::{self as coordinator_api, Api};
 
 pub(crate) const USAGE: &str = "\
 usage: herdr team <command> [--json]
@@ -21,7 +25,9 @@ usage: herdr team <command> [--json]
   leave <pane>                  remove a member (it is not auto-joined again)
   hook                          Claude's per-turn team hook (reads stdin)
 
-<group> is a group id (w3), number or label; <pane> a pane id (w3:p1).";
+<group> is a group id (w3), label or number; <pane> a pane id (w3:p1).
+The changing commands do not run from a pane whose agent is running
+(agents use the agents_team tool).";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
@@ -203,6 +209,44 @@ fn method_for(command: &Command) -> Option<Method> {
     })
 }
 
+/// Whether `command` changes a team (everything but list, get and hook).
+fn changes_a_team(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Help | Command::Hook | Command::List | Command::Get(_)
+    )
+}
+
+/// Refuse a changing verb run from `env_pane` while an agent runs there
+/// (an agent's shell tool): the server would record it as the user and
+/// skip `agents_team`'s guards. A plain shell pane, a script outside herdr
+/// or an unreachable server is not refused here.
+fn refuse_agent_caller(api: &impl Api, env_pane: Option<&str>) -> Result<(), String> {
+    let Some(env_pane) = env_pane.filter(|pane| !pane.trim().is_empty()) else {
+        return Ok(());
+    };
+    let pane = coordinator_api::resolve_caller(api, env_pane)
+        .map(|caller| caller.pane_id)
+        .unwrap_or_else(|_| env_pane.to_string());
+    let Ok(info) = coordinator_api::agent_get(api, &pane) else {
+        return Ok(());
+    };
+    let text = |value: &serde_json::Value| {
+        value
+            .as_str()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let Some(kind) = text(&info["agent"]).or_else(|| text(&info["agent_session"]["agent"])) else {
+        return Ok(());
+    };
+    let name = text(&info["name"]).unwrap_or(kind);
+    Err(format!(
+        "{pane} runs an agent ({name}): changing a team stays with the user (the TUI, or herdr team from a shell pane); agents use the agents_team tool"
+    ))
+}
+
 /// `herdr team hook …` (any further arguments are ignored).
 fn is_hook(args: &[String]) -> bool {
     args.first().map(String::as_str) == Some("hook")
@@ -237,6 +281,15 @@ pub fn run_team_command(args: &[String]) -> std::io::Result<i32> {
             None => return Ok(2),
         },
     };
+    if changes_a_team(&parsed.command) {
+        let env_pane = super::target::caller_pane_id();
+        if let Err(message) =
+            refuse_agent_caller(&super::coordinator::SocketApi, env_pane.as_deref())
+        {
+            eprintln!("herdr team: {message}");
+            return Ok(1);
+        }
+    }
     if matches!(parsed.command, Command::Get(None)) {
         if let Method::TeamGet(TeamGetParams {
             caller_pane: None, ..
@@ -329,6 +382,49 @@ mod tests {
 
     fn command(list: &[&str]) -> Command {
         parse(&args(list)).expect("parses").command
+    }
+
+    #[test]
+    fn changing_verbs_refuse_a_pane_whose_agent_runs() {
+        use crate::coordinator::api::ApiError;
+        use serde_json::json;
+        // w3:p1 runs claude "fixer" (its launch-time id w3:p9 is an alias);
+        // w1:p3 is a plain shell.
+        let api = |method: Method| -> Result<serde_json::Value, ApiError> {
+            match method {
+                Method::BrowserResolveCaller(caller) => {
+                    let pane = if caller.pane_id == "w3:p9" {
+                        "w3:p1".to_string()
+                    } else {
+                        caller.pane_id
+                    };
+                    Ok(json!({ "actor": { "kind": "pane", "pane_id": pane,
+                        "tab_id": "w3:t1", "workspace_id": "w3", "shell_pid": 1, "gone": false } }))
+                }
+                Method::AgentGet(target) if target.target == "w3:p1" => {
+                    Ok(json!({ "agent": { "agent": "claude", "name": "fixer" } }))
+                }
+                _ => Err(ApiError::new("agent_not_found", "no agent")),
+            }
+        };
+        let refused = refuse_agent_caller(&api, Some("w3:p9")).unwrap_err();
+        assert!(refused.contains("w3:p1 runs an agent (fixer)"), "{refused}");
+        assert!(refused.contains("agents_team"), "{refused}");
+        assert_eq!(refuse_agent_caller(&api, Some("w1:p3")), Ok(()));
+        assert_eq!(refuse_agent_caller(&api, None), Ok(()));
+        for verb in [
+            &["make", "w3"][..],
+            &["disband", "w3"],
+            &["purpose", "w3", "x"],
+            &["role", "w3:p1", "x"],
+            &["join", "w3:p1"],
+            &["leave", "w3:p1"],
+        ] {
+            assert!(changes_a_team(&command(verb)), "{verb:?}");
+        }
+        for verb in [&["list"][..], &["get"], &["get", "w3"], &["hook"]] {
+            assert!(!changes_a_team(&command(verb)), "{verb:?}");
+        }
     }
 
     #[test]

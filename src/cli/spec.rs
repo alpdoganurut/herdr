@@ -1101,7 +1101,7 @@ fn team_command() -> Command {
     Command::new("team")
         .about("Inspect and change teams (team groups of agents)")
         .long_about(
-            "A team is a group whose agents work together: every agent started in it joins, is named after its role and may message its teammates. GROUP is a group id (w3), number or label; PANE a pane id (w3:p1). The command line acts as the user.",
+            "A team is a group whose agents work together: every agent started in it joins, is named after its role and may message its teammates. GROUP is a group id (w3), label or number; PANE a pane id (w3:p1). The command line acts as the user, so the changing commands do not run from a pane whose agent is running (agents use the agents_team tool).",
         )
         .subcommand(
             Command::new("list")
