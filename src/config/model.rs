@@ -6,8 +6,7 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 use super::{
     ActionKeybinds, AgentsConfig, BindingConfig, BrowserConfig, CommandKeybindConfig,
     CoordinatorConfig, IndexedKeybind, Keybinds, NewsConfig, NotesConfig, SidebarConfig,
-    SoundConfig,
-    TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
+    SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
     DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 

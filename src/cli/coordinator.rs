@@ -1499,7 +1499,7 @@ mod tests {
         let list = session
             .handle(&json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/list" }))
             .expect("a reply");
-        assert_eq!(list["result"]["tools"].as_array().map(Vec::len), Some(19));
+        assert_eq!(list["result"]["tools"].as_array().map(Vec::len), Some(21));
         assert!(
             !calls
                 .borrow()
