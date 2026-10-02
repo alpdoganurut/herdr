@@ -1694,19 +1694,38 @@ impl App {
         let terminal = self
             .existing_coordinator_pane()
             .and_then(|pane| self.coordinator_terminal(pane));
-        let (pending, ready) = terminal.map_or((false, false), |terminal| {
+        let (pending, ready, prompt) = terminal.map_or((false, false, false), |terminal| {
             (
                 terminal.managed_agent_launch_pending(),
                 terminal.managed_agent_interactive_ready(),
+                terminal.state == crate::detect::AgentState::Blocked,
             )
         });
         if ready {
             self.coordinator.phase = CoordPhase::Running;
             self.coordinator.clear_alert(KIND_DOWN);
+            self.coordinator.clear_alert(KIND_BLOCKED);
             self.register_running_coordinator();
         } else if !pending {
             self.coordinator
                 .go_down(down_reason::START_FAILED, "the coordinator did not come up");
+        } else if prompt {
+            // A prompt at launch (Claude's folder trust after the directory
+            // moved, a resume question): herdr's managed launch waits on the
+            // user without a deadline, and so does the coordinator. The
+            // give-up moves on in half-window steps so the phase (and its
+            // log line) changes rarely, and an answer just before the old
+            // give-up is not taken for a timeout.
+            self.coordinator.alert(
+                KIND_BLOCKED,
+                "coordinator needs you",
+                Some("the coordinator is waiting on a prompt in its tab"),
+            );
+            if give_up_at < now + LAUNCH_GIVE_UP / 2 {
+                self.coordinator.phase = CoordPhase::Launching {
+                    give_up_at: now + LAUNCH_GIVE_UP,
+                };
+            }
         } else if now >= give_up_at {
             self.coordinator.go_down(
                 down_reason::LAUNCH_TIMEOUT,
@@ -2367,6 +2386,46 @@ mod tests {
             Some("http://127.0.0.1:7799/")
         );
         assert!(info.coordinator_session.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_prompt_at_launch_waits_for_the_user_instead_of_timing_out() {
+        let mut app = coordinator_app(true);
+        let now = launching(&mut app);
+        let terminal = coordinator_terminal_mut(&mut app);
+        terminal.set_detected_state(
+            Some(crate::detect::Agent::Claude),
+            crate::detect::AgentState::Blocked,
+        );
+        terminal.reconcile_managed_agent_at(now, false);
+        assert!(terminal.managed_agent_launch_pending(), "blocked at launch");
+        let late = now + LAUNCH_GIVE_UP + Duration::from_secs(1);
+        app.handle_coordinator_tasks(late);
+        assert!(
+            matches!(app.coordinator.phase, CoordPhase::Launching { give_up_at } if give_up_at > late),
+            "{:?}",
+            app.coordinator.phase
+        );
+        assert_eq!(app.coordinator.notify_ledger.pending.len(), 1);
+        assert_eq!(app.coordinator.notify_ledger.pending[0].kind, KIND_BLOCKED);
+        app.handle_coordinator_tasks(late + Duration::from_secs(1));
+        assert_eq!(
+            app.coordinator.notify_ledger.pending.len(),
+            1,
+            "alerted once"
+        );
+
+        // The user answers: the launch settles and the coordinator runs.
+        let terminal = coordinator_terminal_mut(&mut app);
+        terminal.set_detected_state(
+            Some(crate::detect::Agent::Claude),
+            crate::detect::AgentState::Idle,
+        );
+        terminal.reconcile_managed_agent_at(late, false);
+        assert!(terminal.managed_agent_interactive_ready());
+        app.handle_coordinator_tasks(late + Duration::from_secs(2));
+        assert_eq!(app.coordinator.phase, CoordPhase::Running);
+        assert!(app.coordinator.notify_ledger.pending.is_empty());
     }
 
     #[tokio::test]
