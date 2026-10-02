@@ -24,6 +24,10 @@ pub(crate) const BEFORE_BYTES: u64 = 192 * 1024;
 pub(crate) const AFTER_BYTES: u64 = 64 * 1024;
 /// The tail [`context_at`] reads when the file is shorter than the anchor.
 pub(crate) const RECOVERY_BYTES: u64 = 256 * 1024;
+/// How far back [`context_at`] widens its window, four times at a step,
+/// while no prompt is in it (Claude Code writes attachment lines of
+/// hundreds of KiB between a prompt and its first reply).
+pub(crate) const MAX_BEFORE_BYTES: u64 = 3 * 1024 * 1024;
 /// Characters per side when the caller passes `0`.
 pub(crate) const DEFAULT_CHARS: u32 = 600;
 /// The most characters per side.
@@ -242,7 +246,9 @@ fn find_uuid(buf: &[u8], lines: &[Line], uuid: &str) -> Option<usize> {
     })
 }
 
-/// [`context_at`] over any reader of known length.
+/// [`context_at`] over any reader of known length: the window before the
+/// anchor widens (up to [`MAX_BEFORE_BYTES`]) while it holds no prompt and
+/// the file has more before it.
 fn extract_from<R: Read + Seek>(
     reader: &mut R,
     len: u64,
@@ -250,6 +256,27 @@ fn extract_from<R: Read + Seek>(
     flavor: Flavor,
     chars: u32,
 ) -> io::Result<Extract> {
+    let mut before = BEFORE_BYTES;
+    loop {
+        let (extract, reached_start) = extract_window(reader, len, anchor, flavor, chars, before)?;
+        if !extract.continued || reached_start || before >= MAX_BEFORE_BYTES {
+            return Ok(extract);
+        }
+        before = (before * 4).min(MAX_BEFORE_BYTES);
+    }
+}
+
+/// One attempt of [`extract_from`] with `before` bytes before the anchor
+/// (`before + AFTER_BYTES` of tail when the anchor offset is unusable);
+/// also says whether the window started at the beginning of the file.
+fn extract_window<R: Read + Seek>(
+    reader: &mut R,
+    len: u64,
+    anchor: &Anchor,
+    flavor: Flavor,
+    chars: u32,
+    before: u64,
+) -> io::Result<(Extract, bool)> {
     let chars = match chars {
         0 => DEFAULT_CHARS,
         n => n.min(MAX_CHARS),
@@ -257,13 +284,17 @@ fn extract_from<R: Read + Seek>(
     let uuid = anchor.uuid.as_deref().filter(|uuid| !uuid.is_empty());
     let (start, end, anchor_pos) = match anchor.offset {
         Some(offset) if offset <= len => {
-            let start = offset.saturating_sub(BEFORE_BYTES);
+            let start = offset.saturating_sub(before);
             let end = offset.saturating_add(AFTER_BYTES).min(len);
             (start, end, Some((offset - start) as usize))
         }
         // Shrunk (rewritten, or a backup) or never measured: the tail, where
         // the uuid finds the spot again.
-        _ => (len.saturating_sub(RECOVERY_BYTES), len, None),
+        _ => (
+            len.saturating_sub(RECOVERY_BYTES.max(before + AFTER_BYTES)),
+            len,
+            None,
+        ),
     };
     let buf = read_range(reader, start, end)?;
     let lines = lines(&buf, start, end, len);
@@ -290,7 +321,7 @@ fn extract_from<R: Read + Seek>(
         Flavor::Claude => claude_turns(&lines),
         Flavor::Codex => codex_turns(&lines),
     };
-    Ok(pick(&turns, anchor_pos, chars))
+    Ok((pick(&turns, anchor_pos, chars), start == 0))
 }
 
 // ----- extraction -----------------------------------------------------------
@@ -798,8 +829,8 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_outside_the_window_is_continued() {
-        let dir = temp_dir("claude-continued");
+    fn a_prompt_before_the_first_window_is_found_by_widening_it() {
+        let dir = temp_dir("claude-widened");
         let path = dir.join("s.jsonl");
         let filler = "x".repeat(1000);
         let mut lines = vec![user("u1", json!("long ago"), 1)];
@@ -814,6 +845,33 @@ mod tests {
         }
         lines.push(assistant("last", "m-last", said("latest words"), 3));
         write(&path, &lines);
+        assert!(fs::metadata(&path).unwrap().len() > BEFORE_BYTES);
+        let anchor = capture_anchor(&path, Flavor::Claude).expect("anchor");
+        let extract = context_at(&path, &anchor, Flavor::Claude, 0).expect("context");
+        assert!(!extract.continued);
+        assert_eq!(extract.prompt.as_deref(), Some("long ago"));
+        assert_eq!(extract.reply.as_deref(), Some("latest words"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_prompt_beyond_the_widest_window_is_continued() {
+        let dir = temp_dir("claude-continued");
+        let path = dir.join("s.jsonl");
+        let filler = "x".repeat(4000);
+        let mut lines = vec![user("u1", json!("long ago"), 1)];
+        // More than MAX_BEFORE_BYTES of assistant output after the prompt.
+        for index in 0..820 {
+            lines.push(assistant(
+                &format!("a{index}"),
+                &format!("m{index}"),
+                said(&filler),
+                2,
+            ));
+        }
+        lines.push(assistant("last", "m-last", said("latest words"), 3));
+        write(&path, &lines);
+        assert!(fs::metadata(&path).unwrap().len() > MAX_BEFORE_BYTES);
         let anchor = capture_anchor(&path, Flavor::Claude).expect("anchor");
         let extract = context_at(&path, &anchor, Flavor::Claude, 0).expect("context");
         assert!(extract.continued);
