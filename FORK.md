@@ -103,24 +103,36 @@ src/integration/assets/browser/package.json
 src/integration/assets/browser/smoke.mjs
 src/integration/browser_assets.rs
 src/persist/browser.rs
-src/cli/plus.rs
-src/plus/api.rs
-src/plus/assets/coordinator.md
-src/plus/assets/dashboard.html
-src/plus/assets/icons/agent.png
-src/plus/assets/icons/coordinator.png
-src/plus/assets/icons/empty.png
-src/plus/assets/icons/favicon.png
-src/plus/launch.rs
-src/plus/live.rs
-src/plus/lock.rs
-src/plus/mcp.rs
-src/plus/messages.rs
-src/plus/mod.rs
-src/plus/registry.rs
-src/plus/serve.rs
-src/plus/turn.rs
-src/plus/watch.rs
+src/api/schema/coordinator.rs
+src/cli/coordinator.rs
+src/coordinator/api.rs
+src/coordinator/assets/coordinator.md
+src/coordinator/assets/dashboard.html
+src/coordinator/assets/icons/agent.png
+src/coordinator/assets/icons/coordinator.png
+src/coordinator/assets/icons/empty.png
+src/coordinator/assets/icons/favicon.png
+src/coordinator/launch.rs
+src/coordinator/live.rs
+src/coordinator/lock.rs
+src/coordinator/mcp.rs
+src/coordinator/messages.rs
+src/coordinator/mod.rs
+src/coordinator/registry.rs
+src/coordinator/serve.rs
+src/coordinator/turn.rs
+src/coordinator/watch.rs
+src/app/coordinator.rs
+src/client/shell/coordinator.rs
+src/client/shell/coordinator_shell.rs
+src/client/shell/settings_coordinator.rs
+src/client/shell/tests/coordinator.rs
+src/config/coordinator.rs
+src/coordinator/engine.rs
+src/persist/coordinator.rs
+src/server/headless/coordinator_notify.rs
+src/server/headless/tests/fork_smoke/coordinator.rs
+src/server/headless/tests/fork_smoke/stub_claude.sh
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
 | struct | field | default |
@@ -148,8 +160,11 @@ src/plus/watch.rs
 | App | agent_transcript_backup_last | None |
 | App | agent_transcript_backup_pending | std::collections::BTreeMap::new() |
 | App | news | news::NewsState::new(&config.news, policy.persist_session, Instant::now()) |
+| App | coordinator | coordinator::CoordinatorState::new(&config.coordinator, policy.persist_session) |
+| AppState | coordinator_terminal_id | None |
 | Config | news | crate::config::NewsConfig::default() |
 | Config | browser | crate::config::BrowserConfig::default() |
+| Config | coordinator | crate::config::CoordinatorConfig::default() |
 | BrowserProfileInfo (fork-owned type; listed for the schema artifact) | companion | None |
 | SessionConfig | backup_agent_transcripts | true |
 | UiConfig | sidebar_layout | crate::config::SidebarLayoutConfig::Spaces |
@@ -166,6 +181,7 @@ src/plus/watch.rs
 | KeysConfig | toggle_tab_important | crate::config::BindingConfig::default() |
 | KeysConfig | open_news | crate::config::BindingConfig::default() |
 | KeysConfig | open_browser | crate::config::BindingConfig::default() |
+| KeysConfig | open_coordinator | crate::config::BindingConfig::default() |
 | KeysConfigOverlay | toggle_agent_suspend | None |
 | KeysConfigOverlay | move_tab_to_group | None |
 | KeysConfigOverlay | toggle_groups_folded | None |
@@ -174,6 +190,7 @@ src/plus/watch.rs
 | KeysConfigOverlay | toggle_tab_important | None |
 | KeysConfigOverlay | open_news | None |
 | KeysConfigOverlay | open_browser | None |
+| KeysConfigOverlay | open_coordinator | None |
 | Keybinds | toggle_agent_suspend | crate::config::ActionKeybinds::default() |
 | Keybinds | move_tab_to_group | crate::config::ActionKeybinds::default() |
 | Keybinds | toggle_groups_folded | crate::config::ActionKeybinds::default() |
@@ -182,6 +199,7 @@ src/plus/watch.rs
 | Keybinds | toggle_tab_important | crate::config::ActionKeybinds::default() |
 | Keybinds | open_news | crate::config::ActionKeybinds::default() |
 | Keybinds | open_browser | crate::config::ActionKeybinds::default() |
+| Keybinds | open_coordinator | crate::config::ActionKeybinds::default() |
 | ClientShellConfig | sidebar_layout | crate::config::SidebarLayoutConfig::Spaces |
 | ClientShellConfig | tab_agent_glyphs | std::collections::BTreeMap::new() |
 | ClientShellConfig | tab_agent_glyph_colors | std::collections::BTreeMap::new() |
@@ -202,6 +220,7 @@ src/plus/watch.rs
 | ClientShellState | reminder_daily_minutes | None |
 | ClientShellState | news | Default::default() |
 | ClientShellState | browser | Default::default() |
+| ClientShellState | coordinator | Default::default() |
 | ClientPendingNotification | reminder | None |
 | ClientVisibleNotification | reminder | None |
 | ShellHitMap | sidebar_tabs | Vec::new() |
@@ -218,6 +237,7 @@ src/plus/watch.rs
 | ShellHitMap | context_menu_remind_options | Vec::new() |
 | ShellHitMap | news_row | Rect::default() |
 | ShellHitMap | browser_row | Rect::default() |
+| ShellHitMap | coordinator_row | Rect::default() |
 | OverlayRender | menu_swatches | Vec::new() |
 | OverlayRender | menu_remind_options | Vec::new() |
 | ShellRenderState | sidebar_tab_drop_row | None |
@@ -226,6 +246,8 @@ src/plus/watch.rs
 | ShellRenderState | news_row | None |
 | ShellRenderState | browser_row | None |
 | ShellRenderState | browser_marked_tabs | std::collections::HashSet::new() |
+| ShellRenderState | coordinator_row | None |
+| ShellRenderState | coordinator_managed_tabs | None |
 | ClientSettingsOverlay | transcripts | None |
 | ClientSettingsOverlay | loading_transcripts | false |
 | ClientSettingsOverlay | closed | Box::default() |
@@ -234,6 +256,7 @@ src/plus/watch.rs
 | ClientSettingsOverlay | daily_time_picker | None |
 | ClientSettingsOverlay | news | Box::default() |
 | ClientSettingsOverlay | browser | Box::default() |
+| ClientSettingsOverlay | coordinator | Box::default() |
 | ClientConfirmCloseOverlay | close_group | true |
 | ClientContextMenuTarget::Tab | agent | None |
 | ClientContextMenuTarget::Tab | color | Default::default() |
@@ -272,6 +295,8 @@ client::shell::settings::save_settings_edit -> pub(super) (settings_sounds.rs ca
 app::tab_bar_status::spawn_status_command(7 args) -> #[cfg(test)] wrapper passing StatusOutputFormat::UPSTREAM; production code calls spawn_status_command_with_format(.., format: StatusOutputFormat) (a new upstream non-test call site = E0425: switch it to the _with_format form)
 client::shell::ClientShellState::receive_notification -> kept; its replace-by-pane block moved into replace_pane_notifications(endpoint_id, pane_id, now) -> bool (cleared a visible card), shared with the idle reminder engine
 app::actions::AppState::update_terminal_state -> pub(crate) (was private; src/app/subagents.rs calls it)
+app::api::agents::App::queue_agent_prompt -> pub(in crate::app) (was private; src/app/coordinator.rs delivers wake-ups through it)
+client::shell::tabs::render_tab_bar(b, area, snapshot, config, tab_scroll, reveal_focused_tab, tab_drag_insert_index, hits) -> (b, area, snapshot, config, coordinator_mark: Option<(&str, String)>, tab_scroll, reveal_focused_tab, tab_drag_insert_index, hits) (the spaces layout's coordinator tab mark)
 Visibility widened by the fork (upstream renaming or narrowing one breaks fork code): app::agents::DEFAULT_AGENT_START_TIMEOUT, app::agents::available_shell_name, app::api::agents::AGENT_PROMPT_SUBMIT_DELAY, app::terminal_targets::{terminal_targets, terminal_target_candidate}, integration::home_dir, client::shell::notification_policy::{notification_target_is_active, COMPLETION_EVIDENCE_GRACE} (pub(super)), app::agent_resume::shell_command_from_argv (pub(super); the closed-session reopen types it), app::api::sanitized_notification_text (pub(super); app::news sanitizes the editor's notification text with it), api::server::dispatch_to_app_with_timeout (pub(crate), re-exported as api::dispatch_to_app_with_timeout; browser::serve resolves the calling pane through it)
 
 ## 4. Owned enum variants (append last; E0004 in upstream match = deny)
@@ -295,7 +320,7 @@ Method::NewsOpen   [src/api/schema.rs, after NewsHistory; wire "news.open"]
 Method::NewsSetEnabled   [src/api/schema.rs, after NewsOpen; wire "news.set_enabled"]
 Method::NewsSetTimes   [src/api/schema.rs, after NewsSetEnabled; wire "news.set_times"]
 Method::NewsSetQuietHours   [src/api/schema.rs, after NewsSetTimes; wire "news.set_quiet_hours"]
-Method::BrowserRun   [src/api/schema.rs, after NewsSetQuietHours; wire "browser.run"; the one method agents call, its BrowserOp (src/api/schema/browser.rs, tagged `op`, Unknown the serde(other) fallback) grows instead of Method]
+Method::BrowserRun   [src/api/schema.rs, after CoordinatorSetNotify; wire "browser.run"; the one method agents call, its BrowserOp (src/api/schema/browser.rs, tagged `op`, Unknown the serde(other) fallback) grows instead of Method]
 Method::BrowserGet   [src/api/schema.rs, after BrowserRun; wire "browser.get"]
 Method::BrowserStatus   [src/api/schema.rs, after BrowserGet; wire "browser.status"]
 Method::BrowserFocus   [src/api/schema.rs, after BrowserStatus; wire "browser.focus"]
@@ -306,17 +331,29 @@ Method::BrowserResolveCaller   [src/api/schema.rs, after BrowserLog; wire "brows
 Method::BrowserProfiles   [src/api/schema.rs, after BrowserResolveCaller; wire "browser.profiles"]
 Method::BrowserProfileCreate   [src/api/schema.rs, after BrowserProfiles; wire "browser.profile_create"]
 Method::BrowserProfileDelete   [src/api/schema.rs, after BrowserProfileCreate; wire "browser.profile_delete"]
+Method::CoordinatorGet   [src/api/schema.rs, after NewsSetQuietHours, before BrowserRun; wire "coordinator.get"]
+Method::CoordinatorOpen   [src/api/schema.rs, after CoordinatorGet; wire "coordinator.open"]
+Method::CoordinatorOpenDashboard   [src/api/schema.rs, after CoordinatorOpen; wire "coordinator.open_dashboard"]
+Method::CoordinatorWake   [src/api/schema.rs, after CoordinatorOpenDashboard; wire "coordinator.wake"]
+Method::CoordinatorStart   [src/api/schema.rs, after CoordinatorWake; wire "coordinator.start"]
+Method::CoordinatorSetEnabled   [src/api/schema.rs, after CoordinatorStart; wire "coordinator.set_enabled"]
+Method::CoordinatorSetWakeCaps   [src/api/schema.rs, after CoordinatorSetEnabled; wire "coordinator.set_wake_caps"]
+Method::CoordinatorSetModel   [src/api/schema.rs, after CoordinatorSetWakeCaps; wire "coordinator.set_model"]
+Method::CoordinatorSetNotify   [src/api/schema.rs, after CoordinatorSetModel, directly before BrowserRun; wire "coordinator.set_notify"]
 Method::BrowserSettings   [src/api/schema.rs, after BrowserProfileDelete; wire "browser.settings"]
 Method::BrowserSettingsSet   [src/api/schema.rs, after BrowserSettings; wire "browser.settings.set"]
 Method::BrowserFix   [src/api/schema.rs, after BrowserSettingsSet, last of the fork block; wire "browser.fix"]
 BrowserOp::Click, Type, Press, Select, Fill, Hover, Snapshot, Batch   [src/api/schema/browser.rs, fork-owned enum, after Focus and before the `Unknown` serde(other) fallback (which stays last); wire "click" "type" "press" "select" "fill" "hover" "snapshot" "batch"; Snapshot is the read path with the snapshot format (a batch step whose refs serve the following steps); a batch's steps are BrowserBatchStep { tab, flattened op }, Batch carries close_opened]
 KeybindAction::OpenBrowser   [src/input/keybindings.rs, after OpenNews; internal]
+KeybindAction::OpenCoordinator   [src/input/keybindings.rs, after OpenBrowser; internal]
 ClientShellOverlayKind::Browser   [src/client/shell/state.rs, last after Settings; internal]
 ClientShellOverlay::Browser   [src/client/shell/state.rs, last after Settings; the Browser overlay (client/shell/browser.rs), client-local, never on the wire]
 ClientContextMenuTarget::Browser   [src/client/shell/state.rs, last after News; the tabs layout's pinned Browser row, `{ profile, running, local }`; internal]
+ClientContextMenuTarget::Coordinator   [src/client/shell/state.rs, last after Browser; the tabs layout's pinned coordinator row, `{ items }` captured when the menu opened; internal]
 ClientContextMenuAction::BrowserFocusWindow   [src/client/shell/state.rs, after NewsToggleSchedule; the Browser row menu's Focus window; internal]
 ClientContextMenuAction::BrowserToggleProfile   [src/client/shell/state.rs, after BrowserFocusWindow; Start / Stop profile; internal]
 ClientContextMenuAction::BrowserOpenOverlay   [src/client/shell/state.rs, last after BrowserToggleProfile; Open overlay; internal]
+ClientContextMenuAction::Coordinator   [src/client/shell/state.rs, last after BrowserOpenOverlay; carries a CoordinatorMenuAction (Open dashboard, Focus, Wake now, Restart, Pause/Resume, Settings); internal]
 PendingEndpointKind::BrowserGet   [src/client/shell/state.rs, after NewsSetQuietHours; internal]
 PendingEndpointKind::BrowserFocus   [src/client/shell/state.rs, after BrowserGet; internal]
 PendingEndpointKind::BrowserStart   [src/client/shell/state.rs, after BrowserFocus; internal]
@@ -324,7 +361,9 @@ PendingEndpointKind::BrowserStop   [src/client/shell/state.rs, after BrowserStar
 PendingEndpointKind::BrowserSettings   [src/client/shell/state.rs, after BrowserStop; internal]
 PendingEndpointKind::BrowserSettingsSet   [src/client/shell/state.rs, after BrowserSettings; internal]
 PendingEndpointKind::BrowserFix   [src/client/shell/state.rs, after BrowserSettingsSet; internal]
+PendingEndpointKind::Coordinator   [src/client/shell/state.rs, after BrowserFix; carries a CoordinatorRequestKind; internal]
 ClientSettingsSection::Browser   [src/client/shell/state.rs, last after News, in ALL and label() ("browser"); internal]
+ClientSettingsSection::Coordinator   [src/client/shell/state.rs, last after Browser, in ALL and label() ("coordinator"); internal]
 TabRemindInterval   [src/api/schema/tabs.rs, fork-owned enum after TabSetRemindParams; wire "5m" "10m" "30m" "1h" "6h" "daily", Unknown the serde(other) fallback; JSON records, session.json and the bincode client snapshot (variant index), append-closed]
 TabRemindEvery   [src/api/schema/tabs.rs, fork-owned closed enum, "off" plus the intervals; part of the tab.set_reminder digest, so a new interval needs a new method name]
 crate::sound::Sound::Reminder   [src/sound.rs, last after Request, with ReminderBase { Done, Request }; client-only (never on the wire); the server's sound_notify_message and app/actions.rs client_notification_kind match it]
@@ -343,6 +382,7 @@ ResponseResult::BrowserStatus   [src/api/schema/response.rs, after BrowserGet; w
 ResponseResult::BrowserLog   [src/api/schema/response.rs, after BrowserStatus; wire "browser_log"]
 ResponseResult::BrowserActor   [src/api/schema/response.rs, after BrowserLog; wire "browser_actor"]
 ResponseResult::BrowserProfiles   [src/api/schema/response.rs, after BrowserActor; wire "browser_profiles"]
+ResponseResult::CoordinatorGet   [src/api/schema/response.rs, directly after NewsGet; wire "coordinator_get"; every coordinator.* method answers it]
 ResponseResult::BrowserSettings   [src/api/schema/response.rs, after BrowserProfiles, last of the fork block; wire "browser_settings"]
 KeybindAction::ToggleAgentSuspend   [src/input/keybindings.rs, after ClearPane; internal]
 KeybindAction::MoveTabToGroup   [src/input/keybindings.rs; internal]
@@ -372,10 +412,17 @@ ConfigEdit::DailyReminderTime   [src/config/write.rs, after SoundFile; the remin
 ConfigEdit::NewsEnabled   [src/config/write.rs, after DailyReminderTime; `news.enabled`, written by news.set_enabled on the server (the settings news tab's toggle goes through that method); internal]
 ConfigEdit::NewsTimes   [src/config/write.rs, after NewsEnabled; `news.times` as a one-line TOML array of quoted `HH:MM`, written by news.set_times on the server (the settings news tab's time rows go through that method); internal]
 ConfigEdit::NewsQuietHours   [src/config/write.rs, after NewsTimes; `news.quiet_hours` as a quoted window or "" for off, written by news.set_quiet_hours on the server (the settings news tab's quiet-hours picker goes through that method; a server without it gets the client's local write); internal]
-ConfigEdit::BrowserBool { key, value }   [src/config/write.rs, after NewsQuietHours; a `[browser]` toggle (`enabled`, `show_activity`, `pin_dashboard`, `steer_agents`, `wrap_agents`, `disable_native_browser`, `shell_hook`), written by browser.settings.set on the server; internal]
+ConfigEdit::BrowserBool { key, value }   [src/config/write.rs, after SidebarLayoutTabs; a `[browser]` toggle (`enabled`, `show_activity`, `pin_dashboard`, `steer_agents`, `wrap_agents`, `disable_native_browser`, `shell_hook`), written by browser.settings.set on the server; internal]
 ConfigEdit::BrowserString { key, value }   [src/config/write.rs, after BrowserBool; `browser.activity_color` as a quoted `#rrggbb`; internal]
 ConfigEdit::BrowserList { key, values }   [src/config/write.rs, after BrowserString; `browser.mcp_agents` as a TOML array of quoted names; internal]
 ConfigEdit::BrowserBools { pairs }   [src/config/write.rs, last after BrowserList; several `[browser]` toggles in one write (the settings row `agents use herdr's browser` = steer_agents + wrap_agents, key `steer_wrap`); internal]
+ConfigEdit::CoordinatorEnabled   [src/config/write.rs, after NewsQuietHours, before BrowserBool; `coordinator.enabled`, written by coordinator.set_enabled on the server; internal]
+ConfigEdit::CoordinatorWakeCaps { cap_hour, cap_day }   [src/config/write.rs, after CoordinatorEnabled; both caps, coordinator.set_wake_caps; internal]
+ConfigEdit::CoordinatorModel   [src/config/write.rs, after CoordinatorWakeCaps; `coordinator.model`, None removes it; internal]
+ConfigEdit::CoordinatorNotify   [src/config/write.rs, after CoordinatorModel; `coordinator.notify`; internal]
+ConfigEdit::SidebarLayoutTabs   [src/config/write.rs, after CoordinatorNotify, directly before BrowserBool; `ui.sidebar_layout = "tabs"`, the coordinator settings hint row (client-local write); internal]
+AppEvent::CoordinatorPassFinished   [src/events.rs, last after WorktreeReadFinished; the coordinator worker's pass output; internal]
+PinnedRow::Coordinator   [src/client/shell/tab_sidebar.rs, fork-owned enum, last after News; internal]
 ConfigEdit::SoundFile   [src/config/write.rs, after IdleReminderMinutes; the settings sound pickers ([ui.sound] done_path / request_path / reminder_path); internal]
 ClientContextMenuTarget::Group   [src/client/shell/state.rs, between Tab and Pane; internal]
 ClientContextMenuTarget::News   [src/client/shell/state.rs, last after Pane; the tabs layout's pinned News row, `{ enabled }`; internal]
@@ -430,24 +477,36 @@ browser.settings, browser.settings.set, browser.fix: fork-defined (Method::Brows
 browser.settings digest: 3c10d3f5d952a2f78ea6536fc0730f87833b6bd41385ba2c9a208451bfff2cf8 (EmptyParams).
 browser.settings.set digest: 6460c5c56d7e1e241ed59c4d76174e7fc4b7ab03b53c50fed717d359fddea833 (BrowserSettingsSetParams { key: String, value: serde_json::Value }).
 browser.fix digest: 71558d5a9cf80cc82952b6bc1330776bce901118546e242640bf2384f51f5a8c (BrowserFixParams { ids: Vec<String> }).
+coordinator.get, coordinator.open, coordinator.open_dashboard, coordinator.wake, coordinator.start, coordinator.set_enabled, coordinator.set_wake_caps, coordinator.set_model, coordinator.set_notify: fork-defined (Method::Coordinator*, api_method_name arms from crate::api::schema::coordinator::method, request_changes_ui for coordinator.open, coordinator.start and coordinator.wake, handlers in src/app/coordinator.rs, CLI `herdr coordinator enable|disable|start [--new]|wake|status [--json]|dashboard [--print]` in src/cli/coordinator.rs). Every method answers ResponseResult::CoordinatorGet { info: CoordinatorGetInfo }; write methods take an optional caller_pane (the CLI fills it from HERDR_PANE_ID, the TUI omits it) and refuse in_coordinator_turn from the coordinator's own pane during its turn. coordinator.open_dashboard {open = true}: clears unread suggestions and answers the URL at once; with open set, a short herdr-coordinator-open thread opens it through crate::browser::hub() when [browser] enabled, else platform::open_url (it cannot go through browser.run from the App: that answers browser_lane). Remote client shells send open: false and show the URL instead. Errors: coordinator_disabled, coordinator_unavailable, coordinator_blocked, coordinator_not_running, in_coordinator_turn, coordinator_config_write_failed, coordinator_restart_failed, invalid_caps, dashboard_unavailable.
+coordinator.get digest: d6ec446e6d7ee38199feb4f9c48198613e9f339a534012bde7160fb07a63eaa8 (EmptyParams).
+coordinator.open digest: 24a5c11d01bf8c6a65452115dc121a17f077ddf9d504d5c88c137f3b850536cc (EmptyParams).
+coordinator.open_dashboard digest: d3d061db09bc59874312f676504bed2a6cc127bf6da2738f7214e32fd87facc0 (CoordinatorOpenDashboardParams { open: bool = true }).
+coordinator.set_enabled digest: e7a703e3d1daa27cbe5b8637f7a3b8ac74a0c8f40497c88a53b699311d1bd71c (CoordinatorSetEnabledParams { enabled: bool, caller_pane: Option<String> }).
+coordinator.set_model digest: 33c2821d6c15c99671f9df050f2f6caef09fc91c9724b70e22fcc92ad1996e7b (CoordinatorSetModelParams { model: Option<String>, caller_pane: Option<String> }).
+coordinator.set_notify digest: 78ad0eb2d53f3fe07c1dda181ede781ee94914dd7d33d037df56cdcd6e503126 (CoordinatorSetNotifyParams { enabled: bool, caller_pane: Option<String> }).
+coordinator.set_wake_caps digest: 9f6f9010ba7b4b9a8b8d8835d117f0ddd864f4184ee3324f50d0737fa084510a (CoordinatorSetWakeCapsParams { cap_hour: u32, cap_day: u32, caller_pane: Option<String> }).
+coordinator.start digest: d536a69f3c65a742c3ab09e46e3b2f28aaa44c0d1570aa75befb14fb2bf3482e (CoordinatorStartParams { resume: bool = true, caller_pane: Option<String> }).
+coordinator.wake digest: 9b8885f0516494756d440daf6de982049a3c0e7ea65b4f2395ff6446a2a62f94 (CoordinatorWakeParams { caller_pane: Option<String> }).
 browser.status, browser.log, browser.profiles, browser.profile_create, browser.profile_delete: fork-defined (Method::BrowserStatus (EmptyParams → ResponseResult::BrowserStatus { status: BrowserStatusInfo }, the full picture: browser.get plus home, ledger path, executable, node, runtime.json, recent log), BrowserLog (BrowserLogParams { limit, pane_id, tab } → ResponseResult::BrowserLog { entries: Vec<BrowserActivity> }), BrowserProfiles (EmptyParams → ResponseResult::BrowserProfiles { profiles }), BrowserProfileCreate (BrowserProfileCreateParams { name, temporary }; `new` = a fresh tmp-<stamp>), BrowserProfileDelete (BrowserProfileName { name }; refuses the default profile and a running one, moves the directory to the Trash); api_method_name arms, handlers in src/app/browser.rs, CLI `herdr browser status|log|profile list|create|delete|start|stop|setup|doctor|mcp`). Not advertised to the client shell, so no digest.
 pane.move: upstream method, advertised to the client shell only by the fork (absent from base CLIENT_SHELL_METHODS).
 CLIENT_SHELL_METHODS (src/server/client_commands.rs): union, sorted; the test advertised_client_shell_methods_are_sorted_unique_and_in_schema enforces it.
-Digest asserts in advertised_client_shell_method_shapes_stay_at_the_v1_contract: the fork appends twenty-four `actual.remove(..)` asserts (agent.suspend, agent.activate, pane.move, agent.transcripts, agent.restart, tab.set_color, tab.set_remind, tab.set_reminder, session.closed_list, session.closed_remove, session.closed_reopen, news.get, news.open, news.run, news.set_enabled, news.set_times, news.set_quiet_hours, browser.focus, browser.get, browser.start, browser.stop, browser.settings, browser.settings.set, browser.fix) after upstream's pane.link.resolve assert. Resolve an assert-block conflict as the union of `actual.remove` blocks, upstream first, no method name twice.
+Digest asserts in advertised_client_shell_method_shapes_stay_at_the_v1_contract: the fork appends thirty-three `actual.remove(..)` asserts (agent.suspend, agent.activate, pane.move, agent.transcripts, agent.restart, tab.set_color, tab.set_remind, tab.set_reminder, session.closed_list, session.closed_remove, session.closed_reopen, news.get, news.open, news.run, news.set_enabled, news.set_times, news.set_quiet_hours, browser.focus, browser.get, browser.start, browser.stop, browser.settings, browser.settings.set, browser.fix, then the nine coordinator.* methods) after upstream's pane.link.resolve assert. Resolve an assert-block conflict as the union of `actual.remove` blocks, upstream first, no method name twice.
 Any digest value change = deny (contract change, never a fixture fix). pane.move's digest covers upstream-owned PaneMoveParams/PaneMoveDestination: an upstream reshape fails it after a clean merge, and that is a deny.
 tests/fixtures/endpoint-*-v1.json and src/protocol/** frozen tests: never edited (the fork has no diff under tests/).
 Upstream adding "pane.move" to CLIENT_SHELL_METHODS, or adding any section 9 identifier = deny (collision).
 
 ## 6. Config keys (cross-checked by scripts/config_reference_check.py)
 ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors, session.backup_agent_transcripts,
-keys.toggle_agent_suspend, keys.move_tab_to_group, keys.toggle_groups_folded, keys.restart_agent, keys.cycle_tab_color, keys.toggle_tab_important, keys.open_news (keys.open_browser directly after it, in every list),
+keys.toggle_agent_suspend, keys.move_tab_to_group, keys.toggle_groups_folded, keys.restart_agent, keys.cycle_tab_color, keys.toggle_tab_important, keys.open_news (keys.open_browser directly after it, keys.open_coordinator directly after that, in every list),
 ui.toast.herdr.sticky, ui.toast.herdr.max_stack, ui.idle_reminder_minutes, ui.daily_reminder_time, ui.sound.reminder_path,
 news.enabled, news.times, news.quiet_hours, news.model,
 browser.enabled, browser.autostart, browser.stop_with_server, browser.default_profile, browser.executable, browser.node, browser.extra_args, browser.restore_tabs, browser.read_max_chars, browser.snapshot_max_chars, browser.screenshot_max_px, browser.screenshot_keep, browser.active_seconds, browser.allow_eval, browser.allow_act, browser.type_into_password_fields, browser.active_glyph_secs, browser.launch_timeout_ms, browser.op_timeout_ms, browser.show_activity, browser.activity_color, browser.group_symbols, browser.steer_agents, browser.disable_native_browser, browser.wrap_agents, browser.pin_dashboard, browser.mcp_agents, browser.shell_hook, keys.open_browser
+coordinator.enabled, coordinator.model, coordinator.cap_hour, coordinator.cap_day, coordinator.periodic_minutes, coordinator.relaunch_cap_hour, coordinator.notify, coordinator.notify_daily_cap, coordinator.quiet_hours, coordinator.dashboard_port,
 ui.tab_bar_right command entry fields `lines` (u8, default 1, clamped to 1..=4 with a config warning) and `ansi` (bool, default false) are not separate keys: they are documented in the ui.tab_bar_right entry's description in config-reference.json (appended after upstream's sentences) and in configuration.mdx in the paragraph plus example directly after upstream's "Separators appear only between visible entries" paragraph.
 Placement in docs/next/website/src/data/config-reference.json: keys.* directly after keys.clear_pane, ui.* directly after ui.sidebar_collapsed_mode (in the order ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors, ui.idle_reminder_minutes, ui.daily_reminder_time), ui.sound.reminder_path directly after ui.sound.request_path, session.backup_agent_transcripts last in the session group, ui.toast.herdr.sticky and ui.toast.herdr.max_stack directly after ui.toast.herdr.position in the notifications group. The same keys appear as commented defaults in src/main.rs DEFAULT_CONFIG (after clear_pane, sidebar_collapsed_mode, startup_per_agent_delay_ms) and in docs/next/website/src/content/docs/configuration.mdx.
 The news.* keys form their own group (id `news`, title News) directly after the session group in config-reference.json and a `[news]` block directly after the `[session]` block in DEFAULT_CONFIG; they are not in configuration.mdx (fork-only feature, no release docs).
 The browser.* keys form their own group (id `browser`, title Browser) directly after the news group in config-reference.json and a `[browser]` block directly after the `[news]` block in DEFAULT_CONFIG; not in configuration.mdx either.
+The coordinator.* keys form their own group (id `coordinator`, title Coordinator) directly after the browser group in config-reference.json and a `[coordinator]` block directly after the `[browser]` block in DEFAULT_CONFIG; not in configuration.mdx either. `dashboard_port` binds 127.0.0.1 only, 0 disables serving, and a value that is not a port is a diagnostic that keeps the rest of the section.
 After any merge touching config-reference.json: python3 -m json.tool on the file, then python3 scripts/config_reference_check.py.
 
 ## 7. Per-file merge rules
@@ -463,12 +522,12 @@ src/api/schema/common.rs  deny: AgentStatus is append-closed
 tests/api_ping.rs  deny: the fork's one line is the protocol literal in ping_over_socket_returns_version; it must equal PROTOCOL_VERSION in src/protocol/wire.rs after the sync
 tests/support/mod.rs  deny: the fork's one line is CURRENT_PROTOCOL; it must equal PROTOCOL_VERSION in src/protocol/wire.rs after the sync
 src/protocol/wire.rs  deny: PROTOCOL_VERSION is the fork's value (upstream + 3: ClientShellTab.color (23), ClientShellTab.remind with ClientShellAgent.subagents (24), ClientShellTab.important and remind_every replacing remind (25); when upstream bumps, resolve to upstream's new value + 3 and keep the fork comment), the fork's other lines are one inside deserialize_client_shell_agent_status, ClientShellTab.color, .important, .remind_every and ClientShellAgent.subagents (serde default, deliberately not skip_serializing_if: the bincode round-trip needs every field) and `color: None` / `important: false` / `remind_every: None` in the client_shell_snapshot_roundtrip literal (section 2)
-src/api/schema.rs  additive: fork Method variants stay directly after AgentStart (NewsRun … NewsSetTimes, then BrowserRun, BrowserGet, BrowserStatus, BrowserFocus, BrowserStart, BrowserStop, BrowserLog, BrowserResolveCaller, BrowserProfiles, BrowserProfileCreate and BrowserProfileDelete close the block); the fork's is_zero stays directly after is_false; `pub mod browser;` and `pub use browser::*;` directly after the agents lines, `pub mod closed_sessions;` and `pub use closed_sessions::*;` directly after them, `pub mod news;` and `pub use news::*;` after those
-src/persist.rs  additive: `pub mod closed_sessions;` directly after `pub mod agent_transcripts;`, `pub mod news;` directly after it, `pub mod browser;` directly after that; the closed-sessions and news lines last in the module doc
-src/app/mod.rs  additive: `mod closed_sessions;` directly after `mod agents;`, `pub(crate) mod news;` directly after it (pub(crate): the server's news_notify reads the queue), `mod browser;` directly after that
-src/cli.rs  additive: `mod tab_closed;` directly after `mod tab;`, `mod news;` directly after it, `mod browser;` and `mod browser_mcp;` directly after that; the `news` arm directly after the `session` arm in maybe_run, the `browser` arm directly after it
-src/client/shell.rs  additive: `mod settings_closed;` directly after `mod settings;`, `mod news;` directly after `mod mouse;`, `mod browser;` and `mod browser_overlay;` directly after it, `mod settings_news;` directly after `mod settings_daily_time;`
-src/api/schema/response.rs  additive: fork ResponseResult variants stay directly after AgentStarted (NewsStatus, NewsGet, NewsHistory, then BrowserRun, BrowserGet, BrowserStatus, BrowserLog, BrowserActor and BrowserProfiles close the block); `use super::browser::{…};` directly after the agents use, `use super::news::{NewsEditionInfo, NewsGetInfo, NewsStatusInfo};` directly after the closed_sessions use
+src/api/schema.rs  additive: fork Method variants stay directly after AgentStart (NewsRun … NewsSetTimes, then BrowserRun, BrowserGet, BrowserStatus, BrowserFocus, BrowserStart, BrowserStop, BrowserLog, BrowserResolveCaller, BrowserProfiles, BrowserProfileCreate and BrowserProfileDelete close the block); the fork's is_zero stays directly after is_false; `pub mod browser;` and `pub use browser::*;` directly after the agents lines, `pub mod closed_sessions;` and `pub use closed_sessions::*;` directly after them, `pub mod news;` and `pub use news::*;` after those; `pub mod coordinator;` directly after `pub mod commands;` (types only, no `pub use` yet); the coordinator.* Method variants (CoordinatorGet … CoordinatorSetNotify) sit directly after NewsSetQuietHours, before BrowserRun; `pub mod coordinator;` with the other schema modules
+src/persist.rs  additive: `pub mod closed_sessions;` directly after `pub mod agent_transcripts;`, `pub mod news;` directly after it, `pub mod browser;` directly after that; the closed-sessions and news lines last in the module doc; `pub mod coordinator;` directly after `pub mod closed_sessions;`
+src/app/mod.rs  additive: `mod closed_sessions;` directly after `mod agents;`, `pub(crate) mod news;` directly after it (pub(crate): the server's news_notify reads the queue), `mod browser;` directly after that; `pub(crate) mod coordinator;` directly after `pub(crate) mod news;`
+src/cli.rs  additive: `mod tab_closed;` directly after `mod tab;`, `mod news;` directly after it, `mod browser;` and `mod browser_mcp;` directly after that; the `news` arm directly after the `session` arm in maybe_run, the `browser` arm directly after it; `mod coordinator;` directly after `mod completion;` (rustfmt order), the `coordinator` arm directly after the `browser` arm
+src/client/shell.rs  additive: `mod settings_closed;` directly after `mod settings;`, `mod news;` directly after `mod mouse;`, `mod browser;` and `mod browser_overlay;` directly after it, `mod settings_news;` directly after `mod settings_daily_time;`; `mod coordinator;` and `mod coordinator_shell;` directly after `mod context_menu;`, `mod settings_coordinator;` directly after `mod settings_closed;`
+src/api/schema/response.rs  additive: fork ResponseResult variants stay directly after AgentStarted (NewsStatus, NewsGet, NewsHistory, then BrowserRun, BrowserGet, BrowserStatus, BrowserLog, BrowserActor and BrowserProfiles close the block); `use super::browser::{…};` directly after the agents use, `use super::news::{NewsEditionInfo, NewsGetInfo, NewsStatusInfo};` directly after the closed_sessions use; ResponseResult::CoordinatorGet directly after NewsGet
 src/api/schema/agents.rs  additive: fork params types stay after AgentStartParams; AgentInfo.subagents stays directly after state_change_seq
 src/api/schema/panes.rs  additive: PaneReportSubagentParams and SubagentEvent stay last in the file
 src/integration/mod.rs  additive: `mod claude_subagent_hooks;` directly after `mod claude_settings;`, `pub(crate) mod news_assets;` directly after it, `pub(crate) mod browser_assets;` directly after that
@@ -478,21 +537,21 @@ src/integration/tests.rs  deny: the fork's lines are the two SubagentStop assert
 src/api/schema/tabs.rs  additive: TabInfo.color, .important, .remind_every stay the last fields; TabColor, TabSetColorParams, TabSetRemindParams, TabRemindInterval, TabRemindEvery and TabSetReminderParams stay after TabInfo
 src/cli/tab.rs  additive: the fork's `color`, `important`, `remind`, `closed` and `reopen` arms stay after `rename` (closed and reopen call src/cli/tab_closed.rs), tab_color, tab_important, tab_remind and send_reminder before tab_close, their help lines after the rename line; the fork's tests module stays last
 src/cli/spec.rs  additive: the fork's `closed` and `reopen` subcommands directly before the tab `close` subcommand; `.subcommand(news_command())` directly after session_command() in command(), `.subcommand(browser_command())` directly after it; fn browser_tab_arg, fn browser_common and fn browser_command directly before fn news_command, which stays directly before fn session_command; spec_models_tab_closed_and_reopen, spec_models_news_run_status_and_log, spec_models_news_open_history_enable_and_disable, spec_models_news_times then spec_models_browser_verbs_and_lifecycle directly before spec_models_tab_remind_values
-src/api/server.rs  additive: fork api_method_name arms stay after the agent.start arm (the browser.* names directly after news.set_times); `dispatch_to_app_with_timeout` is pub(crate)
-src/api/mod.rs  additive: fork arms stay after Method::AgentStart (Method::SessionClosedReopen directly after PaneReportSubagent, Method::NewsRun then Method::NewsOpen directly after it); `pub(crate) use server::dispatch_to_app_with_timeout;` directly after the api_method_name use
-src/config/model.rs  additive: upstream first, fork lines directly after each clear_pane line; Config.news then Config.browser the last fields (NewsConfig and BrowserConfig in the super import); HerdrToastConfig sticky/max_stack directly after position (struct, Default, impl HerdrToastConfig after the Default impl), the *_TOAST_MAX_STACK consts directly after MAX_TOAST_DELAY_SECONDS, the *_IDLE_REMINDER_MINUTES consts after them; UiConfig.idle_reminder_minutes and daily_reminder_time directly after tab_agent_glyph_colors (struct and Default), effective_idle_reminder_minutes, effective_daily_reminder_minutes, daily_reminder_diagnostic and idle_reminder_diagnostic last in impl UiConfig, parse_time_of_day directly before impl Default for ToastConfig; KeysConfigOverlay.toggle_tab_important carries `alias = "toggle_tab_remind"`
+src/api/server.rs  additive: fork api_method_name arms stay after the agent.start arm (the browser.* names directly after news.set_times); `dispatch_to_app_with_timeout` is pub(crate); the coordinator.* api_method_name arms directly after news.set_quiet_hours, before browser.run, naming crate::api::schema::coordinator::method constants
+src/api/mod.rs  additive: fork arms stay after Method::AgentStart (Method::SessionClosedReopen directly after PaneReportSubagent, Method::NewsRun then Method::NewsOpen directly after it); `pub(crate) use server::dispatch_to_app_with_timeout;` directly after the api_method_name use; Method::CoordinatorOpen, CoordinatorStart and CoordinatorWake directly after Method::NewsOpen in request_changes_ui
+src/config/model.rs  additive: upstream first, fork lines directly after each clear_pane line; Config.news then Config.browser the last fields (NewsConfig and BrowserConfig in the super import); HerdrToastConfig sticky/max_stack directly after position (struct, Default, impl HerdrToastConfig after the Default impl), the *_TOAST_MAX_STACK consts directly after MAX_TOAST_DELAY_SECONDS, the *_IDLE_REMINDER_MINUTES consts after them; UiConfig.idle_reminder_minutes and daily_reminder_time directly after tab_agent_glyph_colors (struct and Default), effective_idle_reminder_minutes, effective_daily_reminder_minutes, daily_reminder_diagnostic and idle_reminder_diagnostic last in impl UiConfig, parse_time_of_day directly before impl Default for ToastConfig; KeysConfigOverlay.toggle_tab_important carries `alias = "toggle_tab_remind"`; Config.coordinator after Config.browser (CoordinatorConfig in the super import), KeysConfig/KeysConfigOverlay open_coordinator directly after open_browser in every list
 src/config/tab_bar.rs  additive: MAX_TAB_BAR_COMMAND_LINES directly after MAX_TAB_BAR_RIGHT_ENTRIES, default_command_lines and effective_tab_bar_command_lines after default_command_timeout_seconds, Command.lines and .ansi the last fields of the variant, the lines clamp diagnostic first in tab_bar_right_diagnostics' Command arm (which binds `lines, ansi: _`), the fork test last in the tests module
 src/app/tab_bar_status.rs  deny: the fork's hunks are `mod output; use output::StatusOutputFormat;` after the imports, TabBarCommandRuntime.format (last field), `lines, ansi` in configure_tab_bar_status' Command arm and `format: StatusOutputFormat::new(*lines, *ansi)`, spawn_status_command_with_format in handle_tab_bar_status_tasks, spawn_status_command turned into a #[cfg(test)] wrapper, run_status_command's `format` parameter and its two calls into output::, and `lines: 1, ansi: false` in three test literals; re-apply them on upstream's new file by hand
-src/config/io.rs  additive: `"news"` and `"browser"` in KNOWN_TOP_LEVEL_CONFIG_KEYS (sorted: browser after advanced, news after keys); the `news` load_live_section call directly after the remote one, the `browser` one last, directly after it
-src/config.rs  additive: `mod news;` directly after `mod model;`, `mod browser;` directly after it, `news::{format_hhmm, normalize_times, parse_hhmm, parse_quiet_hours, NewsConfig, QuietHours},` in the pub use block directly before the sound line and `browser::{is_forbidden_switch, valid_profile_name, BrowserConfig, AUTO_EXECUTABLE},` directly after it; `tab_bar::{effective_tab_bar_command_lines, MAX_TAB_BAR_COMMAND_LINES},` in the pub(crate) use block directly after the tab_bar group; the fork's `.chain(self.ui.toast.herdr.diagnostic())` then `.chain(self.ui.idle_reminder_diagnostic())` then `.chain(self.ui.daily_reminder_diagnostic())` then `.chain(self.news.diagnostics())` then `.chain(self.browser.diagnostics())` stay last in Config::collect_diagnostics
-src/config/write.rs  additive: ConfigEdit::IdleReminderMinutes, SoundFile, DailyReminderTime, NewsEnabled, NewsTimes, NewsQuietHours stay last in the enum and in each match (format_time_of_day directly after the enum, re-exported from src/config.rs); their tests first in the tests module
+src/config/io.rs  additive: `"news"` and `"browser"` in KNOWN_TOP_LEVEL_CONFIG_KEYS (sorted: browser after advanced, news after keys); the `news` load_live_section call directly after the remote one, the `browser` one last, directly after it; `"coordinator"` in KNOWN_TOP_LEVEL_CONFIG_KEYS directly after `"browser"`, its load_live_section call directly after the news one
+src/config.rs  additive: `mod news;` directly after `mod model;`, `mod browser;` directly after it, `news::{format_hhmm, normalize_times, parse_hhmm, parse_quiet_hours, NewsConfig, QuietHours},` in the pub use block directly before the sound line and `browser::{is_forbidden_switch, valid_profile_name, BrowserConfig, AUTO_EXECUTABLE},` directly after it; `tab_bar::{effective_tab_bar_command_lines, MAX_TAB_BAR_COMMAND_LINES},` in the pub(crate) use block directly after the tab_bar group; the fork's `.chain(self.ui.toast.herdr.diagnostic())` then `.chain(self.ui.idle_reminder_diagnostic())` then `.chain(self.ui.daily_reminder_diagnostic())` then `.chain(self.news.diagnostics())` then `.chain(self.browser.diagnostics())` stay last in Config::collect_diagnostics; `mod coordinator;` directly after `mod browser;`, `coordinator::{validate_caps, CoordinatorConfig},` in the pub use block directly before the news line, `.chain(self.coordinator.diagnostics())` directly after the news diagnostics
+src/config/write.rs  additive: ConfigEdit::IdleReminderMinutes, SoundFile, DailyReminderTime, NewsEnabled, NewsTimes, NewsQuietHours stay last in the enum and in each match (format_time_of_day directly after the enum, re-exported from src/config.rs); their tests first in the tests module; ConfigEdit::CoordinatorEnabled, CoordinatorWakeCaps, CoordinatorModel, CoordinatorNotify and SidebarLayoutTabs directly after NewsQuietHours (enum, label and apply)
 src/sound.rs  additive: Sound::Reminder, ReminderBase, Sound::base and preview directly after the Sound enum; play()'s built-in match goes through base()
 src/config/sound.rs  additive: SoundConfig.reminder_path after request_path (struct, Default, path_for arm, diagnostics list); supported_sound_extension directly before impl AgentSoundOverrides; its test before missing_sound_file_produces_diagnostic
-src/config/keybinds.rs  additive: upstream first, fork lines directly after each clear_pane line
-src/input/keybindings.rs  additive: upstream first, fork lines directly after each ClearPane line
-src/input/keybind_help.rs  additive: upstream first, fork entries directly after the clear pane entry
-src/main.rs  additive: `mod browser;` directly after `mod app;`; DEFAULT_CONFIG comment lines, upstream first (`open_browser` directly after `open_news`); the `[news]` block directly after the `[session]` block, the `[browser]` block directly after it
-src/client/shell/state.rs  additive: upstream first, fork after; ClientSettingsSection::ALL keeps Backups, Reminders, ClosedSessions then News last; ClientSettingsOverlay.closed sits between transcripts and loading_transcripts, .news is the last field
+src/config/keybinds.rs  additive: upstream first, fork lines directly after each clear_pane line; open_coordinator directly after open_browser in Keybinds, its default and apply_action
+src/input/keybindings.rs  additive: upstream first, fork lines directly after each ClearPane line; KeybindAction::OpenCoordinator and its binding pair directly after OpenBrowser
+src/input/keybind_help.rs  additive: upstream first, fork entries directly after the clear pane entry; the `open coordinator` entry directly after `open browser`
+src/main.rs  additive: `mod browser;` directly after `mod app;`; DEFAULT_CONFIG comment lines, upstream first (`open_browser` directly after `open_news`); the `[news]` block directly after the `[session]` block, the `[browser]` block directly after it; `mod coordinator;` directly after `mod config;` (rustfmt order); the `open_coordinator` comment line directly after `open_browser`, the `[coordinator]` block directly after the `[browser]` block
+src/client/shell/state.rs  additive: upstream first, fork after; ClientSettingsSection::ALL keeps Backups, Reminders, ClosedSessions then News last; ClientSettingsOverlay.closed sits between transcripts and loading_transcripts, .news is the last field; ClientSettingsSection::Coordinator last after Browser, ClientSettingsOverlay.coordinator after .browser, ClientShellState.coordinator after .browser, ShellHitMap.coordinator_row after browser_row
 src/client/shell/tests/mod.rs  additive: fork module lines (`mod browser;` directly after `mod news;`)
 src/server/headless/tests/mod.rs  additive: the fork_smoke module line; test literals per section 2
 *  deny: anything that is not a structural additive conflict (zdiff3 base empty, both sides pure insertions)
@@ -573,8 +632,58 @@ src/handoff_runtime.rs  depends: HandoffRuntimeState serde carries suspended_exi
 src/platform/unix_common.rs  mid-logic: signal_process_group (kill -SIG -pgid; the news watchdog's SIGTERM to the News pane's foreground job), re-exported by macos.rs and linux.rs in their `pub(crate) use super::unix_common` list
 src/platform/windows.rs  mid-logic: signal_process_group no-op directly before process_exists
 src/platform/fallback.rs  mid-logic: signal_process_group stub directly before process_exists
+src/app/state.rs  mid-logic: AppState.coordinator_terminal_id (mirrored by app/coordinator.rs note_coordinator_terminal) is the last field
+src/app/actions.rs  mid-logic: update_terminal_state_with_completion_policy's suppress_completion also holds for the coordinator's terminal (AppState.coordinator_terminal_id), so its Working→Idle raises no Finished toast or Done sound; handle_app_event's AppEvent::CoordinatorPassFinished arm
+src/app/agent_suspend.rs  mid-logic: emit_agent_status_transition first marks the coordinator's pass input dirty (mark_coordinator_input_dirty)
+src/app/api.rs  mid-logic: emit_pane_updated first marks the coordinator's pass input dirty; handle_app_event applies AppEvent::CoordinatorPassFinished (apply_coordinator_output) directly before WorktreeReadFinished; handle_api_request dispatches the nine Method::Coordinator* arms directly after the news ones
+src/app/mod.rs  mid-logic: App::new (coordinator field from CoordinatorState::new), apply_live_config (a `coordinator` section block directly after the news one calls apply_coordinator_config)
+src/app/runtime.rs  mid-logic: next_headless_loop_deadline_with_git_refresh chains next_coordinator_deadline directly after next_news_deadline
+src/server/headless.rs  mid-logic: `mod coordinator_notify;` directly after `mod news_notify;`; handle_scheduled_tasks_headless runs handle_coordinator_tasks then flush_coordinator_notifications directly after handle_news_tasks
+src/events.rs  mid-logic: AppEvent::CoordinatorPassFinished (the coordinator worker's output, sent with try_send from the herdr-coordinator worker)
+src/app/agents.rs  mid-logic: start_agent's shell check has a #[cfg(test)] coordinator.assume_shell_ready seam (the smoke tests' stub pane)
+src/app/api/agents.rs  mid-logic: queue_agent_prompt is pub(in crate::app) and its runtime_hosts_agent check has a #[cfg(test)] coordinator.assume_shell_ready seam
+src/platform/mod.rs  mid-logic: coordinator_supported() (cfg!(unix): the coordinator needs the public JSON API socket)
+src/server/client_commands.rs  mid-logic: CLIENT_SHELL_METHODS lists the nine coordinator.* methods (sorted), every_coordinator_method_is_advertised_to_client_shells checks them
+src/client/mod.rs  mid-logic: the client loop's tick block calls shell.tick_coordinator(now, &mut outcome) directly after tick_news
+src/client/shell/actions.rs  mid-logic: push_endpoint_method_with_kind treats CoordinatorOpen as focus-changing; handle_endpoint_result routes PendingEndpointKind::Coordinator; KeybindAction::OpenCoordinator → coordinator.open; keyboard_tab_list leaves out the pinned coordinator tab (coordinator_pinned_tab_id) like the News tab
+src/client/shell/mouse.rs  mid-logic: handle_mouse (the coordinator row: a left press on hits.coordinator_row focuses or opens it, a right-click opens its menu, both directly after the News row checks; a settings click applies at once in the coordinator section)
+src/client/shell/composition.rs  mid-logic: both ShellRenderState literals pass coordinator_row (coordinator_row()) and coordinator_managed_tabs
+src/client/shell/render.rs  mid-logic: render_shell calls tab_sidebar::render_tab_sidebar_with (the coordinator row and managed marks) and stores hits.coordinator_row; render_tab_bar gets the coordinator tab mark outside the tabs layout
+src/client/shell/tabs.rs  mid-logic: render_tab_bar appends the coordinator mark (`● 2 ideas`) to the coordinator tab's label through a local tab_label closure
+src/client/shell/context_menu.rs  mid-logic: items and activate route ClientContextMenuTarget::Coordinator to coordinator_shell.rs
+src/client/shell/settings.rs  mid-logic: open_settings_overlay (coordinator: Box::default()), selected_index_for_settings_section (Coordinator 0), select_settings_section (enter_coordinator_section), settings_choice_count, apply_settings_choice and the esc picker chain (close_coordinator_picker)
+src/client/shell/settings_overlay.rs  mid-logic: render_settings_overlay is 96 columns wide (eleven section tabs), the coordinator section 30 rows, renders render_coordinator_section, the primary button only with a record
+src/client/shell/idle_reminders.rs  mid-logic: is_news_tab also exempts the coordinator tab (is_coordinator_tab) from both reminder engines
+src/client/shell/worktrees.rs  mid-logic: the exhaustive PendingEndpointKind error arm lists PendingEndpointKind::Coordinator(_)
+src/client/shell/tests/graphics.rs  depends: its ClientSettingsOverlay literal carries `coordinator: Box::default()`
 
 ## 9. Identifier watch-list (any hit in the incoming upstream diff = deny "upstream collision")
+coordinator
+CoordinatorState
+CoordinatorConfig
+CoordPhase
+coordinator.get
+coordinator.open
+coordinator.open_dashboard
+coordinator.wake
+coordinator.start
+coordinator.set_enabled
+coordinator.set_wake_caps
+coordinator.set_model
+coordinator.set_notify
+CoordinatorGet
+coordinator_row
+ClientCoordinatorState
+is_coordinator_tab
+ensure_coordinator_tab
+CoordinatorPassFinished
+coordinator_terminal_id
+OpenCoordinator
+open_coordinator
+SidebarLayoutTabs
+herdr_agents
+agents_
+HERDR_COORDINATOR_
 agent.suspend
 agent.activate
 agent.transcripts
@@ -953,7 +1062,7 @@ server::headless::tests::fork_smoke::session_restore_keeps_a_suspended_pane_park
 server::headless::tests::fork_smoke::claude_hook_asset_reports_the_transcript_path_the_backup_store_uses
 server::headless::tests::fork_smoke::claude_subagent_hooks_reach_the_client_shell_snapshot
 client::shell::tests::tab_sidebar::fork_smoke::locked_suspended_pane_emits_no_pane_input
-client::shell::tests::settings_backups::fork_smoke::every_settings_section_fits_the_84_column_popup
+client::shell::tests::settings_backups::fork_smoke::every_settings_section_fits_the_96_column_popup
 client::shell::tests::sticky_notifications::fork_smoke::three_cards_stack_newest_nearest_the_corner
 client::shell::tests::tab_sidebar::fork_smoke::colored_tab_label_reaches_the_renderer_in_its_color
 client::shell::tests::breathe::fork_smoke::a_working_tab_glyph_breathes_and_schedules_frames
@@ -968,9 +1077,15 @@ server::headless::tests::fork_smoke::browser_get_reports_a_fake_host_tab_with_it
 server::headless::tests::fork_smoke::browser_launch_argv_carries_no_automation_switches
 server::headless::tests::fork_smoke::browser_settings_write_the_config_and_fix_the_hook_and_codex_entries
 client::shell::tests::browser::fork_smoke::browser_row_shows_the_running_browser_above_the_footer
+server::headless::tests::fork_smoke::coordinator::coordinator_enabled_starts_a_coordinator_in_a_pinned_tab
+server::headless::tests::fork_smoke::coordinator::coordinator_wake_reaches_the_coordinator_pane
+server::headless::tests::fork_smoke::coordinator::coordinator_suggestion_notification_waits_for_a_client_shell
+server::headless::tests::fork_smoke::coordinator::coordinator_idle_sends_no_finished_toast
+server::headless::tests::fork_smoke::coordinator::coordinator_dashboard_serves_board_json
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 ### Added
+- Coordinator, native (build 1): the coordinator runs inside the herdr server, which also serves its dashboard; `herdr plus` became `herdr coordinator`. `[coordinator] enabled = true` makes the server start a Claude coordinator in a `coordinator` tab (pinned as the bottom row of the `tabs` sidebar, below News: `○ N agents`, `◐ waking/working`, `● N ideas`, `◌ capped`, `! locked`, `× down`, `○ off`; managed agents' tabs get a dim `+`; under `spaces` the coordinator tab carries the same mark in the tab bar), relaunch it when it goes missing (`relaunch_cap_hour`, then `down`), wake it on agent events and messages (`cap_hour`, `cap_day`, `periodic_minutes`), migrate the POC's `plus/` directory to `coordinator/` once, and serve the HTML dashboard on `http://127.0.0.1:<dashboard_port>/` (7718 by default, 0 off). The row's menu and the new settings section open the dashboard (herdr's browser, else the system browser; remote shells get the URL), wake, restart, pause/resume, and set the model, wake caps and notifications; `keys.open_coordinator` (unbound) focuses it. Its own finished/attention toasts are suppressed; it raises its own capped notifications instead (new suggestions, down, blocked, locked; `notify`, `notify_daily_cap`, `quiet_hours`). The MCP server is `herdr_agents` with `agents_*` tools; coordinator-opened agents get short task names, the best-fitting existing group (a new one only when none fits), and priority work starts ungrouped in the top space (`agents_open_tab priority`). New API: `coordinator.get|open|open_dashboard|wake|start|set_enabled|set_wake_caps|set_model|set_notify`; CLI `herdr coordinator enable|disable|start [--new]|wake|status [--json]|dashboard [--print]|messages|manage|unmanage|clear-turn|seed|mcp`. Unix only for now.
 - herdr browser, activity overlay lifetime: the glow frame stays on a tab for the `[browser] active_glyph_secs` window (120 s by default, the same window as the sidebar's `◎`) instead of 3 s — pulsing while an operation runs, a calmer steady glow for the rest of the window, a slow fade at its end, gone at once when the pane is released or the tab closes; a navigation inside the window puts it back in the same state without stretching the window; screenshots still hide it. The cursor stays where the last operation left it for the whole window (read-only operations keep it; a navigation re-places it) and fades with the frame. While a pane is active its tab group's title carries a `●` mark (`● ✻ planner`, plain Unicode, applied by the companion — never the page's document.title), removed when the window ends together with the collapse; ownership, comparisons and restores go by the plain title, so a browser restart mid-window still adopts the pane's group. The directive carries `linger_ms`; companion v11 (a running browser shows the mark after `herdr browser stop` and open again; a v10 worker keeps plain titles meanwhile). Checked by scripts/test_browser_overlay.mjs (run from the Rust test activity_overlay_lives_for_the_window_and_marks_the_group when node is on PATH).
 - AI news desk, what's new since you read: the page viewer (viewer.py) draws a timeline spine beside every story — a first-seen chip (`today`, `yday`, `Mon`, `Sep 12`; the edition a story first ran in, from `<home>/first_seen.json`, which the runner keeps: built once from every edition in `editions/index.json` when the file is missing, then only added to, a story never moving later) and, against the baseline edition, a `●` node with a rust rail for a story that was not there (NEW) or a `◑` node, the editor's one-line `what_changed` note (`↻ revised:`) and a word diff of the text (`Δ`) for one whose text changed or that the editor flagged `"changed": true` (UPDATED; system.md asks for both fields, the validator accepts them: `changed` a bool, `what_changed` a string without control characters of at most 30 words). The title line reads `● N new ◑ M updated since you read the HH:MM edition` with a first-seen ribbon (how many stories per age bucket) and a legend, every section rule carries its own `N new · M updated`, the footer tallies them, and `n` / `N` jump to the next / previous new story, `u` toggles a new-only filter. The baseline: the edition herdr last saw the reader on (`<home>/read.json`, `last_read_edition`, recorded by the server's scheduler pass while the News tab is focused with the viewer up — the viewer writes `<home>/viewer-state.json` `showing` on every edition it opens — persisted in news.json and in news.get as `last_read_edition`); an edition older than that is compared against the one before it, and without a record the previous edition is the baseline. news.get also carries `new_stories` (the latest edition's stories absent from the last one read), the pinned News row's unread state reads `N new` and a run notification's body starts with `N new · `. The spread layout (≥ 160 columns) deals whole sections to two columns — the lead opens the left one, each section goes to the shorter column (ties left) and never splits across the fold (viewer.py `deal_sections`). `herdr news quiet [HH:MM-HH:MM|--off]` shows or sets the quiet hours through the new `news.set_quiet_hours` method (the settings news tab's quiet-hours picker uses it too, so a remote server's window changes; the canonical `HH:MM-HH:MM` or "" is written to `news.quiet_hours`, news_invalid_quiet_hours otherwise). Python checks for both assets live in scripts/test_news_viewer.py (marker states, baselines, chips, word diff, filter, dealing, a pty run of the pinned viewer that drains output and checks the keys, quit and the restored screen) and scripts/test_news_run.py (validator fields, first-seen index), run by the Rust test python_asset_checks_pass (which also asserts no `__pycache__` beside the assets).
 - herdr+ settings → browser: a `browser` section right after `news` in the settings overlay (src/client/shell/settings_browser.rs; the popup is 84 columns wide so ten tabs fit, 32 rows tall for this section). Rows: `browser: on|off`, `show activity (groups, glow, cursor)`, `pinned dashboard`, `activity colour #rrggbb ■` (↵/→ cycles the presets #aa6eff #00c8ff #5fd3a0 #ffb86b #ff7aa8), `agents use herdr's browser (steer + wrap)` (both keys), `hide agents' own browsers`, `MCP for: claude ✓ codex ✗` (↵/→ cycles both / claude / codex / none → `mcp_agents`, the registration follows on the server), `shell hook in ~/.zshrc`, `▸ fix all (N issues)` (`browser.fix` for every failing fixable check — the extension fix restarts the browser), `open browser` / `stop browser` (the default profile), `install herdr+ Browser from a Chromium build… (↵ copies the command)` (the overlay has no text input: the exact `herdr browser install-chromium <Chromium.app>` goes to the clipboard). Every row acts through the active server (`browser.settings.set` writes the server's config); a remote endpoint's file-editing rows say `(on <machine>)`. Under a rule the facts — status, browser, helper, extension, MCP, shell hook, the last fix — with ✓/✗ first and the reason after. The section polls `browser.settings` every ~0.9 s while the server is checking or fixing and says `browser settings unavailable on this server (an older herdr)` when the method is not advertised. The Browser sidebar row and `herdr browser status` show a `setup needed` hint while a file-editing check fails.

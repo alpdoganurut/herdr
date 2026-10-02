@@ -752,6 +752,12 @@
           "description": "Open the Browser overlay: the herdr browser's profiles and tabs with who opened and last used each one; Enter focuses a tab's window, `s` starts or stops the profile, Esc closes. Unset by default; for example, open_browser = \"alt+b\"."
         },
         {
+          "key": "keys.open_coordinator",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Focus the coordinator tab, creating it (and starting the coordinator when it is enabled) when there is none. Unset by default; for example, open_coordinator = \"alt+c\"."
+        },
+        {
           "key": "keys.copy_mode",
           "type": "keybinding",
           "default": "\"prefix+[\"",
@@ -1745,6 +1751,72 @@
           "type": "string",
           "default": "\"#aa6eff\"",
           "description": "The activity overlay's colour as `#rrggbb`: the frame border and glow, the cursor fill and the click ripple (the glow's transparency is fixed). Applies live after `herdr server reload-config` (the next overlay refresh uses it); an invalid value reports a config diagnostic and keeps the default purple. Tab-group colours are not affected: Chrome only offers its own nine named colours, and herdr picks one per pane."
+        }
+      ]
+    },
+    {
+      "id": "coordinator",
+      "title": "Coordinator",
+      "keys": [
+        {
+          "key": "coordinator.enabled",
+          "type": "boolean",
+          "default": "false",
+          "description": "Run the coordinator inside the herdr server: a Claude Code agent in a `coordinator` tab that watches the agents it manages, is woken when they message each other, finish or get stuck, and keeps a board of their state and its suggestions. The server starts it, relaunches it when it dies and serves its dashboard; there is no separate process to run. One coordinator per config directory: a second server on the same config directory reports `locked`. Off by default; `herdr coordinator enable` or the settings section turns it on. Disabling it stops wakes and the dashboard but leaves the coordinator's Claude running in its tab. Unix only for now; elsewhere the coordinator reports `unavailable`."
+        },
+        {
+          "key": "coordinator.model",
+          "type": "string",
+          "default": "unset",
+          "description": "Model handed to the coordinator's Claude Code (`claude --model`). Applies at the next launch or restart. Unset uses Claude's default."
+        },
+        {
+          "key": "coordinator.cap_hour",
+          "type": "integer",
+          "default": "12",
+          "description": "Most wakes the coordinator receives in a rolling hour. Past the cap the pending events wait and the coordinator row reads `capped`. The `HERDR_COORDINATOR_WAKE_CAP_HOUR` environment variable on the server process overrides it."
+        },
+        {
+          "key": "coordinator.cap_day",
+          "type": "integer",
+          "default": "80",
+          "description": "Most wakes the coordinator receives in a rolling 24 hours. The `HERDR_COORDINATOR_WAKE_CAP_DAY` environment variable on the server process overrides it."
+        },
+        {
+          "key": "coordinator.periodic_minutes",
+          "type": "integer",
+          "default": "60",
+          "description": "Minutes after the last wake at which low-priority events that are still pending (for example a change in the managed-agent registry) wake the coordinator. Nothing pending means no periodic wake. Counted against the wake caps. The `HERDR_COORDINATOR_PERIODIC_S` environment variable (seconds) on the server process overrides it."
+        },
+        {
+          "key": "coordinator.relaunch_cap_hour",
+          "type": "integer",
+          "default": "3",
+          "description": "Most automatic relaunches of a coordinator that went missing in a rolling hour. Past the cap the coordinator is marked `down` with one notification; `herdr coordinator start` or Restart coordinator brings it back."
+        },
+        {
+          "key": "coordinator.notify",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show coordinator notifications: new suggestions on its board (batched into one), and the coordinator going down, blocked on a prompt, or locked by another server (once each until it recovers). The coordinator's own finished and needs-attention toasts are always silenced. Notifications go out only while a client is attached and wait for one otherwise."
+        },
+        {
+          "key": "coordinator.notify_daily_cap",
+          "type": "integer",
+          "default": "6",
+          "description": "Most coordinator notifications delivered in a local day. A notification past the cap is dropped, except a `down` alert."
+        },
+        {
+          "key": "coordinator.quiet_hours",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Local wall-clock window `HH:MM-HH:MM` during which a coordinator notification waits; it goes out when the window ends. Only a `down` alert goes out inside it. May wrap past midnight. An empty string (the default) disables quiet hours; an invalid value reports a config warning and disables them."
+        },
+        {
+          "key": "coordinator.dashboard_port",
+          "type": "integer",
+          "default": "7718",
+          "description": "Port on `127.0.0.1` where the server serves the coordinator's HTML dashboard (`/`, `/board.json`, `/live.json`) while it holds the coordinator lock. `0` disables serving. A port in use is not fatal: the dashboard reports unavailable and the bind is retried every minute. Open it with Open dashboard on the coordinator row's menu, the settings section, or `herdr coordinator dashboard`. A value that is not a port reports a config warning and falls back to the default."
         }
       ]
     },
