@@ -846,7 +846,7 @@ impl ClientInfoDockState {
                 pinned,
                 rows,
                 ui.hist_scroll,
-                selected.map(|(first, _)| (first, "☞")),
+                selected.map(|(first, _)| (first, "›")),
             ),
             CachedRows::Editor { rows, cursor_row } => {
                 (&[], rows, ui.notes_scroll, Some((*cursor_row, "▸")))

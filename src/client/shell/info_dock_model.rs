@@ -436,7 +436,7 @@ pub(crate) fn footer(input: &FooterInput<'_>, width: usize) -> Row {
     if let Some(theirs) = input.conflict {
         return Row::new(
             vec![
-                seg("☞ ", fg(DUSK.rust)),
+                seg("› ", fg(DUSK.rust)),
                 seg("changed elsewhere · ", italic(fg(DUSK.note))),
                 hit("reload", fg(DUSK.gold), InfoDockTarget::ConflictReload),
                 seg(" · ", fg(DUSK.dim)),
@@ -451,7 +451,7 @@ pub(crate) fn footer(input: &FooterInput<'_>, width: usize) -> Row {
     }
     if let Some(flash) = input.flash {
         return Row::new(
-            vec![seg("☞ ", fg(DUSK.rust)), seg(flash, italic(fg(DUSK.note)))],
+            vec![seg("› ", fg(DUSK.rust)), seg(flash, italic(fg(DUSK.note)))],
             None,
         );
     }

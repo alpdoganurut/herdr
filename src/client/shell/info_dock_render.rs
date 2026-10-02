@@ -3,7 +3,7 @@
 //! (`info_dock_model`) and the scroll from `compute_view`.
 //!
 //! Column 0 is the divider (`│`, a gold `┃` while dragged), column 1 the
-//! marker column (`☞` beside the selected checkpoint, `▸` beside the
+//! marker column (`›` beside the selected checkpoint, `▸` beside the
 //! editor's line). Row 0 is the Notes / History strip; the last two rows
 //! are a `┄` rule and the footer.
 
@@ -93,7 +93,7 @@ pub(crate) fn render(
         if let Some((_, symbol)) = frame.mark.filter(|(at, _)| *at == index) {
             let style = Style::default()
                 .fg(DUSK.rust)
-                .bg(if symbol == "☞" { DUSK.sel } else { DUSK.page })
+                .bg(if symbol == "›" { DUSK.sel } else { DUSK.page })
                 .add_modifier(Modifier::BOLD);
             buffer.set_string(area.x + 1, y, symbol, style);
         }
