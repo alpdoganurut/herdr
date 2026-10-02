@@ -255,7 +255,7 @@ fn codex_argv(ctx: &LaunchCtx, kickoff: Option<&str>, no_daemon: bool) -> Vec<St
 
 pub fn coordinator_kickoff(dir: &Path) -> String {
     format!(
-        "You are the herdr+ coordinator agent. Read {} now and follow it exactly. Then do the \"On start\" steps.",
+        "You are the herdr+ coordinator agent. Read {} now and follow it exactly (file tools only, no shell commands). Then do the \"On start\" steps.",
         instructions_path(dir).display()
     )
 }
@@ -478,7 +478,7 @@ mod tests {
         let dir = Path::new("/p");
         assert_eq!(
             coordinator_kickoff(dir),
-            "You are the herdr+ coordinator agent. Read /p/coordinator.md now and follow it exactly. Then do the \"On start\" steps."
+            "You are the herdr+ coordinator agent. Read /p/coordinator.md now and follow it exactly (file tools only, no shell commands). Then do the \"On start\" steps."
         );
         assert_eq!(
             agent_kickoff(dir, "rev", Some("reviewer"), Some("demo"), Some("Review lead's branch.")),

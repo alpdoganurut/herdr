@@ -1055,7 +1055,7 @@ fn gate(
 /// The line typed into the coordinator for wake-up `seq`.
 pub fn wake_prompt(dir: &Path, seq: u64) -> String {
     format!(
-        "[herdr+ wake-up #{seq} \u{2014} not the user; read-only turn] Read {}. Re-read memory/MEMORY.md, update dashboard/board.json and memory, record proposed actions as suggestions; do not act. If nothing material changed, reply in one line.",
+        "[herdr+ wake-up #{seq} \u{2014} not the user; read-only turn] Read {}. Re-read memory/MEMORY.md, update dashboard/board.json and memory, record proposed actions as suggestions; do not act. Use the Read/Write/Edit file tools, not shell commands (nobody may be there to approve them). If nothing material changed, reply in one line.",
         wake_dir(dir).join(format!("{seq}.md")).display()
     )
 }
