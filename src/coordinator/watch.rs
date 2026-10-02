@@ -34,6 +34,8 @@ const DIGESTS_KEPT: usize = 50;
 const PREVIEWS: usize = 3;
 const PREVIEW_CHARS: usize = 80;
 const HELD_LOG_EVERY_S: u64 = 60;
+/// The backoff after the server held a prepared wake-up back.
+pub(crate) const HELD_RETRY_S: u64 = 30;
 /// A sender's refused messages to the coordinator wake it at most once per
 /// this window.
 const REFUSAL_REPEAT_S: u64 = 600;
@@ -419,6 +421,15 @@ impl WatchState {
         self.retry_after = now + cfg.gap_s;
     }
 
+    /// The server held the prompt back (the coordinator was not idle, not
+    /// interactive or not in its pane by its own check): keep everything
+    /// pending and back off briefly, so a disagreement between the facts
+    /// and the server cannot turn into a wake-up loop. A forced wake waits
+    /// the backoff too.
+    pub fn wake_held(&mut self, now: u64, cfg: &WakeCfg) {
+        self.retry_after = now + cfg.settle_s.max(HELD_RETRY_S);
+    }
+
     fn wakes_within(&self, window: u64, now: u64) -> usize {
         self.wakes
             .iter()
@@ -660,6 +671,10 @@ pub fn tick(
             _ => {}
         }
     }
+    // Read before `liveness`, which clears it once the coordinator shows up:
+    // the server says down until `coordinator.start`, and a down
+    // coordinator gets no wake-ups even when its agent is back.
+    let down = state.coordinator_down;
     liveness(state, live, coordinator, cfg, now, &mut actions);
     if !state.baselined {
         baseline(state, live, now);
@@ -672,7 +687,7 @@ pub fn tick(
         state.registry_changed(now);
     }
     state.cap_pending();
-    gate(state, coordinator, turn_live, cfg, now, &mut actions);
+    gate(state, coordinator, down, turn_live, cfg, now, &mut actions);
     actions
 }
 
@@ -976,11 +991,15 @@ fn queue_messages(state: &mut WatchState, live: &LiveData, new_msgs: &[AgentMess
 fn held_reason(
     state: &WatchState,
     coordinator: Option<&LiveAgent>,
+    down: bool,
     turn_live: bool,
     high: bool,
     cfg: &WakeCfg,
     now: u64,
 ) -> Option<(&'static str, String)> {
+    if down {
+        return Some(("held", "coordinator down".into()));
+    }
     let Some(agent) = coordinator else {
         return Some(("held", "coordinator offline".into()));
     };
@@ -1013,6 +1032,7 @@ fn held_reason(
 fn gate(
     state: &mut WatchState,
     coordinator: Option<&LiveAgent>,
+    down: bool,
     turn_live: bool,
     cfg: &WakeCfg,
     now: u64,
@@ -1039,7 +1059,7 @@ fn gate(
     if !triggered {
         return;
     }
-    if let Some((verb, reason)) = held_reason(state, coordinator, turn_live, high, cfg, now) {
+    if let Some((verb, reason)) = held_reason(state, coordinator, down, turn_live, high, cfg, now) {
         // Once a minute per kind of reason (the gap countdown is one kind).
         let kind: String = reason.chars().take_while(|c| !c.is_ascii_digit()).collect();
         let due = state
@@ -1380,6 +1400,29 @@ mod tests {
         // Unchanged afterwards: nothing to report.
         assert!(quiet(&mut state, &data, &cfg(), 102).is_empty());
         assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn a_down_coordinator_gets_no_wake_even_when_its_agent_is_back() {
+        let mut state = WatchState::default();
+        let cfg = cfg();
+        let at = |status: &str| live(vec![coord("idle"), agent("w2:p1", "a", status)]);
+        quiet(&mut state, &at("working"), &cfg, 0);
+        quiet(&mut state, &at("idle"), &cfg, 10);
+        // The server says down on every pass (its phase), the facts show
+        // the coordinator idle: held, not woken.
+        state.coordinator_down = true;
+        let actions = quiet(&mut state, &at("idle"), &cfg, 200);
+        assert!(wakes(&actions).is_empty(), "{actions:?}");
+        assert!(
+            logs(&actions)
+                .iter()
+                .any(|line| line.starts_with("held coordinator down")),
+            "{actions:?}"
+        );
+        // `coordinator.start` cleared it: the pending item goes out.
+        state.coordinator_down = false;
+        assert_eq!(wakes(&quiet(&mut state, &at("idle"), &cfg, 210)).len(), 1);
     }
 
     #[test]

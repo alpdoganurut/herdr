@@ -778,6 +778,28 @@ impl App {
     }
 
     pub(super) fn emit_event(&mut self, event: crate::api::schema::EventEnvelope) {
+        use crate::api::schema::EventKind;
+        // Fork: the coordinator's facts carry the spaces, tabs and their
+        // labels, and which pane each agent is in: follow every structural
+        // change (an O(1) flag; the post is coalesced).
+        if matches!(
+            event.event,
+            EventKind::WorkspaceCreated
+                | EventKind::WorkspaceClosed
+                | EventKind::WorkspaceRenamed
+                | EventKind::WorkspaceMoved
+                | EventKind::WorkspaceReordered
+                | EventKind::TabCreated
+                | EventKind::TabClosed
+                | EventKind::TabRenamed
+                | EventKind::TabMoved
+                | EventKind::PaneCreated
+                | EventKind::PaneClosed
+                | EventKind::PaneMoved
+                | EventKind::PaneExited
+        ) {
+            self.mark_coordinator_input_dirty();
+        }
         self.run_plugin_event_hooks(&event);
         self.event_hub.push(event);
     }

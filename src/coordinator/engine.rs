@@ -23,7 +23,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -265,6 +267,9 @@ pub struct CoordinatorPassOutput {
     pub registered: Option<Result<(), String>>,
     /// The POC directory was renamed into place on this start.
     pub dir_migrated: bool,
+    /// The worker that produced it: the App's sink stamps it, and the App
+    /// ignores outputs of a worker it already dropped.
+    pub worker: u64,
 }
 
 impl CoordinatorPassOutput {
@@ -284,6 +289,7 @@ impl CoordinatorPassOutput {
             migration: None,
             registered: None,
             dir_migrated: false,
+            worker: 0,
         }
     }
 
@@ -746,6 +752,7 @@ impl Engine {
                 // Not typed in: the marker must not guard a turn that never
                 // started (the user may type into the coordinator next).
                 turn::clear_if(self.dir(), marker);
+                self.state.wake_held(now, &self.cfg.wake);
                 self.log(now, &format!("held coordinator {status} (re-check)"));
             }
             WakeOutcome::Failed(code) => {
@@ -1102,6 +1109,10 @@ impl Engine {
 pub struct WorkerHandle {
     tx: Option<mpsc::Sender<WorkerMsg>>,
     handle: Option<JoinHandle<()>>,
+    /// Set on drop: an output retry gives up at once, so the join (on the
+    /// server's main loop, which is the one that would drain the channel)
+    /// does not wait out the retries.
+    stop: Arc<AtomicBool>,
 }
 
 /// Where the worker delivers its outputs (the App wraps the event sender).
@@ -1119,12 +1130,15 @@ const SINK_PAUSE: Duration = Duration::from_millis(50);
 impl WorkerHandle {
     pub fn spawn(cfg: EngineConfig, sink: OutputSink) -> io::Result<Self> {
         let (tx, rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&stop);
         let handle = std::thread::Builder::new()
             .name("herdr-coordinator".into())
-            .spawn(move || run(Engine::new(cfg), &rx, &sink))?;
+            .spawn(move || run(Engine::new(cfg), &rx, &sink, &stopping))?;
         Ok(Self {
             tx: Some(tx),
             handle: Some(handle),
+            stop,
         })
     }
 
@@ -1148,6 +1162,7 @@ impl Drop for WorkerHandle {
     fn drop(&mut self) {
         // Shutdown ends the loop at its next receive (closing the channel
         // would too, unless a wake reporter still holds a sender).
+        self.stop.store(true, Ordering::Relaxed);
         if let Some(tx) = self.tx.take() {
             let _ = tx.send(WorkerMsg::Shutdown);
         }
@@ -1161,19 +1176,24 @@ impl Drop for WorkerHandle {
 
 /// Hand `out` to the sink, retrying a full channel a few times; `false` when
 /// it was given up, in which case the next pass sends the read model again
-/// and the one-shot answers ride along with it.
+/// and the one-shot answers ride along with it. `stop` (the handle is being
+/// dropped) gives up at once.
 fn deliver(
     engine: &mut Engine,
     sink: &OutputSink,
     out: CoordinatorPassOutput,
     attempts: usize,
     pause: Duration,
+    stop: &AtomicBool,
 ) -> bool {
     let mut out = Box::new(out);
     for attempt in 0..attempts.max(1) {
         match sink(out) {
             Ok(()) => return true,
             Err(back) => out = back,
+        }
+        if stop.load(Ordering::Relaxed) {
+            break;
         }
         if attempt + 1 < attempts {
             std::thread::sleep(pause);
@@ -1184,7 +1204,7 @@ fn deliver(
     false
 }
 
-fn run(mut engine: Engine, rx: &mpsc::Receiver<WorkerMsg>, sink: &OutputSink) {
+fn run(mut engine: Engine, rx: &mpsc::Receiver<WorkerMsg>, sink: &OutputSink, stop: &AtomicBool) {
     let mut deadline = Instant::now();
     loop {
         let wait = deadline.saturating_duration_since(Instant::now());
@@ -1212,7 +1232,7 @@ fn run(mut engine: Engine, rx: &mpsc::Receiver<WorkerMsg>, sink: &OutputSink) {
         }
         let now = now_unix();
         if let Some(out) = engine.tick(now) {
-            deliver(&mut engine, sink, out, SINK_ATTEMPTS, SINK_PAUSE);
+            deliver(&mut engine, sink, out, SINK_ATTEMPTS, SINK_PAUSE, stop);
         }
         deadline = Instant::now() + engine.next_wait(now);
     }
@@ -1361,7 +1381,20 @@ mod tests {
         assert!(!turn_path(&dir).exists(), "a held wake releases its marker");
         assert_eq!(engine.state.wake_seq, 0, "held keeps the counters");
         assert_eq!(engine.state.pending.len(), pending);
-        assert_eq!(engine.state.retry_after, 0);
+        let held_until = 71 + watch::HELD_RETRY_S.max(WakeCfg::default().settle_s);
+        assert_eq!(engine.state.retry_after, held_until, "held backs off");
+        // The facts still say idle: the next pass must not prepare the same
+        // wake-up again at once (the App would hold it again, in a loop).
+        let again = engine.tick(71);
+        assert!(
+            again.as_ref().is_none_or(|out| prompts(out).is_empty()),
+            "{again:?}"
+        );
+        let later = engine.tick(held_until).expect("a wake is owed again");
+        assert_eq!(prompts(&later).len(), 1, "{later:?}");
+        let Some(Effect::Prompt { marker, .. }) = prompts(&later).first().copied().cloned() else {
+            unreachable!()
+        };
 
         turn::write(&dir, &marker).unwrap();
         engine.handle(
@@ -1796,12 +1829,48 @@ mod tests {
         let out = engine.tick(1).expect("migration answer");
         assert!(out.migration.is_some());
         let full: OutputSink = Box::new(Err);
-        assert!(!deliver(&mut engine, &full, out, 2, Duration::ZERO));
+        let running = AtomicBool::new(false);
+        assert!(!deliver(
+            &mut engine,
+            &full,
+            out,
+            2,
+            Duration::ZERO,
+            &running
+        ));
         let again = engine.tick(2).expect("resent though unchanged");
         assert!(again.migration.is_some(), "the one-shot answer rides along");
         let taken: OutputSink = Box::new(|_| Ok(()));
-        assert!(deliver(&mut engine, &taken, again, 2, Duration::ZERO));
+        assert!(deliver(
+            &mut engine,
+            &taken,
+            again,
+            2,
+            Duration::ZERO,
+            &running
+        ));
         assert!(engine.tick(3).is_none(), "delivered: nothing new");
+        // A stopping worker gives up after one try instead of sleeping
+        // through its retries (the main loop is joining it).
+        engine.handle(WorkerMsg::Migrate, 4);
+        let out = engine.tick(4).expect("migration answer");
+        let tries = std::cell::Cell::new(0);
+        let counting: OutputSink = Box::new(move |out| {
+            tries.set(tries.get() + 1);
+            assert_eq!(tries.get(), 1, "one try only");
+            Err(out)
+        });
+        let stopping = AtomicBool::new(true);
+        let started = Instant::now();
+        assert!(!deliver(
+            &mut engine,
+            &counting,
+            out,
+            20,
+            Duration::from_secs(1),
+            &stopping
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1), "no retry pause");
         let _ = std::fs::remove_dir_all(&root);
     }
 

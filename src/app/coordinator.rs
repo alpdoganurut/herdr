@@ -196,6 +196,8 @@ pub(crate) struct CoordinatorState {
     pub(crate) unavailable: Option<String>,
     pub(crate) phase: CoordPhase,
     worker: Option<WorkerHandle>,
+    /// Counts spawned workers; outputs carry the one that produced them.
+    worker_generation: u64,
     /// The worker's last reported status.
     engine: EngineStatus,
     pub(crate) dashboard: DashboardState,
@@ -285,6 +287,7 @@ impl CoordinatorState {
             unavailable: None,
             phase: CoordPhase::Off,
             worker: None,
+            worker_generation: 0,
             engine: EngineStatus::WaitingForLock,
             dashboard: DashboardState::Off,
             input_dirty: false,
@@ -1316,7 +1319,11 @@ impl App {
         if !state.enabled && state.notify_ledger.pending.is_empty() {
             return None;
         }
+        // The phase only steps while the worker is ready: a block (a corrupt
+        // registry) during a start would otherwise leave a past deadline
+        // that spins the loop.
         let phase = match &state.phase {
+            _ if state.engine != EngineStatus::Ready => None,
             CoordPhase::Starting {
                 next_try,
                 give_up_at,
@@ -1357,7 +1364,10 @@ impl App {
     /// Apply a worker output (`AppEvent::CoordinatorPassFinished`). Returns
     /// whether the read model changed.
     pub(crate) fn apply_coordinator_output(&mut self, out: Box<CoordinatorPassOutput>) -> bool {
-        if !self.coordinator.enabled || !self.coordinator.has_worker() {
+        if !self.coordinator.enabled
+            || !self.coordinator.has_worker()
+            || out.worker != self.coordinator.worker_generation
+        {
             return false;
         }
         let mut out = *out;
@@ -1402,7 +1412,26 @@ impl App {
             }
         }
         self.coordinator.last_output = Some(out);
+        self.sync_coordinator_suppression();
         true
+    }
+
+    /// The coordinator's own toasts and sounds stay silenced only while
+    /// herdr runs it (starting, launching, running): off, down or blocked,
+    /// a Claude left in that pane is the user's and notifies as any agent.
+    fn sync_coordinator_suppression(&mut self) {
+        let suppressed = matches!(
+            self.coordinator.phase,
+            CoordPhase::Starting { .. } | CoordPhase::Launching { .. } | CoordPhase::Running
+        );
+        let mirror = if suppressed {
+            self.coordinator.terminal_id.as_ref()
+        } else {
+            None
+        };
+        if self.state.coordinator_terminal_id.as_ref() != mirror {
+            self.state.coordinator_terminal_id = mirror.cloned();
+        }
     }
 
     fn note_coordinator_suggestions(
@@ -1462,6 +1491,7 @@ impl App {
     fn drive_coordinator(&mut self, now: Instant) -> bool {
         let before = self.coordinator.phase.clone();
         self.step_coordinator(now);
+        self.sync_coordinator_suppression();
         let changed = before != self.coordinator.phase;
         if changed {
             self.coordinator.input_dirty = true;
@@ -1498,7 +1528,11 @@ impl App {
             }
             EngineStatus::Blocked(reason) => {
                 // A coordinator that is up keeps running; it just gets no
-                // wake-ups until the block clears.
+                // wake-ups until the block clears. `Down` holds until
+                // `coordinator.start`, through a block too.
+                if matches!(self.coordinator.phase, CoordPhase::Down { .. }) {
+                    return;
+                }
                 if self.coordinator.phase.before_ready()
                     || matches!(self.coordinator.phase, CoordPhase::Migrating { .. })
                     || matches!(reason, BlockedReason::LockedElsewhere)
@@ -1561,11 +1595,16 @@ impl App {
             seen_suggestions: state.seen_suggestions.iter().copied().collect(),
         };
         let tx = self.event_tx.clone();
+        // Outputs of a dropped worker may still sit in the event channel
+        // (a quick pause and resume): stamp each with its worker.
+        self.coordinator.worker_generation += 1;
+        let generation = self.coordinator.worker_generation;
         // Never block on the shared event channel: the main loop may be
         // joining this worker (disable, shutdown). A full channel hands the
         // output back for a retry.
-        let sink: crate::coordinator::engine::OutputSink = Box::new(move |out| {
+        let sink: crate::coordinator::engine::OutputSink = Box::new(move |mut out| {
             use tokio::sync::mpsc::error::TrySendError;
+            out.worker = generation;
             match tx.try_send(crate::events::AppEvent::CoordinatorPassFinished(out)) {
                 Ok(()) => Ok(()),
                 Err(TrySendError::Full(crate::events::AppEvent::CoordinatorPassFinished(out))) => {
@@ -1855,6 +1894,22 @@ impl App {
         if !matches!(self.coordinator.phase, CoordPhase::Running) {
             return;
         }
+        // Still running in its own pane: the worker matched a stale entry
+        // (its session changed, e.g. after /clear or a fresh start). Record
+        // it again and post fresh facts instead of starting over it.
+        if self
+            .existing_coordinator_pane()
+            .is_some_and(|pane| self.agent_alive_in(pane))
+        {
+            tracing::info!(
+                event = "coordinator.relaunch",
+                outcome = "re_registered",
+                "the coordinator is still in its pane; recording it again"
+            );
+            self.register_running_coordinator();
+            self.coordinator.input_dirty = true;
+            return;
+        }
         let now_unix = crate::coordinator::now_unix();
         self.coordinator
             .relaunches
@@ -1931,13 +1986,59 @@ impl App {
             self.coordinator.notice = Some(MIGRATION_NOTICE.into());
         }
         self.coordinator.migrated = true;
-        if self.coordinator.session.is_none() {
+        // A legacy coordinator still running its session keeps it: a second
+        // Claude on the same session would interleave its transcript, and
+        // both panes would claim the registry's coordinator entry. The new
+        // coordinator starts fresh then (its memory lives in files).
+        let legacy_live = migration
+            .legacy_session
+            .as_deref()
+            .is_some_and(|session| self.session_live_outside_coordinator(session, own));
+        if legacy_live {
+            tracing::info!(
+                event = "coordinator.migrate",
+                outcome = "fresh_session",
+                "the POC coordinator still runs its session; starting a new one"
+            );
+        } else if self.coordinator.session.is_none() {
             self.coordinator.session = migration.legacy_session.clone();
         }
         self.coordinator.persist();
         let now = Instant::now();
-        let resume = self.coordinator.session.clone();
+        let resume =
+            self.coordinator.session.clone().filter(|session| {
+                !legacy_live || migration.legacy_session.as_deref() != Some(session)
+            });
         self.begin_coordinator_start(resume, now);
+    }
+
+    /// Whether a live (not parked) agent outside the coordinator's pane
+    /// reports `session`.
+    fn session_live_outside_coordinator(
+        &self,
+        session: &str,
+        own: Option<(usize, crate::layout::PaneId)>,
+    ) -> bool {
+        self.state
+            .workspaces
+            .iter()
+            .enumerate()
+            .any(|(ws_idx, ws)| {
+                ws.tabs.iter().any(|tab| {
+                    tab.panes.iter().any(|(pane_id, pane)| {
+                        own != Some((ws_idx, *pane_id))
+                            && self
+                                .state
+                                .terminals
+                                .get(&pane.attached_terminal_id)
+                                .is_some_and(|terminal| {
+                                    terminal.is_agent_terminal()
+                                        && terminal.suspended_agent.is_none()
+                                        && terminal_session(terminal).as_deref() == Some(session)
+                                })
+                    })
+                })
+            })
     }
 
     /// Public pane ids of live agents named `name`, except the given pane.
@@ -1985,10 +2086,22 @@ impl App {
                 outcome,
             });
         };
-        let ours = self
-            .existing_coordinator_pane()
+        // A coordinator that went down gets no automatic wake-ups, even when
+        // its Claude came up later (as `coordinator.wake` refuses it).
+        if matches!(self.coordinator.phase, CoordPhase::Down { .. }) {
+            reply(&mut self.coordinator, WakeOutcome::Held("down".into()));
+            return;
+        }
+        let existing = self.existing_coordinator_pane();
+        let ours = existing
             .filter(|own| self.public_pane_id(own.ws_idx, own.pane_id).as_deref() == Some(pane));
         let Some(own) = ours else {
+            // The registry points elsewhere while the coordinator still runs
+            // in its own pane: record that pane again.
+            if existing.is_some_and(|own| self.agent_alive_in(own)) {
+                self.register_running_coordinator();
+                self.coordinator.input_dirty = true;
+            }
             reply(&mut self.coordinator, WakeOutcome::Held("moved".into()));
             return;
         };
@@ -2148,12 +2261,17 @@ impl App {
         if self.state.workspaces.is_empty() {
             return Err("no space to open the coordinator tab in".into());
         }
+        // Never a stand-in directory: the start reuses this tab, and Claude
+        // keys its trust prompt and session storage to the shell's cwd. The
+        // worker creates the directory when it takes the lock.
+        if !self.coordinator.dir.is_dir() {
+            return Err(format!(
+                "the coordinator directory {} does not exist yet",
+                self.coordinator.dir.display()
+            ));
+        }
         let ws_idx = 0;
-        let cwd = if self.coordinator.dir.is_dir() {
-            self.coordinator.dir.clone()
-        } else {
-            std::env::temp_dir()
-        };
+        let cwd = self.coordinator.dir.clone();
         let (rows, cols) = self.state.estimate_pane_size();
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
@@ -2206,21 +2324,43 @@ impl App {
             .get(pane.ws_idx)
             .and_then(|ws| ws.terminal_id(pane.pane_id))
             .cloned();
-        self.state.coordinator_terminal_id = self.coordinator.terminal_id.clone();
+        self.sync_coordinator_suppression();
     }
 
-    /// The stored tab, only while it is still labelled `coordinator` (a
-    /// renamed tab or a user's shell is never adopted).
+    /// The stored pane, only while it is still in the stored tab and that
+    /// tab is still labelled `coordinator` (a renamed tab or a user's shell
+    /// is never adopted). Closing the coordinator's pane in a split tab
+    /// promotes a sibling to the tab's root: that pane is the user's, so the
+    /// tab counts as gone. A record without a pane id (older builds) takes
+    /// the root of a single-pane tab only.
     fn existing_coordinator_pane(&self) -> Option<CoordPane> {
         let (ws_idx, tab_idx) = self.parse_tab_id(self.coordinator.tab_id.as_deref()?)?;
         let tab = self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
         if tab.custom_name.as_deref() != Some(COORDINATOR_TAB_LABEL) {
             return None;
         }
+        let pane_id = match self.coordinator.pane_id.as_deref() {
+            Some(stored) => {
+                let (pane_ws, pane_id) = self.parse_pane_id(stored)?;
+                if pane_ws != ws_idx || !tab.panes.contains_key(&pane_id) {
+                    return None;
+                }
+                pane_id
+            }
+            None if tab.panes.len() == 1 => tab.root_pane,
+            None => return None,
+        };
         Some(CoordPane {
             ws_idx,
             tab_idx,
-            pane_id: tab.root_pane,
+            pane_id,
+        })
+    }
+
+    /// Whether an agent runs (not parked) in the coordinator pane.
+    fn agent_alive_in(&self, pane: CoordPane) -> bool {
+        self.coordinator_terminal(pane).is_some_and(|terminal| {
+            terminal.is_agent_terminal() && terminal.suspended_agent.is_none()
         })
     }
 
@@ -2288,6 +2428,7 @@ mod tests {
             std::process::id(),
             crate::coordinator::launch::new_uuid()
         ));
+        std::fs::create_dir_all(&coordinator.dir).expect("the coordinator dir");
         coordinator.no_worker = true;
         coordinator.assume_shell_ready = true;
         coordinator.opener = |_| Ok("test");
@@ -2328,6 +2469,7 @@ mod tests {
             migration: None,
             registered: None,
             dir_migrated: false,
+            worker: 0,
         })
     }
 
@@ -2888,8 +3030,54 @@ mod tests {
             .clone();
         let root = app.state.workspaces[0].tabs[0].root_pane;
         let other = app.state.workspaces[0].terminal_id(root).unwrap().clone();
+        assert!(
+            !app.is_coordinator_terminal(&own),
+            "not herdr's to silence before it starts"
+        );
+        app.coordinator.phase = CoordPhase::Running;
+        app.sync_coordinator_suppression();
         assert!(app.is_coordinator_terminal(&own));
         assert!(!app.is_coordinator_terminal(&other));
+        app.coordinator.go_down(down_reason::START_FAILED, "test");
+        app.handle_coordinator_tasks(Instant::now());
+        assert!(
+            !app.is_coordinator_terminal(&own),
+            "a down coordinator's pane notifies again"
+        );
+    }
+
+    #[tokio::test]
+    async fn disabling_lets_a_left_running_coordinator_notify() {
+        let mut app = coordinator_app(true);
+        launching(&mut app);
+        app.coordinator.phase = CoordPhase::Running;
+        app.handle_coordinator_tasks(Instant::now());
+        let pane = app.existing_coordinator_pane().unwrap();
+        let own = app.state.workspaces[0]
+            .terminal_id(pane.pane_id)
+            .unwrap()
+            .clone();
+        assert!(app.is_coordinator_terminal(&own));
+        app.apply_coordinator_config(&CoordinatorConfig::default());
+        app.handle_coordinator_tasks(Instant::now());
+        assert_eq!(app.coordinator.phase, CoordPhase::Off);
+        assert!(!app.is_coordinator_terminal(&own));
+        // A prompt in that Claude is a normal NeedsAttention now.
+        let update = app
+            .state
+            .update_terminal_state(pane.pane_id, |terminal| {
+                let change = terminal.set_detected_state(
+                    Some(crate::detect::Agent::Claude),
+                    crate::detect::AgentState::Blocked,
+                );
+                Some(crate::terminal::TerminalStateMutation {
+                    effective_state_change: change,
+                    session_ref_changed: false,
+                    agent_released: false,
+                })
+            })
+            .expect("a state change");
+        assert!(!update.suppress_completion);
     }
 
     #[test]
@@ -3142,5 +3330,273 @@ mod tests {
         assert_eq!(info.managed[0].status.as_deref(), Some("working"));
         assert_eq!(info.managed[0].last_change_at, Some(5));
         assert_eq!(info.managed[1].status.as_deref(), Some("offline"));
+    }
+
+    fn session(id: &str) -> crate::agent_resume::PersistedAgentSession {
+        crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id(id).expect("a valid session id"),
+            transcript_path: None,
+        }
+    }
+
+    /// Launched, then Claude interactive in the coordinator pane: `Running`.
+    fn running(app: &mut App) {
+        let now = launching(app);
+        let terminal = coordinator_terminal_mut(app);
+        terminal.set_detected_state(
+            Some(crate::detect::Agent::Claude),
+            crate::detect::AgentState::Idle,
+        );
+        terminal.reconcile_managed_agent_at(now + Duration::from_secs(5), false);
+        app.handle_coordinator_tasks(now + Duration::from_secs(5));
+        assert_eq!(app.coordinator.phase, CoordPhase::Running);
+        app.coordinator.sent.clear();
+    }
+
+    fn relaunch_effect(app: &mut App) {
+        let mut out = output(EngineStatus::Ready);
+        out.effects.push(Effect::Relaunch {
+            resume: Some("stale".into()),
+        });
+        app.apply_coordinator_output(out);
+    }
+
+    fn prompt_effect(app: &mut App, pane: &str) {
+        let mut out = output(EngineStatus::Ready);
+        out.effects.push(Effect::Prompt {
+            seq: 7,
+            pane: pane.into(),
+            text: "wake".into(),
+            marker: crate::coordinator::turn::Turn {
+                source: "wake".into(),
+                id: "7".into(),
+                started_unix: 1,
+                coordinator_pane: pane.into(),
+                seen_working: false,
+            },
+            items: 1,
+        });
+        app.apply_coordinator_output(out);
+    }
+
+    fn wake_outcomes(app: &App) -> Vec<WakeOutcome> {
+        app.coordinator
+            .sent
+            .iter()
+            .filter_map(|msg| match msg {
+                WorkerMsg::WakeOutcome { outcome, .. } => Some(outcome.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_user_pane_left_in_the_coordinator_tab_is_never_adopted() {
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        let own = app.existing_coordinator_pane().unwrap();
+        // The user splits the coordinator tab, then closes the coordinator's
+        // pane: their shell becomes the tab's root.
+        let ws = &mut app.state.workspaces[0];
+        let active = ws.active_tab;
+        ws.active_tab = own.tab_idx;
+        let sibling = ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.active_tab = active;
+        app.state.ensure_test_terminals();
+        app.state.workspaces[0].tabs[own.tab_idx].close_pane(own.pane_id);
+        assert_eq!(app.state.workspaces[0].tabs[own.tab_idx].root_pane, sibling);
+        assert!(
+            app.existing_coordinator_pane().is_none(),
+            "the sibling is the user's"
+        );
+        let sibling_id = app.public_pane_id(0, sibling).unwrap();
+        // The relaunch opens a fresh tab instead of typing into the sibling.
+        relaunch_effect(&mut app);
+        assert!(matches!(app.coordinator.phase, CoordPhase::Starting { .. }));
+        app.handle_coordinator_tasks(Instant::now());
+        assert!(
+            matches!(app.coordinator.phase, CoordPhase::Launching { .. }),
+            "{:?}",
+            app.coordinator.phase
+        );
+        let fresh = app.existing_coordinator_pane().expect("a new tab");
+        assert_ne!(fresh.tab_idx, own.tab_idx);
+        assert_ne!(
+            app.coordinator.pane_id.as_deref(),
+            Some(sibling_id.as_str())
+        );
+        let terminal = app.state.workspaces[0].terminal_id(sibling).unwrap();
+        assert!(app.state.terminals[terminal].agent_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_relaunch_over_a_live_coordinator_records_it_again() {
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        relaunch_effect(&mut app);
+        assert_eq!(app.coordinator.phase, CoordPhase::Running, "not restarted");
+        assert!(app.coordinator.relaunches.is_empty(), "not counted");
+        assert!(app.coordinator.input_dirty, "fresh facts follow");
+        assert!(matches!(
+            app.coordinator.sent.last(),
+            Some(WorkerMsg::RegisterCoordinator { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_wake_for_a_moved_registry_entry_is_held_and_re_registers() {
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        prompt_effect(&mut app, "w9:p9");
+        assert_eq!(wake_outcomes(&app), vec![WakeOutcome::Held("moved".into())]);
+        assert!(app
+            .coordinator
+            .sent
+            .iter()
+            .any(|msg| matches!(msg, WorkerMsg::RegisterCoordinator { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_down_coordinator_is_not_woken_even_when_its_claude_is_up() {
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        let own = app.existing_coordinator_pane().unwrap();
+        let pane = app.public_pane_id(own.ws_idx, own.pane_id).unwrap();
+        app.coordinator.go_down(down_reason::LAUNCH_TIMEOUT, "test");
+        prompt_effect(&mut app, &pane);
+        assert_eq!(wake_outcomes(&app), vec![WakeOutcome::Held("down".into())]);
+    }
+
+    #[tokio::test]
+    async fn migration_starts_fresh_while_the_legacy_coordinator_runs_its_session() {
+        let mut app = coordinator_app(true);
+        quiet_tab(&mut app);
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let id = app.state.workspaces[0].terminal_id(root).unwrap().clone();
+        let legacy = app.state.terminals.get_mut(&id).unwrap();
+        legacy.set_detected_state(
+            Some(crate::detect::Agent::Claude),
+            crate::detect::AgentState::Idle,
+        );
+        legacy.set_agent_name(COORDINATOR_AGENT_NAME.into());
+        let shared = "0b1c2d3e-0000-4000-8000-0000000000aa";
+        legacy.persisted_agent_session = Some(session(shared));
+        let now = Instant::now();
+        app.handle_coordinator_tasks(now);
+        ready(&mut app);
+        app.handle_coordinator_tasks(now);
+        app.handle_coordinator_tasks(now);
+        let mut out = output(EngineStatus::Ready);
+        out.migration = Some(MigrationOutcome {
+            legacy_session: Some(shared.into()),
+            legacy_pane: Some("w1:p1".into()),
+            error: None,
+        });
+        app.apply_coordinator_output(out);
+        assert!(
+            matches!(
+                &app.coordinator.phase,
+                CoordPhase::Starting { resume: None, .. }
+            ),
+            "{:?}",
+            app.coordinator.phase
+        );
+        app.handle_coordinator_tasks(Instant::now());
+        assert!(matches!(
+            app.coordinator.phase,
+            CoordPhase::Launching { .. }
+        ));
+        assert_ne!(
+            app.coordinator.session.as_deref(),
+            Some(shared),
+            "a new session, not the live one"
+        );
+    }
+
+    #[test]
+    fn a_block_keeps_a_down_coordinator_down() {
+        let mut app = coordinator_app(true);
+        app.coordinator.phase = CoordPhase::Down {
+            since: 1,
+            reason: down_reason::RELAUNCH_CAP.into(),
+        };
+        app.apply_coordinator_output(output(EngineStatus::Blocked(
+            BlockedReason::LockedElsewhere,
+        )));
+        app.handle_coordinator_tasks(Instant::now());
+        assert!(matches!(app.coordinator.phase, CoordPhase::Down { .. }));
+        ready(&mut app);
+        app.handle_coordinator_tasks(Instant::now());
+        assert!(
+            matches!(app.coordinator.phase, CoordPhase::Down { .. }),
+            "the lock coming free does not start it: {:?}",
+            app.coordinator.phase
+        );
+    }
+
+    #[test]
+    fn a_block_during_a_start_leaves_no_past_deadline() {
+        let mut app = coordinator_app(true);
+        ready(&mut app);
+        let now = Instant::now();
+        app.coordinator.phase = CoordPhase::Starting {
+            resume: None,
+            next_try: now,
+            give_up_at: now + START_TIMEOUT,
+        };
+        app.apply_coordinator_output(output(EngineStatus::Blocked(
+            BlockedReason::RegistryCorrupt("bad".into()),
+        )));
+        app.handle_coordinator_tasks(now);
+        assert!(matches!(app.coordinator.phase, CoordPhase::Starting { .. }));
+        let later = now + Duration::from_secs(1);
+        assert!(
+            app.next_coordinator_deadline(later)
+                .is_none_or(|at| at > later),
+            "a past deadline would spin the loop"
+        );
+    }
+
+    #[test]
+    fn an_output_of_a_dropped_worker_is_ignored() {
+        let mut app = coordinator_app(true);
+        app.coordinator.worker_generation = 2;
+        let mut stale = output(EngineStatus::Ready);
+        stale.worker = 1;
+        assert!(!app.apply_coordinator_output(stale));
+        assert_eq!(app.coordinator.engine, EngineStatus::WaitingForLock);
+        let mut current = output(EngineStatus::Ready);
+        current.worker = 2;
+        assert!(app.apply_coordinator_output(current));
+        assert_eq!(app.coordinator.engine, EngineStatus::Ready);
+    }
+
+    #[test]
+    fn structural_changes_refresh_the_coordinator_facts() {
+        use crate::api::schema::{EventData, EventEnvelope, EventKind};
+        let mut app = coordinator_app(true);
+        app.coordinator.input_dirty = false;
+        let workspace_id = app.public_workspace_id(0);
+        app.emit_event(EventEnvelope {
+            event: EventKind::TabClosed,
+            data: EventData::TabClosed {
+                tab_id: format!("{workspace_id}:t9"),
+                workspace_id,
+            },
+        });
+        assert!(app.coordinator.input_dirty);
+    }
+
+    #[test]
+    fn the_tab_never_opens_outside_the_coordinator_directory() {
+        let mut app = coordinator_app(false);
+        let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+        let tabs = app.state.workspaces[0].tabs.len();
+        let err = app.open_coordinator(Instant::now()).unwrap_err();
+        assert_eq!(err.code, error_code::UNAVAILABLE);
+        assert_eq!(app.state.workspaces[0].tabs.len(), tabs, "no tab in /tmp");
+        assert!(app.coordinator.tab_id.is_none());
     }
 }

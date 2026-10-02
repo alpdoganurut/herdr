@@ -375,7 +375,7 @@ ResponseResult::AgentTranscripts   [src/api/schema/response.rs; wire "agent_tran
 ResponseResult::SessionClosedList   [src/api/schema/response.rs, after AgentTranscripts; wire "session_closed_list"]
 ResponseResult::NewsStatus   [src/api/schema/response.rs, after SessionClosedList; wire "news_status"]
 ResponseResult::NewsGet   [src/api/schema/response.rs, after NewsStatus; wire "news_get"]
-ResponseResult::NewsHistory   [src/api/schema/response.rs, after NewsGet; wire "news_history"]
+ResponseResult::NewsHistory   [src/api/schema/response.rs, after CoordinatorGet; wire "news_history"]
 ResponseResult::BrowserRun   [src/api/schema/response.rs, after NewsHistory; wire "browser_run"]
 ResponseResult::BrowserGet   [src/api/schema/response.rs, after BrowserRun; wire "browser_get"]
 ResponseResult::BrowserStatus   [src/api/schema/response.rs, after BrowserGet; wire "browser_status"]
@@ -632,10 +632,10 @@ src/handoff_runtime.rs  depends: HandoffRuntimeState serde carries suspended_exi
 src/platform/unix_common.rs  mid-logic: signal_process_group (kill -SIG -pgid; the news watchdog's SIGTERM to the News pane's foreground job), re-exported by macos.rs and linux.rs in their `pub(crate) use super::unix_common` list
 src/platform/windows.rs  mid-logic: signal_process_group no-op directly before process_exists
 src/platform/fallback.rs  mid-logic: signal_process_group stub directly before process_exists
-src/app/state.rs  mid-logic: AppState.coordinator_terminal_id (mirrored by app/coordinator.rs note_coordinator_terminal) is the last field
+src/app/state.rs  mid-logic: AppState.coordinator_terminal_id (mirrored by app/coordinator.rs sync_coordinator_suppression: set only while the phase is Starting, Launching or Running) is the last field
 src/app/actions.rs  mid-logic: update_terminal_state_with_completion_policy's suppress_completion also holds for the coordinator's terminal (AppState.coordinator_terminal_id), so its Working→Idle raises no Finished toast or Done sound; handle_app_event's AppEvent::CoordinatorPassFinished arm
 src/app/agent_suspend.rs  mid-logic: emit_agent_status_transition first marks the coordinator's pass input dirty (mark_coordinator_input_dirty)
-src/app/api.rs  mid-logic: emit_pane_updated first marks the coordinator's pass input dirty; handle_app_event applies AppEvent::CoordinatorPassFinished (apply_coordinator_output) directly before WorktreeReadFinished; handle_api_request dispatches the nine Method::Coordinator* arms directly after the news ones
+src/app/api.rs  mid-logic: emit_pane_updated first marks the coordinator's pass input dirty; emit_pane_state_update marks it on an agent label change or release and on every agent status change; emit_event first marks it for the structural kinds (workspace created/closed/renamed/moved/reordered, tab created/closed/renamed/moved, pane created/closed/moved/exited); handle_app_event applies AppEvent::CoordinatorPassFinished (apply_coordinator_output) directly before WorktreeReadFinished; handle_api_request dispatches the nine Method::Coordinator* arms directly after the news ones
 src/app/mod.rs  mid-logic: App::new (coordinator field from CoordinatorState::new), apply_live_config (a `coordinator` section block directly after the news one calls apply_coordinator_config)
 src/app/runtime.rs  mid-logic: next_headless_loop_deadline_with_git_refresh chains next_coordinator_deadline directly after next_news_deadline
 src/server/headless.rs  mid-logic: `mod coordinator_notify;` directly after `mod news_notify;`; handle_scheduled_tasks_headless runs handle_coordinator_tasks then flush_coordinator_notifications directly after handle_news_tasks
