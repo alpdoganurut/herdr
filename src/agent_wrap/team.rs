@@ -258,8 +258,10 @@ pub struct TeamLaunch {
 
 /// Whether the wrap asks the server about the launching pane's team: the
 /// `team_roster` switch is on, the launch is in a herdr pane, not opted out
-/// (`HERDR_NO_WRAP`, `--no-herdr`), not a pass-through subcommand, and not
-/// a managed launch (whose argv already carries the team bits).
+/// (`HERDR_NO_WRAP`, `--no-herdr`), not nested in the pane's own agent (a
+/// `claude -p` from its Bash tool is not the member), not a pass-through
+/// subcommand, and not a managed launch (whose argv already carries the
+/// team bits).
 pub fn should_lookup(
     config: &Config,
     env: &WrapEnv,
@@ -270,6 +272,7 @@ pub fn should_lookup(
     config.agents.team_roster
         && env.pane_id.as_deref().is_some_and(|p| !p.trim().is_empty())
         && !env.herdr_no_wrap
+        && !env.nested
         && !opted_out
         && !super::passthrough(agent, user)
         && !super::is_managed(user, &env.coordinator_dir)

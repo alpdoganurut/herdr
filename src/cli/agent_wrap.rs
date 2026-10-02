@@ -175,6 +175,10 @@ pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
     };
     let mut command = std::process::Command::new(&binary);
     command.args(&argv);
+    // A wrap inside this agent (its Bash tool) then knows it is nested.
+    if let Some(pane) = env.pane_id.as_deref() {
+        command.env(agent_wrap::WRAPPED_PANE_ENV, pane);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

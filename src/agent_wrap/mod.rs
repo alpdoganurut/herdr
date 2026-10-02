@@ -27,6 +27,10 @@ use crate::coordinator::launch::{self, LaunchCtx, MCP_KEY};
 pub const OPT_OUT_FLAG: &str = "--no-herdr";
 /// `HERDR_NO_WRAP=1` turns the wrap off for one launch.
 pub const NO_WRAP_ENV: &str = "HERDR_NO_WRAP";
+/// Set by the wrap on the agent it execs (to the pane, `$HERDR_PANE_ID`):
+/// a wrap that finds it equal to its own pane runs inside that agent (a
+/// `claude -p` or `codex exec` from its Bash tool), not as the pane's agent.
+pub const WRAPPED_PANE_ENV: &str = "HERDR_WRAPPED_PANE";
 /// The herdr_agents tools an unmanaged wrapped agent can use (the others
 /// need a managed agent).
 pub const WRAP_TOOLS: [&str; 2] = ["agents_whoami", "agents_notify"];
@@ -89,6 +93,11 @@ pub struct WrapEnv {
     /// The launching pane's team (the CLI's `team.context` lookup, done
     /// after the argument checks); `None` outside team groups.
     pub team: Option<team::TeamLaunch>,
+    /// Started inside an agent this wrap already launched in the same pane
+    /// ([`WRAPPED_PANE_ENV`]): it shares the pane's id but is not the pane's
+    /// agent, so it gets no team identity and no herdr_agents server (any
+    /// call would act, and ack team updates, as the pane's agent).
+    pub nested: bool,
 }
 
 impl WrapEnv {
@@ -98,6 +107,9 @@ impl WrapEnv {
             .filter(|path| setup::is_executable(path))
             .or_else(|| std::env::current_exe().ok())
             .unwrap_or_else(|| PathBuf::from("herdr"));
+        let pane_id = std::env::var("HERDR_PANE_ID")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
         Self {
             herdr_no_wrap: std::env::var(NO_WRAP_ENV)
                 .is_ok_and(|v| !v.trim().is_empty() && v.trim() != "0"),
@@ -108,11 +120,22 @@ impl WrapEnv {
             home: std::env::var_os("HOME")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
-            pane_id: std::env::var("HERDR_PANE_ID")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
+            pane_id: pane_id.clone(),
             team: None,
+            nested: is_nested(
+                pane_id.as_deref(),
+                std::env::var(WRAPPED_PANE_ENV).ok().as_deref(),
+            ),
         }
+    }
+}
+
+/// Whether a wrap in `pane` runs inside an agent the wrap already launched
+/// there (`wrapped`: [`WRAPPED_PANE_ENV`] as inherited).
+pub fn is_nested(pane: Option<&str>, wrapped: Option<&str>) -> bool {
+    match (pane.map(str::trim), wrapped.map(str::trim)) {
+        (Some(pane), Some(wrapped)) => !pane.is_empty() && pane == wrapped,
+        _ => false,
     }
 }
 
@@ -186,8 +209,8 @@ pub fn plan(config: &Config, env: &WrapEnv) -> WrapPlan {
     let team = env
         .team
         .clone()
-        .filter(|_| config.agents.team_roster && !env.herdr_no_wrap);
-    let tools = master && config.agents.tools;
+        .filter(|_| config.agents.team_roster && !env.herdr_no_wrap && !env.nested);
+    let tools = master && config.agents.tools && !env.nested;
     let mut warnings = Vec::new();
     let in_team = team.is_some();
     let instructions =

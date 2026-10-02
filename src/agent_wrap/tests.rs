@@ -25,6 +25,7 @@ fn env() -> WrapEnv {
         home: None,
         pane_id: Some("w3:p1".into()),
         team: None,
+        nested: false,
     }
 }
 
@@ -967,6 +968,46 @@ fn the_lookup_runs_only_for_team_eligible_launches() {
         "claude",
         &managed
     ));
+}
+
+#[test]
+fn an_agent_started_inside_the_panes_own_agent_is_not_the_member() {
+    // The wrap marks the agent it execs; a `claude -p` from that agent's
+    // Bash tool inherits HERDR_PANE_ID and the mark.
+    assert!(is_nested(Some("w3:p1"), Some("w3:p1")));
+    assert!(!is_nested(Some("w3:p1"), None));
+    assert!(
+        !is_nested(Some("w3:p2"), Some("w3:p1")),
+        "another pane's mark"
+    );
+    assert!(!is_nested(None, Some("w3:p1")));
+    assert!(!is_nested(Some(""), Some("")));
+    let nested = WrapEnv {
+        nested: true,
+        team: Some(team::TeamLaunch {
+            text: TEAM_TEXT.into(),
+        }),
+        ..env()
+    };
+    let user = s(&["-p", "summarize the diff"]);
+    let cfg = config("[agents]\nwrap = true\ntools = true\ninstructions = true\n");
+    assert!(!team::should_lookup(&cfg, &nested, false, "claude", &user));
+    // no team identity and no herdr_agents server: any call would act, and
+    // ack team updates, as the pane's agent
+    let plan = super::plan(&cfg, &nested);
+    assert!(
+        plan.team.is_none() && !plan.team_hook && !plan.tools,
+        "{plan:?}"
+    );
+    assert!(!uses_claude_mcp_config(&plan, &user));
+    assert!(!uses_team_settings(&plan, &user));
+    let args = wrap_args("claude", &plan, &user);
+    assert!(!args
+        .iter()
+        .any(|a| a.contains("herdr_agents") || a.starts_with("--settings")));
+    // the same launch as the pane's own agent keeps both
+    let own = super::plan(&cfg, &team_env());
+    assert!(own.team.is_some() && own.tools);
 }
 
 #[test]
