@@ -89,6 +89,7 @@
   .group + .group { margin-top: 16px; }
   .group-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
   .group-name { font-weight: 600; font-size: 15px; }
+  .team-purpose { color: var(--accent); font-size: 13px; }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
           padding: 11px 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -380,6 +381,7 @@ function agentCard(agent, board) {
   const who = el("div", "who");
   const name = el("div", "name", str(a.name) || str(a.pane_id));
   if (a.coordinator === true && str(a.name) !== "coordinator") add(name, el("span", "tag", "coordinator"));
+  if (str(a.team)) add(name, el("span", "tag", "team"));
   const roleProject = [str(a.role), str(a.project)].filter(Boolean).join("/");
   add(who, name, el("div", "sub", [str(a.agent) || "agent", roleProject].filter(Boolean).join(" · ")));
   add(top, who, pill(status));
@@ -441,6 +443,8 @@ function renderGroups(live, board) {
     const group = el("div", "group");
     const head = el("div", "group-head");
     add(head, el("span", "group-name", str(info.label) || str(obj(members[0]).group) || key || "ungrouped"));
+    // A team group (fork teams): its mark and purpose, empty until one is set.
+    if (typeof info.team_purpose === "string") add(head, el("span", "team-purpose", "\u25c6 " + (str(info.team_purpose) || "team")));
     if (key) add(head, el("span", "mono dim", key));
     const tabs = num(info.tab_count);
     add(head, el("span", "muted", members.length + " managed" + (tabs ? " · " + tabs + " tab" + (tabs === 1 ? "" : "s") : "")));

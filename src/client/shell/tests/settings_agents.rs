@@ -104,6 +104,7 @@ fn info(wrap: bool, hook_state: AgentsCheckState) -> AgentsSettingsInfo {
             "[ -f ~/.config/herdr/shell/herdr-plus.zsh ] && source ~/.config/herdr/shell/herdr-plus.zsh  # herdr+\n→ /home/me/.zshrc"
                 .into(),
         ),
+        team_roster: true,
     }
 }
 

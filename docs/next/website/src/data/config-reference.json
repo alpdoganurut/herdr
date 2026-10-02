@@ -1853,6 +1853,12 @@
           "type": "boolean",
           "default": "true",
           "description": "Accept agent notices (`agents_notify`, `herdr agent notify`): sticky cards naming the agent and its tab until dismissed or the tab is visited. `false` answers `notices_off`."
+        },
+        {
+          "key": "agents.team_roster",
+          "type": "boolean",
+          "default": "true",
+          "description": "Give `claude` and `codex` launched in a team group (through the shell hook's `herdr agent wrap`) the team's roster, purpose and the team tools: the `herdr_agents` server with the teammate messaging tools pre-approved, and the roster in the system prompt (Claude) or `developer_instructions` (Codex). Claude also gets a per-launch `--settings` file whose hooks add roster changes to its next turn (`herdr team hook`); Codex sees changes at the top of its next `agents_*` tool result. Works whether or not `wrap` is on; launches outside team groups are unchanged. A launch that passes its own `--settings` or system prompt flag keeps it (the roster then arrives through `agents_whoami` and the tool results)."
         }
       ]
     },

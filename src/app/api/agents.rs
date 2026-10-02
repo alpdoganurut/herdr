@@ -67,10 +67,15 @@ impl App {
     }
 
     pub(super) fn handle_agent_rename(&mut self, id: String, params: AgentRenameParams) -> String {
+        // Teams (fork): teammates address a member by name.
+        let team_member = self.team_member_before_rename(&params.target);
         let agent = match self.rename_agent_target(&params.target, params.name) {
             Ok(agent) => agent,
             Err(err) => return encode_error_body(id, self.agent_rename_error_body(err)),
         };
+        if let Some((pane, old_name)) = team_member {
+            self.team_follow_agent_rename(pane, old_name);
+        }
 
         encode_success(id, ResponseResult::AgentInfo { agent })
     }

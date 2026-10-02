@@ -6,13 +6,15 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::agent_wrap::{self, WrapEnv};
+use crate::agent_wrap::{self, team, WrapEnv};
 use crate::browser::setup::is_executable;
 
 const USAGE: &str = "usage: herdr agent wrap <claude|codex> [--print] [--] ARGS…
 Runs the agent with what [agents] adds: the herdr_agents tools (tools), the herdr+ paragraph (instructions) and,
 from [browser], the browser steering and no built-in browser — only while [agents] wrap is on. Codex always gets
 --no-daemon (attribution); claude runs through claude-z when it is on PATH.
+In a team group ([agents] team_roster) the launch also gets the team's roster, the team tools and, for Claude,
+the per-turn hook settings, whether or not the wrap is on.
 Per launch: --no-herdr (before a `--`) or HERDR_NO_WRAP=1 runs the agent as typed; `command claude` skips herdr.
 --print shows the binary, then one argument per line (newlines inside an argument as \\n), then warnings; nothing runs.";
 
@@ -103,6 +105,31 @@ fn render_print(
     out
 }
 
+/// The files the Claude flags point at (exec path only; `--print` writes
+/// nothing): `mcp/claude.json` and, in a team group, the hook settings.
+/// Both go through the same gate; a failed write drops its flag.
+fn write_launch_files(agent: &str, plan: &mut agent_wrap::WrapPlan, user: &[String]) {
+    if agent != "claude" || !agent_wrap::uses_claude_mcp_config(plan, user) {
+        return;
+    }
+    if let Err(err) = crate::coordinator::launch::write_claude_mcp_config(&plan.ctx) {
+        tracing::warn!(event = "agent.wrap", %err, "cannot write the herdr_agents MCP config");
+        plan.warnings.push(format!(
+            "cannot write the herdr_agents MCP config ({err}); launching without the agent tools"
+        ));
+        plan.tools = false;
+    }
+    if agent_wrap::uses_team_settings(plan, user) {
+        if let Err(err) = team::write_claude_settings(&plan.ctx) {
+            tracing::warn!(event = "agent.wrap", %err, "cannot write the team hook settings");
+            plan.warnings.push(format!(
+                "cannot write the team hook settings ({err}); team updates arrive with the agents_* tool results only"
+            ));
+            plan.team_hook = false;
+        }
+    }
+}
+
 pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
     let parsed = match parse(args) {
         Ok(parsed) => parsed,
@@ -111,21 +138,24 @@ pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
     let agent = parsed.agent;
     let (user, opted_out) = agent_wrap::strip_opt_out(&parsed.user);
     let config = crate::config::Config::load().config;
-    let env = WrapEnv::from_process(&config);
+    let mut env = WrapEnv::from_process(&config);
+    // The team lookup: read-only (no join, no ack), so --print is safe.
+    if team::should_lookup(&config, &env, opted_out, agent, &user) {
+        if let Some(pane) = env.pane_id.clone() {
+            env.team = team::lookup(&pane, |params| {
+                team::socket_context(params, team::LOOKUP_TIMEOUT)
+            });
+        }
+    }
     let mut plan = agent_wrap::plan(&config, &env);
     if opted_out {
         plan.disable();
     }
-    // the file the `--mcp-config=` flag points at (idempotent; --print writes nothing)
-    if !parsed.print && agent == "claude" && agent_wrap::uses_claude_mcp_config(&plan, &user) {
-        if let Err(err) = crate::coordinator::launch::write_claude_mcp_config(&plan.ctx) {
-            tracing::warn!(event = "agent.wrap", %err, "cannot write the herdr_agents MCP config");
-            plan.warnings.push(format!(
-                "cannot write the herdr_agents MCP config ({err}); launching without the agent tools"
-            ));
-            plan.tools = false;
-        }
+    if !parsed.print {
+        write_launch_files(agent, &mut plan, &user);
     }
+    let conflicts = agent_wrap::team_conflicts(agent, &plan, &user);
+    plan.warnings.extend(conflicts);
     let argv = agent_wrap::wrap_args(agent, &plan, &user);
     let names = binary_names(agent);
     let binary = real_binary(names);

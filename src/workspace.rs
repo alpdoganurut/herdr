@@ -18,6 +18,8 @@ use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, Term
 mod aggregate;
 mod git;
 mod tab;
+/// Fork: teams (a group marked as a team).
+pub mod team;
 
 use self::git::git_status_cache_key_for_space;
 pub(crate) use self::{
@@ -206,6 +208,8 @@ pub struct Workspace {
     pub(crate) next_public_tab_number: usize,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
+    /// Fork: set when this group is a team (shared runtime fact, persisted).
+    pub team: Option<team::Team>,
     #[cfg(test)]
     pub(crate) test_runtimes: HashMap<PaneId, TerminalRuntime>,
 }
@@ -271,6 +275,7 @@ impl Workspace {
             next_public_tab_number: 2,
             tabs: vec![tab],
             active_tab: 0,
+            team: None,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
         }
@@ -423,6 +428,7 @@ impl Workspace {
                 next_public_tab_number: 2,
                 tabs: vec![tab],
                 active_tab: 0,
+                team: None,
                 #[cfg(test)]
                 test_runtimes: HashMap::new(),
             },
@@ -1215,6 +1221,7 @@ impl Workspace {
             next_public_tab_number: 2,
             tabs: vec![tab],
             active_tab: 0,
+            team: None,
             test_runtimes: HashMap::new(),
         }
     }
@@ -1291,6 +1298,19 @@ impl Workspace {
             "adversarial pane must distinguish raw pane id from public pane number"
         );
         assert_eq!(ws.find_tab_index_for_pane(final_root), Some(1));
+
+        // Fork teams: a team whose members' raw ids differ from their public
+        // numbers, out of tab order, with a removed (excluded) pane.
+        let mut team = team::Team::new(
+            Some("adversarial purpose".into()),
+            Some(team::TeamActor::User),
+            1,
+        );
+        team.join(survivor_root, None, 2);
+        team.join(later_pane, Some("fixer".into()), 3);
+        team.record("fixer joined");
+        team.excluded.push(final_root);
+        ws.team = Some(team);
         ws
     }
 
@@ -1392,6 +1412,59 @@ impl Workspace {
             self.next_public_tab_number,
             max_tab_number
         );
+
+        // Fork teams: members and removed panes live here, never both,
+        // members are unique, text is one line within its caps.
+        if let Some(team) = &self.team {
+            let mut members = std::collections::HashSet::new();
+            for member in &team.members {
+                assert!(
+                    live_panes.contains(&member.pane_id),
+                    "workspace {} team member {:?} is not a pane here",
+                    self.id,
+                    member.pane_id
+                );
+                assert!(
+                    members.insert(member.pane_id),
+                    "workspace {} team member {:?} listed twice",
+                    self.id,
+                    member.pane_id
+                );
+                assert!(
+                    !team.excluded.contains(&member.pane_id),
+                    "workspace {} pane {:?} is both a member and removed",
+                    self.id,
+                    member.pane_id
+                );
+                if let Some(role) = &member.role {
+                    assert!(
+                        team::is_one_line_within(role, crate::api::schema::team::ROLE_MAX_CHARS),
+                        "workspace {} member role {role:?} is not one capped line",
+                        self.id
+                    );
+                }
+            }
+            for excluded in &team.excluded {
+                assert!(
+                    live_panes.contains(excluded),
+                    "workspace {} removed team pane {:?} is not a pane here",
+                    self.id,
+                    excluded
+                );
+            }
+            if let Some(purpose) = &team.purpose {
+                assert!(
+                    team::is_one_line_within(purpose, crate::api::schema::team::PURPOSE_MAX_CHARS),
+                    "workspace {} team purpose {purpose:?} is not one capped line",
+                    self.id
+                );
+            }
+            assert!(
+                team.change_count() <= team::MAX_CHANGES,
+                "workspace {} team change log exceeds its cap",
+                self.id
+            );
+        }
 
         let public_pane_keys: std::collections::HashSet<_> =
             self.public_pane_numbers.keys().copied().collect();

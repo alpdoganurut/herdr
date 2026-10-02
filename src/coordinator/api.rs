@@ -14,7 +14,8 @@ use serde_json::Value;
 use crate::api::schema::{
     AgentPromptParams, AgentReadParams, AgentStartParams, AgentTarget, BrowserActor, BrowserCaller,
     EmptyParams, Method, PaneMoveDestination, PaneMoveParams, PaneTarget, ReadFormat, ReadSource,
-    TabCreateParams, TabListParams, TabRenameParams, WorkspaceCreateParams,
+    TabCreateParams, TabListParams, TabRenameParams, TeamContextParams, TeamGetParams, TeamInfo,
+    TeamJoinParams, TeamMakeParams, TeamSetPurposeParams, TeamSetRoleParams, WorkspaceCreateParams,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -344,6 +345,114 @@ pub(crate) fn agent_start_with(
             Err(err) => return Err(err),
         }
     }
+}
+
+// ----- teams (`team.*`) ----------------------------------------------------
+
+/// `team.context` for `caller_pane` (the one agent-side read; `ack` marks
+/// the current revision as told). The result: `{member, eligible, team,
+/// text, revision}`.
+pub fn team_context(
+    api: &impl Api,
+    caller_pane: &str,
+    ack: bool,
+    full: bool,
+) -> Result<Value, ApiError> {
+    api.call(Method::TeamContext(TeamContextParams {
+        caller_pane: caller_pane.to_string(),
+        ack,
+        full,
+        ack_revision: None,
+    }))
+}
+
+/// `team.context` ack for `caller_pane`, marking only up to `revision` (the
+/// revision of the read whose text was delivered) as told: a change that
+/// lands between that read and this ack still reaches the member next time.
+pub fn team_context_ack(
+    api: &impl Api,
+    caller_pane: &str,
+    revision: Option<u64>,
+) -> Result<Value, ApiError> {
+    api.call(Method::TeamContext(TeamContextParams {
+        caller_pane: caller_pane.to_string(),
+        ack: true,
+        full: false,
+        ack_revision: revision,
+    }))
+}
+
+/// `team.get` for a group (id or label) → the team (`None`: not a team
+/// group, or a server without teams).
+pub fn team_of_workspace(api: &impl Api, workspace_id: &str) -> Option<Value> {
+    let result = api
+        .call(Method::TeamGet(TeamGetParams {
+            workspace_id: Some(workspace_id.to_string()),
+            caller_pane: None,
+        }))
+        .ok()?;
+    take(result, "team").ok().filter(Value::is_object)
+}
+
+/// `team.list` → `teams` (empty on a server without teams, or when the
+/// answer does not parse: no team facts rather than no live view).
+pub fn team_list(api: &impl Api) -> Vec<TeamInfo> {
+    api.call(Method::TeamList(EmptyParams {}))
+        .ok()
+        .and_then(|result| take(result, "teams").ok())
+        .and_then(|teams| serde_json::from_value(teams).ok())
+        .unwrap_or_default()
+}
+
+/// `team.join` for `pane_id`; with a role it is the pre-launch join of a
+/// tab whose agent is about to start.
+pub fn team_join(api: &impl Api, pane_id: &str, role: Option<&str>) -> Result<Value, ApiError> {
+    api.call(Method::TeamJoin(TeamJoinParams {
+        pane_id: pane_id.to_string(),
+        role: role.map(str::to_string),
+    }))
+}
+
+/// `team.make` for a group, by `caller_pane` (the server names the actor).
+pub fn team_make(
+    api: &impl Api,
+    workspace_id: &str,
+    purpose: Option<&str>,
+    caller_pane: &str,
+) -> Result<Value, ApiError> {
+    api.call(Method::TeamMake(TeamMakeParams {
+        workspace_id: workspace_id.to_string(),
+        purpose: purpose.map(str::to_string),
+        caller_pane: Some(caller_pane.to_string()),
+    }))
+}
+
+/// `team.set_purpose` for a group, by `caller_pane`.
+pub fn team_set_purpose(
+    api: &impl Api,
+    workspace_id: &str,
+    purpose: Option<&str>,
+    caller_pane: &str,
+) -> Result<Value, ApiError> {
+    api.call(Method::TeamSetPurpose(TeamSetPurposeParams {
+        workspace_id: workspace_id.to_string(),
+        purpose: purpose.map(str::to_string),
+        caller_pane: Some(caller_pane.to_string()),
+    }))
+}
+
+/// `team.set_role` for a member's pane, by `caller_pane`.
+pub fn team_set_role(
+    api: &impl Api,
+    pane_id: &str,
+    role: Option<&str>,
+    caller_pane: &str,
+) -> Result<Value, ApiError> {
+    api.call(Method::TeamSetRole(TeamSetRoleParams {
+        pane_id: pane_id.to_string(),
+        role: role.map(str::to_string),
+        caller_pane: Some(caller_pane.to_string()),
+    }))
 }
 
 /// Upper bound for every coordinator wait (a socket is never held for minutes).

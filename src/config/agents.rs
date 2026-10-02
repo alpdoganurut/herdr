@@ -1,7 +1,7 @@
 //! `[agents]`: how herdr+ wraps plain `claude` / `codex` launches in its
 //! panes and whether agents may show the user notices (fork).
 //!
-//! Everything is off by default: with `wrap` off (and no legacy
+//! Everything but `notices` and `team_roster` is off by default: with `wrap` off (and no legacy
 //! `[browser] wrap_agents = true`), a launch through the shell hook runs
 //! exactly as typed (Codex still gets `--no-daemon`, without which its
 //! sessions cannot be attributed to the pane). Changes apply on the next
@@ -28,6 +28,10 @@ pub struct AgentsConfig {
     /// Accept agent notices (`agents_notify`, `herdr agent notify`); off
     /// answers `notices_off`. Default: true.
     pub notices: bool,
+    /// Give claude / codex launched in a team group the team's roster,
+    /// purpose and the team tools (the team-only launch wrap; independent
+    /// of `wrap`). Default: true.
+    pub team_roster: bool,
 }
 
 impl Default for AgentsConfig {
@@ -38,6 +42,7 @@ impl Default for AgentsConfig {
             instructions: false,
             instructions_file: String::new(),
             notices: true,
+            team_roster: true,
         }
     }
 }
@@ -104,6 +109,7 @@ mod tests {
         let config = AgentsConfig::default();
         assert_eq!(config.wrap, None);
         assert!(!config.tools && !config.instructions && config.notices);
+        assert!(config.team_roster, "team groups get the roster by default");
         assert_eq!(config.instructions_file(), None);
         assert_eq!(
             Config::default().agents_wrap(),
@@ -114,9 +120,10 @@ mod tests {
     #[test]
     fn the_section_parses() {
         let config: Config = toml::from_str(
-            "[agents]\nwrap = true\ntools = true\ninstructions = true\ninstructions_file = \" ~/a.md \"\nnotices = false\n",
+            "[agents]\nwrap = true\ntools = true\ninstructions = true\ninstructions_file = \" ~/a.md \"\nnotices = false\nteam_roster = false\n",
         )
         .unwrap();
+        assert!(!config.agents.team_roster);
         assert_eq!(config.agents.wrap, Some(true));
         assert!(config.agents.tools && config.agents.instructions && !config.agents.notices);
         assert_eq!(config.agents.instructions_file(), Some("~/a.md"));

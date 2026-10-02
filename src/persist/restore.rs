@@ -360,6 +360,8 @@ fn restore_workspace(
         .unwrap_or(1)
         .max(snap.next_public_tab_number);
     let mut failed_imports = 0;
+    // Fork teams: old raw pane id -> restored pane id, over surviving panes.
+    let mut restored_by_old_raw: HashMap<u32, PaneId> = HashMap::new();
 
     for (idx, tab_snap) in snap.tabs.iter().enumerate() {
         let tab_number = snap.public_tab_numbers.get(idx).copied().unwrap_or(idx + 1);
@@ -385,6 +387,9 @@ fn restore_workspace(
         }
         next_public_tab_number = next_public_tab_number.max(tab.number + 1);
         for pane_id in tab.layout.pane_ids() {
+            if let Some(old_raw) = reverse_id_map.get(&pane_id) {
+                restored_by_old_raw.insert(*old_raw, pane_id);
+            }
             let public_number = public_pane_numbers_by_old_raw
                 .get(
                     &reverse_id_map
@@ -433,12 +438,64 @@ fn restore_workspace(
             next_public_tab_number,
             active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
             tabs,
+            team: snap
+                .team
+                .as_ref()
+                .map(|team| restored_team(team, &restored_by_old_raw)),
             #[cfg(test)]
             test_runtimes: HashMap::new(),
         })
         .map(|workspace| (workspace, terminals, terminal_runtimes)),
         failed_imports,
     )
+}
+
+/// A saved team with its panes remapped to the restored ids; members and
+/// exclusions whose pane did not survive are dropped. Every member starts
+/// unacknowledged (seen 0), and its time in state starts now.
+fn restored_team(
+    snap: &super::snapshot::TeamSnapshot,
+    restored_by_old_raw: &HashMap<u32, PaneId>,
+) -> crate::workspace::team::Team {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let mut team = crate::workspace::team::Team::new(
+        snap.purpose
+            .as_deref()
+            .and_then(crate::workspace::team::sanitize_purpose),
+        snap.purpose_by.clone(),
+        snap.created_unix,
+    );
+    team.revision = snap.revision.max(1);
+    for member in &snap.members {
+        let Some(pane_id) = restored_by_old_raw.get(&member.pane).copied() else {
+            continue;
+        };
+        if team.is_member(pane_id) {
+            continue;
+        }
+        let mut restored = crate::workspace::team::TeamMember::new(
+            pane_id,
+            member
+                .role
+                .as_deref()
+                .and_then(crate::workspace::team::sanitize_role),
+            member.joined_unix,
+        );
+        restored.status_since_unix = now;
+        restored.pending_rename = member.pending_rename;
+        team.members.push(restored);
+    }
+    for old_raw in &snap.excluded {
+        if let Some(pane_id) = restored_by_old_raw.get(old_raw).copied() {
+            if !team.is_member(pane_id) && !team.is_excluded(pane_id) {
+                team.excluded.push(pane_id);
+            }
+        }
+    }
+    team
 }
 
 fn unavailable_restored_terminal(
@@ -1362,6 +1419,169 @@ mod tests {
         }
     }
 
+    /// Fork teams: a two-tab team group as an older or newer file has it.
+    fn team_session_json(team: Option<serde_json::Value>) -> serde_json::Value {
+        let cwd = std::env::current_dir().unwrap();
+        let mut workspace = serde_json::json!({
+            "id": "wteam",
+            "custom_name": "demo-team",
+            "identity_cwd": cwd,
+            "public_pane_numbers": {"10": 1, "11": 2, "20": 3},
+            "next_public_pane_number": 4,
+            "public_tab_numbers": [1, 2],
+            "next_public_tab_number": 3,
+            "tabs": [
+                {
+                    "layout": {"Split": {"direction": "Horizontal", "ratio": 0.5,
+                        "first": {"Pane": 10}, "second": {"Pane": 11}}},
+                    "panes": {"10": {"cwd": cwd}, "11": {"cwd": cwd}},
+                    "zoomed": false, "focused": 10, "root_pane": 10,
+                },
+                {
+                    "layout": {"Pane": 20},
+                    "panes": {"20": {"cwd": cwd}},
+                    "zoomed": false, "focused": 20, "root_pane": 20,
+                },
+            ],
+            "active_tab": 0,
+        });
+        if let Some(team) = team {
+            workspace["team"] = team;
+        }
+        serde_json::json!({
+            "version": super::super::snapshot::SNAPSHOT_VERSION,
+            "workspaces": [workspace],
+            "active": 0,
+            "selected": 0,
+        })
+    }
+
+    fn restore_test_snapshot(
+        snapshot: &SessionSnapshot,
+    ) -> (
+        Vec<Workspace>,
+        HashMap<TerminalId, TerminalState>,
+        crate::terminal::TerminalRuntimeRegistry,
+    ) {
+        let (events, _event_rx) = mpsc::channel(4);
+        let (workspaces, terminals, runtimes) = restore(
+            snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        (workspaces, terminals, runtimes.into())
+    }
+
+    #[tokio::test]
+    async fn teams_round_trip_with_pane_ids_remapped_across_tabs() {
+        let json = team_session_json(Some(serde_json::json!({
+            "purpose": "fix sync",
+            "purpose_by": {"kind": "agent", "name": "fixer"},
+            "created_unix": 7,
+            "revision": 9,
+            "members": [
+                {"pane": 11, "role": "fixer", "joined_unix": 8},
+                {"pane": 20, "role": "reviewer", "joined_unix": 9, "pending_rename": true},
+                {"pane": 99, "role": "ghost", "joined_unix": 9},
+            ],
+            "excluded": [10, 77],
+        })));
+        let snapshot: SessionSnapshot = serde_json::from_value(json).unwrap();
+        let (workspaces, terminals, runtimes) = restore_test_snapshot(&snapshot);
+        let ws = &workspaces[0];
+        let team = ws.team.as_ref().expect("the team restores");
+        assert_eq!(team.purpose.as_deref(), Some("fix sync"));
+        assert_eq!(
+            team.purpose_by,
+            Some(crate::workspace::team::TeamActor::Agent {
+                name: "fixer".into()
+            })
+        );
+        assert_eq!(team.revision, 9);
+        // Old raw ids map through each tab's own remap (unioned); a member
+        // whose pane did not survive (99) and a stale removal (77) are gone.
+        let numbers: Vec<_> = team
+            .members
+            .iter()
+            .map(|member| ws.public_pane_number(member.pane_id))
+            .collect();
+        assert_eq!(numbers, vec![Some(2), Some(3)]);
+        assert_eq!(team.members[0].role.as_deref(), Some("fixer"));
+        assert_eq!(ws.find_tab_index_for_pane(team.members[1].pane_id), Some(1));
+        assert!(team
+            .members
+            .iter()
+            .all(|member| member.seen_revision() == 0));
+        assert!(team.members[1].pending_rename());
+        assert_eq!(team.excluded.len(), 1);
+        assert_eq!(ws.public_pane_number(team.excluded[0]), Some(1));
+        ws.assert_invariants_for_test();
+
+        // Captured again, the team names the restored raw ids.
+        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let saved = captured.workspaces[0].team.as_ref().expect("saved team");
+        assert_eq!(saved.members.len(), 2);
+        assert_eq!(saved.members[0].pane, team.members[0].pane_id.raw());
+        assert_eq!(saved.excluded, vec![team.excluded[0].raw()]);
+        assert_eq!(saved.revision, 9);
+
+        // The restored session indexes its team (a live handoff restores
+        // through the same path).
+        let mut state = crate::app::state::AppState::test_new();
+        state.workspaces = workspaces;
+        state.active = Some(0);
+        state.terminals = terminals;
+        state.rebuild_team_index();
+        assert_eq!(state.team_count, 1);
+        assert_eq!(state.team_index.len(), 2);
+        state.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
+    async fn sessions_without_teams_still_restore_and_old_readers_ignore_teams() {
+        let snapshot: SessionSnapshot = serde_json::from_value(team_session_json(None)).unwrap();
+        let (workspaces, terminals, runtimes) = restore_test_snapshot(&snapshot);
+        assert!(workspaces[0].team.is_none());
+        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let written = serde_json::to_value(&captured).unwrap();
+        assert!(
+            written["workspaces"][0].get("team").is_none(),
+            "no team, no key: {written}"
+        );
+
+        // An older build's workspace snapshot has no `team` field: it reads
+        // a newer file and drops the team.
+        #[derive(serde::Deserialize)]
+        struct OlderWorkspaceSnapshot {
+            id: Option<String>,
+            tabs: Vec<serde_json::Value>,
+        }
+        let newer = team_session_json(Some(serde_json::json!({
+            "revision": 2, "members": [{"pane": 10}], "excluded": [],
+        })));
+        let older: OlderWorkspaceSnapshot =
+            serde_json::from_value(newer["workspaces"][0].clone()).unwrap();
+        assert_eq!(older.id.as_deref(), Some("wteam"));
+        assert_eq!(older.tabs.len(), 2);
+        // An unknown actor from a newer build restores as `Unknown`.
+        let future = team_session_json(Some(serde_json::json!({
+            "purpose": "p", "purpose_by": {"kind": "robot"}, "members": [],
+        })));
+        let snapshot: SessionSnapshot = serde_json::from_value(future).unwrap();
+        assert_eq!(
+            snapshot.workspaces[0].team.as_ref().unwrap().purpose_by,
+            Some(crate::workspace::team::TeamActor::Unknown)
+        );
+    }
+
     #[tokio::test]
     async fn tab_colors_round_trip_through_session_json_and_restore() {
         let cwd = std::env::current_dir().unwrap();
@@ -1542,6 +1762,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
+                team: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -1729,6 +1950,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
+                team: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -1815,6 +2037,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
+                team: None,
                 public_pane_numbers: HashMap::from([(10, 1), (20, 3)]),
                 next_public_pane_number: 4,
                 public_tab_numbers: vec![5],
@@ -1933,6 +2156,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
+                team: None,
                 public_pane_numbers: HashMap::from([(10, 1), (11, 2), (12, 3), (13, 4)]),
                 next_public_pane_number: 5,
                 public_tab_numbers: vec![1, 3, 4, 5],
@@ -2032,6 +2256,7 @@ mod tests {
             custom_name: None,
             identity_cwd: cwd,
             worktree_space: None,
+            team: None,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -2075,6 +2300,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
+                team: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -2534,6 +2760,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd,
                 worktree_space: None,
+                team: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),

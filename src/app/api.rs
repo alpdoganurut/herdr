@@ -337,6 +337,10 @@ impl App {
         if pane_died && !self.agent_notices.is_empty() {
             self.follow_agent_notice_panes();
         }
+        // Fork teams: likewise, members of panes the exit removed leave.
+        if pane_died && self.state.team_count > 0 {
+            self.reconcile_teams_and_publish();
+        }
         if update_ready.is_some() {
             self.state.latest_release_notes = crate::release_notes::load_latest();
         }
@@ -818,6 +822,24 @@ impl App {
         {
             self.follow_agent_notice_panes();
         }
+        // Fork teams: membership follows moves, closes and agent starts.
+        // Nothing at all while no team exists.
+        if self.state.team_count > 0
+            && matches!(
+                event.event,
+                EventKind::PaneMoved
+                    | EventKind::PaneClosed
+                    | EventKind::PaneExited
+                    | EventKind::TabClosed
+                    | EventKind::WorkspaceClosed
+                    | EventKind::WorkspaceRenamed
+                    | EventKind::TabRenamed
+                    | EventKind::PaneAgentDetected
+                    | EventKind::PaneAgentStatusChanged
+            )
+        {
+            self.follow_teams(&event);
+        }
         self.run_plugin_event_hooks(&event);
         self.event_hub.push(event);
     }
@@ -1167,6 +1189,17 @@ impl App {
                 return self.handle_agents_settings_set(request.id, params)
             }
             Method::AgentsFix(params) => return self.handle_agents_fix(request.id, params),
+            Method::TeamList(_) => return self.handle_team_list(request.id),
+            Method::TeamGet(params) => return self.handle_team_get(request.id, params),
+            Method::TeamMake(params) => return self.handle_team_make(request.id, params),
+            Method::TeamDisband(params) => return self.handle_team_disband(request.id, params),
+            Method::TeamSetPurpose(params) => {
+                return self.handle_team_set_purpose(request.id, params)
+            }
+            Method::TeamSetRole(params) => return self.handle_team_set_role(request.id, params),
+            Method::TeamJoin(params) => return self.handle_team_join(request.id, params),
+            Method::TeamLeave(params) => return self.handle_team_leave(request.id, params),
+            Method::TeamContext(params) => return self.handle_team_context(request.id, params),
             Method::TabSetColor(params) => return self.handle_tab_set_color(request.id, params),
             Method::TabSetRemind(params) => return self.handle_tab_set_remind(request.id, params),
             Method::TabSetReminder(params) => {

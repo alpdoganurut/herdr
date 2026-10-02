@@ -80,6 +80,13 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.set_color",
     "tab.set_remind",
     "tab.set_reminder",
+    "team.disband",
+    "team.get",
+    "team.join",
+    "team.leave",
+    "team.make",
+    "team.set_purpose",
+    "team.set_role",
     "workspace.close",
     "workspace.create",
     "workspace.focus",
@@ -483,11 +490,99 @@ mod tests {
             actual.remove("agents.settings.set").as_deref(),
             Some("1b012b44b0d82bfa63daaf37373d75b76289217c1677345bfd4dc8c27c2b59d0")
         );
+        // fork: teams.
+        assert_eq!(
+            actual.remove("team.disband").as_deref(),
+            Some("967a5429a196186df1bbfd4a382205220640fd473608296a690f6cc75e8bdf16")
+        );
+        assert_eq!(
+            actual.remove("team.get").as_deref(),
+            Some("c1f9494dc09f9a6f0284aae2c3c349d3599e12353606abc25f56c5eac9d52345")
+        );
+        assert_eq!(
+            actual.remove("team.join").as_deref(),
+            Some("a3f0ed909e8e9b17835308e4b416d4d4bbb746f3317d9cdd088396fe41853094")
+        );
+        assert_eq!(
+            actual.remove("team.leave").as_deref(),
+            Some("db3e86aca6a94e80e07238ad8d3ecb88997f6ec95524d4c45586b212b9eeaf2b")
+        );
+        assert_eq!(
+            actual.remove("team.make").as_deref(),
+            Some("51ce432dd19278c5258f1dc07a4b21261bf2788fd8de0d319cd75d19ffa2562c")
+        );
+        assert_eq!(
+            actual.remove("team.set_purpose").as_deref(),
+            Some("9e3683747ca882cfa21e6200cc814a9d7c1ce91a90e5e68e3b548a7aec32f89f")
+        );
+        assert_eq!(
+            actual.remove("team.set_role").as_deref(),
+            Some("0d0663aa876a6f81790a20e944cfd655a045a3427edde7ffe13fb74da6cd29f3")
+        );
 
         assert_eq!(
             actual, expected,
             "an existing endpoint method changed shape; add load-bearing behavior as a new advertised method or explicitly gate new fields"
         );
+    }
+
+    #[test]
+    fn team_methods_are_advertised_except_the_list_and_the_agent_read() {
+        for method in crate::api::schema::team::method::CLIENT_SHELL {
+            assert!(
+                supports_client_shell_method_name(method),
+                "{method} is not in CLIENT_SHELL_METHODS"
+            );
+        }
+        assert!(!supports_client_shell_method_name(
+            crate::api::schema::team::method::LIST
+        ));
+        assert!(!supports_client_shell_method_name(
+            crate::api::schema::team::method::CONTEXT
+        ));
+        assert_eq!(CLIENT_SHELL_METHODS.len(), 84);
+    }
+
+    #[test]
+    fn team_params_reference_no_existing_schema_type() {
+        // Digest hygiene: a team request branch references only team
+        // parameter structs, so no other schema change can move its digest.
+        let schema = serde_json::to_value(schemars::schema_for!(crate::api::schema::Request))
+            .expect("request schema");
+        let definitions = schema
+            .get("$defs")
+            .and_then(serde_json::Value::as_object)
+            .expect("request definitions");
+        let branches = schema
+            .get("oneOf")
+            .and_then(serde_json::Value::as_array)
+            .expect("request method branches");
+        for method in crate::api::schema::team::method::ALL {
+            let branch = branches
+                .iter()
+                .find(|branch| {
+                    branch
+                        .pointer("/properties/method/const")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(method)
+                })
+                .unwrap_or_else(|| panic!("missing request schema branch for {method}"));
+            let mut referenced = BTreeSet::new();
+            collect_schema_refs(branch, &mut referenced);
+            let mut visited = BTreeSet::new();
+            while let Some(name) = referenced.pop_first() {
+                if !visited.insert(name.clone()) {
+                    continue;
+                }
+                assert!(
+                    name.starts_with("Team") || name == "EmptyParams",
+                    "{method} references the existing type {name}"
+                );
+                if let Some(definition) = definitions.get(&name) {
+                    collect_schema_refs(definition, &mut referenced);
+                }
+            }
+        }
     }
 
     #[test]

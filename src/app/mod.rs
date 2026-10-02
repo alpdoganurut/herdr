@@ -36,6 +36,8 @@ mod subagents;
 mod tab_bar_status;
 mod tab_color;
 mod tab_remind;
+/// Fork: teams (`team.*`, following panes and agents).
+pub(crate) mod team;
 mod terminal_targets;
 mod terminal_titles;
 mod theme_sync;
@@ -172,6 +174,12 @@ pub struct App {
     /// Where `agents.settings` / `agents.fix` look and write; `None` = the
     /// server's own environment (tests point it at a temporary home).
     pub(crate) agents_setup_env: Option<crate::browser::setup::SetupEnv>,
+    /// Fork teams: the "you are no longer in a team" lines waiting for
+    /// their pane's next `team.context`.
+    pub(crate) team_tombstones: team::TeamTombstones,
+    /// Tests: how often `follow_teams` ran (the zero-team perf guard).
+    #[cfg(test)]
+    pub(crate) team_follow_calls: usize,
     agent_transcript_backup_thread:
         Option<std::thread::JoinHandle<agent_transcripts::AgentTranscriptBackupPass>>,
     /// The most recent finished backup pass, for `agent.transcripts`.
@@ -569,9 +577,14 @@ impl App {
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
             coordinator_terminal_id: None,
+            team_index: std::collections::HashMap::new(),
+            team_count: 0,
+            teams_view_rev: 0,
         };
 
         state.terminals = restored_terminals;
+        // Fork teams: restored teams rebuild their index.
+        state.rebuild_team_index();
 
         for ws_idx in 0..state.workspaces.len() {
             let cwd = state.workspaces[ws_idx]
@@ -664,6 +677,9 @@ impl App {
             agent_notices: agent_notices::AgentNotices::new(config.agents.notices),
             agents_config: config.agents.clone(),
             agents_setup_env: None,
+            team_tombstones: team::TeamTombstones::default(),
+            #[cfg(test)]
+            team_follow_calls: 0,
             agent_transcript_backup_thread: None,
             agent_transcript_backup_last: None,
             agent_transcript_backup_pending: std::collections::BTreeMap::new(),
@@ -727,6 +743,8 @@ impl App {
 
         app.state.pane_id_aliases = pane_id_aliases;
         app.state.workspaces = workspaces;
+        // Fork teams: a live handoff keeps teams; rebuild their index.
+        app.state.rebuild_team_index();
         app.state.terminals = terminals;
         app.terminal_runtimes = runtimes.into();
         app.state.active = snapshot

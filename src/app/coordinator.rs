@@ -840,6 +840,27 @@ impl App {
         self.state.coordinator_terminal_id.as_ref() == Some(terminal_id)
     }
 
+    /// Whether a pane is the coordinator's (fork teams: it never joins a
+    /// team). O(1) through the terminal mirror while the coordinator runs,
+    /// else the stored tab and pane.
+    pub(crate) fn is_coordinator_pane(&self, ws_idx: usize, pane: crate::layout::PaneId) -> bool {
+        let Some(state) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_state(pane))
+        else {
+            return false;
+        };
+        if self.state.coordinator_terminal_id.as_ref() == Some(&state.attached_terminal_id) {
+            return true;
+        }
+        self.coordinator.tab_id.is_some()
+            && self.existing_coordinator_pane().is_some_and(|coordinator| {
+                coordinator.ws_idx == ws_idx && coordinator.pane_id == pane
+            })
+    }
+
     /// Mark the agent facts stale (the agent-transition and pane-update hooks).
     pub(crate) fn mark_coordinator_input_dirty(&mut self) {
         self.coordinator.mark_input_dirty();
@@ -2194,6 +2215,10 @@ impl App {
                     .clone()
                     .unwrap_or_else(|| ws.cached_auto_label.clone()),
                 tab_count: ws.tabs.len() as u64,
+                team_purpose: ws
+                    .team
+                    .as_ref()
+                    .map(|team| team.purpose.clone().unwrap_or_default()),
             });
             for (tab_idx, tab) in ws.tabs.iter().enumerate() {
                 let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
@@ -2217,6 +2242,12 @@ impl App {
                         continue;
                     };
                     let suspended = terminal.suspended_agent.as_ref();
+                    // Fork teams: an O(1) index miss for non-members.
+                    let member = if self.state.team_index.contains_key(&pane_id) {
+                        ws.team.as_ref().and_then(|team| team.member(pane_id))
+                    } else {
+                        None
+                    };
                     agents.push(CoordinatorAgentFact {
                         pane_id: public,
                         tab_id: tab_id.clone(),
@@ -2236,6 +2267,8 @@ impl App {
                         session: terminal_session(terminal),
                         cwd: None,
                         subagents: u64::from(terminal.active_subagent_count()),
+                        team: member.map(|_| workspace_id.clone()),
+                        team_role: member.and_then(|member| member.role.clone()),
                     });
                 }
             }
@@ -3121,6 +3154,52 @@ mod tests {
                 "{forbidden} in build_coordinator_input"
             );
         }
+    }
+
+    #[test]
+    fn coordinator_input_carries_team_membership_roles_and_purpose() {
+        let mut app = coordinator_app(true);
+        let mut group = crate::workspace::Workspace::test_new("app");
+        group.test_add_tab(None);
+        let (member, other) = (group.tabs[0].root_pane, group.tabs[1].root_pane);
+        let mut team = crate::workspace::team::Team::new(Some("fix sync".into()), None, 1);
+        team.join(member, Some("fixer".into()), 1);
+        group.team = Some(team);
+        app.state.workspaces.push(group);
+        app.state.ensure_test_terminals();
+        app.state.rebuild_team_index();
+        for pane in [member, other] {
+            let id = app.state.workspaces[1]
+                .pane_state(pane)
+                .unwrap()
+                .attached_terminal_id
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&id)
+                .unwrap()
+                .set_detected_state(
+                    Some(crate::detect::Agent::Claude),
+                    crate::detect::AgentState::Idle,
+                );
+        }
+        let input = app.build_coordinator_input();
+        let workspace_id = app.state.workspaces[1].id.clone();
+        let member_fact = input
+            .agents
+            .iter()
+            .find(|fact| Some(&fact.pane_id) == app.public_pane_id(1, member).as_ref())
+            .unwrap();
+        assert_eq!(member_fact.team.as_ref(), Some(&workspace_id));
+        assert_eq!(member_fact.team_role.as_deref(), Some("fixer"));
+        let other_fact = input
+            .agents
+            .iter()
+            .find(|fact| Some(&fact.pane_id) == app.public_pane_id(1, other).as_ref())
+            .unwrap();
+        assert_eq!(other_fact.team, None);
+        assert_eq!(input.groups[1].team_purpose.as_deref(), Some("fix sync"));
+        assert_eq!(input.groups[0].team_purpose, None);
     }
 
     #[test]

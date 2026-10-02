@@ -1885,7 +1885,7 @@
           "type": "object"
         },
         "AgentsSettingsSetParams": {
-          "description": "`agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,\n`tools`, `instructions` and `notices`; a string for `instructions_file`\n(`\"\"` or `\"default\"` = built-in, `\"file\"` = `<config dir>/agents.md`,\nseeded with the built-in text when missing, anything else = that path).",
+          "description": "`agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,\n`tools`, `instructions`, `notices` and `team_roster`; a string for `instructions_file`\n(`\"\"` or `\"default\"` = built-in, `\"file\"` = `<config dir>/agents.md`,\nseeded with the built-in text when missing, anything else = that path).",
           "properties": {
             "key": {
               "type": "string"
@@ -6680,6 +6680,173 @@
           ],
           "type": "object"
         },
+        "TeamContextParams": {
+          "description": "`team.context`: the agent-side read (`HERDR_PANE_ID`). Read-only except\nfor `ack`, which marks the current revision as told to this member.",
+          "properties": {
+            "ack": {
+              "default": false,
+              "type": "boolean"
+            },
+            "ack_revision": {
+              "description": "With `ack`: mark only up to this revision as told (the revision the\ncaller read and delivered), so a change landing between a read and a\nlater ack is not lost. Absent: the current revision.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "caller_pane": {
+              "type": "string"
+            },
+            "full": {
+              "default": false,
+              "description": "The whole roster block, not just the changes since the last ack.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "caller_pane"
+          ],
+          "type": "object"
+        },
+        "TeamGetParams": {
+          "description": "`team.get`: the team of a group, or of the caller's group.",
+          "properties": {
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "description": "A group id (or label); absent means `caller_pane`'s group.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "TeamJoinParams": {
+          "description": "`team.join`: the pane joins its group's team (clearing a removal). With\na role it may join before its agent starts (a pre-launch join).",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        "TeamMakeParams": {
+          "description": "`team.make`: mark a group as a team. Every pane in it with a live agent\njoins, with no role.",
+          "properties": {
+            "caller_pane": {
+              "description": "The calling agent's pane; absent means the user.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "purpose": {
+              "description": "One line, at most 80 characters after sanitizing.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "description": "A group id (or label).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
+          ],
+          "type": "object"
+        },
+        "TeamPaneParams": {
+          "description": "`team.leave`: the pane leaves its team and is not auto-joined again\nuntil it joins or moves in.",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        "TeamSetPurposeParams": {
+          "description": "`team.set_purpose`: a missing or empty purpose clears it.",
+          "properties": {
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "purpose": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
+          ],
+          "type": "object"
+        },
+        "TeamSetRoleParams": {
+          "description": "`team.set_role`: a missing or empty role clears it (the name stays).",
+          "properties": {
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "role": {
+              "description": "One line, at most 32 characters after sanitizing.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        "TeamWorkspaceParams": {
+          "description": "`team.disband`: a group by id (or label).",
+          "properties": {
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
+          ],
+          "type": "object"
+        },
         "ToastHerdrPosition": {
           "enum": [
             "top-left",
@@ -7876,6 +8043,150 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentsFixParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "team.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "team.get",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TeamGetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "team.make",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TeamMakeParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "team.disband",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TeamWorkspaceParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "team.set_purpose",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TeamSetPurposeParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "team.set_role",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TeamSetRoleParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "team.join",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TeamJoinParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "team.leave",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TeamPaneParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "team.context",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TeamContextParams"
             }
           },
           "required": [
@@ -10202,6 +10513,11 @@
             "steer_browser": {
               "default": false,
               "description": "`[browser] steer_agents` (read-only here; applies while wrapped).",
+              "type": "boolean"
+            },
+            "team_roster": {
+              "default": true,
+              "description": "Launches in a team group get the roster, purpose and team tools\n(`[agents] team_roster`; independent of `wrap`). Absent from older\nservers: on, the default.",
               "type": "boolean"
             },
             "tools": {
@@ -15083,6 +15399,111 @@
               "type": "object"
             },
             {
+              "description": "`team.list` (fork): every team, in sidebar order.",
+              "properties": {
+                "revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "teams": {
+                  "default": [],
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/TeamInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "team_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "revision"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`team.get`, `team.make`, `team.disband`, `team.set_purpose`,\n`team.set_role`, `team.join`, `team.leave` (fork). `renamed` is set by\n`team.set_role` (and a `team.join` with a role): whether the member's\nname now follows the role.",
+              "properties": {
+                "renamed": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "team": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/TeamInfo"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": {
+                  "const": "team_reply",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`team.context` (fork): the caller's team and the text to tell it.",
+              "properties": {
+                "eligible": {
+                  "default": false,
+                  "description": "The caller's pane is in a team group, not removed from it, and\nnot the coordinator's (it joins once its agent is detected).",
+                  "type": "boolean"
+                },
+                "member": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/TeamMemberInfo"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "revision": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "team": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/TeamInfo"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "team_context",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "agent": {
                   "$ref": "#/schemas/success_response/$defs/AgentInfo"
@@ -16333,6 +16754,189 @@
             "Unknown"
           ],
           "type": "string"
+        },
+        "TeamActor": {
+          "description": "Who set a team's purpose: derived by the server from the calling pane's\nown record (the coordinator's pane, else the agent's name), never from\nparameters. Absent `caller_pane` means the user.",
+          "oneOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "user",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "coordinator",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An agent, named as it was at the time.",
+              "properties": {
+                "kind": {
+                  "const": "agent",
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "name"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An actor this side does not know (a newer peer).",
+              "properties": {
+                "kind": {
+                  "const": "unknown",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "TeamInfo": {
+          "description": "One team.",
+          "properties": {
+            "created_unix": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "excluded": {
+              "default": [],
+              "description": "Panes removed from the team in place (public ids now).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "members": {
+              "default": [],
+              "description": "Join order.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/TeamMemberInfo"
+              },
+              "type": "array"
+            },
+            "purpose": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "purpose_by": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/TeamActor"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "revision": {
+              "default": 0,
+              "description": "Bumped by every join, leave, role, purpose and member rename.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workspace_id": {
+              "type": "string"
+            },
+            "workspace_label": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
+          ],
+          "type": "object"
+        },
+        "TeamMemberInfo": {
+          "description": "One member, with its pane and tab re-projected now.",
+          "properties": {
+            "agent": {
+              "description": "The agent kind (`claude`, `codex`); absent while no agent runs.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "joined_unix": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "name": {
+              "description": "The agent name, when set.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filled by `team.get`, `team.list` and `team.context`; never in the\n`endpoint.teams.v1` push."
+            },
+            "status_since_unix": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
         },
         "WorkspaceInfo": {
           "properties": {

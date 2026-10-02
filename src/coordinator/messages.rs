@@ -57,6 +57,10 @@ pub struct AgentMessage {
     /// `None` for a message, [`KIND_REFUSAL`] when herdr+ refused to deliver it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// The team (its group's workspace id) when sender and target are
+    /// teammates (fork teams); shown on the dashboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
 }
 
 /// The rotated log (`messages.1.jsonl`), replaced on every rotation.
@@ -293,11 +297,13 @@ mod tests {
         // And the new fields stay out of lines that do not use them.
         let written = serde_json::to_string(&message).unwrap();
         assert!(!written.contains("reply_to"), "{written}");
+        assert!(!written.contains("team"), "{written}");
         let full = AgentMessage {
             id: Some("m1".into()),
             reply_to: Some("m0".into()),
             from_role: Some("lead".into()),
             kind: Some(KIND_REFUSAL.into()),
+            team: Some("w3".into()),
             ..message
         };
         let back: AgentMessage =

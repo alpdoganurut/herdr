@@ -46,6 +46,11 @@ pub struct LiveAgent {
     /// Last status change the watcher saw (0 = not seen changing yet).
     #[serde(default)]
     pub last_change_unix: u64,
+    /// The team (its group's workspace id) this agent is a member of (fork
+    /// teams); a member is managed for messaging even without a registry
+    /// entry, and its `role` falls back to its team role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +59,9 @@ pub struct LiveGroup {
     pub label: String,
     pub tab_count: u64,
     pub managed: u64,
+    /// Set when the group is a team: its purpose (empty until one is set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_purpose: Option<String>,
 }
 
 /// A registry entry whose agent is not running anywhere right now.
@@ -130,6 +138,10 @@ pub struct CoordinatorAgentFact {
     /// own pass leaves it unset rather than inspect the pane's process.
     pub cwd: Option<String>,
     pub subagents: u64,
+    /// The team (workspace id) this agent's pane is a member of.
+    pub team: Option<String>,
+    /// Its role in that team, when set.
+    pub team_role: Option<String>,
 }
 
 /// One sidebar group (space), in sidebar order.
@@ -138,6 +150,8 @@ pub struct GroupFact {
     pub workspace_id: String,
     pub label: String,
     pub tab_count: u64,
+    /// `Some` when the group is a team: its purpose, empty until set.
+    pub team_purpose: Option<String>,
 }
 
 /// Typed inputs for [`build_facts`].
@@ -148,11 +162,13 @@ pub struct FactInputs<'a> {
     pub tab_labels: &'a HashMap<String, String>,
 }
 
-/// The API inputs, as returned by `agent.list`, `workspace.list` and `tab.list`.
+/// The API inputs, as returned by `agent.list`, `workspace.list`, `tab.list`
+/// and `team.list` (an older server without teams: empty).
 pub struct Inputs<'a> {
     pub agents: &'a [Value],
     pub workspaces: &'a [Value],
     pub tabs: &'a [Value],
+    pub teams: &'a [crate::api::schema::TeamInfo],
 }
 
 fn s(value: &Value, key: &str) -> Option<String> {
@@ -180,6 +196,8 @@ pub fn fact_from_json(info: &Value) -> Option<CoordinatorAgentFact> {
         session: session_of(info),
         cwd: s(info, "foreground_cwd").or_else(|| s(info, "cwd")),
         subagents: info["subagents"].as_u64().unwrap_or(0),
+        team: None,
+        team_role: None,
     })
 }
 
@@ -189,7 +207,45 @@ pub fn group_from_json(workspace: &Value) -> Option<GroupFact> {
         workspace_id: s(workspace, "workspace_id")?,
         label: s(workspace, "label").unwrap_or_default(),
         tab_count: workspace["tab_count"].as_u64().unwrap_or(0),
+        team_purpose: None,
     })
+}
+
+/// Fold `team.list` into the facts: members get their team and role, team
+/// groups their purpose (empty until set). O(members + groups).
+pub fn apply_teams(
+    teams: &[crate::api::schema::TeamInfo],
+    agents: &mut [CoordinatorAgentFact],
+    groups: &mut [GroupFact],
+) {
+    if teams.is_empty() {
+        return;
+    }
+    let mut members: HashMap<&str, (&str, Option<&str>)> = HashMap::new();
+    let mut purposes: HashMap<&str, &str> = HashMap::new();
+    for team in teams {
+        purposes.insert(
+            team.workspace_id.as_str(),
+            team.purpose.as_deref().unwrap_or(""),
+        );
+        for member in &team.members {
+            members.insert(
+                member.pane_id.as_str(),
+                (team.workspace_id.as_str(), member.role.as_deref()),
+            );
+        }
+    }
+    for fact in agents.iter_mut() {
+        if let Some((team, role)) = members.get(fact.pane_id.as_str()) {
+            fact.team = Some((*team).to_string());
+            fact.team_role = role.map(str::to_string);
+        }
+    }
+    for group in groups.iter_mut() {
+        if let Some(purpose) = purposes.get(group.workspace_id.as_str()) {
+            group.team_purpose = Some((*purpose).to_string());
+        }
+    }
 }
 
 /// Tab id to label from a `tab.list` result (unlabelled tabs are left out).
@@ -208,13 +264,14 @@ pub fn build(
     include_unmanaged: bool,
     now: u64,
 ) -> (LiveData, bool) {
-    let agents: Vec<CoordinatorAgentFact> =
+    let mut agents: Vec<CoordinatorAgentFact> =
         inputs.agents.iter().filter_map(fact_from_json).collect();
-    let groups: Vec<GroupFact> = inputs
+    let mut groups: Vec<GroupFact> = inputs
         .workspaces
         .iter()
         .filter_map(group_from_json)
         .collect();
+    apply_teams(inputs.teams, &mut agents, &mut groups);
     let tab_labels = tab_labels_from_json(inputs.tabs);
     build_facts(
         &FactInputs {
@@ -291,7 +348,8 @@ pub fn build_facts(
         }
     }
     for (fact, entry) in facts.iter().zip(claims) {
-        let managed = entry.is_some();
+        // A team member is managed for messaging without a registry entry.
+        let managed = entry.is_some() || fact.team.is_some();
         if !managed {
             unmanaged_count += 1;
             if !include_unmanaged {
@@ -332,11 +390,15 @@ pub fn build_facts(
             cwd: fact.cwd.clone(),
             managed,
             coordinator: registered.as_ref().is_some_and(|r| r.is_coordinator()),
-            role: registered.as_ref().and_then(|r| r.role.clone()),
+            role: registered
+                .as_ref()
+                .and_then(|r| r.role.clone())
+                .or_else(|| fact.team_role.clone()),
             project: registered.as_ref().and_then(|r| r.project.clone()),
             note: registered.as_ref().and_then(|r| r.note.clone()),
             subagents: fact.subagents,
             last_change_unix: last_change.get(&fact.pane_id).copied().unwrap_or(0),
+            team: fact.team.clone(),
         });
     }
     // An entry that lost its last key (its pane now hosts an agent matched by
@@ -379,6 +441,7 @@ pub fn build_facts(
                 .copied()
                 .unwrap_or(0),
             workspace_id: group.workspace_id.clone(),
+            team_purpose: group.team_purpose.clone(),
         })
         .collect();
     let coordinator_pane = agents
@@ -474,6 +537,7 @@ mod tests {
             agents: &agents,
             workspaces: &workspaces,
             tabs: &tabs,
+            teams: &[],
         };
         let (live, relinked) = build(&inputs, &mut registry, Vec::new(), &last_change, false, 99);
         assert!(relinked);
@@ -540,11 +604,13 @@ mod tests {
                 workspace_id: "w1".into(),
                 label: "coordinator".into(),
                 tab_count: 1,
+                team_purpose: None,
             },
             GroupFact {
                 workspace_id: "w2".into(),
                 label: "app".into(),
                 tab_count: 2,
+                team_purpose: None,
             },
         ];
         let tab_labels = HashMap::from([("w2:t1".to_string(), "api work".to_string())]);
@@ -598,6 +664,7 @@ mod tests {
                 agents: &agents,
                 workspaces: &workspaces,
                 tabs: &tabs,
+                teams: &[],
             },
             &mut json_registry,
             Vec::new(),
@@ -607,6 +674,85 @@ mod tests {
         );
         assert_eq!(typed, from_json);
         assert_eq!(typed_registry, json_registry);
+    }
+
+    #[test]
+    fn team_members_are_managed_without_a_registry_entry_on_both_edges() {
+        use crate::api::schema::{TeamInfo, TeamMemberInfo};
+        let teams = vec![TeamInfo {
+            workspace_id: "w2".into(),
+            workspace_label: "app".into(),
+            purpose: Some("fix sync".into()),
+            members: vec![
+                TeamMemberInfo {
+                    pane_id: "w2:p4".into(),
+                    role: Some("fixer".into()),
+                    ..TeamMemberInfo::default()
+                },
+                TeamMemberInfo {
+                    pane_id: "w2:p5".into(),
+                    ..TeamMemberInfo::default()
+                },
+            ],
+            ..TeamInfo::default()
+        }];
+        let agents = vec![
+            agent("w2:p4", "s4", "idle"),
+            agent("w2:p5", "s5", "working"),
+            agent("w2:p6", "s6", "idle"),
+        ];
+        let workspaces = vec![
+            json!({ "workspace_id": "w1", "label": "bucket", "tab_count": 1 }),
+            json!({ "workspace_id": "w2", "label": "app", "tab_count": 3 }),
+        ];
+        let mut registry = Registry::default();
+        let (from_json, _) = build(
+            &Inputs {
+                agents: &agents,
+                workspaces: &workspaces,
+                tabs: &[],
+                teams: &teams,
+            },
+            &mut registry,
+            Vec::new(),
+            &HashMap::new(),
+            true,
+            9,
+        );
+        assert!(registry.agents.is_empty(), "membership is never written");
+        let fixer = &from_json.agents[0];
+        assert!(fixer.managed);
+        assert_eq!(fixer.team.as_deref(), Some("w2"));
+        assert_eq!(fixer.role.as_deref(), Some("fixer"));
+        assert!(from_json.agents[1].managed && from_json.agents[1].role.is_none());
+        assert!(!from_json.agents[2].managed, "not a member");
+        assert_eq!(from_json.unmanaged_count, 1);
+        assert_eq!(
+            from_json.groups[1].team_purpose.as_deref(),
+            Some("fix sync")
+        );
+        assert_eq!(from_json.groups[1].managed, 2);
+        assert_eq!(from_json.groups[0].team_purpose, None);
+
+        // The server's typed facts carry the same fields and build the same data.
+        let mut facts: Vec<CoordinatorAgentFact> =
+            agents.iter().filter_map(fact_from_json).collect();
+        let mut groups: Vec<GroupFact> = workspaces.iter().filter_map(group_from_json).collect();
+        apply_teams(&teams, &mut facts, &mut groups);
+        assert_eq!(facts[0].team_role.as_deref(), Some("fixer"));
+        let (typed, _) = build_facts(
+            &FactInputs {
+                agents: &facts,
+                groups: &groups,
+                tab_labels: &HashMap::new(),
+            },
+            &mut Registry::default(),
+            Vec::new(),
+            &HashMap::new(),
+            true,
+            9,
+        );
+        assert_eq!(typed, from_json);
     }
 
     #[test]
@@ -633,6 +779,7 @@ mod tests {
             agents: &agents,
             workspaces: &[],
             tabs: &[],
+            teams: &[],
         };
         let (live, relinked) = build(&inputs, &mut registry, Vec::new(), &HashMap::new(), true, 9);
         assert!(relinked);
@@ -652,6 +799,7 @@ mod tests {
             agents: &agents,
             workspaces: &[],
             tabs: &[],
+            teams: &[],
         };
         let (live, relinked) = build(&inputs, &mut registry, Vec::new(), &HashMap::new(), true, 9);
         assert!(relinked);

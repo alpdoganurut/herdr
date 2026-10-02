@@ -46,7 +46,8 @@ pub(crate) enum ConfigEdit<'a> {
         key: &'static str,
         values: &'a [String],
     },
-    /// Fork: an `[agents]` toggle (`tools`, `instructions`, `notices`).
+    /// Fork: an `[agents]` toggle (`tools`, `instructions`, `notices`,
+    /// `team_roster`).
     AgentsBool {
         key: &'static str,
         value: bool,
@@ -653,9 +654,15 @@ mod tests {
             value: false,
         }
         .apply(&edited);
+        let edited = ConfigEdit::AgentsBool {
+            key: "team_roster",
+            value: false,
+        }
+        .apply(&edited);
         let edited = ConfigEdit::AgentsInstructionsFile(Some(" ~/x/agents.md ")).apply(&edited);
         let config: crate::config::Config = toml::from_str(&edited).unwrap();
         assert!(config.agents.tools && !config.agents.notices);
+        assert!(!config.agents.team_roster);
         assert_eq!(config.agents.instructions_file(), Some("~/x/agents.md"));
         assert_eq!(
             config.ui.sidebar_layout,

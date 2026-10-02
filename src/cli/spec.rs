@@ -46,6 +46,7 @@ pub(super) fn command() -> Command {
         .subcommand(terminal_command())
         .subcommand(session_command())
         .subcommand(news_command())
+        .subcommand(team_command())
         .subcommand(browser_command())
         .subcommand(integration_command())
         .subcommand(plugin_command());
@@ -1093,6 +1094,81 @@ fn browser_command() -> Command {
         .subcommand(Command::new("mcp").about("Serve the browser tools over stdio MCP (started by Claude Code)"))
 }
 
+/// `herdr team` (fork teams).
+fn team_command() -> Command {
+    let group = || Arg::new("group").value_name("GROUP");
+    let pane = || Arg::new("pane").value_name("PANE").required(true);
+    Command::new("team")
+        .about("Inspect and change teams (team groups of agents)")
+        .long_about(
+            "A team is a group whose agents work together: every agent started in it joins, is named after its role and may message its teammates. GROUP is a group id (w3), number or label; PANE a pane id (w3:p1). The command line acts as the user.",
+        )
+        .subcommand(
+            Command::new("list")
+                .about("Show every team")
+                .override_usage("herdr team list [--json]")
+                .arg(json_flag()),
+        )
+        .subcommand(
+            Command::new("get")
+                .about("Show a group's team (default: this pane's group)")
+                .override_usage("herdr team get [GROUP] [--json]")
+                .arg(group())
+                .arg(json_flag()),
+        )
+        .subcommand(
+            Command::new("make")
+                .about("Mark a group as a team; its agents join")
+                .override_usage("herdr team make GROUP [--purpose TEXT] [--json]")
+                .arg(group().required(true))
+                .arg(option("purpose", "TEXT"))
+                .arg(json_flag()),
+        )
+        .subcommand(
+            Command::new("disband")
+                .about("Unmark a team group (agents keep their names)")
+                .override_usage("herdr team disband GROUP [--json]")
+                .arg(group().required(true))
+                .arg(json_flag()),
+        )
+        .subcommand(
+            Command::new("purpose")
+                .about("Set a team's purpose (empty text clears it)")
+                .override_usage("herdr team purpose GROUP TEXT [--json]")
+                .arg(group().required(true))
+                .arg(Arg::new("text").value_name("TEXT").num_args(0..))
+                .arg(json_flag()),
+        )
+        .subcommand(
+            Command::new("role")
+                .about("Set a member's role; its agent is renamed after it")
+                .override_usage("herdr team role PANE ROLE [--json]")
+                .arg(pane())
+                .arg(Arg::new("role").value_name("ROLE").num_args(0..))
+                .arg(json_flag()),
+        )
+        .subcommand(
+            Command::new("join")
+                .about("Add a pane to its group's team")
+                .override_usage("herdr team join PANE [--role ROLE] [--json]")
+                .arg(pane())
+                .arg(option("role", "ROLE"))
+                .arg(json_flag()),
+        )
+        .subcommand(
+            Command::new("leave")
+                .about("Remove a member (it is not auto-joined again)")
+                .override_usage("herdr team leave PANE [--json]")
+                .arg(pane())
+                .arg(json_flag()),
+        )
+        .subcommand(
+            Command::new("hook")
+                .about("Claude's per-turn team hook (reads the hook JSON on stdin; always exits 0)")
+                .override_usage("herdr team hook"),
+        )
+}
+
 fn news_command() -> Command {
     Command::new("news")
         .about("Run and inspect the AI news desk")
@@ -1823,6 +1899,21 @@ mod tests {
         assert!(reopen
             .get_arguments()
             .any(|arg| arg.get_id() == "session" && arg.is_required_set()));
+    }
+
+    #[test]
+    fn spec_models_team_verbs() {
+        let cmd = super::command();
+        let team = command_path(&cmd, &["team"]);
+        let mut verbs: Vec<_> = team.get_subcommands().map(|c| c.get_name()).collect();
+        verbs.sort_unstable();
+        assert_eq!(
+            verbs,
+            ["disband", "get", "hook", "join", "leave", "list", "make", "purpose", "role"]
+        );
+        assert!(has_option(command_path(&cmd, &["team", "make"]), "purpose"));
+        assert!(has_option(command_path(&cmd, &["team", "join"]), "role"));
+        assert!(argument(command_path(&cmd, &["team", "leave"]), "pane").is_required_set());
     }
 
     #[test]

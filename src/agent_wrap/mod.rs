@@ -8,8 +8,14 @@
 //! herdr_agents server) also pass through and get only the browser
 //! contributions. The settings section's facts ([`settings_snapshot`]) and
 //! its one confirmed file edit ([`fix_shell_hook`]) live here too.
+//!
+//! A launch in a team group gets the team bits ([`team`]) whatever the
+//! master switch says (`[agents] team_roster`): the herdr_agents server
+//! with the team tools, the roster in the system prompt and, for Claude,
+//! the per-turn hook settings. Nothing else of the wrap comes with them.
 
 pub mod instructions;
+pub mod team;
 
 use std::path::{Path, PathBuf};
 
@@ -78,6 +84,11 @@ pub struct WrapEnv {
     pub codex_own_instructions: Option<String>,
     /// `$HOME`, for `~` in `instructions_file`.
     pub home: Option<PathBuf>,
+    /// `$HERDR_PANE_ID`: the pane the team lookup asks about.
+    pub pane_id: Option<String>,
+    /// The launching pane's team (the CLI's `team.context` lookup, done
+    /// after the argument checks); `None` outside team groups.
+    pub team: Option<team::TeamLaunch>,
 }
 
 impl WrapEnv {
@@ -97,6 +108,10 @@ impl WrapEnv {
             home: std::env::var_os("HOME")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
+            pane_id: std::env::var("HERDR_PANE_ID")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            team: None,
         }
     }
 }
@@ -115,7 +130,7 @@ fn codex_config_path() -> Option<PathBuf> {
 }
 
 /// The user's own top-level `developer_instructions` from Codex's config.toml.
-fn codex_developer_instructions() -> Option<String> {
+pub(crate) fn codex_developer_instructions() -> Option<String> {
     let text = std::fs::read_to_string(codex_config_path()?).ok()?;
     let value: toml::Value = toml::from_str(&text).ok()?;
     value
@@ -141,6 +156,13 @@ pub struct WrapPlan {
     pub ctx: LaunchCtx,
     /// The user's own Codex `developer_instructions`.
     pub codex_own: Option<String>,
+    /// The team bits (a launch in a team group, `[agents] team_roster`):
+    /// forces the herdr_agents server with the team tools, adds the roster
+    /// to the prompt; never the paragraph, steering or `no_native`.
+    pub team: Option<team::TeamLaunch>,
+    /// Claude gets the team's `--settings` hook file (off when it could not
+    /// be written).
+    pub team_hook: bool,
     /// Things the user should know (an unusable instructions file).
     pub warnings: Vec<String>,
 }
@@ -153,12 +175,18 @@ impl WrapPlan {
         self.instructions = None;
         self.steer = false;
         self.no_native = false;
+        self.team = None;
+        self.team_hook = false;
     }
 }
 
 /// The plan for a launch under `config`.
 pub fn plan(config: &Config, env: &WrapEnv) -> WrapPlan {
     let master = config.agents_wrap().0 && !env.herdr_no_wrap;
+    let team = env
+        .team
+        .clone()
+        .filter(|_| config.agents.team_roster && !env.herdr_no_wrap);
     let tools = master && config.agents.tools;
     let mut warnings = Vec::new();
     let instructions =
@@ -172,7 +200,6 @@ pub fn plan(config: &Config, env: &WrapEnv) -> WrapPlan {
         });
     WrapPlan {
         master,
-        tools,
         instructions,
         steer: master && config.browser.steer_agents,
         no_native: master && config.browser.disable_native_browser,
@@ -182,6 +209,10 @@ pub fn plan(config: &Config, env: &WrapEnv) -> WrapPlan {
             port: env.dashboard_port,
         },
         codex_own: env.codex_own_instructions.clone(),
+        team_hook: team.is_some(),
+        // the team forces the server (with the team tools)
+        tools: tools || team.is_some(),
+        team,
         warnings,
     }
 }
@@ -259,18 +290,96 @@ fn split_at_dashes(user: &[String]) -> (&[String], &[String]) {
 }
 
 /// Whether `wrap_args` will point Claude at `<dir>/mcp/claude.json` (the
-/// verb writes the file first).
+/// verb writes the file first; the team settings file goes through the
+/// same gate).
 pub fn uses_claude_mcp_config(plan: &WrapPlan, user: &[String]) -> bool {
-    plan.master
-        && plan.tools
+    ((plan.master && plan.tools) || plan.team.is_some())
         && !passthrough("claude", user)
         && !is_managed(split_at_dashes(user).0, &plan.ctx.dir)
 }
 
-/// The paragraph and the steering text (unmanaged: both; managed: steering only).
+/// Whether `pre` (Claude's flags) already has `--settings[=…]`.
+fn has_settings_flag(pre: &[String]) -> bool {
+    pre.iter()
+        .any(|a| a == "--settings" || a.starts_with("--settings="))
+}
+
+/// Whether `pre` already has a system prompt flag of its own.
+fn has_append_prompt(pre: &[String]) -> bool {
+    pre.iter().any(|a| {
+        ["--append-system-prompt", "--append-system-prompt-file"]
+            .iter()
+            .any(|flag| a == flag || a.strip_prefix(flag).is_some_and(|r| r.starts_with('=')))
+    })
+}
+
+/// Whether the user's Codex arguments set `developer_instructions`.
+fn codex_sets_instructions(user: &[String]) -> bool {
+    (0..user.len()).any(|i| {
+        flag_value(user, i, &CODEX_CONFIG)
+            .is_some_and(|v| v.trim_start().starts_with("developer_instructions"))
+    })
+}
+
+/// Whether the team settings file is used by this launch (the CLI writes it
+/// first, on the exec path only).
+pub fn uses_team_settings(plan: &WrapPlan, user: &[String]) -> bool {
+    plan.team.is_some()
+        && plan.team_hook
+        && uses_claude_mcp_config(plan, user)
+        && !has_settings_flag(split_at_dashes(user).0)
+}
+
+/// What the user's own flags take away from the team bits, as warnings for
+/// stderr (`wrap_args` stays pure and silent).
+pub fn team_conflicts(agent: &str, plan: &WrapPlan, user: &[String]) -> Vec<String> {
+    if plan.team.is_none() || passthrough(agent, user) {
+        return Vec::new();
+    }
+    let mut warnings = Vec::new();
+    match agent {
+        "claude" => {
+            let pre = split_at_dashes(user).0;
+            if is_managed(pre, &plan.ctx.dir) {
+                return warnings;
+            }
+            if has_settings_flag(pre) {
+                warnings.push(
+                    "team updates per turn are off (your --settings wins); they still arrive with the agents_* tool results"
+                        .to_string(),
+                );
+            }
+            if has_append_prompt(pre) {
+                warnings.push(
+                    "the team roster is not in the system prompt (your --append-system-prompt wins); agents_whoami and the first turn's hook carry it"
+                        .to_string(),
+                );
+            }
+        }
+        "codex" if !is_managed(user, &plan.ctx.dir) && codex_sets_instructions(user) => {
+            warnings.push(
+                "the team roster is not in developer_instructions (your -c developer_instructions wins); agents_whoami and the tool results carry it"
+                    .to_string(),
+            );
+        }
+        _ => {}
+    }
+    warnings
+}
+
+/// The team text, the paragraph and the steering text (unmanaged: all;
+/// managed: steering only — a managed team launch carries its roster).
 fn prompt_parts(plan: &WrapPlan, managed: bool) -> Vec<&str> {
     let mut parts = Vec::new();
     if !managed {
+        if let Some(text) = plan
+            .team
+            .as_ref()
+            .map(|team| team.text.trim())
+            .filter(|t| !t.is_empty())
+        {
+            parts.push(text);
+        }
         if let Some(text) = plan
             .instructions
             .as_deref()
@@ -286,13 +395,25 @@ fn prompt_parts(plan: &WrapPlan, managed: bool) -> Vec<&str> {
     parts
 }
 
-/// The comma list for Claude's allowlist.
-fn claude_allow_list() -> String {
+/// The comma list for Claude's allowlist (the team set for a team member).
+fn claude_allow_list(plan: &WrapPlan) -> String {
+    if plan.team.is_some() {
+        return team::claude_allow_list();
+    }
     WRAP_TOOLS
         .iter()
         .map(|tool| format!("mcp__{MCP_KEY}__{tool}"))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// The tools a Codex launch pre-approves.
+fn codex_approved_tools(plan: &WrapPlan) -> &'static [&'static str] {
+    if plan.team.is_some() {
+        &team::TEAM_TOOLS
+    } else {
+        &WRAP_TOOLS
+    }
 }
 
 /// Merge `allow` into the first user `--allowedTools` value of `pre`
@@ -330,7 +451,7 @@ fn merge_allowed_tools(pre: &mut Vec<String>, allow: &str) -> bool {
 /// herdr's after them and before a user `--`, and never a flag the user
 /// already passed. Variadic flags take their `=` form.
 pub fn wrap_args(agent: &str, plan: &WrapPlan, user: &[String]) -> Vec<String> {
-    let off = !plan.master || passthrough(agent, user);
+    let off = (!plan.master && plan.team.is_none()) || passthrough(agent, user);
     match agent {
         "codex" => {
             // The daemon would spawn MCP servers with another pane's
@@ -350,7 +471,7 @@ pub fn wrap_args(agent: &str, plan: &WrapPlan, user: &[String]) -> Vec<String> {
                 if plan.tools && !managed {
                     args.extend(launch::codex_mcp_overrides(&plan.ctx, false));
                     if CODEX_PER_TOOL_APPROVAL {
-                        for tool in WRAP_TOOLS {
+                        for tool in codex_approved_tools(plan) {
                             args.push("-c".into());
                             args.push(format!(
                                 "mcp_servers.{MCP_KEY}.tools.{tool}.approval_mode=\"approve\""
@@ -359,11 +480,7 @@ pub fn wrap_args(agent: &str, plan: &WrapPlan, user: &[String]) -> Vec<String> {
                     }
                 }
                 let parts = prompt_parts(plan, managed);
-                let user_sets = (0..user.len()).any(|i| {
-                    flag_value(user, i, &CODEX_CONFIG)
-                        .is_some_and(|v| v.trim_start().starts_with("developer_instructions"))
-                });
-                if !parts.is_empty() && !user_sets {
+                if !parts.is_empty() && !codex_sets_instructions(user) {
                     let mut all: Vec<&str> = Vec::new();
                     if let Some(own) = plan
                         .codex_own
@@ -396,20 +513,18 @@ pub fn wrap_args(agent: &str, plan: &WrapPlan, user: &[String]) -> Vec<String> {
                 ours.push(launch::mcp_config_flag(&launch::claude_mcp_config_path(
                     &plan.ctx.dir,
                 )));
-                let allow = claude_allow_list();
+                let allow = claude_allow_list(plan);
                 if !merge_allowed_tools(&mut pre, &allow) {
                     ours.push(format!("--allowedTools={allow}"));
                 }
             }
+            if plan.team.is_some() && plan.team_hook && !managed && !has_settings_flag(&pre) {
+                ours.push(team::settings_flag(&team::claude_settings_path(
+                    &plan.ctx.dir,
+                )));
+            }
             let prompt = prompt_parts(plan, managed).join("\n\n");
-            let user_prompt = pre.iter().any(|a| {
-                ["--append-system-prompt", "--append-system-prompt-file"]
-                    .iter()
-                    .any(|flag| {
-                        a == flag || a.strip_prefix(flag).is_some_and(|r| r.starts_with('='))
-                    })
-            });
-            if !prompt.is_empty() && !user_prompt {
+            if !prompt.is_empty() && !has_append_prompt(&pre) {
                 ours.push("--append-system-prompt".into());
                 ours.push(prompt);
             }
@@ -454,6 +569,8 @@ pub struct WrapSnapshot {
     /// `[browser] steer_agents` (applies while wrapped; read-only here).
     pub steer_browser: bool,
     pub notices: bool,
+    /// `[agents] team_roster` (the team-only launch wrap).
+    pub team_roster: bool,
     pub checks: Vec<WrapCheck>,
     /// The exact `.zshrc` line the hook fix adds and where, when it is offered.
     pub hook_preview: Option<String>,
@@ -521,6 +638,7 @@ pub fn settings_snapshot(config: &Config, env: &SetupEnv) -> WrapSnapshot {
         ),
         steer_browser: config.browser.steer_agents,
         notices: config.agents.notices,
+        team_roster: config.agents.team_roster,
         checks: vec![
             WrapCheck {
                 id: "shell_hook",
@@ -578,7 +696,7 @@ pub(crate) mod test_support {
     use crate::browser::setup::SetupEnv;
 
     /// The variables set (or removed, `None`) while a [`TempHome`] lives.
-    const VARS: [&str; 8] = [
+    const VARS: [&str; 9] = [
         "HOME",
         "ZDOTDIR",
         "CODEX_HOME",
@@ -587,6 +705,8 @@ pub(crate) mod test_support {
         crate::config::CONFIG_PATH_ENV_VAR,
         crate::coordinator::COORDINATOR_DIR_ENV,
         super::NO_WRAP_ENV,
+        // never ask a live herdr about this process's pane (the team lookup)
+        "HERDR_PANE_ID",
     ];
 
     pub(crate) struct TempHome {
@@ -621,6 +741,7 @@ pub(crate) mod test_support {
             std::env::set_var("XDG_STATE_HOME", root.join("xdg-state"));
             std::env::remove_var(crate::coordinator::COORDINATOR_DIR_ENV);
             std::env::remove_var(super::NO_WRAP_ENV);
+            std::env::remove_var("HERDR_PANE_ID");
             let config_path = crate::config::config_dir().join("config.toml");
             std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &config_path);
             let env = SetupEnv {

@@ -68,6 +68,65 @@ pub struct WorkspaceSnapshot {
     pub tabs: Vec<TabSnapshot>,
     #[serde(default)]
     pub active_tab: usize,
+    /// Fork: set when the group is a team. Optional, so an older build reads
+    /// the file (and drops the team on its next save).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<TeamSnapshot>,
+}
+
+/// A team as saved: members by their old raw pane id (like
+/// `public_pane_numbers`), remapped on restore. The change log and each
+/// member's seen revision are not saved, so every member is told the full
+/// roster once after a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose_by: Option<crate::workspace::team::TeamActor>,
+    #[serde(default)]
+    pub created_unix: u64,
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub members: Vec<TeamMemberSnapshot>,
+    #[serde(default)]
+    pub excluded: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamMemberSnapshot {
+    /// The pane's raw id when saved.
+    pub pane: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub joined_unix: u64,
+    /// A role whose rename was still pending.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending_rename: bool,
+}
+
+impl TeamSnapshot {
+    pub(crate) fn capture(team: &crate::workspace::team::Team) -> Self {
+        Self {
+            purpose: team.purpose.clone(),
+            purpose_by: team.purpose_by.clone(),
+            created_unix: team.created_unix,
+            revision: team.revision,
+            members: team
+                .members
+                .iter()
+                .map(|member| TeamMemberSnapshot {
+                    pane: member.pane_id.raw(),
+                    role: member.role.clone(),
+                    joined_unix: member.joined_unix,
+                    pending_rename: member.pending_rename(),
+                })
+                .collect(),
+            excluded: team.excluded.iter().map(|pane| pane.raw()).collect(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -200,6 +259,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             custom_name: snap.custom_name,
             identity_cwd,
             worktree_space: None,
+            team: None,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -348,6 +408,7 @@ fn capture_workspace(
         next_public_tab_number: ws.next_public_tab_number,
         tabs,
         active_tab: ws.active_tab,
+        team: ws.team.as_ref().map(TeamSnapshot::capture),
     }
 }
 
@@ -849,6 +910,7 @@ mod tests {
                 custom_name: Some("pi-mono".to_string()),
                 identity_cwd: PathBuf::from("/home/can/Projects/herdr"),
                 worktree_space: None,
+                team: None,
                 public_pane_numbers: HashMap::from([(0, 1), (1, 2)]),
                 next_public_pane_number: 3,
                 public_tab_numbers: vec![1],
@@ -1522,6 +1584,7 @@ mod tests {
                 custom_name: Some("fallback test".to_string()),
                 identity_cwd: PathBuf::from("/tmp"),
                 worktree_space: None,
+                team: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),

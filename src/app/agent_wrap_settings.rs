@@ -101,6 +101,10 @@ impl App {
                 key: key::NOTICES,
                 value: as_bool()?,
             },
+            key::TEAM_ROSTER => ConfigEdit::AgentsBool {
+                key: key::TEAM_ROSTER,
+                value: as_bool()?,
+            },
             key::INSTRUCTIONS_FILE => {
                 let text = value.as_str().map(str::trim).ok_or_else(|| {
                     invalid(format!(
@@ -134,7 +138,7 @@ impl App {
             }
             other => {
                 return Err(invalid(format!(
-                    "agents.settings.set: unknown key {other:?} (wrap, tools, instructions, instructions_file, notices)"
+                    "agents.settings.set: unknown key {other:?} (wrap, tools, instructions, instructions_file, notices, team_roster)"
                 )))
             }
         };
@@ -193,6 +197,7 @@ impl App {
             key::TOOLS => agents.tools.into(),
             key::INSTRUCTIONS => agents.instructions.into(),
             key::NOTICES => agents.notices.into(),
+            key::TEAM_ROSTER => agents.team_roster.into(),
             key::INSTRUCTIONS_FILE => agents.instructions_file.trim().into(),
             _ => serde_json::Value::Null,
         }
@@ -298,6 +303,7 @@ fn settings_info(snapshot: WrapSnapshot) -> AgentsSettingsInfo {
         notices: snapshot.notices,
         checks: snapshot.checks.into_iter().map(check_info).collect(),
         hook_preview: snapshot.hook_preview,
+        team_roster: snapshot.team_roster,
     }
 }
 

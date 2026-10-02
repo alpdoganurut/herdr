@@ -183,6 +183,37 @@ pub enum ResponseResult {
     AgentsFix {
         results: Vec<super::agent_wrap::AgentsCheckInfo>,
     },
+    /// `team.list` (fork): every team, in sidebar order.
+    TeamList {
+        revision: u64,
+        #[serde(default)]
+        teams: Vec<super::team::TeamInfo>,
+    },
+    /// `team.get`, `team.make`, `team.disband`, `team.set_purpose`,
+    /// `team.set_role`, `team.join`, `team.leave` (fork). `renamed` is set by
+    /// `team.set_role` (and a `team.join` with a role): whether the member's
+    /// name now follows the role.
+    TeamReply {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team: Option<super::team::TeamInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        renamed: Option<bool>,
+    },
+    /// `team.context` (fork): the caller's team and the text to tell it.
+    TeamContext {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<super::team::TeamMemberInfo>,
+        /// The caller's pane is in a team group, not removed from it, and
+        /// not the coordinator's (it joins once its agent is detected).
+        #[serde(default)]
+        eligible: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team: Option<super::team::TeamInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default)]
+        revision: u64,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

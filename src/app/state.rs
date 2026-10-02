@@ -892,6 +892,14 @@ pub struct AppState {
     /// Fork: the coordinator's terminal, mirrored from `App.coordinator` so
     /// its completion toasts and sounds are suppressed here.
     pub(crate) coordinator_terminal_id: Option<crate::terminal::TerminalId>,
+    /// Fork teams: member pane -> its team's workspace id (members only),
+    /// for O(1) lookups. Rebuilt on restore and after reconcile.
+    pub(crate) team_index: std::collections::HashMap<PaneId, String>,
+    /// Fork teams: workspaces with `Some(team)`; `0` skips all team work.
+    pub(crate) team_count: usize,
+    /// Fork teams: bumped by every change a client renders (structure,
+    /// member ids or labels), never by status; `0` until the first team.
+    pub(crate) teams_view_rev: u64,
 }
 
 impl AppState {
@@ -1110,6 +1118,9 @@ impl AppState {
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
             coordinator_terminal_id: None,
+            team_index: std::collections::HashMap::new(),
+            team_count: 0,
+            teams_view_rev: 0,
         }
     }
 
@@ -1138,6 +1149,8 @@ impl AppState {
         state.active = Some(0);
         state.selected = 0;
         state.ensure_test_terminals();
+        // The fixture's workspace carries a team (fork): index it.
+        state.rebuild_team_index();
         state
     }
 
@@ -1293,6 +1306,32 @@ impl AppState {
         for &pane_id in self.plugin_panes.keys() {
             assert_live_pane(pane_id, "plugin pane record");
         }
+
+        // Fork teams: the index is exactly the members, the count exactly
+        // the teams, and the coordinator's pane is never a member.
+        let mut members = std::collections::HashMap::new();
+        let mut teams = 0;
+        for ws in &self.workspaces {
+            if let Some(team) = &ws.team {
+                teams += 1;
+                for member in &team.members {
+                    members.insert(member.pane_id, ws.id.clone());
+                    if let Some(coordinator) = &self.coordinator_terminal_id {
+                        assert!(
+                            ws.pane_state(member.pane_id)
+                                .is_none_or(|pane| &pane.attached_terminal_id != coordinator),
+                            "team member {:?} is the coordinator's pane",
+                            member.pane_id
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            self.team_index, members,
+            "team_index must equal the union of team members"
+        );
+        assert_eq!(self.team_count, teams, "team_count must equal the teams");
     }
 
     pub fn insert_test_runtime(

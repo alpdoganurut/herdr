@@ -13,6 +13,8 @@ mod surface_interest_tests;
 mod agent_notices_smoke;
 #[path = "fork_smoke.rs"]
 mod fork_smoke;
+#[path = "teams_smoke.rs"]
+mod teams_smoke;
 
 fn client_shell_projection(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,

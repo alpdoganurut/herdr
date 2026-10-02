@@ -543,6 +543,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # instructions_file = ""
 # Accept agent notices (agents_notify, `herdr agent notify`); off answers notices_off.
 # notices = true
+# claude / codex launched in a team group get the team's roster, purpose and the team tools
+# (herdr_agents for messaging teammates) and, for Claude, a per-turn hook with roster changes.
+# Works without `wrap`; launches outside team groups are unchanged. Needs the shell hook.
+# team_roster = true
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

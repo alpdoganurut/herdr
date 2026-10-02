@@ -23,6 +23,8 @@ fn env() -> WrapEnv {
         dashboard_port: crate::coordinator::DEFAULT_PORT,
         codex_own_instructions: None,
         home: None,
+        pane_id: Some("w3:p1".into()),
+        team: None,
     }
 }
 
@@ -664,5 +666,394 @@ fn an_unmanaged_claude_launch_with_tools_uses_the_coordinator_mcp_config() {
     assert!(home.contains(&path));
     let args = wrap_args("claude", &plan, &s(&["uuid"]));
     assert!(args.contains(&launch::mcp_config_flag(&path)), "{args:?}");
+    drop(home);
+}
+
+// ---------------------------------------------------------------------------
+// The team-only launch wrap
+
+const TEAM_TEXT: &str =
+    "You are a new member (this pane, w3:p1, no role yet) in a herdr+ team (group demo).";
+
+fn team_env() -> WrapEnv {
+    WrapEnv {
+        team: Some(team::TeamLaunch {
+            text: TEAM_TEXT.into(),
+        }),
+        ..env()
+    }
+}
+
+fn team_plan(text: &str) -> WrapPlan {
+    plan(&config(text), &team_env())
+}
+
+fn settings_arg() -> String {
+    format!("--settings={DIR}/team/claude-settings.json")
+}
+
+fn team_allow() -> String {
+    format!("--allowedTools={}", team::claude_allow_list())
+}
+
+#[test]
+fn a_team_launch_with_the_master_off_gets_only_the_team_bits() {
+    let plan = team_plan("");
+    assert!(!plan.master && plan.tools && plan.team.is_some() && plan.team_hook);
+    assert!(plan.instructions.is_none() && !plan.steer && !plan.no_native);
+    let user = s(&["uuid-1"]);
+    assert!(uses_claude_mcp_config(&plan, &user), "the file gate is on");
+    assert!(uses_team_settings(&plan, &user));
+    let args = wrap_args("claude", &plan, &user);
+    assert_eq!(
+        args,
+        [
+            "uuid-1".to_string(),
+            claude_flag(),
+            team_allow(),
+            settings_arg(),
+            "--append-system-prompt".into(),
+            TEAM_TEXT.into(),
+        ]
+    );
+    assert!(!args.iter().any(|a| a == "--no-chrome"));
+    assert_eq!(
+        args.iter().filter(|a| a.starts_with("--settings")).count(),
+        1
+    );
+    // every team tool is pre-approved, the tab tools are not
+    for tool in team::TEAM_TOOLS {
+        assert!(team_allow().contains(&format!("mcp__herdr_agents__{tool}")));
+    }
+    assert!(!team_allow().contains("agents_open_tab"));
+    // no team: the master-off wrap is unchanged
+    let plain = plan_for_off();
+    assert!(!uses_claude_mcp_config(&plain, &user));
+    assert_eq!(wrap_args("claude", &plain, &user), user);
+}
+
+fn plan_for_off() -> WrapPlan {
+    plan(&config(""), &env())
+}
+
+#[test]
+fn the_team_switch_off_or_an_opt_out_drops_the_team_bits() {
+    let off = team_plan("[agents]\nteam_roster = false\n");
+    assert!(off.team.is_none() && !off.tools);
+    assert_eq!(wrap_args("claude", &off, &s(&["x"])), ["x"]);
+    let no_wrap = plan(
+        &config(""),
+        &WrapEnv {
+            herdr_no_wrap: true,
+            ..team_env()
+        },
+    );
+    assert!(no_wrap.team.is_none());
+    let mut opted = team_plan("");
+    opted.disable();
+    assert!(opted.team.is_none() && !opted.team_hook && !opted.tools);
+    assert_eq!(wrap_args("codex", &opted, &[]), ["--no-daemon"]);
+}
+
+#[test]
+fn team_and_instructions_share_one_system_prompt_with_the_master_on() {
+    let plan = team_plan(
+        "[agents]\nwrap = true\ntools = true\ninstructions = true\n[browser]\nsteer_agents = true\n",
+    );
+    let args = wrap_args("claude", &plan, &[]);
+    assert_eq!(
+        args.iter()
+            .filter(|a| *a == "--append-system-prompt")
+            .count(),
+        1
+    );
+    let i = args
+        .iter()
+        .position(|a| a == "--append-system-prompt")
+        .unwrap();
+    assert_eq!(
+        args[i + 1],
+        format!(
+            "{TEAM_TEXT}\n\n{}\n\n{}",
+            instructions::DEFAULT_NOTIFY_PARAGRAPH,
+            BROWSER_STEERING
+        )
+    );
+    // the team allowlist replaces the notify one; one flag
+    assert_eq!(
+        args.iter()
+            .filter(|a| a.starts_with("--allowedTools"))
+            .count(),
+        1
+    );
+    assert!(args.contains(&team_allow()));
+    assert!(args.contains(&"--no-chrome".to_string()));
+}
+
+#[test]
+fn the_users_own_claude_flags_win_with_a_warning() {
+    let plan = team_plan("");
+    let user = s(&[
+        "--settings",
+        "/mine.json",
+        "--allowedTools",
+        "Bash(ls)",
+        "--append-system-prompt=mine",
+        "--",
+        "hi",
+    ]);
+    let args = wrap_args("claude", &plan, &user);
+    assert!(
+        !args.iter().any(|a| a.starts_with("--settings=")),
+        "{args:?}"
+    );
+    assert_eq!(
+        args.iter().filter(|a| a.starts_with("--settings")).count(),
+        1
+    );
+    // the allowlist merges into the user's value
+    let i = args.iter().position(|a| a == "--allowedTools").unwrap();
+    assert_eq!(
+        args[i + 1],
+        format!("Bash(ls),{}", team::claude_allow_list())
+    );
+    assert!(!args.iter().any(|a| a == TEAM_TEXT));
+    assert_eq!(&args[args.len() - 2..], ["--", "hi"]);
+    assert!(!uses_team_settings(&plan, &user));
+    let warnings = team_conflicts("claude", &plan, &user);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(warnings[0].contains("your --settings wins"));
+    assert!(warnings[1].contains("your --append-system-prompt wins"));
+    // `--settings=` form too; no conflict without the team
+    assert_eq!(
+        team_conflicts("claude", &plan, &s(&["--settings=/x"])).len(),
+        1
+    );
+    assert!(team_conflicts("claude", &plan_for_off(), &user).is_empty());
+}
+
+#[test]
+fn the_team_text_is_defused_in_the_prompt() {
+    let launch = team::lookup("w3:p1", |_| {
+        Ok(serde_json::json!({ "eligible": true, "text": "purpose: run -p and --print\u{1b}" }))
+    })
+    .unwrap();
+    let plan = plan(
+        &config(""),
+        &WrapEnv {
+            team: Some(launch),
+            ..env()
+        },
+    );
+    let args = wrap_args("claude", &plan, &[]);
+    let prompt = args.last().unwrap();
+    assert_eq!(prompt, "purpose: run \u{2011}p and \u{2011}-print");
+    assert!(!format!(" {} ", args.join(" ")).contains(" -p "));
+}
+
+#[test]
+fn codex_in_a_team_gets_the_server_the_team_approvals_and_the_roster() {
+    let plan = plan(
+        &config(""),
+        &WrapEnv {
+            codex_own_instructions: Some("Be terse.".into()),
+            ..team_env()
+        },
+    );
+    let args = wrap_args("codex", &plan, &s(&["resume"]));
+    assert_eq!(args[0], "--no-daemon");
+    assert_eq!(args.last().unwrap(), "resume");
+    assert!(!args.iter().any(|a| a == "--disable"));
+    for tool in team::TEAM_TOOLS {
+        let approval = format!("mcp_servers.herdr_agents.tools.{tool}.approval_mode=\"approve\"");
+        assert!(args.contains(&approval), "{tool}");
+    }
+    assert_eq!(
+        developer_instructions(&args).as_deref(),
+        Some(format!("Be terse.\n\n{TEAM_TEXT}").as_str())
+    );
+    // the user's own developer_instructions win, with a warning
+    let user = s(&["-c", "developer_instructions=\"mine\""]);
+    let args = wrap_args("codex", &plan, &user);
+    assert_eq!(developer_instructions(&args).as_deref(), Some("mine"));
+    assert_eq!(team_conflicts("codex", &plan, &user).len(), 1);
+}
+
+#[test]
+fn a_managed_team_launch_gets_nothing_added() {
+    let plan = team_plan("");
+    let dir = std::path::Path::new(DIR);
+    let managed = s(&[
+        "--session-id",
+        "u1",
+        &crate::coordinator::launch::mcp_config_flag(
+            &crate::coordinator::launch::claude_mcp_config_path(dir),
+        ),
+        &format!("--allowedTools={CLAUDE_ALLOW_AGENT}"),
+        &settings_arg(),
+        "--append-system-prompt",
+        TEAM_TEXT,
+        "--",
+        "kickoff",
+    ]);
+    assert_eq!(wrap_args("claude", &plan, &managed), managed);
+    assert!(!uses_claude_mcp_config(&plan, &managed));
+    assert!(team_conflicts("claude", &plan, &managed).is_empty());
+    let codex = crate::coordinator::launch::codex_args(
+        &crate::coordinator::launch::LaunchCtx {
+            herdr_bin: PathBuf::from("/opt/herdr/herdr"),
+            dir: PathBuf::from(DIR),
+            port: crate::coordinator::DEFAULT_PORT,
+        },
+        Some("go"),
+    );
+    let args = wrap_args("codex", &plan, &codex);
+    assert_eq!(&args[1..], &codex[..]);
+    assert!(developer_instructions(&args).is_none());
+}
+
+#[test]
+fn the_lookup_runs_only_for_team_eligible_launches() {
+    let cfg = config("");
+    let user = s(&["x"]);
+    assert!(team::should_lookup(&cfg, &env(), false, "claude", &user));
+    assert!(
+        !team::should_lookup(&cfg, &env(), true, "claude", &user),
+        "--no-herdr"
+    );
+    let no_wrap = WrapEnv {
+        herdr_no_wrap: true,
+        ..env()
+    };
+    assert!(
+        !team::should_lookup(&cfg, &no_wrap, false, "claude", &user),
+        "HERDR_NO_WRAP"
+    );
+    let no_pane = WrapEnv {
+        pane_id: None,
+        ..env()
+    };
+    assert!(!team::should_lookup(&cfg, &no_pane, false, "codex", &user));
+    assert!(!team::should_lookup(
+        &cfg,
+        &env(),
+        false,
+        "claude",
+        &s(&["mcp", "list"])
+    ));
+    assert!(!team::should_lookup(
+        &cfg,
+        &env(),
+        false,
+        "codex",
+        &s(&["login"])
+    ));
+    assert!(!team::should_lookup(
+        &config("[agents]\nteam_roster = false\n"),
+        &env(),
+        false,
+        "claude",
+        &user
+    ));
+    let managed = s(&[&format!("--allowedTools={CLAUDE_ALLOW_AGENT}")]);
+    assert!(!team::should_lookup(
+        &cfg,
+        &env(),
+        false,
+        "claude",
+        &managed
+    ));
+}
+
+#[test]
+fn a_failed_lookup_is_a_plain_wrap() {
+    let launch = team::lookup("w3:p1", |_| Err("server_unavailable: no socket".into()));
+    let plan = plan(
+        &config("[agents]\nwrap = true\ntools = true\n[browser]\nsteer_agents = false\n"),
+        &WrapEnv {
+            team: launch,
+            ..env()
+        },
+    );
+    assert!(plan.team.is_none());
+    assert_eq!(
+        wrap_args("claude", &plan, &[]),
+        [
+            claude_flag(),
+            CLAUDE_ALLOW.to_string(),
+            "--no-chrome".to_string()
+        ]
+    );
+}
+
+#[test]
+fn the_coordinators_real_team_argv_is_seen_as_managed_through_the_hook() {
+    // The argv `agents_open_tab` really builds for a team member, through
+    // the shell hook with every switch on (the dev config) and a team plan:
+    // managed, so the wrap adds no second settings file, allowlist or
+    // MCP config, and warns about nothing of ours.
+    let home = TempHome::new("wrap-managed-team");
+    let dir = crate::coordinator::coordinator_dir();
+    let ctx = LaunchCtx {
+        herdr_bin: PathBuf::from("/opt/herdr/herdr"),
+        dir: dir.clone(),
+        port: crate::coordinator::DEFAULT_PORT,
+    };
+    let team = team::TeamLaunch {
+        text: TEAM_TEXT.into(),
+    };
+    let managed = launch::claude_args_with_team(
+        &ctx,
+        &ClaudeSession::New("u1".into()),
+        false,
+        Some("go"),
+        Some(&team),
+    )
+    .unwrap();
+    assert!(is_managed(&managed, &dir));
+    for mut plan in [plan_for(true, true, true), team_plan("")] {
+        plan.ctx = ctx.clone();
+        if plan.team.is_none() {
+            plan.team = Some(team.clone());
+        }
+        let args = wrap_args("claude", &plan, &managed);
+        assert_eq!(
+            count_herdr_agents(&args),
+            count_herdr_agents(&managed),
+            "{args:?}"
+        );
+        assert_eq!(
+            args.iter().filter(|a| a.starts_with("--settings")).count(),
+            1,
+            "{args:?}"
+        );
+        assert_eq!(
+            args.iter()
+                .filter(|a| a.starts_with("--append-system-prompt"))
+                .count(),
+            1,
+            "one system prompt flag: {args:?}"
+        );
+        let prompt_at = args
+            .iter()
+            .position(|a| a == "--append-system-prompt")
+            .unwrap();
+        assert!(args[prompt_at + 1].contains(TEAM_TEXT), "{args:?}");
+        assert!(!uses_claude_mcp_config(&plan, &managed));
+        assert!(team_conflicts("claude", &plan, &managed).is_empty());
+        assert_eq!(&args[args.len() - 2..], ["--", "go"]);
+    }
+    // Codex: the same for its overrides and developer_instructions.
+    let managed = launch::codex_args_with_team(&ctx, Some("go"), Some(&team));
+    assert!(is_managed(&managed, &dir));
+    let mut plan = plan_for(true, true, true);
+    plan.ctx = ctx.clone();
+    plan.team = Some(team.clone());
+    let args = wrap_args("codex", &plan, &managed);
+    assert_eq!(count_herdr_agents(&args), count_herdr_agents(&managed));
+    assert!(developer_instructions(&args)
+        .unwrap_or_default()
+        .contains(TEAM_TEXT));
+    assert!(team_conflicts("codex", &plan, &managed).is_empty());
     drop(home);
 }

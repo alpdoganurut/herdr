@@ -35,6 +35,7 @@ pub mod key {
     pub const INSTRUCTIONS: &str = "instructions";
     pub const INSTRUCTIONS_FILE: &str = "instructions_file";
     pub const NOTICES: &str = "notices";
+    pub const TEAM_ROSTER: &str = "team_roster";
 }
 
 /// The check ids in [`AgentsSettingsInfo::checks`].
@@ -125,6 +126,11 @@ pub struct AgentsSettingsInfo {
     /// The exact `.zshrc` line the shell-hook fix adds, and the file it edits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook_preview: Option<String>,
+    /// Launches in a team group get the roster, purpose and team tools
+    /// (`[agents] team_roster`; independent of `wrap`). Absent from older
+    /// servers: on, the default.
+    #[serde(default = "default_true")]
+    pub team_roster: bool,
 }
 
 fn default_true() -> bool {
@@ -132,7 +138,7 @@ fn default_true() -> bool {
 }
 
 /// `agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,
-/// `tools`, `instructions` and `notices`; a string for `instructions_file`
+/// `tools`, `instructions`, `notices` and `team_roster`; a string for `instructions_file`
 /// (`""` or `"default"` = built-in, `"file"` = `<config dir>/agents.md`,
 /// seeded with the built-in text when missing, anything else = that path).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
@@ -170,6 +176,7 @@ mod tests {
         let info: AgentsSettingsInfo =
             serde_json::from_str(r#"{"wrap":false,"tools":false,"instructions":false}"#).unwrap();
         assert!(info.notices);
+        assert!(info.team_roster, "an older server's answer reads as on");
         assert_eq!(info.wrap_source, AgentsWrapSource::Default);
     }
 }

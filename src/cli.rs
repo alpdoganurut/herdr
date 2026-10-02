@@ -45,6 +45,7 @@ mod status;
 mod tab;
 mod tab_closed;
 mod target;
+mod team;
 mod workspace;
 mod worktree;
 
@@ -143,6 +144,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "news" => news::run_news_command(&args[2..])?,
         "browser" => browser::run_browser_command(&args[2..])?,
         "coordinator" => coordinator::run_coordinator_command(&args[2..])?,
+        "team" => team::run_team_command(&args[2..])?,
         _ => return Ok(CommandOutcome::NotCli),
     };
 

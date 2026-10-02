@@ -22,6 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::json;
 
 use super::{instructions_path, mcp_dir, write_atomically, DEFAULT_PORT};
+use crate::agent_wrap::team::TeamLaunch;
 
 /// The MCP server key everywhere (Codex `-c` takes a dotted path: no dash).
 pub const MCP_KEY: &str = "herdr_agents";
@@ -156,15 +157,48 @@ pub fn claude_args(
     coordinator: bool,
     kickoff: Option<&str>,
 ) -> io::Result<Vec<String>> {
+    claude_args_with_team(ctx, session, coordinator, kickoff, None)
+}
+
+/// [`claude_args`] for a team member: also the team's hook settings
+/// (`--settings=<dir>/team/claude-settings.json`, written when it differs)
+/// and the roster as its system prompt addition. `None` is [`claude_args`].
+pub fn claude_args_with_team(
+    ctx: &LaunchCtx,
+    session: &ClaudeSession,
+    coordinator: bool,
+    kickoff: Option<&str>,
+    team: Option<&TeamLaunch>,
+) -> io::Result<Vec<String>> {
     let config = write_claude_mcp_config(ctx)?;
-    Ok(claude_argv(
+    let mut args = claude_argv(
         ctx,
         &config,
         session,
         coordinator,
         kickoff,
         env_on(SYSPROMPT_FILE_ENV),
-    ))
+    );
+    if let Some(team) = team {
+        let settings = crate::agent_wrap::team::write_claude_settings(ctx)?;
+        insert_before_dashes(&mut args, claude_team_flags(&settings, team));
+    }
+    Ok(args)
+}
+
+/// The team flags of a managed Claude launch (before its `--`).
+fn claude_team_flags(settings: &Path, team: &TeamLaunch) -> Vec<String> {
+    vec![
+        crate::agent_wrap::team::settings_flag(settings),
+        "--append-system-prompt".into(),
+        team.text.clone(),
+    ]
+}
+
+/// `flags` inserted before the first `--` of `args` (at the end without one).
+fn insert_before_dashes(args: &mut Vec<String>, flags: Vec<String>) {
+    let at = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    args.splice(at..at, flags);
 }
 
 fn claude_argv(
@@ -232,6 +266,50 @@ fn toml_array<S: AsRef<str>>(items: &[S]) -> String {
 /// sandbox, and the herdr_agents MCP server for this launch only.
 pub fn codex_args(ctx: &LaunchCtx, kickoff: Option<&str>) -> Vec<String> {
     codex_argv(ctx, kickoff, env_on(CODEX_NO_DAEMON_ENV))
+}
+
+/// [`codex_args`] for a team member: the roster in `developer_instructions`
+/// after the user's own (Codex's `config.toml`). `None` is [`codex_args`].
+pub fn codex_args_with_team(
+    ctx: &LaunchCtx,
+    kickoff: Option<&str>,
+    team: Option<&TeamLaunch>,
+) -> Vec<String> {
+    let mut args = codex_args(ctx, kickoff);
+    if let Some(team) = team {
+        let own = crate::agent_wrap::codex_developer_instructions();
+        codex_add_team(&mut args, own.as_deref(), team, kickoff.is_some());
+    }
+    args
+}
+
+/// `-c developer_instructions=<own ⧺ team text>` before the kickoff prompt.
+fn codex_add_team(args: &mut Vec<String>, own: Option<&str>, team: &TeamLaunch, kickoff: bool) {
+    let mut parts: Vec<&str> = Vec::new();
+    if let Some(own) = own.map(str::trim).filter(|t| !t.is_empty()) {
+        parts.push(own);
+    }
+    parts.push(team.text.trim());
+    let at = if kickoff {
+        args.len().saturating_sub(1)
+    } else {
+        args.len()
+    };
+    args.splice(
+        at..at,
+        [
+            "-c".to_string(),
+            format!(
+                "developer_instructions={}",
+                toml_string(&parts.join("\n\n"))
+            ),
+        ],
+    );
+}
+
+/// A team member's kickoff: the roster block first, then the usual kickoff.
+pub fn team_kickoff(team_text: &str, kickoff: &str) -> String {
+    format!("{}\n\n{kickoff}", team_text.trim())
 }
 
 /// The `-c mcp_servers.herdr_agents.*` overrides that give a Codex launch
@@ -547,6 +625,85 @@ mod tests {
         assert_eq!(
             agent_kickoff(dir, "lead", None, None, None),
             "You are lead, a herdr+ managed agent. Call agents_whoami once to see the agent tools and etiquette. Wait for the user's instructions."
+        );
+    }
+
+    #[test]
+    fn a_team_launch_adds_the_hook_settings_and_the_roster_before_the_dashes() {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-launch-team-{}-{}",
+            std::process::id(),
+            new_uuid()
+        ));
+        let ctx = LaunchCtx {
+            herdr_bin: PathBuf::from("/opt/herdr/herdr"),
+            dir: dir.clone(),
+            port: DEFAULT_PORT,
+        };
+        let team = TeamLaunch {
+            text: "You are \"fixer\" (pane w3:p1) in a herdr+ team (group demo).".into(),
+        };
+        let session = ClaudeSession::New("u1".into());
+        let plain = claude_args(&ctx, &session, false, Some("go")).unwrap();
+        let args = claude_args_with_team(&ctx, &session, false, Some("go"), Some(&team)).unwrap();
+        let settings = dir.join("team/claude-settings.json");
+        assert!(settings.is_file());
+        let dashes = args.iter().position(|a| a == "--").unwrap();
+        assert_eq!(
+            &args[dashes - 3..],
+            [
+                format!("--settings={}", settings.display()),
+                "--append-system-prompt".to_string(),
+                team.text.clone(),
+                "--".to_string(),
+                "go".to_string(),
+            ]
+        );
+        // everything else is the plain launch
+        let mut without = args.clone();
+        without.drain(dashes - 3..dashes);
+        assert_eq!(without, plain);
+        assert_eq!(
+            claude_args_with_team(&ctx, &session, false, Some("go"), None).unwrap(),
+            plain
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_codex_team_launch_puts_the_roster_after_the_users_instructions() {
+        let team = TeamLaunch {
+            text: "You are \"reviewer\"".into(),
+        };
+        let mut args = codex_argv(&ctx(), Some("go"), false);
+        let plain = args.clone();
+        codex_add_team(&mut args, Some(" Be terse. "), &team, true);
+        assert_eq!(args.last().map(String::as_str), Some("go"));
+        assert_eq!(args[args.len() - 3], "-c");
+        assert_eq!(
+            args[args.len() - 2],
+            format!(
+                "developer_instructions={}",
+                toml_string("Be terse.\n\nYou are \"reviewer\"")
+            )
+        );
+        assert_eq!(args.len(), plain.len() + 2);
+        let mut args = codex_argv(&ctx(), None, false);
+        codex_add_team(&mut args, None, &team, false);
+        assert_eq!(
+            args.last().unwrap(),
+            &format!(
+                "developer_instructions={}",
+                toml_string("You are \"reviewer\"")
+            )
+        );
+        assert_eq!(
+            codex_args_with_team(&ctx(), Some("go"), None),
+            codex_args(&ctx(), Some("go"))
+        );
+        assert_eq!(
+            team_kickoff(" ROSTER \n", "You are fixer."),
+            "ROSTER\n\nYou are fixer."
         );
     }
 }

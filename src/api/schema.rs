@@ -17,6 +17,7 @@ pub mod response;
 pub mod server;
 pub mod session;
 pub mod tabs;
+pub mod team;
 pub mod workspaces;
 pub mod worktrees;
 
@@ -43,6 +44,10 @@ pub use response::*;
 pub use server::*;
 pub use session::*;
 pub use tabs::*;
+pub use team::{
+    TeamActor, TeamContextParams, TeamGetParams, TeamInfo, TeamJoinParams, TeamMakeParams,
+    TeamMemberInfo, TeamPaneParams, TeamSetPurposeParams, TeamSetRoleParams, TeamWorkspaceParams,
+};
 pub use workspaces::*;
 pub use worktrees::*;
 
@@ -177,6 +182,24 @@ pub enum Method {
     AgentsSettingsSet(agent_wrap::AgentsSettingsSetParams),
     #[serde(rename = "agents.fix")]
     AgentsFix(agent_wrap::AgentsFixParams),
+    #[serde(rename = "team.list")]
+    TeamList(EmptyParams),
+    #[serde(rename = "team.get")]
+    TeamGet(team::TeamGetParams),
+    #[serde(rename = "team.make")]
+    TeamMake(team::TeamMakeParams),
+    #[serde(rename = "team.disband")]
+    TeamDisband(team::TeamWorkspaceParams),
+    #[serde(rename = "team.set_purpose")]
+    TeamSetPurpose(team::TeamSetPurposeParams),
+    #[serde(rename = "team.set_role")]
+    TeamSetRole(team::TeamSetRoleParams),
+    #[serde(rename = "team.join")]
+    TeamJoin(team::TeamJoinParams),
+    #[serde(rename = "team.leave")]
+    TeamLeave(team::TeamPaneParams),
+    #[serde(rename = "team.context")]
+    TeamContext(team::TeamContextParams),
     #[serde(rename = "tab.set_color")]
     TabSetColor(TabSetColorParams),
     #[serde(rename = "tab.set_remind")]
