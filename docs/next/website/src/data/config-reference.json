@@ -758,6 +758,12 @@
           "description": "Focus the coordinator tab, creating it (and starting the coordinator when it is enabled) when there is none. Unset by default; for example, open_coordinator = \"alt+c\"."
         },
         {
+          "key": "keys.toggle_info_pane",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Show or hide the focused tab's info pane: a dock on the right with the tab's agent-session notes (click to edit, tick task markers) and its history of checkpoints (decisions, milestones, failures, notes and bookmarks, each expandable to the prompt and reply around it). Open state is per tab; drag the divider or press < and > in the pane to resize. Unset by default; for example, toggle_info_pane = \"alt+n\"."
+        },
+        {
           "key": "keys.copy_mode",
           "type": "keybinding",
           "default": "\"prefix+[\"",
@@ -980,6 +986,12 @@
           "type": "string",
           "default": "\"09:30\"",
           "description": "Local time of day (24-hour \"HH:MM\") a tab's daily reminder (the tab menu's remind selector, tab.set_reminder every = daily) fires. The settings overlay's reminders tab edits it too: its \"daily at HH:MM\" row opens a list of times in 30-minute steps (a configured time off that grid shows first as custom). A new time applies at once: if it is still ahead today the reminder fires today, otherwise tomorrow, and the change itself never fires one. A daily reminder missed while no client was attached fires once when a client next sees the tab that day. An invalid value reports a config warning and uses 09:30."
+        },
+        {
+          "key": "ui.info_pane_width",
+          "type": "integer",
+          "default": "44",
+          "description": "Default width in columns of a tab's info pane (keys.toggle_info_pane) until you drag its divider; a dragged width is remembered by the client. 28 through 120; out-of-range values are clamped with a config warning. The pane never takes more than 70% of the window and always leaves the terminal 30 columns; a pane surface narrower than 58 columns shows no pane until the window widens."
         },
         {
           "key": "ui.mobile_width_threshold",
@@ -1859,6 +1871,18 @@
           "type": "boolean",
           "default": "true",
           "description": "Give `claude` and `codex` launched in a team group (through the shell hook's `herdr agent wrap`) the team's roster, purpose and the team tools: the `herdr_agents` server with the teammate messaging tools pre-approved, and the roster in the system prompt (Claude) or `developer_instructions` (Codex). Claude also gets a per-launch `--settings` file whose hooks add roster changes to its next turn (`herdr team hook`); Codex sees changes at the top of its next `agents_*` tool result. Works whether or not `wrap` is on; launches outside team groups are unchanged. A launch that passes its own `--settings` or system prompt flag keeps it (the roster then arrives through `agents_whoami` and the tool results)."
+        }
+      ]
+    },
+    {
+      "id": "notes",
+      "title": "Notes",
+      "keys": [
+        {
+          "key": "notes.enabled",
+          "type": "boolean",
+          "default": "true",
+          "description": "Per-session notes and checkpoints: the info pane, `herdr notes` / `herdr checkpoint`, the notes.* and checkpoints.* API methods and the agents' notes tools. Notes are markdown files under `<config dir>/notes/` keyed by the agent session (`<agent>-<session id>.md`), or by the tab when it runs no agent; checkpoints are an append-only `<key>.checkpoints.jsonl` beside them. With false every notes method answers `notes_disabled`; the files stay on disk. Independent of the coordinator."
         }
       ]
     },
