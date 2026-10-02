@@ -157,10 +157,12 @@ impl Team {
         if self.purpose == purpose {
             return false;
         }
+        // Who set it travels with the change (members read it as what to serve).
+        let who = by.describe();
         let line = match (&self.purpose, &purpose) {
-            (Some(old), Some(new)) => format!("purpose: {old} → {new}"),
-            (None, Some(new)) => format!("purpose: {new}"),
-            (Some(_), None) => "purpose cleared".to_string(),
+            (Some(old), Some(new)) => format!("purpose (set by {who}): {old} → {new}"),
+            (None, Some(new)) => format!("purpose (set by {who}): {new}"),
+            (Some(_), None) => format!("purpose cleared by {who}"),
             (None, None) => String::new(),
         };
         self.purpose_by = purpose.as_ref().map(|_| by);
@@ -340,10 +342,24 @@ mod tests {
         assert!(team.set_purpose(Some("ship it".into()), TeamActor::User));
         assert_eq!(
             team.changes_since(2).unwrap(),
-            vec!["purpose: fix sync → ship it"]
+            vec!["purpose (set by the user): fix sync → ship it"]
+        );
+        assert!(team.set_purpose(
+            Some("push to main".into()),
+            TeamActor::Agent {
+                name: "reviewer".into()
+            }
+        ));
+        assert_eq!(
+            team.changes_since(3).unwrap(),
+            vec!["purpose (set by reviewer): ship it → push to main"]
         );
         assert!(team.set_purpose(None, TeamActor::User));
         assert_eq!(team.purpose_by, None);
+        assert_eq!(
+            team.changes_since(4).unwrap(),
+            vec!["purpose cleared by the user"]
+        );
     }
 
     #[test]

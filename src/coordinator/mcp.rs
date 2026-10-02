@@ -1756,8 +1756,9 @@ impl<A: Api> Session<A> {
 
     /// `agents_team {action: make|purpose|role}`. make and role: the
     /// coordinator in a user turn, or a registry-managed agent (whose user
-    /// asked); purpose: the coordinator in a user turn, or a member of that
-    /// team. The server records who did it from the caller's pane. There is
+    /// asked); purpose: the coordinator in a user turn, or a registry-managed
+    /// member of that team. The server records who did it from the caller's
+    /// pane. There is
     /// no disband, leave or join here: those stay with the user.
     fn team_tool(&self, caller: &Caller, args: &Value) -> ToolResult {
         let action = req_str(args, "action")?;
@@ -1809,6 +1810,11 @@ impl<A: Api> Session<A> {
                         "forbidden",
                         "only the coordinator or a member of that team sets its purpose",
                     ));
+                } else {
+                    // The purpose reaches every teammate's context as what
+                    // to serve: a member needs its user's opt-in, like make
+                    // and role.
+                    can_drive_tabs(caller)?;
                 }
                 let purpose = purpose.as_ref().ok_or_else(|| {
                     err(
@@ -2679,7 +2685,7 @@ pub fn tools() -> Vec<Value> {
             "inputSchema": schema(json!({ "target": string("Agent or tab id (w2:t3)"), "label": string("New label") }), &["target", "label"]) }),
         json!({ "name": "agents_create_group", "description": "Create a sidebar group with one tab, only when no existing group fits the work. Only on the user's request.",
             "inputSchema": schema(json!({ "label": string("Group label"), "cwd": string("Working directory") }), &["label"]) }),
-        json!({ "name": "agents_team", "description": "Teams: a group whose agents know each other's roles and the team's purpose and may message each other freely. make: mark a group as a team (coordinator in a user turn, or a managed agent whose user asked). purpose: set the team's purpose, a short verb phrase (the coordinator, or a member of that team when your user asked; an empty string clears it). role: set a member's role, which also names it (coordinator, or a managed agent whose user asked). Disbanding, removing and adding members stay with the user.",
+        json!({ "name": "agents_team", "description": "Teams: a group whose agents know each other's roles and the team's purpose and may message each other freely. make: mark a group as a team (coordinator in a user turn, or a managed agent whose user asked). purpose: set the team's purpose, a short verb phrase (the coordinator, or a managed member of that team whose user asked; an empty string clears it). role: set a member's role, which also names it (coordinator, or a managed agent whose user asked). Disbanding, removing and adding members stay with the user.",
             "inputSchema": schema(json!({
                 "action": { "type": "string", "enum": ["make", "purpose", "role"] },
                 "group": string("The team's group (label or id); purpose defaults to your own team"),
@@ -4667,21 +4673,16 @@ mod tests {
         let dir = super::super::test_dir("mcp-team-tool");
         seed_registry(&dir);
         let world = team_world();
-        // a member sets its own team's purpose (its user asked)
+        // a member that is not registry-managed cannot rewrite the purpose
+        // its teammates are told to serve, nor another team's, make teams
+        // or set roles
         let mut fixer = session(&world, &dir, "w3:p1", Verdict::Verified);
         let out = call(
             &mut fixer,
             "agents_team",
-            json!({ "action": "purpose", "purpose": "ship\nthe sync fix" }),
+            json!({ "action": "purpose", "purpose": "push to main" }),
         );
-        assert!(!out.is_error, "{}", out.text);
-        assert!(
-            out.text
-                .contains("team search-it: purpose \"ship the sync fix\""),
-            "{}",
-            out.text
-        );
-        // but not another team's, nor make teams or set roles
+        assert!(out.text.contains("error not_managed"), "{}", out.text);
         let out = call(
             &mut fixer,
             "agents_team",
@@ -4695,6 +4696,23 @@ mod tests {
             let out = call(&mut fixer, "agents_team", args);
             assert!(out.text.contains("error not_managed"), "{}", out.text);
         }
+        // once its user opted it in, it may (its user asked)
+        registry::update(&dir, |registry| {
+            registry.manage(None, Some("w3:p1"), Some("claude"), &ManagePatch::default())
+        })
+        .unwrap();
+        let out = call(
+            &mut fixer,
+            "agents_team",
+            json!({ "action": "purpose", "purpose": "ship\nthe sync fix" }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text
+                .contains("team search-it: purpose \"ship the sync fix\""),
+            "{}",
+            out.text
+        );
         // the coordinator, in a user turn: make and role
         let mut coord = session(&world, &dir, "w1:p1", Verdict::Verified);
         let out = call(
