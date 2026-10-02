@@ -4,10 +4,12 @@
 //! - `actions.rs` — state mutations (testable without PTYs/async)
 
 pub(crate) mod actions;
+pub(crate) mod agent_notices;
 mod agent_resume;
 mod agent_suspend;
 mod agent_transcripts;
 pub(crate) mod agent_view;
+mod agent_wrap_settings;
 #[cfg(unix)]
 pub(crate) use agent_suspend::SUSPEND_GRACEFUL_EXIT_GRACE;
 mod agents;
@@ -163,6 +165,13 @@ pub struct App {
     pub(crate) news: news::NewsState,
     /// The coordinator (fork): lifecycle, tab, worker and read model.
     pub(crate) coordinator: coordinator::CoordinatorState,
+    /// Agent cards (fork): `agent.notify` notices, pushed to client shells.
+    pub(crate) agent_notices: agent_notices::AgentNotices,
+    /// `[agents]` as last applied (fork; the Agents settings section).
+    pub(crate) agents_config: crate::config::AgentsConfig,
+    /// Where `agents.settings` / `agents.fix` look and write; `None` = the
+    /// server's own environment (tests point it at a temporary home).
+    pub(crate) agents_setup_env: Option<crate::browser::setup::SetupEnv>,
     agent_transcript_backup_thread:
         Option<std::thread::JoinHandle<agent_transcripts::AgentTranscriptBackupPass>>,
     /// The most recent finished backup pass, for `agent.transcripts`.
@@ -652,6 +661,9 @@ impl App {
                 &config.coordinator,
                 policy.persist_session,
             ),
+            agent_notices: agent_notices::AgentNotices::new(config.agents.notices),
+            agents_config: config.agents.clone(),
+            agents_setup_env: None,
             agent_transcript_backup_thread: None,
             agent_transcript_backup_last: None,
             agent_transcript_backup_pending: std::collections::BTreeMap::new(),
@@ -931,6 +943,15 @@ impl App {
 
         if !invalid_section("browser") {
             crate::browser::hub().apply_config(&config.browser);
+        }
+
+        if !invalid_section("agents") {
+            if self.agent_notices.enabled() != config.agents.notices {
+                self.render_dirty.request_generic();
+                self.render_notify.notify_one();
+            }
+            self.agent_notices.set_enabled(config.agents.notices);
+            self.agents_config = config.agents.clone();
         }
 
         let graphics_config_valid = !invalid_section("terminal")

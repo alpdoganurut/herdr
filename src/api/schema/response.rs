@@ -166,6 +166,23 @@ pub enum ResponseResult {
     BrowserSettings {
         settings: BrowserSettingsInfo,
     },
+    /// `agent.notify` (fork).
+    AgentNotify {
+        id: String,
+        outcome: super::agent_notices::AgentNotifyOutcome,
+    },
+    /// `agent.notices` and `agent.notice_dismiss` (fork): every card, oldest first.
+    AgentNotices {
+        notices: Vec<super::agent_notices::AgentNoticeInfo>,
+    },
+    /// `agents.settings` and `agents.settings.set` (fork).
+    AgentsSettings {
+        info: super::agent_wrap::AgentsSettingsInfo,
+    },
+    /// `agents.fix` (fork): the checks after the fixes ran.
+    AgentsFix {
+        results: Vec<super::agent_wrap::AgentsCheckInfo>,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

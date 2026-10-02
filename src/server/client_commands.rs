@@ -14,9 +14,13 @@ const ENDPOINT_RESPONSE_CHUNK_BYTES: usize = 512 * 1024;
 
 const CLIENT_SHELL_METHODS: &[&str] = &[
     "agent.activate",
+    "agent.notice_dismiss",
     "agent.restart",
     "agent.suspend",
     "agent.transcripts",
+    "agents.fix",
+    "agents.settings",
+    "agents.settings.set",
     "browser.fix",
     "browser.focus",
     "browser.get",
@@ -461,6 +465,23 @@ mod tests {
         assert_eq!(
             actual.remove("coordinator.wake").as_deref(),
             Some("9b8885f0516494756d440daf6de982049a3c0e7ea65b4f2395ff6446a2a62f94")
+        );
+        // fork: agent cards and the Agents settings section.
+        assert_eq!(
+            actual.remove("agent.notice_dismiss").as_deref(),
+            Some("b82b1a70813888abb724380331ba44fb72812e9b177af4ba08cd17e104bba094")
+        );
+        assert_eq!(
+            actual.remove("agents.fix").as_deref(),
+            Some("5c28b30fb6a27e53ea9144fadfe971cc9ef8c7682fabe21cc99f5485ff250dd5")
+        );
+        assert_eq!(
+            actual.remove("agents.settings").as_deref(),
+            Some("bdae4ed7aed2040ce09b342c53c7e0ca69882ca001d12f7a61f7127fbd2a5b6a")
+        );
+        assert_eq!(
+            actual.remove("agents.settings.set").as_deref(),
+            Some("1b012b44b0d82bfa63daaf37373d75b76289217c1677345bfd4dc8c27c2b59d0")
         );
 
         assert_eq!(

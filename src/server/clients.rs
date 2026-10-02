@@ -178,6 +178,10 @@ pub(crate) struct ClientConnection {
     /// Last coherent shell replacement sent to this client.
     pub(crate) shell_snapshot: Option<crate::protocol::ClientShellSnapshot>,
     pub(crate) shell_agent_completions: Option<crate::protocol::endpoint::EndpointAgentCompletions>,
+    /// Fork: the agent-card revision last sent (`endpoint.agent-notices.v1`);
+    /// `None` until the first payload (none while the server never had a
+    /// card), which then carries `initial`.
+    pub(crate) shell_agent_notices_sent: Option<u64>,
     /// View policy paired with the last coherent shell replacement.
     pub(crate) shell_agent_view: Option<crate::api::schema::AgentViewSetParams>,
     /// Monotonic shell replacement revision for this connection.
@@ -248,6 +252,7 @@ impl ClientConnection {
             shell_location: None,
             shell_snapshot: None,
             shell_agent_completions: None,
+            shell_agent_notices_sent: None,
             shell_agent_view: None,
             shell_projection_revision: 0,
             shell_endpoint_command_in_flight: false,

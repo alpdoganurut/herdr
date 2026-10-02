@@ -329,8 +329,14 @@ impl App {
                 None
             };
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
+        let pane_died = matches!(ev, AppEvent::PaneDied { .. });
         let previous_toast = self.state.toast.clone();
         let mut pane_updates = self.state.handle_app_event(ev);
+        // Fork: `pane.exited` is emitted before the pane goes; drop the
+        // cards of panes the exit removed.
+        if pane_died && !self.agent_notices.is_empty() {
+            self.follow_agent_notice_panes();
+        }
         if update_ready.is_some() {
             self.state.latest_release_notes = crate::release_notes::load_latest();
         }
@@ -800,6 +806,18 @@ impl App {
         ) {
             self.mark_coordinator_input_dirty();
         }
+        // Fork: agent cards follow their pane (O(cards), nothing without cards).
+        if matches!(
+            event.event,
+            EventKind::PaneMoved
+                | EventKind::PaneClosed
+                | EventKind::PaneExited
+                | EventKind::TabClosed
+                | EventKind::WorkspaceClosed
+        ) && !self.agent_notices.is_empty()
+        {
+            self.follow_agent_notice_panes();
+        }
         self.run_plugin_event_hooks(&event);
         self.event_hub.push(event);
     }
@@ -1139,6 +1157,16 @@ impl App {
                 return self.handle_agent_restart(request.id, params);
             }
             Method::AgentTranscripts(_) => return self.handle_agent_transcripts(request.id),
+            Method::AgentNotify(params) => return self.handle_agent_notify(request.id, params),
+            Method::AgentNotices(_) => return self.handle_agent_notices(request.id),
+            Method::AgentNoticeDismiss(params) => {
+                return self.handle_agent_notice_dismiss(request.id, params)
+            }
+            Method::AgentsSettings(_) => return self.handle_agents_settings(request.id),
+            Method::AgentsSettingsSet(params) => {
+                return self.handle_agents_settings_set(request.id, params)
+            }
+            Method::AgentsFix(params) => return self.handle_agents_fix(request.id, params),
             Method::TabSetColor(params) => return self.handle_tab_set_color(request.id, params),
             Method::TabSetRemind(params) => return self.handle_tab_set_remind(request.id, params),
             Method::TabSetReminder(params) => {

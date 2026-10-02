@@ -196,7 +196,13 @@ impl HeadlessServer {
         let Some(location) = client.shell_location.as_mut() else {
             return false;
         };
+        let moved = location.focused_tab_id() != Some(tab_id);
         location.focus_tab(workspace_id, tab_id.to_owned());
+        // Fork: the user's own move into a tab sees its agent cards (API-driven
+        // focus and reconciliation do not come through here).
+        if moved && !self.app.agent_notices.is_empty() {
+            self.app.visit_agent_notices_tab(tab_id);
+        }
         true
     }
 
@@ -343,7 +349,20 @@ impl HeadlessServer {
                 let Some(location) = client.shell_location.as_mut() else {
                     return false;
                 };
+                // Fork: a workspace switch is the user's move into that
+                // workspace's active tab, so it sees that tab's agent cards.
+                let watch_cards = !self.app.agent_notices.is_empty();
+                let tab_before = watch_cards
+                    .then(|| location.focused_tab_id().map(str::to_owned))
+                    .flatten();
                 location.focus_workspace(workspace_id);
+                let entered = watch_cards
+                    .then(|| location.focused_tab_id().map(str::to_owned))
+                    .flatten()
+                    .filter(|tab_after| tab_before.as_ref() != Some(tab_after));
+                if let Some(tab_id) = entered {
+                    self.app.visit_agent_notices_tab(&tab_id);
+                }
                 true
             }
             api::schema::Method::TabFocus(target) => {

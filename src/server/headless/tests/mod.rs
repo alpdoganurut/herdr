@@ -9,6 +9,8 @@ mod surface_delta_tests;
 #[path = "surface_interest.rs"]
 mod surface_interest_tests;
 // fork: smoke tests run by name in the sync gate (FORK.md section 10).
+#[path = "agent_notices_smoke.rs"]
+mod agent_notices_smoke;
 #[path = "fork_smoke.rs"]
 mod fork_smoke;
 

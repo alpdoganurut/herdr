@@ -72,6 +72,7 @@ use crate::server::socket_paths::{
 };
 use crate::server::terminal_attach::paste_payload_for_runtime;
 
+pub mod agent_notices;
 mod bootstrap;
 mod client_views;
 mod coordinator_notify;

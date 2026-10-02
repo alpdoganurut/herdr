@@ -458,6 +458,8 @@ impl HeadlessServer {
         }
 
         let mut broken_clients: Vec<u64> = Vec::new();
+        // Fork: agent cards, framed at most once per pass (only when a client is behind).
+        let mut agent_notice_frames = super::agent_notices::PassFrames::default();
         for (client_id, (cols, rows), cell_size, _is_foreground, mode) in render_targets {
             #[cfg(unix)]
             if matches!(mode, ClientConnectionMode::TerminalObserve { .. })
@@ -578,6 +580,16 @@ impl HeadlessServer {
                     client.shell_snapshot = Some(candidate);
                     client.shell_agent_completions = Some(completions);
                     client.shell_agent_view = agent_view;
+                }
+                if let Err(err) = super::agent_notices::sync_client(
+                    &self.app,
+                    &self.client_shell_boot_id,
+                    client,
+                    &mut agent_notice_frames,
+                ) {
+                    warn!(client_id, err = %err, "failed to send agent notices");
+                    broken_clients.push(client_id);
+                    continue;
                 }
                 shell_projection_revision = client.shell_projection_revision;
                 if !client.shell_surface_active {

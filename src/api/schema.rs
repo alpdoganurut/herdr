@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub mod agent_notices;
+pub mod agent_wrap;
 pub mod agents;
 pub mod browser;
 pub mod closed_sessions;
@@ -18,6 +20,15 @@ pub mod tabs;
 pub mod workspaces;
 pub mod worktrees;
 
+// fork: named re-exports (each module also has `method` / `error_code`).
+pub use agent_notices::{
+    AgentNoticeDismissParams, AgentNoticeInfo, AgentNoticeKind, AgentNotifyOutcome,
+    AgentNotifyParams,
+};
+pub use agent_wrap::{
+    AgentsCheckInfo, AgentsCheckState, AgentsFixParams, AgentsSettingsInfo,
+    AgentsSettingsSetParams, AgentsWrapSource,
+};
 pub use agents::*;
 pub use browser::*;
 pub use closed_sessions::*;
@@ -154,6 +165,18 @@ pub enum Method {
     AgentRestart(AgentRestartParams),
     #[serde(rename = "agent.transcripts")]
     AgentTranscripts(EmptyParams),
+    #[serde(rename = "agent.notify")]
+    AgentNotify(agent_notices::AgentNotifyParams),
+    #[serde(rename = "agent.notices")]
+    AgentNotices(EmptyParams),
+    #[serde(rename = "agent.notice_dismiss")]
+    AgentNoticeDismiss(agent_notices::AgentNoticeDismissParams),
+    #[serde(rename = "agents.settings")]
+    AgentsSettings(EmptyParams),
+    #[serde(rename = "agents.settings.set")]
+    AgentsSettingsSet(agent_wrap::AgentsSettingsSetParams),
+    #[serde(rename = "agents.fix")]
+    AgentsFix(agent_wrap::AgentsFixParams),
     #[serde(rename = "tab.set_color")]
     TabSetColor(TabSetColorParams),
     #[serde(rename = "tab.set_remind")]

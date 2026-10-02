@@ -1302,6 +1302,71 @@
           ],
           "type": "object"
         },
+        "AgentNoticeDismissParams": {
+          "description": "`agent.notice_dismiss`: the cards to remove (`all` removes every card).",
+          "properties": {
+            "all": {
+              "default": false,
+              "type": "boolean"
+            },
+            "ids": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "AgentNoticeKind": {
+          "description": "The card's accent: `info` (default), `question` (blocked on the user),\n`done` (a long task finished), `warning` (needs the user's care).",
+          "oneOf": [
+            {
+              "enum": [
+                "info",
+                "question",
+                "done",
+                "warning"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A kind this side does not know (a newer peer); shown as `info`.",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentNotifyParams": {
+          "description": "`agent.notify`: show the user a card from the agent in `caller_pane`.",
+          "properties": {
+            "body": {
+              "description": "At most 3 lines and 280 characters after sanitizing.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "caller_pane": {
+              "description": "The calling pane (`HERDR_PANE_ID`); aliases of a moved pane resolve.",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/schemas/request/$defs/AgentNoticeKind",
+              "default": "info"
+            },
+            "title": {
+              "description": "One line, at most 80 characters after sanitizing; must not be empty.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "title"
+          ],
+          "type": "object"
+        },
         "AgentPromptParams": {
           "properties": {
             "target": {
@@ -1799,6 +1864,37 @@
           },
           "required": [
             "target"
+          ],
+          "type": "object"
+        },
+        "AgentsFixParams": {
+          "description": "`agents.fix`: the checks to fix; empty = every fixable check. A fix with\n`edits_files` runs only when `confirm` is true.",
+          "properties": {
+            "confirm": {
+              "default": false,
+              "type": "boolean"
+            },
+            "ids": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "AgentsSettingsSetParams": {
+          "description": "`agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,\n`tools`, `instructions` and `notices`; a string for `instructions_file`\n(`\"\"` or `\"default\"` = built-in, `\"file\"` = `<config dir>/agents.md`,\nseeded with the built-in text when missing, anything else = that path).",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "key",
+            "value"
           ],
           "type": "object"
         },
@@ -7695,6 +7791,102 @@
         {
           "properties": {
             "method": {
+              "const": "agent.notify",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentNotifyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.notices",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.notice_dismiss",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentNoticeDismissParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.settings",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.settings.set",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsSettingsSetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.fix",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsFixParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "tab.set_color",
               "type": "string"
             },
@@ -9698,6 +9890,121 @@
           ],
           "type": "object"
         },
+        "AgentNoticeInfo": {
+          "description": "One card as `agent.notices`, `agent.notice_dismiss` and the\n`endpoint.agent-notices.v1` push report it. Tab and workspace are resolved\nwhen the list is built (the pane may have moved since the card was made).",
+          "properties": {
+            "agent": {
+              "description": "The sender's agent kind (`claude`, `codex`), when known.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "body": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "`n<seq>`, unique for the server's lifetime.",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/AgentNoticeKind",
+              "default": "info"
+            },
+            "name": {
+              "description": "The sender: agent name, else agent kind, else pane id.",
+              "type": "string"
+            },
+            "pane_id": {
+              "description": "The sender's pane now.",
+              "type": "string"
+            },
+            "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "unix": {
+              "description": "When the card was made (or last refreshed by a duplicate), seconds\nsince the Unix epoch.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "title",
+            "name",
+            "pane_id",
+            "unix"
+          ],
+          "type": "object"
+        },
+        "AgentNoticeKind": {
+          "description": "The card's accent: `info` (default), `question` (blocked on the user),\n`done` (a long task finished), `warning` (needs the user's care).",
+          "oneOf": [
+            {
+              "enum": [
+                "info",
+                "question",
+                "done",
+                "warning"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A kind this side does not know (a newer peer); shown as `info`.",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentNotifyOutcome": {
+          "description": "What `agent.notify` did.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "shown",
+              "description": "A new card (it replaced the sender's previous card, if any).",
+              "type": "string"
+            },
+            {
+              "const": "deduped",
+              "description": "Same title and body as the sender's current card within 10 minutes:\nthe card was refreshed, no rate-limit slot was used.",
+              "type": "string"
+            }
+          ]
+        },
         "AgentSessionInfo": {
           "properties": {
             "agent": {
@@ -9794,6 +10101,154 @@
             "failed"
           ],
           "type": "object"
+        },
+        "AgentsCheckInfo": {
+          "description": "One status check (`shell_hook`, `claude`, `codex`).",
+          "properties": {
+            "detail": {
+              "default": "",
+              "type": "string"
+            },
+            "edits_files": {
+              "default": false,
+              "description": "The fix edits a user file: the client must confirm first and send\n`agents.fix { confirm: true }`.",
+              "type": "boolean"
+            },
+            "fixable": {
+              "default": false,
+              "description": "`agents.fix` can repair it.",
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/AgentsCheckState",
+              "default": "missing"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
+        "AgentsCheckState": {
+          "description": "A status check's state.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "ok",
+              "description": "Installed and current.",
+              "type": "string"
+            },
+            {
+              "const": "outdated",
+              "description": "Installed but old (the shell hook's file lacks the current marker).",
+              "type": "string"
+            },
+            {
+              "const": "missing",
+              "description": "Not installed (no `.zshrc` line).",
+              "type": "string"
+            },
+            {
+              "const": "absent",
+              "description": "Not on the server's PATH (`claude`, `codex`).",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentsSettingsInfo": {
+          "description": "`agents.settings`: the section's picture.",
+          "properties": {
+            "checks": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/AgentsCheckInfo"
+              },
+              "type": "array"
+            },
+            "hook_preview": {
+              "description": "The exact `.zshrc` line the shell-hook fix adds, and the file it edits.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "instructions": {
+              "description": "Add the herdr+ paragraph to wrapped launches' system prompt.",
+              "type": "boolean"
+            },
+            "instructions_detail": {
+              "default": "",
+              "description": "`built-in`, `~/.config/herdr/agents.md (412 B)`, `missing → built-in`.",
+              "type": "string"
+            },
+            "instructions_file": {
+              "default": "",
+              "description": "`\"\"` = the built-in paragraph, else the file that overrides it.",
+              "type": "string"
+            },
+            "notices": {
+              "default": true,
+              "description": "Accept `agent.notify` cards (`[agents] notices`).",
+              "type": "boolean"
+            },
+            "steer_browser": {
+              "default": false,
+              "description": "`[browser] steer_agents` (read-only here; applies while wrapped).",
+              "type": "boolean"
+            },
+            "tools": {
+              "description": "Add the herdr_agents MCP server to wrapped launches.",
+              "type": "boolean"
+            },
+            "wrap": {
+              "description": "The effective master switch (`[agents] wrap`, else the legacy key).",
+              "type": "boolean"
+            },
+            "wrap_source": {
+              "$ref": "#/schemas/success_response/$defs/AgentsWrapSource",
+              "default": "default"
+            }
+          },
+          "required": [
+            "wrap",
+            "tools",
+            "instructions"
+          ],
+          "type": "object"
+        },
+        "AgentsWrapSource": {
+          "description": "Where the effective `wrap` value comes from.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "agents",
+              "description": "`[agents] wrap`.",
+              "type": "string"
+            },
+            {
+              "const": "browser_legacy",
+              "description": "The legacy `[browser] wrap_agents` (read only as a fallback).",
+              "type": "string"
+            },
+            {
+              "const": "default",
+              "description": "Neither is written: off.",
+              "type": "string"
+            }
+          ]
         },
         "BrowserActivity": {
           "properties": {
@@ -14546,6 +15001,84 @@
               "required": [
                 "type",
                 "settings"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agent.notify` (fork).",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/schemas/success_response/$defs/AgentNotifyOutcome"
+                },
+                "type": {
+                  "const": "agent_notify",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "outcome"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agent.notices` and `agent.notice_dismiss` (fork): every card, oldest first.",
+              "properties": {
+                "notices": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/AgentNoticeInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "agent_notices",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "notices"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.settings` and `agents.settings.set` (fork).",
+              "properties": {
+                "info": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsSettingsInfo"
+                },
+                "type": {
+                  "const": "agents_settings",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "info"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.fix` (fork): the checks after the fixes ran.",
+              "properties": {
+                "results": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/AgentsCheckInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "agents_fix",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "results"
               ],
               "type": "object"
             },

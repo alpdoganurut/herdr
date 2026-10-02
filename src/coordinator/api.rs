@@ -124,6 +124,24 @@ pub fn resolve_caller(api: &impl Api, env_pane: &str) -> Result<CallerPane, ApiE
     }
 }
 
+/// `agent.notify` from `caller_pane` → `(card id, outcome)` (`shown` or
+/// `deduped`). The server names the sender from its own pane record.
+pub fn agent_notify(
+    api: &impl Api,
+    caller_pane: &str,
+    kind: crate::api::schema::AgentNoticeKind,
+    title: &str,
+    body: Option<&str>,
+) -> Result<(String, String), ApiError> {
+    let result = api.call(Method::AgentNotify(crate::api::schema::AgentNotifyParams {
+        caller_pane: caller_pane.to_string(),
+        kind,
+        title: title.to_string(),
+        body: body.map(str::to_string),
+    }))?;
+    Ok((str_at(&result, &["id"])?, str_at(&result, &["outcome"])?))
+}
+
 /// `agent.list` → `agents`.
 pub fn agents(api: &impl Api) -> Result<Vec<Value>, ApiError> {
     take_list(api.call(Method::AgentList(EmptyParams {}))?, "agents")
