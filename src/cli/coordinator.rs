@@ -303,11 +303,16 @@ fn wake(server: &Server<'_>, args: &[String]) -> Result<i32, Fail> {
             caller_pane: server.caller_pane.clone(),
         },
     )?;
-    println!(
-        "wake requested; it is sent once the coordinator is idle. {}",
-        state_line(&info)
-    );
+    println!("{} {}", wake_line(&info), state_line(&info));
     Ok(0)
+}
+
+/// The `wake` reply's first line: why the wake waits, when it does.
+fn wake_line(info: &CoordinatorGetInfo) -> String {
+    match info.wake_queued.as_deref() {
+        Some(reason) => format!("wake queued: {reason}; it is sent once the coordinator is idle."),
+        None => "wake requested; it is sent once the coordinator is idle.".into(),
+    }
 }
 
 fn status(server: &Server<'_>, args: &[String]) -> Result<i32, Fail> {
@@ -1142,6 +1147,19 @@ mod tests {
         ));
         let off = CoordinatorGetInfo::default();
         assert_eq!(dashboard_reason(&off), "the coordinator is off");
+    }
+
+    #[test]
+    fn a_queued_wake_says_why_it_waits() {
+        let queued = CoordinatorGetInfo {
+            wake_queued: Some("coordinator is waiting on a prompt in its tab".into()),
+            ..CoordinatorGetInfo::default()
+        };
+        assert_eq!(
+            wake_line(&queued),
+            "wake queued: coordinator is waiting on a prompt in its tab; it is sent once the coordinator is idle."
+        );
+        assert!(wake_line(&CoordinatorGetInfo::default()).starts_with("wake requested"));
     }
 
     #[test]

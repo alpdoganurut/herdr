@@ -812,6 +812,7 @@ impl App {
             unread_suggestions: state.unread,
             coordinator_dir: state.dir.display().to_string(),
             notify: state.notify.enabled,
+            wake_queued: None,
         }
     }
 
@@ -878,8 +879,14 @@ impl App {
         id: String,
         params: CoordinatorWakeParams,
     ) -> String {
-        let result = self.wake_coordinator(params.caller_pane.as_deref());
-        self.coordinator_reply(id, result)
+        match self.wake_coordinator(params.caller_pane.as_deref()) {
+            Ok(queued) => {
+                let mut info = self.coordinator_get_info();
+                info.wake_queued = queued;
+                encode_success(id, ResponseResult::CoordinatorGet { info })
+            }
+            Err(err) => encode_error(id, err.code, err.message),
+        }
     }
 
     pub(crate) fn handle_coordinator_start(
@@ -1031,16 +1038,25 @@ impl App {
     }
 
     /// `coordinator.wake`: a wake-up that bypasses the gap and the caps (the
-    /// coordinator must still be idle; the worker holds it otherwise).
+    /// coordinator must still be idle; the worker holds it otherwise). A
+    /// coordinator that is up or coming up takes the request; it stays
+    /// queued until the coordinator is idle. Returns why it waits when it
+    /// cannot be delivered now.
     pub(crate) fn wake_coordinator(
         &mut self,
         caller_pane: Option<&str>,
-    ) -> Result<(), CoordinatorError> {
+    ) -> Result<Option<String>, CoordinatorError> {
         if !self.coordinator.enabled {
             return Err(CoordinatorError::disabled());
         }
         self.refuse_in_coordinator_turn(caller_pane)?;
-        if !matches!(self.coordinator.phase, CoordPhase::Running) {
+        if !matches!(
+            self.coordinator.phase,
+            CoordPhase::Running
+                | CoordPhase::Migrating { .. }
+                | CoordPhase::Starting { .. }
+                | CoordPhase::Launching { .. }
+        ) {
             return Err(CoordinatorError::new(
                 error_code::NOT_RUNNING,
                 "the coordinator is not running",
@@ -1049,7 +1065,55 @@ impl App {
         self.coordinator.send(WorkerMsg::Wake);
         // The worker's pass needs fresh facts to see an idle coordinator.
         self.coordinator.input_dirty = true;
-        Ok(())
+        Ok(self.coordinator_wake_hold())
+    }
+
+    /// Why a wake-up cannot be delivered now, or `None` when the
+    /// coordinator is idle and interactive (the worker may still wait a
+    /// few seconds for it to settle). Uses the delivery's own check.
+    fn coordinator_wake_hold(&self) -> Option<String> {
+        let own = self.existing_coordinator_pane();
+        let status = own.and_then(|own| self.coordinator_status(own));
+        if status == Some("blocked") {
+            return Some("coordinator is waiting on a prompt in its tab".into());
+        }
+        if !matches!(self.coordinator.phase, CoordPhase::Running) {
+            return Some("coordinator is starting".into());
+        }
+        let Some(own) = own else {
+            return Some("coordinator tab is gone".into());
+        };
+        let reason = match status {
+            Some("idle" | "done") if !self.coordinator_interactive(own) => {
+                "coordinator is starting"
+            }
+            Some("idle" | "done") => {
+                let turn_live = self
+                    .coordinator
+                    .last_output
+                    .as_ref()
+                    .is_some_and(|out| out.turn.is_some());
+                if !turn_live {
+                    return None;
+                }
+                "a coordinator turn is in progress"
+            }
+            Some("working") => "coordinator is working",
+            Some("suspended") => "coordinator is suspended",
+            Some(_) => "coordinator status unknown, check its tab",
+            None => "coordinator is not running in its tab",
+        };
+        Some(reason.into())
+    }
+
+    /// Whether the coordinator pane takes a prompt: its managed launch
+    /// settled and the agent is interactive.
+    fn coordinator_interactive(&self, own: CoordPane) -> bool {
+        self.coordinator_terminal(own).is_some_and(|terminal| {
+            !terminal.managed_agent_launch_pending()
+                && (terminal.managed_agent_kind().is_none()
+                    || terminal.managed_agent_interactive_ready())
+        })
     }
 
     /// `coordinator.start`: start a coordinator that is not up, or restart a
@@ -1929,11 +1993,7 @@ impl App {
             return;
         };
         let status = self.coordinator_status(own).unwrap_or("offline");
-        let interactive = self.coordinator_terminal(own).is_some_and(|terminal| {
-            !terminal.managed_agent_launch_pending()
-                && (terminal.managed_agent_kind().is_none()
-                    || terminal.managed_agent_interactive_ready())
-        });
+        let interactive = self.coordinator_interactive(own);
         if !matches!(status, "idle" | "done") || !interactive {
             reply(&mut self.coordinator, WakeOutcome::Held(status.to_string()));
             return;
@@ -2943,6 +3003,117 @@ mod tests {
                 ..
             } if status == "working"
         )));
+    }
+
+    #[tokio::test]
+    async fn a_wake_that_cannot_be_delivered_says_why_and_stays_queued() {
+        let mut app = coordinator_app(true);
+        let now = launching(&mut app);
+        let wakes = |app: &App| {
+            app.coordinator
+                .sent
+                .iter()
+                .filter(|msg| matches!(msg, WorkerMsg::Wake))
+                .count()
+        };
+        let set = |app: &mut App, state: crate::detect::AgentState, at: Instant| {
+            let terminal = coordinator_terminal_mut(app);
+            terminal.set_detected_state(Some(crate::detect::Agent::Claude), state);
+            terminal.reconcile_managed_agent_at(at, false);
+        };
+
+        // Launching, on a prompt (Claude's folder trust): queued, not refused.
+        set(&mut app, crate::detect::AgentState::Blocked, now);
+        assert_eq!(
+            app.wake_coordinator(None).unwrap().as_deref(),
+            Some("coordinator is waiting on a prompt in its tab")
+        );
+        assert_eq!(wakes(&app), 1, "the wake is queued with the worker");
+
+        let settle = now + Duration::from_secs(5);
+        set(&mut app, crate::detect::AgentState::Idle, settle);
+        app.handle_coordinator_tasks(settle);
+        assert_eq!(app.coordinator.phase, CoordPhase::Running);
+
+        for (state, reason) in [
+            (crate::detect::AgentState::Working, "coordinator is working"),
+            (
+                crate::detect::AgentState::Unknown,
+                "coordinator status unknown, check its tab",
+            ),
+            (
+                crate::detect::AgentState::Blocked,
+                "coordinator is waiting on a prompt in its tab",
+            ),
+        ] {
+            set(&mut app, state, settle);
+            assert_eq!(
+                app.wake_coordinator(None).unwrap().as_deref(),
+                Some(reason),
+                "{state:?}"
+            );
+        }
+        set(&mut app, crate::detect::AgentState::Idle, settle);
+        assert_eq!(app.wake_coordinator(None).unwrap(), None, "deliverable now");
+        assert_eq!(wakes(&app), 5);
+
+        // The reply carries it; `coordinator.get` does not.
+        set(&mut app, crate::detect::AgentState::Working, settle);
+        let reply = app.handle_coordinator_wake("w".into(), CoordinatorWakeParams::default());
+        assert!(
+            reply.contains(r#""wake_queued":"coordinator is working""#),
+            "{reply}"
+        );
+        assert!(!app
+            .handle_coordinator_get("g".into())
+            .contains("wake_queued"));
+
+        // Down still refuses.
+        app.coordinator.go_down(down_reason::START_FAILED, "test");
+        assert_eq!(
+            app.wake_coordinator(None).unwrap_err().code,
+            error_code::NOT_RUNNING
+        );
+    }
+
+    #[tokio::test]
+    async fn an_agent_status_change_refreshes_the_coordinator_facts() {
+        let mut app = coordinator_app(true);
+        let now = launching(&mut app);
+        let pane = app.existing_coordinator_pane().unwrap();
+        let transition = |app: &mut App, state: crate::detect::AgentState| {
+            app.coordinator.input_dirty = false;
+            let update = app
+                .state
+                .update_terminal_state(pane.pane_id, |terminal| {
+                    let change =
+                        terminal.set_detected_state(Some(crate::detect::Agent::Claude), state);
+                    terminal.reconcile_managed_agent_at(now, false);
+                    Some(crate::terminal::TerminalStateMutation {
+                        effective_state_change: change,
+                        session_ref_changed: false,
+                        agent_released: false,
+                    })
+                })
+                .expect("a state update");
+            let relabelled = update.previous_agent_label != update.agent_label;
+            app.emit_pane_state_update(&update);
+            (relabelled, app.coordinator.input_dirty)
+        };
+        // The first one names the agent; the next ones only change status.
+        assert_eq!(
+            transition(&mut app, crate::detect::AgentState::Working),
+            (true, true)
+        );
+        assert_eq!(
+            transition(&mut app, crate::detect::AgentState::Idle),
+            (false, true),
+            "a status change alone marks the facts stale"
+        );
+        assert_eq!(
+            transition(&mut app, crate::detect::AgentState::Working),
+            (false, true)
+        );
     }
 
     #[test]

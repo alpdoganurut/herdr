@@ -216,6 +216,11 @@ pub struct CoordinatorGetInfo {
     /// `[coordinator] notify`: the coordinator's own notifications.
     #[serde(default = "default_true")]
     pub notify: bool,
+    /// Set only on a `coordinator.wake` reply when the wake cannot be
+    /// delivered now: why it waits (e.g. `coordinator is working`). The wake
+    /// stays queued and is sent once the coordinator is idle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_queued: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -245,6 +250,7 @@ impl Default for CoordinatorGetInfo {
             unread_suggestions: 0,
             coordinator_dir: String::new(),
             notify: true,
+            wake_queued: None,
         }
     }
 }

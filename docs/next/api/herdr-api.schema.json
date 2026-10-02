@@ -10914,6 +10914,13 @@
                 "pending": 0,
                 "seq": 0
               }
+            },
+            "wake_queued": {
+              "description": "Set only on a `coordinator.wake` reply when the wake cannot be\ndelivered now: why it waits (e.g. `coordinator is working`). The wake\nstays queued and is sent once the coordinator is idle.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [

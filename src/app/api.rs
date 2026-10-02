@@ -669,6 +669,7 @@ impl App {
         }
 
         if update.previous_agent_label != update.agent_label || update.agent_released {
+            self.mark_coordinator_input_dirty();
             self.emit_event(crate::api::schema::EventEnvelope {
                 event: crate::api::schema::EventKind::PaneAgentDetected,
                 data: crate::api::schema::EventData::PaneAgentDetected {
@@ -697,6 +698,11 @@ impl App {
             .map(|pane| agent_status(update.state, pane.seen, update.suspended))
             .unwrap_or_else(|| agent_status(update.state, update.seen, update.suspended));
 
+        if previous_agent_status != agent_status {
+            // The coordinator's facts follow every status change (detection
+            // and hooks land here, not in `emit_agent_status_transition`).
+            self.mark_coordinator_input_dirty();
+        }
         if previous_agent_status != agent_status
             || update.previous_presentation != update.presentation
         {
