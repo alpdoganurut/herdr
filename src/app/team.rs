@@ -165,17 +165,22 @@ impl App {
         }
     }
 
-    /// A group by id, by sidebar number, or by its label (unique).
+    /// A group by id, by its label (unique), or by sidebar number, in that
+    /// order (a group labelled "2024" is found by its label); never an index
+    /// past the last group.
     fn team_resolve_group(&self, group: &str) -> Option<usize> {
         let group = group.trim();
-        if let Some(ws_idx) = self.parse_workspace_id(group) {
+        if let Some(ws_idx) = self.state.workspaces.iter().position(|ws| ws.id == group) {
             return Some(ws_idx);
         }
         let mut hits = self.state.workspaces.iter().enumerate().filter(|(_, ws)| {
             ws.custom_name.as_deref() == Some(group) || ws.cached_auto_label == group
         });
-        let (ws_idx, _) = hits.next()?;
-        hits.next().is_none().then_some(ws_idx)
+        if let Some((ws_idx, _)) = hits.next() {
+            return hits.next().is_none().then_some(ws_idx);
+        }
+        self.parse_workspace_id(group)
+            .filter(|ws_idx| self.state.workspaces.get(*ws_idx).is_some())
     }
 
     fn team_group_or_error(&self, group: &str) -> TeamResult<usize> {
@@ -1363,6 +1368,59 @@ mod tests {
             .as_ref()
             .map(|team| team.members.iter().map(|member| member.pane_id).collect())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn groups_past_the_last_never_panic_and_labels_win_over_numbers() {
+        let mut app = team_app();
+        // Two groups: positional "9" and "w_9" name nothing.
+        for group in ["9", "w_9"] {
+            let made = call(
+                &mut app,
+                Method::TeamMake(TeamMakeParams {
+                    workspace_id: group.into(),
+                    ..TeamMakeParams::default()
+                }),
+            );
+            assert_eq!(made["error"]["code"], "workspace_not_found", "{made}");
+            let disbanded = call(
+                &mut app,
+                Method::TeamDisband(TeamWorkspaceParams {
+                    workspace_id: group.into(),
+                }),
+            );
+            assert_eq!(disbanded["error"]["code"], "workspace_not_found");
+            let purpose = call(
+                &mut app,
+                Method::TeamSetPurpose(TeamSetPurposeParams {
+                    workspace_id: group.into(),
+                    purpose: Some("x".into()),
+                    caller_pane: None,
+                }),
+            );
+            assert_eq!(purpose["error"]["code"], "workspace_not_found");
+        }
+        // A numeric label is a label, not index 2023.
+        app.state.workspaces[1].custom_name = Some("2024".into());
+        let made = call(
+            &mut app,
+            Method::TeamMake(TeamMakeParams {
+                workspace_id: "2024".into(),
+                ..TeamMakeParams::default()
+            }),
+        );
+        assert_eq!(made["result"]["type"], "team_reply", "{made}");
+        assert!(app.state.workspaces[1].team.is_some());
+        // The sidebar number still works when no label claims it.
+        let purpose = call(
+            &mut app,
+            Method::TeamSetPurpose(TeamSetPurposeParams {
+                workspace_id: "2".into(),
+                purpose: Some("ship it".into()),
+                caller_pane: None,
+            }),
+        );
+        assert_eq!(purpose["result"]["team"]["purpose"], "ship it", "{purpose}");
     }
 
     #[test]
