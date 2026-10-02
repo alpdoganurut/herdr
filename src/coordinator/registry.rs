@@ -306,7 +306,7 @@ pub fn update<R>(
     let mut registry = match load_strict(dir) {
         Ok(registry) => registry,
         Err(LoadError::Corrupt(err)) => {
-            tracing::warn!("herdr+ registry is corrupt: {err}");
+            tracing::warn!("coordinator: registry is corrupt: {err}");
             return Err("managed.json is corrupt; fix or remove it".into());
         }
         Err(LoadError::Io(err)) => return Err(format!("cannot read managed.json: {err}")),

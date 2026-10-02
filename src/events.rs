@@ -200,4 +200,6 @@ pub enum AppEvent {
     WorktreeRemoveFinished(Box<WorktreeRemoveResult>),
     /// Background worktree discovery completed for an API list/open request.
     WorktreeReadFinished(Box<WorktreeReadResult>),
+    /// The coordinator worker finished a pass with something to report.
+    CoordinatorPassFinished(Box<crate::coordinator::engine::CoordinatorPassOutput>),
 }

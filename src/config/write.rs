@@ -18,6 +18,19 @@ pub(crate) enum ConfigEdit<'a> {
     NewsTimes(&'a [String]),
     /// Fork: `news.quiet_hours`, `HH:MM-HH:MM` or empty for none.
     NewsQuietHours(&'a str),
+    /// Fork: `coordinator.enabled`.
+    CoordinatorEnabled(bool),
+    /// Fork: `coordinator.cap_hour` and `coordinator.cap_day`, together.
+    CoordinatorWakeCaps {
+        cap_hour: u32,
+        cap_day: u32,
+    },
+    /// Fork: `coordinator.model`; `None` removes it.
+    CoordinatorModel(Option<&'a str>),
+    /// Fork: `coordinator.notify`.
+    CoordinatorNotify(bool),
+    /// Fork: `ui.sidebar_layout = "tabs"` (the coordinator settings hint).
+    SidebarLayoutTabs,
     /// Fork: a `[browser]` toggle (`browser.settings.set`).
     BrowserBool {
         key: &'static str,
@@ -56,6 +69,11 @@ impl ConfigEdit<'_> {
             Self::DailyReminderTime(_) => "daily reminder time",
             Self::SoundFile { .. } => "sound setting",
             Self::NewsEnabled(_) | Self::NewsTimes(_) | Self::NewsQuietHours(_) => "news setting",
+            Self::CoordinatorEnabled(_)
+            | Self::CoordinatorWakeCaps { .. }
+            | Self::CoordinatorModel(_)
+            | Self::CoordinatorNotify(_) => "coordinator setting",
+            Self::SidebarLayoutTabs => "sidebar setting",
             Self::BrowserBool { .. }
             | Self::BrowserString { .. }
             | Self::BrowserList { .. }
@@ -134,6 +152,38 @@ impl ConfigEdit<'_> {
                 "quiet_hours",
                 &toml::Value::String(window.trim().to_owned()).to_string(),
             ),
+            Self::CoordinatorEnabled(enabled) => {
+                super::upsert_section_bool(content, "coordinator", "enabled", enabled)
+            }
+            Self::CoordinatorWakeCaps { cap_hour, cap_day } => {
+                let content = super::upsert_section_value(
+                    content,
+                    "coordinator",
+                    "cap_hour",
+                    &cap_hour.to_string(),
+                );
+                super::upsert_section_value(
+                    &content,
+                    "coordinator",
+                    "cap_day",
+                    &cap_day.to_string(),
+                )
+            }
+            Self::CoordinatorModel(Some(model)) => super::upsert_section_value(
+                content,
+                "coordinator",
+                "model",
+                &toml::Value::String(model.trim().to_owned()).to_string(),
+            ),
+            Self::CoordinatorModel(None) => {
+                super::remove_section_key(content, "coordinator", "model")
+            }
+            Self::CoordinatorNotify(enabled) => {
+                super::upsert_section_bool(content, "coordinator", "notify", enabled)
+            }
+            Self::SidebarLayoutTabs => {
+                super::upsert_section_value(content, "ui", "sidebar_layout", "\"tabs\"")
+            }
             // The browser edits go through toml_edit: `[browser]  # note`,
             // `[ browser ]`, multi-line arrays and trailing comments survive.
             Self::BrowserBool { key, value } => browser_table_edit(content, |table| {

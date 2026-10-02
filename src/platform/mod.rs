@@ -333,6 +333,12 @@ pub(crate) use unix_common::{
 };
 
 mod client_state;
+/// Fork: the coordinator relies on the public JSON API socket, confirmed on
+/// unix only so far.
+pub(crate) fn coordinator_supported() -> bool {
+    cfg!(unix)
+}
+
 pub(crate) use client_state::{create_private_state_file, replace_file, sync_parent_directory};
 
 #[cfg(not(unix))]

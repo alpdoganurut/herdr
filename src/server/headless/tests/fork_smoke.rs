@@ -1586,3 +1586,7 @@ async fn browser_settings_write_the_config_and_fix_the_hook_and_codex_entries() 
     std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[cfg(unix)]
+#[path = "fork_smoke/coordinator.rs"]
+mod coordinator;

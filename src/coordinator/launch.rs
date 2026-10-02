@@ -1,5 +1,5 @@
-//! Launch argv for herdr+ agents: the flags that give a Claude Code or Codex
-//! session the `herdr plus mcp` server for this launch only (nothing is
+//! Launch argv for managed agents: the flags that give a Claude Code or Codex
+//! session the `herdr coordinator mcp` server for this launch only (nothing is
 //! written to the user's global agent configs), its permission allowlist and
 //! its kickoff prompt. Pure builders apart from the Claude MCP config file.
 //!
@@ -20,31 +20,35 @@ use serde_json::json;
 use super::{instructions_path, mcp_dir, write_atomically, DEFAULT_PORT};
 
 /// The MCP server key everywhere (Codex `-c` takes a dotted path: no dash).
-pub const MCP_KEY: &str = "herdr_plus";
-/// Claude allowlist for a managed agent: every herdr_plus tool.
-pub const CLAUDE_ALLOW_AGENT: &str = "mcp__herdr_plus";
-/// Claude allowlist for the coordinator: the herdr+ and browser tools and
-/// the read-only `herdr plus` verbs. The CLI's write verbs (manage, unmanage,
-/// coordinator wake/start/clear-turn) are not pre-approved: they would get
+pub const MCP_KEY: &str = "herdr_agents";
+/// Claude allowlist for a managed agent: every herdr_agents tool.
+pub const CLAUDE_ALLOW_AGENT: &str = "mcp__herdr_agents";
+/// Claude allowlist for the coordinator: the herdr_agents and browser tools and
+/// the read-only `herdr coordinator` verbs. The CLI's write verbs (manage, unmanage,
+/// wake, start, clear-turn) are not pre-approved: they would get
 /// around the MCP tools' non-user-turn guard without a prompt.
-pub const CLAUDE_ALLOW_COORDINATOR: &str = "mcp__herdr_plus,mcp__herdr-browser,Bash(herdr plus status:*),Bash(herdr plus messages:*),Bash(herdr plus coordinator status:*)";
+pub const CLAUDE_ALLOW_COORDINATOR: &str = "mcp__herdr_agents,mcp__herdr-browser,Bash(herdr coordinator status:*),Bash(herdr coordinator messages:*)";
 /// `1` adds `--append-system-prompt-file=<dir>/coordinator.md` to the coordinator.
-pub const SYSPROMPT_FILE_ENV: &str = "HERDR_PLUS_SYSPROMPT_FILE";
+pub const SYSPROMPT_FILE_ENV: &str = "HERDR_COORDINATOR_SYSPROMPT_FILE";
 /// `1` adds `--no-daemon` to Codex (when no shell hook adds it).
-pub const CODEX_NO_DAEMON_ENV: &str = "HERDR_PLUS_CODEX_NO_DAEMON";
+pub const CODEX_NO_DAEMON_ENV: &str = "HERDR_COORDINATOR_CODEX_NO_DAEMON";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchCtx {
     /// The herdr binary the MCP server runs from (`current_exe`).
     pub herdr_bin: PathBuf,
-    /// The absolute herdr+ directory, passed to every MCP server as `--dir`.
+    /// The absolute coordinator directory, passed to every MCP server as `--dir`.
     pub dir: PathBuf,
-    /// The dashboard port; passed to the MCP server as `--port` when not the default.
+    /// The herdr server's `[coordinator] dashboard_port` (`0` = not served);
+    /// passed to the MCP server as `--port` when not the default, so
+    /// `agents_whoami` prints the URL the server actually uses and agents the
+    /// MCP server starts inherit it.
     pub port: u16,
 }
 
 impl LaunchCtx {
-    /// The running herdr binary with this directory and port.
+    /// The running herdr binary with this directory and the configured
+    /// dashboard port.
     pub fn current(dir: PathBuf, port: u16) -> io::Result<Self> {
         Ok(Self {
             herdr_bin: std::env::current_exe()?,
@@ -53,10 +57,10 @@ impl LaunchCtx {
         })
     }
 
-    /// `herdr plus mcp` arguments.
+    /// `herdr coordinator mcp` arguments.
     fn mcp_args(&self) -> Vec<String> {
         let mut args = vec![
-            "plus".to_string(),
+            "coordinator".to_string(),
             "mcp".to_string(),
             "--dir".to_string(),
             self.dir.to_string_lossy().into_owned(),
@@ -215,7 +219,7 @@ fn toml_array<S: AsRef<str>>(items: &[S]) -> String {
 }
 
 /// Codex argv after the executable: no approval prompts, a workspace-write
-/// sandbox, and the herdr_plus MCP server for this launch only.
+/// sandbox, and the herdr_agents MCP server for this launch only.
 pub fn codex_args(ctx: &LaunchCtx, kickoff: Option<&str>) -> Vec<String> {
     codex_argv(ctx, kickoff, env_on(CODEX_NO_DAEMON_ENV))
 }
@@ -243,7 +247,7 @@ fn codex_argv(ctx: &LaunchCtx, kickoff: Option<&str>, no_daemon: bool) -> Vec<St
         format!("{key}.tool_timeout_sec=150"),
         // Under `-a never` Codex rejects an MCP call that needs approval
         // ("requires approval, but approval policy is never"); pre-approve
-        // this one server, like Claude's `--allowedTools=mcp__herdr_plus`.
+        // this one server, like Claude's `--allowedTools=mcp__herdr_agents`.
         "-c".into(),
         format!("{key}.default_tools_approval_mode=\"approve\""),
     ];
@@ -287,7 +291,7 @@ pub fn agent_kickoff(
         .filter(|t| !t.is_empty())
         .unwrap_or("Wait for the user's instructions.");
     format!(
-        "You are {name}, a herdr+ managed agent{tags}. Call plus_whoami once to see the herdr+ tools and etiquette. {task}"
+        "You are {name}, a herdr+ managed agent{tags}. Call agents_whoami once to see the agent tools and etiquette. {task}"
     )
 }
 
@@ -299,7 +303,7 @@ mod tests {
     fn ctx() -> LaunchCtx {
         LaunchCtx {
             herdr_bin: PathBuf::from("/opt/herdr \"dev\"/herdr"),
-            dir: PathBuf::from("/home/u/.config/herdr-dev/plus"),
+            dir: PathBuf::from("/home/u/.config/herdr-dev/coordinator"),
             port: DEFAULT_PORT,
         }
     }
@@ -344,8 +348,8 @@ mod tests {
             [
                 "--session-id",
                 "u1",
-                "--mcp-config=/home/u/.config/herdr-dev/plus/mcp/claude.json",
-                "--allowedTools=mcp__herdr_plus",
+                "--mcp-config=/home/u/.config/herdr-dev/coordinator/mcp/claude.json",
+                "--allowedTools=mcp__herdr_agents",
                 "--",
                 "--hello",
             ]
@@ -363,10 +367,10 @@ mod tests {
             [
                 "--resume",
                 "u2",
-                "--mcp-config=/home/u/.config/herdr-dev/plus/mcp/claude.json",
+                "--mcp-config=/home/u/.config/herdr-dev/coordinator/mcp/claude.json",
                 "--permission-mode",
                 "acceptEdits",
-                "--allowedTools=mcp__herdr_plus,mcp__herdr-browser,Bash(herdr plus status:*),Bash(herdr plus messages:*),Bash(herdr plus coordinator status:*)",
+                "--allowedTools=mcp__herdr_agents,mcp__herdr-browser,Bash(herdr coordinator status:*),Bash(herdr coordinator messages:*)",
                 "--",
             ]
         );
@@ -381,7 +385,7 @@ mod tests {
         assert_eq!(
             &with_file[with_file.len() - 3..],
             [
-                "--append-system-prompt-file=/home/u/.config/herdr-dev/plus/coordinator.md",
+                "--append-system-prompt-file=/home/u/.config/herdr-dev/coordinator/coordinator.md",
                 "--",
                 "go"
             ]
@@ -393,13 +397,9 @@ mod tests {
         for entry in CLAUDE_ALLOW_COORDINATOR.split(',') {
             if let Some(command) = entry.strip_prefix("Bash(") {
                 assert!(
-                    [
-                        "herdr plus status:",
-                        "herdr plus messages:",
-                        "herdr plus coordinator status:"
-                    ]
-                    .iter()
-                    .any(|read| command.starts_with(read)),
+                    ["herdr coordinator status:", "herdr coordinator messages:"]
+                        .iter()
+                        .any(|read| command.starts_with(read)),
                     "{entry}"
                 );
             }
@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(
             server["args"],
             json!([
-                "plus",
+                "coordinator",
                 "mcp",
                 "--dir",
                 dir.to_string_lossy(),
@@ -434,6 +434,20 @@ mod tests {
             ])
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_args_carry_the_configured_dashboard_port() {
+        let port_args = |port: u16| {
+            let args = LaunchCtx { port, ..ctx() }.mcp_args();
+            args.iter()
+                .position(|a| a == "--port")
+                .map(|at| args[at + 1].clone())
+        };
+        assert_eq!(port_args(DEFAULT_PORT), None, "the default stays implicit");
+        assert_eq!(port_args(7728).as_deref(), Some("7728"));
+        // Serving off: the MCP server must not print the default URL.
+        assert_eq!(port_args(0).as_deref(), Some("0"));
     }
 
     #[test]
@@ -455,7 +469,7 @@ mod tests {
         let mut parsed = toml::Table::new();
         for value in overrides {
             let (key, raw) = value.split_once('=').unwrap();
-            let key = key.strip_prefix("mcp_servers.herdr_plus.").unwrap();
+            let key = key.strip_prefix("mcp_servers.herdr_agents.").unwrap();
             let table: toml::Table = toml::from_str(&format!("{key} = {raw}")).unwrap();
             parsed.extend(table);
         }
@@ -463,10 +477,15 @@ mod tests {
         assert_eq!(
             parsed["args"],
             toml::Value::Array(
-                ["plus", "mcp", "--dir", "/home/u/.config/herdr-dev/plus"]
-                    .iter()
-                    .map(|s| toml::Value::String((*s).into()))
-                    .collect()
+                [
+                    "coordinator",
+                    "mcp",
+                    "--dir",
+                    "/home/u/.config/herdr-dev/coordinator"
+                ]
+                .iter()
+                .map(|s| toml::Value::String((*s).into()))
+                .collect()
             )
         );
         let env_vars: Vec<&str> = parsed["env_vars"]
@@ -500,11 +519,11 @@ mod tests {
         );
         assert_eq!(
             agent_kickoff(dir, "rev", Some("reviewer"), Some("demo"), Some("Review lead's branch.")),
-            "You are rev, a herdr+ managed agent (role reviewer, project demo). Call plus_whoami once to see the herdr+ tools and etiquette. Review lead's branch."
+            "You are rev, a herdr+ managed agent (role reviewer, project demo). Call agents_whoami once to see the agent tools and etiquette. Review lead's branch."
         );
         assert_eq!(
             agent_kickoff(dir, "lead", None, None, None),
-            "You are lead, a herdr+ managed agent. Call plus_whoami once to see the herdr+ tools and etiquette. Wait for the user's instructions."
+            "You are lead, a herdr+ managed agent. Call agents_whoami once to see the agent tools and etiquette. Wait for the user's instructions."
         );
     }
 }

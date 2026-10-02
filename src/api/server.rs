@@ -551,6 +551,17 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::NewsSetEnabled(_) => "news.set_enabled",
         Method::NewsSetTimes(_) => "news.set_times",
         Method::NewsSetQuietHours(_) => "news.set_quiet_hours",
+        Method::CoordinatorGet(_) => crate::api::schema::coordinator::method::GET,
+        Method::CoordinatorOpen(_) => crate::api::schema::coordinator::method::OPEN,
+        Method::CoordinatorOpenDashboard(_) => {
+            crate::api::schema::coordinator::method::OPEN_DASHBOARD
+        }
+        Method::CoordinatorWake(_) => crate::api::schema::coordinator::method::WAKE,
+        Method::CoordinatorStart(_) => crate::api::schema::coordinator::method::START,
+        Method::CoordinatorSetEnabled(_) => crate::api::schema::coordinator::method::SET_ENABLED,
+        Method::CoordinatorSetWakeCaps(_) => crate::api::schema::coordinator::method::SET_WAKE_CAPS,
+        Method::CoordinatorSetModel(_) => crate::api::schema::coordinator::method::SET_MODEL,
+        Method::CoordinatorSetNotify(_) => crate::api::schema::coordinator::method::SET_NOTIFY,
         Method::BrowserRun(_) => "browser.run",
         Method::BrowserGet(_) => "browser.get",
         Method::BrowserStatus(_) => "browser.status",

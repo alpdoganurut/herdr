@@ -1,4 +1,6 @@
-//! `herdr plus serve`: the dashboard HTTP server on 127.0.0.1.
+//! The coordinator's dashboard HTTP server on 127.0.0.1, run by the herdr
+//! server's coordinator worker ([`DashboardServer`]) once it holds the
+//! watcher lock.
 //!
 //! Read-only and local: GET only, HTTP/1.0 with `Connection: close`, one
 //! thread per connection. It serves the coordinator agent's page
@@ -10,6 +12,9 @@
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use super::{board_path, dashboard_dir, live_path, memory_index_path, wakeups_path};
@@ -23,6 +28,8 @@ const WAKEUP_TAIL_BYTES: u64 = 256 * 1024;
 /// Request head (request line plus headers) read limit.
 const MAX_HEAD: u64 = 16 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often the stoppable accept loop checks its stop flag when idle.
+const ACCEPT_POLL: Duration = Duration::from_millis(200);
 
 const JSON: &str = "application/json";
 const TEXT: &str = "text/plain; charset=utf-8";
@@ -40,43 +47,117 @@ const ICONS: &[(&str, &[u8])] = &[
     ("empty.png", include_bytes!("assets/icons/empty.png")),
 ];
 
-/// Bind `127.0.0.1:<port>` and serve the dashboard until the listener fails.
-/// Blocks; the caller spawns a thread. A port in use is logged and returned.
-pub fn serve(dir: PathBuf, port: u16) -> io::Result<()> {
-    let listener = match TcpListener::bind(("127.0.0.1", port)) {
-        Ok(listener) => listener,
-        Err(err) => {
-            tracing::warn!(port, error = %err, "herdr+ dashboard could not bind");
-            return Err(err);
-        }
-    };
-    tracing::info!(port, dir = %dir.display(), "herdr+ dashboard listening");
-    serve_on(dir, listener)
+fn spawn_connection(dir: &Path, stream: TcpStream) {
+    let dir = dir.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("herdr-coordinator-http".into())
+        .spawn(move || {
+            if let Err(err) = connection(&dir, stream) {
+                tracing::debug!(error = %err, "coordinator: dashboard connection failed");
+            }
+        });
+    if let Err(err) = spawned {
+        tracing::warn!(error = %err, "coordinator: dashboard could not spawn a connection thread");
+    }
 }
 
-/// Accept loop over an already bound listener (tests bind port 0).
-pub(crate) fn serve_on(dir: PathBuf, listener: TcpListener) -> io::Result<()> {
-    for stream in listener.incoming() {
-        let stream = match stream {
-            Ok(stream) => stream,
-            Err(err) => {
-                tracing::debug!(error = %err, "herdr+ dashboard accept failed");
-                continue;
+/// The dashboard served on a background thread until dropped. The listener
+/// is nonblocking and the accept loop polls a stop flag every
+/// [`ACCEPT_POLL`], so dropping it releases the port promptly (the drop
+/// joins the accept loop). Connections already accepted finish on their own threads,
+/// bounded by the 5 s IO timeout.
+pub struct DashboardServer {
+    port: u16,
+    stop: Arc<AtomicBool>,
+    /// Accept-loop passes (a no-spin check for tests).
+    #[cfg(test)]
+    polls: Arc<AtomicUsize>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl DashboardServer {
+    /// Bind `127.0.0.1:<port>` (`0` picks a free port) and start serving.
+    /// A bind failure (port in use) is returned, not logged: the caller
+    /// reports it once.
+    pub fn start(dir: PathBuf, port: u16) -> io::Result<Self> {
+        let listener = TcpListener::bind(("127.0.0.1", port))?;
+        listener.set_nonblocking(true)?;
+        let port = listener.local_addr()?.port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let counter = Arc::new(AtomicUsize::new(0));
+        #[cfg(test)]
+        let polls = counter.clone();
+        let flag = stop.clone();
+        let handle = std::thread::Builder::new()
+            .name("herdr-coordinator-http".into())
+            .spawn(move || accept_until_stopped(&dir, &listener, &flag, &counter))?;
+        tracing::info!(port, "coordinator: dashboard listening");
+        Ok(Self {
+            port,
+            stop,
+            #[cfg(test)]
+            polls,
+            handle: Some(handle),
+        })
+    }
+
+    /// The bound port.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    #[cfg(test)]
+    fn polls(&self) -> usize {
+        self.polls.load(Ordering::Relaxed)
+    }
+
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            if handle.join().is_err() {
+                tracing::warn!("coordinator: dashboard accept thread panicked");
             }
-        };
-        let dir = dir.clone();
-        let spawned = std::thread::Builder::new()
-            .name("herdr-plus-http".into())
-            .spawn(move || {
-                if let Err(err) = connection(&dir, stream) {
-                    tracing::debug!(error = %err, "herdr+ dashboard connection failed");
-                }
-            });
-        if let Err(err) = spawned {
-            tracing::warn!(error = %err, "herdr+ dashboard could not spawn a connection thread");
+            tracing::info!(port = self.port, "coordinator: dashboard stopped");
         }
     }
-    Ok(())
+}
+
+impl Drop for DashboardServer {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+/// `http://127.0.0.1:<port>/`.
+pub fn dashboard_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/")
+}
+
+fn accept_until_stopped(
+    dir: &Path,
+    listener: &TcpListener,
+    stop: &AtomicBool,
+    polls: &AtomicUsize,
+) {
+    while !stop.load(Ordering::Relaxed) {
+        polls.fetch_add(1, Ordering::Relaxed);
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // Accepted sockets may inherit the listener's nonblocking
+                // mode (BSD/macOS); the connection code relies on timeouts.
+                if let Err(err) = stream.set_nonblocking(false) {
+                    tracing::debug!(error = %err, "coordinator: dashboard connection setup failed");
+                    continue;
+                }
+                spawn_connection(dir, stream);
+            }
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(ACCEPT_POLL),
+            Err(err) => {
+                tracing::debug!(error = %err, "coordinator: dashboard accept failed");
+                std::thread::sleep(ACCEPT_POLL);
+            }
+        }
+    }
 }
 
 fn connection(dir: &Path, stream: TcpStream) -> io::Result<()> {
@@ -229,7 +310,7 @@ fn file(path: &Path, content_type: &'static str) -> (u16, &'static str, Vec<u8>)
         Ok(handle) => handle,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return error(404, "not_found"),
         Err(err) => {
-            tracing::debug!(path = %path.display(), error = %err, "herdr+ dashboard read failed");
+            tracing::debug!(path = %path.display(), error = %err, "coordinator: dashboard read failed");
             return error(500, "read_failed");
         }
     };
@@ -241,7 +322,7 @@ fn file(path: &Path, content_type: &'static str) -> (u16, &'static str, Vec<u8>)
         Ok(_) if body.len() as u64 > MAX_BODY => error(413, "too_large"),
         Ok(_) => (200, content_type, body),
         Err(err) => {
-            tracing::debug!(path = %path.display(), error = %err, "herdr+ dashboard read failed");
+            tracing::debug!(path = %path.display(), error = %err, "coordinator: dashboard read failed");
             error(500, "read_failed")
         }
     }
@@ -292,7 +373,7 @@ fn content_type(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plus::{seed, test_dir, DASHBOARD_TEMPLATE};
+    use crate::coordinator::{seed, test_dir, DASHBOARD_TEMPLATE};
 
     fn seeded(name: &str) -> PathBuf {
         let dir = test_dir(name);
@@ -501,11 +582,8 @@ mod tests {
     fn real_socket_on_loopback() {
         let dir = seeded("serve-socket");
         std::fs::write(live_path(&dir), r#"{"generated_unix":7}"#).unwrap();
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let addr = listener.local_addr().unwrap();
-        assert!(addr.ip().is_loopback());
-        let served = dir.clone();
-        std::thread::spawn(move || serve_on(served, listener));
+        let server = DashboardServer::start(dir.clone(), 0).unwrap();
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], server.port()));
         let fetch = |request: &str| {
             let mut stream = TcpStream::connect(addr).unwrap();
             stream
@@ -527,6 +605,64 @@ mod tests {
         );
         let rebinding = fetch("GET /live.json HTTP/1.1\r\nHost: evil.example:80\r\n\r\n");
         assert!(rebinding.starts_with("HTTP/1.0 403 "), "{rebinding}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn fetch_live(port: u16) -> String {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .write_all(b"GET /live.json HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn a_stopped_server_releases_its_port() {
+        let dir = seeded("serve-stop");
+        std::fs::write(live_path(&dir), r#"{"generated_unix":3}"#).unwrap();
+        let server = DashboardServer::start(dir.clone(), 0).unwrap();
+        let port = server.port();
+        assert_ne!(port, 0);
+        assert_eq!(dashboard_url(port), format!("http://127.0.0.1:{port}/"));
+        let response = fetch_live(port);
+        assert!(response.starts_with("HTTP/1.0 200 OK\r\n"), "{response}");
+        assert!(response.ends_with("{\"generated_unix\":3}"), "{response}");
+        // A second bind of the same port fails while it serves.
+        assert!(DashboardServer::start(dir.clone(), port).is_err());
+        let started = std::time::Instant::now();
+        drop(server);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "stop waits at most one poll interval"
+        );
+        let again = DashboardServer::start(dir.clone(), port).expect("port released");
+        assert_eq!(
+            fetch_live(again.port()).lines().next(),
+            Some("HTTP/1.0 200 OK")
+        );
+        drop(again);
+        assert!(
+            TcpListener::bind(("127.0.0.1", port)).is_ok(),
+            "drop releases the port too"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_idle_accept_loop_sleeps_between_polls() {
+        // The loop must not spin: over 600 ms idle it polls a handful of
+        // times (every 200 ms), never thousands.
+        let dir = seeded("serve-idle");
+        let server = DashboardServer::start(dir.clone(), 0).unwrap();
+        std::thread::sleep(Duration::from_millis(600));
+        let polls = server.polls();
+        drop(server);
+        assert!((1..=6).contains(&polls), "{polls}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

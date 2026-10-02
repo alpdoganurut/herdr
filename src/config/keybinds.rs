@@ -356,6 +356,7 @@ pub struct Keybinds {
     pub toggle_tab_important: ActionKeybinds,
     pub open_news: ActionKeybinds,
     pub open_browser: ActionKeybinds,
+    pub open_coordinator: ActionKeybinds,
     pub copy_mode: ActionKeybinds,
     pub focus_pane_left: ActionKeybinds,
     pub focus_pane_down: ActionKeybinds,
@@ -533,6 +534,7 @@ impl Config {
             toggle_tab_important: empty_action!(),
             open_news: empty_action!(),
             open_browser: empty_action!(),
+            open_coordinator: empty_action!(),
             copy_mode: empty_action!(),
             focus_pane_left: empty_action!(),
             focus_pane_down: empty_action!(),
@@ -689,6 +691,7 @@ impl Config {
             apply_action!(keybinds.toggle_tab_important, toggle_tab_important, source);
             apply_action!(keybinds.open_news, open_news, source);
             apply_action!(keybinds.open_browser, open_browser, source);
+            apply_action!(keybinds.open_coordinator, open_coordinator, source);
             apply_action!(keybinds.copy_mode, copy_mode, source);
             apply_action!(keybinds.focus_pane_left, focus_pane_left, source);
             apply_action!(keybinds.focus_pane_down, focus_pane_down, source);

@@ -21,6 +21,7 @@ mod checksum;
 mod cli;
 mod client;
 mod config;
+mod coordinator;
 mod copy_mode;
 mod detect;
 mod events;
@@ -40,7 +41,6 @@ mod persist;
 mod platform;
 mod plugin_command;
 mod plugin_paths;
-mod plus;
 mod popup_size;
 mod product_announcements;
 mod protocol;
@@ -183,6 +183,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # toggle_tab_important = ""         # unbound; marks the focused tab important, or unmarks it
 # open_news = ""                    # unbound; focuses the News tab, creating it with the page viewer when gone
 # open_browser = ""                 # unbound; opens the Browser overlay (the herdr browser's tabs and who uses them)
+# open_coordinator = ""             # unbound; focuses the coordinator tab, creating it when gone
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"
@@ -511,6 +512,27 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Keep the guarded herdr+ line in ~/.zshrc so plain codex / claude in herdr+ panes run through
 # `herdr browser wrap` (the managed file under <config dir>/shell). `setup` adds or removes it.
 # shell_hook = true
+
+[coordinator]
+# Run the coordinator agent (a Claude session that watches your managed agents) in a
+# pinned `coordinator` tab, started and monitored by the herdr server (fork feature).
+# enabled = false
+# Claude model for the coordinator; applies at its next launch. Unset uses Claude's default.
+# model = "opus"
+# Wake-ups per hour and per day.
+# cap_hour = 12
+# cap_day = 80
+# The slow periodic check, in minutes, while changes are pending.
+# periodic_minutes = 60
+# Relaunches of a coordinator that went missing per hour before it is reported down.
+# relaunch_cap_hour = 3
+# Coordinator notifications (new suggestions, down, blocked) and their daily cap.
+# notify = true
+# notify_daily_cap = 6
+# Local window HH:MM-HH:MM in which coordinator notifications wait; empty disables it.
+# quiet_hours = ""
+# The coordinator dashboard on http://127.0.0.1:<port>/; 0 disables serving.
+# dashboard_port = 7718
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

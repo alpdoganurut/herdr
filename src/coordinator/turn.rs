@@ -75,7 +75,7 @@ pub fn read_live(dir: &Path, now: u64) -> Option<Turn> {
 pub fn clear(dir: &Path) {
     if let Err(err) = std::fs::remove_file(turn_path(dir)) {
         if err.kind() != io::ErrorKind::NotFound {
-            tracing::warn!("herdr+ cannot clear the turn marker: {err}");
+            tracing::warn!("coordinator: cannot clear the turn marker: {err}");
         }
     }
 }
@@ -106,7 +106,7 @@ pub fn clear_if(dir: &Path, expected: &Turn) {
                 clear(dir);
             }
         }
-        Err(err) => tracing::warn!("herdr+ cannot lock the turn marker: {err}"),
+        Err(err) => tracing::warn!("coordinator: cannot lock the turn marker: {err}"),
     }
 }
 
@@ -129,7 +129,7 @@ pub fn mark_working_if(dir: &Path, expected: &Turn) -> io::Result<()> {
 /// marker state. In order: past [`TURN_SAFETY_S`] the turn is over whatever
 /// the status; past [`TURN_HARD_EXPIRY_S`] it is over unless the coordinator
 /// is still working or blocked in it (a long or stalled herdr+ turn stays
-/// guarded; `herdr plus coordinator clear-turn` is the user's way out);
+/// guarded; `herdr coordinator clear-turn` is the user's way out);
 /// `working` is recorded once (`Keep` when already seen, so the marker is not
 /// rewritten every tick), and so is `blocked`: herdr+ only prompts an idle
 /// coordinator, so blocked means the turn started and hit a prompt (a poll

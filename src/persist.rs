@@ -10,6 +10,7 @@
 pub mod agent_transcripts;
 pub mod browser;
 pub mod closed_sessions;
+pub mod coordinator;
 mod io;
 pub mod news;
 pub mod plugin_registry;

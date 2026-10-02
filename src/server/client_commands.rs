@@ -26,6 +26,15 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "browser.stop",
     "client_shell.surface.set",
     "command.invoke",
+    "coordinator.get",
+    "coordinator.open",
+    "coordinator.open_dashboard",
+    "coordinator.set_enabled",
+    "coordinator.set_model",
+    "coordinator.set_notify",
+    "coordinator.set_wake_caps",
+    "coordinator.start",
+    "coordinator.wake",
     "integration.install",
     "integration.list",
     "layout.set_split_ratio",
@@ -417,11 +426,57 @@ mod tests {
             actual.remove("browser.fix").as_deref(),
             Some("71558d5a9cf80cc82952b6bc1330776bce901118546e242640bf2384f51f5a8c")
         );
+        assert_eq!(
+            actual.remove("coordinator.get").as_deref(),
+            Some("d6ec446e6d7ee38199feb4f9c48198613e9f339a534012bde7160fb07a63eaa8")
+        );
+        assert_eq!(
+            actual.remove("coordinator.open").as_deref(),
+            Some("24a5c11d01bf8c6a65452115dc121a17f077ddf9d504d5c88c137f3b850536cc")
+        );
+        assert_eq!(
+            actual.remove("coordinator.open_dashboard").as_deref(),
+            Some("d3d061db09bc59874312f676504bed2a6cc127bf6da2738f7214e32fd87facc0")
+        );
+        assert_eq!(
+            actual.remove("coordinator.set_enabled").as_deref(),
+            Some("e7a703e3d1daa27cbe5b8637f7a3b8ac74a0c8f40497c88a53b699311d1bd71c")
+        );
+        assert_eq!(
+            actual.remove("coordinator.set_model").as_deref(),
+            Some("33c2821d6c15c99671f9df050f2f6caef09fc91c9724b70e22fcc92ad1996e7b")
+        );
+        assert_eq!(
+            actual.remove("coordinator.set_notify").as_deref(),
+            Some("78ad0eb2d53f3fe07c1dda181ede781ee94914dd7d33d037df56cdcd6e503126")
+        );
+        assert_eq!(
+            actual.remove("coordinator.set_wake_caps").as_deref(),
+            Some("9f6f9010ba7b4b9a8b8d8835d117f0ddd864f4184ee3324f50d0737fa084510a")
+        );
+        assert_eq!(
+            actual.remove("coordinator.start").as_deref(),
+            Some("d536a69f3c65a742c3ab09e46e3b2f28aaa44c0d1570aa75befb14fb2bf3482e")
+        );
+        assert_eq!(
+            actual.remove("coordinator.wake").as_deref(),
+            Some("9b8885f0516494756d440daf6de982049a3c0e7ea65b4f2395ff6446a2a62f94")
+        );
 
         assert_eq!(
             actual, expected,
             "an existing endpoint method changed shape; add load-bearing behavior as a new advertised method or explicitly gate new fields"
         );
+    }
+
+    #[test]
+    fn every_coordinator_method_is_advertised_to_client_shells() {
+        for method in crate::api::schema::coordinator::method::ALL {
+            assert!(
+                supports_client_shell_method_name(method),
+                "{method} is not in CLIENT_SHELL_METHODS"
+            );
+        }
     }
 
     #[test]

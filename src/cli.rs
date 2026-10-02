@@ -27,13 +27,13 @@ mod api;
 mod browser;
 mod browser_mcp;
 mod completion;
+mod coordinator;
 mod integration;
 mod machine;
 mod news;
 mod notification;
 mod pane;
 mod plugin;
-mod plus;
 mod protocol_guard;
 mod runtime;
 mod server;
@@ -137,7 +137,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "session" => run_session_command(&args[2..])?,
         "news" => news::run_news_command(&args[2..])?,
         "browser" => browser::run_browser_command(&args[2..])?,
-        "plus" => plus::run_plus_command(&args[2..])?,
+        "coordinator" => coordinator::run_coordinator_command(&args[2..])?,
         _ => return Ok(CommandOutcome::NotCli),
     };
 

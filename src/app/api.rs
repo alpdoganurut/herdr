@@ -166,6 +166,11 @@ impl App {
             return Vec::new();
         }
 
+        if let AppEvent::CoordinatorPassFinished(out) = ev {
+            self.apply_coordinator_output(out);
+            return Vec::new();
+        }
+
         if let AppEvent::WorktreeReadFinished(result) = ev {
             self.handle_api_worktree_read_finished(*result);
             return Vec::new();
@@ -772,6 +777,7 @@ impl App {
     }
 
     pub(crate) fn emit_pane_updated(&mut self, ws_idx: usize, pane_id: crate::layout::PaneId) {
+        self.mark_coordinator_input_dirty();
         if let Some(pane) = self.pane_info(ws_idx, pane_id) {
             self.emit_event(crate::api::schema::EventEnvelope {
                 event: crate::api::schema::EventKind::PaneUpdated,
@@ -1131,6 +1137,29 @@ impl App {
             Method::NewsSetTimes(params) => return self.handle_news_set_times(request.id, params),
             Method::NewsSetQuietHours(params) => {
                 return self.handle_news_set_quiet_hours(request.id, params)
+            }
+            Method::CoordinatorGet(_) => return self.handle_coordinator_get(request.id),
+            Method::CoordinatorOpen(_) => return self.handle_coordinator_open(request.id),
+            Method::CoordinatorOpenDashboard(params) => {
+                return self.handle_coordinator_open_dashboard(request.id, params)
+            }
+            Method::CoordinatorWake(params) => {
+                return self.handle_coordinator_wake(request.id, params)
+            }
+            Method::CoordinatorStart(params) => {
+                return self.handle_coordinator_start(request.id, params)
+            }
+            Method::CoordinatorSetEnabled(params) => {
+                return self.handle_coordinator_set_enabled(request.id, params)
+            }
+            Method::CoordinatorSetWakeCaps(params) => {
+                return self.handle_coordinator_set_wake_caps(request.id, params)
+            }
+            Method::CoordinatorSetModel(params) => {
+                return self.handle_coordinator_set_model(request.id, params)
+            }
+            Method::CoordinatorSetNotify(params) => {
+                return self.handle_coordinator_set_notify(request.id, params)
             }
             Method::BrowserRun(_) => {
                 return responses::encode_error(

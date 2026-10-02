@@ -13,6 +13,7 @@ pub(crate) use agent_suspend::SUSPEND_GRACEFUL_EXIT_GRACE;
 mod agents;
 mod browser;
 mod closed_sessions;
+pub(crate) mod coordinator;
 pub(crate) mod news;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
@@ -160,6 +161,8 @@ pub struct App {
     pub(crate) agent_transcript_backup_deadline: Option<Instant>,
     /// The AI news desk: schedule, tab and run in flight (`news.*`).
     pub(crate) news: news::NewsState,
+    /// The coordinator (fork): lifecycle, tab, worker and read model.
+    pub(crate) coordinator: coordinator::CoordinatorState,
     agent_transcript_backup_thread:
         Option<std::thread::JoinHandle<agent_transcripts::AgentTranscriptBackupPass>>,
     /// The most recent finished backup pass, for `agent.transcripts`.
@@ -556,6 +559,7 @@ impl App {
             host_cell_size: crate::kitty_graphics::HostCellSize::default(),
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
+            coordinator_terminal_id: None,
         };
 
         state.terminals = restored_terminals;
@@ -644,6 +648,10 @@ impl App {
                 .persist_session
                 .then_some(Instant::now() + agent_transcripts::AGENT_TRANSCRIPT_BACKUP_INTERVAL),
             news: news::NewsState::new(&config.news, policy.persist_session, Instant::now()),
+            coordinator: coordinator::CoordinatorState::new(
+                &config.coordinator,
+                policy.persist_session,
+            ),
             agent_transcript_backup_thread: None,
             agent_transcript_backup_last: None,
             agent_transcript_backup_pending: std::collections::BTreeMap::new(),
@@ -915,6 +923,10 @@ impl App {
 
         if !invalid_section("news") {
             self.news.apply_config(&config.news);
+        }
+
+        if !invalid_section("coordinator") {
+            self.apply_coordinator_config(&config.coordinator);
         }
 
         if !invalid_section("browser") {

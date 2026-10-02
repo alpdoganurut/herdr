@@ -671,6 +671,7 @@ impl App {
     }
 
     fn emit_agent_status_transition(&mut self, ws_idx: usize, pane_id: crate::layout::PaneId) {
+        self.mark_coordinator_input_dirty();
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return;
         };

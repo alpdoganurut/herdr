@@ -1,15 +1,15 @@
-//! herdr+ agents (fork): the shared pieces behind `herdr plus` — the
-//! managed-agent registry, the agent message log, the live dashboard data,
-//! the `herdr plus mcp` server agents use, the watcher that wakes the
-//! coordinator agent, and the small dashboard HTTP server.
-//!
-//! Everything here is client-side over the existing JSON API: the server
-//! knows nothing about herdr+. State lives in files under [`plus_dir`] so the
-//! coordinator agent, the MCP servers and the watcher (separate processes)
-//! share it, and so it survives server restarts (pane ids are remapped on
-//! restore; the registry matches agents by native session id first).
+//! The coordinator (fork): the herdr server runs it. The server's worker
+//! ([`engine`]) owns the files under [`coordinator_dir`] — the managed-agent
+//! registry, the agent message log, the live dashboard data, the turn marker
+//! and the wake-up digests — and serves the dashboard; the App side
+//! (`app::coordinator`) drives the coordinator agent's lifecycle. The
+//! `herdr coordinator mcp` servers agents use and the CLI are separate
+//! processes that share the same files, which is also why state survives
+//! server restarts (pane ids are remapped on restore; the registry matches
+//! agents by native session id first).
 
 pub mod api;
+pub mod engine;
 pub mod launch;
 pub mod live;
 pub mod lock;
@@ -24,11 +24,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Overrides the herdr+ directory (tests, throwaway sessions).
-pub const PLUS_DIR_ENV: &str = "HERDR_PLUS_DIR";
+/// Overrides the coordinator directory (tests, throwaway sessions).
+pub const COORDINATOR_DIR_ENV: &str = "HERDR_COORDINATOR_DIR";
 /// The role that marks the coordinator agent; at most one agent holds it.
 pub const COORDINATOR_ROLE: &str = "coordinator";
-/// Default dashboard port (`herdr plus run`/`serve`).
+/// Default dashboard port (`[coordinator] dashboard_port`).
 pub const DEFAULT_PORT: u16 = 7718;
 
 pub const COORDINATOR_INSTRUCTIONS: &str = include_str!("assets/coordinator.md");
@@ -52,15 +52,24 @@ Format: - [file](file.md) \u{2014} one-line summary (updated YYYY-MM-DD)
 /// Seeded once as `dashboard/board.json`, the coordinator's dashboard content.
 pub const BOARD_TEMPLATE: &str = "{}\n";
 
-/// Lock names under the herdr+ directory (`<name>.lock`).
+/// Lock names under the coordinator directory (`<name>.lock`).
 pub const WATCH_LOCK: &str = "watcher";
 pub const REGISTRY_LOCK: &str = "registry";
 
-/// `~/.config/herdr/plus` (`herdr-dev` for debug builds), or `$HERDR_PLUS_DIR`.
-pub fn plus_dir() -> PathBuf {
-    match std::env::var(PLUS_DIR_ENV) {
+/// `~/.config/herdr/coordinator` (`herdr-dev` for debug builds), or `$HERDR_COORDINATOR_DIR`.
+pub fn coordinator_dir() -> PathBuf {
+    match std::env::var(COORDINATOR_DIR_ENV) {
         Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
-        _ => crate::config::config_dir().join("plus"),
+        _ => crate::config::config_dir().join("coordinator"),
+    }
+}
+
+/// The POC's directory (`config_dir/plus`), moved to [`coordinator_dir`] on
+/// the first native start; `None` when the directory is overridden.
+pub fn legacy_dir() -> Option<PathBuf> {
+    match std::env::var(COORDINATOR_DIR_ENV) {
+        Ok(dir) if !dir.trim().is_empty() => None,
+        _ => Some(crate::config::config_dir().join("plus")),
     }
 }
 
@@ -101,7 +110,8 @@ pub fn watch_state_path(dir: &Path) -> PathBuf {
 pub fn wake_dir(dir: &Path) -> PathBuf {
     dir.join("wake")
 }
-/// Written by `herdr plus coordinator wake`; the watcher consumes it.
+/// Left by the POC's `herdr plus coordinator wake`; the worker deletes a
+/// stale one on start (`coordinator.wake` replaced it).
 pub fn wake_request_path(dir: &Path) -> PathBuf {
     dir.join("wake.request")
 }
@@ -155,13 +165,13 @@ pub fn write_atomically(path: &Path, content: &[u8]) -> io::Result<()> {
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "plus".into());
+        .unwrap_or_else(|| "coordinator".into());
     let tmp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
     std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, path)
 }
 
-/// Create the herdr+ directory and the files the coordinator agent starts
+/// Create the coordinator directory and the files the coordinator agent starts
 /// from. The instructions and the dashboard template are herdr's and always
 /// rewritten; the dashboard page, the board and the memory index belong to the
 /// coordinator agent and are only seeded.
@@ -194,7 +204,7 @@ pub fn seed(dir: &Path) -> io::Result<()> {
 #[cfg(test)]
 pub(crate) fn test_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "herdr-plus-{name}-{}-{}",
+        "herdr-coordinator-{name}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

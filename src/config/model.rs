@@ -4,9 +4,10 @@ use crossterm::event::KeyModifiers;
 use serde::{de, Deserialize, Deserializer, Serialize};
 
 use super::{
-    ActionKeybinds, BindingConfig, BrowserConfig, CommandKeybindConfig, IndexedKeybind, Keybinds,
-    NewsConfig, SidebarConfig, SoundConfig, TabBarRightEntryConfig, ThemeConfig,
-    DEFAULT_MOBILE_WIDTH_THRESHOLD, DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
+    ActionKeybinds, BindingConfig, BrowserConfig, CommandKeybindConfig, CoordinatorConfig,
+    IndexedKeybind, Keybinds, NewsConfig, SidebarConfig, SoundConfig, TabBarRightEntryConfig,
+    ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD, DEFAULT_MOUSE_SCROLL_LINES,
+    DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 
 pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
@@ -438,6 +439,7 @@ pub struct Config {
     pub remote: RemoteConfig,
     pub news: NewsConfig,
     pub browser: BrowserConfig,
+    pub coordinator: CoordinatorConfig,
 }
 
 #[derive(Debug)]
@@ -541,6 +543,8 @@ pub struct KeysConfig {
     pub open_news: BindingConfig,
     /// Open the Browser overlay (the herdr browser's tabs and who uses them). Unset by default.
     pub open_browser: BindingConfig,
+    /// Focus the coordinator tab (coordinator.open), creating it when it is gone. Unset by default.
+    pub open_coordinator: BindingConfig,
     /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
     pub copy_mode: BindingConfig,
     /// Focus the pane to the left. Default: "prefix+h".
@@ -690,6 +694,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     open_browser: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    open_coordinator: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     copy_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus_pane_left: Option<BindingConfig>,
@@ -808,6 +814,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(toggle_tab_important);
         apply_field!(open_news);
         apply_field!(open_browser);
+        apply_field!(open_coordinator);
         apply_field!(copy_mode);
         apply_field!(focus_pane_left);
         apply_field!(focus_pane_down);
@@ -921,6 +928,7 @@ impl KeysConfig {
         copy_effective_action_field!(toggle_tab_important, keybinds.toggle_tab_important);
         copy_effective_action_field!(open_news, keybinds.open_news);
         copy_effective_action_field!(open_browser, keybinds.open_browser);
+        copy_effective_action_field!(open_coordinator, keybinds.open_coordinator);
         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
         copy_effective_action_field!(focus_pane_left, keybinds.focus_pane_left);
         copy_effective_action_field!(focus_pane_down, keybinds.focus_pane_down);
@@ -1315,6 +1323,7 @@ impl Default for KeysConfig {
             toggle_tab_important: BindingConfig::default(),
             open_news: BindingConfig::default(),
             open_browser: BindingConfig::default(),
+            open_coordinator: BindingConfig::default(),
             copy_mode: BindingConfig::one("prefix+["),
             focus_pane_left: BindingConfig::one("prefix+h"),
             focus_pane_down: BindingConfig::one("prefix+j"),

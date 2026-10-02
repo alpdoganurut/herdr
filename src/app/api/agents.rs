@@ -152,7 +152,7 @@ impl App {
         true
     }
 
-    fn queue_agent_prompt(
+    pub(in crate::app) fn queue_agent_prompt(
         &mut self,
         id: String,
         params: AgentPromptParams,
@@ -211,7 +211,12 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
             return Err(agent_not_found(id, &params.target));
         };
-        if !super::super::agents::runtime_hosts_agent(runtime, expected_agent) {
+        let hosts_agent = super::super::agents::runtime_hosts_agent(runtime, expected_agent);
+        // Fork test seam: the coordinator smoke tests' stub pane stands in
+        // for the agent process.
+        #[cfg(test)]
+        let hosts_agent = hosts_agent || self.coordinator.assume_shell_ready;
+        if !hosts_agent {
             return Err(encode_error(
                 id,
                 "agent_not_ready",

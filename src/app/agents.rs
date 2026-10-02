@@ -196,8 +196,15 @@ impl App {
             .terminal_runtimes
             .get(&terminal_id)
             .ok_or_else(|| AgentStartError::TargetUnavailable(params.pane_id.clone()))?;
-        let shell_name = available_shell_name(runtime)
-            .ok_or_else(|| AgentStartError::TargetBusy(params.pane_id.clone()))?;
+        let shell_name = available_shell_name(runtime);
+        #[cfg(test)]
+        let shell_name = shell_name.or_else(|| {
+            self.coordinator
+                .assume_shell_ready
+                .then(|| "sh".to_string())
+        });
+        let shell_name =
+            shell_name.ok_or_else(|| AgentStartError::TargetBusy(params.pane_id.clone()))?;
 
         let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
         argv.extend(params.args);

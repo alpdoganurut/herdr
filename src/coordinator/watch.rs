@@ -1,47 +1,31 @@
-//! `herdr plus run`: the singleton watcher (live data, wake-ups) and the
-//! coordinator lifecycle.
+//! The watcher policy the coordinator worker ([`super::engine`]) runs: wake-up
+//! bookkeeping and the pure [`tick`].
 //!
-//! Every tick the watcher rebuilds `live.json` from the JSON API, diffs the
-//! managed agents against what it saw last, and queues the changes. A
+//! Every pass the worker rebuilds `live.json` from herdr's agent facts, diffs
+//! the managed agents against what it saw last, and queues the changes. A
 //! wake-up (`agent.prompt` into the coordinator agent, pointing at a digest
 //! file) fires only for an idle, settled coordinator with no live turn,
 //! within the gap and the hourly/daily caps, and only when something is
 //! worth it: a high item, a normal item older than the debounce, the slow
-//! periodic check with anything pending, or `herdr plus coordinator wake`.
-//! [`tick`] is the pure policy; [`run`] does the I/O around it.
+//! periodic check with anything pending, or `herdr coordinator wake`.
+//! [`tick`] is the pure policy; the worker does the I/O around it.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::api::{self, Api, ApiError};
-use super::launch::{self, ClaudeSession, LaunchCtx};
-use super::live::{self, LiveAgent, LiveData, WatchSummary};
+use super::live::{LiveAgent, LiveData, WatchSummary};
 use super::messages::{self, AgentMessage};
-use super::registry::{self, ManagePatch, Registry};
 use super::turn::{self, Turn, TurnStep};
-use super::{
-    now_unix, registry_path, wake_dir, wake_request_path, wakeups_path, write_atomically,
-    COORDINATOR_ROLE, WATCH_LOCK,
-};
-use crate::api::schema::{BrowserOp, BrowserRunParams, Method};
+use super::{now_unix, wake_dir, wakeups_path, write_atomically, COORDINATOR_ROLE};
 
-pub const DEBOUNCE_ENV: &str = "HERDR_PLUS_WAKE_DEBOUNCE_S";
-pub const GAP_ENV: &str = "HERDR_PLUS_WAKE_GAP_S";
-pub const PERIODIC_ENV: &str = "HERDR_PLUS_PERIODIC_S";
-pub const CAP_HOUR_ENV: &str = "HERDR_PLUS_WAKE_CAP_HOUR";
-pub const CAP_DAY_ENV: &str = "HERDR_PLUS_WAKE_CAP_DAY";
-
-/// The coordinator's sidebar group and tab.
-pub const COORDINATOR_GROUP: &str = "herdr+";
-pub const COORDINATOR_TAB: &str = "coordinator";
-const COORDINATOR_NAME: &str = "coordinator";
-const START_TIMEOUT_MS: u64 = 60_000;
-/// How long a resumed coordinator gets to show up before a fresh session replaces it.
-const RESUME_CHECK_S: u64 = 20;
+pub const DEBOUNCE_ENV: &str = "HERDR_COORDINATOR_WAKE_DEBOUNCE_S";
+pub const GAP_ENV: &str = "HERDR_COORDINATOR_WAKE_GAP_S";
+pub const PERIODIC_ENV: &str = "HERDR_COORDINATOR_PERIODIC_S";
+pub const CAP_HOUR_ENV: &str = "HERDR_COORDINATOR_WAKE_CAP_HOUR";
+pub const CAP_DAY_ENV: &str = "HERDR_COORDINATOR_WAKE_CAP_DAY";
 
 /// Pending items beyond this fold into one `+N earlier` line.
 const PENDING_CAP: usize = 30;
@@ -53,24 +37,13 @@ const HELD_LOG_EVERY_S: u64 = 60;
 /// A sender's refused messages to the coordinator wake it at most once per
 /// this window.
 const REFUSAL_REPEAT_S: u64 = 600;
-const LIVE_REFRESH_S: u64 = 10;
-const ROTATE_EVERY_S: u64 = 300;
-const ROTATE_BYTES: u64 = 5 * 1024 * 1024;
-const ERROR_BACKOFF: Duration = Duration::from_secs(10);
-const COORDINATOR_RETRY_S: u64 = 60;
+pub(super) const LIVE_REFRESH_S: u64 = 10;
+pub(super) const ROTATE_EVERY_S: u64 = 300;
+pub(super) const ROTATE_BYTES: u64 = 5 * 1024 * 1024;
 /// Messages kept in `live.json` for the dashboard's log.
-const LIVE_MESSAGES: usize = 50;
+pub(super) const LIVE_MESSAGES: usize = 50;
 const HOUR: u64 = 3600;
 const DAY: u64 = 86_400;
-
-pub struct WatchOpts {
-    pub dir: PathBuf,
-    pub port: u16,
-    pub serve: bool,
-    pub coordinator: bool,
-    pub interval_ms: u64,
-    pub ctx: LaunchCtx,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WakeCfg {
@@ -81,10 +54,10 @@ pub struct WakeCfg {
     pub periodic_s: u64,
     pub cap_hour: u32,
     pub cap_day: u32,
+    /// A registered coordinator missing this long triggers a relaunch
+    /// ([`Action::Relaunch`]); the herdr server counts relaunches against
+    /// its own cap.
     pub missing_s: u64,
-    pub relaunch_cap_hour: u32,
-    /// Relaunch a coordinator that went missing (off with `--no-coordinator`).
-    pub relaunch: bool,
 }
 
 impl Default for WakeCfg {
@@ -98,21 +71,36 @@ impl Default for WakeCfg {
             cap_hour: 12,
             cap_day: 80,
             missing_s: 30,
-            relaunch_cap_hour: 3,
-            relaunch: true,
         }
     }
 }
 
 impl WakeCfg {
-    /// The §4 defaults with the `HERDR_PLUS_*` overrides applied.
-    pub fn from_env() -> Self {
-        Self::from_lookup(|name| std::env::var(name).ok())
+    /// The configured caps and periodic check (`[coordinator]`), with the
+    /// `HERDR_COORDINATOR_*` overrides applied on top.
+    pub fn from_config(cap_hour: u32, cap_day: u32, periodic_s: u64) -> Self {
+        Self {
+            cap_hour,
+            cap_day,
+            periodic_s: periodic_s.max(1),
+            ..Self::default()
+        }
+        .with_env()
     }
 
+    /// These values with the `HERDR_COORDINATOR_*` overrides applied.
+    pub fn with_env(self) -> Self {
+        self.with_lookup(|name| std::env::var(name).ok())
+    }
+
+    #[cfg(test)]
     fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
+        Self::default().with_lookup(get)
+    }
+
+    fn with_lookup(self, get: impl Fn(&str) -> Option<String>) -> Self {
         let number = |name: &str| get(name).and_then(|value| value.trim().parse::<u64>().ok());
-        let mut cfg = Self::default();
+        let mut cfg = self;
         if let Some(value) = number(DEBOUNCE_ENV) {
             cfg.debounce_s = value;
         }
@@ -246,7 +234,7 @@ pub enum Ev {
     Earlier { count: u64, since: u64 },
 }
 
-fn is_idle(status: &str) -> bool {
+pub(super) fn is_idle(status: &str) -> bool {
     matches!(status, "idle" | "done")
 }
 
@@ -342,9 +330,8 @@ pub struct WatchState {
     /// Delivery times within the last day (the caps).
     #[serde(default)]
     pub wakes: Vec<u64>,
-    /// Coordinator relaunch times within the last hour.
-    #[serde(default)]
-    pub relaunches: Vec<u64>,
+    /// The herdr server gave up relaunching the coordinator (its relaunch
+    /// cap); set by the server before every tick, published in live.json.
     #[serde(default)]
     pub coordinator_down: bool,
     /// Byte offset into `messages.jsonl`.
@@ -352,7 +339,7 @@ pub struct WatchState {
     pub msg_offset: u64,
     #[serde(default)]
     pub registry_mtime_ms: u64,
-    /// `herdr plus coordinator wake` is waiting for an idle coordinator.
+    /// `herdr coordinator wake` is waiting for an idle coordinator.
     #[serde(default)]
     pub forced: bool,
     /// No wake-up before this (a failed prompt backs off by the gap).
@@ -459,6 +446,7 @@ impl WatchState {
             coordinator_down: self.coordinator_down,
             turn_live,
             wakes_last_hour: self.wakes_within(HOUR, now) as u64,
+            wakes_last_day: self.wakes_within(DAY, now) as u64,
             board_unix: mtime_ms(&super::board_path(&self.dir)) / 1000,
         }
     }
@@ -741,23 +729,16 @@ fn liveness(
         state.coord_missing_since = None;
         return;
     };
-    if !cfg.relaunch || state.coordinator_down {
+    if state.coordinator_down {
         return;
     }
     let since = *state.coord_missing_since.get_or_insert(now);
     if now.saturating_sub(since) < cfg.missing_s {
         return;
     }
-    state.relaunches.retain(|at| now.saturating_sub(*at) < HOUR);
-    if state.relaunches.len() >= cfg.relaunch_cap_hour as usize {
-        state.coordinator_down = true;
-        actions.push(Action::Log(format!(
-            "coordinator down: {} relaunches in the last hour; not relaunching (herdr plus coordinator start)",
-            state.relaunches.len()
-        )));
-        return;
-    }
-    state.relaunches.push(now);
+    // A trigger, repeated every `missing_s` while the coordinator stays
+    // missing: the server relaunches it through herdr's agent lifecycle and
+    // counts the relaunches against its own cap (then sets `coordinator_down`).
     state.coord_missing_since = Some(now);
     let resume = if entry.agent.as_deref() == Some("claude") {
         entry.session.clone()
@@ -962,7 +943,7 @@ fn queue_messages(state: &mut WatchState, live: &LiveData, new_msgs: &[AgentMess
             // Typed into the coordinator: it has seen that one already.
             if message.outcome == messages::OUTCOME_LOGGED {
                 // A reply logged while the coordinator was busy (usually in
-                // plus_wait_for_message, which returned it). Delivered, not a
+                // agents_wait_for_message, which returned it). Delivered, not a
                 // failure: the normal lane, in case it was not waiting.
                 between.push(preview(message));
             } else if message.outcome != messages::OUTCOME_SENT {
@@ -1111,7 +1092,7 @@ fn clock(unix: u64) -> String {
 }
 
 /// `2026-10-02T03:14:05`, local time.
-fn iso(unix: u64) -> String {
+pub(super) fn iso(unix: u64) -> String {
     time::OffsetDateTime::from_unix_timestamp(unix as i64 + local_offset_s())
         .map(|at| {
             format!(
@@ -1239,9 +1220,9 @@ pub fn digest_markdown(seq: u64, evs: &[Ev], now: u64) -> String {
     out
 }
 
-// ----- the driver ---------------------------------------------------------
+// ----- file helpers (used by the worker, `engine`) -------------------------
 
-fn mtime_ms(path: &Path) -> u64 {
+pub(super) fn mtime_ms(path: &Path) -> u64 {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
         .ok()
@@ -1251,20 +1232,20 @@ fn mtime_ms(path: &Path) -> u64 {
 }
 
 /// One `wakeups.log` line: `2026-10-02T03:14:05 delivered #7 5 items -> w1:p1`.
-fn log_line(dir: &Path, now: u64, line: &str) {
-    tracing::info!("herdr+ watcher: {line}");
+pub(super) fn log_line(dir: &Path, now: u64, line: &str) {
+    tracing::info!("coordinator watcher: {line}");
     let result = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(wakeups_path(dir))
         .and_then(|mut file| file.write_all(format!("{} {line}\n", iso(now)).as_bytes()));
     if let Err(err) = result {
-        tracing::warn!("herdr+ cannot write wakeups.log: {err}");
+        tracing::warn!("coordinator: cannot write wakeups.log: {err}");
     }
 }
 
 /// Keep the newest [`DIGESTS_KEPT`] `wake/<seq>.md` files.
-fn prune_digests(dir: &Path) {
+pub(super) fn prune_digests(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(wake_dir(dir)) else {
         return;
     };
@@ -1287,597 +1268,16 @@ fn prune_digests(dir: &Path) {
     digests.sort();
     for (_, path) in &digests[..digests.len() - DIGESTS_KEPT] {
         if let Err(err) = std::fs::remove_file(path) {
-            tracing::warn!("herdr+ cannot prune {}: {err}", path.display());
+            tracing::warn!("coordinator: cannot prune {}: {err}", path.display());
         }
     }
-}
-
-struct Driver<A: Api> {
-    api: A,
-    dir: PathBuf,
-    ctx: LaunchCtx,
-    cfg: WakeCfg,
-    interval: Duration,
-    state: WatchState,
-    /// Start a coordinator when none is registered (until one start succeeds).
-    need_coordinator: bool,
-    next_coordinator_try: u64,
-    /// Newest messages for `live.json`, fed from the offset reader.
-    recent: VecDeque<AgentMessage>,
-    /// The last `live.json` written, `generated_unix` zeroed.
-    last_live: Option<LiveData>,
-    last_live_write: u64,
-    last_state: Vec<u8>,
-    last_rotate: u64,
-    last_error_log: u64,
-}
-
-impl<A: Api> Driver<A> {
-    fn new(api: A, opts: &WatchOpts, cfg: WakeCfg, mut state: WatchState) -> Self {
-        // The log's tail seeds `recent`; skip what was appended while the
-        // watcher was down so it is not added twice (the baseline would
-        // ignore those lines anyway).
-        let (_, offset) = messages::since_offset(&opts.dir, state.msg_offset);
-        state.msg_offset = offset;
-        Self {
-            api,
-            dir: opts.dir.clone(),
-            ctx: opts.ctx.clone(),
-            cfg,
-            interval: Duration::from_millis(opts.interval_ms.max(200)),
-            last_state: serde_json::to_vec_pretty(&state).unwrap_or_default(),
-            state,
-            need_coordinator: opts.coordinator,
-            next_coordinator_try: 0,
-            recent: messages::recent(&opts.dir, LIVE_MESSAGES, None).into(),
-            last_live: None,
-            last_live_write: 0,
-            last_rotate: 0,
-            last_error_log: 0,
-        }
-    }
-
-    fn log(&self, now: u64, line: &str) {
-        log_line(&self.dir, now, line);
-    }
-
-    /// Start a coordinator when none is registered; `true` when it started
-    /// (and so wrote the registry).
-    fn ensure_coordinator(&mut self, now: u64) -> bool {
-        if !self.need_coordinator || now < self.next_coordinator_try {
-            return false;
-        }
-        // A corrupt registry reads as empty here; coordinator_start refuses it.
-        if Registry::load(&self.dir).coordinator().is_some() {
-            self.need_coordinator = false;
-            return false;
-        }
-        match coordinator_start(&self.api, &self.dir, &self.ctx, None) {
-            Ok(pane) => {
-                self.need_coordinator = false;
-                self.log(now, &format!("coordinator started -> {pane}"));
-                true
-            }
-            Err(err) => {
-                self.next_coordinator_try = now + COORDINATOR_RETRY_S;
-                self.log(now, &format!("coordinator start failed: {err}"));
-                false
-            }
-        }
-    }
-
-    /// One poll; returns how long to sleep before the next.
-    fn step(&mut self, now: u64) -> Duration {
-        let fetched = api::agents(&self.api)
-            .and_then(|agents| Ok((agents, api::workspaces(&self.api)?, api::tabs(&self.api)?)));
-        let (agents, workspaces, tabs) = match fetched {
-            Ok(fetched) => fetched,
-            Err(err) => {
-                // A server restart must not replay as events: re-baseline.
-                // live.json is left alone; its age is the dashboard's signal.
-                self.state.rebaseline();
-                if now.saturating_sub(self.last_error_log) >= HELD_LOG_EVERY_S {
-                    self.last_error_log = now;
-                    self.log(now, &format!("server unavailable: {err}"));
-                }
-                return ERROR_BACKOFF;
-            }
-        };
-        let inputs = live::Inputs {
-            agents: &agents,
-            workspaces: &workspaces,
-            tabs: &tabs,
-        };
-        let registry_file = registry_path(&self.dir);
-        let observed_mtime = mtime_ms(&registry_file);
-        let mut registry_changed = observed_mtime != self.state.registry_mtime_ms;
-        // The mtime to remember: the one observed, unless our own write below
-        // replaced it (a coordinator registered here is our own write).
-        let mut registry_mtime = observed_mtime;
-        if self.ensure_coordinator(now) {
-            registry_mtime = mtime_ms(&registry_file);
-        }
-        let last_change: HashMap<String, u64> = self
-            .state
-            .last_change
-            .iter()
-            .map(|(pane, at)| (pane.clone(), *at))
-            .collect();
-        let mut registry = Registry::load(&self.dir);
-        let (mut live, relinked) =
-            live::build(&inputs, &mut registry, Vec::new(), &last_change, false, now);
-        if relinked {
-            // Relink under the lock, over the freshly loaded registry. A write
-            // by someone else since the check above is still a change.
-            let result = registry::update(&self.dir, |locked| {
-                let foreign = mtime_ms(&registry_file) != registry_mtime;
-                let wrote = live::build(&inputs, locked, Vec::new(), &last_change, false, now).1;
-                Ok((wrote, foreign))
-            });
-            match result {
-                Ok((wrote, foreign)) => {
-                    registry_changed |= foreign;
-                    if wrote {
-                        // Our own relink write is not a registry change.
-                        registry_mtime = mtime_ms(&registry_file);
-                    }
-                }
-                Err(err) => self.log(now, &format!("relink not saved: {err}")),
-            }
-        }
-        self.state.registry_mtime_ms = registry_mtime;
-
-        let (new_msgs, offset) = messages::since_offset(&self.dir, self.state.msg_offset);
-        self.state.msg_offset = offset;
-        // Right after reading; a line appended since keeps the log for a later rotation.
-        if now.saturating_sub(self.last_rotate) >= ROTATE_EVERY_S {
-            self.last_rotate = now;
-            match messages::rotate_if_large(&self.dir, ROTATE_BYTES, offset) {
-                Ok(true) => {
-                    self.state.msg_offset = 0;
-                    self.log(now, "rotated messages.jsonl");
-                }
-                Ok(false) => {}
-                Err(err) => tracing::warn!("herdr+ cannot rotate the message log: {err}"),
-            }
-        }
-        self.recent.extend(new_msgs.iter().cloned());
-        while self.recent.len() > LIVE_MESSAGES {
-            self.recent.pop_front();
-        }
-
-        let turn = turn::read_live(&self.dir, now);
-        let request = wake_request_path(&self.dir);
-        let wake_requested = request.exists();
-        if wake_requested {
-            if let Err(err) = std::fs::remove_file(&request) {
-                tracing::warn!("herdr+ cannot remove wake.request: {err}");
-            }
-            self.log(now, "wake requested");
-        }
-
-        let actions = tick(
-            &mut self.state,
-            &live,
-            &new_msgs,
-            registry_changed,
-            turn.as_ref(),
-            wake_requested,
-            &self.cfg,
-            now,
-        );
-        let mut turn_live = turn.is_some();
-        for action in actions {
-            match action {
-                Action::Log(line) => self.log(now, &line),
-                // Both only touch the turn read above: an MCP server may
-                // have started a new one since.
-                Action::MarkTurnWorking => {
-                    if let Some(turn) = &turn {
-                        if let Err(err) = turn::mark_working_if(&self.dir, turn) {
-                            tracing::warn!("herdr+ cannot update the turn marker: {err}");
-                        }
-                    }
-                }
-                Action::ClearTurn => {
-                    if let Some(turn) = &turn {
-                        turn::clear_if(&self.dir, turn);
-                    }
-                    turn_live = turn::read_live(&self.dir, now).is_some();
-                }
-                Action::Relaunch { resume } => self.relaunch(resume.as_deref(), now),
-                Action::Wake {
-                    seq,
-                    digest,
-                    prompt,
-                    pane,
-                    items,
-                } => {
-                    if self.wake(seq, &digest, &prompt, &pane, items, now) {
-                        turn_live = true;
-                    }
-                }
-            }
-        }
-
-        for agent in &mut live.agents {
-            agent.last_change_unix = self
-                .state
-                .last_change
-                .get(&agent.pane_id)
-                .copied()
-                .unwrap_or(0);
-        }
-        live.messages = self.recent.iter().cloned().collect();
-        live.watch = self.state.summary(&self.cfg, turn_live, now);
-        self.publish(live, now);
-        self.persist();
-        self.interval
-    }
-
-    fn relaunch(&mut self, resume: Option<&str>, now: u64) {
-        let line = match coordinator_start(&self.api, &self.dir, &self.ctx, resume) {
-            Ok(pane) => format!("relaunch resume={} -> {pane}", resume.unwrap_or("none")),
-            Err(err) => format!("relaunch failed: {err}"),
-        };
-        // The start can take a while (the resume check): count the missing
-        // time from now, or the next tick would launch a second coordinator
-        // before this one shows up in agent.list.
-        self.state.coord_missing_since = Some(now_unix().max(now));
-        self.log(now, &line);
-    }
-
-    /// Deliver one wake-up; `true` when the prompt went in.
-    fn wake(
-        &mut self,
-        seq: u64,
-        digest: &str,
-        prompt: &str,
-        pane: &str,
-        items: usize,
-        now: u64,
-    ) -> bool {
-        // Re-check right before typing: the user may have just started a turn.
-        match api::agent_get(&self.api, pane) {
-            Ok(agent) if agent["agent_status"].as_str().is_some_and(is_idle) => {}
-            Ok(agent) => {
-                let status = agent["agent_status"].as_str().unwrap_or("unknown");
-                self.log(now, &format!("held coordinator {status} (re-check)"));
-                return false;
-            }
-            Err(err) => {
-                self.state.wake_failed(now, &self.cfg);
-                self.log(now, &format!("failed #{seq} {}", err.code));
-                return false;
-            }
-        }
-        let path = wake_dir(&self.dir).join(format!("{seq}.md"));
-        if let Err(err) = write_atomically(&path, digest.as_bytes()) {
-            self.state.wake_failed(now, &self.cfg);
-            self.log(now, &format!("failed #{seq} digest not written: {err}"));
-            return false;
-        }
-        prune_digests(&self.dir);
-        let marker = Turn {
-            source: "wake".into(),
-            id: seq.to_string(),
-            started_unix: now,
-            coordinator_pane: pane.to_string(),
-            seen_working: false,
-        };
-        // Without the marker the coordinator's write tools are not guarded
-        // during this turn: no marker, no wake-up. An agent message may have
-        // taken the turn since the tick read it: hold, it is not a failure.
-        match turn::write_if_absent(&self.dir, &marker, now) {
-            Ok(true) => {}
-            Ok(false) => {
-                self.log(now, "held turn live (re-check)");
-                return false;
-            }
-            Err(err) => {
-                self.state.wake_failed(now, &self.cfg);
-                self.log(now, &format!("failed #{seq} turn marker: {err}"));
-                return false;
-            }
-        }
-        match api::prompt(&self.api, pane, prompt) {
-            Ok(()) => {
-                self.state.wake_delivered(seq, now);
-                self.log(now, &format!("delivered #{seq} {items} items -> {pane}"));
-                true
-            }
-            Err(err) => {
-                turn::clear_if(&self.dir, &marker);
-                self.state.wake_failed(now, &self.cfg);
-                self.log(now, &format!("failed #{seq} {}", err.code));
-                false
-            }
-        }
-    }
-
-    /// Write `live.json` when it changed (ignoring the timestamp) or every 10 s.
-    fn publish(&mut self, live: LiveData, now: u64) {
-        let comparable = LiveData {
-            generated_unix: 0,
-            ..live.clone()
-        };
-        if self.last_live.as_ref() == Some(&comparable)
-            && now.saturating_sub(self.last_live_write) < LIVE_REFRESH_S
-        {
-            return;
-        }
-        let written = serde_json::to_vec_pretty(&live)
-            .map_err(io::Error::other)
-            .and_then(|json| write_atomically(&super::live_path(&self.dir), &json));
-        match written {
-            Ok(()) => {
-                self.last_live = Some(comparable);
-                self.last_live_write = now;
-            }
-            Err(err) => tracing::warn!("herdr+ cannot write live.json: {err}"),
-        }
-    }
-
-    /// Save `watch_state.json` when it changed.
-    fn persist(&mut self) {
-        let Ok(json) = serde_json::to_vec_pretty(&self.state) else {
-            return;
-        };
-        if json == self.last_state {
-            return;
-        }
-        match self.state.save() {
-            Ok(()) => self.last_state = json,
-            Err(err) => tracing::warn!("herdr+ cannot write watch_state.json: {err}"),
-        }
-    }
-}
-
-/// Open the dashboard in herdr's browser; best effort.
-fn open_dashboard(api: &impl Api, port: u16) {
-    let result = api.call(Method::BrowserRun(BrowserRunParams {
-        caller: None,
-        profile: None,
-        tab: None,
-        op: BrowserOp::Open {
-            url: format!("http://127.0.0.1:{port}/"),
-            focus: false,
-            wait: None,
-        },
-        timeout_ms: Some(10_000),
-    }));
-    if let Err(err) = result {
-        tracing::info!("herdr+ dashboard not opened in the browser: {err}");
-    }
-}
-
-pub fn run<A: Api>(api: A, opts: WatchOpts) -> io::Result<i32> {
-    let dir = opts.dir.clone();
-    let Some(_lock) = super::lock::try_exclusive(&dir, WATCH_LOCK)? else {
-        println!("watcher already running ({})", dir.display());
-        return Ok(0);
-    };
-    super::seed(&dir)?;
-    launch::write_claude_mcp_config(&opts.ctx)?;
-    let now = now_unix();
-    if opts.serve {
-        let (serve_dir, port) = (dir.clone(), opts.port);
-        std::thread::spawn(move || {
-            if let Err(err) = super::serve::serve(serve_dir.clone(), port) {
-                tracing::warn!("herdr+ dashboard server stopped: {err}");
-                log_line(
-                    &serve_dir,
-                    now_unix(),
-                    &format!("dashboard on port {port} failed: {err}"),
-                );
-            }
-        });
-    }
-    let mut cfg = WakeCfg::from_env();
-    cfg.relaunch = opts.coordinator;
-    let mut state = WatchState::load(&dir);
-    state.rebaseline();
-    // A restarted watcher retries a coordinator the relaunch cap gave up on.
-    state.coordinator_down = false;
-    println!(
-        "herdr+ watcher: {} · dashboard http://127.0.0.1:{}/ · log {}",
-        dir.display(),
-        opts.port,
-        wakeups_path(&dir).display()
-    );
-    log_line(
-        &dir,
-        now,
-        &format!(
-            "watcher started (debounce {}s, gap {}s, periodic {}s, caps {}/h {}/day)",
-            cfg.debounce_s, cfg.gap_s, cfg.periodic_s, cfg.cap_hour, cfg.cap_day
-        ),
-    );
-    let mut driver = Driver::new(api, &opts, cfg, state);
-    driver.ensure_coordinator(now);
-    if opts.serve {
-        open_dashboard(&driver.api, opts.port);
-    }
-    loop {
-        let wait = driver.step(now_unix());
-        std::thread::sleep(wait);
-    }
-}
-
-pub fn coordinator_start<A: Api>(
-    api: &A,
-    dir: &Path,
-    ctx: &LaunchCtx,
-    resume: Option<&str>,
-) -> Result<String, String> {
-    coordinator_start_with(api, dir, ctx, resume, &std::thread::sleep)
-}
-
-/// Whether `pane` (`{workspace}:p{n}`) belongs to `workspace_id`.
-fn in_group(pane: &str, workspace_id: &str) -> bool {
-    pane.strip_prefix(workspace_id)
-        .is_some_and(|rest| rest.starts_with(":p"))
-}
-
-fn session_id(session: &ClaudeSession) -> &str {
-    match session {
-        ClaudeSession::New(id) | ClaudeSession::Resume(id) => id,
-    }
-}
-
-fn start_claude(
-    api: &impl Api,
-    dir: &Path,
-    ctx: &LaunchCtx,
-    pane: &str,
-    session: &ClaudeSession,
-    sleep: &dyn Fn(Duration),
-) -> Result<(), ApiError> {
-    let kickoff = launch::coordinator_kickoff(dir);
-    let args = launch::claude_args(ctx, session, true, Some(&kickoff))
-        .map_err(|err| ApiError::new("mcp_config", err.to_string()))?;
-    api::agent_start_with(
-        api,
-        COORDINATOR_NAME,
-        "claude",
-        pane,
-        args,
-        START_TIMEOUT_MS,
-        sleep,
-    )
-    .map(|_| ())
-}
-
-/// Poll the pane for up to [`RESUME_CHECK_S`] until a live agent shows up.
-fn agent_comes_up(api: &impl Api, pane: &str, sleep: &dyn Fn(Duration)) -> bool {
-    for _ in 0..RESUME_CHECK_S {
-        sleep(Duration::from_secs(1));
-        if let Ok(agent) = api::agent_get(api, pane) {
-            if matches!(
-                agent["agent_status"].as_str(),
-                Some("idle" | "working" | "blocked" | "done")
-            ) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Find or create the `herdr+` group, start the coordinator Claude session
-/// there (reusing its old pane when that is back at a shell), and register it.
-pub(crate) fn coordinator_start_with(
-    api: &impl Api,
-    dir: &Path,
-    ctx: &LaunchCtx,
-    resume: Option<&str>,
-    sleep: &dyn Fn(Duration),
-) -> Result<String, String> {
-    // Refuse before launching anything when the registry cannot be updated
-    // afterwards: an unregistered coordinator would be started again and again.
-    let known = match registry::load_strict(dir) {
-        Ok(known) => known,
-        Err(registry::LoadError::Corrupt(_)) => {
-            return Err("managed.json is corrupt; fix or remove it".into())
-        }
-        Err(registry::LoadError::Io(err)) => {
-            return Err(format!("cannot read managed.json: {err}"))
-        }
-    };
-    let cwd = dir.to_string_lossy().into_owned();
-    let workspaces = api::workspaces(api).map_err(|err| format!("cannot list groups: {err}"))?;
-    let (workspace, fresh_root) = match api::group_by_label_or_id(&workspaces, COORDINATOR_GROUP) {
-        Some(workspace) => (workspace, None),
-        None => {
-            let (workspace, tab, root) = api::workspace_create(api, COORDINATOR_GROUP, Some(&cwd))
-                .map_err(|err| format!("cannot create the herdr+ group: {err}"))?;
-            if let Err(err) = api::tab_rename(api, &tab, COORDINATOR_TAB) {
-                tracing::warn!("herdr+ cannot label the coordinator tab: {err}");
-            }
-            (workspace, Some(root))
-        }
-    };
-    let mut session = match resume {
-        Some(id) => ClaudeSession::Resume(id.to_string()),
-        None => ClaudeSession::New(launch::new_uuid()),
-    };
-    // Reuse the old pane only inside the herdr+ group: after a server restore
-    // pane ids are remapped, and the stored id may now be a user's shell.
-    let reusable = known
-        .coordinator()
-        .and_then(|entry| entry.pane_id.clone())
-        .filter(|pane| in_group(pane, &workspace) && Some(pane) != fresh_root.as_ref());
-    let mut pane = None;
-    if let Some(old) = reusable {
-        match start_claude(api, dir, ctx, &old, &session, sleep) {
-            Ok(()) => pane = Some(old),
-            Err(err)
-                if matches!(
-                    err.code.as_str(),
-                    "agent_pane_not_found" | "agent_pane_busy" | "agent_pane_unavailable"
-                ) =>
-            {
-                tracing::info!("herdr+ coordinator pane {old} not reusable: {err}");
-            }
-            Err(err) => return Err(format!("cannot start the coordinator in {old}: {err}")),
-        }
-    }
-    let pane = match pane {
-        Some(pane) => pane,
-        None => {
-            let pane = match fresh_root {
-                Some(root) => root,
-                None => {
-                    api::tab_create(api, Some(&workspace), Some(&cwd), Some(COORDINATOR_TAB))
-                        .map_err(|err| format!("cannot open the coordinator tab: {err}"))?
-                        .1
-                }
-            };
-            start_claude(api, dir, ctx, &pane, &session, sleep)
-                .map_err(|err| format!("cannot start the coordinator in {pane}: {err}"))?;
-            pane
-        }
-    };
-    if matches!(session, ClaudeSession::Resume(_)) && !agent_comes_up(api, &pane, sleep) {
-        // The resume failed (unknown or broken session): start fresh in the same pane.
-        tracing::info!("herdr+ coordinator resume did not come up; starting a new session");
-        session = ClaudeSession::New(launch::new_uuid());
-        start_claude(api, dir, ctx, &pane, &session, sleep)
-            .map_err(|err| format!("cannot restart the coordinator in {pane}: {err}"))?;
-    }
-    let id = session_id(&session).to_string();
-    registry::update(dir, |registry| {
-        match registry.coordinator_index() {
-            // A fresh session differs from the stored one, so `find` would
-            // refuse the pane: overwrite the keys instead.
-            Some(index) => {
-                registry.set_keys(index, Some(&id), Some(&pane));
-            }
-            None => {
-                registry.manage(
-                    Some(&id),
-                    Some(&pane),
-                    Some("claude"),
-                    &ManagePatch {
-                        role: Some(COORDINATOR_ROLE.into()),
-                        project: Some(COORDINATOR_GROUP.into()),
-                        note: None,
-                    },
-                )?;
-            }
-        }
-        Ok(())
-    })?;
-    Ok(pane)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plus::live::OfflineAgent;
-    use serde_json::{json, Value};
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use crate::coordinator::live::OfflineAgent;
+    use std::collections::HashMap;
 
     fn agent(pane: &str, name: &str, status: &str) -> LiveAgent {
         LiveAgent {
@@ -2293,7 +1693,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_coordinator_is_relaunched_up_to_the_cap() {
+    fn a_missing_coordinator_triggers_a_relaunch_every_missing_window_until_down() {
         let cfg = cfg();
         let mut state = WatchState::default();
         let mut gone = live(vec![]);
@@ -2322,31 +1722,24 @@ mod tests {
         assert_eq!(relaunches(&quiet(&mut state, &gone, &cfg, 59)), 0);
         assert_eq!(relaunches(&quiet(&mut state, &gone, &cfg, 60)), 1);
         assert_eq!(relaunches(&quiet(&mut state, &gone, &cfg, 90)), 1);
-        let actions = quiet(&mut state, &gone, &cfg, 120);
-        assert_eq!(relaunches(&actions), 0);
-        assert!(logs(&actions)[0].starts_with("coordinator down"));
-        assert!(state.coordinator_down);
-        assert!(state.summary(&cfg, false, 120).coordinator_down);
-        assert!(
-            quiet(&mut state, &gone, &cfg, 5000).is_empty(),
-            "logged once, stays down"
+        assert_eq!(
+            relaunches(&quiet(&mut state, &gone, &cfg, 120)),
+            1,
+            "no cap here: the server counts"
         );
+        // The server gave up (its relaunch cap): no more triggers.
+        state.coordinator_down = true;
+        assert!(state.summary(&cfg, false, 150).coordinator_down);
+        assert!(quiet(&mut state, &gone, &cfg, 5000).is_empty());
         // Back (started by hand): no longer down.
-        quiet(&mut state, &live(vec![coord("idle")]), &cfg, 5010);
+        let actions = quiet(&mut state, &live(vec![coord("idle")]), &cfg, 5010);
         assert!(!state.coordinator_down);
-        // --no-coordinator never relaunches.
-        let off = WakeCfg {
-            relaunch: false,
-            ..WakeCfg::default()
-        };
-        let mut state = WatchState::default();
-        quiet(&mut state, &gone, &off, 0);
-        assert_eq!(relaunches(&quiet(&mut state, &gone, &off, 100)), 0);
+        assert!(logs(&actions)[0].starts_with("coordinator back"));
     }
 
     #[test]
     fn persisted_state_round_trips_without_rebaselining_counters() {
-        let dir = crate::plus::test_dir("watch-state");
+        let dir = crate::coordinator::test_dir("watch-state");
         let cfg = cfg();
         let mut state = WatchState::load(&dir);
         assert_eq!(state.dir, dir);
@@ -2385,7 +1778,7 @@ mod tests {
         assert_eq!(loaded.wake_seq, 3);
         assert_eq!(loaded.pending.len(), 1);
         // A corrupt file starts from the default.
-        std::fs::write(crate::plus::watch_state_path(&dir), "{oops").unwrap();
+        std::fs::write(crate::coordinator::watch_state_path(&dir), "{oops").unwrap();
         assert_eq!(WatchState::load(&dir).wake_seq, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2675,375 +2068,23 @@ mod tests {
         );
         assert_eq!(cfg.gap(true), 20);
         assert_eq!(WakeCfg::from_lookup(|_| None), WakeCfg::default());
-    }
-
-    // ----- driver ------------------------------------------------------------
-
-    type Calls = Rc<RefCell<Vec<Method>>>;
-
-    fn recorder(
-        reply: impl Fn(&Method) -> Result<Value, ApiError>,
-    ) -> (impl Fn(Method) -> Result<Value, ApiError>, Calls) {
-        let calls = Calls::default();
-        let seen = calls.clone();
-        let api = move |method: Method| {
-            let out = reply(&method);
-            seen.borrow_mut().push(method);
-            out
+        // Configured values sit under the overrides.
+        let configured = WakeCfg {
+            cap_hour: 4,
+            cap_day: 20,
+            periodic_s: 600,
+            ..WakeCfg::default()
         };
-        (api, calls)
-    }
-
-    fn ctx(dir: &Path) -> LaunchCtx {
-        LaunchCtx {
-            herdr_bin: PathBuf::from("/opt/herdr"),
-            dir: dir.to_path_buf(),
-            port: crate::plus::DEFAULT_PORT,
-        }
-    }
-
-    fn started(calls: &Calls) -> Vec<(String, Vec<String>)> {
-        calls
-            .borrow()
-            .iter()
-            .filter_map(|method| match method {
-                Method::AgentStart(params) => Some((params.pane_id.clone(), params.args.clone())),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn register_coordinator(dir: &Path, session: &str, pane: &str) {
-        registry::update(dir, |registry| {
-            registry
-                .manage(
-                    Some(session),
-                    Some(pane),
-                    Some("claude"),
-                    &ManagePatch {
-                        role: Some(COORDINATOR_ROLE.into()),
-                        project: Some("herdr+".into()),
-                        note: Some("keep".into()),
-                    },
-                )
-                .map(|_| ())
-        })
-        .unwrap();
-    }
-
-    fn group_w1() -> Value {
-        json!({ "workspaces": [{ "workspace_id": "w1", "label": "herdr+" }, { "workspace_id": "w2", "label": "app" }] })
-    }
-
-    fn no_sleep(_: Duration) {}
-
-    #[test]
-    fn coordinator_start_reuses_its_pane_and_rekeys_the_entry() {
-        let dir = crate::plus::test_dir("coord-reuse");
-        register_coordinator(&dir, "old", "w1:p1");
-        let (api, calls) = recorder(|method| match method {
-            Method::WorkspaceList(_) => Ok(group_w1()),
-            Method::AgentStart(_) => Ok(json!({ "agent": { "pane_id": "w1:p1" } })),
-            other => panic!("unexpected {other:?}"),
-        });
-        let pane = coordinator_start_with(&api, &dir, &ctx(&dir), None, &no_sleep).unwrap();
-        assert_eq!(pane, "w1:p1");
-        let starts = started(&calls);
-        assert_eq!(starts.len(), 1);
-        assert_eq!(starts[0].0, "w1:p1");
-        let args = &starts[0].1;
-        assert_eq!(args[0], "--session-id");
-        assert!(args.iter().any(|arg| arg.starts_with("--mcp-config=")));
-        assert!(args.iter().any(|arg| arg.starts_with("--allowedTools=")));
-        let registry = Registry::load(&dir);
-        assert_eq!(registry.agents.len(), 1);
-        let entry = &registry.agents[0];
-        assert_eq!(entry.session.as_deref(), Some(args[1].as_str()));
-        assert_ne!(entry.session.as_deref(), Some("old"));
-        assert_eq!(entry.note.as_deref(), Some("keep"));
-        assert!(entry.is_coordinator());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn coordinator_start_falls_back_to_a_new_tab_when_the_pane_is_busy() {
-        let dir = crate::plus::test_dir("coord-busy");
-        register_coordinator(&dir, "old", "w1:p1");
-        let (api, calls) = recorder(|method| match method {
-            Method::WorkspaceList(_) => Ok(group_w1()),
-            Method::AgentStart(params) if params.pane_id == "w1:p1" => {
-                Err(ApiError::new("agent_pane_busy", "vim is running"))
-            }
-            Method::AgentStart(_) => Ok(json!({ "agent": {} })),
-            Method::TabCreate(params) => {
-                assert_eq!(params.workspace_id.as_deref(), Some("w1"));
-                assert_eq!(params.label.as_deref(), Some(COORDINATOR_TAB));
-                assert!(!params.focus);
-                Ok(json!({ "tab": { "tab_id": "w1:t2" }, "root_pane": { "pane_id": "w1:p2" } }))
-            }
-            other => panic!("unexpected {other:?}"),
-        });
-        let pane = coordinator_start_with(&api, &dir, &ctx(&dir), None, &no_sleep).unwrap();
-        assert_eq!(pane, "w1:p2");
-        let starts = started(&calls);
-        assert_eq!(starts.last().map(|(pane, _)| pane.as_str()), Some("w1:p2"));
-        assert!(starts.len() > 2, "busy is retried before falling back");
-        let registry = Registry::load(&dir);
-        assert_eq!(registry.agents.len(), 1);
-        assert_eq!(registry.agents[0].pane_id.as_deref(), Some("w1:p2"));
-        assert_eq!(
-            registry.agents[0].session.as_deref(),
-            starts.last().map(|(_, args)| args[1].as_str())
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn coordinator_start_never_reuses_a_pane_outside_its_group() {
-        let dir = crate::plus::test_dir("coord-stale");
-        // After a restore w2:p5 may be anybody's shell.
-        register_coordinator(&dir, "old", "w2:p5");
-        let (api, calls) = recorder(|method| match method {
-            Method::WorkspaceList(_) => Ok(group_w1()),
-            Method::AgentStart(params) => {
-                assert_ne!(params.pane_id, "w2:p5");
-                Ok(json!({ "agent": {} }))
-            }
-            Method::TabCreate(_) => {
-                Ok(json!({ "tab": { "tab_id": "w1:t2" }, "root_pane": { "pane_id": "w1:p2" } }))
-            }
-            other => panic!("unexpected {other:?}"),
-        });
-        assert_eq!(
-            coordinator_start_with(&api, &dir, &ctx(&dir), None, &no_sleep).unwrap(),
-            "w1:p2"
-        );
-        assert_eq!(started(&calls).len(), 1);
-        assert!(in_group("w1:p2", "w1"));
-        assert!(!in_group("w11:p2", "w1"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn coordinator_start_creates_the_group_and_registers_the_coordinator() {
-        let dir = crate::plus::test_dir("coord-new");
-        let (api, calls) = recorder(|method| match method {
-            Method::WorkspaceList(_) => {
-                Ok(json!({ "workspaces": [{ "workspace_id": "w1", "label": "app" }] }))
-            }
-            Method::WorkspaceCreate(params) => {
-                assert_eq!(params.label.as_deref(), Some(COORDINATOR_GROUP));
-                Ok(json!({
-                    "workspace": { "workspace_id": "w3" },
-                    "tab": { "tab_id": "w3:t1" },
-                    "root_pane": { "pane_id": "w3:p1" }
-                }))
-            }
-            Method::TabRename(params) => {
-                assert_eq!(
-                    (params.tab_id.as_str(), params.label.as_str()),
-                    ("w3:t1", COORDINATOR_TAB)
-                );
-                Ok(json!({}))
-            }
-            Method::AgentStart(_) => Ok(json!({ "agent": {} })),
-            other => panic!("unexpected {other:?}"),
-        });
-        let pane = coordinator_start_with(&api, &dir, &ctx(&dir), None, &no_sleep).unwrap();
-        assert_eq!(pane, "w3:p1");
-        let starts = started(&calls);
-        assert_eq!(starts.len(), 1);
-        let registry = Registry::load(&dir);
-        let entry = registry.coordinator().unwrap();
-        assert_eq!(entry.pane_id.as_deref(), Some("w3:p1"));
-        assert_eq!(entry.session.as_deref(), Some(starts[0].1[1].as_str()));
-        assert_eq!(entry.agent.as_deref(), Some("claude"));
-        assert_eq!(entry.project.as_deref(), Some(COORDINATOR_GROUP));
-        assert!(crate::plus::launch::claude_mcp_config_path(&dir).exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_resume_that_does_not_come_up_is_replaced_by_a_new_session() {
-        let dir = crate::plus::test_dir("coord-resume");
-        register_coordinator(&dir, "old", "w1:p1");
-        let (api, calls) = recorder(|method| match method {
-            Method::WorkspaceList(_) => Ok(group_w1()),
-            Method::AgentStart(_) => Ok(json!({ "agent": {} })),
-            Method::AgentGet(_) => Err(ApiError::new("agent_not_found", "no agent")),
-            other => panic!("unexpected {other:?}"),
-        });
-        let slept = Rc::new(RefCell::new(0u64));
-        let counter = slept.clone();
-        let sleep = move |d: Duration| *counter.borrow_mut() += d.as_secs();
-        coordinator_start_with(&api, &dir, &ctx(&dir), Some("old"), &sleep).unwrap();
-        assert_eq!(*slept.borrow(), RESUME_CHECK_S);
-        let starts = started(&calls);
-        assert_eq!(starts.len(), 2);
-        assert_eq!(
-            starts[0].1[..2],
-            ["--resume".to_string(), "old".to_string()]
-        );
-        assert_eq!(starts[1].1[0], "--session-id");
-        let entry = Registry::load(&dir).coordinator().cloned().unwrap();
-        assert_eq!(entry.session.as_deref(), Some(starts[1].1[1].as_str()));
-
-        // A resume that comes up keeps its session.
-        let (api, calls) = recorder(|method| match method {
-            Method::WorkspaceList(_) => Ok(group_w1()),
-            Method::AgentStart(_) => Ok(json!({ "agent": {} })),
-            Method::AgentGet(_) => Ok(json!({ "agent": { "agent_status": "idle" } })),
-            other => panic!("unexpected {other:?}"),
-        });
-        let session = entry.session.clone().unwrap();
-        coordinator_start_with(&api, &dir, &ctx(&dir), Some(&session), &no_sleep).unwrap();
-        assert_eq!(started(&calls).len(), 1);
-        assert_eq!(
-            Registry::load(&dir)
-                .coordinator()
-                .unwrap()
-                .session
-                .as_deref(),
-            Some(session.as_str())
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn coordinator_start_refuses_a_corrupt_registry_before_launching() {
-        let dir = crate::plus::test_dir("coord-corrupt");
-        std::fs::write(crate::plus::registry_path(&dir), "{not json").unwrap();
-        let (api, calls) = recorder(|method| panic!("unexpected {method:?}"));
-        let err = coordinator_start_with(&api, &dir, &ctx(&dir), None, &no_sleep).unwrap_err();
-        assert!(err.contains("corrupt"), "{err}");
-        assert!(calls.borrow().is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    fn api_agent(pane: &str, session: &str, status: &str) -> Value {
-        json!({
-            "terminal_id": "t", "pane_id": pane, "tab_id": format!("{}:t1", &pane[..2]),
-            "workspace_id": &pane[..2], "agent": "claude", "agent_status": status,
-            "agent_session": { "source": "hook", "agent": "claude", "kind": "id", "value": session },
-            "focused": false, "revision": 1
-        })
-    }
-
-    #[test]
-    fn the_driver_publishes_live_data_and_delivers_a_requested_wake() {
-        let dir = crate::plus::test_dir("watch-driver");
-        crate::plus::seed(&dir).unwrap();
-        register_coordinator(&dir, "cs", "w1:p1");
-        for text in ["one", "two"] {
-            let mut old = message("w2:p1", "w2:p2", "sent");
-            old.text = text.into();
-            messages::append(&dir, &old).unwrap();
-        }
-        let (api, calls) = recorder(|method| match method {
-            Method::AgentList(_) => Ok(json!({ "agents": [
-                api_agent("w1:p1", "cs", "idle"),
-                api_agent("w2:p1", "unmanaged", "working"),
-            ] })),
-            Method::WorkspaceList(_) => Ok(group_w1()),
-            Method::TabList(_) => Ok(json!({ "tabs": [] })),
-            Method::AgentGet(_) => Ok(json!({ "agent": { "agent_status": "idle" } })),
-            Method::AgentPrompt(_) => Ok(json!({})),
-            other => panic!("unexpected {other:?}"),
-        });
-        let opts = WatchOpts {
-            dir: dir.clone(),
-            port: 7719,
-            serve: false,
-            coordinator: false,
-            interval_ms: 2000,
-            ctx: ctx(&dir),
-        };
-        let mut state = WatchState::load(&dir);
-        state.rebaseline();
-        let mut driver = Driver::new(api, &opts, WakeCfg::default(), state);
-        std::fs::write(wake_request_path(&dir), "1").unwrap();
-        assert_eq!(driver.step(100), Duration::from_millis(2000));
-        assert!(!wake_request_path(&dir).exists(), "the request is consumed");
-        let live: LiveData =
-            serde_json::from_slice(&std::fs::read(crate::plus::live_path(&dir)).unwrap()).unwrap();
-        assert_eq!(live.coordinator_pane.as_deref(), Some("w1:p1"));
-        assert_eq!(live.unmanaged_count, 1);
-        let texts: Vec<&str> = live.messages.iter().map(|m| m.text.as_str()).collect();
-        assert_eq!(texts, ["one", "two"], "the log tail once, not twice");
-        assert!(driver.state.forced, "waits for a settled coordinator");
-        driver.step(106);
-        let prompts: Vec<String> = calls
-            .borrow()
-            .iter()
-            .filter_map(|method| match method {
-                Method::AgentPrompt(params) => Some(format!("{} {}", params.target, params.text)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(prompts.len(), 1);
-        assert!(
-            prompts[0].starts_with("w1:p1 [herdr+ wake-up #1 "),
-            "{}",
-            prompts[0]
-        );
-        assert!(wake_dir(&dir).join("1.md").exists());
-        let turn = turn::read_live(&dir, 106).unwrap();
-        assert_eq!((turn.source.as_str(), turn.id.as_str()), ("wake", "1"));
-        let log = std::fs::read_to_string(wakeups_path(&dir)).unwrap();
-        assert!(log.contains(" baseline\n"), "{log}");
-        assert!(log.contains(" delivered #1 0 items -> w1:p1\n"), "{log}");
-        let live: LiveData =
-            serde_json::from_slice(&std::fs::read(crate::plus::live_path(&dir)).unwrap()).unwrap();
-        assert_eq!(live.watch.wake_seq, 1);
-        assert!(live.watch.turn_live);
-        assert_eq!(WatchState::load(&dir).wake_seq, 1, "persisted");
-        // No second wake while the turn is live.
-        std::fs::write(wake_request_path(&dir), "1").unwrap();
-        driver.step(150);
-        let log = std::fs::read_to_string(wakeups_path(&dir)).unwrap();
-        assert!(log.contains(" held turn live (pending 0)\n"), "{log}");
-        assert_eq!(
-            calls
-                .borrow()
-                .iter()
-                .filter(|method| matches!(method, Method::AgentPrompt(_)))
-                .count(),
-            1
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_server_error_backs_off_and_rebaselines() {
-        let dir = crate::plus::test_dir("watch-down");
-        let api = |_: Method| -> Result<Value, ApiError> {
-            Err(ApiError::new("server_unavailable", "down"))
-        };
-        let opts = WatchOpts {
-            dir: dir.clone(),
-            port: 7719,
-            serve: false,
-            coordinator: true,
-            interval_ms: 2000,
-            ctx: ctx(&dir),
-        };
-        let mut state = WatchState::load(&dir);
-        state.baselined = true;
-        let mut driver = Driver::new(api, &opts, WakeCfg::default(), state);
-        assert_eq!(driver.step(100), ERROR_BACKOFF);
-        assert!(!driver.state.baselined);
-        assert!(!crate::plus::live_path(&dir).exists());
-        let log = std::fs::read_to_string(wakeups_path(&dir)).unwrap();
-        assert!(
-            log.contains("server unavailable: server_unavailable: down"),
-            "{log}"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
+        let cfg = configured
+            .clone()
+            .with_lookup(|name| env.get(name).map(|v| v.to_string()));
+        assert_eq!((cfg.cap_hour, cfg.cap_day, cfg.periodic_s), (5, 20, 300));
+        assert_eq!(configured.clone().with_lookup(|_| None), configured);
     }
 
     #[test]
     fn old_digests_are_pruned() {
-        let dir = crate::plus::test_dir("watch-prune");
+        let dir = crate::coordinator::test_dir("watch-prune");
         std::fs::create_dir_all(wake_dir(&dir)).unwrap();
         for seq in 1..=55 {
             std::fs::write(wake_dir(&dir).join(format!("{seq}.md")), "x").unwrap();

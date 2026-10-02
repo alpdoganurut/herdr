@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
 mod browser;
+mod coordinator;
 mod io;
 mod keybinds;
 mod model;
@@ -16,6 +17,7 @@ pub use self::{
     browser::{
         is_forbidden_switch, valid_profile_name, BrowserConfig, AUTO_EXECUTABLE, MCP_AGENTS,
     },
+    coordinator::{validate_caps, CoordinatorConfig},
     io::{
         config_diagnostic_summary, config_dir, config_path, load_live_config,
         remove_keybinding_config_sections, remove_section_key, state_dir, upsert_section_bool,
@@ -138,6 +140,7 @@ impl Config {
             .chain(self.ui.idle_reminder_diagnostic())
             .chain(self.ui.daily_reminder_diagnostic())
             .chain(self.news.diagnostics())
+            .chain(self.coordinator.diagnostics())
             .chain(self.browser.diagnostics())
             .collect()
     }

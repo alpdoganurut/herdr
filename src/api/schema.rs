@@ -5,6 +5,7 @@ pub mod browser;
 pub mod closed_sessions;
 pub mod commands;
 pub mod common;
+pub mod coordinator;
 pub mod events;
 pub mod integrations;
 pub mod news;
@@ -183,6 +184,24 @@ pub enum Method {
     NewsSetTimes(NewsSetTimesParams),
     #[serde(rename = "news.set_quiet_hours")]
     NewsSetQuietHours(NewsSetQuietHoursParams),
+    #[serde(rename = "coordinator.get")]
+    CoordinatorGet(EmptyParams),
+    #[serde(rename = "coordinator.open")]
+    CoordinatorOpen(EmptyParams),
+    #[serde(rename = "coordinator.open_dashboard")]
+    CoordinatorOpenDashboard(coordinator::CoordinatorOpenDashboardParams),
+    #[serde(rename = "coordinator.wake")]
+    CoordinatorWake(coordinator::CoordinatorWakeParams),
+    #[serde(rename = "coordinator.start")]
+    CoordinatorStart(coordinator::CoordinatorStartParams),
+    #[serde(rename = "coordinator.set_enabled")]
+    CoordinatorSetEnabled(coordinator::CoordinatorSetEnabledParams),
+    #[serde(rename = "coordinator.set_wake_caps")]
+    CoordinatorSetWakeCaps(coordinator::CoordinatorSetWakeCapsParams),
+    #[serde(rename = "coordinator.set_model")]
+    CoordinatorSetModel(coordinator::CoordinatorSetModelParams),
+    #[serde(rename = "coordinator.set_notify")]
+    CoordinatorSetNotify(coordinator::CoordinatorSetNotifyParams),
     #[serde(rename = "browser.run")]
     BrowserRun(BrowserRunParams),
     #[serde(rename = "browser.get")]

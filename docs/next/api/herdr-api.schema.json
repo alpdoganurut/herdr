@@ -3574,6 +3574,125 @@
           ],
           "type": "object"
         },
+        "CoordinatorOpenDashboardParams": {
+          "description": "`coordinator.open_dashboard`: clears unread suggestions; with `open`\n(default true) the server opens the dashboard URL.",
+          "properties": {
+            "open": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "CoordinatorSetEnabledParams": {
+          "description": "`coordinator.set_enabled` (written to the config).",
+          "properties": {
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "type": "object"
+        },
+        "CoordinatorSetModelParams": {
+          "description": "`coordinator.set_model`: `null` is Claude's default.",
+          "properties": {
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "CoordinatorSetNotifyParams": {
+          "description": "`coordinator.set_notify`.",
+          "properties": {
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "type": "object"
+        },
+        "CoordinatorSetWakeCapsParams": {
+          "description": "`coordinator.set_wake_caps`: both caps are required.",
+          "properties": {
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cap_day": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cap_hour": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "cap_hour",
+            "cap_day"
+          ],
+          "type": "object"
+        },
+        "CoordinatorStartParams": {
+          "description": "`coordinator.start`: start, or restart with `resume` (default true).",
+          "properties": {
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "resume": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "CoordinatorWakeParams": {
+          "description": "`coordinator.wake`.",
+          "properties": {
+            "caller_pane": {
+              "description": "The calling pane (`HERDR_PANE_ID`); absent means the user.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EmptyParams": {
           "type": "object"
         },
@@ -7816,6 +7935,150 @@
         {
           "properties": {
             "method": {
+              "const": "coordinator.get",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "coordinator.open",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "coordinator.open_dashboard",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorOpenDashboardParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "coordinator.wake",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorWakeParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "coordinator.start",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorStartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "coordinator.set_enabled",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorSetEnabledParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "coordinator.set_wake_caps",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorSetWakeCapsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "coordinator.set_model",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorSetModelParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "coordinator.set_notify",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CoordinatorSetNotifyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "browser.run",
               "type": "string"
             },
@@ -10488,6 +10751,352 @@
             "failed"
           ],
           "type": "string"
+        },
+        "CoordinatorBoardInfo": {
+          "description": "A summary of the coordinator's board; its content is for the dashboard.",
+          "properties": {
+            "generated_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "suggestion_count": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "unread": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "CoordinatorGetInfo": {
+          "description": "`coordinator.get`'s read model; every coordinator method answers with it\n(as `ResponseResult::CoordinatorGet { info }`, `{\"type\": \"coordinator_get\",\n\"info\": {...}}` on the wire).",
+          "properties": {
+            "blocked_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "board": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/CoordinatorBoardInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "coordinator_dir": {
+              "default": "",
+              "type": "string"
+            },
+            "coordinator_session": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "coordinator_status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "dashboard_error": {
+              "description": "Why there is no dashboard URL (e.g. `port 7718 in use`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "dashboard_url": {
+              "description": "Only while the dashboard is listening.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "down_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "managed": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/CoordinatorManagedInfo"
+              },
+              "type": "array"
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "notice": {
+              "description": "A one-time notice (e.g. after the migration from the POC).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "notify": {
+              "default": true,
+              "description": "`[coordinator] notify`: the coordinator's own notifications.",
+              "type": "boolean"
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "relaunches_hour": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/CoordinatorStateInfo",
+              "default": "off"
+            },
+            "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "turn": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/CoordinatorTurnInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "unread_suggestions": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "wake": {
+              "$ref": "#/schemas/success_response/$defs/CoordinatorWakeInfo",
+              "default": {
+                "cap_day": 0,
+                "cap_hour": 0,
+                "capped": false,
+                "day": 0,
+                "hour": 0,
+                "pending": 0,
+                "seq": 0
+              }
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "type": "object"
+        },
+        "CoordinatorManagedInfo": {
+          "description": "One managed agent.",
+          "properties": {
+            "agent": {
+              "description": "The agent kind (`claude`, `codex`, …).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "last_change_at": {
+              "description": "Unix seconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "project": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "CoordinatorStateInfo": {
+          "description": "The coordinator's lifecycle state as the read model reports it.",
+          "oneOf": [
+            {
+              "enum": [
+                "off",
+                "waiting_for_lock",
+                "starting",
+                "running",
+                "down",
+                "blocked",
+                "unavailable"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A state this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        },
+        "CoordinatorTurnInfo": {
+          "description": "The live non-user turn marker, when one is set.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "source": {
+              "description": "`wake` or `message`.",
+              "type": "string"
+            },
+            "started_at": {
+              "description": "Unix seconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "source",
+            "id",
+            "started_at"
+          ],
+          "type": "object"
+        },
+        "CoordinatorWakeInfo": {
+          "description": "The wake-up counters and caps.",
+          "properties": {
+            "cap_day": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cap_hour": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "capped": {
+              "default": false,
+              "type": "boolean"
+            },
+            "day": {
+              "default": 0,
+              "description": "Wake-ups today.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "hour": {
+              "default": 0,
+              "description": "Wake-ups in the last hour.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "last_at": {
+              "description": "Unix seconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "next_periodic_at": {
+              "description": "Unix seconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pending": {
+              "default": 0,
+              "description": "Queued changes waiting for the next wake-up.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "seq": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
         },
         "EventData": {
           "oneOf": [
@@ -13777,6 +14386,22 @@
               "required": [
                 "type",
                 "news"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "info": {
+                  "$ref": "#/schemas/success_response/$defs/CoordinatorGetInfo"
+                },
+                "type": {
+                  "const": "coordinator_get",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "info"
               ],
               "type": "object"
             },

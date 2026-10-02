@@ -139,6 +139,9 @@ pub enum ResponseResult {
     NewsGet {
         news: NewsGetInfo,
     },
+    CoordinatorGet {
+        info: super::coordinator::CoordinatorGetInfo,
+    },
     NewsHistory {
         editions: Vec<NewsEditionInfo>,
     },

@@ -1,4 +1,4 @@
-//! Advisory file locks under the herdr+ directory (`<dir>/<name>.lock`):
+//! Advisory file locks under the coordinator directory (`<dir>/<name>.lock`):
 //! the watcher singleton, the registry read-modify-write and the message log
 //! rotation. `File::lock` locks are per open file, so two handles in one
 //! process exclude each other just like two processes do.

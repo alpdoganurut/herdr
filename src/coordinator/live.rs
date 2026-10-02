@@ -1,7 +1,10 @@
-//! The live data (`live.json`): what the dashboard reads, rebuilt from the
-//! JSON API without any LLM in the loop. [`build`] is pure over the API's
-//! `agent.list`, `workspace.list` and `tab.list` results, the registry and the
-//! message log, so it is tested with fixture JSON.
+//! The live data (`live.json`): what the dashboard reads, rebuilt without any
+//! LLM in the loop. [`build_facts`] is pure over typed agent facts (the herdr
+//! server builds them from scalar App accessors, never from per-pane process
+//! or cwd inspection), the group and tab names, the registry and the message
+//! log. [`build`] is the JSON edge for callers that read the API over the
+//! socket (`agent.list`, `workspace.list`, `tab.list`): it converts once and
+//! calls [`build_facts`].
 
 use std::collections::HashMap;
 
@@ -83,6 +86,9 @@ pub struct WatchSummary {
     /// A non-user turn marker is live.
     pub turn_live: bool,
     pub wakes_last_hour: u64,
+    /// Wake-ups within the last 24 hours.
+    #[serde(default)]
+    pub wakes_last_day: u64,
     /// When the coordinator last wrote `dashboard/board.json` (its mtime):
     /// the coordinator has no clock to stamp the board itself.
     #[serde(default)]
@@ -104,6 +110,44 @@ pub struct LiveData {
     pub watch: WatchSummary,
 }
 
+/// One live agent as herdr reports it: scalar facts only.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CoordinatorAgentFact {
+    pub pane_id: String,
+    pub tab_id: String,
+    pub workspace_id: String,
+    /// The agent name (`agent.rename` / `agent.start`), when set.
+    pub name: Option<String>,
+    /// The display label herdr shows for the agent.
+    pub display_agent: Option<String>,
+    /// The agent kind (`claude`, `codex`, ...).
+    pub agent: Option<String>,
+    /// `idle`, `working`, `blocked`, `done` or `unknown`.
+    pub status: String,
+    /// The native session id, when known.
+    pub session: Option<String>,
+    /// Only the socket edge fills this (the API reports it); the server's
+    /// own pass leaves it unset rather than inspect the pane's process.
+    pub cwd: Option<String>,
+    pub subagents: u64,
+}
+
+/// One sidebar group (space), in sidebar order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupFact {
+    pub workspace_id: String,
+    pub label: String,
+    pub tab_count: u64,
+}
+
+/// Typed inputs for [`build_facts`].
+pub struct FactInputs<'a> {
+    pub agents: &'a [CoordinatorAgentFact],
+    pub groups: &'a [GroupFact],
+    /// Tab id to tab label.
+    pub tab_labels: &'a HashMap<String, String>,
+}
+
 /// The API inputs, as returned by `agent.list`, `workspace.list` and `tab.list`.
 pub struct Inputs<'a> {
     pub agents: &'a [Value],
@@ -123,11 +167,39 @@ pub fn session_of(agent: &Value) -> Option<String> {
     s(&agent["agent_session"], "value")
 }
 
-/// A live agent's registry keys: pane id, native session id, agent kind.
-type AgentKeys = (String, Option<String>, Option<String>);
+/// An `agent.list` entry as a fact; `None` without a pane id.
+pub fn fact_from_json(info: &Value) -> Option<CoordinatorAgentFact> {
+    Some(CoordinatorAgentFact {
+        pane_id: s(info, "pane_id")?,
+        tab_id: s(info, "tab_id").unwrap_or_default(),
+        workspace_id: s(info, "workspace_id").unwrap_or_default(),
+        name: s(info, "name"),
+        display_agent: s(info, "display_agent"),
+        agent: s(info, "agent").or_else(|| s(&info["agent_session"], "agent")),
+        status: s(info, "agent_status").unwrap_or_else(|| "unknown".into()),
+        session: session_of(info),
+        cwd: s(info, "foreground_cwd").or_else(|| s(info, "cwd")),
+        subagents: info["subagents"].as_u64().unwrap_or(0),
+    })
+}
 
-/// Build the live data; relinks registry entries whose pane id or session id
-/// went stale (the caller saves the registry when `relinked` is true).
+/// A `workspace.list` entry as a group; `None` without an id.
+pub fn group_from_json(workspace: &Value) -> Option<GroupFact> {
+    Some(GroupFact {
+        workspace_id: s(workspace, "workspace_id")?,
+        label: s(workspace, "label").unwrap_or_default(),
+        tab_count: workspace["tab_count"].as_u64().unwrap_or(0),
+    })
+}
+
+/// Tab id to label from a `tab.list` result (unlabelled tabs are left out).
+pub fn tab_labels_from_json(tabs: &[Value]) -> HashMap<String, String> {
+    tabs.iter()
+        .filter_map(|t| Some((s(t, "tab_id")?, s(t, "label")?)))
+        .collect()
+}
+
+/// [`build_facts`] over the JSON API results (the socket edge).
 pub fn build(
     inputs: &Inputs<'_>,
     registry: &mut Registry,
@@ -136,67 +208,89 @@ pub fn build(
     include_unmanaged: bool,
     now: u64,
 ) -> (LiveData, bool) {
-    let groups_by_id: HashMap<String, String> = inputs
+    let agents: Vec<CoordinatorAgentFact> =
+        inputs.agents.iter().filter_map(fact_from_json).collect();
+    let groups: Vec<GroupFact> = inputs
         .workspaces
         .iter()
-        .filter_map(|w| Some((s(w, "workspace_id")?, s(w, "label").unwrap_or_default())))
+        .filter_map(group_from_json)
         .collect();
-    let tab_labels: HashMap<String, String> = inputs
-        .tabs
+    let tab_labels = tab_labels_from_json(inputs.tabs);
+    build_facts(
+        &FactInputs {
+            agents: &agents,
+            groups: &groups,
+            tab_labels: &tab_labels,
+        },
+        registry,
+        messages,
+        last_change,
+        include_unmanaged,
+        now,
+    )
+}
+
+/// Build the live data; relinks registry entries whose pane id or session id
+/// went stale (the caller saves the registry when `relinked` is true).
+pub fn build_facts(
+    inputs: &FactInputs<'_>,
+    registry: &mut Registry,
+    messages: Vec<AgentMessage>,
+    last_change: &HashMap<String, u64>,
+    include_unmanaged: bool,
+    now: u64,
+) -> (LiveData, bool) {
+    let groups_by_id: HashMap<&str, &str> = inputs
+        .groups
         .iter()
-        .filter_map(|t| Some((s(t, "tab_id")?, s(t, "label")?)))
+        .map(|group| (group.workspace_id.as_str(), group.label.as_str()))
         .collect();
     let mut relinked = false;
     let mut seen = vec![false; registry.agents.len()];
     let mut agents = Vec::new();
     let mut unmanaged_count = 0;
     let mut managed_per_group: HashMap<String, u64> = HashMap::new();
-    let keys: Vec<Option<AgentKeys>> = inputs
-        .agents
-        .iter()
-        .map(|info| {
-            let pane_id = s(info, "pane_id")?;
-            let kind = s(info, "agent").or_else(|| s(&info["agent_session"], "agent"));
-            Some((pane_id, session_of(info), kind))
-        })
-        .collect();
+    let facts = inputs.agents;
     // Session matches claim their entries first, so a pane-only match (an
     // agent in a pane an entry used to have) cannot take an entry whose own
     // session is live elsewhere.
-    let mut claims: Vec<Option<usize>> = vec![None; keys.len()];
-    for (claim, key) in claims.iter_mut().zip(&keys) {
-        let Some((_, session, _)) = key else { continue };
-        if let Some(index) = registry.find_by_session(session.as_deref()) {
+    let mut claims: Vec<Option<usize>> = vec![None; facts.len()];
+    for (claim, fact) in claims.iter_mut().zip(facts) {
+        if let Some(index) = registry.find_by_session(fact.session.as_deref()) {
             if !seen[index] {
                 seen[index] = true;
                 *claim = Some(index);
             }
         }
     }
-    for (claim, key) in claims.iter_mut().zip(&keys) {
-        let Some((pane_id, session, kind)) = key else {
-            continue;
-        };
+    for (claim, fact) in claims.iter_mut().zip(facts) {
         if claim.is_some() {
             continue;
         }
         *claim = (0..registry.agents.len()).find(|&index| {
             !seen[index]
-                && registry.pane_matches(index, session.as_deref(), Some(pane_id), kind.as_deref())
+                && registry.pane_matches(
+                    index,
+                    fact.session.as_deref(),
+                    Some(&fact.pane_id),
+                    fact.agent.as_deref(),
+                )
         });
         if let Some(index) = *claim {
             seen[index] = true;
         }
     }
-    for (claim, key) in claims.iter().zip(&keys) {
-        if let (Some(index), Some((pane_id, session, kind))) = (claim, key) {
-            relinked |= registry.relink(*index, session.as_deref(), Some(pane_id), kind.as_deref());
+    for (claim, fact) in claims.iter().zip(facts) {
+        if let Some(index) = claim {
+            relinked |= registry.relink(
+                *index,
+                fact.session.as_deref(),
+                Some(&fact.pane_id),
+                fact.agent.as_deref(),
+            );
         }
     }
-    for ((info, key), entry) in inputs.agents.iter().zip(&keys).zip(claims) {
-        let Some((pane_id, session, kind)) = key.clone() else {
-            continue;
-        };
+    for (fact, entry) in facts.iter().zip(claims) {
         let managed = entry.is_some();
         if !managed {
             unmanaged_count += 1;
@@ -204,36 +298,45 @@ pub fn build(
                 continue;
             }
         }
-        let workspace_id = s(info, "workspace_id").unwrap_or_default();
-        let tab_id = s(info, "tab_id").unwrap_or_default();
-        let tab_label = tab_labels.get(&tab_id).cloned();
-        let name = s(info, "name")
+        let tab_label = inputs
+            .tab_labels
+            .get(&fact.tab_id)
+            .filter(|label| !label.is_empty())
+            .cloned();
+        let name = fact
+            .name
+            .clone()
+            .filter(|name| !name.is_empty())
             .or_else(|| tab_label.clone())
-            .or_else(|| s(info, "display_agent"))
-            .or_else(|| kind.clone())
-            .unwrap_or_else(|| pane_id.clone());
+            .or_else(|| fact.display_agent.clone())
+            .or_else(|| fact.agent.clone())
+            .unwrap_or_else(|| fact.pane_id.clone());
         let registered = entry.map(|index| registry.agents[index].clone());
         if managed {
-            *managed_per_group.entry(workspace_id.clone()).or_default() += 1;
+            *managed_per_group
+                .entry(fact.workspace_id.clone())
+                .or_default() += 1;
         }
         agents.push(LiveAgent {
             name,
-            pane_id: pane_id.clone(),
-            tab_id,
+            pane_id: fact.pane_id.clone(),
+            tab_id: fact.tab_id.clone(),
             tab_label,
-            group: groups_by_id.get(&workspace_id).cloned(),
-            workspace_id,
-            agent: kind,
-            status: s(info, "agent_status").unwrap_or_else(|| "unknown".into()),
-            session,
-            cwd: s(info, "foreground_cwd").or_else(|| s(info, "cwd")),
+            group: groups_by_id
+                .get(fact.workspace_id.as_str())
+                .map(|label| label.to_string()),
+            workspace_id: fact.workspace_id.clone(),
+            agent: fact.agent.clone(),
+            status: fact.status.clone(),
+            session: fact.session.clone(),
+            cwd: fact.cwd.clone(),
             managed,
             coordinator: registered.as_ref().is_some_and(|r| r.is_coordinator()),
             role: registered.as_ref().and_then(|r| r.role.clone()),
             project: registered.as_ref().and_then(|r| r.project.clone()),
             note: registered.as_ref().and_then(|r| r.note.clone()),
-            subagents: info["subagents"].as_u64().unwrap_or(0),
-            last_change_unix: last_change.get(&pane_id).copied().unwrap_or(0),
+            subagents: fact.subagents,
+            last_change_unix: last_change.get(&fact.pane_id).copied().unwrap_or(0),
         });
     }
     // An entry that lost its last key (its pane now hosts an agent matched by
@@ -266,16 +369,16 @@ pub fn build(
         })
         .collect();
     let groups = inputs
-        .workspaces
+        .groups
         .iter()
-        .filter_map(|w| {
-            let workspace_id = s(w, "workspace_id")?;
-            Some(LiveGroup {
-                label: s(w, "label").unwrap_or_default(),
-                tab_count: w["tab_count"].as_u64().unwrap_or(0),
-                managed: managed_per_group.get(&workspace_id).copied().unwrap_or(0),
-                workspace_id,
-            })
+        .map(|group| LiveGroup {
+            label: group.label.clone(),
+            tab_count: group.tab_count,
+            managed: managed_per_group
+                .get(&group.workspace_id)
+                .copied()
+                .unwrap_or(0),
+            workspace_id: group.workspace_id.clone(),
         })
         .collect();
     let coordinator_pane = agents
@@ -327,7 +430,7 @@ pub fn find_live<'a>(live: &'a LiveData, target: &str) -> Option<&'a LiveAgent> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plus::registry::ManagePatch;
+    use crate::coordinator::registry::ManagePatch;
     use serde_json::json;
 
     fn agent(pane: &str, session: &str, status: &str) -> Value {
@@ -391,6 +494,119 @@ mod tests {
         assert!(!relinked, "already relinked");
         assert_eq!(all.agents.len(), 3);
         assert!(!all.agents[2].managed);
+    }
+
+    fn fact(pane: &str, session: &str, status: &str) -> CoordinatorAgentFact {
+        CoordinatorAgentFact {
+            pane_id: pane.into(),
+            tab_id: format!("{}:t1", &pane[..2]),
+            workspace_id: pane[..2].into(),
+            agent: Some("claude".into()),
+            status: status.into(),
+            session: (!session.is_empty()).then(|| session.to_string()),
+            ..CoordinatorAgentFact::default()
+        }
+    }
+
+    #[test]
+    fn typed_facts_build_the_same_live_data_as_the_json_edge() {
+        let patch = |role: &str| ManagePatch {
+            role: Some(role.into()),
+            project: Some("app".into()),
+            note: None,
+        };
+        let seed = || {
+            let mut registry = Registry::default();
+            registry
+                .manage(Some("s1"), Some("w1:p1"), None, &patch("coordinator"))
+                .unwrap();
+            registry
+                .manage(Some("s2"), Some("w9:p9"), None, &patch("lead"))
+                .unwrap();
+            registry
+                .manage(Some("gone"), Some("w8:p8"), None, &patch("reviewer"))
+                .unwrap();
+            registry
+        };
+        let mut lead = fact("w2:p4", "s2", "working");
+        lead.subagents = 2;
+        let facts = vec![
+            fact("w1:p1", "s1", "idle"),
+            lead,
+            fact("w2:p5", "s5", "blocked"),
+        ];
+        let groups = vec![
+            GroupFact {
+                workspace_id: "w1".into(),
+                label: "coordinator".into(),
+                tab_count: 1,
+            },
+            GroupFact {
+                workspace_id: "w2".into(),
+                label: "app".into(),
+                tab_count: 2,
+            },
+        ];
+        let tab_labels = HashMap::from([("w2:t1".to_string(), "api work".to_string())]);
+        let last_change = HashMap::from([("w2:p4".to_string(), 50)]);
+        let mut typed_registry = seed();
+        let (typed, relinked) = build_facts(
+            &FactInputs {
+                agents: &facts,
+                groups: &groups,
+                tab_labels: &tab_labels,
+            },
+            &mut typed_registry,
+            Vec::new(),
+            &last_change,
+            true,
+            99,
+        );
+        assert!(relinked);
+        assert_eq!(typed_registry.agents[1].pane_id.as_deref(), Some("w2:p4"));
+        assert_eq!(typed.coordinator_pane.as_deref(), Some("w1:p1"));
+        assert_eq!(typed.agents.len(), 3);
+        assert_eq!(typed.unmanaged_count, 1);
+        assert_eq!(typed.agents[1].name, "api work");
+        assert_eq!(typed.agents[1].subagents, 2);
+        assert_eq!(
+            typed.agents[1].cwd, None,
+            "the server pass never reads a cwd"
+        );
+        assert_eq!(typed.offline.len(), 1);
+        assert_eq!(typed.groups[1].managed, 1);
+
+        let mut lead_json = agent("w2:p4", "s2", "working");
+        lead_json["subagents"] = json!(2);
+        lead_json.as_object_mut().unwrap().remove("cwd");
+        let mut agents = vec![
+            agent("w1:p1", "s1", "idle"),
+            lead_json,
+            agent("w2:p5", "s5", "blocked"),
+        ];
+        for agent in &mut agents {
+            agent.as_object_mut().unwrap().remove("cwd");
+        }
+        let workspaces = vec![
+            json!({ "workspace_id": "w1", "label": "coordinator", "tab_count": 1 }),
+            json!({ "workspace_id": "w2", "label": "app", "tab_count": 2 }),
+        ];
+        let tabs = vec![json!({ "tab_id": "w2:t1", "label": "api work" })];
+        let mut json_registry = seed();
+        let (from_json, _) = build(
+            &Inputs {
+                agents: &agents,
+                workspaces: &workspaces,
+                tabs: &tabs,
+            },
+            &mut json_registry,
+            Vec::new(),
+            &last_change,
+            true,
+            99,
+        );
+        assert_eq!(typed, from_json);
+        assert_eq!(typed_registry, json_registry);
     }
 
     #[test]

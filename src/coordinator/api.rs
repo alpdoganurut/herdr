@@ -1,7 +1,7 @@
-//! The herdr+ contract over the herdr socket: one [`Api::call`] per JSON API
+//! The coordinator contract over the herdr socket: one [`Api::call`] per JSON API
 //! request, and typed helpers that pick the result keys out of the response.
 //!
-//! herdr+ code never opens the socket itself; `src/cli/plus.rs` implements
+//! Coordinator code never opens the socket itself; `src/cli/coordinator.rs` implements
 //! [`Api`] over the CLI's protocol-checked request path, and tests implement it
 //! with a closure returning fixture JSON.
 
@@ -328,7 +328,7 @@ pub(crate) fn agent_start_with(
     }
 }
 
-/// Upper bound for every herdr+ wait (a socket is never held for minutes).
+/// Upper bound for every coordinator wait (a socket is never held for minutes).
 pub const MAX_WAIT_S: u64 = 120;
 
 /// Poll `agent.get` every second until the status is one of `until`; the

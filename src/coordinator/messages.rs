@@ -27,8 +27,8 @@ pub const KIND_REFUSAL: &str = "refusal";
 pub const OUTCOME_SENT: &str = "sent";
 
 /// `outcome` of a reply that was not typed in because the asker was busy
-/// (usually waiting in plus_wait_for_message). Not a refusal: the asker
-/// receives it from the log (plus_wait_for_message, plus_messages).
+/// (usually waiting in agents_wait_for_message). Not a refusal: the asker
+/// receives it from the log (agents_wait_for_message, agents_messages).
 pub const OUTCOME_LOGGED: &str = "logged";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +151,7 @@ pub fn since_offset(dir: &Path, offset: u64) -> (Vec<AgentMessage>, u64) {
         Ok(file) => file,
         Err(err) => {
             if err.kind() != io::ErrorKind::NotFound {
-                tracing::warn!("herdr+ cannot open the message log: {err}");
+                tracing::warn!("coordinator: cannot open the message log: {err}");
             }
             return (Vec::new(), 0);
         }
@@ -163,7 +163,7 @@ pub fn since_offset(dir: &Path, offset: u64) -> (Vec<AgentMessage>, u64) {
         .seek(SeekFrom::Start(start))
         .and_then(|_| file.read_to_end(&mut bytes))
     {
-        tracing::warn!("herdr+ cannot read the message log: {err}");
+        tracing::warn!("coordinator: cannot read the message log: {err}");
         return (Vec::new(), start);
     }
     let Some(end) = bytes.iter().rposition(|byte| *byte == b'\n') else {

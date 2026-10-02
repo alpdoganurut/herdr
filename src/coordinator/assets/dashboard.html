@@ -280,7 +280,7 @@ function pill(status, label) {
 function empty(text) {
   return el("div", "empty", text);
 }
-// A sentence with `code` spans, e.g. "is `herdr plus run` running?".
+// A sentence with `code` spans, e.g. "start it with `herdr coordinator start`".
 function withCode(parent, text) {
   str(text).split("`").forEach((part, i) => {
     if (part) parent.appendChild(i % 2 ? el("code", "", part) : document.createTextNode(part));
@@ -325,16 +325,16 @@ function renderHeader() {
   banners.replaceChildren();
   if (!state.live) {
     const text = state.liveMissing
-      ? "no live data yet — is `herdr plus run` running?"
-      : "waiting for live data — is `herdr plus run` running?";
+      ? "no live data yet — is herdr running with the coordinator enabled?"
+      : "waiting for live data — is herdr running with the coordinator enabled?";
     add(banners, withCode(el("div", "banner amber"), text));
   } else if (generated && nowS() - generated > STALE_S) {
     add(banners, withCode(el("div", "banner red"),
-      "live data stale since " + hhmm(generated) + " — is `herdr plus run` running?"));
+      "live data stale since " + hhmm(generated) + " — is herdr running with the coordinator enabled?"));
   }
   if (watch.coordinator_down === true) {
     add(banners, withCode(el("div", "banner red"),
-      "coordinator down — herdr+ stopped relaunching it. Start it with `herdr plus coordinator start`."));
+      "coordinator down — herdr+ stopped relaunching it. Start it with `herdr coordinator start`."));
   }
 }
 
@@ -420,7 +420,7 @@ function renderGroups(live, board) {
     const blank = el("div", "panel empty-state");
     add(blank, icon("empty"), el("div", "", "No managed agents yet."));
     add(blank, withCode(el("div", "empty"),
-      "Ask the coordinator to open one, or opt a pane in with `herdr plus manage <pane>`."));
+      "Ask the coordinator to open one, or opt a pane in with `herdr coordinator manage <pane>`."));
     return add(box, blank);
   }
   const groups = arr(live.groups).map(obj);

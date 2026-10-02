@@ -889,6 +889,9 @@ pub struct AppState {
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
     pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
+    /// Fork: the coordinator's terminal, mirrored from `App.coordinator` so
+    /// its completion toasts and sounds are suppressed here.
+    pub(crate) coordinator_terminal_id: Option<crate::terminal::TerminalId>,
 }
 
 impl AppState {
@@ -1106,6 +1109,7 @@ impl AppState {
             host_cell_size: crate::kitty_graphics::HostCellSize::default(),
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
+            coordinator_terminal_id: None,
         }
     }
 

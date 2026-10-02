@@ -7,6 +7,7 @@ use super::{model::LoadedConfig, Config, CONFIG_PATH_ENV_VAR};
 const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
     "browser",
+    "coordinator",
     "experimental",
     "keys",
     "news",
@@ -384,6 +385,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut diagnostics,
         &mut invalid_sections,
         |section| config.news = section,
+    );
+    load_live_section(
+        table,
+        "coordinator",
+        "coordinator config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.coordinator = section,
     );
     load_live_section(
         table,
@@ -945,6 +954,27 @@ model = "opus"
             "an invalid section keeps the defaults"
         );
         assert_eq!(loaded.invalid_sections, vec!["news".to_string()]);
+    }
+
+    #[test]
+    fn load_live_config_parses_coordinator_section() {
+        let loaded = load_live_config_from_str(
+            r#"
+[coordinator]
+enabled = true
+cap_hour = 4
+cap_day = 20
+dashboard_port = 7728
+"#,
+        )
+        .unwrap();
+
+        assert!(loaded.config.coordinator.enabled);
+        assert_eq!(loaded.config.coordinator.cap_hour, 4);
+        assert_eq!(loaded.config.coordinator.cap_day, 20);
+        assert_eq!(loaded.config.coordinator.dashboard_port, 7728);
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        assert!(loaded.invalid_sections.is_empty());
     }
 
     #[test]

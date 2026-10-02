@@ -1648,6 +1648,7 @@ impl AppState {
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
             AppEvent::WorktreeReadFinished(_) => Vec::new(),
+            AppEvent::CoordinatorPassFinished(_) => Vec::new(),
             AppEvent::TabBarCommandFinished { .. } => Vec::new(),
             AppEvent::PluginCommandFinished { .. } => Vec::new(),
         }
@@ -1744,7 +1745,9 @@ impl AppState {
         let change = mutation.effective_state_change.or(unchanged_change)?;
         // A parked agent's exit is expected: never a completion to announce
         // or to leave unseen, whatever residual state detection reports.
+        // Fork: the coordinator raises its own notifications instead.
         let suppress_completion = force_suppress_completion
+            || self.coordinator_terminal_id.as_ref() == Some(&terminal_id)
             || suspended
             || (change.state == AgentState::Idle && suppress_acquisition_completion);
         if change.previous_state != change.state {
