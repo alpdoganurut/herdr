@@ -2153,6 +2153,9 @@ impl<A: Api> Session<A> {
                 "previous": notes.previous,
                 "offset": start,
                 "next_offset": (end < text.len()).then_some(end),
+                // Claude Code hands the model this structured copy rather
+                // than the text above, so it carries the body too.
+                "text": body,
             }),
         ))
     }
@@ -2301,10 +2304,14 @@ impl<A: Api> Session<A> {
             if list.checkpoints.len() == 1 { "" } else { "s" },
             list.key
         );
-        Ok(Reply::new(
-            cap_head(rows, Some(&footer)),
-            serde_json::to_value(&list).unwrap_or_else(|_| json!({})),
-        ))
+        // The structured copy (what Claude Code shows the model) is newest
+        // first as well.
+        let mut data = serde_json::to_value(&list).unwrap_or_else(|_| json!({}));
+        if let Some(Value::Array(checkpoints)) = data.get_mut("checkpoints") {
+            checkpoints.reverse();
+        }
+        data["order"] = json!("newest_first");
+        Ok(Reply::new(cap_head(rows, Some(&footer)), data))
     }
 }
 
@@ -4075,6 +4082,14 @@ mod tests {
             Some("rev r1  key claude-w2-p5  11 bytes")
         );
         assert!(read.text.contains("Goal: demo"));
+        // Claude Code shows the model the structured copy, so it has the body.
+        assert!(
+            read.data["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("Goal: demo")),
+            "{}",
+            read.data
+        );
         let stale = call(
             &mut s,
             "agents_notes_write",
@@ -4121,6 +4136,8 @@ mod tests {
             list.text
         );
         assert!(list.text.contains("1 checkpoint in claude-w2-p5"));
+        assert_eq!(list.data["order"], "newest_first");
+        assert_eq!(list.data["checkpoints"][0]["id"], "cp_1");
         let bad = call(
             &mut s,
             "agents_checkpoint",
