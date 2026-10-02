@@ -1223,7 +1223,7 @@ fn header_menu_renames_ungroups_and_closes_a_group_without_touching_worktree_sib
         Some(ClientShellOverlay::ContextMenu(menu)) => {
             assert!(matches!(
                 menu.target,
-                ClientContextMenuTarget::Group { ref workspace_id } if workspace_id == "ws_3"
+                ClientContextMenuTarget::Group { ref workspace_id, .. } if workspace_id == "ws_3"
             ));
             menu.items()
         }
@@ -1235,7 +1235,10 @@ fn header_menu_renames_ungroups_and_closes_a_group_without_touching_worktree_sib
         [
             ClientContextMenuAction::Rename,
             ClientContextMenuAction::Ungroup,
-            ClientContextMenuAction::CloseGroup
+            ClientContextMenuAction::CloseGroup,
+            // Fork: the endpoint advertises every method (no list), so the
+            // team item shows after upstream's (`tests/teams.rs`).
+            ClientContextMenuAction::MakeTeam,
         ]
     );
 

@@ -6,7 +6,9 @@
 //! reloads it; the reply refreshes the section): the master `wrap` switch,
 //! the two contributions (the agent tools, the instructions paragraph) —
 //! dimmed and inert while the wrap is off — and the instructions file
-//! (built-in ↔ `agents.md` in the server's config dir). The status row shows
+//! (built-in ↔ `agents.md` in the server's config dir), and the team roster
+//! switch (launches in a team group get the roster, purpose and team tools;
+//! independent of the master switch, so never dimmed). The status row shows
 //! the shell hook and whether `claude` / `codex` are on the server's PATH.
 //!
 //! The shell hook's `[fix]` edits `~/.zshrc`, so it is the one two-step row
@@ -29,8 +31,12 @@ pub(super) const ROW_WRAP: usize = 0;
 pub(super) const ROW_TOOLS: usize = 1;
 pub(super) const ROW_INSTRUCTIONS: usize = 2;
 pub(super) const ROW_FILE: usize = 3;
-pub(super) const ROW_STATUS: usize = 4;
-pub(super) const ROWS: usize = 5;
+pub(super) const ROW_TEAM_ROSTER: usize = 4;
+pub(super) const ROW_STATUS: usize = 5;
+pub(super) const ROWS: usize = 6;
+/// The dim line under the team roster row (not a row: no hit, no selection).
+pub(super) const TEAM_ROSTER_SUBLINE: &str =
+    "claude/codex launched in a team group get the roster, purpose and team tools (needs the shell hook)";
 /// The armed `[fix]`'s buttons, as choice hits past the rows (the mouse
 /// handler routes them before it selects a row).
 pub(super) const HIT_CONFIRM: usize = 100;
@@ -145,6 +151,7 @@ pub(super) fn row_labels(
             on(info.instructions)
         ),
         format!("  instructions file: {file}   {file_hint}"),
+        format!("team roster in team groups: {}", on(info.team_roster)),
         status,
     ]
 }
@@ -187,7 +194,7 @@ impl ClientShellState {
         )
     }
 
-    /// Rows in the agents section: the five rows once a record is there.
+    /// Rows in the agents section: the six rows once a record is there.
     pub(super) fn agents_section_rows(&self) -> usize {
         match self.agents_settings() {
             Some(ClientAgentsSettings { info: Some(_), .. }) => ROWS,
@@ -278,6 +285,12 @@ impl ClientShellState {
                 };
                 self.set_agents_setting("instructions_file", next.into(), outcome)
             }
+            // Not gated on the wrap: team launches are wrapped either way.
+            ROW_TEAM_ROSTER => self.set_agents_setting(
+                crate::api::schema::agent_wrap::key::TEAM_ROSTER,
+                (!info.team_roster).into(),
+                outcome,
+            ),
             ROW_STATUS if !fixing && hook_fixable(&info) => {
                 if let Some(agents) = self.agents_settings_mut() {
                     agents.armed = true;
@@ -595,6 +608,20 @@ pub(super) fn render_agents_section(
         );
         hits.push((rect, index));
         y += 1;
+        if index == ROW_TEAM_ROSTER {
+            if y >= area.bottom() {
+                return;
+            }
+            put_text(
+                buffer,
+                area.x,
+                y,
+                area.width,
+                &format!("     {TEAM_ROSTER_SUBLINE}"),
+                dim,
+            );
+            y += 1;
+        }
     }
     if agents.armed {
         let preview = info

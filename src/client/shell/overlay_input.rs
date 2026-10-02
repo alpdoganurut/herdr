@@ -505,6 +505,11 @@ impl ClientShellState {
             return;
         }
 
+        if matches!(self.overlay, Some(ClientShellOverlay::TeamInfo(_))) {
+            self.route_team_overlay_key(key, outcome);
+            return;
+        }
+
         if matches!(self.overlay, Some(ClientShellOverlay::Onboarding)) {
             if matches!(
                 key.code,
@@ -928,7 +933,7 @@ impl ClientShellState {
             return;
         }
         if key.code == KeyCode::Esc {
-            self.overlay = None;
+            self.cancel_rename_overlay();
             outcome.repaint = true;
             return;
         }
@@ -960,6 +965,13 @@ impl ClientShellState {
             return;
         };
         let trimmed = rename.input.trim();
+        // Fork: the team targets (`teams.rs`), reopening Team info after.
+        if let Some(request) = Self::team_rename_request(&rename.target, trimmed) {
+            self.push_team_request(request, outcome);
+            self.reopen_team_overlay_after(&rename.target);
+            outcome.repaint = true;
+            return;
+        }
         let method = match rename.target {
             ClientRenameTarget::NewWorkspace {
                 source_workspace_id,
@@ -1087,6 +1099,8 @@ impl ClientShellState {
                     }
                 }
             }
+            // Handled above.
+            ClientRenameTarget::TeamPurpose { .. } | ClientRenameTarget::TeamRole { .. } => None,
         };
         if let Some(method) = method {
             self.push_endpoint_method(method, outcome);
@@ -1121,6 +1135,11 @@ impl ClientShellState {
             return;
         };
         outcome.repaint = true;
+        if confirm.ungroup {
+            // Fork: "Ungroup (disbands team)" confirmed.
+            self.ungroup(confirm.workspace_id, outcome);
+            return;
+        }
         let method = if let Some(target) = confirm.tab_target {
             if target.workspace.endpoint_id != self.active_endpoint_id
                 || !self.navigation_target_valid(&target.workspace)
@@ -1227,6 +1246,7 @@ impl ClientShellState {
                 },
                 detail: format!("{} — {scope}", workspace.label),
                 close_group: true,
+                ungroup: false,
             },
         ));
         true
@@ -1263,6 +1283,7 @@ impl ClientShellState {
                 title: "Close group?".to_owned(),
                 detail,
                 close_group: false,
+                ungroup: false,
             },
         ));
         true

@@ -1944,6 +1944,19 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            // Fork: teams (`shell/teams.rs`).
+                            Ok(endpoint::EndpointControlMessage::Teams(payload)) => {
+                                if let Some(shell) = state.shell.as_mut() {
+                                    if shell.receive_teams(&endpoint_id, payload) {
+                                        if let Some(frame) = shell
+                                            .compose(state.reported_size.0, state.reported_size.1)
+                                        {
+                                            state.present_frame(frame);
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::Ignored) => {
                                 debug!(%kind, "ignoring unknown endpoint control message");
                                 continue;
@@ -2155,6 +2168,7 @@ async fn run_client_loop(
                         let (effects, notification_repaint) = shell.tick_notifications(now);
                         shell.tick_news(now, &mut outcome);
                         shell.tick_coordinator(now, &mut outcome);
+                        shell.tick_teams(now, &mut outcome);
                         shell.tick_browser(now, &mut outcome);
                         outcome.repaint |= notification_repaint
                             | shell.tick_copy_feedback(now)

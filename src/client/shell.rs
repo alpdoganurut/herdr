@@ -53,6 +53,8 @@ mod suspended_pane;
 mod tab_color;
 mod tab_remind_menu;
 mod tab_sidebar;
+mod team_overlay;
+mod teams;
 mod text_editor;
 mod word_selection;
 mod worktrees;

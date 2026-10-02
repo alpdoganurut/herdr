@@ -75,6 +75,11 @@ impl ClientShellState {
             browser_marked_tabs,
             coordinator_row,
             coordinator_managed_tabs: Some(&self.coordinator.managed_tabs),
+            teams: super::teams::active_teams_of(
+                &self.teams,
+                &self.active_endpoint_id,
+                self.snapshot.as_deref(),
+            ),
             remote_collapsed_groups: &self.remote_collapsed_groups,
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
@@ -243,6 +248,11 @@ impl ClientShellState {
                 browser_marked_tabs,
                 coordinator_row,
                 coordinator_managed_tabs: Some(&self.coordinator.managed_tabs),
+                teams: super::teams::active_teams_of(
+                    &self.teams,
+                    &self.active_endpoint_id,
+                    self.snapshot.as_deref(),
+                ),
                 remote_collapsed_groups: &self.remote_collapsed_groups,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
@@ -776,6 +786,19 @@ impl ClientShellState {
                 )?;
                 occlusion.cover(rendered.area);
                 self.hits.global_menu_rows = rendered.menu_rows;
+                None
+            } else if let ClientShellOverlay::TeamInfo(team) = overlay {
+                // Fork: the Team info overlay (`team_overlay.rs`).
+                let rendered = super::team_overlay::render_team_overlay(
+                    &mut composed,
+                    team,
+                    &self.config.palette,
+                    self.config.status_indicators,
+                )?;
+                occlusion.cover(rendered.area);
+                self.hits.team_overlay_popup = rendered.area;
+                self.hits.overlay_cancel = rendered.cancel;
+                self.hits.team_overlay = rendered.hits;
                 None
             } else {
                 let rendered = render::render_client_overlay(

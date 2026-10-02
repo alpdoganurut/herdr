@@ -155,6 +155,10 @@ pub(super) struct ShellHitMap {
     /// Fork: one hit per drawn agent card, its `×` first, and the fold line
     /// (`agent_cards.rs`).
     pub(super) agent_cards: Vec<(Rect, super::agent_cards::AgentCardHit)>,
+    /// Fork: the Team info overlay's targets (buttons before rows) and its
+    /// panel (`team_overlay.rs`).
+    pub(super) team_overlay: Vec<(Rect, super::team_overlay::TeamOverlayHit)>,
+    pub(super) team_overlay_popup: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
     /// The tab menu's swatch row: one hit per swatch, indexed like `tab_color::picker_choices`.
@@ -366,6 +370,8 @@ pub(super) enum ClientShellOverlayKind {
     GlobalMenu,
     Settings,
     Browser,
+    /// Fork: the Team info overlay (`team_overlay.rs`).
+    TeamInfo,
 }
 
 #[derive(Debug)]
@@ -396,6 +402,20 @@ pub(super) enum ClientRenameTarget {
         tab_id: String,
         pane_id: String,
         tab_label: Option<String>,
+    },
+    /// Fork: a team's purpose; `make` sends `team.make` (the group is not a
+    /// team yet), else `team.set_purpose`. `reopen` brings Team info back
+    /// when the modal closes (saved or not).
+    TeamPurpose {
+        workspace_id: String,
+        make: bool,
+        reopen: bool,
+    },
+    /// Fork: a member's role (`team.set_role`); empty clears it.
+    TeamRole {
+        pane_id: String,
+        workspace_id: String,
+        reopen: bool,
     },
 }
 
@@ -697,6 +717,16 @@ pub(super) enum ClientContextMenuAction {
     BrowserOpenOverlay,
     /// Fork: a coordinator row menu item.
     Coordinator(super::coordinator::CoordinatorMenuAction),
+    /// Fork, group menu (`teams.rs`): make the group a team (the purpose
+    /// prompt), open Team info, edit the purpose, disband the team.
+    MakeTeam,
+    TeamInfo,
+    EditPurpose,
+    DisbandTeam,
+    /// Fork, tab menu in a team group: set the role, leave, or join.
+    SetTeamRole,
+    LeaveTeam,
+    JoinTeam,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -746,9 +776,16 @@ pub(super) enum ClientContextMenuTarget {
         /// The reminder selector: the tab's interval when the menu opened and
         /// the cursor.
         remind: ClientTabMenuRemind,
+        /// Fork: the team items, when the tab's agent pane is in a team
+        /// group of a server advertising `team.get`.
+        team: Option<super::teams::ClientTabTeamMenu>,
     },
-    /// A space shown as a tab group in the `tabs` layout.
-    Group { workspace_id: String },
+    /// A space shown as a tab group in the `tabs` layout. Fork: `team` is
+    /// the team items' state, `None` without `team.get` on the server.
+    Group {
+        workspace_id: String,
+        team: Option<super::teams::ClientGroupTeamMenu>,
+    },
     Pane {
         pane_id: String,
         workspace_id: String,
@@ -800,6 +837,9 @@ pub(super) struct ClientConfirmCloseOverlay {
     pub(super) detail: String,
     /// Whether the close also takes sibling worktree spaces (never for a tab group).
     pub(super) close_group: bool,
+    /// Fork: the confirmation is for "Ungroup (disbands team)": accepting
+    /// ungroups instead of closing.
+    pub(super) ungroup: bool,
 }
 
 #[derive(Debug)]
@@ -819,6 +859,8 @@ pub(super) enum ClientShellOverlay {
     Settings(ClientSettingsOverlay),
     /// The herdr browser's profiles and tabs (`browser.rs`, client-local).
     Browser(super::browser::ClientBrowserOverlay),
+    /// Fork: a team group's members, roles and purpose (`team_overlay.rs`).
+    TeamInfo(super::team_overlay::ClientTeamOverlay),
 }
 
 impl ClientShellOverlay {
@@ -838,6 +880,7 @@ impl ClientShellOverlay {
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
             Self::Browser(_) => ClientShellOverlayKind::Browser,
+            Self::TeamInfo(_) => ClientShellOverlayKind::TeamInfo,
         }
     }
 }
@@ -878,6 +921,8 @@ pub(super) enum PendingEndpointKind {
     AgentsFix,
     /// Fork: a `coordinator.*` request.
     Coordinator(super::coordinator::CoordinatorRequestKind),
+    /// Fork: a `team.*` request (`teams.rs`).
+    Team(super::teams::TeamRequestKind),
     PrepareWorktreeCreate {
         workspace_id: String,
     },
@@ -1206,6 +1251,9 @@ pub(crate) struct ClientShellState {
     /// Fork: the coordinator as `coordinator.get` last reported it
     /// (`coordinator.rs`, glue in `coordinator_shell.rs`).
     pub(super) coordinator: super::coordinator::ClientCoordinatorState,
+    /// Fork: each endpoint's teams as its last `endpoint.teams.v1` push
+    /// listed them (`teams.rs`).
+    pub(super) teams: HashMap<ClientEndpointId, super::teams::ClientTeamsState>,
     /// Tabs with a scheduled reminder, keyed like `idle_reminders`.
     pub(super) scheduled_reminders:
         HashMap<(ClientEndpointId, String), super::idle_reminders::ClientScheduledReminder>,
@@ -1392,6 +1440,7 @@ impl ClientShellState {
             news: super::news::ClientNewsState::default(),
             browser: super::browser::ClientBrowserState::default(),
             coordinator: super::coordinator::ClientCoordinatorState::default(),
+            teams: HashMap::new(),
             reminder_epochs: HashMap::new(),
             reminder_local_time: None,
             reminder_daily_minutes: None,

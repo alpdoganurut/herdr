@@ -12,6 +12,8 @@ pub(crate) enum EndpointControlMessage {
     AgentCompletions(crate::protocol::endpoint::EndpointAgentCompletions),
     /// Fork: the endpoint's agent cards (`endpoint.agent-notices.v1`).
     AgentNotices(crate::server::headless::agent_notices::AgentNoticesPayload),
+    /// Fork: the endpoint's teams (`endpoint.teams.v1`).
+    Teams(crate::server::headless::teams::TeamsPayload),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -36,6 +38,12 @@ pub(crate) fn decode_endpoint_control(
                 .map(EndpointControlMessage::AgentNotices)
                 .unwrap_or(EndpointControlMessage::Ignored),
         );
+    }
+    // Fork: teams, optional like agent notices.
+    if kind == crate::server::headless::teams::TEAMS_KIND {
+        return Ok(crate::server::headless::teams::TeamsPayload::decode(data)
+            .map(EndpointControlMessage::Teams)
+            .unwrap_or(EndpointControlMessage::Ignored));
     }
     if kind == crate::protocol::endpoint::AGENT_VIEW_PROJECTION_KIND {
         let Ok(projection): Result<crate::protocol::endpoint::EndpointAgentViewProjection, _> =
@@ -151,6 +159,49 @@ mod tests {
             assert!(
                 matches!(
                     decode_endpoint_control(AGENT_NOTICES_KIND, garbage).unwrap(),
+                    EndpointControlMessage::Ignored
+                ),
+                "{garbage}"
+            );
+        }
+    }
+
+    #[test]
+    fn teams_round_trip_and_garbage_is_ignored() {
+        use crate::server::headless::teams::{TeamsPayload, TEAMS_KIND};
+        let data = serde_json::json!({
+            "boot_id": "boot",
+            "revision": 4,
+            "teams": [{
+                "workspace_id": "w2",
+                "workspace_label": "search-it",
+                "purpose": "fix calendar sync",
+                "members": [{"pane_id": "w2:p1", "tab_id": "w2:t1", "role": "fixer"}],
+            }],
+        })
+        .to_string();
+        let EndpointControlMessage::Teams(decoded) =
+            decode_endpoint_control(TEAMS_KIND, &data).unwrap()
+        else {
+            panic!("expected teams");
+        };
+        let expected: TeamsPayload = serde_json::from_str(&data).unwrap();
+        assert_eq!(decoded.boot_id, "boot");
+        assert_eq!(decoded.revision, 4);
+        assert_eq!(decoded.teams, expected.teams);
+        assert_eq!(decoded.teams[0].members[0].role.as_deref(), Some("fixer"));
+        // Re-encoded and decoded again, the payload is unchanged.
+        let again = serde_json::to_string(&decoded).unwrap();
+        let EndpointControlMessage::Teams(twice) =
+            decode_endpoint_control(TEAMS_KIND, &again).unwrap()
+        else {
+            panic!("expected teams");
+        };
+        assert_eq!(twice.teams, decoded.teams);
+        for garbage in ["not json", "{}", r#"{"boot_id":1}"#, "[]"] {
+            assert!(
+                matches!(
+                    decode_endpoint_control(TEAMS_KIND, garbage).unwrap(),
                     EndpointControlMessage::Ignored
                 ),
                 "{garbage}"

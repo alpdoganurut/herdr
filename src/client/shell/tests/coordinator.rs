@@ -892,6 +892,7 @@ fn render_sidebar(
         browser_marked_tabs: HashSet::new(),
         coordinator_row: None,
         coordinator_managed_tabs: None,
+        teams: None,
         remote_collapsed_groups: &shell.remote_collapsed_groups,
         workspace_scroll: &mut shell.workspace_scroll,
         agent_scroll: &mut shell.agent_scroll,
@@ -917,6 +918,7 @@ fn render_sidebar(
         TabSidebarCoordinator {
             row: row.as_ref(),
             managed_tabs: Some(&coordinator.managed_tabs),
+            teams: None,
         },
     );
     (buffer, rect, hits)

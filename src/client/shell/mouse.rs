@@ -1785,6 +1785,26 @@ impl ClientShellState {
             }
             return;
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::TeamInfo(_))) {
+            // Fork: the Team info overlay (`team_overlay.rs`).
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.route_team_overlay_click(point, outcome);
+                }
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    let delta = if mouse.kind == MouseEventKind::ScrollUp {
+                        -1
+                    } else {
+                        1
+                    };
+                    if let Some(ClientShellOverlay::TeamInfo(overlay)) = self.overlay.as_mut() {
+                        outcome.repaint |= overlay.move_cursor(delta);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.overlay.is_some() {
             if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
                 return;
@@ -1802,6 +1822,10 @@ impl ClientShellState {
                     rename.input.clear();
                     outcome.repaint = true;
                 }
+            } else if matches!(self.overlay, Some(ClientShellOverlay::Rename(_))) {
+                // Fork: a team Rename modal opened from Team info reopens it.
+                self.cancel_rename_overlay();
+                outcome.repaint = true;
             } else {
                 self.overlay = None;
                 outcome.repaint = true;

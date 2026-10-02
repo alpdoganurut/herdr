@@ -10,7 +10,7 @@ use crate::api::schema::{
 };
 use crate::client::shell::settings_agents::{
     row_labels, ClientAgentsSettings, HIT_CANCEL, HIT_CONFIRM, ROWS, ROW_FILE, ROW_INSTRUCTIONS,
-    ROW_STATUS, ROW_TOOLS,
+    ROW_STATUS, ROW_TEAM_ROSTER, ROW_TOOLS, TEAM_ROSTER_SUBLINE,
 };
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
@@ -503,4 +503,74 @@ fn remote_fix_labels_say_which_machine() {
     let labels = row_labels(&local, &info(true, AgentsCheckState::Ok));
     assert!(!labels[ROW_STATUS].contains("▸"), "{labels:?}");
     assert_eq!(labels.len(), ROWS);
+}
+
+#[test]
+fn the_team_roster_row_is_the_sixth_row_and_never_dimmed() {
+    assert_eq!((ROW_TEAM_ROSTER, ROW_STATUS, ROWS), (4, 5, 6));
+    let mut state = agents_state();
+    entered(&mut state, info(false, AgentsCheckState::Ok));
+    let text = frame_text(&mut state);
+    assert!(text.contains("team roster in team groups: on"), "{text}");
+    assert!(
+        text.contains("claude/codex launched in a team group"),
+        "{text}"
+    );
+    let frame = state.compose(120, 40).expect("frame");
+    let buffer = frame.to_ratatui_buffer().expect("buffer");
+    let palette = state.config.palette.clone();
+    let roster = choice_rect(&state, ROW_TEAM_ROSTER);
+    assert_eq!(
+        buffer[(roster.x + 6, roster.y)].fg,
+        palette.text,
+        "the roster row works with the wrap off, so it is not dimmed"
+    );
+    // The sub-line sits between the roster row and the status row, and is
+    // not a hit of its own.
+    let status = choice_rect(&state, ROW_STATUS);
+    assert_eq!(status.y, roster.y + 2, "the sub-line takes one row");
+    assert!(state
+        .hits
+        .settings_choices
+        .iter()
+        .all(|(rect, _)| rect.y != roster.y + 1));
+    let labels = row_labels(
+        &ClientAgentsSettings::default(),
+        &info(false, AgentsCheckState::Ok),
+    );
+    assert_eq!(labels[ROW_TEAM_ROSTER], "team roster in team groups: on");
+    assert!(TEAM_ROSTER_SUBLINE.contains("needs the shell hook"));
+}
+
+#[test]
+fn the_team_roster_row_toggles_by_key_and_click_with_the_wrap_off() {
+    let mut state = agents_state();
+    entered(&mut state, info(false, AgentsCheckState::Ok));
+    down_to(&mut state, ROW_TEAM_ROSTER);
+    let outcome = state.handle_input_bytes(b"\r");
+    let [(id, Method::AgentsSettingsSet(params))] = &requests(&outcome)[..] else {
+        panic!("team_roster set");
+    };
+    assert_eq!(
+        (params.key.as_str(), &params.value),
+        ("team_roster", &serde_json::Value::Bool(false))
+    );
+    let id = id.clone();
+    let mut off = info(false, AgentsCheckState::Ok);
+    off.team_roster = false;
+    reply(&mut state, &id, off);
+    let text = frame_text(&mut state);
+    assert!(text.contains("team roster in team groups: off"), "{text}");
+
+    // A click on the row acts at once, and its index maps to the roster.
+    let roster = choice_rect(&state, ROW_TEAM_ROSTER);
+    let outcome = click(&mut state, roster);
+    let [(_, Method::AgentsSettingsSet(params))] = &requests(&outcome)[..] else {
+        panic!("team_roster set by click");
+    };
+    assert_eq!(
+        (params.key.as_str(), &params.value),
+        ("team_roster", &serde_json::Value::Bool(true))
+    );
+    assert!(!armed(&state), "the roster row never arms the fix");
 }

@@ -868,6 +868,10 @@ impl ClientShellState {
             PendingEndpointKind::Coordinator(kind) => {
                 return self.handle_coordinator_endpoint_result(kind, result);
             }
+            // Fork: `team.*` replies (`teams.rs`).
+            PendingEndpointKind::Team(kind) => {
+                return self.handle_team_endpoint_result(kind, result);
+            }
             kind @ (PendingEndpointKind::BrowserGet
             | PendingEndpointKind::BrowserFocus
             | PendingEndpointKind::BrowserStart

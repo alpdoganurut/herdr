@@ -34,6 +34,11 @@
 //! when not every pinned row fits it keeps its row first, then News, then
 //! Browser. Tabs holding a coordinator-managed agent get a dim `+` mark
 //! before the agent glyph (an O(1) lookup in the client's managed set).
+//!
+//! Fork, teams (`teams.rs`): a team group's header shows `◆ <purpose>` (the
+//! mark in accent), or `◆ <group label>` dim before a purpose exists; a
+//! member's row shows a dim `◆` in the `+` slot (members are also managed,
+//! so the `+` is skipped). Both are O(1) lookups in the client's team maps.
 
 use ratatui::{
     buffer::Buffer,
@@ -157,6 +162,8 @@ fn entries<'a>(
 pub(super) struct TabSidebarCoordinator<'a> {
     pub(super) row: Option<&'a super::coordinator::CoordinatorRow>,
     pub(super) managed_tabs: Option<&'a HashSet<String>>,
+    /// Fork: the endpoint's teams (header marks, member rows).
+    pub(super) teams: Option<&'a super::teams::ClientTeamsState>,
 }
 
 /// The `tabs` sidebar, with the coordinator's row and managed marks.
@@ -325,7 +332,12 @@ pub(super) fn render_tab_sidebar_with(
                 members,
             } => {
                 let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
-                render_group_header(buffer, rect, workspace, *folded, *members, dragged, config);
+                let team = coordinator
+                    .teams
+                    .and_then(|teams| teams.team(&workspace.workspace_id));
+                render_group_header(
+                    buffer, rect, workspace, *folded, *members, dragged, team, config,
+                );
                 hits.sidebar_groups
                     .push((rect, workspace.workspace_id.clone()));
                 hits.workspaces.push(WorkspaceHit {
@@ -349,6 +361,12 @@ pub(super) fn render_tab_sidebar_with(
                 let subagents = tab_subagents.get(tab.tab_id.as_str()).copied().unwrap_or(0);
                 let mut markers = reminder_markers(tab, state, &config.palette);
                 if coordinator
+                    .teams
+                    .is_some_and(|teams| teams.is_member_tab(&tab.tab_id))
+                {
+                    // A member is managed too: its dim mark takes the `+` slot.
+                    markers.insert(0, (super::teams::TEAM_MARK, config.palette.overlay0));
+                } else if coordinator
                     .managed_tabs
                     .is_some_and(|managed| managed.contains(&tab.tab_id))
                 {
@@ -904,6 +922,7 @@ fn render_toolbar(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // one row's facts; a struct would only rename them
 fn render_group_header(
     buffer: &mut Buffer,
     rect: Rect,
@@ -911,6 +930,7 @@ fn render_group_header(
     folded: bool,
     members: usize,
     dragged: bool,
+    team: Option<&crate::api::schema::team::TeamInfo>,
     config: &ClientShellConfig,
 ) {
     let palette = &config.palette;
@@ -930,18 +950,39 @@ fn render_group_header(
     let count = format!("{members}");
     let status_icon_text = status_icon(workspace.agent_status, config.status_indicators);
     let tail_width = display_width(&count) as u16 + 1 + display_width(status_icon_text) as u16 + 1;
-    let lead = 1 + display_width(marker) as u16 + 1;
+    // Fork: a team group leads with the mark and shows its purpose (the
+    // group label, dim, until there is one).
+    let team_mark = team.map(|_| super::teams::TEAM_MARK);
+    let (text, text_style, mark_style) = match team {
+        Some(team) => match super::teams::header_label(team, &workspace.label) {
+            (purpose, false) => (purpose, name_style, Style::default().fg(palette.accent)),
+            (label, true) => (
+                label,
+                Style::default().fg(palette.overlay0),
+                Style::default().fg(palette.overlay0),
+            ),
+        },
+        None => (workspace.label.as_str(), name_style, name_style),
+    };
+    let mark_width = team_mark.map_or(0, |mark| display_width(mark) as u16 + 1);
+    let lead = 1 + display_width(marker) as u16 + 1 + mark_width;
     let available = rect.width.saturating_sub(lead + tail_width + 1) as usize;
-    let label = crate::ui::truncate_end(&workspace.label, available);
+    let label = crate::ui::truncate_end(text, available);
     let pad = rect
         .width
         .saturating_sub(lead + display_width(&label) as u16 + tail_width + 1);
     let dim = Style::default().fg(palette.overlay0);
-    let spans = vec![
+    let mut spans = vec![
         Span::raw(" "),
         Span::styled(marker.to_string(), dim),
         Span::raw(" "),
-        Span::styled(label, name_style),
+    ];
+    if let Some(mark) = team_mark {
+        spans.push(Span::styled(mark, mark_style));
+        spans.push(Span::raw(" "));
+    }
+    spans.extend([
+        Span::styled(label, text_style),
         Span::raw(" ".repeat(usize::from(pad) + 1)),
         Span::styled(count, dim),
         Span::raw(" "),
@@ -950,7 +991,7 @@ fn render_group_header(
             Style::default().fg(status_color(workspace.agent_status, palette)),
         ),
         Span::raw(" "),
-    ];
+    ]);
     Paragraph::new(Line::from(spans))
         .style(row_style)
         .render(rect, buffer);

@@ -228,6 +228,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
             title: "close".into(),
             detail: "confirm".into(),
             close_group: true,
+            ungroup: false,
         }),
         ClientShellOverlay::Help(ClientHelpOverlay {
             query: TextEditor::default(),
@@ -273,6 +274,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
                 color: Default::default(),
                 important: false,
                 remind: Default::default(),
+                team: None,
             },
             x: 35,
             y: 8,

@@ -47,8 +47,6 @@ impl TeamsPayload {
 
     /// The payload of an `endpoint.teams.v1` control message; `None` for
     /// malformed data.
-    // Until the client's control decode calls it (the client commit).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn decode(data: &str) -> Option<Self> {
         serde_json::from_str(data).ok()
     }

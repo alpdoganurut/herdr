@@ -42,7 +42,10 @@ impl ClientContextMenuOverlay {
                 ),
             ],
             ClientContextMenuTarget::Tab {
-                agent, important, ..
+                agent,
+                important,
+                team,
+                ..
             } => {
                 let mut items = vec![
                     item("New tab", Action::NewTab),
@@ -61,6 +64,16 @@ impl ClientContextMenuOverlay {
                     None => {}
                 }
                 items.push(item("Close", Action::Close));
+                // Fork: the team items, after Close so upstream's positions
+                // hold (and absent outside team groups).
+                match team {
+                    Some(team) if team.member => {
+                        items.push(item("Set team role…", Action::SetTeamRole));
+                        items.push(item("Leave team", Action::LeaveTeam));
+                    }
+                    Some(_) => items.push(item("Join team", Action::JoinTeam)),
+                    None => {}
+                }
                 // After Close, so upstream's item positions hold: the
                 // important toggle, then the two selector rows, whose labels
                 // only name them (render_context_menu draws the options).
@@ -80,11 +93,35 @@ impl ClientContextMenuOverlay {
                 items.push(item("Color", Action::Color));
                 items
             }
-            ClientContextMenuTarget::Group { .. } => vec![
-                item("Rename group", Action::Rename),
-                item("Ungroup", Action::Ungroup),
-                item("Close group", Action::CloseGroup),
-            ],
+            ClientContextMenuTarget::Group { team, .. } => {
+                use super::teams::ClientGroupTeamMenu;
+                let team_group = *team == Some(ClientGroupTeamMenu::Team);
+                let mut items = vec![
+                    item("Rename group", Action::Rename),
+                    item(
+                        if team_group {
+                            "Ungroup (disbands team)"
+                        } else {
+                            "Ungroup"
+                        },
+                        Action::Ungroup,
+                    ),
+                    item("Close group", Action::CloseGroup),
+                ];
+                // Fork: the team items, after upstream's.
+                match team {
+                    Some(ClientGroupTeamMenu::NotTeam) => {
+                        items.push(item("Make team…", Action::MakeTeam));
+                    }
+                    Some(ClientGroupTeamMenu::Team) => items.extend([
+                        item("Team info", Action::TeamInfo),
+                        item("Edit purpose…", Action::EditPurpose),
+                        item("Disband team", Action::DisbandTeam),
+                    ]),
+                    None => {}
+                }
+                items
+            }
             ClientContextMenuTarget::News { enabled, .. } => vec![
                 item("Run now", Action::NewsRun),
                 item("Open", Action::NewsOpen),
@@ -209,6 +246,7 @@ impl ClientShellState {
                 })
         });
         let color = super::tab_color::tab_menu_color(tab.color);
+        let team = self.tab_team_menu(&tab.workspace_id, agent.as_ref());
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
@@ -217,6 +255,7 @@ impl ClientShellState {
                 color,
                 important: tab.important,
                 remind: super::tab_remind_menu::tab_menu_remind(tab.remind_every),
+                team,
             },
             x,
             y,
@@ -319,8 +358,8 @@ impl ClientShellState {
             ClientContextMenuTarget::Workspace { workspace_id, .. } => {
                 self.activate_workspace_context_action(workspace_id, action, outcome)
             }
-            ClientContextMenuTarget::Group { workspace_id } => {
-                self.activate_group_context_action(workspace_id, action, outcome)
+            ClientContextMenuTarget::Group { workspace_id, team } => {
+                self.activate_group_context_action(workspace_id, team, action, outcome)
             }
             ClientContextMenuTarget::News { enabled, .. } => {
                 self.activate_news_context_action(enabled, action, outcome)
@@ -330,6 +369,18 @@ impl ClientShellState {
             } => self.activate_browser_context_action(profile, running, action, outcome),
             ClientContextMenuTarget::Coordinator { .. } => {
                 self.activate_coordinator_context_action(action, outcome)
+            }
+            ClientContextMenuTarget::Tab {
+                team: Some(team), ..
+            } if matches!(
+                action,
+                ClientContextMenuAction::SetTeamRole
+                    | ClientContextMenuAction::LeaveTeam
+                    | ClientContextMenuAction::JoinTeam
+            ) =>
+            {
+                // Like the swatch row, these do not focus the tab.
+                self.activate_tab_team_action(team, action, outcome)
             }
             ClientContextMenuTarget::Tab {
                 tab_id,
@@ -632,8 +683,9 @@ impl ClientShellState {
 impl ClientShellState {
     /// `tabs` layout: right-click on a group header.
     pub(super) fn open_group_context_menu(&mut self, workspace_id: String, x: u16, y: u16) {
+        let team = self.group_team_menu(&workspace_id);
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
-            target: ClientContextMenuTarget::Group { workspace_id },
+            target: ClientContextMenuTarget::Group { workspace_id, team },
             x,
             y,
             highlighted: 0,
@@ -643,9 +695,19 @@ impl ClientShellState {
     fn activate_group_context_action(
         &mut self,
         workspace_id: String,
+        team: Option<super::teams::ClientGroupTeamMenu>,
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,
     ) {
+        if team == Some(super::teams::ClientGroupTeamMenu::Team)
+            && action == ClientContextMenuAction::Ungroup
+            && self.config.confirm_close
+        {
+            // Ungrouping a team group disbands the team: confirmed like
+            // Close group (the same `confirm_close` setting).
+            self.open_ungroup_team_confirmation(workspace_id);
+            return;
+        }
         match action {
             ClientContextMenuAction::Rename => {
                 let label = self.snapshot.as_deref().and_then(|snapshot| {
@@ -663,46 +725,7 @@ impl ClientShellState {
                     }));
                 }
             }
-            ClientContextMenuAction::Ungroup => {
-                // Every member goes to the ungrouped bucket (the first space); the
-                // emptied space is removed by the server. All or nothing: a member
-                // that cannot move (several panes) refuses the whole ungroup.
-                let (first, member_ids) = match self.snapshot.as_deref() {
-                    Some(snapshot) => {
-                        let Some(first) = snapshot.workspaces.first() else {
-                            return;
-                        };
-                        if first.workspace_id == workspace_id {
-                            return;
-                        }
-                        (
-                            first.workspace_id.clone(),
-                            snapshot
-                                .tabs
-                                .iter()
-                                .filter(|tab| tab.workspace_id == workspace_id)
-                                .map(|tab| tab.tab_id.clone())
-                                .collect::<Vec<_>>(),
-                        )
-                    }
-                    None => return,
-                };
-                if let Some(reason) = member_ids
-                    .iter()
-                    .find_map(|tab_id| self.tab_group_move_blocker(tab_id))
-                {
-                    self.notify_group_move_refused(reason);
-                    outcome.repaint = true;
-                    return;
-                }
-                let moves = member_ids
-                    .iter()
-                    .filter_map(|tab_id| self.move_tab_to_workspace_method(tab_id, &first, false))
-                    .collect::<Vec<_>>();
-                for method in moves {
-                    self.push_endpoint_method(method, outcome);
-                }
-            }
+            ClientContextMenuAction::Ungroup => self.ungroup(workspace_id, outcome),
             ClientContextMenuAction::CloseGroup => {
                 if self.config.confirm_close {
                     self.open_close_group_confirmation(workspace_id);
@@ -718,7 +741,67 @@ impl ClientShellState {
                     );
                 }
             }
+            ClientContextMenuAction::MakeTeam => {
+                self.open_team_purpose_rename(workspace_id, "", true, false);
+            }
+            ClientContextMenuAction::TeamInfo => self.open_team_overlay(workspace_id),
+            ClientContextMenuAction::EditPurpose => {
+                let purpose = self
+                    .active_team(&workspace_id)
+                    .and_then(|team| team.purpose.clone())
+                    .unwrap_or_default();
+                self.open_team_purpose_rename(workspace_id, &purpose, false, false);
+            }
+            ClientContextMenuAction::DisbandTeam => {
+                // No confirmation: nothing is closed, the agents keep running.
+                self.push_team_request(
+                    super::teams::TeamRequest::Disband { workspace_id },
+                    outcome,
+                );
+            }
             _ => {}
+        }
+    }
+
+    /// Ungroup: every member goes to the ungrouped bucket (the first space);
+    /// the emptied space is removed by the server (and a team with it). All
+    /// or nothing: a member that cannot move (several panes) refuses the
+    /// whole ungroup.
+    pub(super) fn ungroup(&mut self, workspace_id: String, outcome: &mut ClientShellInput) {
+        let (first, member_ids) = match self.snapshot.as_deref() {
+            Some(snapshot) => {
+                let Some(first) = snapshot.workspaces.first() else {
+                    return;
+                };
+                if first.workspace_id == workspace_id {
+                    return;
+                }
+                (
+                    first.workspace_id.clone(),
+                    snapshot
+                        .tabs
+                        .iter()
+                        .filter(|tab| tab.workspace_id == workspace_id)
+                        .map(|tab| tab.tab_id.clone())
+                        .collect::<Vec<_>>(),
+                )
+            }
+            None => return,
+        };
+        if let Some(reason) = member_ids
+            .iter()
+            .find_map(|tab_id| self.tab_group_move_blocker(tab_id))
+        {
+            self.notify_group_move_refused(reason);
+            outcome.repaint = true;
+            return;
+        }
+        let moves = member_ids
+            .iter()
+            .filter_map(|tab_id| self.move_tab_to_workspace_method(tab_id, &first, false))
+            .collect::<Vec<_>>();
+        for method in moves {
+            self.push_endpoint_method(method, outcome);
         }
     }
 }

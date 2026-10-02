@@ -86,7 +86,10 @@ pub(crate) fn render_client_overlay(
         }
         ClientShellOverlay::Browser(v) => super::browser_overlay::render_browser_overlay(b, v, p)
             .map(|()| OverlayRender::default()),
-        ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
+        // Fork: composed by `team_overlay.rs` directly.
+        ClientShellOverlay::ContextMenu(_)
+        | ClientShellOverlay::GlobalMenu(_)
+        | ClientShellOverlay::TeamInfo(_) => None,
     }
 }
 
