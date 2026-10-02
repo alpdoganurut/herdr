@@ -46,17 +46,21 @@ pub(super) fn render_settings_overlay(
     let height = if settings.section == ClientSettingsSection::Integrations {
         integration_height.max(22)
     } else if settings.section == ClientSettingsSection::Browser {
-        // eleven rows, a rule and up to seven facts (clamped to the terminal)
-        32
+        // ten rows, a rule and up to six facts (clamped to the terminal)
+        30
     } else if settings.section == ClientSettingsSection::Coordinator {
         // up to nine rows and nine facts (clamped to the terminal)
         30
+    } else if settings.section == ClientSettingsSection::Agents {
+        // five rows, the armed [fix] (preview and buttons), a rule, the
+        // checks and three hint lines (clamped to the terminal)
+        32
     } else {
         22
     };
-    // 96 columns: eleven section tabs (the fork's news, browser and
-    // coordinator) in one row.
-    let popup = popup(buffer.area, 96, height)?;
+    // 104 columns: twelve section tabs (the fork's news, browser,
+    // coordinator and agents) in one row.
+    let popup = popup(buffer.area, 104, height)?;
     let inner = panel(buffer, popup, palette.accent, palette.panel_bg)?;
     if inner.width < 20 || inner.height < 8 {
         return None;
@@ -94,12 +98,18 @@ pub(super) fn render_settings_overlay(
         })
         .sum::<usize>();
     let gaps = ClientSettingsSection::ALL.len().saturating_sub(1);
+    // Fork: the bare labels are two cells narrower per tab; when even they
+    // and their gaps do not fit (a narrow terminal with the badge on), the
+    // gaps go too, so no tab is clipped.
+    let bare_width = padded_width.saturating_sub(2 * ClientSettingsSection::ALL.len());
     let (padded, tab_gap) = if padded_width + gaps <= usize::from(inner.width) {
         (true, 1)
     } else if padded_width <= usize::from(inner.width) {
         (true, 0)
-    } else {
+    } else if bare_width + gaps <= usize::from(inner.width) {
         (false, 1)
+    } else {
+        (false, 0)
     };
     let section_label =
         |section: ClientSettingsSection| settings_tab_label(section, integration_badge, padded);
@@ -251,6 +261,15 @@ pub(super) fn render_settings_overlay(
                 &mut choice_hits,
             );
         }
+        ClientSettingsSection::Agents => {
+            super::super::settings_agents::render_agents_section(
+                buffer,
+                content,
+                settings,
+                palette,
+                &mut choice_hits,
+            );
+        }
         ClientSettingsSection::Coordinator => {
             super::super::settings_coordinator::render_coordinator_section(
                 buffer,
@@ -277,6 +296,8 @@ pub(super) fn render_settings_overlay(
         ClientSettingsSection::News => settings.news.info.is_some(),
         ClientSettingsSection::Browser => settings.browser.info.is_some(),
         ClientSettingsSection::Coordinator => settings.coordinator.info.is_some(),
+        // the armed [fix] draws its own confirm button
+        ClientSettingsSection::Agents => settings.agents.info.is_some() && !settings.agents.armed,
         _ => true,
     };
     let labels = if show_primary { vec![10, 12] } else { vec![12] };

@@ -51,6 +51,7 @@ impl ClientShellState {
             news: Box::default(),
             browser: Box::default(),
             coordinator: Box::default(),
+            agents: Box::default(),
         }));
     }
 
@@ -65,7 +66,8 @@ impl ClientShellState {
             | ClientSettingsSection::ClosedSessions
             | ClientSettingsSection::News
             | ClientSettingsSection::Browser
-            | ClientSettingsSection::Coordinator => 0,
+            | ClientSettingsSection::Coordinator
+            | ClientSettingsSection::Agents => 0,
             ClientSettingsSection::Reminders => {
                 super::idle_reminders::reminder_choice_index(self.config.idle_reminder_minutes)
             }
@@ -107,6 +109,8 @@ impl ClientShellState {
             settings.idle_reminder_minutes = idle_reminder_minutes;
             settings.sound_picker = None;
             settings.daily_time_picker = None;
+            // leaving (or re-entering) the agents section disarms its [fix]
+            settings.agents.armed = false;
         }
         if request_integrations {
             self.queue_integration_list(outcome, true);
@@ -125,6 +129,9 @@ impl ClientShellState {
         }
         if section == ClientSettingsSection::Coordinator {
             self.enter_coordinator_section();
+        }
+        if section == ClientSettingsSection::Agents {
+            self.enter_agents_section(outcome);
         }
         outcome.repaint = true;
     }
@@ -148,6 +155,7 @@ impl ClientShellState {
         let news_rows = self.news_section_rows();
         let browser_rows = self.browser_section_rows();
         let coordinator_rows = self.coordinator_section_rows();
+        let agents_rows = self.agents_section_rows();
         match self.overlay.as_ref() {
             Some(ClientShellOverlay::Settings(settings)) => match settings.section {
                 ClientSettingsSection::Theme => crate::config::THEME_NAMES.len(),
@@ -163,6 +171,7 @@ impl ClientShellState {
                 ClientSettingsSection::News => news_rows,
                 ClientSettingsSection::Browser => browser_rows,
                 ClientSettingsSection::Coordinator => coordinator_rows,
+                ClientSettingsSection::Agents => agents_rows,
             },
             _ => 0,
         }
@@ -288,6 +297,7 @@ impl ClientShellState {
             ClientSettingsSection::News => self.apply_news_choice(selected, outcome),
             ClientSettingsSection::Browser => self.apply_browser_choice(selected, outcome),
             ClientSettingsSection::Coordinator => self.apply_coordinator_choice(selected, outcome),
+            ClientSettingsSection::Agents => self.apply_agents_choice(selected, outcome),
             ClientSettingsSection::Integrations => self.install_recommended_integrations(outcome),
             // Read-only: the store is shown, not edited.
             ClientSettingsSection::Backups => {}
@@ -502,6 +512,10 @@ impl ClientShellState {
             return false;
         }
         let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
+        // The agents section's armed [fix] takes ↵ and esc first.
+        if self.route_agents_key(code, modifiers, outcome) {
+            return true;
+        }
         if code == KeyCode::Esc
             && (self.close_sound_picker()
                 || self.close_daily_time_picker()

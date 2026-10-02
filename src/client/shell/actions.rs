@@ -879,6 +879,11 @@ impl ClientShellState {
             | PendingEndpointKind::BrowserFix => {
                 return self.handle_browser_settings_endpoint_result(result);
             }
+            kind @ (PendingEndpointKind::AgentsSettings
+            | PendingEndpointKind::AgentsSettingsSet
+            | PendingEndpointKind::AgentsFix) => {
+                return self.handle_agents_settings_endpoint_result(kind, result);
+            }
             kind => {
                 let mut outcome = ClientShellInput::default();
                 let repaint = self.handle_worktree_endpoint_result(kind, result, &mut outcome);

@@ -99,6 +99,8 @@ fn fast_path_blocker(
         Some("client_surface_patch.fallback.endpoint_notice")
     } else if notification_blocks_patch(state, patch) {
         Some("client_surface_patch.fallback.notification")
+    } else if super::agent_cards::agent_cards_block_patch(state, patch) {
+        Some("client_surface_patch.fallback.agent_cards")
     } else if state.copy_feedback.is_some() {
         Some("client_surface_patch.fallback.copy_feedback")
     } else if state.link_hover_blocks_patch(patch) {

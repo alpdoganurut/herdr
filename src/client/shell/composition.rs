@@ -590,6 +590,56 @@ impl ClientShellState {
             occlusion.cover(self.hits.notification_toast);
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
         }
+        // Fork: agent cards (`agent_cards.rs`), under the tab bar at the top
+        // right, below a top-right toast stack. No cards: no work.
+        self.hits.agent_cards.clear();
+        if self.has_agent_cards() {
+            let cursor = frame.cursor.clone();
+            let mut composed = frame.to_ratatui_buffer()?;
+            let now_unix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs());
+            let cards = self.agent_card_views();
+            let hits = if layout.mobile_header.is_empty() {
+                let area = layout.pane_surface;
+                let toasts = if notification_stack_bounds.is_empty() {
+                    self.hits.notification_toast
+                } else {
+                    notification_stack_bounds
+                };
+                let below_toasts = self.config.toast_position
+                    == crate::config::ToastHerdrPosition::TopRight
+                    && !toasts.is_empty()
+                    && toasts.right() > area.right().saturating_sub(agent_cards::CARD_WIDTH);
+                let top_offset = if below_toasts {
+                    toasts.bottom().saturating_sub(area.y)
+                } else {
+                    0
+                };
+                agent_cards::render_agent_cards(&mut composed, area, top_offset, &cards, now_unix)
+            } else {
+                // one banner line, above a toast banner when one is up
+                let full = Rect::new(0, 0, cols, rows);
+                let area = if self.hits.notification_toast.is_empty() {
+                    full
+                } else {
+                    Rect::new(0, 0, cols, self.hits.notification_toast.y)
+                };
+                agent_cards::render_agent_card_banner(
+                    &mut composed,
+                    area,
+                    &cards,
+                    self.hits.notification_toast.is_empty()
+                        && (has_config_diagnostic || active_lifecycle.is_some()),
+                    &self.config.palette,
+                )
+            };
+            for (rect, _) in &hits {
+                occlusion.cover(*rect);
+            }
+            self.hits.agent_cards = hits;
+            frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+        }
         if let Some(feedback) = self.copy_feedback.as_ref() {
             let cursor = frame.cursor.clone();
             let mut composed = frame.to_ratatui_buffer()?;
@@ -699,6 +749,8 @@ impl ClientShellState {
             self.hits.panes.clear();
             self.hits.pane_splits.clear();
             self.hits.popup = None;
+            // Fork: the switcher covers the agent cards too.
+            self.hits.agent_cards.clear();
         }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         if let Some(bar) = mode_bar {

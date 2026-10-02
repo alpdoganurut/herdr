@@ -10,6 +10,8 @@ pub(crate) enum EndpointControlMessage {
     HealthPong,
     AgentViewProjection(DecodedAgentViewProjection),
     AgentCompletions(crate::protocol::endpoint::EndpointAgentCompletions),
+    /// Fork: the endpoint's agent cards (`endpoint.agent-notices.v1`).
+    AgentNotices(crate::server::headless::agent_notices::AgentNoticesPayload),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -25,6 +27,15 @@ pub(crate) fn decode_endpoint_control(
         return Ok(serde_json::from_str(data)
             .map(EndpointControlMessage::AgentCompletions)
             .unwrap_or(EndpointControlMessage::Ignored));
+    }
+    // Fork: an optional control; malformed data is ignored like any unknown
+    // optional control, never an endpoint failure.
+    if kind == crate::server::headless::agent_notices::AGENT_NOTICES_KIND {
+        return Ok(
+            crate::server::headless::agent_notices::AgentNoticesPayload::decode(data)
+                .map(EndpointControlMessage::AgentNotices)
+                .unwrap_or(EndpointControlMessage::Ignored),
+        );
     }
     if kind == crate::protocol::endpoint::AGENT_VIEW_PROJECTION_KIND {
         let Ok(projection): Result<crate::protocol::endpoint::EndpointAgentViewProjection, _> =
@@ -105,6 +116,46 @@ mod tests {
             decode_endpoint_control(&kind, "invalid").unwrap(),
             EndpointControlMessage::Ignored
         ));
+    }
+
+    #[test]
+    fn agent_notices_round_trip_and_garbage_is_ignored() {
+        use crate::server::headless::agent_notices::{AgentNoticesPayload, AGENT_NOTICES_KIND};
+        let payload = AgentNoticesPayload {
+            boot_id: "boot".into(),
+            revision: 2,
+            notices: vec![crate::api::schema::AgentNoticeInfo {
+                id: "n1".into(),
+                kind: crate::api::schema::AgentNoticeKind::Question,
+                title: "need a decision".into(),
+                name: "api".into(),
+                pane_id: "w1:p2".into(),
+                unix: 5,
+                ..Default::default()
+            }],
+            initial: true,
+        };
+        let crate::protocol::ServerMessage::EndpointControl { kind, data } =
+            payload.message().unwrap()
+        else {
+            panic!("expected optional control");
+        };
+        assert_eq!(kind, AGENT_NOTICES_KIND);
+        let EndpointControlMessage::AgentNotices(decoded) =
+            decode_endpoint_control(&kind, &data).unwrap()
+        else {
+            panic!("expected agent notices");
+        };
+        assert_eq!(decoded, payload);
+        for garbage in ["not json", "{}", r#"{"boot_id":1}"#, "[]"] {
+            assert!(
+                matches!(
+                    decode_endpoint_control(AGENT_NOTICES_KIND, garbage).unwrap(),
+                    EndpointControlMessage::Ignored
+                ),
+                "{garbage}"
+            );
+        }
     }
 
     #[test]

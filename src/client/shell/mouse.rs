@@ -916,6 +916,14 @@ impl ClientShellState {
         if self.popup_terminal_id.is_some() {
             return;
         }
+        // Fork: agent cards sit above the panes and the toasts; their presses
+        // never reach either (`agent_cards.rs`).
+        if self.overlay.is_none()
+            && self.mode == ClientShellMode::Terminal
+            && self.handle_agent_card_mouse(mouse, outcome)
+        {
+            return;
+        }
         if !self.replaying_url_click
             && self.overlay.is_none()
             && self.mode == ClientShellMode::Terminal
@@ -1567,6 +1575,17 @@ impl ClientShellState {
         }
         if matches!(self.overlay, Some(ClientShellOverlay::Settings(_))) {
             if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                // Fork: the agents section's armed [fix] takes its buttons;
+                // a press anywhere else disarms it and goes on.
+                let choice = self
+                    .hits
+                    .settings_choices
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, index)| *index);
+                if self.route_agents_click(choice, outcome) {
+                    return;
+                }
                 if let Some((_, section)) = self
                     .hits
                     .settings_tabs
@@ -1597,6 +1616,7 @@ impl ClientShellState {
                         || self.news_click_applies()
                         || self.coordinator_click_applies()
                         || self.browser_click_applies()
+                        || self.agents_click_applies()
                     {
                         self.apply_settings_choice(outcome);
                     }

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 mod actions;
+mod agent_cards;
 mod agent_sidebar;
 mod aggregate_navigation;
 mod machine_diagnostics;
@@ -39,6 +40,7 @@ mod preferences;
 mod render;
 mod scroll;
 mod settings;
+mod settings_agents;
 mod settings_browser;
 mod settings_closed;
 mod settings_coordinator;

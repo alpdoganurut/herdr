@@ -1924,6 +1924,26 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            // Fork: agent cards (`shell/agent_cards.rs`).
+                            Ok(endpoint::EndpointControlMessage::AgentNotices(payload)) => {
+                                if let Some(shell) = state.shell.as_mut() {
+                                    let (effects, repaint) =
+                                        shell.receive_agent_notices(&endpoint_id, payload);
+                                    let frame = repaint
+                                        .then(|| {
+                                            shell.compose(
+                                                state.reported_size.0,
+                                                state.reported_size.1,
+                                            )
+                                        })
+                                        .flatten();
+                                    handle_shell_notification_effects(effects, &state.sound_config);
+                                    if let Some(frame) = frame {
+                                        state.present_frame(frame);
+                                    }
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::Ignored) => {
                                 debug!(%kind, "ignoring unknown endpoint control message");
                                 continue;

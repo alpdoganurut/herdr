@@ -248,6 +248,7 @@ fn surface_with_popup() -> PaneSurfaceFrame {
     surface
 }
 
+mod agent_cards;
 mod agents_worktrees_notifications;
 mod breathe;
 mod browser;
@@ -268,6 +269,7 @@ mod mouse_selection;
 mod news;
 mod notification_format;
 mod popup_focus_projection;
+mod settings_agents;
 mod settings_backups;
 mod settings_browser;
 mod settings_closed;

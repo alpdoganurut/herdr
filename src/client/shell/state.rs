@@ -152,6 +152,9 @@ pub(super) struct ShellHitMap {
     /// One hit per drawn notification card: the index into `visible_notifications`, or
     /// `None` for the sticky stack's "+N more" line.
     pub(super) notification_toasts: Vec<(Rect, Option<usize>)>,
+    /// Fork: one hit per drawn agent card, its `×` first, and the fold line
+    /// (`agent_cards.rs`).
+    pub(super) agent_cards: Vec<(Rect, super::agent_cards::AgentCardHit)>,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
     /// The tab menu's swatch row: one hit per swatch, indexed like `tab_color::picker_choices`.
@@ -473,6 +476,8 @@ pub(super) enum ClientSettingsSection {
     News,
     Browser,
     Coordinator,
+    /// Fork: wrapping claude / codex in herdr+ panes (`settings_agents.rs`).
+    Agents,
 }
 
 impl ClientSettingsSection {
@@ -488,6 +493,7 @@ impl ClientSettingsSection {
         Self::News,
         Self::Browser,
         Self::Coordinator,
+        Self::Agents,
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -503,6 +509,7 @@ impl ClientSettingsSection {
             Self::News => "news",
             Self::Browser => "browser",
             Self::Coordinator => "coordinator",
+            Self::Agents => "agents",
         }
     }
 }
@@ -555,6 +562,9 @@ pub(super) struct ClientSettingsOverlay {
     /// Fork: the coordinator section's record and picker (boxed: the
     /// overlay enum stays small).
     pub(super) coordinator: Box<super::settings_coordinator::ClientCoordinatorSettings>,
+    /// Fork: the agents section's record, endpoint and armed `[fix]`
+    /// (boxed: the overlay enum stays small).
+    pub(super) agents: Box<super::settings_agents::ClientAgentsSettings>,
 }
 
 #[derive(Debug)]
@@ -861,6 +871,11 @@ pub(super) enum PendingEndpointKind {
     BrowserSettings,
     BrowserSettingsSet,
     BrowserFix,
+    /// Fork: `agents.settings` / `agents.settings.set` / `agents.fix`
+    /// (`settings_agents.rs`).
+    AgentsSettings,
+    AgentsSettingsSet,
+    AgentsFix,
     /// Fork: a `coordinator.*` request.
     Coordinator(super::coordinator::CoordinatorRequestKind),
     PrepareWorktreeCreate {
@@ -1176,6 +1191,10 @@ pub(crate) struct ClientShellState {
     /// `queued_notifications`); sticky mode keeps every card until it is cleared.
     pub(super) visible_notifications: VecDeque<ClientVisibleNotification>,
     pub(super) queued_notifications: VecDeque<ClientVisibleNotification>,
+    /// Fork: each endpoint's agent cards as its last
+    /// `endpoint.agent-notices.v1` payload listed them, with the seen set
+    /// that keeps old cards from ringing (`agent_cards.rs`).
+    pub(super) agent_cards: super::agent_cards::AgentCardsByEndpoint,
     /// Important tabs waiting in Done/Blocked, keyed by endpoint and tab id
     /// (`idle_reminders.rs`).
     pub(super) idle_reminders:
@@ -1366,6 +1385,7 @@ impl ClientShellState {
             pending_integration_installs: 0,
             pending_notifications: Vec::new(),
             visible_notifications: VecDeque::new(),
+            agent_cards: HashMap::new(),
             queued_notifications: VecDeque::new(),
             idle_reminders: HashMap::new(),
             scheduled_reminders: HashMap::new(),

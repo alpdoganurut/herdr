@@ -8,7 +8,7 @@ use crate::api::schema::{
 };
 use crate::client::shell::settings_browser::{
     install_command, next_color, next_mcp_agents, row_labels, COLOR_PRESETS, ROW_COLOR, ROW_FIX,
-    ROW_HOOK, ROW_INSTALL, ROW_MCP, ROW_OPEN_STOP, ROW_STEER,
+    ROW_HIDE_NATIVE, ROW_INSTALL, ROW_MCP, ROW_OPEN_STOP, ROW_STEER,
 };
 use crate::config::{Config, SidebarLayoutConfig};
 
@@ -111,12 +111,6 @@ fn info() -> BrowserSettingsInfo {
                 "codex: not registered",
                 BrowserFixKind::EditsFiles,
             ),
-            check(
-                "shell_hook",
-                false,
-                "a herdr+ line for a different instance: ~/.herdr-dev/config/herdr/shell/herdr-plus.zsh",
-                BrowserFixKind::EditsFiles,
-            ),
             check("launch_context", true, "Aqua", BrowserFixKind::None),
         ],
         checked_at: Some(1_800_000_000),
@@ -176,11 +170,10 @@ fn the_browser_section_pulls_the_record_and_shows_rows_and_facts() {
         "show activity (groups, glow, cursor): on",
         "pinned dashboard: on",
         "activity colour  #aa6eff ■",
-        "agents use herdr's browser (steer + wrap): on",
-        "hide agents' own browsers: on",
+        "agents prefer herdr's browser (when wrapped): on",
+        "hide agents' own browsers (when wrapped): on",
         "MCP for: claude ✓  codex ✗",
-        "shell hook in ~/.zshrc: on",
-        "▸ fix all (2 issues)",
+        "▸ fix all (1 issue)",
         "stop browser",
         "install herdr+ Browser from a Chromium build… (↵ copies the command)",
         "status",
@@ -189,14 +182,15 @@ fn the_browser_section_pulls_the_record_and_shows_rows_and_facts() {
         "✓ playwright-core 1.63.0 · node v22.14.0",
         "✓ v10 · ready",
         "claude ✓ · codex ✗ not registered",
-        "✗ a herdr+ line for a different instance: ~/.herdr-dev",
         "↵ apply",
     ] {
         assert!(text.contains(expected), "missing {expected:?} in\n{text}");
     }
+    // the shell hook moved to Settings → Agents: no row, no fact
+    assert!(!text.contains("shell hook"), "{text}");
     // the tab strip holds every section including the new one
     assert!(text.contains(" browser "), "{text}");
-    assert_eq!(state.browser_section_rows(), 11);
+    assert_eq!(state.browser_section_rows(), 10);
 }
 
 #[test]
@@ -247,19 +241,28 @@ fn rows_send_the_settings_writes_and_the_actions() {
     assert_eq!(next_color("#123456"), COLOR_PRESETS[0]);
     assert_eq!(next_color(COLOR_PRESETS[4]), COLOR_PRESETS[0]);
 
-    // the steer + wrap row writes both keys with one request (`steer_wrap`)
+    // the steering row writes `steer_agents` only (the wrap is Settings → Agents)
     state.handle_input_bytes(b"\x1b[B");
     assert_eq!(selected_row(&state), ROW_STEER);
     let (id, key, value) = one_set(&state.handle_input_bytes(b"\r"));
     assert_eq!(
         (key.as_str(), value),
-        ("steer_wrap", serde_json::Value::Bool(false))
+        ("steer_agents", serde_json::Value::Bool(false))
     );
-    let mut both = info();
-    both.steer_agents = false;
-    both.wrap_agents = false;
-    reply(&mut state, &id, both);
-    assert!(settings_frame_text(&mut state).contains("(steer + wrap): off"));
+    let mut steer_off = info();
+    steer_off.steer_agents = false;
+    reply(&mut state, &id, steer_off);
+    assert!(settings_frame_text(&mut state)
+        .contains("agents prefer herdr's browser (when wrapped): off"));
+    // the hide row writes its own key
+    state.handle_input_bytes(b"\x1b[B");
+    assert_eq!(selected_row(&state), ROW_HIDE_NATIVE);
+    let (id, key, value) = one_set(&state.handle_input_bytes(b"\r"));
+    assert_eq!(
+        (key.as_str(), value),
+        ("disable_native_browser", serde_json::Value::Bool(false))
+    );
+    reply(&mut state, &id, info());
     let mut outcome = ClientShellInput::default();
     state.tick_browser(std::time::Instant::now(), &mut outcome);
     assert!(
@@ -268,7 +271,7 @@ fn rows_send_the_settings_writes_and_the_actions() {
     );
 
     // the MCP row: → cycles claude -> codex
-    for _ in ROW_STEER..ROW_MCP {
+    for _ in ROW_HIDE_NATIVE..ROW_MCP {
         state.handle_input_bytes(b"\x1b[B");
     }
     let (id, key, value) = one_set(&state.handle_input_bytes(b"\x1b[C"));
@@ -290,16 +293,14 @@ fn rows_send_the_settings_writes_and_the_actions() {
         state.next_browser_settings_deadline().is_some(),
         "the server is fixing: the section polls"
     );
-
-    // the shell hook row
-    state.handle_input_bytes(b"\x1b[B");
-    assert_eq!(selected_row(&state), ROW_HOOK);
-    let (id, key, value) = one_set(&state.handle_input_bytes(b"\r"));
-    assert_eq!(
-        (key.as_str(), value),
-        ("shell_hook", serde_json::Value::Bool(false))
-    );
-    reply(&mut state, &id, info());
+    let deadline = state.next_browser_settings_deadline().unwrap();
+    let mut outcome = ClientShellInput::default();
+    state.tick_browser(deadline, &mut outcome);
+    let requests = endpoint_requests(&outcome);
+    let [(id, Method::BrowserSettings(_))] = &requests[..] else {
+        panic!("the poll pulls browser.settings, got {requests:?}");
+    };
+    reply(&mut state, id, info());
 
     // fix all: browser.fix with no ids
     state.handle_input_bytes(b"\x1b[B");
@@ -312,31 +313,17 @@ fn rows_send_the_settings_writes_and_the_actions() {
     assert!(params.ids.is_empty());
     let mut fixed = info();
     fixed.fixes = vec![BrowserFixResult {
-        id: "shell_hook".into(),
+        id: "mcp_codex".into(),
         ok: true,
-        detail: "shell: added the herdr+ line to ~/.zshrc".into(),
+        detail: "codex: registered".into(),
     }];
-    fixed.checks.retain(|c| c.id != "shell_hook");
-    fixed.checks.push(check(
-        "shell_hook",
-        true,
-        "~/.zshrc",
-        BrowserFixKind::EditsFiles,
-    ));
+    fixed.checks.iter_mut().for_each(|c| c.ok = true);
     reply(&mut state, id, fixed);
     let text = settings_frame_text(&mut state);
-    assert!(text.contains("▸ fix all (1 issue)"), "{text}");
     assert!(text.contains("last fix"), "{text}");
-    assert!(text.contains("shell_hook ✓"), "{text}");
+    assert!(text.contains("mcp_codex ✓"), "{text}");
     // nothing to fix: Enter sends nothing
-    let mut clean = info();
-    clean.checks.iter_mut().for_each(|c| c.ok = true);
-    let outcome = state.handle_input_bytes(b"\r");
-    let [(id, _)] = &endpoint_requests(&outcome)[..] else {
-        panic!("one browser.fix");
-    };
-    reply(&mut state, id, clean);
-    assert!(settings_frame_text(&mut state).contains("▸ fix all (nothing to fix)"));
+    assert!(text.contains("▸ fix all (nothing to fix)"), "{text}");
     assert!(endpoint_requests(&state.handle_input_bytes(b"\r")).is_empty());
 
     // open · stop: running -> browser.stop, stopped -> browser.start
@@ -513,8 +500,12 @@ fn a_server_without_browser_settings_says_so_and_sends_nothing() {
 fn remote_rows_say_where_the_edits_land_and_right_still_switches_sections() {
     let mut labels = row_labels(&info(), Some("Build"));
     assert_eq!(labels[ROW_MCP], "MCP for: claude ✓  codex ✗ (on Build)");
-    assert_eq!(labels[ROW_HOOK], "shell hook in ~/.zshrc: on (on Build)");
-    assert_eq!(labels[ROW_FIX], "▸ fix all (2 issues) (on Build)");
+    assert_eq!(labels[ROW_FIX], "▸ fix all (1 issue) (on Build)");
+    assert_eq!(labels.len(), 10);
+    assert!(
+        !labels.iter().any(|l| l.contains("shell hook")),
+        "{labels:?}"
+    );
     assert!(labels[ROW_INSTALL].ends_with("(on Build)"));
     assert_eq!(labels[0], "browser: on", "toggles carry no suffix");
     labels = row_labels(&info(), None);

@@ -187,7 +187,8 @@ fn unavailable_transcript_store_does_not_wedge_the_backups_section() {
 mod fork_smoke {
     use super::*;
 
-    /// Section tabs are clipped with `.min()` to the fixed 96-column popup; a
+    /// Section tabs are clipped with `.min()` to the fixed popup (104 columns
+    /// since the fork's agents section; the test name keeps 96); a
     /// longer upstream label or a new upstream section would silently cut
     /// `backups`, `reminders` or `closed` off. Checked with the integrations
     /// badge on, the widest row (the tabs close up their one-cell gaps, then
@@ -200,7 +201,8 @@ mod fork_smoke {
         state.set_snapshot(Box::new(snapshot));
         state.set_pane_surface(surface());
         state.open_settings_overlay();
-        let frame = state.compose(106, 30).expect("settings frame");
+        // 108 columns hold the whole 104-column popup
+        let frame = state.compose(108, 30).expect("settings frame");
 
         let tabs = state.hits.settings_tabs.clone();
         assert_eq!(
@@ -209,13 +211,14 @@ mod fork_smoke {
             "every section gets a tab, in order"
         );
         assert_eq!(
-            &ClientSettingsSection::ALL[ClientSettingsSection::ALL.len() - 5..],
+            &ClientSettingsSection::ALL[ClientSettingsSection::ALL.len() - 6..],
             [
                 ClientSettingsSection::Reminders,
                 ClientSettingsSection::ClosedSessions,
                 ClientSettingsSection::News,
                 ClientSettingsSection::Browser,
-                ClientSettingsSection::Coordinator
+                ClientSettingsSection::Coordinator,
+                ClientSettingsSection::Agents
             ]
         );
         let popup_left = tabs[0].0.x;
@@ -240,7 +243,7 @@ mod fork_smoke {
                 "{section:?} tab is clipped"
             );
             assert!(
-                rect.right() <= popup_left + 94,
+                rect.right() <= popup_left + 102,
                 "{section:?} tab ends past the popup's inner width"
             );
         }
@@ -251,5 +254,6 @@ mod fork_smoke {
         assert!(row.contains(" news "), "{row}");
         assert!(row.contains("browser"), "{row}");
         assert!(row.contains("coordinator"), "{row}");
+        assert!(row.contains(" agents"), "{row}");
     }
 }

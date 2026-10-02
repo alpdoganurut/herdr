@@ -4,15 +4,17 @@
 //! Every toggle row goes to the active server as `browser.settings.set`
 //! (the server writes its own config file and reloads it; the reply
 //! refreshes the section), so a remote server's own setup changes. The
-//! colour row and the MCP row cycle through choices on ↵ or →. The MCP and
-//! shell-hook rows edit user files on the server host (an MCP registration,
-//! `~/.zshrc`) — that happens on ↵, the user's explicit act, and rows that
-//! do so say `(on <machine>)` for a remote endpoint. `fix all` runs the
-//! setup steps for every failing check (`browser.fix`); `open browser` /
-//! `stop browser` start or stop the default profile. Below the rows, under
-//! a rule, the facts: the status line, the browser, the helper, the
-//! extension, the MCP registrations, the shell hook — each with ✓/✗ and a
-//! short reason from the server's checks.
+//! colour row and the MCP row cycle through choices on ↵ or →. The MCP row
+//! edits user files on the server host (an MCP registration) — that happens
+//! on ↵, the user's explicit act, and rows that do so say `(on <machine>)`
+//! for a remote endpoint. The two agent rows (steering, hiding agents' own
+//! browsers) apply only while Settings → Agents wraps claude / codex; the
+//! shell hook lives there too. `fix all` runs the setup steps for every
+//! failing check (`browser.fix`); `open browser` / `stop browser` start or
+//! stop the default profile. Below the rows, under a rule, the facts: the
+//! status line, the browser, the helper, the extension, the MCP
+//! registrations — each with ✓/✗ and a short reason from the server's
+//! checks.
 
 use super::render::{display_width, put_text};
 use super::*;
@@ -36,11 +38,10 @@ pub(super) const ROW_COLOR: usize = 3;
 pub(super) const ROW_STEER: usize = 4;
 pub(super) const ROW_HIDE_NATIVE: usize = 5;
 pub(super) const ROW_MCP: usize = 6;
-pub(super) const ROW_HOOK: usize = 7;
-pub(super) const ROW_FIX: usize = 8;
-pub(super) const ROW_OPEN_STOP: usize = 9;
-pub(super) const ROW_INSTALL: usize = 10;
-pub(super) const ROWS: usize = 11;
+pub(super) const ROW_FIX: usize = 7;
+pub(super) const ROW_OPEN_STOP: usize = 8;
+pub(super) const ROW_INSTALL: usize = 9;
+pub(super) const ROWS: usize = 10;
 
 /// The section's state inside the settings overlay: its own copy of the
 /// `browser.settings` record (the renderer sees the overlay, not the shell
@@ -139,7 +140,7 @@ impl ClientShellState {
         )
     }
 
-    /// Rows in the browser section: the eleven rows once a record is there.
+    /// Rows in the browser section: the ten rows once a record is there.
     pub(super) fn browser_section_rows(&self) -> usize {
         match self.browser_settings() {
             Some(ClientBrowserSettings { info: Some(_), .. }) => ROWS,
@@ -295,10 +296,9 @@ impl ClientShellState {
                 next_color(&info.activity_color).into(),
                 outcome,
             ),
+            // Steering only: wrapping claude / codex is Settings → Agents.
             ROW_STEER => {
-                // One row, both keys, one server-side write: on when both are on.
-                let on = !(info.steer_agents && info.wrap_agents);
-                self.set_browser_setting("steer_wrap", on.into(), outcome);
+                self.set_browser_setting("steer_agents", (!info.steer_agents).into(), outcome)
             }
             ROW_HIDE_NATIVE => self.set_browser_setting(
                 "disable_native_browser",
@@ -315,7 +315,6 @@ impl ClientShellState {
                 ),
                 outcome,
             ),
-            ROW_HOOK => self.set_browser_setting("shell_hook", (!info.shell_hook).into(), outcome),
             ROW_FIX => {
                 if info.fixing || fixable_issues(&info) == 0 {
                     return;
@@ -521,11 +520,11 @@ pub(super) fn row_labels(info: &BrowserSettingsInfo, remote_label: Option<&str>)
         format!("pinned dashboard: {}", on(info.pin_dashboard)),
         format!("activity colour  {} ■", info.activity_color),
         format!(
-            "agents use herdr's browser (steer + wrap): {}",
-            on(info.steer_agents && info.wrap_agents)
+            "agents prefer herdr's browser (when wrapped): {}",
+            on(info.steer_agents)
         ),
         format!(
-            "hide agents' own browsers: {}",
+            "hide agents' own browsers (when wrapped): {}",
             on(info.disable_native_browser)
         ),
         remote(format!(
@@ -533,7 +532,6 @@ pub(super) fn row_labels(info: &BrowserSettingsInfo, remote_label: Option<&str>)
             if has("claude") { "✓" } else { "✗" },
             if has("codex") { "✓" } else { "✗" }
         )),
-        remote(format!("shell hook in ~/.zshrc: {}", on(info.shell_hook))),
         remote(fix),
         if info.running {
             "stop browser".to_string()
@@ -691,14 +689,12 @@ pub(super) fn facts(
         out.extend(one("mcp_codex", "codex"));
         out
     };
-    let hook: Segments = line("shell_hook");
     let mut facts = vec![
         ("status", vec![(info.status.clone(), None)]),
         ("browser", line("executable")),
         ("helper", line("helper")),
         ("extension", line("extension")),
         ("MCP", mcp),
-        ("shell hook", hook),
     ];
     if !info.fixes.is_empty() {
         let mut segments: Segments = Vec::new();

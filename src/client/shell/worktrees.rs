@@ -550,6 +550,9 @@ impl ClientShellState {
                 | PendingEndpointKind::BrowserSettings
                 | PendingEndpointKind::BrowserSettingsSet
                 | PendingEndpointKind::BrowserFix
+                | PendingEndpointKind::AgentsSettings
+                | PendingEndpointKind::AgentsSettingsSet
+                | PendingEndpointKind::AgentsFix
                 | PendingEndpointKind::Coordinator(_)
                 | PendingEndpointKind::SelectionCopy
                 | PendingEndpointKind::PaneScroll { .. }
