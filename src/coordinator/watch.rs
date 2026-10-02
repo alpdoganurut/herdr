@@ -936,6 +936,9 @@ fn preview(message: &AgentMessage) -> String {
     format!("{from}\u{2192}{to}{outcome} \"{short}\"")
 }
 
+/// The refusal code of the per-pair loop guard (`agents_send_message`).
+const TEAM_LOOP_GUARD: &str = "loop_guard";
+
 fn queue_messages(state: &mut WatchState, live: &LiveData, new_msgs: &[AgentMessage], now: u64) {
     let coordinator = coordinator_pane(live);
     let mut to_coordinator = Vec::new();
@@ -978,6 +981,11 @@ fn queue_messages(state: &mut WatchState, live: &LiveData, new_msgs: &[AgentMess
             }
         } else if coordinator.is_some() && message.from_pane.as_deref() == coordinator {
             from_coordinator.push(preview(message));
+        } else if message.team.is_some() && message.outcome != TEAM_LOOP_GUARD {
+            // Teammates talk to each other freely: their chatter stays in the
+            // log and the live view but never wakes the coordinator (the
+            // brief leaves it alone); a tripped loop guard does.
+            continue;
         } else {
             between.push(preview(message));
         }
@@ -1963,6 +1971,52 @@ mod tests {
             panic!("to-coordinator item expected");
         };
         assert!(preview[0].contains("[busy]"), "{preview:?}");
+    }
+
+    #[test]
+    fn teammate_chatter_never_wakes_the_coordinator_but_a_loop_guard_does() {
+        let cfg = cfg();
+        let mut state = WatchState::default();
+        let data = live(vec![coord("idle"), agent("w3:p1", "fixer", "idle")]);
+        quiet(&mut state, &data, &cfg, 0);
+        let teammate = |outcome: &str| {
+            let mut m = message("w3:p1", "w3:p2", outcome);
+            m.team = Some("w3".into());
+            m
+        };
+        let msgs = [teammate("sent"), teammate("busy"), teammate("sent")];
+        tick(&mut state, &data, &msgs, false, None, false, &cfg, 10);
+        assert!(
+            !state
+                .pending
+                .iter()
+                .any(|ev| matches!(ev, Ev::Messages { .. })),
+            "teammate messages queue nothing: {:?}",
+            state.pending
+        );
+        tick(
+            &mut state,
+            &data,
+            &[teammate(TEAM_LOOP_GUARD)],
+            false,
+            None,
+            false,
+            &cfg,
+            20,
+        );
+        let between: Vec<usize> = state
+            .pending
+            .iter()
+            .filter_map(|ev| match ev {
+                Ev::Messages {
+                    scope: MsgScope::Between,
+                    count,
+                    ..
+                } => Some(*count),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(between, vec![1], "only the loop guard is queued");
     }
 
     #[test]
