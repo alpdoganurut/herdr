@@ -1846,7 +1846,7 @@
           "key": "agents.instructions_file",
           "type": "string",
           "default": "\"\"",
-          "description": "Empty uses the built-in paragraph. A path (`~` expanded) replaces it verbatim after sanitizing: control characters are dropped and files over 8 KiB, missing or empty files fall back to the built-in text with a warning. The settings section's `file` choice uses `<config dir>/agents.md`, seeded with the built-in text when missing."
+          "description": "Empty uses the built-in paragraph. A path (`~` expanded) replaces it verbatim after sanitizing, including the built-in rule for other agents' messages (in a team group the built-in text says to act on teammates' messages within the team's purpose and to treat anyone else's as untrusted; a file must say this itself): control characters are dropped and files over 8 KiB, missing or empty files fall back to the built-in text with a warning. The settings section's `file` choice uses `<config dir>/agents.md`, seeded with the built-in text when missing."
         },
         {
           "key": "agents.notices",

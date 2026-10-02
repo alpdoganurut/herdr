@@ -323,8 +323,10 @@ impl<A: Api> Session<A> {
         })
     }
 
-    /// Whether the connecting pane is a team member (one `team.context`
-    /// read at `initialize`; never for a server from the wrong pane).
+    /// Whether the connecting pane is a team member, or about to be one
+    /// (`eligible`: a launch in a team group joins once its agent is
+    /// detected, usually after this `initialize`). One `team.context` read;
+    /// never for a server from the wrong pane.
     fn connecting_member(&self) -> bool {
         if matches!(self.opts.verdict, Verdict::Wrong(_)) {
             return false;
@@ -333,7 +335,9 @@ impl<A: Api> Session<A> {
             return false;
         };
         api::team_context(&self.api, pane, false, false)
-            .map(|context| caller_team(&context).0.is_some())
+            .map(|context| {
+                caller_team(&context).0.is_some() || context["eligible"].as_bool().unwrap_or(false)
+            })
             .unwrap_or(false)
     }
 
@@ -4572,6 +4576,8 @@ mod tests {
                 .clone()
         };
         assert_eq!(init("w3:p1", Verdict::Verified), TEAM_INSTRUCTIONS);
+        // a launch in the team group that has not been detected (joined) yet
+        assert_eq!(init("w3:p9", Verdict::Verified), TEAM_INSTRUCTIONS);
         assert_eq!(init("w2:p3", Verdict::Verified), INSTRUCTIONS);
         world.calls.borrow_mut().clear();
         assert_eq!(init("w3:p1", Verdict::Wrong("daemon".into())), INSTRUCTIONS);

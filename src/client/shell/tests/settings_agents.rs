@@ -302,7 +302,7 @@ fn rows_send_their_settings_writes() {
     let text = frame_text(&mut state);
     assert!(
         text.contains(
-            "instructions file: ~/.config/herdr/agents.md (412 B)   (↵ back to built-in)"
+            "instructions file: ~/.config/herdr/agents.md (412 B)   (↵ built-in · replaces the team rule too)"
         ),
         "{text}"
     );

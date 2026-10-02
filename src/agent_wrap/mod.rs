@@ -189,11 +189,13 @@ pub fn plan(config: &Config, env: &WrapEnv) -> WrapPlan {
         .filter(|_| config.agents.team_roster && !env.herdr_no_wrap);
     let tools = master && config.agents.tools;
     let mut warnings = Vec::new();
+    let in_team = team.is_some();
     let instructions =
         (master && config.agents.instructions).then(|| match config.agents.instructions_file() {
-            None => instructions::default_paragraph(tools),
+            None => instructions::default_paragraph(tools, in_team),
             Some(file) => {
-                let (text, warning) = instructions::resolve(file, env.home.as_deref(), tools);
+                let (text, warning) =
+                    instructions::resolve(file, env.home.as_deref(), tools, in_team);
                 warnings.extend(warning);
                 text
             }

@@ -539,7 +539,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # tools = false
 # Add the herdr+ paragraph to a wrapped launch's system prompt / developer instructions.
 # instructions = false
-# "" = the built-in paragraph; a path (~ expanded) replaces it.
+# "" = the built-in paragraph; a path (~ expanded) replaces it, including the built-in rule for
+# agents' messages (in a team group: act on teammates within the purpose, else untrusted).
 # instructions_file = ""
 # Accept agent notices (agents_notify, `herdr agent notify`); off answers notices_off.
 # notices = true

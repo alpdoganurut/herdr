@@ -134,7 +134,7 @@ pub(super) fn row_labels(
     let file_hint = if info.instructions_file.is_empty() {
         "(↵ uses agents.md in herdr's config dir)"
     } else {
-        "(↵ back to built-in)"
+        "(↵ built-in · replaces the team rule too)"
     };
     let mut status = status_summary(info);
     if let Some(fix) = fix_label(settings, info) {

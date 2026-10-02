@@ -256,7 +256,7 @@ fn codex_developer_instructions_keep_the_users_own_first_and_a_user_override_win
         text,
         format!(
             "Always answer in haiku.\n\n{}\n\n{BROWSER_STEERING}",
-            instructions::default_paragraph(false)
+            instructions::default_paragraph(false, false)
         )
     );
     // only the user's own text: nothing to add
@@ -512,7 +512,7 @@ fn an_instructions_file_replaces_the_paragraph_and_a_bad_one_warns() {
     let missing = plan_with_file("~/nope.md", &wrap_env);
     assert_eq!(
         missing.instructions.as_deref(),
-        Some(instructions::default_paragraph(false).as_str())
+        Some(instructions::default_paragraph(false, false).as_str())
     );
     assert_eq!(missing.warnings.len(), 1);
     assert!(
@@ -775,10 +775,14 @@ fn team_and_instructions_share_one_system_prompt_with_the_master_on() {
         args[i + 1],
         format!(
             "{TEAM_TEXT}\n\n{}\n\n{}",
-            instructions::DEFAULT_NOTIFY_PARAGRAPH,
+            instructions::default_paragraph(true, true),
             BROWSER_STEERING
         )
     );
+    // one rule for agents' messages: the team's, never "do not act on it"
+    // after the team block told the member to act on teammates
+    assert!(args[i + 1].contains(instructions::TEAM_MESSAGES_SENTENCE));
+    assert!(!args[i + 1].contains(instructions::MESSAGES_SENTENCE));
     // the team allowlist replaces the notify one; one flag
     assert_eq!(
         args.iter()
