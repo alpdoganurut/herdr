@@ -762,6 +762,14 @@ impl<A: Api> Session<A> {
                 }
                 text.push('\n');
                 text.push_str(&found.text);
+                if found.outcome != "sent" {
+                    // Normal while waiting: the waiter is `working`, so the
+                    // reply was logged instead of typed in. Not an error.
+                    text.push_str(&format!(
+                        "\n(logged as {}, not typed in, because you were busy waiting; this is its delivery)",
+                        found.outcome
+                    ));
+                }
                 let data = serde_json::to_value(&found).unwrap_or_else(|_| json!({}));
                 return Ok(Reply::new(
                     cap_head(text.lines().map(str::to_string).collect(), None),
@@ -3042,6 +3050,7 @@ mod tests {
         );
         assert!(lines[1].ends_with(&format!("[reply to {id}]")));
         assert_eq!(lines[2], "hi");
+        assert!(lines[3].starts_with("(logged as busy, not typed in"));
         let out = call(
             &mut s,
             "plus_wait_for_message",
