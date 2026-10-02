@@ -1,0 +1,623 @@
+<!doctype html>
+<!-- herdr+ dashboard. Owned by the coordinator agent; template.html is the reseeded reference.
+     Contract: GET /live.json (LiveData: generated_unix, agents[], offline[], groups[], unmanaged_count,
+     coordinator_pane, messages[], watch{}) every 2 s; GET /board.json (coordinator content) every 5 s.
+     Render all data with textContent only. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>herdr+</title>
+<link rel="icon" type="image/png" href="/icons/favicon.png">
+<style>
+  :root {
+    --page: #17181e;
+    --panel: #1d1f27;
+    --panel-2: #22242e;
+    --line: #2c2f3b;
+    --ink: #cfd2de;
+    --muted: #8b8fa3;
+    --dim: #5d6174;
+    --accent: #aa6eff;
+    --gold: #a5a9cf;
+    --idle: #7fd19b;
+    --working: #6ea8fe;
+    --blocked: #ff6b7f;
+    --done: #5fd4c4;
+    --suspended: #8a8ea3;
+    --unknown: #5d6174;
+    --warn: #e8b86b;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--page); color: var(--ink); }
+  body {
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 20px 24px 40px; }
+  .mono { font-family: var(--mono); font-size: 12.5px; }
+  .muted { color: var(--muted); }
+  .dim { color: var(--dim); }
+  code { font-family: var(--mono); font-size: 0.92em; background: rgba(170, 110, 255, 0.12);
+         padding: 0 4px; border-radius: 4px; }
+
+  /* header */
+  header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+           padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 650;
+           letter-spacing: 0.2px; }
+  .brand img { width: 26px; height: 26px; }
+  .brand .plus { color: var(--accent); }
+  .head-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted);
+               font-size: 13px; }
+  .head-right { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .flag { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line);
+          color: var(--gold); }
+  .flag.hot { border-color: rgba(255, 107, 127, 0.5); color: var(--blocked); }
+  .note { font-size: 12px; color: var(--warn); }
+
+  /* banners */
+  .banner { margin-top: 12px; padding: 9px 14px; border-radius: 8px; font-size: 13.5px;
+            border: 1px solid; }
+  .banner.red { background: rgba(255, 107, 127, 0.10); border-color: rgba(255, 107, 127, 0.45);
+                color: #ffb3bd; }
+  .banner.amber { background: rgba(232, 184, 107, 0.08); border-color: rgba(232, 184, 107, 0.4);
+                  color: #f0d29e; }
+
+  /* layout */
+  .cols { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 22px; margin-top: 18px; }
+  @media (max-width: 1000px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+  .col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+  section h2 { margin: 0 0 8px; font-size: 11.5px; font-weight: 600; letter-spacing: 1.1px;
+               text-transform: uppercase; color: var(--gold); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+           padding: 12px 14px; }
+  .empty { color: var(--dim); font-size: 13px; }
+
+  /* summary */
+  .summary-text { font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
+  .summary-meta { margin-top: 6px; font-size: 12px; color: var(--muted); }
+
+  /* lists */
+  ul.plain { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  ul.plain li { line-height: 1.45; }
+  .why { display: block; color: var(--muted); font-size: 12.5px; }
+  .suggestion { padding-left: 10px; border-left: 2px solid var(--accent); }
+
+  /* groups and agent cards */
+  .group + .group { margin-top: 16px; }
+  .group-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+  .group-name { font-weight: 600; font-size: 15px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+          padding: 11px 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .card.coord { border-color: rgba(170, 110, 255, 0.55);
+                box-shadow: inset 3px 0 0 var(--accent); }
+  .card.blocked { border-color: rgba(255, 107, 127, 0.55); }
+  .card-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .mark { width: 32px; height: 32px; flex: none; }
+  .who { min-width: 0; flex: 1; }
+  .name { font-weight: 600; font-size: 14.5px; overflow: hidden; text-overflow: ellipsis;
+          white-space: nowrap; }
+  .sub { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+         white-space: nowrap; }
+  .tag { font-size: 10.5px; letter-spacing: 0.6px; text-transform: uppercase; color: var(--accent);
+         margin-left: 6px; font-weight: 600; }
+  .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
+  .agent-note { font-size: 12.5px; color: var(--ink); }
+  .board-note { font-size: 12.5px; color: var(--gold); }
+
+  .pill { flex: none; font-size: 11.5px; font-weight: 600; padding: 1px 9px; border-radius: 999px;
+          border: 1px solid currentColor; line-height: 18px; }
+  .s-idle { color: var(--idle); }
+  .s-working { color: var(--working); }
+  .s-blocked { color: var(--blocked); background: rgba(255, 107, 127, 0.12); }
+  .s-done { color: var(--done); }
+  .s-suspended { color: var(--suspended); }
+  .s-unknown, .s-offline { color: var(--unknown); }
+
+  .empty-state { display: flex; flex-direction: column; align-items: center; gap: 6px;
+                 padding: 22px 12px; text-align: center; }
+  .empty-state img { width: 128px; height: 128px; opacity: 0.9; }
+
+  /* tables */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11.5px; padding: 0 8px 6px 0; }
+  td { padding: 5px 8px 5px 0; border-top: 1px solid var(--line); vertical-align: top; }
+
+  /* message log */
+  .log { font-family: var(--mono); font-size: 12.5px; display: flex; flex-direction: column; }
+  .log-row { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px; padding: 4px 0;
+             border-top: 1px solid var(--line); }
+  .log-row:first-child { border-top: none; }
+  .log-row .when { color: var(--dim); }
+  .log-row .route { color: var(--gold); }
+  .log-row .text { color: var(--ink); word-break: break-word; }
+  .log-row.refusal, .log-row.refusal .text, .log-row.refusal .route { color: var(--dim); }
+  .outcome { color: var(--idle); }
+  .outcome.bad { color: var(--warn); }
+  .reply { color: var(--accent); }
+
+  footer { margin-top: 26px; font-size: 12px; color: var(--dim); display: flex; gap: 14px; }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand"><span id="brand-mark"></span><span>herdr<span class="plus">+</span></span></div>
+    <div class="head-meta">
+      <span id="coord-pill" class="pill s-offline">coordinator …</span>
+      <span id="generated" class="mono"></span>
+    </div>
+    <div class="head-right">
+      <span id="watch-line" class="muted mono"></span>
+      <span id="flags"></span>
+      <span id="notes" class="note"></span>
+    </div>
+  </header>
+  <div id="banners"></div>
+
+  <div class="cols">
+    <div class="col">
+      <section id="summary-section">
+        <h2>Coordinator summary</h2>
+        <div class="panel" id="summary"></div>
+      </section>
+      <section id="groups-section">
+        <h2>Agents</h2>
+        <div id="groups"></div>
+      </section>
+      <section id="messages-section">
+        <h2>Message log</h2>
+        <div class="panel"><div class="log" id="messages"></div></div>
+      </section>
+    </div>
+    <aside class="col">
+      <section>
+        <h2>Suggestions</h2>
+        <div class="panel" id="suggestions"></div>
+      </section>
+      <section>
+        <h2>Projects</h2>
+        <div class="panel" id="projects"></div>
+      </section>
+      <section>
+        <h2>Open threads</h2>
+        <div class="panel" id="threads"></div>
+      </section>
+      <section>
+        <h2>Offline managed agents</h2>
+        <div class="panel" id="offline"></div>
+      </section>
+      <div id="unmanaged" class="muted"></div>
+    </aside>
+  </div>
+
+  <footer>
+    <a href="/memory">memory index</a>
+    <a href="/wakeups">wake-up log</a>
+    <span>read-only · refreshes every 2 s</span>
+  </footer>
+</div>
+
+<script>
+"use strict";
+// Everything below renders data with textContent only; never build HTML from data.
+
+const LIVE_MS = 2000;
+const BOARD_MS = 5000;
+const STALE_S = 15;
+const CAP_HOUR_DEFAULT = 12;
+const MESSAGE_ROWS = 30;
+const TEXT_CUT = 160;
+
+const state = {
+  live: null, liveRaw: "", liveError: "", liveMissing: false, liveAt: 0,
+  board: null, boardRaw: "", boardError: "",
+  bodyKey: "",
+};
+
+// ----- tolerant accessors ---------------------------------------------------
+const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const obj = (v) => (isObj(v) ? v : {});
+const arr = (v) => (Array.isArray(v) ? v : []);
+const str = (v) => (typeof v === "string" ? v : typeof v === "number" && isFinite(v) ? String(v) : "");
+const num = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
+const nowS = () => Math.floor(Date.now() / 1000);
+
+function cut(text, max) {
+  const t = str(text).replace(/\s+/g, " ").trim();
+  return t.length > max ? t.slice(0, max - 1) + "…" : t;
+}
+function hhmm(unix) {
+  if (!num(unix)) return "";
+  const d = new Date(num(unix) * 1000);
+  return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+function hhmmss(unix) {
+  if (!num(unix)) return "";
+  const d = new Date(num(unix) * 1000);
+  return hhmm(unix) + ":" + String(d.getSeconds()).padStart(2, "0");
+}
+function age(unix) {
+  if (!num(unix)) return "";
+  const s = Math.max(0, nowS() - num(unix));
+  if (s < 60) return "<1m";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h";
+  return Math.floor(s / 86400) + "d";
+}
+function basename(path) {
+  const p = str(path).replace(/\/+$/, "");
+  return p.slice(p.lastIndexOf("/") + 1) || p;
+}
+const STATUSES = ["idle", "working", "blocked", "done", "suspended", "unknown"];
+const statusClass = (s) => "s-" + (STATUSES.includes(s) ? s : "unknown");
+
+// ----- DOM helpers (textContent only) ---------------------------------------
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null && text !== "") node.textContent = String(text);
+  return node;
+}
+function add(parent, ...children) {
+  for (const child of children) if (child) parent.appendChild(child);
+  return parent;
+}
+function icon(name, cls) {
+  const img = el("img", cls);
+  img.alt = "";
+  img.src = "/icons/" + name + ".png";
+  img.addEventListener("error", () => img.remove());
+  return img;
+}
+function pill(status, label) {
+  return el("span", "pill " + statusClass(status), label || status || "unknown");
+}
+function empty(text) {
+  return el("div", "empty", text);
+}
+// A sentence with `code` spans, e.g. "is `herdr plus run` running?".
+function withCode(parent, text) {
+  str(text).split("`").forEach((part, i) => {
+    if (part) parent.appendChild(i % 2 ? el("code", "", part) : document.createTextNode(part));
+  });
+  return parent;
+}
+
+// ----- header (every tick: staleness moves with the clock) -------------------
+function renderHeader() {
+  const live = obj(state.live);
+  const watch = obj(live.watch);
+  const agents = arr(live.agents);
+  const coord = agents.find((a) => obj(a).coordinator === true);
+
+  const coordPill = document.getElementById("coord-pill");
+  const coordStatus = coord ? str(coord.status) || "unknown" : state.live ? "offline" : "unknown";
+  coordPill.className = "pill " + (coord ? statusClass(coordStatus) : "s-offline");
+  coordPill.textContent = "coordinator " + coordStatus;
+
+  const generated = num(live.generated_unix);
+  document.getElementById("generated").textContent = generated ? "live " + hhmmss(generated) : "";
+
+  const capHour = num(watch.cap_hour) || CAP_HOUR_DEFAULT;
+  const parts = [];
+  if (num(watch.wake_seq)) parts.push("wake #" + num(watch.wake_seq));
+  parts.push(num(watch.pending) + " pending");
+  parts.push(num(watch.wakes_last_hour) + "/" + capHour + " this hour");
+  if (num(watch.last_wake_unix)) parts.push("last " + age(watch.last_wake_unix) + " ago");
+  document.getElementById("watch-line").textContent = state.live ? parts.join(" · ") : "";
+
+  const flags = document.getElementById("flags");
+  flags.replaceChildren();
+  if (watch.capped === true) add(flags, el("span", "flag hot", "capped"));
+  if (watch.turn_live === true) add(flags, el("span", "flag", "turn live"));
+
+  const notes = [];
+  if (state.liveError) notes.push("live.json: " + state.liveError);
+  if (state.boardError) notes.push("board.json: " + state.boardError);
+  document.getElementById("notes").textContent = notes.join(" · ");
+
+  const banners = document.getElementById("banners");
+  banners.replaceChildren();
+  if (!state.live) {
+    const text = state.liveMissing
+      ? "no live data yet — is `herdr plus run` running?"
+      : "waiting for live data — is `herdr plus run` running?";
+    add(banners, withCode(el("div", "banner amber"), text));
+  } else if (generated && nowS() - generated > STALE_S) {
+    add(banners, withCode(el("div", "banner red"),
+      "live data stale since " + hhmm(generated) + " — is `herdr plus run` running?"));
+  }
+  if (watch.coordinator_down === true) {
+    add(banners, withCode(el("div", "banner red"),
+      "coordinator down — herdr+ stopped relaunching it. Start it with `herdr plus coordinator start`."));
+  }
+}
+
+// ----- body (only when the data changed, so text stays selectable) -----------
+function renderSummary(board) {
+  const box = document.getElementById("summary");
+  box.replaceChildren();
+  const summary = str(board.summary);
+  if (summary) {
+    add(box, el("div", "summary-text", summary));
+  } else {
+    add(box, empty("No summary yet. The coordinator writes it to dashboard/board.json."));
+  }
+  if (num(board.updated_unix)) {
+    add(box, el("div", "summary-meta", "updated " + age(board.updated_unix) + " ago · " + hhmm(board.updated_unix)));
+  }
+}
+
+function renderSuggestions(board) {
+  const box = document.getElementById("suggestions");
+  box.replaceChildren();
+  const items = arr(board.suggestions).filter((s) => str(obj(s).text) || str(s));
+  if (!items.length) return add(box, empty("No suggestions."));
+  const list = el("ul", "plain");
+  for (const item of items) {
+    const li = el("li", "suggestion", str(obj(item).text) || str(item));
+    const why = str(obj(item).why);
+    if (why) add(li, el("span", "why", why));
+    add(list, li);
+  }
+  add(box, list);
+}
+
+function agentCard(agent, board) {
+  const a = obj(agent);
+  const status = str(a.status) || "unknown";
+  const card = el("article", "card" + (a.coordinator === true ? " coord" : "") + (status === "blocked" ? " blocked" : ""));
+
+  const top = el("div", "card-top");
+  add(top, icon(a.coordinator === true ? "coordinator" : "agent", "mark"));
+  const who = el("div", "who");
+  const name = el("div", "name", str(a.name) || str(a.pane_id));
+  if (a.coordinator === true && str(a.name) !== "coordinator") add(name, el("span", "tag", "coordinator"));
+  const roleProject = [str(a.role), str(a.project)].filter(Boolean).join("/");
+  add(who, name, el("div", "sub", [str(a.agent) || "agent", roleProject].filter(Boolean).join(" · ")));
+  add(top, who, pill(status));
+  add(card, top);
+
+  const meta = el("div", "meta");
+  add(meta, el("span", "mono", str(a.pane_id)));
+  if (num(a.last_change_unix)) add(meta, el("span", "", status + " " + age(a.last_change_unix)));
+  if (str(a.cwd)) {
+    const cwd = el("span", "", basename(a.cwd));
+    cwd.title = str(a.cwd);
+    add(meta, cwd);
+  }
+  if (num(a.subagents)) add(meta, el("span", "", num(a.subagents) + " subagent" + (num(a.subagents) === 1 ? "" : "s")));
+  if (str(a.session)) {
+    const session = el("span", "mono", str(a.session).slice(0, 8));
+    session.title = str(a.session);
+    add(meta, session);
+  }
+  add(card, meta);
+
+  if (str(a.note)) add(card, el("div", "agent-note", str(a.note)));
+  const notes = obj(board.agent_notes);
+  const boardNote = str(notes[str(a.session)]) || str(notes[str(a.pane_id)]);
+  if (boardNote) add(card, el("div", "board-note", boardNote));
+  return card;
+}
+
+function renderGroups(live, board) {
+  const box = document.getElementById("groups");
+  box.replaceChildren();
+  if (!state.live) return add(box, el("div", "panel empty", "Waiting for live data."));
+  const agents = arr(live.agents).filter((a) => obj(a).managed !== false);
+  if (!agents.length) {
+    const blank = el("div", "panel empty-state");
+    add(blank, icon("empty"), el("div", "", "No managed agents yet."));
+    add(blank, withCode(el("div", "empty"),
+      "Ask the coordinator to open one, or opt a pane in with `herdr plus manage <pane>`."));
+    return add(box, blank);
+  }
+  const groups = arr(live.groups).map(obj);
+  const order = groups.map((g) => str(g.workspace_id));
+  const byGroup = new Map();
+  for (const agent of agents) {
+    const key = str(obj(agent).workspace_id);
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push(agent);
+  }
+  const keys = [...byGroup.keys()].sort((x, y) => {
+    const ix = order.indexOf(x), iy = order.indexOf(y);
+    return (ix < 0 ? 1e9 : ix) - (iy < 0 ? 1e9 : iy);
+  });
+  for (const key of keys) {
+    const info = groups.find((g) => str(g.workspace_id) === key) || {};
+    const members = byGroup.get(key);
+    const group = el("div", "group");
+    const head = el("div", "group-head");
+    add(head, el("span", "group-name", str(info.label) || str(obj(members[0]).group) || key || "ungrouped"));
+    if (key) add(head, el("span", "mono dim", key));
+    const tabs = num(info.tab_count);
+    add(head, el("span", "muted", members.length + " managed" + (tabs ? " · " + tabs + " tab" + (tabs === 1 ? "" : "s") : "")));
+    const cards = el("div", "cards");
+    for (const agent of members) add(cards, agentCard(agent, board));
+    add(group, head, cards);
+    add(box, group);
+  }
+}
+
+function renderProjects(board) {
+  const box = document.getElementById("projects");
+  box.replaceChildren();
+  const rows = arr(board.projects).map(obj).filter((p) => str(p.name));
+  if (!rows.length) return add(box, empty("No projects recorded."));
+  const table = el("table");
+  const head = el("tr");
+  for (const h of ["Project", "Owner", "Status", "Next"]) add(head, el("th", "", h));
+  add(table, head);
+  for (const p of rows) {
+    const tr = el("tr");
+    add(tr, el("td", "", str(p.name)), el("td", "muted", str(p.owner)),
+        el("td", "", str(p.status)), el("td", "muted", str(p.next)));
+    add(table, tr);
+  }
+  add(box, table);
+}
+
+function renderThreads(board) {
+  const box = document.getElementById("threads");
+  box.replaceChildren();
+  const rows = arr(board.threads).filter((t) => str(obj(t).text) || str(t));
+  if (!rows.length) return add(box, empty("Nothing open."));
+  const list = el("ul", "plain");
+  for (const t of rows) {
+    const li = el("li", "", str(obj(t).text) || str(t));
+    const bits = [];
+    if (str(obj(t).waiting_on)) bits.push("waiting on " + str(obj(t).waiting_on));
+    if (str(obj(t).since)) bits.push("since " + str(obj(t).since));
+    if (bits.length) add(li, el("span", "why", bits.join(" · ")));
+    add(list, li);
+  }
+  add(box, list);
+}
+
+function renderOffline(live) {
+  const box = document.getElementById("offline");
+  box.replaceChildren();
+  const rows = arr(live.offline).map(obj);
+  if (!rows.length) return add(box, empty("None."));
+  const list = el("ul", "plain");
+  for (const o of rows) {
+    const li = el("li", "dim");
+    const roleProject = [str(o.role), str(o.project)].filter(Boolean).join("/") || "managed agent";
+    add(li, el("span", "", roleProject));
+    const bits = [str(o.agent), str(o.pane_id) ? "was " + str(o.pane_id) : ""].filter(Boolean);
+    if (bits.length) add(li, document.createTextNode(" · " + bits.join(" · ")));
+    if (str(o.session)) {
+      const s = el("span", "mono", " · " + str(o.session).slice(0, 8));
+      s.title = str(o.session);
+      add(li, s);
+    }
+    add(list, li);
+  }
+  add(box, list);
+}
+
+function renderUnmanaged(live) {
+  const n = num(live.unmanaged_count);
+  document.getElementById("unmanaged").textContent =
+    n + " unmanaged tab" + (n === 1 ? "" : "s") + ", invisible to herdr+";
+}
+
+function renderMessages(live) {
+  const box = document.getElementById("messages");
+  box.replaceChildren();
+  const rows = arr(live.messages).map(obj).slice(-MESSAGE_ROWS).reverse();
+  if (!rows.length) return add(box, empty("No agent messages yet."));
+  for (const m of rows) {
+    const refusal = str(m.kind) === "refusal";
+    const row = el("div", "log-row" + (refusal ? " refusal" : ""));
+    add(row, el("span", "when", hhmm(m.unix)));
+    const body = el("div");
+    const from = str(m.from_name) || str(m.from_pane) || "outside";
+    const to = str(m.to_name) || str(m.to_pane) || "?";
+    add(body, el("span", "route", from + " → " + to + " "));
+    const outcome = str(m.outcome) || "?";
+    add(body, el("span", "outcome" + (outcome === "sent" ? "" : " bad"), "[" + outcome + "] "));
+    if (str(m.reply_to)) add(body, el("span", "reply", "↩ " + str(m.reply_to) + " "));
+    add(body, el("span", "text", cut(m.text, TEXT_CUT)));
+    const tip = [str(m.id), str(m.from_pane) + " → " + str(m.to_pane)].filter(Boolean).join("  ");
+    row.title = tip;
+    add(row, body);
+    add(box, row);
+  }
+}
+
+function renderBody() {
+  const live = obj(state.live);
+  const board = obj(state.board);
+  // Ages are shown in minutes, so a minute bucket is enough to keep them fresh.
+  const liveKey = state.live ? JSON.stringify(Object.assign({}, live, { generated_unix: 0 })) : "";
+  const key = liveKey + "\u0000" + state.boardRaw + "\u0000" + Math.floor(nowS() / 30);
+  if (key === state.bodyKey) return;
+  state.bodyKey = key;
+  renderSummary(board);
+  renderSuggestions(board);
+  renderGroups(live, board);
+  renderProjects(board);
+  renderThreads(board);
+  renderOffline(live);
+  renderUnmanaged(live);
+  renderMessages(live);
+}
+
+function render() {
+  try {
+    renderHeader();
+    renderBody();
+  } catch (err) {
+    // A coordinator edit broke rendering; say so instead of going blank.
+    document.getElementById("notes").textContent = "render error: " + String(err && err.message || err);
+  }
+}
+
+// ----- polling (keeps the last good data on any failure) ---------------------
+async function fetchJson(url) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (response.status === 404) return { missing: true };
+  if (!response.ok) throw new Error("HTTP " + response.status);
+  const raw = await response.text();
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (_) {
+    throw new Error("parse error, showing last good data");
+  }
+  if (!isObj(data)) throw new Error("not an object, showing last good data");
+  return { raw, data };
+}
+
+async function pollLive() {
+  try {
+    const got = await fetchJson("/live.json");
+    if (got.missing) {
+      state.liveMissing = true;
+      state.liveError = state.live ? "missing, showing last good data" : "";
+    } else {
+      state.live = got.data;
+      state.liveRaw = got.raw;
+      state.liveMissing = false;
+      state.liveError = "";
+      state.liveAt = nowS();
+    }
+  } catch (err) {
+    state.liveError = err && err.message ? err.message : "fetch failed";
+  }
+  render();
+  setTimeout(pollLive, LIVE_MS);
+}
+
+async function pollBoard() {
+  try {
+    const got = await fetchJson("/board.json");
+    if (got.missing) {
+      state.boardError = "";
+    } else {
+      state.board = got.data;
+      state.boardRaw = got.raw;
+      state.boardError = "";
+    }
+  } catch (err) {
+    state.boardError = err && err.message ? err.message : "fetch failed";
+  }
+  render();
+  setTimeout(pollBoard, BOARD_MS);
+}
+
+document.getElementById("brand-mark").replaceWith(icon("favicon"));
+render();
+pollLive();
+pollBoard();
+</script>
+</body>
+</html>

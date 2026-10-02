@@ -103,6 +103,24 @@ src/integration/assets/browser/package.json
 src/integration/assets/browser/smoke.mjs
 src/integration/browser_assets.rs
 src/persist/browser.rs
+src/cli/plus.rs
+src/plus/api.rs
+src/plus/assets/coordinator.md
+src/plus/assets/dashboard.html
+src/plus/assets/icons/agent.png
+src/plus/assets/icons/coordinator.png
+src/plus/assets/icons/empty.png
+src/plus/assets/icons/favicon.png
+src/plus/launch.rs
+src/plus/live.rs
+src/plus/lock.rs
+src/plus/mcp.rs
+src/plus/messages.rs
+src/plus/mod.rs
+src/plus/registry.rs
+src/plus/serve.rs
+src/plus/turn.rs
+src/plus/watch.rs
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
 | struct | field | default |

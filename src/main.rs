@@ -40,6 +40,7 @@ mod persist;
 mod platform;
 mod plugin_command;
 mod plugin_paths;
+mod plus;
 mod popup_size;
 mod product_announcements;
 mod protocol;
