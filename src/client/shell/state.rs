@@ -19,6 +19,9 @@ pub(crate) struct ClientShellConfig {
     pub(super) sidebar_start_collapsed: bool,
     pub(super) sidebar_collapsed_mode: SidebarCollapsedModeConfig,
     pub(super) sidebar_layout: crate::config::SidebarLayoutConfig,
+    /// Fork: `ui.info_pane_width`, the info dock's width until one is
+    /// dragged or stepped.
+    pub(super) info_pane_width: u16,
     pub(super) tab_agent_glyphs: std::collections::BTreeMap<String, String>,
     pub(super) tab_agent_glyph_colors:
         std::collections::BTreeMap<String, Option<ratatui::style::Color>>,
@@ -76,6 +79,9 @@ pub(super) struct ClientShellLayout {
     pub tab_bar: Rect,
     pub mobile_header: Rect,
     pub pane_surface: Rect,
+    /// Fork: the focused tab's info dock, carved from the right of the pane
+    /// surface (empty while closed or when it does not fit).
+    pub info_dock: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +132,8 @@ pub(super) struct ShellHitMap {
     pub(super) browser_row: Rect,
     /// Fork: the `tabs` layout's pinned coordinator row, the bottom-most.
     pub(super) coordinator_row: Rect,
+    /// Fork: the info dock (`info_dock.rs`).
+    pub(super) info_dock: super::info_dock::InfoDockHits,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
@@ -301,6 +309,8 @@ pub(super) enum ClientChromeDrag {
         last_sent_offset: Option<usize>,
         last_sent_at: Option<std::time::Instant>,
     },
+    /// Fork: the info dock's divider.
+    InfoDockWidth,
 }
 
 pub(super) struct WorkspaceHit {
@@ -727,6 +737,8 @@ pub(super) enum ClientContextMenuAction {
     SetTeamRole,
     LeaveTeam,
     JoinTeam,
+    /// Fork: tab and pane menus: open or close the tab's info dock.
+    ToggleInfoPane,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -923,6 +935,18 @@ pub(super) enum PendingEndpointKind {
     Coordinator(super::coordinator::CoordinatorRequestKind),
     /// Fork: a `team.*` request (`teams.rs`).
     Team(super::teams::TeamRequestKind),
+    /// Fork: the info dock's `notes.get`.
+    InfoNotesGet,
+    /// Fork: the info dock's `notes.set` (a save or a task tick).
+    InfoNotesWrite,
+    /// Fork: the info dock's `checkpoints.list`.
+    InfoCheckpointsList,
+    /// Fork: the info dock's `checkpoints.add` / `checkpoints.remove`.
+    InfoCheckpointWrite,
+    /// Fork: the info dock's `checkpoints.context`.
+    InfoCheckpointContext {
+        id: String,
+    },
     PrepareWorktreeCreate {
         workspace_id: String,
     },
@@ -1052,6 +1076,8 @@ pub(super) struct ClientInputContext {
     pub(super) popup_terminal_id: Option<String>,
     pub(super) popup_pending: bool,
     pub(super) retained_selection: bool,
+    /// Fork: the info dock has the keyboard.
+    pub(super) info_dock_focused: bool,
 }
 
 type ClientInputLeases = crate::input::InputLeaseTable<u8, ClientInputContext, ClientInputTarget>;
@@ -1254,6 +1280,12 @@ pub(crate) struct ClientShellState {
     /// Fork: each endpoint's teams as its last `endpoint.teams.v1` push
     /// listed them (`teams.rs`).
     pub(super) teams: HashMap<ClientEndpointId, super::teams::ClientTeamsState>,
+    /// Fork: the info dock; `None` until the first toggle (lazy).
+    pub(super) info_dock: Option<Box<super::info_dock::ClientInfoDockState>>,
+    /// Fork: the info dock's width (`ui.info_pane_width` until dragged).
+    pub(super) info_dock_width: u16,
+    /// Fork: the width was dragged or stepped; only then it is remembered.
+    pub(super) info_dock_width_manual: bool,
     /// Tabs with a scheduled reminder, keyed like `idle_reminders`.
     pub(super) scheduled_reminders:
         HashMap<(ClientEndpointId, String), super::idle_reminders::ClientScheduledReminder>,
@@ -1335,6 +1367,11 @@ impl ClientShellState {
             .filter(|split| split.is_finite())
             .map(|split| split.clamp(0.1, 0.9))
             .unwrap_or(0.5);
+        let info_dock_width = preferences
+            .info_dock_width
+            .unwrap_or(config.info_pane_width)
+            .max(super::info_dock::DOCK_MIN);
+        let info_dock_width_manual = preferences.info_dock_width.is_some();
         if let Some(sort) = preferences.agent_panel_sort {
             config.agent_panel_sort = sort;
         }
@@ -1441,6 +1478,9 @@ impl ClientShellState {
             browser: super::browser::ClientBrowserState::default(),
             coordinator: super::coordinator::ClientCoordinatorState::default(),
             teams: HashMap::new(),
+            info_dock: None,
+            info_dock_width,
+            info_dock_width_manual,
             reminder_epochs: HashMap::new(),
             reminder_local_time: None,
             reminder_daily_minutes: None,
@@ -1555,6 +1595,7 @@ impl ClientShellState {
             self.sidebar_collapsed,
             self.focused_tab_count(),
             self.sidebar_width,
+            self.info_dock_width_for_focused_tab(),
         )
     }
 
@@ -1917,6 +1958,7 @@ impl ClientShellState {
                 Some(_) => {}
             }
         }
+        self.prune_info_dock_tabs(&snapshot);
         self.snapshot = Some(snapshot);
         self.refresh_suspended_pane_ids();
         self.reconcile_pending_workspace_highlight();
@@ -2221,6 +2263,7 @@ impl ClientShellState {
             .chain(self.next_breathe_deadline())
             .chain(self.next_browser_deadline(now))
             .chain(self.next_browser_settings_deadline())
+            .chain(self.next_info_dock_deadline(now))
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)

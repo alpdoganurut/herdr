@@ -10,6 +10,9 @@ impl ClientShellState {
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::Detach) => {
                 outcome.detach = true;
             }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleInfoPane) => {
+                self.toggle_info_pane_for_focused_tab(outcome);
+            }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleSidebar) => {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
                 self.sidebar_collapsed_manual = true;
@@ -537,6 +540,10 @@ impl ClientShellState {
         if let PendingEndpointKind::PaneLinkResolve { target } = pending.kind {
             return self.complete_link_hover(target, result);
         }
+        // Fork: info dock replies show in the dock, never as a notice.
+        if pending.kind.is_info_dock() {
+            return self.handle_info_dock_endpoint_result(pending, result);
+        }
         if result.is_ok() {
             let timeout_key = ClientEndpointNoticeKey {
                 boot_id: boot_id.to_owned(),
@@ -590,6 +597,13 @@ impl ClientShellState {
         match pending.kind {
             PendingEndpointKind::Generic => {}
             PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),
+            PendingEndpointKind::InfoNotesGet
+            | PendingEndpointKind::InfoNotesWrite
+            | PendingEndpointKind::InfoCheckpointsList
+            | PendingEndpointKind::InfoCheckpointWrite
+            | PendingEndpointKind::InfoCheckpointContext { .. } => {
+                unreachable!("handled above")
+            }
             PendingEndpointKind::ProductAnnouncementDismiss { version, id } => {
                 return match result {
                     Ok(_) => (false, Vec::new()),

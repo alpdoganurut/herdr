@@ -1027,6 +1027,10 @@ impl ClientShellState {
                     self.set_sidebar_width_from_column(mouse.column, outcome);
                     return;
                 }
+                Some(ClientChromeDrag::InfoDockWidth) => {
+                    self.info_dock_drag(mouse.column, outcome);
+                    return;
+                }
                 Some(ClientChromeDrag::SidebarSection) => {
                     self.set_sidebar_section_from_row(mouse.row, outcome);
                     return;
@@ -1409,6 +1413,7 @@ impl ClientShellState {
                     ClientChromeDrag::SidebarWidth | ClientChromeDrag::SidebarSection => {
                         self.persist_chrome_preferences(outcome);
                     }
+                    ClientChromeDrag::InfoDockWidth => self.info_dock_release(outcome),
                     ClientChromeDrag::WorkspaceScrollbar { .. }
                     | ClientChromeDrag::AgentScrollbar { .. }
                     | ClientChromeDrag::HelpScrollbar { .. }
@@ -2000,6 +2005,12 @@ impl ClientShellState {
                     outcome.repaint = true;
                 }
             }
+            // Fork: the wheel over the info dock scrolls its view.
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if super::contains(self.hits.info_dock.area, point) =>
+            {
+                self.info_dock_wheel(point, mouse.kind == MouseEventKind::ScrollDown, outcome);
+            }
             MouseEventKind::ScrollUp
                 if self
                     .hits
@@ -2075,6 +2086,11 @@ impl ClientShellState {
                 self.workspace_press = None;
                 self.tab_press = None;
                 self.chrome_drag = None;
+                // Fork: the info dock, before any pane hit, so a dock press
+                // never starts a pane gesture or a selection.
+                if self.info_dock_press(point, outcome) {
+                    return;
+                }
                 if super::contains(self.hits.sidebar_divider, point)
                     && !super::contains(self.hits.sidebar_toggle, point)
                 {
@@ -2417,6 +2433,7 @@ impl ClientShellState {
                     .find(|hit| super::contains(hit.rect, point))
                     .cloned();
                 if let Some(hit) = pane_hit {
+                    self.info_dock_pane_pressed(outcome);
                     let locked = self.suspended_pane_locked(&hit.pane_id);
                     if locked {
                         // A suspended pane takes no input and shows no shell: no

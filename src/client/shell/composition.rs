@@ -279,6 +279,29 @@ impl ClientShellState {
                 },
             },
         );
+        // Fork: the info dock, into the chrome buffer; the pane surface blit
+        // is clipped to `layout.pane_surface`, which excludes the dock.
+        if !layout.info_dock.is_empty() {
+            let agent = self.info_dock_agent_label();
+            let tab_label = snapshot
+                .focused_tab_id
+                .as_deref()
+                .and_then(|tab_id| snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id))
+                .map_or("", |tab| tab.label.as_str());
+            let dragging = matches!(self.chrome_drag, Some(ClientChromeDrag::InfoDockWidth));
+            if let Some(dock) = self.info_dock.as_deref_mut() {
+                dock.dragging = dragging;
+                self.hits.info_dock = dock.compose(
+                    &mut buffer,
+                    layout.info_dock,
+                    &super::info_dock::DockComposeInput {
+                        tab_label,
+                        agent: &agent,
+                        sized_elsewhere: surface.frame.width != layout.pane_surface.width,
+                    },
+                );
+            }
+        }
         self.hits.panes = surface
             .panes
             .iter()
@@ -388,6 +411,10 @@ impl ClientShellState {
             frame.cells[start..start + usize::from(bar.width)].to_vec()
         });
         blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        if self.info_dock_focused() {
+            // Fork: the keyboard is in the info dock, not the pane.
+            frame.cursor = None;
+        }
         let suspended_cards = self.paint_suspended_panes(&mut frame, snapshot);
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();

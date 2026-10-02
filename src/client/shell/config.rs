@@ -61,6 +61,7 @@ impl ClientShellState {
                 .then_some(self.config.agent_panel_sort),
             collapsed_groups,
             remote_collapsed_groups,
+            info_dock_width: self.info_dock_width_manual.then_some(self.info_dock_width),
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);
@@ -85,6 +86,9 @@ impl ClientShellState {
                 }
                 if !self.sidebar_width_manual {
                     self.sidebar_width = self.config.sidebar_width;
+                }
+                if !self.info_dock_width_manual {
+                    self.info_dock_width = self.config.info_pane_width;
                 }
                 self.rebalance_notification_cards(std::time::Instant::now());
                 if self.agent_panel_sort_manual {
@@ -120,6 +124,7 @@ impl ClientShellConfig {
             sidebar_start_collapsed: config.ui.sidebar_start_collapsed,
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_layout: config.ui.sidebar_layout,
+            info_pane_width: config.ui.effective_info_pane_width(),
             tab_agent_glyphs: config.ui.tab_agent_glyphs.clone(),
             tab_agent_glyph_colors: crate::config::resolve_tab_agent_glyph_colors(
                 &config.ui.tab_agent_glyph_colors,
@@ -334,6 +339,7 @@ impl ClientShellConfig {
                 self.sidebar_max_width = ui.sidebar_max_width;
                 self.sidebar_collapsed_mode = ui.sidebar_collapsed_mode;
                 self.sidebar_layout = ui.sidebar_layout;
+                self.info_pane_width = ui.effective_info_pane_width();
                 self.tab_agent_glyphs = ui.tab_agent_glyphs.clone();
                 diagnostics.extend(crate::config::tab_agent_glyph_color_diagnostics(
                     &ui.tab_agent_glyph_colors,
@@ -390,6 +396,7 @@ impl ClientShellConfig {
         sidebar_collapsed: bool,
         tab_count: usize,
         sidebar_width: u16,
+        info_dock_width: Option<u16>,
     ) -> ClientShellLayout {
         if cols <= self.mobile_width_threshold {
             let header_height = rows.min(2);
@@ -398,6 +405,7 @@ impl ClientShellConfig {
                 tab_bar: Rect::default(),
                 mobile_header: Rect::new(0, 0, cols, header_height),
                 pane_surface: Rect::new(0, header_height, cols, rows.saturating_sub(header_height)),
+                info_dock: Rect::default(),
             };
         }
 
@@ -422,7 +430,7 @@ impl ClientShellConfig {
             && self.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs
             && !(self.hide_tab_bar_when_single_tab && tab_count == 1);
         let tab_height = u16::from(show_tab_bar);
-        let (tab_bar, pane_surface) = match self.tab_bar_position {
+        let (tab_bar, mut pane_surface) = match self.tab_bar_position {
             TabBarPositionConfig::Top => (
                 Rect::new(main.x, 0, main.width, tab_height),
                 Rect::new(
@@ -443,11 +451,34 @@ impl ClientShellConfig {
             ),
         };
 
+        // Fork: the info dock is carved from the right of the pane surface,
+        // and only when both it and the terminal keep their minimum width.
+        let info_dock = match info_dock_width {
+            Some(width)
+                if pane_surface.width
+                    >= super::info_dock::DOCK_MIN + super::info_dock::TERM_MIN =>
+            {
+                let max = (cols.saturating_mul(7) / 10)
+                    .min(pane_surface.width - super::info_dock::TERM_MIN)
+                    .max(super::info_dock::DOCK_MIN);
+                let width = width.clamp(super::info_dock::DOCK_MIN, max);
+                pane_surface.width -= width;
+                Rect::new(
+                    pane_surface.right(),
+                    pane_surface.y,
+                    width,
+                    pane_surface.height,
+                )
+            }
+            _ => Rect::default(),
+        };
+
         ClientShellLayout {
             sidebar: Rect::new(0, 0, sidebar_width, rows),
             tab_bar,
             mobile_header: Rect::default(),
             pane_surface,
+            info_dock,
         }
     }
 
@@ -465,7 +496,7 @@ impl ClientShellConfig {
             .unwrap_or(self.sidebar_width)
             .clamp(min_width, max_width);
         let surface = self
-            .layout(cols, rows, sidebar_collapsed, 0, sidebar_width)
+            .layout(cols, rows, sidebar_collapsed, 0, sidebar_width, None)
             .pane_surface;
         ClientSurfaceSize {
             cols: surface.width.max(1),

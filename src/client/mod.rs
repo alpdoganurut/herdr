@@ -2170,6 +2170,7 @@ async fn run_client_loop(
                         shell.tick_coordinator(now, &mut outcome);
                         shell.tick_teams(now, &mut outcome);
                         shell.tick_browser(now, &mut outcome);
+                        shell.tick_info_dock(now, &mut outcome);
                         outcome.repaint |= notification_repaint
                             | shell.tick_copy_feedback(now)
                             | shell.tick_workspace_highlight(now)

@@ -197,6 +197,11 @@ impl ClientShellState {
                     } else if !self.popup_pending {
                         if self.insert_overlay_text(&text) {
                             outcome.repaint = true;
+                        } else if self.overlay.is_none() && self.info_dock_focused() {
+                            // Fork: the dock has the keyboard; text never
+                            // reaches the pane.
+                            self.info_dock_insert_text(&text);
+                            outcome.repaint = true;
                         } else if self.overlay.is_none() && self.mode == ClientShellMode::Terminal {
                             self.push_focused_pane_event(
                                 ClientPaneInputEvent::TextCommit(text),
@@ -229,6 +234,11 @@ impl ClientShellState {
                         );
                     } else if !self.popup_pending {
                         if self.insert_overlay_text(&text) {
+                            outcome.repaint = true;
+                        } else if self.overlay.is_none() && self.info_dock_focused() {
+                            // Fork: the dock has the keyboard; a paste never
+                            // reaches the pane.
+                            self.info_dock_insert_text(&text);
                             outcome.repaint = true;
                         } else if self.overlay.is_none() && self.mode == ClientShellMode::Terminal {
                             self.push_focused_pane_event(
@@ -572,6 +582,11 @@ impl ClientShellState {
                 if crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
                     self.mode = ClientShellMode::Prefix;
                     outcome.repaint = true;
+                    return None;
+                }
+                // Fork: the info dock has the keyboard.
+                if self.info_dock_focused() {
+                    self.handle_info_dock_key(key, outcome);
                     return None;
                 }
                 self.focused_pane_id().map(ClientInputTarget::Pane)
@@ -965,6 +980,7 @@ impl ClientShellState {
                 .selection
                 .as_ref()
                 .is_some_and(crate::selection::Selection::is_visible),
+            info_dock_focused: self.info_dock_focused(),
         }
     }
 

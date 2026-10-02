@@ -260,6 +260,7 @@ mod endpoint_requests;
 mod endpoints;
 mod graphics;
 mod idle_reminders;
+mod info_dock;
 #[path = "input.rs"]
 mod input_domain;
 mod keybindings_settings;

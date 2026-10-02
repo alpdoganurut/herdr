@@ -177,6 +177,8 @@ impl ClientContextMenuOverlay {
                     ),
                     item("Close pane", Action::ClosePane),
                 ]);
+                // Fork: the pane's tab's info dock.
+                items.push(item("Info pane", Action::ToggleInfoPane));
                 items
             }
         }
@@ -349,6 +351,25 @@ impl ClientShellState {
                 ClientContextMenuTarget::Tab { tab_id, remind, .. },
             ) => {
                 self.pick_tab_remind_option(tab_id.clone(), *remind, outcome);
+                outcome.repaint = true;
+                return;
+            }
+            // Fork: the pane menu's info dock item acts on the pane's tab
+            // without focusing it (a background tab is opened in state only).
+            (
+                ClientContextMenuAction::ToggleInfoPane,
+                ClientContextMenuTarget::Pane { pane_id, .. },
+            ) => {
+                let tab_id = self.snapshot.as_deref().and_then(|snapshot| {
+                    snapshot
+                        .panes
+                        .iter()
+                        .find(|pane| &pane.pane_id == pane_id)
+                        .map(|pane| pane.tab_id.clone())
+                });
+                if let Some(tab_id) = tab_id {
+                    self.toggle_info_pane(tab_id, outcome);
+                }
                 outcome.repaint = true;
                 return;
             }

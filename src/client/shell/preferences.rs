@@ -28,6 +28,9 @@ pub(super) struct ClientChromePreferences {
     pub(super) collapsed_groups: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) remote_collapsed_groups: Vec<ClientRemoteCollapsedGroups>,
+    /// Fork: the info dock's width, once dragged or stepped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) info_dock_width: Option<u16>,
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {

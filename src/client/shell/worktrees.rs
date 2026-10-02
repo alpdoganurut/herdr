@@ -555,6 +555,11 @@ impl ClientShellState {
                 | PendingEndpointKind::AgentsFix
                 | PendingEndpointKind::Coordinator(_)
                 | PendingEndpointKind::Team(_)
+                | PendingEndpointKind::InfoNotesGet
+                | PendingEndpointKind::InfoNotesWrite
+                | PendingEndpointKind::InfoCheckpointsList
+                | PendingEndpointKind::InfoCheckpointWrite
+                | PendingEndpointKind::InfoCheckpointContext { .. }
                 | PendingEndpointKind::SelectionCopy
                 | PendingEndpointKind::PaneScroll { .. }
                 | PendingEndpointKind::WordSelection { .. }
