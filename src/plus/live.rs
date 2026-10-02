@@ -83,6 +83,10 @@ pub struct WatchSummary {
     /// A non-user turn marker is live.
     pub turn_live: bool,
     pub wakes_last_hour: u64,
+    /// When the coordinator last wrote `dashboard/board.json` (its mtime):
+    /// the coordinator has no clock to stamp the board itself.
+    #[serde(default)]
+    pub board_unix: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +123,9 @@ pub fn session_of(agent: &Value) -> Option<String> {
     s(&agent["agent_session"], "value")
 }
 
+/// A live agent's registry keys: pane id, native session id, agent kind.
+type AgentKeys = (String, Option<String>, Option<String>);
+
 /// Build the live data; relinks registry entries whose pane id or session id
 /// went stale (the caller saves the registry when `relinked` is true).
 pub fn build(
@@ -144,19 +151,52 @@ pub fn build(
     let mut agents = Vec::new();
     let mut unmanaged_count = 0;
     let mut managed_per_group: HashMap<String, u64> = HashMap::new();
-    for info in inputs.agents {
-        let Some(pane_id) = s(info, "pane_id") else {
+    let keys: Vec<Option<AgentKeys>> = inputs
+        .agents
+        .iter()
+        .map(|info| {
+            let pane_id = s(info, "pane_id")?;
+            let kind = s(info, "agent").or_else(|| s(&info["agent_session"], "agent"));
+            Some((pane_id, session_of(info), kind))
+        })
+        .collect();
+    // Session matches claim their entries first, so a pane-only match (an
+    // agent in a pane an entry used to have) cannot take an entry whose own
+    // session is live elsewhere.
+    let mut claims: Vec<Option<usize>> = vec![None; keys.len()];
+    for (claim, key) in claims.iter_mut().zip(&keys) {
+        let Some((_, session, _)) = key else { continue };
+        if let Some(index) = registry.find_by_session(session.as_deref()) {
+            if !seen[index] {
+                seen[index] = true;
+                *claim = Some(index);
+            }
+        }
+    }
+    for (claim, key) in claims.iter_mut().zip(&keys) {
+        let Some((pane_id, session, kind)) = key else {
             continue;
         };
-        let session = session_of(info);
-        let kind = s(info, "agent").or_else(|| s(&info["agent_session"], "agent"));
-        let entry = registry
-            .find(session.as_deref(), Some(&pane_id))
-            .filter(|index| !seen[*index]);
-        if let Some(index) = entry {
-            seen[index] = true;
-            relinked |= registry.relink(index, session.as_deref(), Some(&pane_id), kind.as_deref());
+        if claim.is_some() {
+            continue;
         }
+        *claim = (0..registry.agents.len()).find(|&index| {
+            !seen[index]
+                && registry.pane_matches(index, session.as_deref(), Some(pane_id), kind.as_deref())
+        });
+        if let Some(index) = *claim {
+            seen[index] = true;
+        }
+    }
+    for (claim, key) in claims.iter().zip(&keys) {
+        if let (Some(index), Some((pane_id, session, kind))) = (claim, key) {
+            relinked |= registry.relink(*index, session.as_deref(), Some(pane_id), kind.as_deref());
+        }
+    }
+    for ((info, key), entry) in inputs.agents.iter().zip(&keys).zip(claims) {
+        let Some((pane_id, session, kind)) = key.clone() else {
+            continue;
+        };
         let managed = entry.is_some();
         if !managed {
             unmanaged_count += 1;
@@ -196,6 +236,22 @@ pub fn build(
             last_change_unix: last_change.get(&pane_id).copied().unwrap_or(0),
         });
     }
+    // An entry that lost its last key (its pane now hosts an agent matched by
+    // session, and it never had a session) can never match or be named
+    // again: drop it rather than keep an offline row nothing can remove.
+    let before = registry.agents.len();
+    let mut kept_seen = Vec::with_capacity(before);
+    let mut index = 0;
+    registry.agents.retain(|entry| {
+        let keep = entry.session.is_some() || entry.pane_id.is_some();
+        if keep {
+            kept_seen.push(seen[index]);
+        }
+        index += 1;
+        keep
+    });
+    let seen = kept_seen;
+    relinked |= registry.agents.len() != before;
     let offline = registry
         .agents
         .iter()
@@ -335,6 +391,57 @@ mod tests {
         assert!(!relinked, "already relinked");
         assert_eq!(all.agents.len(), 3);
         assert!(!all.agents[2].managed);
+    }
+
+    #[test]
+    fn a_session_match_wins_over_a_session_less_agent_in_the_old_pane() {
+        let mut registry = Registry::default();
+        registry
+            .manage(
+                Some("S"),
+                Some("w1:p1"),
+                Some("claude"),
+                &ManagePatch {
+                    role: Some("coordinator".into()),
+                    ..ManagePatch::default()
+                },
+            )
+            .unwrap();
+        // After a restore: a session-less Codex sits in the coordinator's old
+        // pane and is listed first; the coordinator itself moved to w2:p1.
+        let mut codex = agent("w1:p1", "", "idle");
+        codex["agent"] = json!("codex");
+        codex["agent_session"] = Value::Null;
+        let agents = vec![codex, agent("w2:p1", "S", "idle")];
+        let inputs = Inputs {
+            agents: &agents,
+            workspaces: &[],
+            tabs: &[],
+        };
+        let (live, relinked) = build(&inputs, &mut registry, Vec::new(), &HashMap::new(), true, 9);
+        assert!(relinked);
+        assert_eq!(live.coordinator_pane.as_deref(), Some("w2:p1"));
+        assert!(!live.agents[0].managed, "the codex stays unmanaged");
+        assert_eq!(registry.agents[0].pane_id.as_deref(), Some("w2:p1"));
+        assert_eq!(registry.agents[0].agent.as_deref(), Some("claude"));
+
+        // Restored the other way round: a session-matched Claude lands in the
+        // pane a pane-only Codex entry had. That entry has no key left and is
+        // dropped instead of lingering as an offline row nothing can remove.
+        registry
+            .manage(None, Some("w3:p1"), Some("codex"), &ManagePatch::default())
+            .unwrap();
+        let agents = vec![agent("w3:p1", "S", "idle")];
+        let inputs = Inputs {
+            agents: &agents,
+            workspaces: &[],
+            tabs: &[],
+        };
+        let (live, relinked) = build(&inputs, &mut registry, Vec::new(), &HashMap::new(), true, 9);
+        assert!(relinked);
+        assert_eq!(registry.agents.len(), 1, "{:?}", registry.agents);
+        assert_eq!(registry.agents[0].pane_id.as_deref(), Some("w3:p1"));
+        assert!(live.offline.is_empty());
     }
 
     #[test]

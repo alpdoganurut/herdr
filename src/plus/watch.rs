@@ -50,6 +50,9 @@ const DIGESTS_KEPT: usize = 50;
 const PREVIEWS: usize = 3;
 const PREVIEW_CHARS: usize = 80;
 const HELD_LOG_EVERY_S: u64 = 60;
+/// A sender's refused messages to the coordinator wake it at most once per
+/// this window.
+const REFUSAL_REPEAT_S: u64 = 600;
 const LIVE_REFRESH_S: u64 = 10;
 const ROTATE_EVERY_S: u64 = 300;
 const ROTATE_BYTES: u64 = 5 * 1024 * 1024;
@@ -383,6 +386,9 @@ pub struct WatchState {
     coord_missing_since: Option<u64>,
     #[serde(skip)]
     held_log: Option<(String, u64)>,
+    /// When each sender's last refused message to the coordinator was queued.
+    #[serde(skip)]
+    refusal_queued: BTreeMap<String, u64>,
 }
 
 impl WatchState {
@@ -453,6 +459,7 @@ impl WatchState {
             coordinator_down: self.coordinator_down,
             turn_live,
             wakes_last_hour: self.wakes_within(HOUR, now) as u64,
+            board_unix: mtime_ms(&super::board_path(&self.dir)) / 1000,
         }
     }
 
@@ -938,10 +945,34 @@ fn queue_messages(state: &mut WatchState, live: &LiveData, new_msgs: &[AgentMess
     let mut to_coordinator = Vec::new();
     let mut between = Vec::new();
     let mut from_coordinator = Vec::new();
+    state
+        .refusal_queued
+        .retain(|_, at| now.saturating_sub(*at) < REFUSAL_REPEAT_S);
+    let pending_to_coordinator = state.pending.iter().any(|ev| {
+        matches!(
+            ev,
+            Ev::Messages {
+                scope: MsgScope::ToCoordinator,
+                ..
+            }
+        )
+    });
     for message in new_msgs {
         if coordinator == Some(message.to_pane.as_str()) {
             // Typed into the coordinator: it has seen that one already.
             if message.outcome != "sent" {
+                // A sender retrying on `busy` wakes the coordinator once per
+                // REFUSAL_REPEAT_S; repeats only ride along (they stay in the log).
+                let sender = message.from_pane.clone().unwrap_or_default();
+                let repeat = state
+                    .refusal_queued
+                    .get(&sender)
+                    .is_some_and(|at| now.saturating_sub(*at) < REFUSAL_REPEAT_S);
+                if !repeat {
+                    state.refusal_queued.insert(sender, now);
+                } else if !pending_to_coordinator && to_coordinator.is_empty() {
+                    continue;
+                }
                 to_coordinator.push(preview(message));
             }
         } else if coordinator.is_some() && message.from_pane.as_deref() == coordinator {
@@ -1055,7 +1086,8 @@ fn gate(
 /// The line typed into the coordinator for wake-up `seq`.
 pub fn wake_prompt(dir: &Path, seq: u64) -> String {
     format!(
-        "[herdr+ wake-up #{seq} \u{2014} not the user; read-only turn] Read {}. Re-read memory/MEMORY.md, update dashboard/board.json and memory, record proposed actions as suggestions; do not act. Use the Read/Write/Edit file tools, not shell commands (nobody may be there to approve them). If nothing material changed, reply in one line.",
+        "[herdr+ wake-up #{seq} \u{2014} not the user; read-only turn] If the coordinator rules are not in your context (after /clear or a compaction), Read {} first. Read {}. Re-read memory/MEMORY.md, update dashboard/board.json and memory, record proposed actions as suggestions; do not act. Use the Read/Write/Edit file tools, not shell commands (nobody may be there to approve them). If nothing material changed, reply in one line.",
+        super::instructions_path(dir).display(),
         wake_dir(dir).join(format!("{seq}.md")).display()
     )
 }
@@ -1304,24 +1336,27 @@ impl<A: Api> Driver<A> {
         log_line(&self.dir, now, line);
     }
 
-    /// Start a coordinator when none is registered.
-    fn ensure_coordinator(&mut self, now: u64) {
+    /// Start a coordinator when none is registered; `true` when it started
+    /// (and so wrote the registry).
+    fn ensure_coordinator(&mut self, now: u64) -> bool {
         if !self.need_coordinator || now < self.next_coordinator_try {
-            return;
+            return false;
         }
         // A corrupt registry reads as empty here; coordinator_start refuses it.
         if Registry::load(&self.dir).coordinator().is_some() {
             self.need_coordinator = false;
-            return;
+            return false;
         }
         match coordinator_start(&self.api, &self.dir, &self.ctx, None) {
             Ok(pane) => {
                 self.need_coordinator = false;
                 self.log(now, &format!("coordinator started -> {pane}"));
+                true
             }
             Err(err) => {
                 self.next_coordinator_try = now + COORDINATOR_RETRY_S;
                 self.log(now, &format!("coordinator start failed: {err}"));
+                false
             }
         }
     }
@@ -1349,9 +1384,14 @@ impl<A: Api> Driver<A> {
             tabs: &tabs,
         };
         let registry_file = registry_path(&self.dir);
-        let registry_changed = mtime_ms(&registry_file) != self.state.registry_mtime_ms;
-        // After the change check: a coordinator registered here is our own write.
-        self.ensure_coordinator(now);
+        let observed_mtime = mtime_ms(&registry_file);
+        let mut registry_changed = observed_mtime != self.state.registry_mtime_ms;
+        // The mtime to remember: the one observed, unless our own write below
+        // replaced it (a coordinator registered here is our own write).
+        let mut registry_mtime = observed_mtime;
+        if self.ensure_coordinator(now) {
+            registry_mtime = mtime_ms(&registry_file);
+        }
         let last_change: HashMap<String, u64> = self
             .state
             .last_change
@@ -1362,23 +1402,32 @@ impl<A: Api> Driver<A> {
         let (mut live, relinked) =
             live::build(&inputs, &mut registry, Vec::new(), &last_change, false, now);
         if relinked {
-            // Relink under the lock, over the freshly loaded registry.
+            // Relink under the lock, over the freshly loaded registry. A write
+            // by someone else since the check above is still a change.
             let result = registry::update(&self.dir, |locked| {
-                Ok(live::build(&inputs, locked, Vec::new(), &last_change, false, now).1)
+                let foreign = mtime_ms(&registry_file) != registry_mtime;
+                let wrote = live::build(&inputs, locked, Vec::new(), &last_change, false, now).1;
+                Ok((wrote, foreign))
             });
-            if let Err(err) = result {
-                self.log(now, &format!("relink not saved: {err}"));
+            match result {
+                Ok((wrote, foreign)) => {
+                    registry_changed |= foreign;
+                    if wrote {
+                        // Our own relink write is not a registry change.
+                        registry_mtime = mtime_ms(&registry_file);
+                    }
+                }
+                Err(err) => self.log(now, &format!("relink not saved: {err}")),
             }
         }
-        // Our own relink write is not a registry change.
-        self.state.registry_mtime_ms = mtime_ms(&registry_file);
+        self.state.registry_mtime_ms = registry_mtime;
 
         let (new_msgs, offset) = messages::since_offset(&self.dir, self.state.msg_offset);
         self.state.msg_offset = offset;
-        // Right after reading, so few lines can slip into the rotated file unread.
+        // Right after reading; a line appended since keeps the log for a later rotation.
         if now.saturating_sub(self.last_rotate) >= ROTATE_EVERY_S {
             self.last_rotate = now;
-            match messages::rotate_if_large(&self.dir, ROTATE_BYTES) {
+            match messages::rotate_if_large(&self.dir, ROTATE_BYTES, offset) {
                 Ok(true) => {
                     self.state.msg_offset = 0;
                     self.log(now, "rotated messages.jsonl");
@@ -1416,20 +1465,20 @@ impl<A: Api> Driver<A> {
         for action in actions {
             match action {
                 Action::Log(line) => self.log(now, &line),
+                // Both only touch the turn read above: an MCP server may
+                // have started a new one since.
                 Action::MarkTurnWorking => {
                     if let Some(turn) = &turn {
-                        let marked = Turn {
-                            seen_working: true,
-                            ..turn.clone()
-                        };
-                        if let Err(err) = turn::write(&self.dir, &marked) {
+                        if let Err(err) = turn::mark_working_if(&self.dir, turn) {
                             tracing::warn!("herdr+ cannot update the turn marker: {err}");
                         }
                     }
                 }
                 Action::ClearTurn => {
-                    turn::clear(&self.dir);
-                    turn_live = false;
+                    if let Some(turn) = &turn {
+                        turn::clear_if(&self.dir, turn);
+                    }
+                    turn_live = turn::read_live(&self.dir, now).is_some();
                 }
                 Action::Relaunch { resume } => self.relaunch(resume.as_deref(), now),
                 Action::Wake {
@@ -1512,11 +1561,19 @@ impl<A: Api> Driver<A> {
             seen_working: false,
         };
         // Without the marker the coordinator's write tools are not guarded
-        // during this turn: no marker, no wake-up.
-        if let Err(err) = turn::write(&self.dir, &marker) {
-            self.state.wake_failed(now, &self.cfg);
-            self.log(now, &format!("failed #{seq} turn marker: {err}"));
-            return false;
+        // during this turn: no marker, no wake-up. An agent message may have
+        // taken the turn since the tick read it: hold, it is not a failure.
+        match turn::write_if_absent(&self.dir, &marker, now) {
+            Ok(true) => {}
+            Ok(false) => {
+                self.log(now, "held turn live (re-check)");
+                return false;
+            }
+            Err(err) => {
+                self.state.wake_failed(now, &self.cfg);
+                self.log(now, &format!("failed #{seq} turn marker: {err}"));
+                return false;
+            }
         }
         match api::prompt(&self.api, pane, prompt) {
             Ok(()) => {
@@ -1525,7 +1582,7 @@ impl<A: Api> Driver<A> {
                 true
             }
             Err(err) => {
-                turn::clear(&self.dir);
+                turn::clear_if(&self.dir, &marker);
                 self.state.wake_failed(now, &self.cfg);
                 self.log(now, &format!("failed #{seq} {}", err.code));
                 false
@@ -1971,6 +2028,7 @@ mod tests {
         assert!(digest.contains("working \u{2192} idle"), "{digest}");
         assert!(prompt.starts_with("[herdr+ wake-up #1 "), "{prompt}");
         assert!(prompt.contains("1.md"), "{prompt}");
+        assert!(prompt.contains("coordinator.md first"), "{prompt}");
         deliver(&mut state, &actions, 70);
         assert!(state.pending.is_empty());
         assert!(quiet(&mut state, &at("idle", "idle"), &cfg, 200).is_empty());
@@ -2464,6 +2522,49 @@ mod tests {
             panic!("to-coordinator item expected");
         };
         assert!(preview[0].contains("[busy]"), "{preview:?}");
+    }
+
+    #[test]
+    fn a_sender_retrying_on_busy_wakes_the_coordinator_once_per_window() {
+        let cfg = cfg();
+        let mut state = WatchState::default();
+        let data = live(vec![coord("idle"), agent("w2:p1", "a", "idle")]);
+        quiet(&mut state, &data, &cfg, 0);
+        let busy = [message("w2:p1", "w1:p1", "busy")];
+        let to_coordinator = |state: &WatchState| {
+            state.pending.iter().find_map(|ev| match ev {
+                Ev::Messages {
+                    scope: MsgScope::ToCoordinator,
+                    count,
+                    ..
+                } => Some(*count),
+                _ => None,
+            })
+        };
+        tick(&mut state, &data, &busy, false, None, false, &cfg, 10);
+        // A repeat while the first is pending rides along with it.
+        tick(&mut state, &data, &busy, false, None, false, &cfg, 15);
+        assert_eq!(to_coordinator(&state), Some(2));
+        // After the wake-up delivered them, repeats wait in the log...
+        state.pending.clear();
+        tick(&mut state, &data, &busy, false, None, false, &cfg, 60);
+        assert_eq!(to_coordinator(&state), None);
+        // ...but another sender, or the same one after the window, wakes it.
+        let other = [message("w2:p2", "w1:p1", "busy")];
+        tick(&mut state, &data, &other, false, None, false, &cfg, 61);
+        assert_eq!(to_coordinator(&state), Some(1));
+        state.pending.clear();
+        tick(
+            &mut state,
+            &data,
+            &busy,
+            false,
+            None,
+            false,
+            &cfg,
+            10 + REFUSAL_REPEAT_S,
+        );
+        assert_eq!(to_coordinator(&state), Some(1));
     }
 
     #[test]

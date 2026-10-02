@@ -23,8 +23,11 @@ use super::{instructions_path, mcp_dir, write_atomically, DEFAULT_PORT};
 pub const MCP_KEY: &str = "herdr_plus";
 /// Claude allowlist for a managed agent: every herdr_plus tool.
 pub const CLAUDE_ALLOW_AGENT: &str = "mcp__herdr_plus";
-/// Claude allowlist for the coordinator.
-pub const CLAUDE_ALLOW_COORDINATOR: &str = "mcp__herdr_plus,mcp__herdr-browser,Bash(herdr plus:*)";
+/// Claude allowlist for the coordinator: the herdr+ and browser tools and
+/// the read-only `herdr plus` verbs. The CLI's write verbs (manage, unmanage,
+/// coordinator wake/start/clear-turn) are not pre-approved: they would get
+/// around the MCP tools' non-user-turn guard without a prompt.
+pub const CLAUDE_ALLOW_COORDINATOR: &str = "mcp__herdr_plus,mcp__herdr-browser,Bash(herdr plus status:*),Bash(herdr plus messages:*),Bash(herdr plus coordinator status:*)";
 /// `1` adds `--append-system-prompt-file=<dir>/coordinator.md` to the coordinator.
 pub const SYSPROMPT_FILE_ENV: &str = "HERDR_PLUS_SYSPROMPT_FILE";
 /// `1` adds `--no-daemon` to Codex (when no shell hook adds it).
@@ -363,7 +366,7 @@ mod tests {
                 "--mcp-config=/home/u/.config/herdr-dev/plus/mcp/claude.json",
                 "--permission-mode",
                 "acceptEdits",
-                "--allowedTools=mcp__herdr_plus,mcp__herdr-browser,Bash(herdr plus:*)",
+                "--allowedTools=mcp__herdr_plus,mcp__herdr-browser,Bash(herdr plus status:*),Bash(herdr plus messages:*),Bash(herdr plus coordinator status:*)",
                 "--",
             ]
         );
@@ -386,6 +389,21 @@ mod tests {
         // Every allowlist entry starts with the MCP key the configs register.
         assert!(CLAUDE_ALLOW_AGENT == format!("mcp__{MCP_KEY}"));
         assert!(CLAUDE_ALLOW_COORDINATOR.starts_with(CLAUDE_ALLOW_AGENT));
+        // Only read-only CLI verbs are pre-approved for the coordinator.
+        for entry in CLAUDE_ALLOW_COORDINATOR.split(',') {
+            if let Some(command) = entry.strip_prefix("Bash(") {
+                assert!(
+                    [
+                        "herdr plus status:",
+                        "herdr plus messages:",
+                        "herdr plus coordinator status:"
+                    ]
+                    .iter()
+                    .any(|read| command.starts_with(read)),
+                    "{entry}"
+                );
+            }
+        }
     }
 
     #[test]

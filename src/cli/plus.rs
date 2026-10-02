@@ -30,12 +30,27 @@ const HELP: &str = "herdr plus — herdr+ agents: managed agents, agent messages
   herdr plus coordinator start [--dir D] [--resume UUID] [--port N]
   herdr plus coordinator status [--dir D] [--json]
   herdr plus coordinator wake [--dir D]        ask the watcher for a wake-up on its next tick
+  herdr plus coordinator clear-turn [--dir D]  end the coordinator's herdr+ turn marker (its write tools
+                                               refuse while one is live; for a turn stuck working or blocked)
   herdr plus manage <pane|name> [--role R] [--project P] [--note N] [--dir D]
   herdr plus unmanage <pane|name|session> [--dir D]
   herdr plus status [--dir D] [--json]
   herdr plus messages [--dir D] [--limit N] [--json]
 
-The directory defaults to $HERDR_PLUS_DIR, else <config dir>/plus.";
+manage, unmanage and the coordinator verbs other than status refuse when the
+coordinator agent runs them in a turn herdr+ started (a wake-up or an agent message).
+
+Environment:
+  HERDR_PLUS_DIR                 the herdr+ directory (default <config dir>/plus)
+  HERDR_PLUS_WAKE_DEBOUNCE_S     wake-up debounce for normal items (default 60)
+  HERDR_PLUS_WAKE_GAP_S          minimum gap between wake-ups (default 120)
+  HERDR_PLUS_PERIODIC_S          periodic check when anything is pending (default 3600)
+  HERDR_PLUS_WAKE_CAP_HOUR       wake-ups per hour (default 12)
+  HERDR_PLUS_WAKE_CAP_DAY        wake-ups per day (default 80)
+  HERDR_PLUS_SYSPROMPT_FILE=1    also pass coordinator.md as the coordinator's system prompt file
+  HERDR_PLUS_CODEX_NO_DAEMON=1   start Codex agents with --no-daemon (when no shell hook adds it)
+
+Every verb takes -h/--help.";
 
 const DEFAULT_INTERVAL_MS: u64 = 2000;
 /// live.json older than this means no watcher is running.
@@ -43,7 +58,7 @@ const STALE_LIVE_S: u64 = 15;
 
 pub(super) fn run_plus_command(args: &[String]) -> std::io::Result<i32> {
     let Some(verb) = args.first().map(String::as_str) else {
-        eprintln!("{USAGE}");
+        eprintln!("{HELP}");
         return Ok(2);
     };
     let rest = &args[1..];
@@ -65,6 +80,10 @@ pub(super) fn run_plus_command(args: &[String]) -> std::io::Result<i32> {
     };
     match result {
         Ok(code) => Ok(code),
+        Err(Fail::Help) => {
+            println!("{HELP}");
+            Ok(0)
+        }
         Err(Fail::Usage(message)) => {
             eprintln!("{message}\n{USAGE}");
             Ok(2)
@@ -78,6 +97,8 @@ pub(super) fn run_plus_command(args: &[String]) -> std::io::Result<i32> {
 }
 
 enum Fail {
+    /// `-h`/`--help` anywhere among a verb's options.
+    Help,
     Usage(String),
     Error(String),
     Io(std::io::Error),
@@ -233,6 +254,9 @@ fn parse(args: &[String], value_options: &[&str], flag_options: &[&str]) -> Resu
     let mut iter = args.into_iter();
     let mut options_ended = false;
     while let Some(arg) = iter.next() {
+        if !options_ended && (arg == "--help" || arg == "-h") {
+            return Err(Fail::Help);
+        }
         if options_ended || !arg.starts_with("--") {
             parsed.positionals.push(arg);
         } else if arg == "--" {
@@ -330,15 +354,17 @@ fn seed(args: &[String]) -> Result<i32, Fail> {
 fn coordinator(args: &[String]) -> Result<i32, Fail> {
     let Some(verb) = args.first().map(String::as_str) else {
         return Err(Fail::Usage(
-            "usage: herdr plus coordinator <start|status|wake>".into(),
+            "usage: herdr plus coordinator <start|status|wake|clear-turn>".into(),
         ));
     };
     let rest = &args[1..];
     match verb {
+        "help" | "--help" | "-h" => Err(Fail::Help),
         "start" => {
             let parsed = parse(rest, &["--resume", "--port"], &[])?;
             parsed.at_most_positionals(0)?;
             let dir = parsed.dir()?;
+            refuse_in_herdr_turn(&SocketApi, &dir, caller_pane().as_deref(), plus::now_unix())?;
             plus::seed(&dir)?;
             let ctx = LaunchCtx::current(dir.clone(), parsed.port()?)?;
             let pane =
@@ -364,6 +390,7 @@ fn coordinator(args: &[String]) -> Result<i32, Fail> {
             parsed.at_most_positionals(0)?;
             let dir = parsed.dir()?;
             let now = plus::now_unix();
+            refuse_in_herdr_turn(&SocketApi, &dir, caller_pane().as_deref(), now)?;
             plus::write_atomically(
                 &plus::wake_request_path(&dir),
                 format!("{now}\n").as_bytes(),
@@ -374,10 +401,69 @@ fn coordinator(args: &[String]) -> Result<i32, Fail> {
             }
             Ok(0)
         }
+        "clear-turn" => {
+            let parsed = parse(rest, &[], &[])?;
+            parsed.at_most_positionals(0)?;
+            let dir = parsed.dir()?;
+            let now = plus::now_unix();
+            refuse_in_herdr_turn(&SocketApi, &dir, caller_pane().as_deref(), now)?;
+            match plus::turn::read_live(&dir, now) {
+                Some(turn) => {
+                    plus::turn::clear_if(&dir, &turn);
+                    println!(
+                        "cleared turn {} {} ({}s old); the coordinator's next turn is the user's",
+                        turn.source,
+                        turn.id,
+                        now.saturating_sub(turn.started_unix)
+                    );
+                }
+                None => {
+                    plus::turn::clear(&dir);
+                    println!("no live turn");
+                }
+            }
+            Ok(0)
+        }
         other => Err(Fail::Usage(format!(
             "unknown herdr plus coordinator command: {other}"
         ))),
     }
+}
+
+/// The pane this command runs in (`HERDR_PANE_ID`), if any.
+fn caller_pane() -> Option<String> {
+    super::target::caller_pane_id()
+}
+
+/// Refuse a write verb run by the coordinator agent itself while herdr+
+/// started its turn: the CLI must not get around the non-user-turn guard of
+/// the MCP write tools. Anyone else (the user in another pane, a script
+/// outside herdr) is not affected.
+fn refuse_in_herdr_turn(
+    api: &impl Api,
+    dir: &Path,
+    env_pane: Option<&str>,
+    now: u64,
+) -> Result<(), Fail> {
+    let Some(env_pane) = env_pane.filter(|pane| !pane.is_empty()) else {
+        return Ok(());
+    };
+    let Some(turn) = plus::turn::read_live(dir, now) else {
+        return Ok(());
+    };
+    let pane = plus_api::resolve_caller(api, env_pane)
+        .map(|caller| caller.pane_id)
+        .unwrap_or_else(|_| env_pane.to_string());
+    let registered = Registry::load(dir)
+        .coordinator()
+        .and_then(|entry| entry.pane_id.clone());
+    if pane == turn.coordinator_pane || registered.as_deref() == Some(pane.as_str()) {
+        return Err(Fail::Error(format!(
+            "this turn was started by herdr+ ({} {}), not the user; the coordinator cannot change herdr+ from it. Record a suggestion on the board instead.",
+            turn.source, turn.id
+        )));
+    }
+    Ok(())
 }
 
 /// Seconds since the watcher last wrote live.json.
@@ -395,14 +481,23 @@ fn read_json(path: &Path) -> Option<Value> {
 fn coordinator_report(api: &impl Api, dir: &Path, now: u64) -> Value {
     let registry = Registry::load(dir);
     let entry = registry.coordinator().cloned();
-    let live_agent = entry.as_ref().and_then(|entry| {
+    // The registry's match rule: the session first, then the pane.
+    let live_agent = registry.coordinator_index().and_then(|index| {
         let agents = plus_api::agents(api).ok()?;
-        agents.into_iter().find(|agent| {
-            let session = live::session_of(agent);
-            (entry.session.is_some() && session == entry.session)
-                || (entry.pane_id.is_some()
-                    && agent["pane_id"].as_str() == entry.pane_id.as_deref()
-                    && (entry.session.is_none() || session.is_none()))
+        let session = registry.agents[index].session.clone();
+        let by_session = agents
+            .iter()
+            .find(|agent| session.is_some() && live::session_of(agent) == session)
+            .cloned();
+        by_session.or_else(|| {
+            agents.into_iter().find(|agent| {
+                registry.pane_matches(
+                    index,
+                    live::session_of(agent).as_deref(),
+                    agent["pane_id"].as_str(),
+                    agent_kind(agent).as_deref(),
+                )
+            })
         })
     });
     let turn = plus::turn::read_live(dir, now);
@@ -454,7 +549,7 @@ fn format_coordinator_report(report: &Value) -> String {
     }
     match report["turn"].as_object() {
         Some(turn) => out.push_str(&format!(
-            "turn: {} {} for {}s{}\n",
+            "turn: {} {} for {}s{} (`herdr plus coordinator clear-turn` ends it)\n",
             turn.get("source").and_then(Value::as_str).unwrap_or("?"),
             turn.get("id").and_then(Value::as_str).unwrap_or("?"),
             turn.get("age_s").and_then(Value::as_u64).unwrap_or(0),
@@ -517,7 +612,9 @@ fn manage(args: &[String]) -> Result<i32, Fail> {
         project: parsed.value("--project").map(str::to_string),
         note: parsed.value("--note").map(str::to_string),
     };
-    let line = manage_target(&SocketApi, &parsed.dir()?, target, &patch).map_err(Fail::Error)?;
+    let dir = parsed.dir()?;
+    refuse_in_herdr_turn(&SocketApi, &dir, caller_pane().as_deref(), plus::now_unix())?;
+    let line = manage_target(&SocketApi, &dir, target, &patch).map_err(Fail::Error)?;
     println!("{line}");
     Ok(0)
 }
@@ -536,10 +633,7 @@ fn manage_target(
         .ok_or_else(|| format!("{target} has no pane"))?
         .to_string();
     let session = live::session_of(&agent);
-    let kind = agent["agent"]
-        .as_str()
-        .or_else(|| agent["agent_session"]["agent"].as_str())
-        .map(str::to_string);
+    let kind = agent_kind(&agent);
     let entry = registry::update(dir, |registry| {
         registry.manage(session.as_deref(), Some(&pane), kind.as_deref(), patch)
     })?;
@@ -551,6 +645,15 @@ fn manage_target(
         tag(" project=", &entry.project),
         tag(" note=", &entry.note),
     ))
+}
+
+/// The agent kind of an `agent.get`/`agent.list` entry.
+fn agent_kind(agent: &Value) -> Option<String> {
+    agent["agent"]
+        .as_str()
+        .or_else(|| agent["agent_session"]["agent"].as_str())
+        .filter(|kind| !kind.is_empty())
+        .map(str::to_string)
 }
 
 fn tag(prefix: &str, value: &Option<String>) -> String {
@@ -568,7 +671,9 @@ fn unmanage(args: &[String]) -> Result<i32, Fail> {
             "usage: herdr plus unmanage <pane|name|session>".into(),
         ));
     };
-    let line = unmanage_target(&SocketApi, &parsed.dir()?, target).map_err(Fail::Error)?;
+    let dir = parsed.dir()?;
+    refuse_in_herdr_turn(&SocketApi, &dir, caller_pane().as_deref(), plus::now_unix())?;
+    let line = unmanage_target(&SocketApi, &dir, target).map_err(Fail::Error)?;
     println!("{line}");
     Ok(0)
 }
@@ -576,17 +681,18 @@ fn unmanage(args: &[String]) -> Result<i32, Fail> {
 /// Opt an agent out: a live agent by pane or name, or an offline entry by
 /// its recorded pane id or session id.
 fn unmanage_target(api: &impl Api, dir: &Path, target: &str) -> Result<String, String> {
-    let (session, pane) = match plus_api::agent_get(api, target) {
+    let (session, pane, kind) = match plus_api::agent_get(api, target) {
         Ok(agent) => (
             live::session_of(&agent),
             agent["pane_id"].as_str().map(str::to_string),
+            agent_kind(&agent),
         ),
         Err(err) if err.code == "server_unavailable" => return Err(err.to_string()),
-        Err(_) => (None, None),
+        Err(_) => (None, None, None),
     };
     let removed = registry::update(dir, |registry| {
         let index = registry
-            .find(session.as_deref(), pane.as_deref())
+            .find(session.as_deref(), pane.as_deref(), kind.as_deref())
             .or_else(|| {
                 registry.agents.iter().position(|entry| {
                     entry.pane_id.as_deref() == Some(target)
@@ -1079,6 +1185,68 @@ mod tests {
         assert!(format_coordinator_report(&none).contains("none registered"));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn write_verbs_refuse_the_coordinator_in_a_herdr_turn_only() {
+        let dir = test_dir("guard");
+        registry::update(&dir, |registry| {
+            registry.manage(
+                Some("s-c"),
+                Some("w2:p3"),
+                Some("claude"),
+                &ManagePatch {
+                    role: Some(plus::COORDINATOR_ROLE.into()),
+                    ..ManagePatch::default()
+                },
+            )
+        })
+        .unwrap();
+        // actor_api resolves any pane to w2:p3, the coordinator.
+        let api = actor_api(Some(40));
+        let guard = |pane: Option<&str>| refuse_in_herdr_turn(&api, &dir, pane, 100);
+        assert!(guard(Some("w2:p3")).is_ok(), "no turn: the user's");
+        plus::turn::write(
+            &dir,
+            &plus::turn::Turn {
+                source: "wake".into(),
+                id: "4".into(),
+                started_unix: 90,
+                coordinator_pane: "w2:p3".into(),
+                seen_working: true,
+            },
+        )
+        .unwrap();
+        assert!(matches!(guard(Some("w2:p3")), Err(Fail::Error(m)) if m.contains("wake 4")));
+        assert!(guard(None).is_ok(), "outside herdr: the user");
+        let other = |_: Method| -> Result<Value, ApiError> {
+            Ok(json!({ "type": "browser_actor", "actor": {
+                "kind": "pane", "pane_id": "w5:p1", "tab_id": "w5:t1", "workspace_id": "w5",
+                "shell_pid": 1 } }))
+        };
+        assert!(
+            refuse_in_herdr_turn(&other, &dir, Some("w5:p1"), 100).is_ok(),
+            "the user in another pane"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn help_is_available_on_every_verb() {
+        assert!(matches!(
+            parse(&strings(&["--help"]), &[], &[]),
+            Err(Fail::Help)
+        ));
+        assert!(matches!(
+            parse(&strings(&["rev", "-h"]), &["--role"], &[]),
+            Err(Fail::Help)
+        ));
+        assert!(parse(&strings(&["--", "-h"]), &[], &[]).is_ok(), "after --");
+        assert!(matches!(
+            coordinator(&strings(&["--help"])),
+            Err(Fail::Help)
+        ));
+        assert!(HELP.contains("HERDR_PLUS_WAKE_DEBOUNCE_S") && HELP.contains("clear-turn"));
     }
 
     #[test]
