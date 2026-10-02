@@ -48,11 +48,15 @@ pub(super) fn render_settings_overlay(
     } else if settings.section == ClientSettingsSection::Browser {
         // eleven rows, a rule and up to seven facts (clamped to the terminal)
         32
+    } else if settings.section == ClientSettingsSection::Coordinator {
+        // up to nine rows and nine facts (clamped to the terminal)
+        30
     } else {
         22
     };
-    // 84 columns: ten section tabs (the fork's news and browser) in one row.
-    let popup = popup(buffer.area, 84, height)?;
+    // 96 columns: eleven section tabs (the fork's news, browser and
+    // coordinator) in one row.
+    let popup = popup(buffer.area, 96, height)?;
     let inner = panel(buffer, popup, palette.accent, palette.panel_bg)?;
     if inner.width < 20 || inner.height < 8 {
         return None;
@@ -247,6 +251,17 @@ pub(super) fn render_settings_overlay(
                 &mut choice_hits,
             );
         }
+        ClientSettingsSection::Coordinator => {
+            super::super::settings_coordinator::render_coordinator_section(
+                buffer,
+                content,
+                &settings.coordinator,
+                settings.selected,
+                config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs,
+                palette,
+                &mut choice_hits,
+            );
+        }
     }
 
     let installable = settings
@@ -261,6 +276,7 @@ pub(super) fn render_settings_overlay(
         ClientSettingsSection::Backups => false,
         ClientSettingsSection::News => settings.news.info.is_some(),
         ClientSettingsSection::Browser => settings.browser.info.is_some(),
+        ClientSettingsSection::Coordinator => settings.coordinator.info.is_some(),
         _ => true,
     };
     let labels = if show_primary { vec![10, 12] } else { vec![12] };

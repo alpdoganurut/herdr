@@ -162,12 +162,15 @@ impl ClientShellState {
         tab_id: &str,
     ) -> bool {
         *endpoint_id == self.active_endpoint_id
-            && self
+            && (self
                 .news
                 .info
                 .as_ref()
                 .and_then(|info| info.tab_id.as_deref())
                 == Some(tab_id)
+                // Fork: the coordinator sits Done/Idle between wakes by
+                // design; it raises its own notifications instead.
+                || self.coordinator.is_coordinator_tab(tab_id))
     }
 
     /// Important tabs that are waiting and unfocused, across every endpoint.

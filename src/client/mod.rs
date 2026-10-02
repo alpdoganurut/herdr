@@ -2134,6 +2134,7 @@ async fn run_client_loop(
                         }
                         let (effects, notification_repaint) = shell.tick_notifications(now);
                         shell.tick_news(now, &mut outcome);
+                        shell.tick_coordinator(now, &mut outcome);
                         shell.tick_browser(now, &mut outcome);
                         outcome.repaint |= notification_repaint
                             | shell.tick_copy_feedback(now)

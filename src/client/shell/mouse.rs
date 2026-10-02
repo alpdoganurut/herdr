@@ -1595,6 +1595,7 @@ impl ClientShellState {
                     if immediate
                         || self.reminders_click_applies()
                         || self.news_click_applies()
+                        || self.coordinator_click_applies()
                         || self.browser_click_applies()
                     {
                         self.apply_settings_choice(outcome);
@@ -1909,6 +1910,11 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                if super::contains(self.hits.coordinator_row, point) {
+                    self.open_coordinator_context_menu(mouse.column, mouse.row);
+                    outcome.repaint = true;
+                    return;
+                }
                 let tab_id = self
                     .hits
                     .sidebar_tabs
@@ -2202,6 +2208,11 @@ impl ClientShellState {
                     // The pinned row is never dragged: it focuses (or opens
                     // the News tab) on the press.
                     self.activate_news_row(outcome);
+                    return;
+                }
+                if super::contains(self.hits.coordinator_row, point) {
+                    // Like the News row: focus (or open) on the press.
+                    self.activate_coordinator_row(outcome);
                     return;
                 }
                 let sidebar_tab_press = self

@@ -97,6 +97,9 @@ impl ClientContextMenuOverlay {
                     Action::NewsToggleSchedule,
                 ),
             ],
+            ClientContextMenuTarget::Coordinator { items } => {
+                super::coordinator_shell::coordinator_menu_items(items)
+            }
             ClientContextMenuTarget::Browser { running, local, .. } => {
                 let mut items = Vec::new();
                 if *local {
@@ -325,6 +328,9 @@ impl ClientShellState {
             ClientContextMenuTarget::Browser {
                 profile, running, ..
             } => self.activate_browser_context_action(profile, running, action, outcome),
+            ClientContextMenuTarget::Coordinator { .. } => {
+                self.activate_coordinator_context_action(action, outcome)
+            }
             ClientContextMenuTarget::Tab {
                 tab_id,
                 workspace_id,

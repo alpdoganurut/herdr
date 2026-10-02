@@ -534,11 +534,11 @@ fn remote_rows_say_where_the_edits_land_and_right_still_switches_sections() {
         matches!(
             state.overlay,
             Some(ClientShellOverlay::Settings(ClientSettingsOverlay {
-                section: ClientSettingsSection::Theme,
+                section: ClientSettingsSection::Coordinator,
                 ..
             }))
         ),
-        "the last section wraps to the first"
+        "right moves on to the next section"
     );
 }
 

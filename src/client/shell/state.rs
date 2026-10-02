@@ -124,6 +124,8 @@ pub(super) struct ShellHitMap {
     pub(super) news_row: Rect,
     /// The `tabs` layout's pinned Browser row, directly above the News row.
     pub(super) browser_row: Rect,
+    /// Fork: the `tabs` layout's pinned coordinator row, the bottom-most.
+    pub(super) coordinator_row: Rect,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
@@ -470,6 +472,7 @@ pub(super) enum ClientSettingsSection {
     ClosedSessions,
     News,
     Browser,
+    Coordinator,
 }
 
 impl ClientSettingsSection {
@@ -484,6 +487,7 @@ impl ClientSettingsSection {
         Self::ClosedSessions,
         Self::News,
         Self::Browser,
+        Self::Coordinator,
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -498,6 +502,7 @@ impl ClientSettingsSection {
             Self::ClosedSessions => "closed",
             Self::News => "news",
             Self::Browser => "browser",
+            Self::Coordinator => "coordinator",
         }
     }
 }
@@ -547,6 +552,9 @@ pub(super) struct ClientSettingsOverlay {
     /// The browser section's record and endpoint (boxed: the overlay enum
     /// stays small).
     pub(super) browser: Box<super::settings_browser::ClientBrowserSettings>,
+    /// Fork: the coordinator section's record and picker (boxed: the
+    /// overlay enum stays small).
+    pub(super) coordinator: Box<super::settings_coordinator::ClientCoordinatorSettings>,
 }
 
 #[derive(Debug)]
@@ -677,6 +685,8 @@ pub(super) enum ClientContextMenuAction {
     BrowserToggleProfile,
     /// Browser row menu: the Browser overlay.
     BrowserOpenOverlay,
+    /// Fork: a coordinator row menu item.
+    Coordinator(super::coordinator::CoordinatorMenuAction),
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -745,6 +755,11 @@ pub(super) enum ClientContextMenuTarget {
         profile: String,
         running: bool,
         local: bool,
+    },
+    /// Fork: the `tabs` layout's pinned coordinator row, with its items as
+    /// they were when the menu opened.
+    Coordinator {
+        items: Vec<super::coordinator::CoordinatorMenuItem>,
     },
 }
 
@@ -846,6 +861,8 @@ pub(super) enum PendingEndpointKind {
     BrowserSettings,
     BrowserSettingsSet,
     BrowserFix,
+    /// Fork: a `coordinator.*` request.
+    Coordinator(super::coordinator::CoordinatorRequestKind),
     PrepareWorktreeCreate {
         workspace_id: String,
     },
@@ -1167,6 +1184,9 @@ pub(crate) struct ClientShellState {
     pub(super) news: super::news::ClientNewsState,
     /// The herdr browser as `browser.get` last reported it (`browser.rs`).
     pub(super) browser: super::browser::ClientBrowserState,
+    /// Fork: the coordinator as `coordinator.get` last reported it
+    /// (`coordinator.rs`, glue in `coordinator_shell.rs`).
+    pub(super) coordinator: super::coordinator::ClientCoordinatorState,
     /// Tabs with a scheduled reminder, keyed like `idle_reminders`.
     pub(super) scheduled_reminders:
         HashMap<(ClientEndpointId, String), super::idle_reminders::ClientScheduledReminder>,
@@ -1351,6 +1371,7 @@ impl ClientShellState {
             scheduled_reminders: HashMap::new(),
             news: super::news::ClientNewsState::default(),
             browser: super::browser::ClientBrowserState::default(),
+            coordinator: super::coordinator::ClientCoordinatorState::default(),
             reminder_epochs: HashMap::new(),
             reminder_local_time: None,
             reminder_daily_minutes: None,

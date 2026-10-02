@@ -9,12 +9,18 @@ pub(crate) fn render_tab_bar(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    coordinator_mark: Option<(&str, String)>,
     tab_scroll: &mut usize,
     reveal_focused_tab: &mut bool,
     tab_drag_insert_index: Option<usize>,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
+    // Fork: the coordinator tab's `<label> <glyph> <status>`.
+    let tab_label = |tab: &ClientShellTab| match &coordinator_mark {
+        Some((tab_id, mark)) if *tab_id == tab.tab_id => format!("{} {mark}", tab_label(tab)),
+        _ => tab_label(tab),
+    };
     buffer.set_style(area, Style::default().bg(palette.panel_bg));
     let tabs = snapshot
         .tabs

@@ -50,6 +50,7 @@ impl ClientShellState {
             daily_time_picker: None,
             news: Box::default(),
             browser: Box::default(),
+            coordinator: Box::default(),
         }));
     }
 
@@ -63,7 +64,8 @@ impl ClientShellState {
             | ClientSettingsSection::Backups
             | ClientSettingsSection::ClosedSessions
             | ClientSettingsSection::News
-            | ClientSettingsSection::Browser => 0,
+            | ClientSettingsSection::Browser
+            | ClientSettingsSection::Coordinator => 0,
             ClientSettingsSection::Reminders => {
                 super::idle_reminders::reminder_choice_index(self.config.idle_reminder_minutes)
             }
@@ -121,6 +123,9 @@ impl ClientShellState {
         if section == ClientSettingsSection::Browser {
             self.enter_browser_section(outcome);
         }
+        if section == ClientSettingsSection::Coordinator {
+            self.enter_coordinator_section();
+        }
         outcome.repaint = true;
     }
 
@@ -142,6 +147,7 @@ impl ClientShellState {
         let reminders_rows = self.reminders_section_rows();
         let news_rows = self.news_section_rows();
         let browser_rows = self.browser_section_rows();
+        let coordinator_rows = self.coordinator_section_rows();
         match self.overlay.as_ref() {
             Some(ClientShellOverlay::Settings(settings)) => match settings.section {
                 ClientSettingsSection::Theme => crate::config::THEME_NAMES.len(),
@@ -156,6 +162,7 @@ impl ClientShellState {
                 ClientSettingsSection::Reminders => reminders_rows,
                 ClientSettingsSection::News => news_rows,
                 ClientSettingsSection::Browser => browser_rows,
+                ClientSettingsSection::Coordinator => coordinator_rows,
             },
             _ => 0,
         }
@@ -280,6 +287,7 @@ impl ClientShellState {
             ClientSettingsSection::ClosedSessions => self.reopen_selected_closed_session(outcome),
             ClientSettingsSection::News => self.apply_news_choice(selected, outcome),
             ClientSettingsSection::Browser => self.apply_browser_choice(selected, outcome),
+            ClientSettingsSection::Coordinator => self.apply_coordinator_choice(selected, outcome),
             ClientSettingsSection::Integrations => self.install_recommended_integrations(outcome),
             // Read-only: the store is shown, not edited.
             ClientSettingsSection::Backups => {}
@@ -497,7 +505,8 @@ impl ClientShellState {
         if code == KeyCode::Esc
             && (self.close_sound_picker()
                 || self.close_daily_time_picker()
-                || self.close_news_picker())
+                || self.close_news_picker()
+                || self.close_coordinator_picker())
         {
             outcome.repaint = true;
             return true;

@@ -187,13 +187,13 @@ fn unavailable_transcript_store_does_not_wedge_the_backups_section() {
 mod fork_smoke {
     use super::*;
 
-    /// Section tabs are clipped with `.min()` to the fixed 76-column popup; a
+    /// Section tabs are clipped with `.min()` to the fixed 96-column popup; a
     /// longer upstream label or a new upstream section would silently cut
     /// `backups`, `reminders` or `closed` off. Checked with the integrations
     /// badge on, the widest row (the tabs close up their one-cell gaps, then
     /// drop their padding, to fit it). Every tab uses the same form.
     #[test]
-    fn every_settings_section_fits_the_84_column_popup() {
+    fn every_settings_section_fits_the_96_column_popup() {
         let mut snapshot = snapshot();
         snapshot.integration_updates_available = true;
         let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
@@ -209,12 +209,13 @@ mod fork_smoke {
             "every section gets a tab, in order"
         );
         assert_eq!(
-            &ClientSettingsSection::ALL[ClientSettingsSection::ALL.len() - 4..],
+            &ClientSettingsSection::ALL[ClientSettingsSection::ALL.len() - 5..],
             [
                 ClientSettingsSection::Reminders,
                 ClientSettingsSection::ClosedSessions,
                 ClientSettingsSection::News,
-                ClientSettingsSection::Browser
+                ClientSettingsSection::Browser,
+                ClientSettingsSection::Coordinator
             ]
         );
         let popup_left = tabs[0].0.x;
@@ -239,7 +240,7 @@ mod fork_smoke {
                 "{section:?} tab is clipped"
             );
             assert!(
-                rect.right() <= popup_left + 82,
+                rect.right() <= popup_left + 94,
                 "{section:?} tab ends past the popup's inner width"
             );
         }
@@ -249,5 +250,6 @@ mod fork_smoke {
         assert!(row.contains(" closed"), "{row}");
         assert!(row.contains(" news "), "{row}");
         assert!(row.contains("browser"), "{row}");
+        assert!(row.contains("coordinator"), "{row}");
     }
 }

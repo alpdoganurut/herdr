@@ -28,6 +28,12 @@
 //! one row between the list and the status footer (`hits.news_row`), with a
 //! state glyph, `News` and a short status. With news enabled the row stays
 //! when there is no News tab (a click creates it).
+//!
+//! The coordinator tab (`coordinator.rs`) is pinned the same way, as the
+//! bottom-most pinned row (Browser, News, coordinator from top to bottom);
+//! when not every pinned row fits it keeps its row first, then News, then
+//! Browser. Tabs holding a coordinator-managed agent get a dim `+` mark
+//! before the agent glyph (an O(1) lookup in the client's managed set).
 
 use ratatui::{
     buffer::Buffer,
@@ -102,11 +108,11 @@ pub(super) fn is_group_index(index: usize) -> bool {
 
 /// The rows to draw, honouring fold state except for the focused tab's group.
 /// One pass over the tabs, which the endpoint emits space by space. The
-/// pinned News tab (`pinned_tab_id`) is left out.
+/// pinned tabs (News, coordinator: `pinned_tab_ids`) are left out.
 fn entries<'a>(
     snapshot: &'a ClientShellSnapshot,
     collapsed_groups: &HashSet<String>,
-    pinned_tab_id: Option<&str>,
+    pinned_tab_ids: &[&str],
 ) -> Vec<Entry<'a>> {
     let focused = focused_workspace(snapshot);
     let position: HashMap<&str, usize> = snapshot
@@ -118,7 +124,7 @@ fn entries<'a>(
     let mut members: Vec<Vec<&crate::protocol::ClientShellTab>> =
         vec![Vec::new(); snapshot.workspaces.len()];
     for tab in &snapshot.tabs {
-        if pinned_tab_id == Some(tab.tab_id.as_str()) {
+        if pinned_tab_ids.contains(&tab.tab_id.as_str()) {
             continue;
         }
         if let Some(index) = position.get(tab.workspace_id.as_str()) {
@@ -144,14 +150,28 @@ fn entries<'a>(
     rows
 }
 
-pub(super) fn render_tab_sidebar(
+/// The coordinator's part of the `tabs` sidebar: its pinned row and the
+/// tabs holding a managed agent (`coordinator.rs`). Empty without the
+/// coordinator.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct TabSidebarCoordinator<'a> {
+    pub(super) row: Option<&'a super::coordinator::CoordinatorRow>,
+    pub(super) managed_tabs: Option<&'a HashSet<String>>,
+}
+
+/// The `tabs` sidebar, with the coordinator's row and managed marks.
+/// Returns the coordinator row's rect (empty when it was not drawn), the
+/// hit area of a click on it.
+pub(super) fn render_tab_sidebar_with(
     buffer: &mut Buffer,
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     state: &mut ShellRenderState<'_>,
     hits: &mut ShellHitMap,
-) {
+    coordinator: TabSidebarCoordinator<'_>,
+) -> Rect {
+    let mut coordinator_rect = Rect::default();
     let palette = &config.palette;
     render_sidebar_background(buffer, area, palette);
     hits.sidebar_divider = if area.is_empty() {
@@ -162,7 +182,7 @@ pub(super) fn render_tab_sidebar(
     hits.sidebar_section_divider = Rect::default();
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.is_empty() {
-        return;
+        return coordinator_rect;
     }
 
     render_toolbar(
@@ -176,7 +196,7 @@ pub(super) fn render_tab_sidebar(
     let status_lines = status_footer_lines(snapshot);
     // Rows left under the toolbar and above the menu row; the status keeps
     // one of them for the list once it has more than one line, and the
-    // pinned rows (Browser above News) take one each while they show.
+    // pinned rows (Browser, News, coordinator) take one each while they show.
     let available = content.height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS);
     let pinned: Vec<PinnedRow<'_>> = state
         .browser_row
@@ -184,21 +204,10 @@ pub(super) fn render_tab_sidebar(
         .map(PinnedRow::Browser)
         .into_iter()
         .chain(state.news_row.as_ref().map(PinnedRow::News))
+        .chain(coordinator.row.map(PinnedRow::Coordinator))
         .collect();
-    let news_rows = (pinned.len() as u16).min(available.saturating_sub(1));
-    // When not every pinned row fits, News keeps its row (it had it first);
-    // Browser only shows with room to spare.
-    let pinned: Vec<PinnedRow<'_>> = if usize::from(news_rows) >= pinned.len() {
-        pinned
-    } else {
-        let (news, rest): (Vec<PinnedRow<'_>>, Vec<PinnedRow<'_>>) = pinned
-            .into_iter()
-            .partition(|row| matches!(row, PinnedRow::News(_)));
-        news.into_iter()
-            .chain(rest)
-            .take(usize::from(news_rows))
-            .collect()
-    };
+    let pinned = pinned_rows_that_fit(pinned, available.saturating_sub(1));
+    let news_rows = pinned.len() as u16;
     let available = available.saturating_sub(news_rows);
     let status_rows = (status_lines.len().min(usize::from(u16::MAX)) as u16)
         .min(available.saturating_sub(1).max(1))
@@ -211,8 +220,8 @@ pub(super) fn render_tab_sidebar(
             .height
             .saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS + status_rows + news_rows),
     );
-    // Top-down from the list's bottom edge: Browser, then News.
-    for (offset, row) in pinned.iter().take(usize::from(news_rows)).enumerate() {
+    // Top-down from the list's bottom edge: Browser, News, coordinator.
+    for (offset, row) in pinned.iter().enumerate() {
         let rect = Rect::new(
             content.x,
             body.bottom().saturating_add(offset as u16),
@@ -227,6 +236,10 @@ pub(super) fn render_tab_sidebar(
             PinnedRow::News(row) => {
                 render_news_row(buffer, rect, row, config);
                 hits.news_row = rect;
+            }
+            PinnedRow::Coordinator(row) => {
+                render_coordinator_row(buffer, rect, row, config);
+                coordinator_rect = rect;
             }
         }
     }
@@ -259,14 +272,14 @@ pub(super) fn render_tab_sidebar(
             *count = count.saturating_add(agent.subagents);
         }
     }
-    let rows = entries(
-        snapshot,
-        state.collapsed_groups,
-        state
-            .news_row
-            .as_ref()
-            .and_then(|row| row.tab_id.as_deref()),
-    );
+    let pinned_tab_ids: Vec<&str> = state
+        .news_row
+        .as_ref()
+        .and_then(|row| row.tab_id.as_deref())
+        .into_iter()
+        .chain(coordinator.row.and_then(|row| row.tab_id.as_deref()))
+        .collect();
+    let rows = entries(snapshot, state.collapsed_groups, &pinned_tab_ids);
     let row_heights = vec![1u16; rows.len()];
     let gaps = vec![0u16; rows.len()];
     let mut metrics =
@@ -334,7 +347,19 @@ pub(super) fn render_tab_sidebar(
                     crate::config::tab_agent_glyph_color(&config.tab_agent_glyph_colors, glyph_key)
                 });
                 let subagents = tab_subagents.get(tab.tab_id.as_str()).copied().unwrap_or(0);
-                let markers = reminder_markers(tab, state, &config.palette);
+                let mut markers = reminder_markers(tab, state, &config.palette);
+                if coordinator
+                    .managed_tabs
+                    .is_some_and(|managed| managed.contains(&tab.tab_id))
+                {
+                    markers.insert(
+                        0,
+                        (
+                            super::coordinator::MANAGED_TAB_MARK,
+                            config.palette.overlay0,
+                        ),
+                    );
+                }
                 // Fork: a working tab's glyph breathes (`breathe.rs`).
                 let breathe = (tab.agent_status == crate::api::schema::AgentStatus::Working
                     && !glyph.is_empty())
@@ -433,12 +458,42 @@ pub(super) fn render_tab_sidebar(
         "«",
         Style::default().fg(palette.overlay0),
     );
+    coordinator_rect
 }
 
 /// The pinned rows under the list, in drawing order.
-enum PinnedRow<'a> {
+#[derive(Debug, Clone, Copy)]
+pub(super) enum PinnedRow<'a> {
     Browser(&'a super::browser::BrowserRow),
     News(&'a super::news::NewsRow),
+    Coordinator(&'a super::coordinator::CoordinatorRow),
+}
+
+impl PinnedRow<'_> {
+    /// Which row keeps its place when not all fit: lower goes first.
+    fn keep_rank(&self) -> u8 {
+        match self {
+            Self::Coordinator(_) => 0,
+            Self::News(_) => 1,
+            Self::Browser(_) => 2,
+        }
+    }
+}
+
+/// The pinned rows to draw in `room` rows, still in drawing order (Browser,
+/// News, coordinator). When not every row fits, the coordinator keeps its
+/// row first, then News, then Browser.
+pub(super) fn pinned_rows_that_fit(rows: Vec<PinnedRow<'_>>, room: u16) -> Vec<PinnedRow<'_>> {
+    let room = usize::from(room);
+    if rows.len() <= room {
+        return rows;
+    }
+    let mut ranks: Vec<u8> = rows.iter().map(PinnedRow::keep_rank).collect();
+    ranks.sort_unstable();
+    let cutoff = ranks.get(room).copied().unwrap_or(u8::MAX);
+    rows.into_iter()
+        .filter(|row| row.keep_rank() < cutoff)
+        .collect()
 }
 
 /// The pinned Browser row: ` <glyph> Browser … <status> `, the glyph lit
@@ -515,6 +570,55 @@ fn render_news_row(
         Span::styled(label, label_style),
         Span::raw(" ".repeat(usize::from(pad))),
         Span::styled(row.status.clone(), Style::default().fg(palette.overlay1)),
+        Span::raw(" "),
+    ];
+    Paragraph::new(Line::from(spans))
+        .style(row_style)
+        .render(rect, buffer);
+}
+
+/// The pinned coordinator row: ` <glyph> coordinator … <status> `, styled
+/// as the News row (bold label and row background while focused, the glyph
+/// in the state's color, the status dim and right-aligned).
+fn render_coordinator_row(
+    buffer: &mut Buffer,
+    rect: Rect,
+    row: &super::coordinator::CoordinatorRow,
+    config: &ClientShellConfig,
+) {
+    let palette = &config.palette;
+    let row_style = if row.focused {
+        Style::default().bg(palette.active_row_bg)
+    } else {
+        Style::default()
+    };
+    let label_style = if row.focused {
+        Style::default()
+            .fg(palette.text)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(palette.subtext0)
+    };
+    let glyph = row.state.glyph();
+    let lead = 1 + display_width(glyph) as u16 + 1;
+    // The label wins over the status in a narrow sidebar, as on the
+    // Browser row.
+    let label_width = display_width(super::coordinator::COORDINATOR_ROW_LABEL) as u16;
+    let status_room = rect.width.saturating_sub(lead + label_width + 2) as usize;
+    let status = crate::ui::truncate_end(&row.status, status_room);
+    let status_cells = display_width(&status) as u16 + 1;
+    let available = rect.width.saturating_sub(lead + status_cells + 1) as usize;
+    let label = crate::ui::truncate_end(super::coordinator::COORDINATOR_ROW_LABEL, available);
+    let pad = rect
+        .width
+        .saturating_sub(lead + display_width(&label) as u16 + status_cells);
+    let spans = vec![
+        Span::raw(" "),
+        Span::styled(glyph, Style::default().fg(row.state.color(palette))),
+        Span::raw(" "),
+        Span::styled(label, label_style),
+        Span::raw(" ".repeat(usize::from(pad))),
+        Span::styled(status, Style::default().fg(palette.overlay1)),
         Span::raw(" "),
     ];
     Paragraph::new(Line::from(spans))

@@ -394,6 +394,7 @@ impl ClientShellState {
             crate::api::schema::Method::PaneSplit(params) => params.focus,
             crate::api::schema::Method::SessionClosedReopen(_) => true,
             crate::api::schema::Method::NewsOpen(_) => true,
+            crate::api::schema::Method::CoordinatorOpen(_) => true,
             _ => false,
         };
         if changes_focus {
@@ -864,6 +865,9 @@ impl ClientShellState {
             | PendingEndpointKind::NewsSetQuietHours) => {
                 return self.handle_news_endpoint_result(kind, result);
             }
+            PendingEndpointKind::Coordinator(kind) => {
+                return self.handle_coordinator_endpoint_result(kind, result);
+            }
             kind @ (PendingEndpointKind::BrowserGet
             | PendingEndpointKind::BrowserFocus
             | PendingEndpointKind::BrowserStart
@@ -1175,6 +1179,9 @@ impl ClientShellState {
             KeybindAction::OpenNews => Some(Method::NewsOpen(
                 crate::api::schema::NewsOpenParams::default(),
             )),
+            KeybindAction::OpenCoordinator => Some(Method::CoordinatorOpen(
+                crate::api::schema::EmptyParams::default(),
+            )),
             KeybindAction::EditScrollback => Some(Method::PaneEditScrollback(PaneTarget {
                 pane_id: focused_pane?,
             })),
@@ -1289,11 +1296,16 @@ impl ClientShellState {
         let pinned = tabs_layout
             .then(|| self.news_row().and_then(|row| row.tab_id))
             .flatten();
+        // Fork: the pinned coordinator row is left out the same way.
+        let coordinator = tabs_layout
+            .then(|| self.coordinator_pinned_tab_id())
+            .flatten();
         snapshot
             .tabs
             .iter()
             .filter(|tab| tabs_layout || tab.workspace_id == focused_workspace)
             .filter(|tab| pinned.as_deref() != Some(tab.tab_id.as_str()))
+            .filter(|tab| coordinator.as_deref() != Some(tab.tab_id.as_str()))
             .collect()
     }
 }

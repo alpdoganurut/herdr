@@ -55,6 +55,7 @@ impl ClientShellState {
                     == Some(ClientEndpointStatus::Online)
         });
         let news_row = self.news_row();
+        let coordinator_row = self.coordinator_row();
         let breathe_phase = self.breathe_phase();
         let breathe_reset_rgb = self.breathe_reset_rgb();
         let browser_row = self.browser_row();
@@ -72,6 +73,8 @@ impl ClientShellState {
             news_row,
             browser_row,
             browser_marked_tabs,
+            coordinator_row,
+            coordinator_managed_tabs: Some(&self.coordinator.managed_tabs),
             remote_collapsed_groups: &self.remote_collapsed_groups,
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
@@ -214,6 +217,7 @@ impl ClientShellState {
             _ => (None, None),
         };
         let news_row = self.news_row();
+        let coordinator_row = self.coordinator_row();
         let breathe_phase = self.breathe_phase();
         let breathe_reset_rgb = self.breathe_reset_rgb();
         let browser_row = self.browser_row();
@@ -237,6 +241,8 @@ impl ClientShellState {
                 news_row,
                 browser_row,
                 browser_marked_tabs,
+                coordinator_row,
+                coordinator_managed_tabs: Some(&self.coordinator.managed_tabs),
                 remote_collapsed_groups: &self.remote_collapsed_groups,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,

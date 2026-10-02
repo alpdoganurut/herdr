@@ -250,6 +250,10 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) browser_row: Option<super::browser::BrowserRow>,
     /// Herdr tabs whose panes used the browser recently: the `◎` marker.
     pub(super) browser_marked_tabs: HashSet<String>,
+    /// Fork: the `tabs` layout's pinned coordinator row (the bottom-most).
+    pub(super) coordinator_row: Option<super::coordinator::CoordinatorRow>,
+    /// Fork: tabs holding a coordinator-managed agent (the dim `+`).
+    pub(super) coordinator_managed_tabs: Option<&'a HashSet<String>>,
     pub(super) remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) workspace_scroll: &'a mut usize,
     pub(super) agent_scroll: &'a mut usize,
@@ -307,13 +311,19 @@ pub(super) fn render_shell(
         } else if !state.sidebar_collapsed
             && config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
         {
-            super::tab_sidebar::render_tab_sidebar(
+            let coordinator_row = state.coordinator_row.take();
+            let managed_tabs = state.coordinator_managed_tabs;
+            hits.coordinator_row = super::tab_sidebar::render_tab_sidebar_with(
                 buffer,
                 layout.sidebar,
                 snapshot,
                 config,
                 &mut state,
                 &mut hits,
+                super::tab_sidebar::TabSidebarCoordinator {
+                    row: coordinator_row.as_ref(),
+                    managed_tabs,
+                },
             );
         } else if state.sidebar_collapsed {
             render_collapsed_sidebar(
@@ -338,11 +348,18 @@ pub(super) fn render_shell(
         }
     }
     if layout.tab_bar.height > 0 {
+        // Fork: outside the `tabs` layout the coordinator tab carries its
+        // row's glyph and status after its label.
+        let coordinator_mark = (config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs)
+            .then_some(state.coordinator_row.as_ref())
+            .flatten()
+            .and_then(|row| Some((row.tab_id.as_deref()?, row.tab_mark())));
         render_tab_bar(
             buffer,
             layout.tab_bar,
             snapshot,
             config,
+            coordinator_mark,
             state.tab_scroll,
             state.reveal_focused_tab,
             state.tab_drag_insert_index,
