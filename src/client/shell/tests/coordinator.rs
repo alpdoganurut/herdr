@@ -3,9 +3,9 @@
 //! row, pinned-tab exclusion and managed marks.
 
 use super::super::coordinator::{
-    coordinator_row_state, ClientCoordinatorState, CoordinatorEffect, CoordinatorMenuAction,
-    CoordinatorRequest, CoordinatorRequestKind, CoordinatorRow, CoordinatorRowState,
-    COORDINATOR_REFRESH_INTERVAL,
+    coordinator_row_state, dashboard_url_notice, ClientCoordinatorState, CoordinatorEffect,
+    CoordinatorMenuAction, CoordinatorRequest, CoordinatorRequestKind, CoordinatorRow,
+    CoordinatorRowState, COORDINATOR_REFRESH_INTERVAL,
 };
 use super::super::settings_coordinator::{
     section_rows, ClientCoordinatorSettings, CoordinatorPicker, CoordinatorSettingsRow,
@@ -146,6 +146,93 @@ fn row_state_follows_the_priority_table() {
     off.enabled = false;
     off.state = CoordinatorStateInfo::Off;
     assert_eq!(row_of(&off), (CoordinatorRowState::Off, "off".into()));
+}
+
+#[test]
+fn a_coordinator_waiting_on_the_user_needs_you_above_working_and_ideas() {
+    let mut running = info();
+    running.unread_suggestions = 2;
+    running.turn = Some(CoordinatorTurnInfo {
+        source: "wake".into(),
+        id: "3".into(),
+        started_at: 1,
+    });
+    let needs_you = (CoordinatorRowState::NeedsYou, "needs you".to_string());
+    // Running: a prompt (blocked) or an unknown state needs the user.
+    assert_eq!(
+        coordinator_row_state(&running, Some(AgentStatus::Blocked), false),
+        needs_you
+    );
+    assert_eq!(
+        coordinator_row_state(&running, Some(AgentStatus::Unknown), false),
+        needs_you
+    );
+    assert_eq!(
+        coordinator_row_state(&running, Some(AgentStatus::Working), false).0,
+        CoordinatorRowState::Working
+    );
+    // Without the tab in the snapshot, the reply's status decides.
+    running.coordinator_status = Some("blocked".into());
+    assert_eq!(coordinator_row_state(&running, None, false), needs_you);
+
+    // Starting: blocked on a prompt (Claude's folder trust) needs the user;
+    // unknown is the moment before the agent paints.
+    let mut starting = info();
+    starting.state = CoordinatorStateInfo::Starting;
+    starting.unread_suggestions = 1;
+    assert_eq!(
+        coordinator_row_state(&starting, Some(AgentStatus::Blocked), false),
+        needs_you
+    );
+    assert_eq!(
+        coordinator_row_state(&starting, Some(AgentStatus::Unknown), false).0,
+        CoordinatorRowState::Ideas
+    );
+
+    // Down and the server-side blocks still come first.
+    let mut down = running.clone();
+    down.state = CoordinatorStateInfo::Down;
+    assert_eq!(
+        coordinator_row_state(&down, Some(AgentStatus::Blocked), false).0,
+        CoordinatorRowState::Down
+    );
+    assert_eq!(CoordinatorRowState::NeedsYou.glyph(), "!");
+}
+
+#[test]
+fn clicking_the_needs_you_row_focuses_the_coordinator_tab() {
+    let mut snapshot = coordinator_snapshot();
+    let state = state_with(info(), &snapshot);
+    for tab in &mut snapshot.tabs {
+        if tab.tab_id == "tab_c" {
+            tab.agent_status = AgentStatus::Blocked;
+        }
+    }
+    let row = state.row(&snapshot).expect("row");
+    assert_eq!(row.state, CoordinatorRowState::NeedsYou);
+    assert_eq!(row.tab_mark(), "! needs you");
+    assert_eq!(
+        state.activate_row(&snapshot),
+        CoordinatorEffect::FocusTab("tab_c".into())
+    );
+}
+
+#[test]
+fn a_queued_wake_reply_says_why_and_is_not_kept() {
+    let snapshot = coordinator_snapshot();
+    let mut state = state_with(info(), &snapshot);
+    let mut queued = info();
+    queued.wake_queued = Some("coordinator is working".into());
+    assert_eq!(
+        state.on_reply(CoordinatorRequestKind::Wake, Some(queued), Some(&snapshot)),
+        Some("wake queued: coordinator is working".into())
+    );
+    assert_eq!(state.info.as_ref().expect("info").wake_queued, None);
+    assert_eq!(
+        state.on_reply(CoordinatorRequestKind::Wake, Some(info()), Some(&snapshot)),
+        None,
+        "delivered now: no notice"
+    );
 }
 
 #[test]
@@ -308,7 +395,7 @@ fn open_dashboard_opens_on_local_and_shows_the_url_on_remote() {
     read.unread_suggestions = 0;
     assert_eq!(
         state.on_reply(request.kind(), Some(read.clone()), Some(&snapshot)),
-        Some("http://127.0.0.1:7718/".into())
+        Some(dashboard_url_notice("http://127.0.0.1:7718/"))
     );
     assert_eq!(
         state.on_reply(

@@ -6,8 +6,8 @@
 //! here.
 
 use super::coordinator::{
-    dashboard_url_notice, CoordinatorEffect, CoordinatorMenuItem, CoordinatorRequest,
-    CoordinatorRequestKind, CoordinatorRow,
+    CoordinatorEffect, CoordinatorMenuItem, CoordinatorRequest, CoordinatorRequestKind,
+    CoordinatorRow,
 };
 use super::*;
 use crate::api::schema::coordinator::{
@@ -202,8 +202,8 @@ impl ClientShellState {
             Err(_) => None,
         };
         let snapshot = self.snapshot.as_deref();
-        if let Some(url) = self.coordinator.on_reply(kind, reply, snapshot) {
-            self.set_endpoint_error(dashboard_url_notice(&url));
+        if let Some(notice) = self.coordinator.on_reply(kind, reply, snapshot) {
+            self.set_endpoint_error(notice);
         }
         self.sync_coordinator_settings();
         (true, Vec::new())

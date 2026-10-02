@@ -177,6 +177,9 @@ pub(crate) enum CoordinatorRowState {
     Down,
     Blocked,
     Unavailable,
+    /// The coordinator is up or coming up and waits on the user in its tab
+    /// (a permission or folder-trust prompt), or its state is unknown.
+    NeedsYou,
     Waking,
     Working,
     Ideas,
@@ -189,7 +192,7 @@ impl CoordinatorRowState {
     pub(crate) fn glyph(self) -> &'static str {
         match self {
             Self::Down => "×",
-            Self::Blocked => "!",
+            Self::Blocked | Self::NeedsYou => "!",
             Self::Unavailable => "–",
             Self::Waking | Self::Working => "◐",
             Self::Ideas => "●",
@@ -201,7 +204,7 @@ impl CoordinatorRowState {
     pub(crate) fn color(self, palette: &Palette) -> ratatui::style::Color {
         match self {
             Self::Down => palette.red,
-            Self::Blocked | Self::Waking | Self::Working => palette.yellow,
+            Self::Blocked | Self::NeedsYou | Self::Waking | Self::Working => palette.yellow,
             Self::Ideas => palette.accent,
             Self::Unavailable | Self::Capped | Self::Off | Self::Idle => palette.overlay0,
         }
@@ -215,8 +218,8 @@ pub(crate) struct CoordinatorRow {
     /// coordinator enabled and no tab (a click creates it).
     pub(crate) tab_id: Option<String>,
     pub(crate) state: CoordinatorRowState,
-    /// `down`, `locked`, `registry`, `n/a`, `waking`, `working`, `N ideas`,
-    /// `capped`, `off`, `N agents`.
+    /// `down`, `locked`, `registry`, `n/a`, `needs you`, `waking`,
+    /// `working`, `N ideas`, `capped`, `off`, `N agents`.
     pub(crate) status: String,
     pub(crate) focused: bool,
 }
@@ -232,7 +235,9 @@ impl CoordinatorRow {
 /// The row's state and status for `info`, the coordinator tab's agent
 /// status and whether that tab is focused (both read from the snapshot,
 /// which is fresher than the last reply). Priority: down, blocked,
-/// unavailable, a live turn or a working coordinator, unread suggestions
+/// unavailable, a coordinator waiting on the user (blocked while starting
+/// or running, or unknown while running), a live turn or a working
+/// coordinator, unread suggestions
 /// (not while the tab is focused: the server clears them on focus),
 /// capped, off, else the managed-agent count. A state this client does not
 /// know reads as the idle row.
@@ -256,9 +261,27 @@ pub(crate) fn coordinator_row_state(
         }
         _ => {}
     }
-    let working = tab_status == Some(AgentStatus::Working)
-        || (tab_status.is_none() && info.coordinator_status.as_deref() == Some("working"));
-    if working {
+    let status = tab_status.or_else(|| {
+        Some(match info.coordinator_status.as_deref()? {
+            "blocked" => AgentStatus::Blocked,
+            "unknown" => AgentStatus::Unknown,
+            "working" => AgentStatus::Working,
+            _ => return None,
+        })
+    });
+    // Unknown is also the moment before the agent paints at launch: only a
+    // running coordinator reads it as needing the user.
+    let needs_you = match info.state {
+        CoordinatorStateInfo::Starting => status == Some(AgentStatus::Blocked),
+        CoordinatorStateInfo::Running => {
+            matches!(status, Some(AgentStatus::Blocked | AgentStatus::Unknown))
+        }
+        _ => false,
+    };
+    if needs_you {
+        return (CoordinatorRowState::NeedsYou, "needs you".into());
+    }
+    if status == Some(AgentStatus::Working) {
         return (CoordinatorRowState::Working, "working".into());
     }
     if info.turn.is_some() {
@@ -535,8 +558,8 @@ impl ClientCoordinatorState {
 
     /// A `coordinator.*` reply: `Some(info)` for a `CoordinatorGet` result,
     /// `None` for an error (already raised as the generic notice) or an
-    /// unexpected result. Returns the URL to show for an
-    /// `open_dashboard {open: false}` reply.
+    /// unexpected result. Returns a notice to show: the URL for an
+    /// `open_dashboard {open: false}` reply, or why a wake waits.
     pub(crate) fn on_reply(
         &mut self,
         kind: CoordinatorRequestKind,
@@ -554,19 +577,22 @@ impl ClientCoordinatorState {
                 None
             }
             _ => {
-                let Some(info) = reply else {
+                let Some(mut info) = reply else {
                     // A refusal leaves the state as it was; pull to be sure.
                     self.refresh();
                     return None;
                 };
-                let url = match kind {
+                // Only this reply's: the stored read model does not keep it.
+                let queued = info.wake_queued.take();
+                let notice = match kind {
                     CoordinatorRequestKind::OpenDashboard { open: false } => {
-                        info.dashboard_url.clone()
+                        info.dashboard_url.as_deref().map(dashboard_url_notice)
                     }
+                    CoordinatorRequestKind::Wake => queued.as_deref().map(wake_queued_notice),
                     _ => None,
                 };
                 self.set_info(Some(info));
-                url
+                notice
             }
         }
     }
@@ -590,4 +616,9 @@ impl ClientCoordinatorState {
 /// The text a remote connection shows for the dashboard URL.
 pub(crate) fn dashboard_url_notice(url: &str) -> String {
     format!("coordinator dashboard on the server host: {url}")
+}
+
+/// The text a wake that cannot be delivered now shows.
+pub(crate) fn wake_queued_notice(reason: &str) -> String {
+    format!("wake queued: {reason}")
 }
