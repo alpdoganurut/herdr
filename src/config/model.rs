@@ -5,7 +5,8 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 
 use super::{
     ActionKeybinds, AgentsConfig, BindingConfig, BrowserConfig, CommandKeybindConfig,
-    CoordinatorConfig, IndexedKeybind, Keybinds, NewsConfig, SidebarConfig, SoundConfig,
+    CoordinatorConfig, IndexedKeybind, Keybinds, NewsConfig, NotesConfig, SidebarConfig,
+    SoundConfig,
     TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
     DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
@@ -16,6 +17,10 @@ pub const MIN_TOAST_MAX_STACK: u8 = 1;
 pub const MAX_TOAST_MAX_STACK: u8 = 20;
 pub const DEFAULT_IDLE_REMINDER_MINUTES: u32 = 10;
 pub const MAX_IDLE_REMINDER_MINUTES: u32 = 240;
+/// Fork: `ui.info_pane_width` default and bounds (columns).
+pub const DEFAULT_INFO_PANE_WIDTH: u16 = 44;
+pub const MIN_INFO_PANE_WIDTH: u16 = 28;
+pub const MAX_INFO_PANE_WIDTH: u16 = 120;
 pub const DEFAULT_DAILY_REMINDER_TIME: &str = "09:30";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -441,6 +446,7 @@ pub struct Config {
     pub browser: BrowserConfig,
     pub coordinator: CoordinatorConfig,
     pub agents: AgentsConfig,
+    pub notes: NotesConfig,
 }
 
 #[derive(Debug)]
@@ -546,6 +552,8 @@ pub struct KeysConfig {
     pub open_browser: BindingConfig,
     /// Focus the coordinator tab (coordinator.open), creating it when it is gone. Unset by default.
     pub open_coordinator: BindingConfig,
+    /// Show or hide the focused tab's info pane (notes and history). Unset by default.
+    pub toggle_info_pane: BindingConfig,
     /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
     pub copy_mode: BindingConfig,
     /// Focus the pane to the left. Default: "prefix+h".
@@ -697,6 +705,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     open_coordinator: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_info_pane: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     copy_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus_pane_left: Option<BindingConfig>,
@@ -816,6 +826,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(open_news);
         apply_field!(open_browser);
         apply_field!(open_coordinator);
+        apply_field!(toggle_info_pane);
         apply_field!(copy_mode);
         apply_field!(focus_pane_left);
         apply_field!(focus_pane_down);
@@ -930,6 +941,7 @@ impl KeysConfig {
         copy_effective_action_field!(open_news, keybinds.open_news);
         copy_effective_action_field!(open_browser, keybinds.open_browser);
         copy_effective_action_field!(open_coordinator, keybinds.open_coordinator);
+        copy_effective_action_field!(toggle_info_pane, keybinds.toggle_info_pane);
         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
         copy_effective_action_field!(focus_pane_left, keybinds.focus_pane_left);
         copy_effective_action_field!(focus_pane_down, keybinds.focus_pane_down);
@@ -1107,6 +1119,9 @@ pub struct UiConfig {
     /// Local time of day ("HH:MM", 24-hour) a tab's daily reminder
     /// (`tab.set_reminder` every = daily) fires. Default: "09:30".
     pub daily_reminder_time: String,
+    /// Default width (columns) of a tab's info pane until a width is dragged and remembered.
+    /// 28 through 120. Default: 44.
+    pub info_pane_width: u16,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
@@ -1325,6 +1340,7 @@ impl Default for KeysConfig {
             open_news: BindingConfig::default(),
             open_browser: BindingConfig::default(),
             open_coordinator: BindingConfig::default(),
+            toggle_info_pane: BindingConfig::default(),
             copy_mode: BindingConfig::one("prefix+["),
             focus_pane_left: BindingConfig::one("prefix+h"),
             focus_pane_down: BindingConfig::one("prefix+j"),
@@ -1375,6 +1391,7 @@ impl Default for UiConfig {
             tab_agent_glyph_colors: std::collections::BTreeMap::new(),
             idle_reminder_minutes: DEFAULT_IDLE_REMINDER_MINUTES,
             daily_reminder_time: DEFAULT_DAILY_REMINDER_TIME.into(),
+            info_pane_width: DEFAULT_INFO_PANE_WIDTH,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,
@@ -1440,6 +1457,23 @@ impl UiConfig {
                     self.daily_reminder_time
                 )
             })
+    }
+
+    /// `info_pane_width` clamped to 28..=120; out-of-range values are
+    /// reported by [`UiConfig::info_pane_width_diagnostic`].
+    pub fn effective_info_pane_width(&self) -> u16 {
+        self.info_pane_width
+            .clamp(MIN_INFO_PANE_WIDTH, MAX_INFO_PANE_WIDTH)
+    }
+
+    pub fn info_pane_width_diagnostic(&self) -> Option<String> {
+        (!(MIN_INFO_PANE_WIDTH..=MAX_INFO_PANE_WIDTH).contains(&self.info_pane_width)).then(|| {
+            format!(
+                "ui.info_pane_width must be between {MIN_INFO_PANE_WIDTH} and {MAX_INFO_PANE_WIDTH} (got {}); using {}",
+                self.info_pane_width,
+                self.effective_info_pane_width()
+            )
+        })
     }
 
     pub fn idle_reminder_diagnostic(&self) -> Option<String> {

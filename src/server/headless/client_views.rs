@@ -978,3 +978,19 @@ impl HeadlessServer {
         changed | navigation_changed | geometry_changed
     }
 }
+
+#[cfg(test)]
+mod notes_geometry_tests {
+    use super::HeadlessServer;
+
+    #[test]
+    fn no_notes_method_may_change_client_geometry() {
+        for method in crate::api::schema::notes::sample_methods() {
+            assert!(
+                !HeadlessServer::public_request_may_change_geometry(&method),
+                "{} must not claim tab geometry",
+                crate::api::api_method_name(&method)
+            );
+        }
+    }
+}

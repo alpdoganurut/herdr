@@ -202,4 +202,7 @@ pub enum AppEvent {
     WorktreeReadFinished(Box<WorktreeReadResult>),
     /// The coordinator worker finished a pass with something to report.
     CoordinatorPassFinished(Box<crate::coordinator::engine::CoordinatorPassOutput>),
+    /// The notes worker (fork) located a transcript or read a checkpoint's
+    /// context.
+    NotesWorkerFinished(Box<crate::notes::worker::NotesWorkerResult>),
 }

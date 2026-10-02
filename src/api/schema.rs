@@ -11,6 +11,7 @@ pub mod coordinator;
 pub mod events;
 pub mod integrations;
 pub mod news;
+pub mod notes;
 pub mod panes;
 pub mod plugins;
 pub mod response;
@@ -276,6 +277,22 @@ pub enum Method {
     BrowserSettingsSet(BrowserSettingsSetParams),
     #[serde(rename = "browser.fix")]
     BrowserFix(BrowserFixParams),
+    #[serde(rename = "notes.get")]
+    NotesGet(notes::NotesGetParams),
+    #[serde(rename = "notes.set")]
+    NotesSet(notes::NotesSetParams),
+    #[serde(rename = "notes.append")]
+    NotesAppend(notes::NotesAppendParams),
+    #[serde(rename = "checkpoints.list")]
+    CheckpointsList(notes::CheckpointsListParams),
+    #[serde(rename = "checkpoints.add")]
+    CheckpointsAdd(notes::CheckpointsAddParams),
+    #[serde(rename = "checkpoints.update")]
+    CheckpointsUpdate(notes::CheckpointsUpdateParams),
+    #[serde(rename = "checkpoints.remove")]
+    CheckpointsRemove(notes::CheckpointTarget),
+    #[serde(rename = "checkpoints.context")]
+    CheckpointsContext(notes::CheckpointsContextParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

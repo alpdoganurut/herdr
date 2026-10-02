@@ -1646,3 +1646,6 @@ async fn browser_settings_write_the_config_and_fix_the_codex_entries_but_never_t
 #[cfg(unix)]
 #[path = "fork_smoke/coordinator.rs"]
 mod coordinator;
+
+#[path = "fork_smoke/notes.rs"]
+mod notes;

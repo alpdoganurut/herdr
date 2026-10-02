@@ -218,6 +218,21 @@ pub enum ResponseResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ack_key: Option<String>,
     },
+    NotesGet {
+        notes: super::notes::NotesInfo,
+    },
+    NotesWrite {
+        write: super::notes::NotesWriteInfo,
+    },
+    CheckpointsList {
+        checkpoints: super::notes::CheckpointsListInfo,
+    },
+    CheckpointWrite {
+        checkpoint: super::notes::CheckpointWriteInfo,
+    },
+    CheckpointContext {
+        context: super::notes::CheckpointContextInfo,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

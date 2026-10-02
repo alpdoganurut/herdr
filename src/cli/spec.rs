@@ -47,6 +47,8 @@ pub(super) fn command() -> Command {
         .subcommand(session_command())
         .subcommand(news_command())
         .subcommand(team_command())
+        .subcommand(notes_command())
+        .subcommand(checkpoint_command())
         .subcommand(browser_command())
         .subcommand(integration_command())
         .subcommand(plugin_command());
@@ -1256,6 +1258,126 @@ fn news_command() -> Command {
         )
 }
 
+/// `--tab`, `--pane` and `--key`: which notes, outside a herdr pane.
+fn notes_target_args(command: Command) -> Command {
+    command
+        .arg(option("tab", "TAB_ID"))
+        .arg(option("pane", "PANE_ID"))
+        .arg(option("key", "KEY"))
+}
+
+fn notes_command() -> Command {
+    Command::new("notes")
+        .about("Read and write the per-session notes behind the info pane")
+        .subcommand(notes_target_args(
+            Command::new("read")
+                .about("Print the notes (the key, revision and path go to stderr)")
+                .override_usage("herdr notes read [--json]")
+                .arg(json_flag())
+                .long_about(
+                    "Prints the notes of this pane's agent session, else of its tab (notes.get). Outside a herdr pane name them with --tab, --pane or --key. --json prints the whole record, including the revision `notes write --base` needs.",
+                ),
+        ))
+        .subcommand(notes_target_args(
+            Command::new("path")
+                .about("Print where the notes file is")
+                .override_usage("herdr notes path")
+                .long_about(
+                    "Prints the notes file's path. Outside a herdr pane and without --tab, --pane or --key it prints the notes directory, which also keeps the notes of tabs that no longer exist.",
+                ),
+        ))
+        .subcommand(notes_target_args(
+            Command::new("append")
+                .about("Append a line to the notes, optionally under a section")
+                .override_usage("herdr notes append [TEXT|-] [--section S] [--stamp]")
+                .arg(Arg::new("text").value_name("TEXT").required(false))
+                .arg(option("section", "SECTION"))
+                .arg(flag("stamp"))
+                .long_about(
+                    "Appends TEXT (or stdin with `-` or no TEXT) to the notes (notes.append): at the end, or at the end of `## SECTION`, which is created when missing. --stamp prefixes `- HH:MM `. Never conflicts; prints the new revision.",
+                ),
+        ))
+        .subcommand(notes_target_args(
+            Command::new("write")
+                .about("Replace the notes if they are still at a revision")
+                .override_usage("herdr notes write --base REV [--file F | -]")
+                .arg(option("base", "REV").required(true))
+                .arg(option("file", "FILE"))
+                .arg(Arg::new("stdin").value_name("-").required(false))
+                .long_about(
+                    "Replaces the notes with FILE or stdin when they are still at revision REV (notes.set; `none` for notes that do not exist yet). On a conflict prints `conflict` and exits 3; read them again and retry.",
+                ),
+        ))
+}
+
+fn checkpoint_command() -> Command {
+    Command::new("checkpoint")
+        .about("Mark and list decisions, milestones, failures, bookmarks and notes")
+        .subcommand(notes_target_args(
+            Command::new("add")
+                .about("Add a checkpoint")
+                .override_usage(
+                    "herdr checkpoint add <decision|milestone|failure|bookmark|note> TITLE [--detail D] [--tag T]... [--as user]",
+                )
+                .arg(
+                    Arg::new("kind")
+                        .value_name("KIND")
+                        .required(true)
+                        .value_parser(["decision", "milestone", "failure", "bookmark", "note"]),
+                )
+                .arg(Arg::new("title").value_name("TITLE").required(true).num_args(1..))
+                .arg(option("detail", "DETAIL"))
+                .arg(repeatable_option("tag", "TAG"))
+                .arg(option("as", "AUTHOR").value_parser(["user", "agent"]))
+                .long_about(
+                    "Adds a checkpoint to this pane's session (checkpoints.add) and prints its id. The same kind, title and author within two minutes updates that checkpoint instead. Titles are at most 120 characters, details 2000, and at most 8 tags of 32.",
+                ),
+        ))
+        .subcommand(notes_target_args(
+            Command::new("list")
+                .about("List checkpoints, oldest first")
+                .override_usage("herdr checkpoint list [--kind K] [--limit N] [--json]")
+                .arg(
+                    repeatable_option("kind", "KIND")
+                        .value_parser(["decision", "milestone", "failure", "bookmark", "note"]),
+                )
+                .arg(option("limit", "N"))
+                .arg(json_flag()),
+        ))
+        .subcommand(notes_target_args(
+            Command::new("show")
+                .about("Show a checkpoint with the prompt and reply around it")
+                .override_usage("herdr checkpoint show ID [--chars N]")
+                .arg(Arg::new("id").value_name("ID").required(true))
+                .arg(option("chars", "N"))
+                .arg(json_flag())
+                .long_about(
+                    "Shows the checkpoint and the conversation around it from the agent's transcript (checkpoints.context), waiting up to five seconds while it is read. --chars sets the characters per side (default 600, at most 4000).",
+                ),
+        ))
+        .subcommand(notes_target_args(
+            Command::new("rm")
+                .about("Remove a checkpoint")
+                .override_usage("herdr checkpoint rm ID")
+                .arg(Arg::new("id").value_name("ID").required(true)),
+        ))
+        .subcommand(notes_target_args(
+            Command::new("edit")
+                .about("Change a checkpoint's title, detail, kind or tags")
+                .override_usage(
+                    "herdr checkpoint edit ID [--title T] [--detail D] [--kind K] [--tag T]...",
+                )
+                .arg(Arg::new("id").value_name("ID").required(true))
+                .arg(option("title", "TITLE"))
+                .arg(option("detail", "DETAIL"))
+                .arg(
+                    option("kind", "KIND")
+                        .value_parser(["decision", "milestone", "failure", "bookmark", "note"]),
+                )
+                .arg(repeatable_option("tag", "TAG")),
+        ))
+}
+
 fn session_command() -> Command {
     Command::new("session")
         .about("Manage named persistent sessions")
@@ -1954,6 +2076,63 @@ mod tests {
         assert!(times
             .get_arguments()
             .any(|arg| arg.get_id() == "times" && !arg.is_required_set()));
+    }
+
+    #[test]
+    fn spec_models_notes_verbs() {
+        let cmd = super::command();
+        assert!(has_option(command_path(&cmd, &["notes", "read"]), "json"));
+        for verb in ["read", "path", "append", "write"] {
+            let sub = command_path(&cmd, &["notes", verb]);
+            for target in ["tab", "pane", "key"] {
+                assert!(has_option(sub, target), "notes {verb} --{target}");
+            }
+        }
+        let append = command_path(&cmd, &["notes", "append"]);
+        assert!(has_option(append, "section"));
+        assert!(has_option(append, "stamp"));
+        assert!(append
+            .get_arguments()
+            .any(|arg| arg.get_id() == "text" && !arg.is_required_set()));
+        let write = command_path(&cmd, &["notes", "write"]);
+        assert!(has_option(write, "base"));
+        assert!(has_option(write, "file"));
+    }
+
+    #[test]
+    fn spec_models_checkpoint_verbs() {
+        let cmd = super::command();
+        let add = command_path(&cmd, &["checkpoint", "add"]);
+        assert_eq!(
+            add.get_arguments()
+                .find(|arg| arg.get_id() == "kind")
+                .unwrap()
+                .get_possible_values()
+                .iter()
+                .map(|value| value.get_name().to_owned())
+                .collect::<Vec<_>>(),
+            ["decision", "milestone", "failure", "bookmark", "note"]
+        );
+        assert!(has_option(add, "detail"));
+        assert!(has_option(add, "tag"));
+        assert!(has_option(add, "as"));
+        let list = command_path(&cmd, &["checkpoint", "list"]);
+        assert!(has_option(list, "kind"));
+        assert!(has_option(list, "limit"));
+        assert!(has_option(list, "json"));
+        assert!(has_option(
+            command_path(&cmd, &["checkpoint", "show"]),
+            "chars"
+        ));
+        for verb in ["show", "rm", "edit"] {
+            assert!(command_path(&cmd, &["checkpoint", verb])
+                .get_arguments()
+                .any(|arg| arg.get_id() == "id" && arg.is_required_set()));
+        }
+        let edit = command_path(&cmd, &["checkpoint", "edit"]);
+        for option in ["title", "detail", "kind", "tag"] {
+            assert!(has_option(edit, option), "checkpoint edit --{option}");
+        }
     }
 
     #[test]

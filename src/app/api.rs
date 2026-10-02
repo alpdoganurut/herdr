@@ -171,6 +171,11 @@ impl App {
             return Vec::new();
         }
 
+        if let AppEvent::NotesWorkerFinished(result) = ev {
+            self.handle_notes_worker_finished(*result);
+            return Vec::new();
+        }
+
         if let AppEvent::WorktreeReadFinished(result) = ev {
             self.handle_api_worktree_read_finished(*result);
             return Vec::new();
@@ -1286,6 +1291,24 @@ impl App {
                 return self.handle_browser_settings_set(request.id, params)
             }
             Method::BrowserFix(params) => return self.handle_browser_fix(request.id, params),
+            Method::NotesGet(params) => return self.handle_notes_get(request.id, params),
+            Method::NotesSet(params) => return self.handle_notes_set(request.id, params),
+            Method::NotesAppend(params) => return self.handle_notes_append(request.id, params),
+            Method::CheckpointsList(params) => {
+                return self.handle_checkpoints_list(request.id, params)
+            }
+            Method::CheckpointsAdd(params) => {
+                return self.handle_checkpoints_add(request.id, params)
+            }
+            Method::CheckpointsUpdate(params) => {
+                return self.handle_checkpoints_update(request.id, params)
+            }
+            Method::CheckpointsRemove(params) => {
+                return self.handle_checkpoints_remove(request.id, params)
+            }
+            Method::CheckpointsContext(params) => {
+                return self.handle_checkpoints_context(request.id, params)
+            }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

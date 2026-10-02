@@ -17,6 +17,7 @@ mod browser;
 mod closed_sessions;
 pub(crate) mod coordinator;
 pub(crate) mod news;
+mod notes;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
 #[cfg(test)]
@@ -180,6 +181,8 @@ pub struct App {
     /// Tests: how often `follow_teams` ran (the zero-team perf guard).
     #[cfg(test)]
     pub(crate) team_follow_calls: usize,
+    /// Notes and checkpoints (fork): stores, caches and the notes worker.
+    pub(crate) notes: crate::notes::NotesRuntime,
     agent_transcript_backup_thread:
         Option<std::thread::JoinHandle<agent_transcripts::AgentTranscriptBackupPass>>,
     /// The most recent finished backup pass, for `agent.transcripts`.
@@ -680,6 +683,7 @@ impl App {
             team_tombstones: team::TeamTombstones::default(),
             #[cfg(test)]
             team_follow_calls: 0,
+            notes: notes::runtime_for(&config.notes),
             agent_transcript_backup_thread: None,
             agent_transcript_backup_last: None,
             agent_transcript_backup_pending: std::collections::BTreeMap::new(),
@@ -957,6 +961,10 @@ impl App {
 
         if !invalid_section("coordinator") {
             self.apply_coordinator_config(&config.coordinator);
+        }
+
+        if !invalid_section("notes") {
+            self.notes.enabled = config.notes.enabled;
         }
 
         if !invalid_section("browser") {

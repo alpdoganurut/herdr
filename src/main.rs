@@ -36,6 +36,7 @@ mod layout;
 mod logging;
 mod metadata_tokens;
 mod noninteractive_process;
+mod notes;
 mod pane;
 mod pane_graphics_files;
 mod persist;
@@ -185,6 +186,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # open_news = ""                    # unbound; focuses the News tab, creating it with the page viewer when gone
 # open_browser = ""                 # unbound; opens the Browser overlay (the herdr browser's tabs and who uses them)
 # open_coordinator = ""             # unbound; focuses the coordinator tab, creating it when gone
+# toggle_info_pane = ""             # unbound; shows or hides the focused tab's info pane (notes, history)
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"
@@ -276,6 +278,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 
 # Local time of day (24-hour "HH:MM") a tab's daily reminder fires.
 # daily_reminder_time = "09:30"
+
+# Default width (columns) of a tab's info pane until you drag its divider; 28 through 120.
+# A dragged width is remembered by the client.
+# info_pane_width = 44
 
 # Terminal width at or below which Herdr uses the mobile single-column layout.
 # Increase this for foldables, tablets, or wide phone terminals.
@@ -548,6 +554,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # (herdr_agents for messaging teammates) and, for Claude, a per-turn hook with roster changes.
 # Works without `wrap`; launches outside team groups are unchanged. Needs the shell hook.
 # team_roster = true
+
+[notes]
+# Per-session notes and checkpoints behind the info pane, `herdr notes`,
+# `herdr checkpoint` and the agents' notes tools (stored under <config dir>/notes).
+# enabled = true
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

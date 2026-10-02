@@ -12,6 +12,7 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "experimental",
     "keys",
     "news",
+    "notes",
     "onboarding",
     "remote",
     "server",
@@ -411,6 +412,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut diagnostics,
         &mut invalid_sections,
         |section| config.agents = section,
+    );
+    load_live_section(
+        table,
+        "notes",
+        "notes config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.notes = section,
     );
     config.resolve_derived();
 
@@ -1030,6 +1039,18 @@ dashboard_port = 7728
         assert_eq!(loaded.config.coordinator.dashboard_port, 7728);
         assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
         assert!(loaded.invalid_sections.is_empty());
+    }
+
+    #[test]
+    fn load_live_config_parses_notes_section() {
+        let loaded = load_live_config_from_str("[notes]\nenabled = false\n").unwrap();
+
+        assert!(!loaded.config.notes.enabled);
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        assert!(loaded.invalid_sections.is_empty());
+
+        let loaded = load_live_config_from_str("[notes]\nenabled = \"no\"\n").unwrap();
+        assert_eq!(loaded.invalid_sections, vec!["notes".to_string()]);
     }
 
     #[test]

@@ -7,6 +7,7 @@ mod io;
 mod keybinds;
 mod model;
 mod news;
+mod notes;
 mod sidebar;
 mod sound;
 mod tab_bar;
@@ -39,6 +40,7 @@ pub use self::{
         ToastDelivery, ToastHerdrPosition, UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
     },
     news::{format_hhmm, normalize_times, parse_hhmm, parse_quiet_hours, NewsConfig, QuietHours},
+    notes::NotesConfig,
     sidebar::{
         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenStyle,
         SpaceSidebarToken, SpacesSidebarConfig,
@@ -143,6 +145,7 @@ impl Config {
             .chain(self.ui.daily_reminder_diagnostic())
             .chain(self.news.diagnostics())
             .chain(self.coordinator.diagnostics())
+            .chain(self.ui.info_pane_width_diagnostic())
             .chain(self.browser.diagnostics())
             .collect()
     }

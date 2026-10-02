@@ -63,6 +63,8 @@ pub(crate) enum KeybindAction {
     OpenBrowser,
     /// Fork: focus the coordinator tab (`coordinator.open`).
     OpenCoordinator,
+    /// Fork: show or hide the focused tab's info pane (client-only).
+    ToggleInfoPane,
     CopyMode,
     Zoom,
     EnterResizeMode,
@@ -150,6 +152,7 @@ pub(crate) fn resolve_non_indexed_action(
         (&keybinds.open_news, KeybindAction::OpenNews),
         (&keybinds.open_browser, KeybindAction::OpenBrowser),
         (&keybinds.open_coordinator, KeybindAction::OpenCoordinator),
+        (&keybinds.toggle_info_pane, KeybindAction::ToggleInfoPane),
         (&keybinds.copy_mode, KeybindAction::CopyMode),
         (&keybinds.focus_pane_left, KeybindAction::FocusPaneLeft),
         (&keybinds.focus_pane_down, KeybindAction::FocusPaneDown),

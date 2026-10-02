@@ -3594,6 +3594,189 @@
           ],
           "type": "object"
         },
+        "CheckpointKind": {
+          "description": "A checkpoint's kind.",
+          "oneOf": [
+            {
+              "enum": [
+                "decision",
+                "milestone",
+                "failure",
+                "bookmark",
+                "note"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A kind this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        },
+        "CheckpointTarget": {
+          "description": "`checkpoints.remove`.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/NotesTarget"
+            }
+          },
+          "required": [
+            "target",
+            "id"
+          ],
+          "type": "object"
+        },
+        "CheckpointsAddParams": {
+          "description": "`checkpoints.add`.",
+          "properties": {
+            "author": {
+              "$ref": "#/schemas/request/$defs/NotesAuthor",
+              "default": "agent"
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/schemas/request/$defs/CheckpointKind"
+            },
+            "tags": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/NotesTarget"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "kind",
+            "title"
+          ],
+          "type": "object"
+        },
+        "CheckpointsContextParams": {
+          "description": "`checkpoints.context`.",
+          "properties": {
+            "chars": {
+              "description": "Characters per side (default 600, at most 4000).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/NotesTarget"
+            }
+          },
+          "required": [
+            "target",
+            "id"
+          ],
+          "type": "object"
+        },
+        "CheckpointsListParams": {
+          "description": "`checkpoints.list`.",
+          "properties": {
+            "kinds": {
+              "default": [],
+              "description": "Only these kinds; empty means all.",
+              "items": {
+                "$ref": "#/schemas/request/$defs/CheckpointKind"
+              },
+              "type": "array"
+            },
+            "limit": {
+              "description": "The newest this many (default 500).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "since_seq": {
+              "description": "The `seq` the caller already has; a match replies `unchanged`.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/NotesTarget"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "CheckpointsUpdateParams": {
+          "description": "`checkpoints.update`: the given fields replace the stored ones.",
+          "properties": {
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/CheckpointKind"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tags": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/NotesTarget"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "target",
+            "id"
+          ],
+          "type": "object"
+        },
         "ClientShellSurfaceSetParams": {
           "description": "Updates whether the requesting client shell receives and controls pane presentation.",
           "properties": {
@@ -4449,6 +4632,124 @@
           "required": [
             "times"
           ],
+          "type": "object"
+        },
+        "NotesAppendParams": {
+          "description": "`notes.append`: add text at the end, or at the end of `## <section>`\n(created at the end when missing). Never conflicts.",
+          "properties": {
+            "author": {
+              "$ref": "#/schemas/request/$defs/NotesAuthor",
+              "default": "agent"
+            },
+            "section": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stamp": {
+              "default": false,
+              "description": "Prefix the text with `- HH:MM ` (local time).",
+              "type": "boolean"
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/NotesTarget"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "text"
+          ],
+          "type": "object"
+        },
+        "NotesAuthor": {
+          "description": "Who wrote something.",
+          "oneOf": [
+            {
+              "enum": [
+                "agent",
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An author this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        },
+        "NotesGetParams": {
+          "description": "`notes.get`.",
+          "properties": {
+            "known_revision": {
+              "description": "The revision the caller already has; a match replies `unchanged`\nwithout the text.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/NotesTarget"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "NotesSetParams": {
+          "description": "`notes.set`: replace the text when `base_revision` is current (compare\nand swap). `None` only succeeds while no notes file exists.",
+          "properties": {
+            "author": {
+              "$ref": "#/schemas/request/$defs/NotesAuthor",
+              "default": "agent"
+            },
+            "base_revision": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "$ref": "#/schemas/request/$defs/NotesTarget"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "text"
+          ],
+          "type": "object"
+        },
+        "NotesTarget": {
+          "description": "Which notes a request is about. Precedence: `key` > `pane_id` > `tab_id`;\nall `None` is `invalid_params`.",
+          "properties": {
+            "key": {
+              "description": "A session key (`<agent>-<session id>` or `tab-<tab id>`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
           "type": "object"
         },
         "NotificationShowParams": {
@@ -8813,6 +9114,134 @@
         {
           "properties": {
             "method": {
+              "const": "notes.get",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/NotesGetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "notes.set",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/NotesSetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "notes.append",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/NotesAppendParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "checkpoints.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CheckpointsListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "checkpoints.add",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CheckpointsAddParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "checkpoints.update",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CheckpointsUpdateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "checkpoints.remove",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CheckpointTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "checkpoints.context",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/CheckpointsContextParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -11423,6 +11852,248 @@
           ],
           "type": "object"
         },
+        "CheckpointContextInfo": {
+          "description": "The result of `checkpoints.context`: the prompt and reply around the\nmoment the checkpoint was made.",
+          "properties": {
+            "continued": {
+              "default": false,
+              "description": "The prompt is outside the read window (the turn started earlier).",
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt_ts": {
+              "description": "Unix seconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "reply": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reply_ts": {
+              "description": "Unix seconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "source": {
+              "$ref": "#/schemas/success_response/$defs/CheckpointContextSource"
+            },
+            "truncated": {
+              "default": false,
+              "description": "A side was cut to `chars`.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "source"
+          ],
+          "type": "object"
+        },
+        "CheckpointContextSource": {
+          "description": "Where a checkpoint's transcript context came from.",
+          "oneOf": [
+            {
+              "const": "native",
+              "description": "The agent's live native transcript.",
+              "type": "string"
+            },
+            {
+              "const": "backup",
+              "description": "herdr's transcript backup.",
+              "type": "string"
+            },
+            {
+              "const": "backup_previous",
+              "description": "herdr's previous transcript backup.",
+              "type": "string"
+            },
+            {
+              "const": "pending",
+              "description": "Still being read; ask again shortly.",
+              "type": "string"
+            },
+            {
+              "const": "missing",
+              "description": "No transcript was found.",
+              "type": "string"
+            },
+            {
+              "const": "unsupported",
+              "description": "The agent's transcripts are not readable by herdr, or the checkpoint\nhas no anchor (tab notes).",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A source this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        },
+        "CheckpointInfo": {
+          "description": "One checkpoint.",
+          "properties": {
+            "author": {
+              "$ref": "#/schemas/success_response/$defs/NotesAuthor"
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "has_context": {
+              "default": false,
+              "description": "The checkpoint has a transcript anchor (`checkpoints.context` can\nanswer with text).",
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/CheckpointKind"
+            },
+            "tags": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            },
+            "ts": {
+              "description": "Unix seconds.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "ts",
+            "kind",
+            "author",
+            "title"
+          ],
+          "type": "object"
+        },
+        "CheckpointKind": {
+          "description": "A checkpoint's kind.",
+          "oneOf": [
+            {
+              "enum": [
+                "decision",
+                "milestone",
+                "failure",
+                "bookmark",
+                "note"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A kind this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        },
+        "CheckpointWriteInfo": {
+          "description": "The result of `checkpoints.add`, `checkpoints.update` and\n`checkpoints.remove`.",
+          "properties": {
+            "checkpoint": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/CheckpointInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "folded": {
+              "default": false,
+              "description": "The add matched a recent checkpoint (same kind, title and author) and\nupdated it instead.",
+              "type": "boolean"
+            },
+            "key": {
+              "type": "string"
+            },
+            "removed": {
+              "default": false,
+              "type": "boolean"
+            },
+            "seq": {
+              "description": "The store's change stamp after the write.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "key",
+            "seq"
+          ],
+          "type": "object"
+        },
+        "CheckpointsListInfo": {
+          "description": "The result of `checkpoints.list`, oldest first.",
+          "properties": {
+            "checkpoints": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/CheckpointInfo"
+              },
+              "type": "array"
+            },
+            "key": {
+              "type": "string"
+            },
+            "seq": {
+              "description": "The store's change stamp.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "started_at": {
+              "description": "Unix seconds of the first checkpoint.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "unchanged": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "key",
+            "seq"
+          ],
+          "type": "object"
+        },
         "ClientWindowTitleReason": {
           "enum": [
             "set",
@@ -13309,6 +13980,157 @@
             "consecutive_failures"
           ],
           "type": "object"
+        },
+        "NotesAuthor": {
+          "description": "Who wrote something.",
+          "oneOf": [
+            {
+              "enum": [
+                "agent",
+                "user"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An author this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
+        },
+        "NotesInfo": {
+          "description": "A notes file as the server sees it.",
+          "properties": {
+            "agent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "exists": {
+              "type": "boolean"
+            },
+            "key": {
+              "type": "string"
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "type": "string"
+            },
+            "previous": {
+              "description": "The key this pane used before its session changed (after `/clear`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "revision": {
+              "description": "`sha256:<12 hex>` of the text, or `none` while no file exists.",
+              "type": "string"
+            },
+            "session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "unchanged": {
+              "default": false,
+              "description": "`known_revision` matched: `text` is omitted.",
+              "type": "boolean"
+            },
+            "updated_at": {
+              "description": "Unix seconds of the last write through herdr.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "updated_by": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/NotesAuthor"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "key",
+            "path",
+            "revision",
+            "exists",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        "NotesWriteInfo": {
+          "description": "The result of `notes.set` and `notes.append`. `notes.revision` is the\nrevision after the write (the current one on a conflict).",
+          "properties": {
+            "notes": {
+              "$ref": "#/schemas/success_response/$defs/NotesInfo"
+            },
+            "outcome": {
+              "$ref": "#/schemas/success_response/$defs/NotesWriteOutcome"
+            }
+          },
+          "required": [
+            "outcome",
+            "notes"
+          ],
+          "type": "object"
+        },
+        "NotesWriteOutcome": {
+          "description": "What a notes write did.",
+          "oneOf": [
+            {
+              "enum": [
+                "written"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "conflict",
+              "description": "`base_revision` was not the current revision; `notes` holds the\ncurrent text and nothing was written.",
+              "type": "string"
+            },
+            {
+              "const": "unchanged",
+              "description": "The text was already the current text.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An outcome this client does not know (a newer server).",
+              "type": "string"
+            }
+          ]
         },
         "NotificationShowReason": {
           "enum": [
@@ -15514,6 +16336,86 @@
               },
               "required": [
                 "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "notes": {
+                  "$ref": "#/schemas/success_response/$defs/NotesInfo"
+                },
+                "type": {
+                  "const": "notes_get",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "notes"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "notes_write",
+                  "type": "string"
+                },
+                "write": {
+                  "$ref": "#/schemas/success_response/$defs/NotesWriteInfo"
+                }
+              },
+              "required": [
+                "type",
+                "write"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "checkpoints": {
+                  "$ref": "#/schemas/success_response/$defs/CheckpointsListInfo"
+                },
+                "type": {
+                  "const": "checkpoints_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "checkpoints"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "checkpoint": {
+                  "$ref": "#/schemas/success_response/$defs/CheckpointWriteInfo"
+                },
+                "type": {
+                  "const": "checkpoint_write",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "checkpoint"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "context": {
+                  "$ref": "#/schemas/success_response/$defs/CheckpointContextInfo"
+                },
+                "type": {
+                  "const": "checkpoint_context",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "context"
               ],
               "type": "object"
             },

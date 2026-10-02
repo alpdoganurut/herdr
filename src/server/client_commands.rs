@@ -28,6 +28,11 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "browser.settings.set",
     "browser.start",
     "browser.stop",
+    "checkpoints.add",
+    "checkpoints.context",
+    "checkpoints.list",
+    "checkpoints.remove",
+    "checkpoints.update",
     "client_shell.surface.set",
     "command.invoke",
     "coordinator.get",
@@ -48,6 +53,9 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "news.set_enabled",
     "news.set_quiet_hours",
     "news.set_times",
+    "notes.append",
+    "notes.get",
+    "notes.set",
     "pane.clear",
     "pane.close",
     "pane.copy_motion",
@@ -519,11 +527,53 @@ mod tests {
             actual.remove("team.set_role").as_deref(),
             Some("0d0663aa876a6f81790a20e944cfd655a045a3427edde7ffe13fb74da6cd29f3")
         );
+        assert_eq!(
+            actual.remove("notes.get").as_deref(),
+            Some("514adb7872ed9fe98237146f87911e1f00d4fb3fb3d75e4054c783fc23e848bc")
+        );
+        assert_eq!(
+            actual.remove("notes.set").as_deref(),
+            Some("1ae65a5c7d8087a5e95169878a81ccd8bb532255d22f438fadc0ee2fb428afdb")
+        );
+        assert_eq!(
+            actual.remove("notes.append").as_deref(),
+            Some("00925fe4941e3de5b418a568645b880f65e5c24c33f12b1b820a018f36555b51")
+        );
+        assert_eq!(
+            actual.remove("checkpoints.list").as_deref(),
+            Some("df0d37ec4550faaef6d7cd032f75aeac6403b70415a293d29a24f1c458f04ce2")
+        );
+        assert_eq!(
+            actual.remove("checkpoints.add").as_deref(),
+            Some("f7e43fa3c09ace07c80fcd4b06e0e47d8df8d83eacbb76613ad17cd881deb580")
+        );
+        assert_eq!(
+            actual.remove("checkpoints.update").as_deref(),
+            Some("a563335e063a6aa7a277b71b745b3b2cf6695efeae5457e9ff44130aba72b098")
+        );
+        assert_eq!(
+            actual.remove("checkpoints.remove").as_deref(),
+            Some("f510c7c9e04c24b347efd4ea37ac98bb11016f1654816f35dab5d455ff329248")
+        );
+        assert_eq!(
+            actual.remove("checkpoints.context").as_deref(),
+            Some("bce19edc6742c1a9c961a4bee33d9c1b5d0c516a03e65d0ca5ab722b6da47d93")
+        );
 
         assert_eq!(
             actual, expected,
             "an existing endpoint method changed shape; add load-bearing behavior as a new advertised method or explicitly gate new fields"
         );
+    }
+
+    #[test]
+    fn every_notes_method_is_advertised_to_client_shells() {
+        for method in crate::api::schema::notes::method::ALL {
+            assert!(
+                supports_client_shell_method_name(method),
+                "{method} is not in CLIENT_SHELL_METHODS"
+            );
+        }
     }
 
     #[test]
