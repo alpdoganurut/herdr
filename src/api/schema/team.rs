@@ -188,6 +188,13 @@ pub struct TeamContextParams {
     /// later ack is not lost. Absent: the current revision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ack_revision: Option<u64>,
+    /// With `ack`: the `ack_key` of the read whose text was delivered. The
+    /// ack applies only while it still names the pane's current team (or
+    /// its pending "no longer in a team" line), so an ack that arrives after
+    /// a disband, a re-make or a move never marks another team as told.
+    /// Absent: whatever is current (a read and its ack in one call).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ack_key: Option<String>,
 }
 
 /// One member, with its pane and tab re-projected now.

@@ -131,6 +131,9 @@ pub struct Caller {
     /// The team revision `team_update` was read at: the ack marks only up to
     /// it, so a change landing meanwhile is not acked unseen.
     pub team_revision: Option<u64>,
+    /// What `team_update` came from (`team.context`'s `ack_key`): the ack
+    /// applies only while it still names the caller's team or line.
+    pub team_ack_key: Option<String>,
 }
 
 /// The caller's team, from `team.context`.
@@ -361,7 +364,11 @@ impl<A: Api> Session<A> {
             Ok(caller) => match &caller.team_update {
                 Some(update) => (
                     format!("{update}\n{}", header(caller)),
-                    Some((caller.pane_id.clone(), caller.team_revision)),
+                    Some((
+                        caller.pane_id.clone(),
+                        caller.team_revision,
+                        caller.team_ack_key.clone(),
+                    )),
                 ),
                 None => (header(caller), None),
             },
@@ -376,8 +383,8 @@ impl<A: Api> Session<A> {
             Ok(reply) => success_content(&head, reply),
             Err(error) => error_content(&head, &error),
         };
-        if let Some((pane, revision)) = update_for {
-            if let Err(error) = api::team_context_ack(&self.api, &pane, revision) {
+        if let Some((pane, revision, key)) = update_for {
+            if let Err(error) = api::team_context_ack(&self.api, &pane, revision, key) {
                 tracing::debug!(%error, "herdr coordinator mcp: cannot ack the team update");
             }
         }
@@ -408,18 +415,20 @@ impl<A: Api> Session<A> {
         let managed = registry
             .find(session.as_deref(), Some(&pane.pane_id), agent.as_deref())
             .map(|index| registry.agents[index].clone());
-        let (team, team_update, team_revision) =
+        let (team, team_update, team_revision, team_ack_key) =
             match api::team_context(&self.api, &pane.pane_id, false, false) {
                 Ok(context) => {
                     let (team, update) = caller_team(&context);
-                    (team, update, context["revision"].as_u64())
+                    let key = context["ack_key"].as_str().map(str::to_string);
+                    (team, update, context["revision"].as_u64(), key)
                 }
-                Err(_) => (None, None, None),
+                Err(_) => (None, None, None, None),
             };
         Ok(Caller {
             team,
             team_update,
             team_revision,
+            team_ack_key,
             is_coordinator: managed.as_ref().is_some_and(ManagedAgent::is_coordinator),
             pane_id: pane.pane_id,
             workspace_id: pane.workspace_id,
@@ -2931,9 +2940,13 @@ mod tests {
                     } else {
                         self.team_updates.borrow().get(&pane).cloned()
                     };
+                    let ack_key = team
+                        .as_ref()
+                        .and_then(|t| t["workspace_id"].as_str())
+                        .map(|ws| format!("team:{ws}"));
                     Ok(
                         json!({ "member": member, "eligible": eligible, "team": team,
-                        "text": text, "revision": 1 }),
+                        "text": text, "revision": 1, "ack_key": ack_key }),
                     )
                 }
                 Method::TeamJoin(params) => {
@@ -3581,6 +3594,7 @@ mod tests {
             team: None,
             team_update: None,
             team_revision: None,
+            team_ack_key: None,
         };
         let text = envelope(&caller, "m1a", Some("m0z"), "hello\nthere", NOW, false);
         let lines: Vec<&str> = text.lines().collect();
@@ -4570,6 +4584,10 @@ mod tests {
         assert!(matches!(calls.last(), Some(Method::TeamContext(p)) if p.ack && !p.full));
         // ...bounded by the revision the delivered text was read at
         assert!(matches!(calls.last(), Some(Method::TeamContext(p)) if p.ack_revision == Some(1)));
+        // ...and to the team it was read from
+        assert!(
+            matches!(calls.last(), Some(Method::TeamContext(p)) if p.ack_key.as_deref() == Some("team:w3"))
+        );
         assert_eq!(
             calls
                 .iter()

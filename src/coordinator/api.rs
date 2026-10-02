@@ -363,22 +363,27 @@ pub fn team_context(
         ack,
         full,
         ack_revision: None,
+        ack_key: None,
     }))
 }
 
 /// `team.context` ack for `caller_pane`, marking only up to `revision` (the
 /// revision of the read whose text was delivered) as told: a change that
 /// lands between that read and this ack still reaches the member next time.
+/// `key` is the read's `ack_key`: the server ignores the ack once the pane's
+/// team (or pending line) is no longer the one that was delivered.
 pub fn team_context_ack(
     api: &impl Api,
     caller_pane: &str,
     revision: Option<u64>,
+    key: Option<String>,
 ) -> Result<Value, ApiError> {
     api.call(Method::TeamContext(TeamContextParams {
         caller_pane: caller_pane.to_string(),
         ack: true,
         full: false,
         ack_revision: revision,
+        ack_key: key,
     }))
 }
 

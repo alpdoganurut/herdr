@@ -33,25 +33,29 @@ pub(crate) const REMOVED_LINE: &str = "[herdr+ team update] you are no longer in
 /// One pending "you are no longer in a team" line per pane.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TeamTombstones {
-    lines: HashMap<PaneId, (u64, &'static str)>,
+    /// `(inserted at, line, seq)`; `seq` names this one line for acks.
+    lines: HashMap<PaneId, (u64, &'static str, u64)>,
+    seq: u64,
 }
 
 impl TeamTombstones {
     fn insert(&mut self, pane: PaneId, line: &'static str, now: u64) {
         self.prune(now);
-        self.lines.insert(pane, (now, line));
+        self.seq = self.seq.wrapping_add(1);
+        self.lines.insert(pane, (now, line, self.seq));
     }
 
     fn prune(&mut self, now: u64) {
         self.lines
-            .retain(|_, (at, _)| now.saturating_sub(*at) < TOMBSTONE_TTL_S);
+            .retain(|_, (at, _, _)| now.saturating_sub(*at) < TOMBSTONE_TTL_S);
     }
 
-    fn peek(&self, pane: PaneId, now: u64) -> Option<&'static str> {
+    /// The pending line and its ack key.
+    fn peek(&self, pane: PaneId, now: u64) -> Option<(&'static str, String)> {
         self.lines
             .get(&pane)
-            .filter(|(at, _)| now.saturating_sub(*at) < TOMBSTONE_TTL_S)
-            .map(|(_, line)| *line)
+            .filter(|(at, _, _)| now.saturating_sub(*at) < TOMBSTONE_TTL_S)
+            .map(|(_, line, seq)| (*line, tombstone_ack_key(*seq)))
     }
 
     fn clear(&mut self, pane: PaneId) {
@@ -62,6 +66,16 @@ impl TeamTombstones {
     pub(crate) fn len(&self) -> usize {
         self.lines.len()
     }
+}
+
+/// The `team.context` ack key of a team (see `TeamContextParams.ack_key`).
+fn team_ack_key(team: &Team) -> String {
+    format!("team:{}", team.epoch())
+}
+
+/// The ack key of one pending "no longer in a team" line.
+fn tombstone_ack_key(seq: u64) -> String {
+    format!("gone:{seq}")
 }
 
 impl AppState {
@@ -1067,7 +1081,7 @@ impl App {
         };
         let now = crate::coordinator::now_unix();
         let team_info = self.team_info(ws_idx, true);
-        let (eligible, is_member, seen, revision) =
+        let (eligible, is_member, seen, revision, team_key) =
             match self.state.workspaces[ws_idx].team.as_ref() {
                 Some(team) => {
                     let member = team.member(pane);
@@ -1076,9 +1090,10 @@ impl App {
                         member.is_some(),
                         member.map_or(0, |member| member.seen_revision()),
                         team.revision,
+                        Some(team_ack_key(team)),
                     )
                 }
-                None => (false, false, 0, 0),
+                None => (false, false, 0, 0, None),
             };
         let member = team_info.as_ref().and_then(|info| {
             let public = self.public_pane_id(ws_idx, pane)?;
@@ -1087,6 +1102,7 @@ impl App {
                 .find(|member| member.pane_id == public)
                 .cloned()
         });
+        let mut tombstone_key = None;
         let text = if is_member {
             let behind = seen < revision;
             if params.full || behind {
@@ -1110,11 +1126,21 @@ impl App {
                 .as_ref()
                 .map(|info| self.team_text(info, ws_idx, pane, None))
         } else if team_info.is_none() || !eligible {
-            self.team_tombstones.peek(pane, now).map(str::to_string)
+            self.team_tombstones.peek(pane, now).map(|(line, key)| {
+                tombstone_key = Some(key);
+                line.to_string()
+            })
         } else {
             None
         };
-        if params.ack {
+        // What `text` comes from; an ack naming anything else is stale
+        // (a disband, a re-make or a move since the read) and is ignored.
+        let ack_key = if is_member { team_key } else { tombstone_key };
+        let ack_applies = params
+            .ack_key
+            .as_ref()
+            .is_none_or(|key| ack_key.as_ref() == Some(key));
+        if params.ack && ack_applies {
             if is_member {
                 if let Some(team) = self.team_mut(ws_idx) {
                     team.mark_seen_up_to(pane, params.ack_revision);
@@ -1131,6 +1157,7 @@ impl App {
                 team: team_info,
                 text,
                 revision,
+                ack_key,
             },
         )
     }
@@ -1345,6 +1372,7 @@ mod tests {
                 ack,
                 full,
                 ack_revision: None,
+                ack_key: None,
             }),
         )["result"]
             .clone()
@@ -1939,6 +1967,7 @@ mod tests {
                 ack: true,
                 full: false,
                 ack_revision: Some(read_at),
+                ack_key: None,
             }),
         );
         let next = context(&mut app, a, true, false);
@@ -1979,12 +2008,79 @@ mod tests {
                 ack: false,
                 full: true,
                 ack_revision: None,
+                ack_key: None,
             }),
         )["result"]
             .clone();
         assert_eq!(moved["member"]["pane_id"], public(&app, b), "{moved}");
         assert_eq!(moved["eligible"], true);
         app.state.assert_invariants_for_test();
+    }
+
+    /// The MCP's split ack: `ack_revision` and `ack_key` from an earlier read.
+    fn ack_read(app: &mut App, pane: PaneId, read: &serde_json::Value) {
+        let caller_pane = public(app, pane);
+        call(
+            app,
+            Method::TeamContext(TeamContextParams {
+                caller_pane,
+                ack: true,
+                full: false,
+                ack_revision: read["revision"].as_u64(),
+                ack_key: read["ack_key"].as_str().map(str::to_string),
+            }),
+        );
+    }
+
+    #[test]
+    fn an_ack_never_reaches_a_team_or_line_it_was_not_read_from() {
+        let mut app = team_app();
+        let (a, b) = (pane(&app, 1, 0), pane(&app, 1, 1));
+        detect(&mut app, a, Some(Agent::Claude));
+        detect(&mut app, b, Some(Agent::Claude));
+        make(&mut app, Some("fix sync"));
+        context(&mut app, a, true, false);
+        set_role(&mut app, b, Some("reviewer"));
+
+        // (1) Read a delta, the team is disbanded, then the ack lands: the
+        // disband line is still pending.
+        let read = context(&mut app, a, false, false);
+        assert!(read["ack_key"]
+            .as_str()
+            .is_some_and(|k| k.starts_with("team:")));
+        let workspace_id = group_id(&app);
+        call(
+            &mut app,
+            Method::TeamDisband(TeamWorkspaceParams {
+                workspace_id: workspace_id.clone(),
+            }),
+        );
+        ack_read(&mut app, a, &read);
+        let gone = context(&mut app, a, false, false);
+        assert_eq!(gone["text"], DISBANDED_LINE, "{gone}");
+
+        // (2) Re-made meanwhile: the old team's ack does not mark the new
+        // roster as seen.
+        make(&mut app, None);
+        ack_read(&mut app, a, &read);
+        let fresh = context(&mut app, a, false, false);
+        assert!(
+            fresh["text"].as_str().is_some_and(|t| !t.is_empty()),
+            "the new team's roster still arrives: {fresh}"
+        );
+        assert_ne!(fresh["ack_key"], read["ack_key"]);
+
+        // The pending line's own ack clears it.
+        call(
+            &mut app,
+            Method::TeamDisband(TeamWorkspaceParams { workspace_id }),
+        );
+        let line = context(&mut app, a, false, false);
+        assert!(line["ack_key"]
+            .as_str()
+            .is_some_and(|k| k.starts_with("gone:")));
+        ack_read(&mut app, a, &line);
+        assert!(context(&mut app, a, false, false)["text"].is_null());
     }
 
     #[test]

@@ -35,7 +35,14 @@ pub struct Team {
     pub excluded: Vec<PaneId>,
     /// `(revision, line)`, oldest first, at most [`MAX_CHANGES`]; not persisted.
     pub(crate) changes: VecDeque<(u64, String)>,
+    /// Unique per team value in this process (a disbanded and re-made
+    /// team, or a restored one, gets a new one); not persisted. Ties an
+    /// agent's ack to the team it was told about.
+    pub(crate) epoch: u64,
 }
+
+/// The next [`Team::epoch`].
+static NEXT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// One member.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,7 +91,12 @@ impl Team {
             members: Vec::new(),
             excluded: Vec::new(),
             changes: VecDeque::new(),
+            epoch: NEXT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     pub fn member(&self, pane_id: PaneId) -> Option<&TeamMember> {

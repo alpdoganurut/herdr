@@ -213,6 +213,10 @@ pub enum ResponseResult {
         text: Option<String>,
         #[serde(default)]
         revision: u64,
+        /// What `text` comes from (the pane's team, or its pending "no
+        /// longer in a team" line), opaque; pass it back as `ack_key`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ack_key: Option<String>,
     },
     AgentPrompted {
         agent: AgentInfo,

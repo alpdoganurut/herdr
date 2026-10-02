@@ -6687,6 +6687,13 @@
               "default": false,
               "type": "boolean"
             },
+            "ack_key": {
+              "description": "With `ack`: the `ack_key` of the read whose text was delivered. The\nack applies only while it still names the pane's current team (or\nits pending \"no longer in a team\" line), so an ack that arrives after\na disband, a re-make or a move never marks another team as told.\nAbsent: whatever is current (a read and its ack in one call).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "ack_revision": {
               "description": "With `ack`: mark only up to this revision as told (the revision the\ncaller read and delivered), so a change landing between a read and a\nlater ack is not lost. Absent: the current revision.",
               "format": "uint64",
@@ -15456,6 +15463,13 @@
             {
               "description": "`team.context` (fork): the caller's team and the text to tell it.",
               "properties": {
+                "ack_key": {
+                  "description": "What `text` comes from (the pane's team, or its pending \"no\nlonger in a team\" line), opaque; pass it back as `ack_key`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "eligible": {
                   "default": false,
                   "description": "The caller's pane is in a team group, not removed from it, and\nnot the coordinator's (it joins once its agent is detected).",
