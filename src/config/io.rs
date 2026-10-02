@@ -6,6 +6,7 @@ use super::{model::LoadedConfig, Config, CONFIG_PATH_ENV_VAR};
 
 const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
+    "agents",
     "browser",
     "coordinator",
     "experimental",
@@ -153,7 +154,8 @@ impl Config {
         };
 
         match deserialize_with_ignored::<Config, _>(toml::Deserializer::new(&content)) {
-            Ok((config, ignored_keys)) => {
+            Ok((mut config, ignored_keys)) => {
+                config.resolve_derived();
                 let (unknown_sections, mut diagnostics) =
                     unknown_top_level_sections_from_str(&content);
                 diagnostics.extend(unknown_config_key_diagnostics(
@@ -402,6 +404,15 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut invalid_sections,
         |section| config.browser = section,
     );
+    load_live_section(
+        table,
+        "agents",
+        "agents config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.agents = section,
+    );
+    config.resolve_derived();
 
     diagnostics.extend(config.theme.diagnostics());
 
@@ -910,6 +921,50 @@ mod tests {
 
         std::env::remove_var(CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn config_loaders_parse_agents_and_carry_the_effective_wrap_to_browser() {
+        let loaded = load_live_config_from_str(
+            "[agents]\nwrap = true\ntools = true\n[browser]\nwrap_agents = false\n",
+        )
+        .unwrap();
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        assert_eq!(
+            loaded.config.agents_wrap(),
+            (true, crate::config::WrapSource::Agents)
+        );
+        assert!(loaded.config.agents.tools);
+        assert!(
+            loaded.config.browser.effective_wrap,
+            "the hub's copy is the resolved value"
+        );
+        // the legacy key alone still decides; nothing written: off
+        let loaded = load_live_config_from_str("[browser]\nwrap_agents = true\n").unwrap();
+        assert!(loaded.config.browser.effective_wrap);
+        let loaded = load_live_config_from_str("[ui]\n").unwrap();
+        assert!(!loaded.config.browser.effective_wrap);
+        // an invalid [agents] section: reported; the legacy value decides this reload
+        let loaded =
+            load_live_config_from_str("[agents]\nwrap = \"yes\"\n[browser]\nwrap_agents = true\n")
+                .unwrap();
+        assert_eq!(loaded.invalid_sections, vec!["agents".to_string()]);
+        assert!(loaded.config.browser.effective_wrap);
+
+        // the startup loader fills it in too
+        let _guard = crate::config::test_config_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = std::env::temp_dir().join(format!("herdr-io-agents-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[agents]\nwrap = true\n").unwrap();
+        std::env::set_var(CONFIG_PATH_ENV_VAR, &path);
+        let loaded = Config::load();
+        std::env::remove_var(CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        assert!(loaded.config.browser.effective_wrap);
     }
 
     #[test]

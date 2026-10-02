@@ -7,11 +7,18 @@
 //! never on the process environment directly: the server resolves it once
 //! per call with [`SetupEnv::from_process`], tests build one over temporary
 //! directories. A check answers a [`BrowserCheckInfo`]; a fix the matching
-//! [`BrowserFixResult`]. Fixes that edit the user's files (`~/.zshrc`,
-//! `~/.claude.json`, Codex's `config.toml`) are `edits_files` and only ever
-//! run on an explicit request; `safe` fixes (the sidecar's assets and
-//! `npm ci`, companion files) also run from [`auto_repair`] when the herdr
-//! binary changed since the last setup.
+//! [`BrowserFixResult`]. Fixes that edit the user's files (`~/.claude.json`,
+//! Codex's `config.toml`) are `edits_files` and only ever run on an explicit
+//! request; `safe` fixes (the sidecar's assets and `npm ci`, companion files)
+//! also run from [`auto_repair`] when the herdr binary changed since the last
+//! setup.
+//!
+//! The shell hook (the guarded `~/.zshrc` line and its managed file) also
+//! lives here but is not a browser check: the Agents settings section shows
+//! [`shell_hook_check`] and edits `.zshrc` only after an explicit
+//! confirmation (`agent_wrap::fix_shell_hook`); the CLI's `herdr browser
+//! setup --shell [--remove]` is the other explicit path. `browser.fix` and
+//! plain `herdr browser setup` never reach it.
 
 use std::path::{Path, PathBuf};
 
@@ -25,14 +32,16 @@ use crate::integration::browser_assets;
 pub const MCP_SERVER_NAME: &str = "herdr-browser";
 /// The marker at the end of the guarded `.zshrc` line.
 pub const ZSHRC_MARKER: &str = "# herdr+";
+/// The version line of the managed shell file this herdr writes; a sourced
+/// file without it is an older hook (`outdated`).
+pub const SHELL_FILE_MARKER: &str = "# herdr+ shell v2";
 /// The check ids, in display order.
-pub const CHECK_IDS: [&str; 7] = [
+pub const CHECK_IDS: [&str; 6] = [
     "executable",
     "helper",
     "extension",
     "mcp_claude",
     "mcp_codex",
-    "shell_hook",
     "launch_context",
 ];
 /// The record of the last setup in the browser home (`auto_repair` compares it).
@@ -67,6 +76,8 @@ pub struct SetupEnv {
     pub claude_json: Option<PathBuf>,
     /// `claude` on PATH (the registration goes through its `mcp` verbs).
     pub claude_bin: Option<PathBuf>,
+    /// `claude-z` on PATH (the agent wrap runs it instead of `claude`).
+    pub claude_z_bin: Option<PathBuf>,
     /// `$CODEX_HOME/config.toml`, else `$HOME/.codex/config.toml`.
     pub codex_config: Option<PathBuf>,
     /// `codex` on PATH (only decides wording).
@@ -100,6 +111,7 @@ impl SetupEnv {
             zshrc,
             claude_json: home.as_ref().map(|h| h.join(".claude.json")),
             claude_bin: on_path("claude"),
+            claude_z_bin: on_path("claude-z"),
             codex_config,
             codex_bin: on_path("codex"),
             home,
@@ -515,20 +527,25 @@ pub fn register_claude(env: &SetupEnv, wanted: bool) -> Result<String, String> {
 // ---------------------------------------------------------------------------
 // The shell hook
 
-/// What `setup` writes to the managed file (overwritten every time).
+/// What the hook writes to the managed file (overwritten every time). Each
+/// function carries its own guard: an agent's shell snapshot keeps the
+/// functions but not a helper they call, so a helper would break `codex` /
+/// `claude` inside the agents' own shells. `HERDR_NO_WRAP` and
+/// `[agents] wrap` are decided by `herdr agent wrap`, per launch.
 pub fn shell_file_contents() -> String {
-    "# managed by herdr browser setup — rewritten by every `herdr browser setup --shell`; do not edit\n\
-# Inside a herdr+ pane, codex and claude run through `herdr browser wrap` ([browser] wrap_agents,\n\
-# steer_agents and disable_native_browser decide what it adds); elsewhere the real commands run.\n\
-_herdr_plus_wrap() { [ -n \"$HERDR_PANE_ID\" ] && [ -n \"$HERDR_BIN_PATH\" ]; }\n\
-function codex { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap codex -- \"$@\"; else command codex \"$@\"; fi }\n\
-function claude-z { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap claude -- \"$@\"; else command claude-z \"$@\"; fi }\n\
+    format!(
+        "# managed by herdr — rewritten by Settings → Agents [fix] or `herdr browser setup --shell`; do not edit\n\
+{SHELL_FILE_MARKER}\n\
+# Inside a herdr+ pane, codex and claude run through `herdr agent wrap` ([agents] wrap decides what it adds);\n\
+# elsewhere the real commands run. `command claude` / `command codex` bypass it.\n\
+function codex {{ if [ -n \"$HERDR_PANE_ID\" ] && [ -x \"$HERDR_BIN_PATH\" ]; then \"$HERDR_BIN_PATH\" agent wrap codex -- \"$@\"; else command codex \"$@\"; fi }}\n\
+function claude-z {{ if [ -n \"$HERDR_PANE_ID\" ] && [ -x \"$HERDR_BIN_PATH\" ]; then \"$HERDR_BIN_PATH\" agent wrap claude -- \"$@\"; else command claude-z \"$@\"; fi }}\n\
 # `claude` itself only when it is not an alias (an alias claude='claude-z' reaches the function above);\n\
 # the `function` form keeps zsh from expanding such an alias while parsing this file.\n\
 if ! alias claude >/dev/null 2>&1; then\n\
-  function claude { if _herdr_plus_wrap; then \"$HERDR_BIN_PATH\" browser wrap claude -- \"$@\"; else command claude \"$@\"; fi }\n\
+  function claude {{ if [ -n \"$HERDR_PANE_ID\" ] && [ -x \"$HERDR_BIN_PATH\" ]; then \"$HERDR_BIN_PATH\" agent wrap claude -- \"$@\"; else command claude \"$@\"; fi }}\n\
 fi\n"
-        .to_string()
+    )
 }
 
 /// A single-quoted shell word (`'` inside becomes `'\''`).
@@ -656,6 +673,111 @@ pub fn install_shell_hook(env: &SetupEnv, wanted: bool) -> Result<String, String
         });
     }
     Ok(format!("shell: {}", notes.join(" · ")))
+}
+
+/// The shell hook's state: `ok`, `outdated` or `missing`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookState {
+    /// The last live herdr+ line in `.zshrc` sources a file with
+    /// [`SHELL_FILE_MARKER`] (any instance's file: the content does not
+    /// depend on the instance).
+    Ok,
+    /// A herdr+ line is there, but the file it sources is missing or an
+    /// older version (v1 breaks `codex` / `claude` inside agents' shells).
+    Outdated,
+    /// No live herdr+ line (or no `.zshrc` / home at all).
+    Missing,
+}
+
+impl HookState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Outdated => "outdated",
+            Self::Missing => "missing",
+        }
+    }
+}
+
+/// What [`shell_hook_check`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckOutcome {
+    pub state: HookState,
+    pub detail: String,
+    /// The fix ([`install_shell_hook`] with `wanted`) can repair it.
+    pub fixable: bool,
+    /// The fix edits the user's files (`.zshrc`, the managed file).
+    pub edits_files: bool,
+}
+
+/// Whether the managed file at `path` is this version's.
+fn shell_file_is_current(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .is_ok_and(|text| text.lines().any(|line| line.trim() == SHELL_FILE_MARKER))
+}
+
+/// The shell hook as zsh will see it, instance-agnostic: zsh sources the
+/// lines in order and the last definition wins, so the last live herdr+
+/// line decides. Never writes.
+pub fn shell_hook_check(env: &SetupEnv) -> CheckOutcome {
+    let outcome = |state: HookState, detail: String, fixable: bool| CheckOutcome {
+        state,
+        detail,
+        fixable,
+        edits_files: fixable,
+    };
+    let Some(zshrc) = env.zshrc.as_deref() else {
+        return outcome(
+            HookState::Missing,
+            "no HOME (or ZDOTDIR); no .zshrc".into(),
+            false,
+        );
+    };
+    let text = match read_text(zshrc) {
+        Ok(text) => text,
+        Err(err) => return outcome(HookState::Missing, err, false),
+    };
+    let short = |p: &Path| shorten_home(p, env.home.as_deref());
+    let lines = hook_lines(&text);
+    let Some(last) = lines.last() else {
+        return outcome(
+            HookState::Missing,
+            format!("{} has no herdr+ line", short(zshrc)),
+            true,
+        );
+    };
+    let others = lines.len() - 1;
+    let also = if others == 0 {
+        String::new()
+    } else {
+        format!(
+            " (+{others} earlier herdr+ line{})",
+            if others == 1 { "" } else { "s" }
+        )
+    };
+    if !last.is_file() {
+        return outcome(
+            HookState::Outdated,
+            format!(
+                "{} sources a missing file {}{also}",
+                short(zshrc),
+                short(last)
+            ),
+            true,
+        );
+    }
+    if !shell_file_is_current(last) {
+        return outcome(
+            HookState::Outdated,
+            format!("{} is an older hook (not v2){also}", short(last)),
+            true,
+        );
+    }
+    outcome(
+        HookState::Ok,
+        format!("{} → {}{also}", short(zshrc), short(last)),
+        true,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -998,75 +1120,6 @@ pub fn checks(
     }
     out.push(codex);
 
-    // shell hook
-    out.push(match env.zshrc.as_deref() {
-        None => check(
-            "shell_hook",
-            !config.shell_hook,
-            "no HOME (or ZDOTDIR); no .zshrc",
-            BrowserFixKind::None,
-        ),
-        Some(zshrc) => match read_text(zshrc) {
-            Err(err) => check("shell_hook", false, err, BrowserFixKind::None),
-            Ok(text) => {
-                let lines = hook_lines(&text);
-                let ours = lines.iter().any(|p| p == &env.shell_file);
-                let others: Vec<&PathBuf> =
-                    lines.iter().filter(|p| *p != &env.shell_file).collect();
-                let file_ok = env.shell_file.is_file();
-                let short = |p: &Path| shorten_home(p, env.home.as_deref());
-                if config.shell_hook {
-                    if ours && others.is_empty() && file_ok {
-                        check("shell_hook", true, short(zshrc), BrowserFixKind::EditsFiles)
-                    } else if let Some(other) = others.first() {
-                        check(
-                            "shell_hook",
-                            false,
-                            format!("a herdr+ line for a different instance: {}", short(other)),
-                            BrowserFixKind::EditsFiles,
-                        )
-                    } else if ours && !file_ok {
-                        check(
-                            "shell_hook",
-                            false,
-                            format!(
-                                "{} sources a missing file {}",
-                                short(zshrc),
-                                short(&env.shell_file)
-                            ),
-                            BrowserFixKind::EditsFiles,
-                        )
-                    } else {
-                        check(
-                            "shell_hook",
-                            false,
-                            format!("{} has no herdr+ line", short(zshrc)),
-                            BrowserFixKind::EditsFiles,
-                        )
-                    }
-                } else if ours {
-                    check(
-                        "shell_hook",
-                        false,
-                        format!("{} still has this instance's herdr+ line", short(zshrc)),
-                        BrowserFixKind::EditsFiles,
-                    )
-                } else {
-                    check(
-                        "shell_hook",
-                        true,
-                        if others.is_empty() {
-                            "off".to_string()
-                        } else {
-                            format!("off (a herdr+ line for {} stays)", short(others[0]))
-                        },
-                        BrowserFixKind::EditsFiles,
-                    )
-                }
-            }
-        },
-    });
-
     // launch context
     out.push(launch_context_check());
     out
@@ -1191,7 +1244,6 @@ pub fn fix(id: &str, config: &BrowserConfig, env: &SetupEnv) -> Option<BrowserFi
         "helper" => install_helper(env, config, false),
         "mcp_claude" => register_claude(env, wants("claude")),
         "mcp_codex" => register_codex(env, wants("codex")),
-        "shell_hook" => install_shell_hook(env, config.shell_hook),
         _ => return None,
     };
     Some(match outcome {
@@ -1339,6 +1391,7 @@ mod tests {
             zshrc: Some(dir.join("home/.zshrc")),
             claude_json: Some(dir.join("home/.claude.json")),
             claude_bin: None,
+            claude_z_bin: None,
             codex_config: Some(dir.join("home/.codex/config.toml")),
             codex_bin: None,
             home: Some(dir.join("home")),
@@ -1346,10 +1399,10 @@ mod tests {
         }
     }
 
-    fn config(mcp: &[&str], hook: bool) -> BrowserConfig {
+    fn config(mcp: &[&str], legacy_hook: bool) -> BrowserConfig {
         BrowserConfig {
             mcp_agents: mcp.iter().map(|s| s.to_string()).collect(),
-            shell_hook: hook,
+            shell_hook: legacy_hook,
             executable: "/nonexistent/Chromium.app".into(),
             ..BrowserConfig::default()
         }
@@ -1363,12 +1416,139 @@ mod tests {
     }
 
     #[test]
-    fn hook_lines_are_matched_by_the_full_path_of_the_managed_file() {
+    fn the_browser_checks_and_fixes_never_reach_the_shell_hook() {
+        let dir = temp("no-hook");
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        let env = env_in(&dir);
+        std::fs::write(dir.join("home/.zshrc"), "alias x=y\n").unwrap();
+        assert!(!CHECK_IDS.contains(&"shell_hook"));
+        // even the legacy `shell_hook = true` changes nothing
+        let found = checks(&config(&[], true), &env, None);
+        assert!(found.iter().all(|c| c.id != "shell_hook"), "{found:?}");
+        assert_eq!(
+            found.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            CHECK_IDS
+        );
+        assert!(fix("shell_hook", &config(&[], true), &env).is_none());
+        let named = fix_all(&["shell_hook".into()], &found, &config(&[], true), &env);
+        assert!(named.is_empty(), "{named:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("home/.zshrc")).unwrap(),
+            "alias x=y\n",
+            "byte-identical"
+        );
+        assert!(!env.shell_file.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_shell_file_inlines_its_guard_and_calls_agent_wrap() {
+        let text = shell_file_contents();
+        assert!(text.lines().any(|l| l == SHELL_FILE_MARKER), "{text}");
+        assert!(!text.contains("_herdr_plus_wrap"), "no helper function");
+        assert!(!text.contains("browser wrap"), "{text}");
+        for (function, agent, real) in [
+            ("codex", "codex", "codex"),
+            ("claude-z", "claude", "claude-z"),
+            ("claude", "claude", "claude"),
+        ] {
+            let line = text
+                .lines()
+                .find(|l| {
+                    l.trim_start()
+                        .starts_with(&format!("function {function} {{"))
+                })
+                .unwrap_or_else(|| panic!("no {function} in {text}"));
+            assert!(
+                line.contains("[ -n \"$HERDR_PANE_ID\" ] && [ -x \"$HERDR_BIN_PATH\" ]"),
+                "{line}"
+            );
+            assert!(
+                line.contains(&format!("\"$HERDR_BIN_PATH\" agent wrap {agent} -- \"$@\"")),
+                "{line}"
+            );
+            assert!(line.contains(&format!("command {real} \"$@\"")), "{line}");
+        }
+        // zsh parses it (skipped without zsh)
+        let dir = temp("zsh-n");
+        let file = dir.join("herdr-plus.zsh");
+        std::fs::write(&file, &text).unwrap();
+        if let Some(zsh) = on_path("zsh") {
+            let status = std::process::Command::new(zsh)
+                .arg("-n")
+                .arg(&file)
+                .status()
+                .unwrap();
+            assert!(status.success(), "zsh -n failed");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_hook_check_is_ok_outdated_or_missing_and_instance_agnostic() {
         let dir = temp("hook");
         std::fs::create_dir_all(dir.join("home")).unwrap();
         let env = env_in(&dir);
+        let zshrc = dir.join("home/.zshrc");
+        // no .zshrc / no line: missing, fixable
+        let missing = shell_hook_check(&env);
+        assert_eq!(missing.state, HookState::Missing);
+        assert!(missing.fixable && missing.edits_files);
+        std::fs::write(&zshrc, "alias x=y\n").unwrap();
+        assert_eq!(shell_hook_check(&env).state, HookState::Missing);
+        // another instance's line whose file is v1: outdated
+        let other = dir.join("other/shell/herdr-plus.zsh");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(
+            &other,
+            "_herdr_plus_wrap() { [ -n \"$HERDR_PANE_ID\" ]; }\nfunction codex { herdr browser wrap codex; }\n",
+        )
+        .unwrap();
+        std::fs::write(&zshrc, format!("alias x=y\n{}\n", zshrc_hook_line(&other))).unwrap();
+        let old = shell_hook_check(&env);
+        assert_eq!(old.state, HookState::Outdated, "{}", old.detail);
+        assert!(old.detail.contains("older hook"), "{}", old.detail);
+        assert!(old.fixable);
+        // the same instance-foreign line, its file now v2: ok without a rewrite
+        std::fs::write(&other, shell_file_contents()).unwrap();
+        let ok = shell_hook_check(&env);
+        assert_eq!(ok.state, HookState::Ok, "{}", ok.detail);
+        // a line whose file is gone: outdated
+        std::fs::remove_file(&other).unwrap();
+        let gone = shell_hook_check(&env);
+        assert_eq!(gone.state, HookState::Outdated);
+        assert!(gone.detail.contains("missing file"), "{}", gone.detail);
+        // the last line decides (zsh: the last definition wins)
+        std::fs::write(&other, shell_file_contents()).unwrap();
+        std::fs::create_dir_all(env.shell_file.parent().unwrap()).unwrap();
+        std::fs::write(&env.shell_file, "function codex { :; }\n").unwrap();
+        std::fs::write(
+            &zshrc,
+            format!(
+                "{}\n{}\n",
+                zshrc_hook_line(&other),
+                zshrc_hook_line(&env.shell_file)
+            ),
+        )
+        .unwrap();
+        let last = shell_hook_check(&env);
+        assert_eq!(last.state, HookState::Outdated, "{}", last.detail);
+        assert!(last.detail.contains("+1 earlier"), "{}", last.detail);
+        // no HOME at all: missing, not fixable
+        let mut homeless = env.clone();
+        homeless.zshrc = None;
+        let none = shell_hook_check(&homeless);
+        assert_eq!(none.state, HookState::Missing);
+        assert!(!none.fixable);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn installing_the_hook_replaces_other_lines_once_and_removing_takes_only_ours() {
+        let dir = temp("hook-install");
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        let env = env_in(&dir);
         let other = PathBuf::from("/Users/me/.herdr-dev/config/herdr/shell/herdr-plus.zsh");
-        // the regression: another instance's line used to count as "present"
         std::fs::write(
             dir.join("home/.zshrc"),
             format!("alias x=y\n{}\n", zshrc_hook_line(&other)),
@@ -1378,44 +1558,34 @@ mod tests {
             hook_lines(&std::fs::read_to_string(dir.join("home/.zshrc")).unwrap()),
             vec![other.clone()]
         );
-        let found = checks(&config(&[], true), &env, None);
-        let hook = by_id(&found, "shell_hook");
-        assert!(!hook.ok);
-        assert!(
-            hook.detail.contains("different instance"),
-            "{}",
-            hook.detail
-        );
-        assert!(hook.detail.contains(".herdr-dev"), "{}", hook.detail);
-        assert_eq!(hook.fix_kind, BrowserFixKind::EditsFiles);
-        // fix all replaces it (backup first), and only once
-        let result = fix("shell_hook", &config(&[], true), &env).unwrap();
-        assert!(result.ok, "{}", result.detail);
+        // install replaces it (backup first), and only once
+        let result = install_shell_hook(&env, true).unwrap();
+        assert!(result.contains("added"), "{result}");
         let text = std::fs::read_to_string(dir.join("home/.zshrc")).unwrap();
         assert_eq!(hook_lines(&text), vec![env.shell_file.clone()]);
         assert!(text.starts_with("alias x=y\n"));
         assert!(!text.contains(".herdr-dev"));
         assert!(dir.join("home/.zshrc.herdr-backup").is_file());
-        assert!(env.shell_file.is_file());
-        assert!(by_id(&checks(&config(&[], true), &env, None), "shell_hook").ok);
-        let again = fix("shell_hook", &config(&[], true), &env).unwrap();
-        assert!(again.detail.contains("already has"), "{}", again.detail);
+        assert!(shell_file_is_current(&env.shell_file));
+        assert_eq!(shell_hook_check(&env).state, HookState::Ok);
+        let again = install_shell_hook(&env, true).unwrap();
+        assert!(again.contains("already has"), "{again}");
         assert_eq!(
             std::fs::read_to_string(dir.join("home/.zshrc")).unwrap(),
             text
         );
-        // a commented-out copy is neither present nor removed; off removes only ours
+        // a commented-out copy is neither present nor removed; remove takes only ours
         std::fs::write(
             dir.join("home/.zshrc"),
             format!("#{}\n{text}", zshrc_hook_line(&env.shell_file)),
         )
         .unwrap();
-        let off = fix("shell_hook", &config(&[], false), &env).unwrap();
-        assert!(off.ok, "{}", off.detail);
+        let off = install_shell_hook(&env, false).unwrap();
+        assert!(off.contains("removed"), "{off}");
         let text = std::fs::read_to_string(dir.join("home/.zshrc")).unwrap();
         assert!(hook_lines(&text).is_empty());
         assert!(text.contains("#[ -n"), "the comment stays: {text}");
-        assert!(by_id(&checks(&config(&[], false), &env, None), "shell_hook").ok);
+        assert_eq!(shell_hook_check(&env).state, HookState::Missing);
         // single quotes with an apostrophe in the path round-trip
         let odd = PathBuf::from("/Users/o'neil/shell/herdr-plus.zsh");
         assert_eq!(hook_line_path(&zshrc_hook_line(&odd)), Some(odd));
@@ -1718,7 +1888,7 @@ esac
             check("mcp_codex", true, "x", BrowserFixKind::EditsFiles),
         ];
         assert!(!setup_needed(&checks));
-        checks.push(check("shell_hook", false, "x", BrowserFixKind::EditsFiles));
+        checks.push(check("mcp_claude", false, "x", BrowserFixKind::EditsFiles));
         assert!(setup_needed(&checks));
         let (text, changed) = rewrite_hook_lines("a\n", None, Some("LINE  # herdr+"));
         assert!(changed);

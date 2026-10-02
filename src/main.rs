@@ -13,6 +13,7 @@ const NESTED_HERDR_MESSAGES: [&str; 6] = [
 
 mod agent_resume;
 mod agent_view_eval;
+mod agent_wrap;
 mod api;
 mod app;
 mod browser;
@@ -494,24 +495,18 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # The symbol that starts a tab group's title (then the herdr tab label), keyed by
 # canonical agent id plus "default"; plain Unicode Chrome renders. Omitted keys keep their defaults.
 # group_symbols = { claude = "✻", codex = "◇", default = "◌" }
-# Steer agents in herdr+ panes to this browser: the MCP instructions and `herdr browser wrap`
-# add a preference for the herdr-browser tools over the agents' own browser tools.
+# Steer agents in herdr+ panes to this browser: the MCP instructions and, while [agents] wrap
+# is on, `herdr agent wrap` add a preference for the herdr-browser tools over the agents' own.
 # steer_agents = true
-# `herdr browser wrap` turns the agents' built-in browsers off for that session
-# (Codex in-app browser / browser_use, Claude in Chrome).
+# While [agents] wrap is on, `herdr agent wrap` turns the agents' built-in browsers off for
+# that session (Codex in-app browser / browser_use, Claude in Chrome).
 # disable_native_browser = true
-# Plain codex / claude in herdr+ panes (shell hook from `herdr browser setup --shell`) run through
-# `herdr browser wrap`; false runs them unchanged except Codex's --no-daemon (attribution). Read per launch.
-# wrap_agents = true
 # Keep the herdr+ dashboard as a pinned first tab in every browser window (a user who
 # unpins or closes it is left alone until the next launch). Needs show_activity.
 # pin_dashboard = true
 # The agents `herdr browser setup` (and settings → browser) keep the herdr-browser MCP server
 # registered for: "claude" (Claude Code, user scope) and/or "codex" (~/.codex/config.toml).
 # mcp_agents = ["claude", "codex"]
-# Keep the guarded herdr+ line in ~/.zshrc so plain codex / claude in herdr+ panes run through
-# `herdr browser wrap` (the managed file under <config dir>/shell). `setup` adds or removes it.
-# shell_hook = true
 
 [coordinator]
 # Run the coordinator agent (a Claude session that watches your managed agents) in a
@@ -533,6 +528,21 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # quiet_hours = ""
 # The coordinator dashboard on http://127.0.0.1:<port>/; 0 disables serving.
 # dashboard_port = 7718
+
+[agents]
+# Plain claude / codex in herdr+ panes run through `herdr agent wrap` (the shell hook from
+# Settings → Agents [fix] or `herdr browser setup --shell`). Off runs them exactly as typed,
+# except Codex's --no-daemon (attribution). Unset falls back to the legacy [browser] wrap_agents.
+# Per launch: `claude --no-herdr`, `codex --no-herdr`, HERDR_NO_WRAP=1 or `command claude`.
+# wrap = false
+# Add the herdr_agents MCP server (the notify tool) to a wrapped launch.
+# tools = false
+# Add the herdr+ paragraph to a wrapped launch's system prompt / developer instructions.
+# instructions = false
+# "" = the built-in paragraph; a path (~ expanded) replaces it.
+# instructions_file = ""
+# Accept agent notices (agents_notify, `herdr agent notify`); off answers notices_off.
+# notices = true
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

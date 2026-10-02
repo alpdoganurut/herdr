@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
+mod agents;
 mod browser;
 mod coordinator;
 mod io;
@@ -14,6 +15,7 @@ mod window_title;
 mod write;
 
 pub use self::{
+    agents::{AgentsConfig, WrapSource},
     browser::{
         is_forbidden_switch, valid_profile_name, BrowserConfig, AUTO_EXECUTABLE, MCP_AGENTS,
     },

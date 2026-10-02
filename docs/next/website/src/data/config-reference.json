@@ -1714,19 +1714,19 @@
           "key": "browser.steer_agents",
           "type": "boolean",
           "default": "true",
-          "description": "Steer agents in herdr+ panes to this browser: the herdr-browser MCP server's instructions and `herdr browser wrap` carry a preference for the herdr-browser tools over the agents' own browser tools (Claude in Chrome, Codex's in-app browser / browser_use); web search stays fine for quick lookups. `false` keeps the neutral instructions."
+          "description": "Steer agents in herdr+ panes to this browser: the herdr-browser MCP server's instructions and, while `[agents] wrap` is on, `herdr agent wrap` carry a preference for the herdr-browser tools over the agents' own browser tools (Claude in Chrome, Codex's in-app browser / browser_use); web search stays fine for quick lookups. `false` keeps the neutral instructions."
         },
         {
           "key": "browser.disable_native_browser",
           "type": "boolean",
           "default": "true",
-          "description": "`herdr browser wrap <codex|claude>` turns the agent's built-in browser off for that session: Codex gets `--disable in_app_browser --disable browser_use`, Claude Code `--no-chrome`. Only affects sessions started through the wrapper (the shell functions `herdr browser setup` prints)."
+          "description": "While `[agents] wrap` is on, `herdr agent wrap <claude|codex>` turns the agent's built-in browser off for that session: Codex gets `--disable in_app_browser --disable browser_use`, Claude Code `--no-chrome`. Only affects sessions started through the wrap (the shell hook routes plain `claude` / `codex` in herdr+ panes to it)."
         },
         {
           "key": "browser.wrap_agents",
           "type": "boolean",
-          "default": "true",
-          "description": "Whether plain `codex` and `claude` in herdr+ panes run through `herdr browser wrap` (the shell hook `herdr browser setup --shell` installs). `false` runs them unchanged — except Codex still gets `--no-daemon`, since a shared Codex daemon would attribute every session to the pane that started it. Read at each launch, so the hook can stay installed."
+          "default": "unset",
+          "description": "Legacy: read only as a fallback for `[agents] wrap` when that key is unset. Setting the wrap from the settings overlay writes `[agents] wrap` and removes this key. Existing configs keep working unchanged."
         },
         {
           "key": "browser.pin_dashboard",
@@ -1744,7 +1744,7 @@
           "key": "browser.shell_hook",
           "type": "boolean",
           "default": "true",
-          "description": "Keep the guarded herdr+ line in `~/.zshrc` (`[ -n \"$HERDR_PANE_ID\" ] && … source '<config dir>/shell/herdr-plus.zsh'  # herdr+`), whose managed file routes plain `codex` and `claude` inside herdr+ panes through `herdr browser wrap`. `herdr browser setup` and the settings section add or remove the line to match (backing `.zshrc` up once to `.zshrc.herdr-backup`); nothing edits `.zshrc` without that explicit request. A herdr+ line of another herdr instance is reported by the checks and replaced by `fix all`."
+          "description": "Legacy and inert: kept so older configs parse. The shell hook (the guarded herdr+ line in `~/.zshrc` and its managed file) is installed from Settings → Agents after an explicit confirmation, or with `herdr browser setup --shell [--remove]`; plain `herdr browser setup` and the browser section's fixes never edit `.zshrc`."
         },
         {
           "key": "browser.activity_color",
@@ -1817,6 +1817,42 @@
           "type": "integer",
           "default": "7718",
           "description": "Port on `127.0.0.1` where the server serves the coordinator's HTML dashboard (`/`, `/board.json`, `/live.json`) while it holds the coordinator lock. `0` disables serving. A port in use is not fatal: the dashboard reports unavailable and the bind is retried every minute. Open it with Open dashboard on the coordinator row's menu, the settings section, or `herdr coordinator dashboard`. A value that is not a port reports a config warning and falls back to the default."
+        }
+      ]
+    },
+    {
+      "id": "agents",
+      "title": "Agents",
+      "keys": [
+        {
+          "key": "agents.wrap",
+          "type": "boolean",
+          "default": "false",
+          "description": "Run plain `claude` and `codex` in herdr+ panes through `herdr agent wrap` (the shell hook from Settings → Agents [fix] or `herdr browser setup --shell` routes them there) and give them what the keys below and `[browser] steer_agents` / `disable_native_browser` add. Off runs them exactly as typed, except that Codex always gets `--no-daemon` so its sessions stay attributed to the pane. Unset falls back to the legacy `[browser] wrap_agents`. Per launch, `claude --no-herdr`, `codex --no-herdr` (before a `--`), `HERDR_NO_WRAP=1` or `command claude` opt out. Read at each launch: running agents keep what they launched with. Launches herdr itself manages (the coordinator and managed agents) get only the browser contributions."
+        },
+        {
+          "key": "agents.tools",
+          "type": "boolean",
+          "default": "false",
+          "description": "Add the `herdr_agents` MCP server to a wrapped launch for that session only (Claude: `--mcp-config` and an allowlist for `agents_whoami` and `agents_notify`; Codex: `-c mcp_servers.herdr_agents.*` overrides). Nothing is written to the agents' global configs. Needs `wrap`."
+        },
+        {
+          "key": "agents.instructions",
+          "type": "boolean",
+          "default": "false",
+          "description": "Add a short herdr+ paragraph to a wrapped launch: Claude Code's `--append-system-prompt`, Codex's `developer_instructions` (after your own top-level `developer_instructions`). It says when to use `agents_notify` (with `tools` on) and that `[herdr+ message …]` text comes from another agent. A launch that already passes its own system prompt flag or `developer_instructions` keeps it. Needs `wrap`."
+        },
+        {
+          "key": "agents.instructions_file",
+          "type": "string",
+          "default": "\"\"",
+          "description": "Empty uses the built-in paragraph. A path (`~` expanded) replaces it verbatim after sanitizing: control characters are dropped and files over 8 KiB, missing or empty files fall back to the built-in text with a warning. The settings section's `file` choice uses `<config dir>/agents.md`, seeded with the built-in text when missing."
+        },
+        {
+          "key": "agents.notices",
+          "type": "boolean",
+          "default": "true",
+          "description": "Accept agent notices (`agents_notify`, `herdr agent notify`): sticky cards naming the agent and its tab until dismissed or the tab is visited. `false` answers `notices_off`."
         }
       ]
     },

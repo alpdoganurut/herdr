@@ -91,19 +91,17 @@ pub struct BrowserConfig {
     /// claude `✻`, codex `◇`, default `◌`.
     pub group_symbols: std::collections::BTreeMap<String, String>,
     /// Steer agents in herdr panes to the herdr browser: the MCP server's
-    /// instructions and `herdr browser wrap` add a preference for the
-    /// herdr-browser tools over the agents' own browser tools. Default: true.
+    /// instructions and, while `[agents] wrap` is on, `herdr agent wrap` add
+    /// a preference for the herdr-browser tools over the agents' own browser
+    /// tools. Default: true.
     pub steer_agents: bool,
-    /// `herdr browser wrap` turns the agents' built-in browsers off for that
-    /// session (Codex's in-app browser and browser_use, Claude in Chrome).
-    /// Default: true.
+    /// While `[agents] wrap` is on, `herdr agent wrap` turns the agents'
+    /// built-in browsers off for that session (Codex's in-app browser and
+    /// browser_use, Claude in Chrome). Default: true.
     pub disable_native_browser: bool,
-    /// Plain `codex` / `claude` in a herdr pane (through the shell hook
-    /// `herdr browser setup --shell` installs) run through `herdr browser
-    /// wrap`. `false` runs them unchanged — except Codex still gets
-    /// `--no-daemon`, without which its sessions cannot be attributed to the
-    /// pane. Read per launch. Default: true.
-    pub wrap_agents: bool,
+    /// Legacy: read only as a fallback for `[agents] wrap` when that key is
+    /// unset. Default: unset.
+    pub wrap_agents: Option<bool>,
     /// Keep the herdr+ dashboard (the new tab page) as a pinned first tab in
     /// every browser window; a user who unpins or closes it is left alone
     /// until the next browser launch. Default: true.
@@ -112,9 +110,15 @@ pub struct BrowserConfig {
     /// user scope; `codex`: `~/.codex/config.toml`); `setup` and the settings
     /// overlay register or remove accordingly. Default: both.
     pub mcp_agents: Vec<String>,
-    /// Keep the guarded herdr+ line in `~/.zshrc` (plain `codex` / `claude`
-    /// in herdr+ panes go through `herdr browser wrap`). Default: true.
+    /// Legacy and inert: the shell hook moved to Settings → Agents (an
+    /// explicit, confirmed fix) and `herdr browser setup --shell`; nothing
+    /// reads this key to edit a file. Kept so old configs parse.
     pub shell_hook: bool,
+    /// Not a key: the effective `[agents] wrap` (`Config::agents_wrap`),
+    /// filled in by the config loaders so the browser hub, which only
+    /// receives this section, reports and applies the resolved value.
+    #[serde(skip)]
+    pub effective_wrap: bool,
 }
 
 /// The tab group title symbols keys omit fall back to.
@@ -159,13 +163,14 @@ impl Default for BrowserConfig {
             group_symbols: std::collections::BTreeMap::new(),
             steer_agents: true,
             disable_native_browser: true,
-            wrap_agents: true,
+            wrap_agents: None,
             pin_dashboard: true,
             mcp_agents: DEFAULT_MCP_AGENTS
                 .iter()
                 .map(|a| (*a).to_string())
                 .collect(),
             shell_hook: true,
+            effective_wrap: false,
         }
     }
 }

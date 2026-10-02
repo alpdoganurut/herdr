@@ -4,10 +4,10 @@ use crossterm::event::KeyModifiers;
 use serde::{de, Deserialize, Deserializer, Serialize};
 
 use super::{
-    ActionKeybinds, BindingConfig, BrowserConfig, CommandKeybindConfig, CoordinatorConfig,
-    IndexedKeybind, Keybinds, NewsConfig, SidebarConfig, SoundConfig, TabBarRightEntryConfig,
-    ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD, DEFAULT_MOUSE_SCROLL_LINES,
-    DEFAULT_SCROLLBACK_LIMIT_BYTES,
+    ActionKeybinds, AgentsConfig, BindingConfig, BrowserConfig, CommandKeybindConfig,
+    CoordinatorConfig, IndexedKeybind, Keybinds, NewsConfig, SidebarConfig, SoundConfig,
+    TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
+    DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 
 pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
@@ -440,6 +440,7 @@ pub struct Config {
     pub news: NewsConfig,
     pub browser: BrowserConfig,
     pub coordinator: CoordinatorConfig,
+    pub agents: AgentsConfig,
 }
 
 #[derive(Debug)]

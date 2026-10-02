@@ -32,6 +32,8 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "restart" => agent_restart(&args[1..]),
         "explain" => agent_explain(&args[1..]),
         "transcripts" => agent_transcripts(&args[1..]),
+        "wrap" => super::agent_wrap::run(&args[1..]),
+        "notify" => super::agent_notify::run(&args[1..]),
         "help" | "--help" | "-h" => {
             print_agent_help();
             Ok(0)
@@ -1066,6 +1068,10 @@ fn print_agent_help() {
         "  herdr agent explain --file PATH --agent LABEL [--json|--format text|json] [--verbose]"
     );
     eprintln!("  herdr agent transcripts [--json]");
+    eprintln!("  herdr agent wrap <claude|codex> [--print] [--] ARGS...");
+    eprintln!(
+        "  herdr agent notify <title> [--body TEXT] [--kind info|question|done|warning] [--json]"
+    );
     eprintln!("  targets accept unique agent names and pane ids that currently host agents");
     eprintln!("  kinds: {}", super::spec::agent_kind_values().join("|"));
 }

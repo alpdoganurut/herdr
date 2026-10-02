@@ -1,0 +1,676 @@
+//! The agent wrap (fork): what `herdr agent wrap <claude|codex>` adds to a
+//! plain `claude` / `codex` launch in a herdr+ pane, per `[agents]`.
+//!
+//! The pieces are pure: [`plan`] reads the config and the process facts
+//! ([`WrapEnv`]) once, [`wrap_args`] builds the argv. The shell hook (the
+//! managed zsh file, `crate::browser::setup`) routes the plain commands
+//! here; managed launches (the coordinator's, which already carry the
+//! herdr_agents server) also pass through and get only the browser
+//! contributions. The settings section's facts ([`settings_snapshot`]) and
+//! its one confirmed file edit ([`fix_shell_hook`]) live here too.
+
+pub mod instructions;
+
+use std::path::{Path, PathBuf};
+
+use crate::browser::setup::{self, HookState, SetupEnv};
+use crate::config::{Config, WrapSource};
+use crate::coordinator::launch::{self, LaunchCtx, MCP_KEY};
+
+/// The per-launch opt-out flag, stripped before it reaches the agent.
+pub const OPT_OUT_FLAG: &str = "--no-herdr";
+/// `HERDR_NO_WRAP=1` turns the wrap off for one launch.
+pub const NO_WRAP_ENV: &str = "HERDR_NO_WRAP";
+/// The herdr_agents tools an unmanaged wrapped agent can use (the others
+/// need a managed agent).
+pub const WRAP_TOOLS: [&str; 2] = ["agents_whoami", "agents_notify"];
+/// Codex's per-tool approval (`mcp_servers.<key>.tools.<tool>.approval_mode`):
+/// the key parses with codex-cli 0.160.0 (`codex mcp get`) and unknown keys
+/// are tolerated, so emitting it cannot break a launch. Whether it is
+/// honoured (no prompt on the first `agents_notify`) is checked in the demo.
+const CODEX_PER_TOOL_APPROVAL: bool = true;
+
+/// Arguments that pass straight through (no wrap contributions): the agents'
+/// management subcommands and version/help flags, as the first argument.
+const CLAUDE_PASSTHROUGH: [&str; 11] = [
+    "mcp",
+    "config",
+    "doctor",
+    "update",
+    "install",
+    "setup-token",
+    "plugin",
+    "-v",
+    "--version",
+    "-h",
+    "--help",
+];
+const CODEX_PASSTHROUGH: [&str; 12] = [
+    "login",
+    "logout",
+    "mcp",
+    "mcp-server",
+    "completion",
+    "help",
+    "apply",
+    "features",
+    "-V",
+    "--version",
+    "-h",
+    "--help",
+];
+
+/// The process facts a plan needs, read once per launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapEnv {
+    /// `HERDR_NO_WRAP` is set (non-empty, not `0`).
+    pub herdr_no_wrap: bool,
+    /// The herdr binary the MCP server runs from: `$HERDR_BIN_PATH` when
+    /// executable, else this process.
+    pub herdr_bin: PathBuf,
+    /// The coordinator directory (`--dir` of the MCP server; managed launches
+    /// point their Claude MCP config into it).
+    pub coordinator_dir: PathBuf,
+    /// `[coordinator] dashboard_port`.
+    pub dashboard_port: u16,
+    /// The user's own top-level `developer_instructions` from Codex's
+    /// `config.toml` (kept ahead of herdr's text; profiles are not covered).
+    pub codex_own_instructions: Option<String>,
+    /// `$HOME`, for `~` in `instructions_file`.
+    pub home: Option<PathBuf>,
+}
+
+impl WrapEnv {
+    pub fn from_process(config: &Config) -> Self {
+        let herdr_bin = std::env::var_os("HERDR_BIN_PATH")
+            .map(PathBuf::from)
+            .filter(|path| setup::is_executable(path))
+            .or_else(|| std::env::current_exe().ok())
+            .unwrap_or_else(|| PathBuf::from("herdr"));
+        Self {
+            herdr_no_wrap: std::env::var(NO_WRAP_ENV)
+                .is_ok_and(|v| !v.trim().is_empty() && v.trim() != "0"),
+            herdr_bin,
+            coordinator_dir: crate::coordinator::coordinator_dir(),
+            dashboard_port: config.coordinator.dashboard_port,
+            codex_own_instructions: codex_developer_instructions(),
+            home: std::env::var_os("HOME")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+        }
+    }
+}
+
+/// `$CODEX_HOME/config.toml`, else `$HOME/.codex/config.toml`.
+fn codex_config_path() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|v| !v.is_empty())
+                .map(|home| PathBuf::from(home).join(".codex"))
+        })
+        .map(|dir| dir.join("config.toml"))
+}
+
+/// The user's own top-level `developer_instructions` from Codex's config.toml.
+fn codex_developer_instructions() -> Option<String> {
+    let text = std::fs::read_to_string(codex_config_path()?).ok()?;
+    let value: toml::Value = toml::from_str(&text).ok()?;
+    value
+        .get("developer_instructions")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// What one launch gets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapPlan {
+    /// The wrap is on for this launch (`[agents] wrap`, no opt-out).
+    pub master: bool,
+    /// Add the herdr_agents server (unmanaged launches only).
+    pub tools: bool,
+    /// The herdr+ paragraph (unmanaged launches only).
+    pub instructions: Option<String>,
+    /// The browser steering text (`[browser] steer_agents`).
+    pub steer: bool,
+    /// Turn the agents' own browsers off (`[browser] disable_native_browser`).
+    pub no_native: bool,
+    /// Where the MCP server runs from and with which directory.
+    pub ctx: LaunchCtx,
+    /// The user's own Codex `developer_instructions`.
+    pub codex_own: Option<String>,
+    /// Things the user should know (an unusable instructions file).
+    pub warnings: Vec<String>,
+}
+
+impl WrapPlan {
+    /// Off for this launch: the agent runs as typed (Codex keeps `--no-daemon`).
+    pub fn disable(&mut self) {
+        self.master = false;
+        self.tools = false;
+        self.instructions = None;
+        self.steer = false;
+        self.no_native = false;
+    }
+}
+
+/// The plan for a launch under `config`.
+pub fn plan(config: &Config, env: &WrapEnv) -> WrapPlan {
+    let master = config.agents_wrap().0 && !env.herdr_no_wrap;
+    let tools = master && config.agents.tools;
+    let mut warnings = Vec::new();
+    let instructions =
+        (master && config.agents.instructions).then(|| match config.agents.instructions_file() {
+            None => instructions::default_paragraph(tools),
+            Some(file) => {
+                let (text, warning) = instructions::resolve(file, env.home.as_deref(), tools);
+                warnings.extend(warning);
+                text
+            }
+        });
+    WrapPlan {
+        master,
+        tools,
+        instructions,
+        steer: master && config.browser.steer_agents,
+        no_native: master && config.browser.disable_native_browser,
+        ctx: LaunchCtx {
+            herdr_bin: env.herdr_bin.clone(),
+            dir: env.coordinator_dir.clone(),
+            port: env.dashboard_port,
+        },
+        codex_own: env.codex_own_instructions.clone(),
+        warnings,
+    }
+}
+
+/// `user` without `--no-herdr` before its first `--` (after it, the flag is
+/// the agent's text), and whether one was there.
+pub fn strip_opt_out(user: &[String]) -> (Vec<String>, bool) {
+    let split = user.iter().position(|a| a == "--").unwrap_or(user.len());
+    let mut out: Vec<String> = Vec::with_capacity(user.len());
+    let mut found = false;
+    for arg in &user[..split] {
+        if arg == OPT_OUT_FLAG {
+            found = true;
+        } else {
+            out.push(arg.clone());
+        }
+    }
+    out.extend(user[split..].iter().cloned());
+    (out, found)
+}
+
+/// Whether the first argument is a management subcommand or a version/help
+/// flag that runs without any wrap contribution.
+pub fn passthrough(agent: &str, user: &[String]) -> bool {
+    let Some(first) = user.first().map(String::as_str) else {
+        return false;
+    };
+    match agent {
+        "claude" => CLAUDE_PASSTHROUGH.contains(&first),
+        "codex" => CODEX_PASSTHROUGH.contains(&first),
+        _ => false,
+    }
+}
+
+/// The value of `flag` at `args[i]`: `--flag=value` or `--flag value`.
+fn flag_value<'a>(args: &'a [String], i: usize, names: &[&str]) -> Option<&'a str> {
+    let arg = args[i].as_str();
+    for name in names {
+        if arg == *name {
+            return args.get(i + 1).map(String::as_str);
+        }
+        if let Some(value) = arg
+            .strip_prefix(name)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
+const ALLOWED_TOOLS: [&str; 2] = ["--allowedTools", "--allowed-tools"];
+const CODEX_CONFIG: [&str; 2] = ["-c", "--config"];
+
+/// A managed launch (the coordinator's own argv, `launch::claude_args` /
+/// `codex_args`): it already has the herdr_agents server, so the wrap adds
+/// none of its herdr_agents arguments nor the paragraph. Any one of the
+/// signs is enough (the coordinator directory need not match this process's).
+pub fn is_managed(user: &[String], coordinator_dir: &Path) -> bool {
+    let config_path = launch::claude_mcp_config_path(coordinator_dir);
+    let agents_tools = format!("mcp__{MCP_KEY}");
+    let codex_key = format!("mcp_servers.{MCP_KEY}.");
+    (0..user.len()).any(|i| {
+        flag_value(user, i, &["--mcp-config"]).is_some_and(|v| Path::new(v) == config_path)
+            || flag_value(user, i, &ALLOWED_TOOLS).is_some_and(|v| v.contains(&agents_tools))
+            || flag_value(user, i, &CODEX_CONFIG)
+                .is_some_and(|v| v.trim_start().starts_with(&codex_key))
+    })
+}
+
+/// The arguments before the first `--` (Claude's flags) and the rest.
+fn split_at_dashes(user: &[String]) -> (&[String], &[String]) {
+    let split = user.iter().position(|a| a == "--").unwrap_or(user.len());
+    user.split_at(split)
+}
+
+/// Whether `wrap_args` will point Claude at `<dir>/mcp/claude.json` (the
+/// verb writes the file first).
+pub fn uses_claude_mcp_config(plan: &WrapPlan, user: &[String]) -> bool {
+    plan.master
+        && plan.tools
+        && !passthrough("claude", user)
+        && !is_managed(split_at_dashes(user).0, &plan.ctx.dir)
+}
+
+/// The paragraph and the steering text (unmanaged: both; managed: steering only).
+fn prompt_parts(plan: &WrapPlan, managed: bool) -> Vec<&str> {
+    let mut parts = Vec::new();
+    if !managed {
+        if let Some(text) = plan
+            .instructions
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            parts.push(text);
+        }
+    }
+    if plan.steer {
+        parts.push(crate::cli::BROWSER_STEERING);
+    }
+    parts
+}
+
+/// The comma list for Claude's allowlist.
+fn claude_allow_list() -> String {
+    WRAP_TOOLS
+        .iter()
+        .map(|tool| format!("mcp__{MCP_KEY}__{tool}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Merge `allow` into the first user `--allowedTools` value of `pre`
+/// (never a second flag); `false` when there is none.
+fn merge_allowed_tools(pre: &mut Vec<String>, allow: &str) -> bool {
+    for i in 0..pre.len() {
+        let arg = pre[i].clone();
+        for name in ALLOWED_TOOLS {
+            if arg == name {
+                match pre.get_mut(i + 1) {
+                    Some(value) if !value.starts_with('-') => {
+                        value.push(',');
+                        value.push_str(allow);
+                    }
+                    _ => pre.insert(i + 1, allow.to_string()),
+                }
+                return true;
+            }
+            if let Some(value) = arg.strip_prefix(name).and_then(|r| r.strip_prefix('=')) {
+                pre[i] = if value.is_empty() {
+                    format!("{name}={allow}")
+                } else {
+                    format!("{name}={value},{allow}")
+                };
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The argv handed to the agent (after its executable). Codex: herdr's flags
+/// first, then the user's (subcommands like `resume` stay after them).
+/// Claude: the user's flags first (claude-z reads its session id from `$1`),
+/// herdr's after them and before a user `--`, and never a flag the user
+/// already passed. Variadic flags take their `=` form.
+pub fn wrap_args(agent: &str, plan: &WrapPlan, user: &[String]) -> Vec<String> {
+    let off = !plan.master || passthrough(agent, user);
+    match agent {
+        "codex" => {
+            // The daemon would spawn MCP servers with another pane's
+            // environment: attribution needs this even when wrapping is off.
+            let mut args: Vec<String> = Vec::new();
+            if !user.iter().any(|a| a == "--no-daemon") {
+                args.push("--no-daemon".into());
+            }
+            if !off {
+                let managed = is_managed(user, &plan.ctx.dir);
+                if plan.no_native {
+                    args.extend(
+                        ["--disable", "in_app_browser", "--disable", "browser_use"]
+                            .map(String::from),
+                    );
+                }
+                if plan.tools && !managed {
+                    args.extend(launch::codex_mcp_overrides(&plan.ctx, false));
+                    if CODEX_PER_TOOL_APPROVAL {
+                        for tool in WRAP_TOOLS {
+                            args.push("-c".into());
+                            args.push(format!(
+                                "mcp_servers.{MCP_KEY}.tools.{tool}.approval_mode=\"approve\""
+                            ));
+                        }
+                    }
+                }
+                let parts = prompt_parts(plan, managed);
+                let user_sets = (0..user.len()).any(|i| {
+                    flag_value(user, i, &CODEX_CONFIG)
+                        .is_some_and(|v| v.trim_start().starts_with("developer_instructions"))
+                });
+                if !parts.is_empty() && !user_sets {
+                    let mut all: Vec<&str> = Vec::new();
+                    if let Some(own) = plan
+                        .codex_own
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                    {
+                        all.push(own);
+                    }
+                    all.extend(parts);
+                    args.push("-c".into());
+                    args.push(format!(
+                        "developer_instructions={}",
+                        launch::toml_string(&all.join("\n\n"))
+                    ));
+                }
+            }
+            args.extend(user.iter().cloned());
+            args
+        }
+        "claude" => {
+            if off {
+                return user.to_vec();
+            }
+            let (pre, post) = split_at_dashes(user);
+            let managed = is_managed(pre, &plan.ctx.dir);
+            let mut pre = pre.to_vec();
+            let mut ours: Vec<String> = Vec::new();
+            if plan.tools && !managed {
+                ours.push(launch::mcp_config_flag(&launch::claude_mcp_config_path(
+                    &plan.ctx.dir,
+                )));
+                let allow = claude_allow_list();
+                if !merge_allowed_tools(&mut pre, &allow) {
+                    ours.push(format!("--allowedTools={allow}"));
+                }
+            }
+            let prompt = prompt_parts(plan, managed).join("\n\n");
+            let user_prompt = pre.iter().any(|a| {
+                ["--append-system-prompt", "--append-system-prompt-file"]
+                    .iter()
+                    .any(|flag| {
+                        a == flag || a.strip_prefix(flag).is_some_and(|r| r.starts_with('='))
+                    })
+            });
+            if !prompt.is_empty() && !user_prompt {
+                ours.push("--append-system-prompt".into());
+                ours.push(prompt);
+            }
+            if plan.no_native && !pre.iter().any(|a| a == "--no-chrome") {
+                ours.push("--no-chrome".into());
+            }
+            pre.extend(ours);
+            pre.extend(post.iter().cloned());
+            pre
+        }
+        _ => user.to_vec(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The settings section's facts and its confirmed fix
+
+/// One status entry of the Agents section (`shell_hook`, `claude`, `codex`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapCheck {
+    pub id: &'static str,
+    /// `ok`, `outdated`, `missing` (the hook) or `absent` (not on PATH).
+    pub state: &'static str,
+    pub detail: String,
+    /// A fix is offered (only the hook has one).
+    pub fixable: bool,
+    /// The fix edits the user's files: it needs an explicit confirmation.
+    pub edits_files: bool,
+}
+
+/// The Agents section's picture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapSnapshot {
+    pub wrap: bool,
+    pub wrap_source: WrapSource,
+    pub tools: bool,
+    pub instructions: bool,
+    /// `[agents] instructions_file` as written (empty: built-in).
+    pub instructions_file: String,
+    /// `built-in`, `~/.config/herdr/agents.md (412 B)`, `… missing → built-in`.
+    pub instructions_detail: String,
+    /// `[browser] steer_agents` (applies while wrapped; read-only here).
+    pub steer_browser: bool,
+    pub notices: bool,
+    pub checks: Vec<WrapCheck>,
+    /// The exact `.zshrc` line the hook fix adds and where, when it is offered.
+    pub hook_preview: Option<String>,
+}
+
+/// The section's facts under `config`, with the hook and PATH facts from
+/// `env` (the server's environment). Never writes.
+pub fn settings_snapshot(config: &Config, env: &SetupEnv) -> WrapSnapshot {
+    let (wrap, wrap_source) = config.agents_wrap();
+    let hook = setup::shell_hook_check(env);
+    // With the wrap off a missing hook is fine; an outdated one is broken in
+    // agents' shells whatever the setting, so it stays fixable.
+    let hook_fixable = hook.fixable
+        && match hook.state {
+            HookState::Ok => false,
+            HookState::Outdated => true,
+            HookState::Missing => wrap,
+        };
+    let hook_preview = match (&env.zshrc, hook_fixable) {
+        (Some(zshrc), true) => Some(format!(
+            "{}: {}",
+            setup::shorten_home(zshrc, env.home.as_deref()),
+            setup::zshrc_hook_line(&env.shell_file)
+        )),
+        _ => None,
+    };
+    let on_path = |id: &'static str, found: bool, detail: String| WrapCheck {
+        id,
+        state: if found { "ok" } else { "absent" },
+        detail,
+        fixable: false,
+        edits_files: false,
+    };
+    let claude = match (&env.claude_z_bin, &env.claude_bin) {
+        (Some(_), _) => on_path(
+            "claude",
+            true,
+            "claude-z on the server's PATH (the wrap runs it)".into(),
+        ),
+        (None, Some(_)) => on_path("claude", true, "on the server's PATH".into()),
+        (None, None) => on_path(
+            "claude",
+            false,
+            "not on the server's PATH (nor claude-z)".into(),
+        ),
+    };
+    let codex = on_path(
+        "codex",
+        env.codex_bin.is_some(),
+        if env.codex_bin.is_some() {
+            "on the server's PATH".into()
+        } else {
+            "not on the server's PATH".into()
+        },
+    );
+    WrapSnapshot {
+        wrap,
+        wrap_source,
+        tools: config.agents.tools,
+        instructions: config.agents.instructions,
+        instructions_file: config.agents.instructions_file.clone(),
+        instructions_detail: instructions::file_detail(
+            &config.agents.instructions_file,
+            env.home.as_deref(),
+        ),
+        steer_browser: config.browser.steer_agents,
+        notices: config.agents.notices,
+        checks: vec![
+            WrapCheck {
+                id: "shell_hook",
+                state: hook.state.as_str(),
+                detail: hook.detail,
+                fixable: hook_fixable,
+                edits_files: hook.edits_files,
+            },
+            claude,
+            codex,
+        ],
+        hook_preview,
+    }
+}
+
+/// The confirmed hook fix: write the managed file and make the guarded line
+/// in `.zshrc` this instance's (backing `.zshrc` up once). Only ever called
+/// on an explicit, confirmed request.
+pub fn fix_shell_hook(env: &SetupEnv) -> Result<String, String> {
+    setup::install_shell_hook(env, true)
+}
+
+/// Create the instructions file at `path` with the built-in paragraph when
+/// it does not exist; an existing file is never overwritten.
+pub fn seed_instructions_file(path: &Path) -> std::io::Result<()> {
+    use std::io::Write as _;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            file.write_all(instructions::DEFAULT_NOTIFY_PARAGRAPH.as_bytes())?;
+            file.write_all(b"\n")
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    //! A temporary home for tests that write config, `.zshrc`, `agents.md`
+    //! or `mcp/claude.json`: every variable those paths derive from points
+    //! into one temp directory while the guard lives (restored on drop), and
+    //! the process-wide config env lock is held so tests that touch these
+    //! variables never interleave.
+
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+
+    use crate::browser::setup::SetupEnv;
+
+    /// The variables set (or removed, `None`) while a [`TempHome`] lives.
+    const VARS: [&str; 8] = [
+        "HOME",
+        "ZDOTDIR",
+        "CODEX_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        crate::config::CONFIG_PATH_ENV_VAR,
+        crate::coordinator::COORDINATOR_DIR_ENV,
+        super::NO_WRAP_ENV,
+    ];
+
+    pub(crate) struct TempHome {
+        pub root: PathBuf,
+        pub home: PathBuf,
+        pub config_path: PathBuf,
+        pub env: SetupEnv,
+        saved: Vec<(&'static str, Option<OsString>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TempHome {
+        pub(crate) fn new(name: &str) -> Self {
+            let lock = crate::config::test_config_env_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let root = std::env::temp_dir().join(format!(
+                "herdr-temphome-{name}-{}-{}",
+                std::process::id(),
+                crate::coordinator::launch::new_uuid()
+            ));
+            let home = root.join("home");
+            std::fs::create_dir_all(home.join(".codex")).expect("temp home");
+            let saved = VARS
+                .iter()
+                .map(|var| (*var, std::env::var_os(var)))
+                .collect();
+            std::env::set_var("HOME", &home);
+            std::env::set_var("ZDOTDIR", &home);
+            std::env::set_var("CODEX_HOME", home.join(".codex"));
+            std::env::set_var("XDG_CONFIG_HOME", root.join("xdg-config"));
+            std::env::set_var("XDG_STATE_HOME", root.join("xdg-state"));
+            std::env::remove_var(crate::coordinator::COORDINATOR_DIR_ENV);
+            std::env::remove_var(super::NO_WRAP_ENV);
+            let config_path = crate::config::config_dir().join("config.toml");
+            std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &config_path);
+            let env = SetupEnv {
+                browser_home: root.join("browser"),
+                binary: root.join("bin/herdr"),
+                shell_file: crate::browser::setup::shell_file_path(),
+                zshrc: Some(home.join(".zshrc")),
+                claude_json: Some(home.join(".claude.json")),
+                // never a real CLI: a fix would run it
+                claude_bin: None,
+                claude_z_bin: None,
+                codex_config: Some(home.join(".codex/config.toml")),
+                codex_bin: None,
+                home: Some(home.clone()),
+                node_override: None,
+            };
+            Self {
+                root,
+                home,
+                config_path,
+                env,
+                saved,
+                _lock: lock,
+            }
+        }
+
+        pub(crate) fn write_config(&self, text: &str) {
+            if let Some(parent) = self.config_path.parent() {
+                std::fs::create_dir_all(parent).expect("config dir");
+            }
+            std::fs::write(&self.config_path, text).expect("config");
+        }
+
+        pub(crate) fn contains(&self, path: &Path) -> bool {
+            path.starts_with(&self.root)
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            for (var, value) in &self.saved {
+                match value {
+                    Some(value) => std::env::set_var(var, value),
+                    None => std::env::remove_var(var),
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -45,9 +45,11 @@ impl App {
     }
 
     /// `browser.settings.set`: one `[browser]` key into the server's config
-    /// file (`ConfigEdit`), reloaded live; `mcp_agents` and `shell_hook`
-    /// also run their file-editing fix (the request is the user's explicit
-    /// act), the others refresh the checks.
+    /// file (`ConfigEdit`), reloaded live; `mcp_agents` also runs its
+    /// file-editing fix (the request is the user's explicit act), the others
+    /// refresh the checks. `wrap_agents` / `steer_wrap` write `[agents] wrap`
+    /// (dropping the legacy key); `shell_hook` moved to the Agents section
+    /// (`moved`), so nothing here edits `.zshrc`.
     pub(super) fn handle_browser_settings_set(
         &mut self,
         id: String,
@@ -91,7 +93,7 @@ impl App {
         };
         let list: Vec<String>;
         let text: String;
-        let pairs: [(&'static str, bool); 2];
+        let steer: [(&'static str, bool); 1];
         let edit = match key {
             "enabled" => ConfigEdit::BrowserBool {
                 key: "enabled",
@@ -109,22 +111,27 @@ impl App {
                 key: "steer_agents",
                 value: as_bool()?,
             },
-            "wrap_agents" => ConfigEdit::BrowserBool {
-                key: "wrap_agents",
-                value: as_bool()?,
-            },
+            // compatibility: the wrap switch is `[agents] wrap` now
+            "wrap_agents" => ConfigEdit::AgentsWrap(as_bool()?),
             "disable_native_browser" => ConfigEdit::BrowserBool {
                 key: "disable_native_browser",
                 value: as_bool()?,
             },
-            "shell_hook" => ConfigEdit::BrowserBool {
-                key: "shell_hook",
-                value: as_bool()?,
-            },
-            // the settings row `agents use herdr's browser`: both keys, one write
+            "shell_hook" => {
+                return Err(BrowserError::new(
+                    "moved",
+                    "the shell hook is in Settings → Agents (it edits ~/.zshrc only after a confirmation)",
+                ))
+            }
+            // the old settings row `agents use herdr's browser`: steer_agents
+            // and `[agents] wrap`, one write
             "steer_wrap" => {
-                pairs = [("steer_agents", as_bool()?), ("wrap_agents", as_bool()?)];
-                ConfigEdit::BrowserBools { pairs: &pairs }
+                let value = as_bool()?;
+                steer = [("steer_agents", value)];
+                ConfigEdit::AgentsWrapWithBrowser {
+                    wrap: value,
+                    browser: &steer,
+                }
             }
             "activity_color" => {
                 text = value
@@ -174,9 +181,11 @@ impl App {
         // What the running config must say afterwards (normalised like the edit).
         let requested = match &edit {
             ConfigEdit::BrowserBool { value, .. } => serde_json::Value::Bool(*value),
-            ConfigEdit::BrowserBools { pairs } => serde_json::Value::Bool(pairs[0].1),
             ConfigEdit::BrowserString { value, .. } => serde_json::Value::String(value.to_string()),
             ConfigEdit::BrowserList { values, .. } => serde_json::json!(values),
+            ConfigEdit::AgentsWrap(wrap) | ConfigEdit::AgentsWrapWithBrowser { wrap, .. } => {
+                serde_json::Value::Bool(*wrap)
+            }
             _ => serde_json::Value::Null,
         };
         crate::config::write_edit(edit)
@@ -197,7 +206,7 @@ impl App {
             let why = report
                 .diagnostics
                 .iter()
-                .find(|d| d.contains("browser"))
+                .find(|d| d.contains("browser") || d.contains("agents"))
                 .cloned()
                 .unwrap_or_else(|| "the [browser] section did not reload".to_string());
             return Err(BrowserError::new(
@@ -213,7 +222,6 @@ impl App {
         );
         match key {
             "mcp_agents" => hub().run_fixes(vec!["mcp_claude".into(), "mcp_codex".into()]),
-            "shell_hook" => hub().run_fixes(vec!["shell_hook".into()]),
             _ => hub().refresh_checks(true),
         }
         Ok(())
@@ -389,18 +397,19 @@ impl App {
 }
 
 /// The running config's value for a `browser.settings.set` key, in the
-/// shape the request carried (`steer_wrap` is the two toggles' common value,
-/// `Null` when they disagree).
+/// shape the request carried. `wrap_agents` is the effective `[agents] wrap`
+/// (`Config::agents_wrap().0`, carried on the section as `effective_wrap`);
+/// `steer_wrap` is its and `steer_agents`' common value, `Null` when they
+/// disagree.
 fn browser_config_value(config: &crate::config::BrowserConfig, key: &str) -> serde_json::Value {
     match key {
         "enabled" => config.enabled.into(),
         "show_activity" => config.show_activity.into(),
         "pin_dashboard" => config.pin_dashboard.into(),
         "steer_agents" => config.steer_agents.into(),
-        "wrap_agents" => config.wrap_agents.into(),
+        "wrap_agents" => config.effective_wrap.into(),
         "disable_native_browser" => config.disable_native_browser.into(),
-        "shell_hook" => config.shell_hook.into(),
-        "steer_wrap" if config.steer_agents == config.wrap_agents => config.steer_agents.into(),
+        "steer_wrap" if config.steer_agents == config.effective_wrap => config.steer_agents.into(),
         "activity_color" => config.activity_color.trim().to_ascii_lowercase().into(),
         "mcp_agents" => serde_json::json!(config.mcp_agents),
         _ => serde_json::Value::Null,

@@ -23,6 +23,8 @@ macro_rules! println {
 }
 
 mod agent;
+mod agent_notify;
+mod agent_wrap;
 mod api;
 mod browser;
 mod browser_mcp;
@@ -50,6 +52,9 @@ const TERMINAL_SESSION_OBSERVE_USAGE: &str =
     "usage: herdr terminal session observe <target> [--cols N] [--rows N]";
 const TERMINAL_SESSION_CONTROL_USAGE: &str =
     "usage: herdr terminal session control <target> [--takeover] [--cols N] [--rows N]";
+/// The browser steering paragraph (`[browser] steer_agents`), shared with the agent wrap.
+pub(crate) use browser_mcp::STEERING as BROWSER_STEERING;
+
 pub(crate) const AGENT_HELP_FOOTER: &str = concat!(
     "Are you an AI? Use these resources ONLY IF your task specifically asks you to:\n",
     "  Help a human understand or set up Herdr for the first time:\n",

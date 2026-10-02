@@ -1298,11 +1298,13 @@ fn browser_launch_argv_carries_no_automation_switches() {
 }
 
 /// `browser.settings.set` writes the server's config file and reloads it;
-/// `mcp_agents` and `shell_hook` run their file-editing fix (on temporary
-/// files here); `browser.fix` replaces another instance's hook line; a
-/// failing file-editing check surfaces as `setup_needed` in `browser.get`.
+/// `mcp_agents` runs its file-editing fix (on temporary files here); the
+/// shell hook moved to the Agents section (`moved`; neither the setting nor
+/// `browser.fix` touches `.zshrc`); `wrap_agents` / `steer_wrap` write
+/// `[agents] wrap`; a failing file-editing check surfaces as `setup_needed`
+/// in `browser.get`.
 #[tokio::test(flavor = "current_thread")]
-async fn browser_settings_write_the_config_and_fix_the_hook_and_codex_entries() {
+async fn browser_settings_write_the_config_and_fix_the_codex_entries_but_never_the_hook() {
     use crate::api::schema::{
         BrowserFixParams, BrowserGetParams, BrowserSettingsSetParams, EmptyParams,
     };
@@ -1327,6 +1329,7 @@ async fn browser_settings_write_the_config_and_fix_the_hook_and_codex_entries() 
         zshrc: Some(dir.join("home/.zshrc")),
         claude_json: Some(dir.join("home/.claude.json")),
         claude_bin: None,
+        claude_z_bin: None,
         codex_config: Some(dir.join("home/.codex/config.toml")),
         codex_bin: None,
         home: Some(dir.join("home")),
@@ -1438,86 +1441,133 @@ async fn browser_settings_write_the_config_and_fix_the_hook_and_codex_entries() 
     assert_eq!(settings["result"]["settings"]["fixing"], false);
     assert!(settings["result"]["settings"]["checked_at"].is_u64());
 
-    // shell_hook = true writes the managed file and the guarded line.
-    let set = api(
+    // shell_hook moved to Settings → Agents: refused, `.zshrc` untouched;
+    // browser.fix cannot reach it either.
+    let other = PathBuf::from("/Users/me/.herdr-dev/config/herdr/shell/herdr-plus.zsh");
+    let zshrc_before = format!("alias x=y\n{}\n", setup::zshrc_hook_line(&other));
+    fs::write(dir.join("home/.zshrc"), &zshrc_before).unwrap();
+    let moved = api(
         &mut server,
         Method::BrowserSettingsSet(BrowserSettingsSetParams {
             key: "shell_hook".into(),
             value: serde_json::Value::Bool(true),
         }),
     );
-    assert_eq!(set["result"]["settings"]["shell_hook"], true, "{set}");
+    assert_eq!(moved["error"]["code"], "moved", "{moved}");
+    assert!(
+        moved["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Settings → Agents"),
+        "{moved}"
+    );
+    hub.refresh_checks(true);
+    assert!(hub.wait_for_setup_idle(Duration::from_secs(20)));
+    let settings = api(&mut server, Method::BrowserSettings(EmptyParams::default()));
+    assert!(
+        settings["result"]["settings"]["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["id"] != "shell_hook"),
+        "{settings}"
+    );
+    let fix = api(
+        &mut server,
+        Method::BrowserFix(BrowserFixParams {
+            ids: vec!["shell_hook".into()],
+        }),
+    );
+    assert_eq!(fix["result"]["settings"]["fixing"], true, "{fix}");
     assert!(hub.wait_for_setup_idle(Duration::from_secs(30)));
-    let zshrc = fs::read_to_string(dir.join("home/.zshrc")).unwrap();
-    assert_eq!(setup::hook_lines(&zshrc), vec![env.shell_file.clone()]);
-    assert!(env.shell_file.is_file());
+    let fix = api(
+        &mut server,
+        Method::BrowserFix(BrowserFixParams { ids: vec![] }),
+    );
+    assert!(fix["result"]["settings"].is_object(), "{fix}");
+    assert!(hub.wait_for_setup_idle(Duration::from_secs(30)));
+    assert_eq!(
+        fs::read_to_string(dir.join("home/.zshrc")).unwrap(),
+        zshrc_before,
+        "byte-identical: no browser path edits .zshrc"
+    );
+    assert!(!env.shell_file.exists());
+    assert!(!dir.join("home/.zshrc.herdr-backup").exists());
 
-    // Another instance's line: reported, `setup_needed`, replaced by fix all (backup first).
-    let other = PathBuf::from("/Users/me/.herdr-dev/config/herdr/shell/herdr-plus.zsh");
+    // A failing file-editing check (a stale Codex entry) is `setup_needed`.
+    let got = api(&mut server, Method::BrowserGet(BrowserGetParams::default()));
+    assert_eq!(got["result"]["browser"]["setup_needed"], false, "{got}");
+    let codex = fs::read_to_string(dir.join("home/.codex/config.toml")).unwrap();
     fs::write(
-        dir.join("home/.zshrc"),
-        format!("alias x=y\n{}\n", setup::zshrc_hook_line(&other)),
+        dir.join("home/.codex/config.toml"),
+        codex.replace(
+            &dir.join("bin/herdr").display().to_string(),
+            "/opt/other/herdr",
+        ),
     )
     .unwrap();
     hub.refresh_checks(true);
     assert!(hub.wait_for_setup_idle(Duration::from_secs(20)));
     let got = api(&mut server, Method::BrowserGet(BrowserGetParams::default()));
     assert_eq!(got["result"]["browser"]["setup_needed"], true, "{got}");
-    let settings = api(&mut server, Method::BrowserSettings(EmptyParams::default()));
-    let hook = settings["result"]["settings"]["checks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["id"] == "shell_hook")
-        .unwrap()
-        .clone();
-    assert_eq!(hook["ok"], false, "{hook}");
-    assert!(
-        hook["detail"]
-            .as_str()
-            .unwrap()
-            .contains("different instance"),
-        "{hook}"
-    );
-    assert_eq!(hook["fix_kind"], "edits_files");
-    let fix = api(
-        &mut server,
-        Method::BrowserFix(BrowserFixParams { ids: vec![] }),
-    );
-    assert_eq!(fix["result"]["settings"]["fixing"], true, "{fix}");
-    assert!(hub.wait_for_setup_idle(Duration::from_secs(30)));
-    let zshrc = fs::read_to_string(dir.join("home/.zshrc")).unwrap();
-    assert!(zshrc.starts_with("alias x=y\n"), "{zshrc}");
-    assert_eq!(setup::hook_lines(&zshrc), vec![env.shell_file.clone()]);
-    assert!(dir.join("home/.zshrc.herdr-backup").is_file());
-    let got = api(&mut server, Method::BrowserGet(BrowserGetParams::default()));
-    assert_eq!(got["result"]["browser"]["setup_needed"], false, "{got}");
+    fs::write(dir.join("home/.codex/config.toml"), codex).unwrap();
+    hub.refresh_checks(true);
+    assert!(hub.wait_for_setup_idle(Duration::from_secs(20)));
 
-    // steer + wrap: one request writes both keys in one file write.
+    // wrap_agents: the legacy key is read as the fallback; setting it
+    // writes [agents] wrap and drops the legacy key in one write.
+    let text = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        &config_path,
+        text.replace("[browser]\n", "[browser]\nwrap_agents = true\n"),
+    )
+    .unwrap();
+    server.app.reload_config();
+    let settings = api(&mut server, Method::BrowserSettings(EmptyParams::default()));
+    assert_eq!(
+        settings["result"]["settings"]["wrap_agents"], true,
+        "the effective value from the legacy key: {settings}"
+    );
+    let set = api(
+        &mut server,
+        Method::BrowserSettingsSet(BrowserSettingsSetParams {
+            key: "wrap_agents".into(),
+            value: serde_json::Value::Bool(false),
+        }),
+    );
+    assert_eq!(set["result"]["settings"]["wrap_agents"], false, "{set}");
+    let text = fs::read_to_string(&config_path).unwrap();
+    assert!(text.contains("[agents]\nwrap = false"), "{text}");
+    assert!(!text.contains("wrap_agents"), "{text}");
+    hub.wait_for_setup_idle(Duration::from_secs(20));
+
+    // steer + wrap: steer_agents and [agents] wrap in one file write.
     let set = api(
         &mut server,
         Method::BrowserSettingsSet(BrowserSettingsSetParams {
             key: "steer_wrap".into(),
-            value: serde_json::Value::Bool(false),
+            value: serde_json::Value::Bool(true),
         }),
     );
-    assert_eq!(set["result"]["settings"]["steer_agents"], false, "{set}");
-    assert_eq!(set["result"]["settings"]["wrap_agents"], false, "{set}");
+    assert_eq!(set["result"]["settings"]["steer_agents"], true, "{set}");
+    assert_eq!(set["result"]["settings"]["wrap_agents"], true, "{set}");
     let text = fs::read_to_string(&config_path).unwrap();
     assert!(
-        text.contains("steer_agents = false") && text.contains("wrap_agents = false"),
+        text.contains("steer_agents = true") && text.contains("[agents]\nwrap = true"),
         "{text}"
     );
+    assert!(!text.contains("wrap_agents"), "{text}");
+    assert!(hub.config().effective_wrap);
     hub.wait_for_setup_idle(Duration::from_secs(20));
 
     // A request during a running fix is queued and drained by the same worker.
-    hub.run_fixes(vec!["shell_hook".into()]);
     hub.run_fixes(vec!["mcp_codex".into()]);
+    hub.run_fixes(vec!["mcp_claude".into()]);
     let (fixing, pending, _) = hub.setup_test_state();
     assert!(fixing);
     assert_eq!(
         pending.as_deref(),
-        Some(&["mcp_codex".to_string()][..]),
+        Some(&["mcp_claude".to_string()][..]),
         "queued behind the running fix"
     );
     hub.run_fixes(vec![]);
@@ -1530,7 +1580,7 @@ async fn browser_settings_write_the_config_and_fix_the_hook_and_codex_entries() 
     let settings = api(&mut server, Method::BrowserSettings(EmptyParams::default()));
     let fixes = settings["result"]["settings"]["fixes"].as_array().unwrap();
     assert!(
-        fixes.iter().any(|f| f["id"] == "shell_hook"),
+        fixes.iter().any(|f| f["id"] == "mcp_codex"),
         "the first batch: {fixes:?}"
     );
     assert!(hub.setup_test_state().1.is_none());
@@ -1552,12 +1602,12 @@ async fn browser_settings_write_the_config_and_fix_the_hook_and_codex_entries() 
         text.replace("[browser]\n", "[browser]\nenabled = \"maybe\"\n"),
     )
     .unwrap();
-    let hook_before = fs::read_to_string(dir.join("home/.zshrc")).unwrap();
+    let codex_before = fs::read_to_string(dir.join("home/.codex/config.toml")).unwrap();
     let refused = api(
         &mut server,
         Method::BrowserSettingsSet(BrowserSettingsSetParams {
-            key: "shell_hook".into(),
-            value: serde_json::Value::Bool(false),
+            key: "mcp_agents".into(),
+            value: serde_json::json!([]),
         }),
     );
     assert_eq!(
@@ -1571,15 +1621,21 @@ async fn browser_settings_write_the_config_and_fix_the_hook_and_codex_entries() 
             .contains("written but not applied"),
         "{refused}"
     );
-    assert!(
-        hub.config().shell_hook,
+    assert_eq!(
+        hub.config().mcp_agents,
+        ["codex"],
         "the running config kept the old value"
     );
     hub.wait_for_setup_idle(Duration::from_secs(20));
     assert_eq!(
-        fs::read_to_string(dir.join("home/.zshrc")).unwrap(),
-        hook_before,
+        fs::read_to_string(dir.join("home/.codex/config.toml")).unwrap(),
+        codex_before,
         "no fix ran on the old setting"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("home/.zshrc")).unwrap(),
+        zshrc_before,
+        "and the hook was never touched"
     );
 
     hub.set_setup_env(None);

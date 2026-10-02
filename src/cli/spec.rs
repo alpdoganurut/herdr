@@ -431,6 +431,31 @@ fn agent_command() -> Command {
         )
         .subcommand(id_command("focus", "target", "Focus an agent"))
         .subcommand(
+            Command::new("wrap")
+                .about("Run claude or codex with what [agents] adds (tools, instructions, browser steering)")
+                .override_usage("herdr agent wrap <claude|codex> [--print] [--] [ARG]...")
+                .arg(Arg::new("agent").value_parser(["claude", "codex"]).required(true))
+                .arg(flag("print").help("Print the binary and argv instead of running it"))
+                .arg(
+                    Arg::new("args")
+                        .num_args(0..)
+                        .allow_hyphen_values(true)
+                        .trailing_var_arg(true),
+                )
+                .after_help(
+                    "Per launch: --no-herdr (before a --) or HERDR_NO_WRAP=1 runs the agent as typed.",
+                ),
+        )
+        .subcommand(
+            Command::new("notify")
+                .about("Show your user an agent card from this pane until they dismiss it or visit its tab")
+                .override_usage("herdr agent notify <TITLE> [--body TEXT] [--kind KIND] [--json]")
+                .arg(required("title", "TITLE"))
+                .arg(option("body", "TEXT"))
+                .arg(option("kind", "KIND").value_parser(["info", "question", "done", "warning"]))
+                .arg(json_flag()),
+        )
+        .subcommand(
             Command::new("wait")
                 .about("Wait until an agent reaches one of the requested states")
                 .override_usage("herdr agent wait <TARGET> [OPTIONS]")
@@ -1045,14 +1070,14 @@ fn browser_command() -> Command {
                 .about("Install the Playwright sidecar (npm ci) and register the MCP server for Claude Code and/or Codex")
                 .arg(flag("claude").help("Register with Claude Code (user scope)"))
                 .arg(flag("codex").help("Register in Codex's config.toml with the pane variables forwarded"))
-                .arg(flag("shell").help("Write the managed shell file and add one guarded line to ~/.zshrc (plain codex/claude in herdr+ panes → herdr browser wrap)"))
+                .arg(flag("shell").help("Only write the managed shell file and add one guarded line to ~/.zshrc (plain codex/claude in herdr+ panes → herdr agent wrap); plain setup never edits ~/.zshrc"))
                 .arg(flag("remove").help("With --shell: take the line out of ~/.zshrc again"))
                 .arg(flag("no-mcp"))
                 .arg(option("node", "PATH")),
         )
         .subcommand(
             Command::new("wrap")
-                .about("Run codex or claude with herdr+'s browser steering (setup prints the shell functions)")
+                .about("Alias of `herdr agent wrap` (older managed shell files call it)")
                 .arg(Arg::new("agent").value_parser(["codex", "claude"]).required(true))
                 .arg(Arg::new("args").num_args(0..).allow_hyphen_values(true).trailing_var_arg(true)),
         )
@@ -1733,6 +1758,21 @@ mod tests {
         assert!(agent_start
             .get_arguments()
             .any(|arg| arg.get_id() == "agent_args"));
+    }
+
+    #[test]
+    fn spec_models_fork_agent_wrap_and_notify() {
+        let cmd = super::command();
+        let wrap = command_path(&cmd, &["agent", "wrap"]);
+        assert!(has_option(wrap, "print"));
+        assert!(wrap.get_arguments().any(|arg| arg.get_id() == "args"));
+        let notify = command_path(&cmd, &["agent", "notify"]);
+        assert!(has_option(notify, "body"));
+        assert_eq!(
+            option_values(notify, "kind"),
+            ["info", "question", "done", "warning"]
+        );
+        command_path(&cmd, &["browser", "wrap"]);
     }
 
     #[test]

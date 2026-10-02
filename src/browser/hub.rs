@@ -582,9 +582,11 @@ impl BrowserHub {
             pin_dashboard: config.pin_dashboard,
             activity_color: config.activity_color().to_string(),
             steer_agents: config.steer_agents,
-            wrap_agents: config.wrap_agents,
+            // the effective `[agents] wrap` (legacy fallback included)
+            wrap_agents: config.effective_wrap,
             disable_native_browser: config.disable_native_browser,
             mcp_agents: config.mcp_agents.clone(),
+            // legacy and inert: the hook lives in Settings → Agents
             shell_hook: config.shell_hook,
             profile,
             running: running_profile.is_some(),

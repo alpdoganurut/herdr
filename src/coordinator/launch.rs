@@ -3,10 +3,14 @@
 //! written to the user's global agent configs), its permission allowlist and
 //! its kickoff prompt. Pure builders apart from the Claude MCP config file.
 //!
-//! The pane's shell hook may wrap `claude`/`codex` (`herdr browser wrap`): it
+//! The pane's shell hook may wrap `claude`/`codex` (`herdr agent wrap`): it
 //! adds `--no-daemon` to Codex and inserts its own Claude flags before a user
 //! `--`, so the argv here never repeats those and always ends Claude's flags
-//! with `--`.
+//! with `--`. The wrap recognises these launches as managed (by the MCP
+//! config path, the allowlist or the `-c mcp_servers.herdr_agents.*`
+//! overrides) and adds none of its own herdr_agents arguments to them; it
+//! shares [`mcp_config_flag`], [`write_claude_mcp_config`] and
+//! [`codex_mcp_overrides`] for unmanaged ones.
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
@@ -135,6 +139,12 @@ pub fn write_claude_mcp_config(ctx: &LaunchCtx) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+/// `--mcp-config=<path>`: the variadic flag in its `=` form, so it never
+/// swallows what follows.
+pub fn mcp_config_flag(path: &Path) -> String {
+    format!("--mcp-config={}", path.display())
+}
+
 fn env_on(name: &str) -> bool {
     std::env::var(name).is_ok_and(|value| value.trim() == "1")
 }
@@ -170,7 +180,7 @@ fn claude_argv(
         ClaudeSession::Resume(id) => vec!["--resume".to_string(), id.clone()],
     };
     // Variadic flags take the `=` form so they never swallow what follows.
-    args.push(format!("--mcp-config={}", config.display()));
+    args.push(mcp_config_flag(config));
     if coordinator {
         args.push("--permission-mode".into());
         args.push("acceptEdits".into());
@@ -192,7 +202,7 @@ fn claude_argv(
 }
 
 /// A TOML basic string (`"..."`), for Codex `-c key=value` overrides.
-fn toml_string(value: &str) -> String {
+pub(crate) fn toml_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
     for ch in value.chars() {
@@ -224,13 +234,13 @@ pub fn codex_args(ctx: &LaunchCtx, kickoff: Option<&str>) -> Vec<String> {
     codex_argv(ctx, kickoff, env_on(CODEX_NO_DAEMON_ENV))
 }
 
-fn codex_argv(ctx: &LaunchCtx, kickoff: Option<&str>, no_daemon: bool) -> Vec<String> {
+/// The `-c mcp_servers.herdr_agents.*` overrides that give a Codex launch
+/// the herdr_agents server: command, args, the forwarded pane variables and
+/// the tool timeout; `approve_all` also pre-approves every tool of the
+/// server (managed launches run under `-a never`).
+pub fn codex_mcp_overrides(ctx: &LaunchCtx, approve_all: bool) -> Vec<String> {
     let key = format!("mcp_servers.{MCP_KEY}");
     let mut args: Vec<String> = vec![
-        "-a".into(),
-        "never".into(),
-        "-s".into(),
-        "workspace-write".into(),
         "-c".into(),
         format!(
             "{key}.command={}",
@@ -245,12 +255,25 @@ fn codex_argv(ctx: &LaunchCtx, kickoff: Option<&str>, no_daemon: bool) -> Vec<St
         ),
         "-c".into(),
         format!("{key}.tool_timeout_sec=150"),
+    ];
+    if approve_all {
         // Under `-a never` Codex rejects an MCP call that needs approval
         // ("requires approval, but approval policy is never"); pre-approve
         // this one server, like Claude's `--allowedTools=mcp__herdr_agents`.
-        "-c".into(),
-        format!("{key}.default_tools_approval_mode=\"approve\""),
+        args.push("-c".into());
+        args.push(format!("{key}.default_tools_approval_mode=\"approve\""));
+    }
+    args
+}
+
+fn codex_argv(ctx: &LaunchCtx, kickoff: Option<&str>, no_daemon: bool) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-a".into(),
+        "never".into(),
+        "-s".into(),
+        "workspace-write".into(),
     ];
+    args.extend(codex_mcp_overrides(ctx, true));
     if no_daemon {
         args.push("--no-daemon".into());
     }

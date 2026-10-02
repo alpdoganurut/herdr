@@ -46,11 +46,22 @@ pub(crate) enum ConfigEdit<'a> {
         key: &'static str,
         values: &'a [String],
     },
-    /// Fork: several `[browser]` toggles in one write (the settings row
-    /// `agents use herdr's browser` sets steer_agents and wrap_agents).
-    BrowserBools {
-        pairs: &'a [(&'static str, bool)],
+    /// Fork: an `[agents]` toggle (`tools`, `instructions`, `notices`).
+    AgentsBool {
+        key: &'static str,
+        value: bool,
     },
+    /// Fork: `[agents] wrap`, dropping the legacy `[browser] wrap_agents`
+    /// in the same write (the new key wins from then on).
+    AgentsWrap(bool),
+    /// Fork: `[agents] wrap` (legacy key dropped) plus `[browser]` toggles,
+    /// one write (the browser section's `steer_wrap` compatibility key).
+    AgentsWrapWithBrowser {
+        wrap: bool,
+        browser: &'a [(&'static str, bool)],
+    },
+    /// Fork: `[agents] instructions_file`; `None` removes it (the built-in text).
+    AgentsInstructionsFile(Option<&'a str>),
 }
 
 /// Fork: minutes past midnight as a 24-hour "HH:MM".
@@ -74,10 +85,13 @@ impl ConfigEdit<'_> {
             | Self::CoordinatorModel(_)
             | Self::CoordinatorNotify(_) => "coordinator setting",
             Self::SidebarLayoutTabs => "sidebar setting",
-            Self::BrowserBool { .. }
-            | Self::BrowserString { .. }
-            | Self::BrowserList { .. }
-            | Self::BrowserBools { .. } => "browser setting",
+            Self::BrowserBool { .. } | Self::BrowserString { .. } | Self::BrowserList { .. } => {
+                "browser setting"
+            }
+            Self::AgentsBool { .. }
+            | Self::AgentsWrap(_)
+            | Self::AgentsWrapWithBrowser { .. }
+            | Self::AgentsInstructionsFile(_) => "agents setting",
         }
     }
 
@@ -189,17 +203,37 @@ impl ConfigEdit<'_> {
             Self::BrowserBool { key, value } => browser_table_edit(content, |table| {
                 set_browser_item(table, key, toml_edit::value(value))
             }),
-            Self::BrowserBools { pairs } => browser_table_edit(content, |table| {
-                for (key, value) in pairs {
-                    set_browser_item(table, key, toml_edit::value(*value));
-                }
-            }),
             Self::BrowserString { key, value } => browser_table_edit(content, |table| {
                 set_browser_item(table, key, toml_edit::value(value.trim()))
             }),
             Self::BrowserList { key, values } => browser_table_edit(content, |table| {
                 let array: toml_edit::Array = values.iter().map(|v| v.as_str()).collect();
                 set_browser_item(table, key, toml_edit::value(array))
+            }),
+            Self::AgentsBool { key, value } => document_edit(content, |doc| {
+                set_section_item(doc, "agents", key, toml_edit::value(value));
+            }),
+            Self::AgentsWrap(wrap) => document_edit(content, |doc| {
+                set_section_item(doc, "agents", "wrap", toml_edit::value(wrap));
+                remove_section_item(doc, "browser", "wrap_agents");
+            }),
+            Self::AgentsWrapWithBrowser { wrap, browser } => document_edit(content, |doc| {
+                set_section_item(doc, "agents", "wrap", toml_edit::value(wrap));
+                remove_section_item(doc, "browser", "wrap_agents");
+                for (key, value) in browser {
+                    set_section_item(doc, "browser", key, toml_edit::value(*value));
+                }
+            }),
+            Self::AgentsInstructionsFile(Some(path)) => document_edit(content, |doc| {
+                set_section_item(
+                    doc,
+                    "agents",
+                    "instructions_file",
+                    toml_edit::value(path.trim()),
+                );
+            }),
+            Self::AgentsInstructionsFile(None) => document_edit(content, |doc| {
+                remove_section_item(doc, "agents", "instructions_file");
             }),
         }
     }
@@ -212,10 +246,59 @@ impl ConfigEdit<'_> {
         matches!(
             self,
             Self::BrowserBool { .. }
-                | Self::BrowserBools { .. }
                 | Self::BrowserString { .. }
                 | Self::BrowserList { .. }
+                | Self::AgentsBool { .. }
+                | Self::AgentsWrap(_)
+                | Self::AgentsWrapWithBrowser { .. }
+                | Self::AgentsInstructionsFile(_)
         )
+    }
+}
+
+/// `content` as a toml_edit document with `edit` applied: comments, spacing
+/// and untouched tables stay; a file that does not parse comes back
+/// unchanged (the caller notices the value did not apply).
+pub(crate) fn document_edit(
+    content: &str,
+    edit: impl FnOnce(&mut toml_edit::DocumentMut),
+) -> String {
+    let (bom, body) = match content.strip_prefix('\u{feff}') {
+        Some(body) => ("\u{feff}", body),
+        None => ("", content),
+    };
+    let Ok(mut doc) = body.parse::<toml_edit::DocumentMut>() else {
+        return content.to_string();
+    };
+    edit(&mut doc);
+    format!("{bom}{doc}")
+}
+
+/// Set `key` in the top-level table `section` (appended when missing),
+/// keeping an existing value's decor. A `section` that is not a table is
+/// left alone.
+fn set_section_item(
+    doc: &mut toml_edit::DocumentMut,
+    section: &str,
+    key: &str,
+    item: toml_edit::Item,
+) {
+    use toml_edit::{Item, Table};
+    if doc.get(section).is_none() {
+        doc.insert(section, Item::Table(Table::new()));
+    }
+    if let Some(table) = doc.get_mut(section).and_then(Item::as_table_like_mut) {
+        set_browser_item(table, key, item);
+    }
+}
+
+/// Remove `key` from the top-level table `section`, if both are there.
+fn remove_section_item(doc: &mut toml_edit::DocumentMut, section: &str, key: &str) {
+    if let Some(table) = doc
+        .get_mut(section)
+        .and_then(toml_edit::Item::as_table_like_mut)
+    {
+        table.remove(key);
     }
 }
 
@@ -453,7 +536,7 @@ mod tests {
         let config: crate::config::Config = toml::from_str(&edited).unwrap();
         assert!(!config.browser.pin_dashboard);
         assert_eq!(config.browser.executable, "auto");
-        // a list over a multi-line one, a string, several bools at once
+        // a list over a multi-line one, a string, two bools
         let agents = vec!["codex".to_string()];
         let edited = ConfigEdit::BrowserList {
             key: "mcp_agents",
@@ -465,14 +548,20 @@ mod tests {
             value: " #00c8ff ",
         }
         .apply(&edited);
-        let edited = ConfigEdit::BrowserBools {
-            pairs: &[("steer_agents", false), ("wrap_agents", false)],
+        let edited = ConfigEdit::BrowserBool {
+            key: "steer_agents",
+            value: false,
+        }
+        .apply(&edited);
+        let edited = ConfigEdit::BrowserBool {
+            key: "disable_native_browser",
+            value: false,
         }
         .apply(&edited);
         let config: crate::config::Config = toml::from_str(&edited).unwrap();
         assert_eq!(config.browser.mcp_agents, ["codex"]);
         assert_eq!(config.browser.activity_color, "#00c8ff");
-        assert!(!config.browser.steer_agents && !config.browser.wrap_agents);
+        assert!(!config.browser.steer_agents && !config.browser.disable_native_browser);
         assert_eq!(
             edited.matches("[ browser ]").count(),
             1,
@@ -514,6 +603,69 @@ mod tests {
             .apply("[broken\n"),
             "[broken\n"
         );
+    }
+
+    #[test]
+    fn agents_wrap_writes_the_new_key_and_drops_the_legacy_one_in_one_edit() {
+        let original = "# top\n[browser]  # mine\nwrap_agents = true # old\nsteer_agents = true\n\n[news]\nenabled = false\n";
+        let before: crate::config::Config = toml::from_str(original).unwrap();
+        assert_eq!(
+            before.agents_wrap(),
+            (true, crate::config::WrapSource::LegacyBrowser)
+        );
+        let edited = ConfigEdit::AgentsWrap(false).apply(original);
+        assert!(!edited.contains("wrap_agents"), "{edited}");
+        assert!(edited.contains("[browser]  # mine\n"), "{edited}");
+        assert!(edited.contains("[news]\nenabled = false\n"), "{edited}");
+        assert!(edited.contains("[agents]\nwrap = false\n"), "{edited}");
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(
+            config.agents_wrap(),
+            (false, crate::config::WrapSource::Agents)
+        );
+        assert!(config.browser.steer_agents);
+        // again: one [agents] header, the value flips in place
+        let edited = ConfigEdit::AgentsWrap(true).apply(&edited);
+        assert_eq!(edited.matches("[agents]").count(), 1, "{edited}");
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.agents.wrap, Some(true));
+        // the steer_wrap compatibility edit: both sections, one write
+        let edited = ConfigEdit::AgentsWrapWithBrowser {
+            wrap: false,
+            browser: &[("steer_agents", false)],
+        }
+        .apply("[browser]\nwrap_agents = true\n");
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.agents.wrap, Some(false));
+        assert_eq!(config.browser.wrap_agents, None);
+        assert!(!config.browser.steer_agents);
+    }
+
+    #[test]
+    fn agents_toggles_and_the_instructions_file_round_trip() {
+        let edited = ConfigEdit::AgentsBool {
+            key: "tools",
+            value: true,
+        }
+        .apply("[ui]\nsidebar_layout = \"tabs\"\n");
+        let edited = ConfigEdit::AgentsBool {
+            key: "notices",
+            value: false,
+        }
+        .apply(&edited);
+        let edited = ConfigEdit::AgentsInstructionsFile(Some(" ~/x/agents.md ")).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(config.agents.tools && !config.agents.notices);
+        assert_eq!(config.agents.instructions_file(), Some("~/x/agents.md"));
+        assert_eq!(
+            config.ui.sidebar_layout,
+            crate::config::SidebarLayoutConfig::Tabs
+        );
+        let edited = ConfigEdit::AgentsInstructionsFile(None).apply(&edited);
+        assert!(!edited.contains("instructions_file"), "{edited}");
+        assert_eq!(edited.matches("[agents]").count(), 1, "{edited}");
+        // a file that does not parse comes back unchanged
+        assert_eq!(ConfigEdit::AgentsWrap(true).apply("[broken\n"), "[broken\n");
     }
 
     #[test]
