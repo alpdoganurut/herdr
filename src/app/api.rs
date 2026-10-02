@@ -822,6 +822,14 @@ impl App {
         {
             self.follow_agent_notice_panes();
         }
+        // Fork: cards show their tab's and space's labels.
+        if matches!(
+            event.event,
+            EventKind::TabRenamed | EventKind::WorkspaceRenamed
+        ) && !self.agent_notices.is_empty()
+        {
+            self.follow_agent_notice_labels(&event.data);
+        }
         // Fork teams: membership follows moves, closes and agent starts.
         // Nothing at all while no team exists.
         if self.state.team_count > 0

@@ -135,6 +135,12 @@ impl AgentNotices {
         self.revision = self.revision.wrapping_add(1).max(1);
     }
 
+    /// The cards' projection changed (a tab or space label): clients are
+    /// sent the list again.
+    pub(crate) fn touch(&mut self) {
+        self.bump();
+    }
+
     /// Show a card. `title` and `body` must already be sanitized
     /// ([`sanitize_title`], [`sanitize_body`]).
     pub(crate) fn notify(
@@ -555,6 +561,43 @@ impl App {
             .agent_notices
             .follow_panes(|_| current.next().flatten())
         {
+            self.render_dirty.request_generic();
+            self.render_notify.notify_one();
+        }
+    }
+
+    /// A tab or space was renamed: cards in it show the new label, so the
+    /// list is re-sent when one is there. O(cards), nothing without cards.
+    pub(crate) fn follow_agent_notice_labels(&mut self, data: &crate::api::schema::EventData) {
+        use crate::api::schema::EventData;
+        if self.agent_notices.is_empty() {
+            return;
+        }
+        let renamed = match data {
+            EventData::TabRenamed { tab_id, .. } => self
+                .parse_tab_id(tab_id)
+                .map(|(ws_idx, tab_idx)| (ws_idx, Some(tab_idx))),
+            EventData::WorkspaceRenamed { workspace_id, .. } => self
+                .parse_workspace_id(workspace_id)
+                .filter(|ws_idx| self.state.workspaces.get(*ws_idx).is_some())
+                .map(|ws_idx| (ws_idx, None)),
+            _ => None,
+        };
+        let Some((ws_idx, tab_idx)) = renamed else {
+            return;
+        };
+        let affected = self.agent_notices.list().iter().any(|card| {
+            self.parse_pane_id(&card.pane_id)
+                .is_some_and(|(card_ws, raw)| {
+                    card_ws == ws_idx
+                        && tab_idx.is_none_or(|tab_idx| {
+                            self.state.workspaces[card_ws].find_tab_index_for_pane(raw)
+                                == Some(tab_idx)
+                        })
+                })
+        });
+        if affected {
+            self.agent_notices.touch();
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }

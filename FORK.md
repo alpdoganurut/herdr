@@ -755,7 +755,7 @@ src/client/shell/settings_overlay.rs  mid-logic: render_settings_overlay is 104 
 src/client/shell/idle_reminders.rs  mid-logic: is_news_tab also exempts the coordinator tab (is_coordinator_tab) from both reminder engines
 src/client/shell/worktrees.rs  mid-logic: the exhaustive PendingEndpointKind error arm lists PendingEndpointKind::Coordinator(_)
 src/client/shell/tests/graphics.rs  depends: its ClientSettingsOverlay literal carries `coordinator: Box::default()` and `agents: Box::default()`
-src/app/api.rs  mid-logic: emit_event drops/remaps agent cards on PaneMoved, PaneClosed, PaneExited, TabClosed, WorkspaceClosed (follow_agent_notice_panes, only with cards); handle_app_event follows them after an AppEvent::PaneDied; handle_api_request dispatches Method::AgentNotify … AgentsFix directly after AgentTranscripts
+src/app/api.rs  mid-logic: emit_event drops/remaps agent cards on PaneMoved, PaneClosed, PaneExited, TabClosed, WorkspaceClosed (follow_agent_notice_panes, only with cards) and re-sends them on TabRenamed/WorkspaceRenamed when a card is in the renamed tab or space (follow_agent_notice_labels, only with cards); handle_app_event follows them after an AppEvent::PaneDied; handle_api_request dispatches Method::AgentNotify … AgentsFix directly after AgentTranscripts
 src/app/mod.rs  mid-logic: App::new (agent_notices from config.agents.notices, agents_config, agents_setup_env None), apply_live_config (an `agents` section block directly after the browser hub block: notices on/off and agents_config)
 src/server/headless/render.rs  mid-logic: the per-client render pass calls agent_notices::sync_client (one PassFrames per pass, O(1) per client when the revision was sent) directly after the agent completions block
 src/server/headless/client_views.rs  mid-logic: focus_shell_client_on_tab clears the entered tab's agent cards when the client's focused tab changes; apply_shell_navigation_request's WorkspaceFocus arm does the same for the workspace's active tab (both client-driven only; focus_all_shell_clients_on_default_target never visits)
@@ -1251,6 +1251,7 @@ server::headless::tests::agent_notices_smoke::fork_smoke_agent_notify_reaches_ev
 server::headless::tests::agent_notices_smoke::fork_smoke_agent_notice_is_cleared_only_by_the_users_own_visit
 server::headless::tests::agent_notices_smoke::fork_smoke_agent_notice_is_seen_by_a_workspace_switch_into_its_tab
 server::headless::tests::agent_notices_smoke::fork_smoke_agent_notice_follows_a_moved_pane_and_goes_with_it
+server::headless::tests::agent_notices_smoke::fork_smoke_agent_notice_follows_a_renamed_tab_or_space
 server::headless::tests::agent_notices_smoke::fork_smoke_agent_notice_goes_when_its_pane_process_exits
 server::headless::tests::agent_notices_smoke::fork_smoke_agents_settings_write_the_config_and_the_hook_fix_waits_for_confirm
 client::shell::tests::agent_cards::fork_smoke::a_click_focuses_the_agent_and_x_or_right_click_dismisses

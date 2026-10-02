@@ -296,6 +296,57 @@ async fn fork_smoke_agent_notice_follows_a_moved_pane_and_goes_with_it() {
 }
 
 #[tokio::test]
+async fn fork_smoke_agent_notice_follows_a_renamed_tab_or_space() {
+    use crate::api::schema::{TabRenameParams, WorkspaceRenameParams};
+    let (mut server, pane) = notices_server();
+    let (control, _render) = connect_test_shell(&mut server, 61, 80, 23);
+    notify(&mut server, &pane, "which retry policy?");
+    server.render_and_stream();
+    assert_eq!(notice_payloads(&control).len(), 1);
+
+    // Another tab's rename changes no card: nothing is sent.
+    let home = server.app.public_tab_id(0, 0).expect("home tab");
+    public_api(
+        &mut server,
+        Method::TabRename(TabRenameParams {
+            tab_id: home,
+            label: "shell".into(),
+        }),
+    );
+    server.render_and_stream();
+    assert!(notice_payloads(&control).is_empty());
+
+    // The card's own tab and space: the new labels are sent.
+    let work = server.app.public_tab_id(0, 1).expect("work tab");
+    let renamed = public_api(
+        &mut server,
+        Method::TabRename(TabRenameParams {
+            tab_id: work,
+            label: "retry-policy".into(),
+        }),
+    );
+    assert!(renamed.get("error").is_none(), "{renamed}");
+    server.render_and_stream();
+    let followed = notice_payloads(&control);
+    let last = followed.last().expect("a payload after the tab rename");
+    assert_eq!(last.notices[0].tab_label.as_deref(), Some("retry-policy"));
+
+    let workspace_id = server.app.public_workspace_id(0);
+    public_api(
+        &mut server,
+        Method::WorkspaceRename(WorkspaceRenameParams {
+            workspace_id,
+            label: "calendar".into(),
+        }),
+    );
+    server.render_and_stream();
+    let followed = notice_payloads(&control);
+    let last = followed.last().expect("a payload after the space rename");
+    assert_eq!(last.notices[0].workspace_label.as_deref(), Some("calendar"));
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn fork_smoke_agents_settings_write_the_config_and_the_hook_fix_waits_for_confirm() {
     use crate::api::schema::{AgentsFixParams, AgentsSettingsSetParams};
     let temp = crate::agent_wrap::test_support::TempHome::new("agents-smoke");
