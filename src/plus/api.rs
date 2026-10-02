@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::api::schema::{
     AgentPromptParams, AgentReadParams, AgentStartParams, AgentTarget, BrowserActor, BrowserCaller,
-    EmptyParams, Method, PaneMoveDestination, PaneMoveParams, ReadFormat, ReadSource,
+    EmptyParams, Method, PaneMoveDestination, PaneMoveParams, PaneTarget, ReadFormat, ReadSource,
     TabCreateParams, TabListParams, TabRenameParams, WorkspaceCreateParams,
 };
 
@@ -149,6 +149,17 @@ pub fn agent_get(api: &impl Api, target: &str) -> Result<Value, ApiError> {
             target: target.to_string(),
         }))?,
         "agent",
+    )
+}
+
+/// `pane.get` → `pane`. Unlike `agent.get`, pane lookups resolve the
+/// aliases a pane keeps after `pane.move` changed its public id.
+pub fn pane_get(api: &impl Api, pane_id: &str) -> Result<Value, ApiError> {
+    take(
+        api.call(Method::PaneGet(PaneTarget {
+            pane_id: pane_id.to_string(),
+        }))?,
+        "pane",
     )
 }
 

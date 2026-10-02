@@ -428,7 +428,8 @@ impl<A: Api> Session<A> {
             return Ok(agent.clone());
         }
         if target.contains(':') {
-            if let Ok(info) = api::agent_get(&self.api, target) {
+            // agent.get does not know moved panes' old ids; pane.get does.
+            if let Ok(info) = api::pane_get(&self.api, target) {
                 if let Some(pane) = info["pane_id"].as_str() {
                     if let Some(agent) = live::find_live(&visible, pane) {
                         return Ok(agent.clone());
@@ -1415,10 +1416,14 @@ impl<A: Api> Session<A> {
         let agent = self.target(caller, &live, &target, false)?;
         let old = agent.pane_id.clone();
         let moved = api::pane_move(&self.api, &old, dest)?;
-        // The public pane id changed with the group; the old one is an alias.
-        let new = api::agent_get(&self.api, &old)
-            .ok()
-            .and_then(|info| non_empty(&info["pane_id"]))
+        // The public pane id changed with the group: the move result names
+        // the new one; failing that, pane.get resolves the old id as an alias.
+        let new = non_empty(&moved["pane"]["pane_id"])
+            .or_else(|| {
+                api::pane_get(&self.api, &old)
+                    .ok()
+                    .and_then(|info| non_empty(&info["pane_id"]))
+            })
             .ok_or_else(|| {
                 err(
                     "moved_unresolved",
@@ -2047,6 +2052,11 @@ mod tests {
                 Method::TabList(_) => Ok(json!({ "tabs": self.agents.borrow().iter()
                     .map(|a| json!({ "tab_id": a["tab_id"], "label": a["name"] })).collect::<Vec<_>>() })),
                 Method::AgentGet(target) => {
+                    // Like the real server: agent targets do not resolve
+                    // the aliases a moved pane leaves behind.
+                    if self.aliases.borrow().contains_key(&target.target) {
+                        return Err(not_found());
+                    }
                     let pane = self.canonical(&target.target).ok_or_else(not_found)?;
                     let agents = self.agents.borrow();
                     let agent = agents
@@ -2054,6 +2064,10 @@ mod tests {
                         .find(|a| a["pane_id"] == pane.as_str())
                         .ok_or_else(not_found)?;
                     Ok(json!({ "agent": agent }))
+                }
+                Method::PaneGet(target) => {
+                    let pane = self.canonical(&target.pane_id).ok_or_else(not_found)?;
+                    Ok(json!({ "pane": { "pane_id": pane } }))
                 }
                 Method::AgentPrompt(_) => match self.prompt_error.borrow().clone() {
                     Some(error) => Err(error),
@@ -2080,8 +2094,10 @@ mod tests {
                     }
                     self.aliases
                         .borrow_mut()
-                        .insert(params.pane_id, new.clone());
-                    Ok(json!({ "move_result": { "pane_id": new } }))
+                        .insert(params.pane_id.clone(), new.clone());
+                    Ok(
+                        json!({ "move_result": { "changed": true, "previous_pane_id": params.pane_id, "pane": { "pane_id": new } } }),
+                    )
                 }
                 other => panic!("unexpected request {other:?}"),
             }
