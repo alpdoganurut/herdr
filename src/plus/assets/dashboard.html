@@ -339,7 +339,7 @@ function renderHeader() {
 }
 
 // ----- body (only when the data changed, so text stays selectable) -----------
-function renderSummary(board) {
+function renderSummary(board, live) {
   const box = document.getElementById("summary");
   box.replaceChildren();
   const summary = str(board.summary);
@@ -348,8 +348,10 @@ function renderSummary(board) {
   } else {
     add(box, empty("No summary yet. The coordinator writes it to dashboard/board.json."));
   }
-  if (num(board.updated_unix)) {
-    add(box, el("div", "summary-meta", "updated " + age(board.updated_unix) + " ago · " + hhmm(board.updated_unix)));
+  // board.json's mtime, published by the watcher (the coordinator has no clock).
+  const updated = num(obj(live.watch).board_unix);
+  if (updated && summary) {
+    add(box, el("div", "summary-meta", "updated " + age(updated) + " ago · " + hhmm(updated)));
   }
 }
 
@@ -401,7 +403,10 @@ function agentCard(agent, board) {
 
   if (str(a.note)) add(card, el("div", "agent-note", str(a.note)));
   const notes = obj(board.agent_notes);
-  const boardNote = str(notes[str(a.session)]) || str(notes[str(a.pane_id)]);
+  // Keyed by pane id or session id; the short session prefix agents see works too.
+  const session = str(a.session);
+  const prefixKey = session ? Object.keys(notes).find((k) => k.length >= 8 && session.startsWith(k)) : "";
+  const boardNote = str(notes[session]) || str(notes[str(a.pane_id)]) || (prefixKey ? str(notes[prefixKey]) : "");
   if (boardNote) add(card, el("div", "board-note", boardNote));
   return card;
 }
@@ -541,7 +546,7 @@ function renderBody() {
   const key = liveKey + "\u0000" + state.boardRaw + "\u0000" + Math.floor(nowS() / 30);
   if (key === state.bodyKey) return;
   state.bodyKey = key;
-  renderSummary(board);
+  renderSummary(board, live);
   renderSuggestions(board);
   renderGroups(live, board);
   renderProjects(board);
