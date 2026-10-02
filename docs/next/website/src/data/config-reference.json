@@ -1804,7 +1804,7 @@
           "key": "coordinator.notify_daily_cap",
           "type": "integer",
           "default": "6",
-          "description": "Most coordinator notifications delivered in a local day. A notification past the cap is dropped, except a `down` alert."
+          "description": "Most new-suggestion notifications delivered in a local day; past the cap they are dropped. The `down`, `blocked` and `locked` alerts are not counted and never dropped by the cap."
         },
         {
           "key": "coordinator.quiet_hours",

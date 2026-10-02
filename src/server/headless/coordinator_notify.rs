@@ -5,8 +5,10 @@
 //! `down` / `blocked` / `locked` alert per streak, cleared when the
 //! coordinator recovers. The server delivers, since it owns the clients, and
 //! applies the delivery policy here (the `[coordinator]` `notify` switch,
-//! `notify_daily_cap`, `quiet_hours`), so a queued notification that was
-//! replaced before it went out never used a slot. The policy is the pure
+//! `notify_daily_cap` for suggestions, `quiet_hours`), so a queued
+//! notification that was replaced before it went out never used a slot.
+//! The alerts are once per streak already and are not capped: a dropped
+//! one would not come back while its condition lasts. The policy is the pure
 //! [`delivery_decision`]; the flush below only feeds it and acts on it.
 //!
 //! Delivery goes the way of news ([`super::news_notify`]) and
@@ -44,9 +46,9 @@ use crate::config::QuietHours;
 // suggestions (batched), down (relaunch cap, start failure, name taken),
 // blocked (the coordinator's own NeedsAttention) and locked (another server
 // holds the coordinator lock).
-use crate::app::coordinator::{KIND_BLOCKED, KIND_DOWN};
 #[cfg(test)]
-use crate::app::coordinator::{KIND_LOCKED, KIND_SUGGESTIONS};
+use crate::app::coordinator::KIND_LOCKED;
+use crate::app::coordinator::{KIND_BLOCKED, KIND_DOWN, KIND_SUGGESTIONS};
 
 /// The `[coordinator]` keys that govern delivery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,10 +115,16 @@ pub(crate) fn delivery_decision(
             return Delivery::Hold(quiet.minutes_until_end(minute).max(1));
         }
     }
-    if delivered_today >= policy.daily_cap {
+    if capped(kind) && delivered_today >= policy.daily_cap {
         return Delivery::Drop("daily cap");
     }
     Delivery::Deliver
+}
+
+/// Whether `kind` counts against (and is charged to) `notify_daily_cap`:
+/// suggestions only.
+pub(crate) fn capped(kind: &str) -> bool {
+    kind == KIND_SUGGESTIONS
 }
 
 /// The sound a delivered notification carries: the alerts ring, suggestions
@@ -220,7 +228,9 @@ impl HeadlessServer {
             self.app.mark_api_notification_shown(now);
             let ledger = &mut self.app.coordinator.notify_ledger;
             ledger.pending.remove(index);
-            charge(&mut ledger.day, &mut ledger.delivered, &today);
+            if capped(&pending.kind) {
+                charge(&mut ledger.day, &mut ledger.delivered, &today);
+            }
             self.app.coordinator.persist();
             tracing::info!(
                 event = "coordinator.notify",
@@ -263,10 +273,15 @@ mod tests {
             delivery_decision(&policy, KIND_SUGGESTIONS, Some(600), 2),
             Delivery::Drop("daily cap")
         );
-        assert_eq!(
-            delivery_decision(&policy, KIND_LOCKED, Some(600), 2),
-            Delivery::Drop("daily cap")
-        );
+        for alert in [KIND_BLOCKED, KIND_LOCKED] {
+            assert_eq!(
+                delivery_decision(&policy, alert, Some(600), 2),
+                Delivery::Deliver,
+                "{alert}: an alert is once per streak, never capped"
+            );
+            assert!(!capped(alert), "{alert} is not charged");
+        }
+        assert!(capped(KIND_SUGGESTIONS));
         assert_eq!(
             delivery_decision(&policy, KIND_DOWN, Some(600), 9),
             Delivery::Deliver,

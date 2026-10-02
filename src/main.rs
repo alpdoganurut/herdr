@@ -526,7 +526,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # periodic_minutes = 60
 # Relaunches of a coordinator that went missing per hour before it is reported down.
 # relaunch_cap_hour = 3
-# Coordinator notifications (new suggestions, down, blocked) and their daily cap.
+# Coordinator notifications (new suggestions, down, blocked); the daily cap counts suggestions only.
 # notify = true
 # notify_daily_cap = 6
 # Local window HH:MM-HH:MM in which coordinator notifications wait; empty disables it.
