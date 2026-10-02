@@ -490,20 +490,40 @@ impl ClientCoordinatorState {
         }
     }
 
+    /// The coordinator tab's agent status and focus in `snapshot`.
+    fn coordinator_tab_facts(&self, snapshot: &ClientShellSnapshot) -> Option<(AgentStatus, bool)> {
+        let tab_id = self.tab_id()?;
+        snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == tab_id)
+            .map(|tab| (tab.agent_status, tab.focused))
+    }
+
     /// The snapshot facts the pull follows.
     pub(crate) fn signature(&self, snapshot: &ClientShellSnapshot) -> CoordinatorSnapshotSignature {
-        let coordinator_tab = self.tab_id().and_then(|tab_id| {
-            snapshot
-                .tabs
-                .iter()
-                .find(|tab| tab.tab_id == tab_id)
-                .map(|tab| (tab.agent_status, tab.focused))
-        });
         CoordinatorSnapshotSignature {
             boot_id: snapshot.boot_id.clone(),
             tab_ids: snapshot.tabs.iter().map(|tab| tab.tab_id.clone()).collect(),
-            coordinator_tab,
+            coordinator_tab: self.coordinator_tab_facts(snapshot),
         }
+    }
+
+    /// Whether `snapshot` still has the facts of the last pull, compared in
+    /// place: the tick runs at the client's timer rate, so it allocates
+    /// only when a pull is actually sent.
+    fn pulled_for_matches(&self, snapshot: &ClientShellSnapshot) -> bool {
+        let Some(pulled) = self.pulled_for.as_ref() else {
+            return false;
+        };
+        pulled.boot_id == snapshot.boot_id
+            && pulled.tab_ids.len() == snapshot.tabs.len()
+            && pulled
+                .tab_ids
+                .iter()
+                .zip(&snapshot.tabs)
+                .all(|(pulled, tab)| *pulled == tab.tab_id)
+            && pulled.coordinator_tab == self.coordinator_tab_facts(snapshot)
     }
 
     /// The tick: `Some(Get)` when a pull is due and may be sent (the server
@@ -519,17 +539,16 @@ impl ClientCoordinatorState {
         now: std::time::Instant,
     ) -> (bool, Option<CoordinatorRequest>) {
         let mut repaint = false;
-        let signature = self.signature(snapshot);
         if self
             .pulled_for
             .as_ref()
-            .is_some_and(|pulled| pulled.boot_id != signature.boot_id)
+            .is_some_and(|pulled| pulled.boot_id != snapshot.boot_id)
         {
             // Another connection: nothing of the old server's state applies.
             repaint = self.info.is_some();
             *self = Self::default();
         }
-        let stale = self.pulled_for.as_ref() != Some(&signature);
+        let stale = !self.pulled_for_matches(snapshot);
         let periodic = self
             .last_pull
             .is_some_and(|last| now.duration_since(last) >= COORDINATOR_REFRESH_INTERVAL);
@@ -537,7 +556,7 @@ impl ClientCoordinatorState {
             return (repaint, None);
         }
         self.refresh_due = false;
-        self.pulled_for = Some(signature);
+        self.pulled_for = Some(self.signature(snapshot));
         self.last_pull = Some(now);
         if !advertised || !online {
             return (repaint, None);

@@ -692,6 +692,44 @@ fn settings_rows_send_the_right_method() {
 }
 
 #[test]
+fn a_picked_wake_cap_moves_the_other_one_so_the_pair_stays_valid() {
+    let mut tight = info();
+    tight.wake.cap_hour = 12;
+    tight.wake.cap_day = 20;
+    let mut settings = settings_with(tight);
+    // 30 an hour over a day cap of 20: the day cap rises with it.
+    settings.apply(
+        row_index(CoordinatorSettingsRow::CapHour, false),
+        false,
+        false,
+    );
+    assert_eq!(
+        settings.apply(4, false, false).effect,
+        CoordinatorEffect::Request(CoordinatorRequest::SetWakeCaps {
+            cap_hour: 30,
+            cap_day: 30
+        })
+    );
+    let mut busy = info();
+    busy.wake.cap_hour = 30;
+    busy.wake.cap_day = 80;
+    let mut settings = settings_with(busy);
+    // A day cap of 20 under 30 an hour: the hourly cap comes down to it.
+    settings.apply(
+        row_index(CoordinatorSettingsRow::CapDay, false),
+        false,
+        false,
+    );
+    assert_eq!(
+        settings.apply(0, false, false).effect,
+        CoordinatorEffect::Request(CoordinatorRequest::SetWakeCaps {
+            cap_hour: 20,
+            cap_day: 20
+        })
+    );
+}
+
+#[test]
 fn an_off_list_cap_or_model_is_offered_first() {
     let mut odd = info();
     odd.wake.cap_hour = 7;

@@ -211,19 +211,21 @@ impl ClientCoordinatorSettings {
                     .get(selected)
                     .cloned()
                     .map(CoordinatorRequest::SetModel),
+                // The server refuses an hourly cap above the daily one:
+                // the picked value wins and the other follows it.
                 CoordinatorPicker::CapHour(choices) => {
                     choices
                         .get(selected)
                         .map(|cap_hour| CoordinatorRequest::SetWakeCaps {
                             cap_hour: *cap_hour,
-                            cap_day: info.wake.cap_day,
+                            cap_day: info.wake.cap_day.max(*cap_hour),
                         })
                 }
                 CoordinatorPicker::CapDay(choices) => {
                     choices
                         .get(selected)
                         .map(|cap_day| CoordinatorRequest::SetWakeCaps {
-                            cap_hour: info.wake.cap_hour,
+                            cap_hour: info.wake.cap_hour.min(*cap_day),
                             cap_day: *cap_day,
                         })
                 }
