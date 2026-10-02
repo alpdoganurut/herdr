@@ -238,6 +238,11 @@ fn codex_argv(ctx: &LaunchCtx, kickoff: Option<&str>, no_daemon: bool) -> Vec<St
         ),
         "-c".into(),
         format!("{key}.tool_timeout_sec=150"),
+        // Under `-a never` Codex rejects an MCP call that needs approval
+        // ("requires approval, but approval policy is never"); pre-approve
+        // this one server, like Claude's `--allowedTools=mcp__herdr_plus`.
+        "-c".into(),
+        format!("{key}.default_tools_approval_mode=\"approve\""),
     ];
     if no_daemon {
         args.push("--no-daemon".into());
@@ -428,7 +433,7 @@ mod tests {
             .filter(|(flag, _)| *flag == "-c")
             .map(|(_, value)| value)
             .collect();
-        assert_eq!(overrides.len(), 4);
+        assert_eq!(overrides.len(), 5);
         let mut parsed = toml::Table::new();
         for value in overrides {
             let (key, raw) = value.split_once('=').unwrap();
@@ -454,6 +459,10 @@ mod tests {
             .collect();
         assert_eq!(env_vars, crate::browser::setup::CODEX_FORWARDED_ENV);
         assert_eq!(parsed["tool_timeout_sec"].as_integer(), Some(150));
+        assert_eq!(
+            parsed["default_tools_approval_mode"].as_str(),
+            Some("approve")
+        );
 
         let with_daemon = codex_argv(&ctx, None, true);
         assert_eq!(
