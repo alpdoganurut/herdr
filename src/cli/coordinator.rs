@@ -1413,4 +1413,101 @@ mod tests {
         assert_eq!(age(61), "1m");
         assert_eq!(age(7200), "2h");
     }
+
+    /// Notes do not depend on the coordinator: with `[coordinator] enabled =
+    /// false` the server answers every `coordinator.*` method with an error,
+    /// and `herdr coordinator mcp` still serves the notes tools to any agent.
+    #[test]
+    fn coordinator_mcp_serves_with_coordinator_disabled() {
+        // `mcp()` itself never reads the flag (no config, no coordinator.get).
+        let source = include_str!("coordinator.rs");
+        let start = source.find("fn mcp(args").expect("fn mcp");
+        let end = start + source[start..].find("\nfn seed(").expect("fn seed");
+        let body = &source[start..end];
+        assert!(
+            !body.contains("enabled")
+                && !body.contains("config")
+                && !body.contains("coordinator.get"),
+            "{body}"
+        );
+
+        let dir = test_dir("mcp-disabled");
+        let calls = RefCell::new(Vec::<&'static str>::new());
+        let api = |method: Method| -> Result<Value, ApiError> {
+            let name = crate::api::api_method_name(&method);
+            calls.borrow_mut().push(name);
+            match method {
+                _ if name.starts_with("coordinator.") => Err(ApiError::new(
+                    "coordinator_disabled",
+                    "[coordinator] enabled = false",
+                )),
+                Method::BrowserResolveCaller(_) => Ok(json!({ "type": "browser_actor", "actor": {
+                    "kind": "pane", "pane_id": "w2:p3", "tab_id": "w2:t1", "workspace_id": "w2",
+                    "shell_pid": 7 } })),
+                // A bare shell pane: no agent.
+                Method::AgentGet(_) => Err(ApiError::new("agent_not_found", "no agent")),
+                Method::NotesGet(_) => Ok(json!({ "type": "notes_get", "notes": {
+                    "key": "tab-w2-t1", "path": "/notes/tab-w2-t1.md", "revision": "none",
+                    "exists": false, "bytes": 0 } })),
+                Method::CheckpointsAdd(params) => {
+                    Ok(json!({ "type": "checkpoint_write", "checkpoint": {
+                    "key": "tab-w2-t1", "seq": 120, "checkpoint": {
+                        "id": "cp_1", "ts": 1, "kind": params.kind, "author": params.author,
+                        "title": params.title } } }))
+                }
+                _ => Err(ApiError::new("unexpected", name)),
+            }
+        };
+        let mut session = coordinator::mcp::Session::new(
+            api,
+            coordinator::mcp::McpOpts {
+                dir: dir.clone(),
+                env_pane: Some("w2:p3".into()),
+                verdict: Verdict::Verified,
+                port: DEFAULT_PORT,
+            },
+        );
+        let mut tool = |id: u64, name: &str, arguments: Value| {
+            let reply = session
+                .handle(&json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                    "params": { "name": name, "arguments": arguments } }))
+                .expect("a reply");
+            let result = reply["result"].clone();
+            let text = result["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            assert_ne!(result["isError"], true, "{name}: {text}");
+            text
+        };
+        let read = tool(1, "agents_notes_read", json!({}));
+        assert!(read.contains("rev none  key tab-w2-t1"), "{read}");
+        let mark = tool(
+            2,
+            "agents_checkpoint",
+            json!({ "kind": "milestone", "title": "MCP works" }),
+        );
+        assert!(
+            mark.contains("checkpoint cp_1 milestone \"MCP works\""),
+            "{mark}"
+        );
+        let who = tool(3, "agents_whoami", json!({}));
+        assert!(
+            who.contains("notes: tab-w2-t1 (/notes/tab-w2-t1.md)"),
+            "{who}"
+        );
+        let list = session
+            .handle(&json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/list" }))
+            .expect("a reply");
+        assert_eq!(list["result"]["tools"].as_array().map(Vec::len), Some(19));
+        assert!(
+            !calls
+                .borrow()
+                .iter()
+                .any(|name| name.starts_with("coordinator.")),
+            "{:?}",
+            calls.borrow()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
