@@ -528,7 +528,9 @@ function renderMessages(live) {
     const to = str(m.to_name) || str(m.to_pane) || "?";
     add(body, el("span", "route", from + " → " + to + " "));
     const outcome = str(m.outcome) || "?";
-    add(body, el("span", "outcome" + (outcome === "sent" ? "" : " bad"), "[" + outcome + "] "));
+    // "logged": a reply to a busy asker, delivered through the log.
+    const delivered = outcome === "sent" || outcome === "logged";
+    add(body, el("span", "outcome" + (delivered ? "" : " bad"), "[" + outcome + "] "));
     if (str(m.reply_to)) add(body, el("span", "reply", "↩ " + str(m.reply_to) + " "));
     add(body, el("span", "text", cut(m.text, TEXT_CUT)));
     const tip = [str(m.id), str(m.from_pane) + " → " + str(m.to_pane)].filter(Boolean).join("  ");

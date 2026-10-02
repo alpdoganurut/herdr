@@ -129,6 +129,9 @@ with browser_screenshot.
   `busy`, tell the user and offer wait_s, do not loop.
 - Keep messages self-contained: what you need, why, and what to send back.
 - Replies come typed into you when you are idle, or sit in the log: check plus_messages before assuming silence.
+- Message outcomes: `sent` = typed in; `logged` = a reply to a busy asker, delivered through the log (the
+  asker gets it from plus_wait_for_message / plus_messages, so it is NOT undelivered); anything else
+  (`busy`, `blocked`, `offline`, ...) is a refusal and was not delivered.
 - Never message or read unmanaged panes unless the user asks you to look at a specific one.
 
 ## 8. Token thrift

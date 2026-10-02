@@ -23,6 +23,14 @@ const MESSAGES_LOCK: &str = "messages";
 /// `kind` of a log line for a message that was not typed into its target.
 pub const KIND_REFUSAL: &str = "refusal";
 
+/// `outcome` of a message typed into its target.
+pub const OUTCOME_SENT: &str = "sent";
+
+/// `outcome` of a reply that was not typed in because the asker was busy
+/// (usually waiting in plus_wait_for_message). Not a refusal: the asker
+/// receives it from the log (plus_wait_for_message, plus_messages).
+pub const OUTCOME_LOGGED: &str = "logged";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMessage {
     pub unix: u64,
@@ -35,7 +43,8 @@ pub struct AgentMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_name: Option<String>,
     pub text: String,
-    /// `sent`, or the error code when delivery failed.
+    /// [`OUTCOME_SENT`], [`OUTCOME_LOGGED`] for a reply delivered through
+    /// the log, or the error code when delivery was refused.
     pub outcome: String,
     /// Message id (`m...`, see [`new_id`]); absent on lines written before ids.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,7 +183,7 @@ pub fn since_offset(dir: &Path, offset: u64) -> (Vec<AgentMessage>, u64) {
 /// not the clock: a message from the same second before it does not count);
 /// otherwise those at or after `after_unix`. The outcome is deliberately not
 /// checked: an agent waiting for a reply is `working`, so the reply is usually
-/// logged as `busy` instead of being typed in, and this log line is how the
+/// logged (`logged`) instead of being typed in, and this log line is how the
 /// waiter receives it.
 pub fn find_reply(
     dir: &Path,

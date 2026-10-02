@@ -195,9 +195,9 @@ impl Who {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MsgScope {
-    /// Addressed to the coordinator but not typed in (busy, blocked, ...): high.
+    /// Addressed to the coordinator but refused (busy, blocked, ...): high.
     ToCoordinator,
-    /// Between other agents: normal.
+    /// Between other agents, and replies logged for a busy coordinator: normal.
     Between,
     /// The coordinator's own: low.
     FromCoordinator,
@@ -932,7 +932,7 @@ fn preview(message: &AgentMessage) -> String {
     if short.len() < text.len() {
         short.push('\u{2026}');
     }
-    let outcome = if message.outcome == "sent" {
+    let outcome = if message.outcome == messages::OUTCOME_SENT {
         String::new()
     } else {
         format!(" [{}]", message.outcome)
@@ -960,7 +960,12 @@ fn queue_messages(state: &mut WatchState, live: &LiveData, new_msgs: &[AgentMess
     for message in new_msgs {
         if coordinator == Some(message.to_pane.as_str()) {
             // Typed into the coordinator: it has seen that one already.
-            if message.outcome != "sent" {
+            if message.outcome == messages::OUTCOME_LOGGED {
+                // A reply logged while the coordinator was busy (usually in
+                // plus_wait_for_message, which returned it). Delivered, not a
+                // failure: the normal lane, in case it was not waiting.
+                between.push(preview(message));
+            } else if message.outcome != messages::OUTCOME_SENT {
                 // A sender retrying on `busy` wakes the coordinator once per
                 // REFUSAL_REPEAT_S; repeats only ride along (they stay in the log).
                 let sender = message.from_pane.clone().unwrap_or_default();
@@ -2522,6 +2527,34 @@ mod tests {
             panic!("to-coordinator item expected");
         };
         assert!(preview[0].contains("[busy]"), "{preview:?}");
+    }
+
+    #[test]
+    fn a_reply_logged_for_the_coordinator_is_not_a_refusal() {
+        let cfg = cfg();
+        let mut state = WatchState::default();
+        let data = live(vec![coord("idle"), agent("w2:p1", "a", "idle")]);
+        quiet(&mut state, &data, &cfg, 0);
+        let mut reply = message("w2:p1", "w1:p1", messages::OUTCOME_LOGGED);
+        reply.reply_to = Some("m1abc".into());
+        tick(&mut state, &data, &[reply], false, None, false, &cfg, 10);
+        let scopes: Vec<(MsgScope, Option<Prio>)> = state
+            .pending
+            .iter()
+            .filter_map(|ev| match ev {
+                Ev::Messages { scope, .. } => Some((*scope, ev.prio())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(scopes, vec![(MsgScope::Between, Some(Prio::Normal))]);
+        assert!(
+            state.refusal_queued.is_empty(),
+            "a logged reply is not a refusal"
+        );
+        let Some(Ev::Messages { preview, .. }) = state.pending.first() else {
+            panic!("messages item expected");
+        };
+        assert!(preview[0].contains("[logged]"), "{preview:?}");
     }
 
     #[test]
