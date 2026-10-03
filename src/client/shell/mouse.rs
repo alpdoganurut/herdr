@@ -1973,6 +1973,8 @@ impl ClientShellState {
                     .map(|(_, tab_id)| tab_id.clone());
                 if let Some(tab_id) = tab_id {
                     self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
+                    // Fork: the agent's session id, for "Copy session ID".
+                    self.request_context_menu_session(outcome);
                     outcome.repaint = true;
                     return;
                 }
@@ -2002,6 +2004,8 @@ impl ClientShellState {
                     } else {
                         self.open_pane_context_menu(pane_id, mouse.column, mouse.row);
                     }
+                    // Fork: the agent's session id, for "Copy session ID".
+                    self.request_context_menu_session(outcome);
                     outcome.repaint = true;
                 }
             }

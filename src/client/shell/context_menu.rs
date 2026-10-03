@@ -45,6 +45,7 @@ impl ClientContextMenuOverlay {
                 agent,
                 important,
                 team,
+                session_id,
                 ..
             } => {
                 let mut items = vec![
@@ -62,6 +63,11 @@ impl ClientContextMenuOverlay {
                         items.push(item("Restart agent", Action::RestartAgent));
                     }
                     None => {}
+                }
+                // Fork: after the agent items, only once the agent's session
+                // id arrived (context_menu_session.rs).
+                if session_id.is_some() {
+                    items.push(item("Copy session ID", Action::CopySessionId));
                 }
                 items.push(item("Close", Action::Close));
                 // Fork: the team items, after Close so upstream's positions
@@ -154,6 +160,7 @@ impl ClientContextMenuOverlay {
                 source_pane_id,
                 has_manual_label,
                 right_click_passthrough,
+                session_id,
                 ..
             } => {
                 let mut items = vec![item("Rename pane", Action::RenamePane)];
@@ -179,6 +186,10 @@ impl ClientContextMenuOverlay {
                 ]);
                 // Fork: the pane's tab's info dock.
                 items.push(item("Info pane", Action::ToggleInfoPane));
+                // Fork: once the pane agent's session id arrived.
+                if session_id.is_some() {
+                    items.push(item("Copy session ID", Action::CopySessionId));
+                }
                 items
             }
         }
@@ -258,6 +269,7 @@ impl ClientShellState {
                 important: tab.important,
                 remind: super::tab_remind_menu::tab_menu_remind(tab.remind_every),
                 team,
+                session_id: None,
             },
             x,
             y,
@@ -283,6 +295,7 @@ impl ClientShellState {
                 source_pane_id,
                 has_manual_label: pane.label.is_some(),
                 right_click_passthrough: pane.right_click_passthrough,
+                session_id: None,
             },
             x,
             y,
@@ -351,6 +364,18 @@ impl ClientShellState {
                 ClientContextMenuTarget::Tab { tab_id, remind, .. },
             ) => {
                 self.pick_tab_remind_option(tab_id.clone(), *remind, outcome);
+                outcome.repaint = true;
+                return;
+            }
+            // Fork: copying the agent's session id focuses nothing.
+            (
+                ClientContextMenuAction::CopySessionId,
+                ClientContextMenuTarget::Tab { session_id, .. }
+                | ClientContextMenuTarget::Pane { session_id, .. },
+            ) => {
+                if let Some(session_id) = session_id.clone() {
+                    self.copy_context_menu_session_id(session_id, outcome);
+                }
                 outcome.repaint = true;
                 return;
             }

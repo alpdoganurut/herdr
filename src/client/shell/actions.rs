@@ -540,6 +540,10 @@ impl ClientShellState {
         if let PendingEndpointKind::PaneLinkResolve { target } = pending.kind {
             return self.complete_link_hover(target, result);
         }
+        // Fork: a context menu's session lookup never raises a notice.
+        if let PendingEndpointKind::ContextMenuSession { pane_id } = pending.kind {
+            return self.complete_context_menu_session(pane_id, result);
+        }
         // Fork: info dock replies show in the dock, never as a notice.
         if pending.kind.is_info_dock() {
             return self.handle_info_dock_endpoint_result(pending, result);
@@ -601,7 +605,8 @@ impl ClientShellState {
             | PendingEndpointKind::InfoNotesWrite
             | PendingEndpointKind::InfoCheckpointsList
             | PendingEndpointKind::InfoCheckpointWrite
-            | PendingEndpointKind::InfoCheckpointContext { .. } => {
+            | PendingEndpointKind::InfoCheckpointContext { .. }
+            | PendingEndpointKind::ContextMenuSession { .. } => {
                 unreachable!("handled above")
             }
             PendingEndpointKind::ProductAnnouncementDismiss { version, id } => {

@@ -739,6 +739,9 @@ pub(super) enum ClientContextMenuAction {
     JoinTeam,
     /// Fork: tab and pane menus: open or close the tab's info dock.
     ToggleInfoPane,
+    /// Fork: tab and pane menus: copy the agent's native session id
+    /// (`context_menu_session.rs`).
+    CopySessionId,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -791,6 +794,9 @@ pub(super) enum ClientContextMenuTarget {
         /// Fork: the team items, when the tab's agent pane is in a team
         /// group of a server advertising `team.get`.
         team: Option<super::teams::ClientTabTeamMenu>,
+        /// Fork: the native session id (Claude session, Codex thread) of the
+        /// tab's agent, filled by the `pane.get` reply after the menu opened.
+        session_id: Option<String>,
     },
     /// A space shown as a tab group in the `tabs` layout. Fork: `team` is
     /// the team items' state, `None` without `team.get` on the server.
@@ -804,6 +810,9 @@ pub(super) enum ClientContextMenuTarget {
         source_pane_id: Option<String>,
         has_manual_label: bool,
         right_click_passthrough: bool,
+        /// Fork: the pane agent's native session id, filled like the Tab
+        /// target's.
+        session_id: Option<String>,
     },
     /// The `tabs` layout's pinned News row; `enabled` is the schedule state
     /// when the menu opened (the toggle item flips it).
@@ -946,6 +955,11 @@ pub(super) enum PendingEndpointKind {
     /// Fork: the info dock's `checkpoints.context`.
     InfoCheckpointContext {
         id: String,
+    },
+    /// Fork: the `pane.get` a tab or pane menu sends when it opens, for the
+    /// agent's session id (`context_menu_session.rs`).
+    ContextMenuSession {
+        pane_id: String,
     },
     PrepareWorktreeCreate {
         workspace_id: String,

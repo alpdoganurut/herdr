@@ -63,6 +63,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.edit_scrollback",
     "pane.focus",
     "pane.focus_direction",
+    "pane.get",
     "pane.input.set",
     "pane.link.activate",
     "pane.link.resolve",
@@ -559,6 +560,11 @@ mod tests {
             actual.remove("checkpoints.context").as_deref(),
             Some("bce19edc6742c1a9c961a4bee33d9c1b5d0c516a03e65d0ca5ab722b6da47d93")
         );
+        // Fork: the tab and pane menus' session id lookup (context_menu_session.rs).
+        assert_eq!(
+            actual.remove("pane.get").as_deref(),
+            Some("c7d8d69186e7ac9806b4b20ad78e88a3bd37dcc2d57435cef107698bf9124643")
+        );
 
         assert_eq!(
             actual, expected,
@@ -590,7 +596,7 @@ mod tests {
         assert!(!supports_client_shell_method_name(
             crate::api::schema::team::method::CONTEXT
         ));
-        assert_eq!(CLIENT_SHELL_METHODS.len(), 92);
+        assert_eq!(CLIENT_SHELL_METHODS.len(), 93);
     }
 
     #[test]

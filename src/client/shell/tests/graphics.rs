@@ -275,6 +275,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
                 important: false,
                 remind: Default::default(),
                 team: None,
+                session_id: None,
             },
             x: 35,
             y: 8,

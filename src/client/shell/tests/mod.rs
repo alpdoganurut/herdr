@@ -254,6 +254,7 @@ mod breathe;
 mod browser;
 mod chrome_context;
 mod close_tab;
+mod context_menu_session;
 mod coordinator;
 mod copy;
 mod endpoint_requests;
