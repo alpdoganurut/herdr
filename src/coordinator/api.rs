@@ -14,8 +14,9 @@ use serde_json::Value;
 use crate::api::schema::{
     AgentPromptParams, AgentReadParams, AgentStartParams, AgentTarget, BrowserActor, BrowserCaller,
     EmptyParams, Method, PaneMoveDestination, PaneMoveParams, PaneTarget, ReadFormat, ReadSource,
-    TabCreateParams, TabListParams, TabRenameParams, TeamContextParams, TeamGetParams, TeamInfo,
-    TeamJoinParams, TeamMakeParams, TeamSetPurposeParams, TeamSetRoleParams, WorkspaceCreateParams,
+    TabCreateParams, TabListParams, TabRenameParams, TabTarget, TeamContextParams, TeamGetParams,
+    TeamInfo, TeamJoinParams, TeamMakeParams, TeamSetPurposeParams, TeamSetRoleParams,
+    WorkspaceCreateParams,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,6 +255,14 @@ pub fn tab_rename(api: &impl Api, tab_id: &str, label: &str) -> Result<(), ApiEr
     api.call(Method::TabRename(TabRenameParams {
         tab_id: tab_id.to_string(),
         label: label.to_string(),
+    }))?;
+    Ok(())
+}
+
+/// `tab.close` (the last tab of a group closes the group).
+pub fn tab_close(api: &impl Api, tab_id: &str) -> Result<(), ApiError> {
+    api.call(Method::TabClose(TabTarget {
+        tab_id: tab_id.to_string(),
     }))?;
     Ok(())
 }

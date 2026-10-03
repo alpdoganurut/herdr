@@ -1698,45 +1698,49 @@ impl<A: Api> Session<A> {
         if let Some(team) = &team_launch {
             kickoff = launch::team_kickoff(&team.text, &kickoff);
         }
-        let launch_failed = |error: io::Error| {
-            err(
-                "launch_failed",
-                format!("{error} (tab {tab} pane {pane} stays open)"),
-            )
-        };
-        let ctx =
-            LaunchCtx::current(self.opts.dir.clone(), self.opts.port).map_err(launch_failed)?;
-        let (session, argv) = if kind == "claude" {
-            let uuid = launch::new_uuid();
-            let argv = launch::claude_args_with_team(
-                &ctx,
-                &ClaudeSession::New(uuid.clone()),
-                false,
-                Some(&kickoff),
-                team_launch.as_ref(),
-            )
-            .map_err(launch_failed)?;
-            (Some(uuid), argv)
-        } else {
-            (
-                None,
-                launch::codex_args_with_team(&ctx, Some(&kickoff), team_launch.as_ref()),
-            )
-        };
-        let (started, _) = api::agent_start_with(
-            &self.api,
-            &name,
-            &kind,
-            &pane,
-            argv,
-            START_TIMEOUT_MS,
-            &*self.sleep,
-        )
-        .map_err(|error| {
-            err(
-                &error.code,
-                format!("{} (tab {tab} pane {pane} stays open)", error.message),
-            )
+        let launch_failed = |error: io::Error| err("launch_failed", error.to_string());
+        let launched = (|| {
+            let ctx =
+                LaunchCtx::current(self.opts.dir.clone(), self.opts.port).map_err(launch_failed)?;
+            let (session, argv) = if kind == "claude" {
+                let uuid = launch::new_uuid();
+                let argv = launch::claude_args_with_team(
+                    &ctx,
+                    &ClaudeSession::New(uuid.clone()),
+                    false,
+                    Some(&kickoff),
+                    team_launch.as_ref(),
+                )
+                .map_err(launch_failed)?;
+                (Some(uuid), argv)
+            } else {
+                (
+                    None,
+                    launch::codex_args_with_team(&ctx, Some(&kickoff), team_launch.as_ref()),
+                )
+            };
+            let (started, _) = api::agent_start_with(
+                &self.api,
+                &name,
+                &kind,
+                &pane,
+                argv,
+                START_TIMEOUT_MS,
+                &*self.sleep,
+            )?;
+            Ok::<_, ApiError>((started, session))
+        })();
+        // A tab without its agent is no use (in a team group it would stay a
+        // "no agent" member): close it, and keep the start's own error code.
+        let (started, session) = launched.map_err(|error| {
+            let fate = match api::tab_close(&self.api, &tab) {
+                Ok(()) => format!("tab {tab} closed"),
+                Err(close) => {
+                    tracing::warn!(%close, tab, "herdr coordinator mcp: cannot close the tab of a failed start");
+                    format!("tab {tab} pane {pane} stays open: {}", close.message)
+                }
+            };
+            err(&error.code, format!("{} ({fate})", error.message))
         })?;
         text.push_str(&format!("; agent {started} ({kind}) starting in {pane}"));
         if let Some(session) = &session {
@@ -3200,6 +3204,9 @@ mod tests {
         aliases: RefCell<HashMap<String, String>>,
         calls: RefCell<Vec<Method>>,
         prompt_error: RefCell<Option<ApiError>>,
+        /// `agent.start`'s answer when set (after the real server's
+        /// control-character check).
+        start_error: RefCell<Option<ApiError>>,
         on_sleep: RefCell<Option<SleepHook>>,
         /// `team.list`'s teams (TeamInfo JSON).
         teams: RefCell<Vec<Value>>,
@@ -3422,8 +3429,19 @@ mod tests {
                 },
                 Method::AgentRead(_) => Ok(json!({ "read": { "text": "line one\n> ready" } })),
                 Method::AgentStart(params) => {
+                    // Like the real server: no control characters in an argument.
+                    if params.args.iter().any(|a| a.chars().any(char::is_control)) {
+                        return Err(ApiError::new(
+                            "invalid_agent_argument",
+                            "agent arguments cannot be encoded safely for the target shell",
+                        ));
+                    }
+                    if let Some(error) = self.start_error.borrow().clone() {
+                        return Err(error);
+                    }
                     Ok(json!({ "agent": { "name": params.name, "pane_id": params.pane_id } }))
                 }
+                Method::TabClose(_) => Ok(json!({ "type": "ok" })),
                 // A tab in the team group w3 gets w3 ids; anywhere else w2's.
                 Method::TabCreate(params) if params.workspace_id.as_deref() == Some("w3") => {
                     Ok(json!({ "tab": { "tab_id": "w3:t9" }, "root_pane": { "pane_id": "w3:p9" } }))
@@ -5697,7 +5715,7 @@ mod tests {
         assert!(settings.is_file());
         let kickoff = params.args.last().unwrap();
         assert!(
-            kickoff.starts_with("ROSTER for w3:p9\n\nYou are code-reviewer"),
+            kickoff.starts_with("ROSTER for w3:p9 | You are code-reviewer"),
             "{kickoff}"
         );
         // the roster is read, never acked, by the launch
@@ -5721,6 +5739,59 @@ mod tests {
             "{}",
             out.text
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_start_closes_the_new_tab_and_reports_the_start_error_code() {
+        let dir = super::super::test_dir("mcp-open-start-fails");
+        seed_registry(&dir);
+        let world = team_world();
+        let mut s = session(&world, &dir, "w1:p1", Verdict::Verified);
+        *world.start_error.borrow_mut() = Some(ApiError::new(
+            "invalid_agent_argument",
+            "agent arguments cannot be encoded safely for the target shell",
+        ));
+        for (group, tab) in [("search-it", "w3:t9"), ("demo", "w2:t9")] {
+            world.calls.borrow_mut().clear();
+            let out = call(
+                &mut s,
+                "agents_open_tab",
+                json!({ "group": group, "agent": "claude", "name": "helper", "role": "Fixer" }),
+            );
+            assert!(out.is_error, "{}", out.text);
+            assert!(
+                out.text.contains(&format!(
+                    "error invalid_agent_argument: agent arguments cannot be encoded safely for the target shell (tab {tab} closed)"
+                )),
+                "{}",
+                out.text
+            );
+            let calls = world.calls.borrow().clone();
+            let start = calls
+                .iter()
+                .position(|m| matches!(m, Method::AgentStart(_)))
+                .expect("agent.start");
+            let close = calls
+                .iter()
+                .position(|m| matches!(m, Method::TabClose(t) if t.tab_id == tab))
+                .expect("tab.close");
+            assert!(start < close, "{calls:?}");
+        }
+        // A successful start closes nothing.
+        *world.start_error.borrow_mut() = None;
+        world.calls.borrow_mut().clear();
+        let out = call(
+            &mut s,
+            "agents_open_tab",
+            json!({ "group": "search-it", "agent": "codex", "role": "Fixer", "task": "Line one.\n\nLine two." }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(!world
+            .calls
+            .borrow()
+            .iter()
+            .any(|m| matches!(m, Method::TabClose(_))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -191,8 +191,31 @@ fn claude_team_flags(settings: &Path, team: &TeamLaunch) -> Vec<String> {
     vec![
         crate::agent_wrap::team::settings_flag(settings),
         "--append-system-prompt".into(),
-        team.text.clone(),
+        single_line_arg(&team.text),
     ]
+}
+
+/// What stands in for a line break in a one-line launch argument.
+pub const LINE_SEPARATOR: &str = " | ";
+
+/// `text` as one `agent.start` argument: `agent.start` rejects any argument
+/// with a control character (it cannot quote one safely for every shell),
+/// so lines are trimmed, blank ones dropped and the rest joined with
+/// [`LINE_SEPARATOR`]; other control characters become spaces and
+/// whitespace runs collapse to one space.
+pub fn single_line_arg(text: &str) -> String {
+    text.split(['\n', '\r'])
+        .map(|line| {
+            line.chars()
+                .map(|ch| if ch.is_control() { ' ' } else { ch })
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(LINE_SEPARATOR)
 }
 
 /// `flags` inserted before the first `--` of `args` (at the end without one).
@@ -230,7 +253,7 @@ fn claude_argv(
     }
     args.push("--".into());
     if let Some(kickoff) = kickoff {
-        args.push(kickoff.to_string());
+        args.push(single_line_arg(kickoff));
     }
     args
 }
@@ -284,6 +307,8 @@ pub fn codex_args_with_team(
 }
 
 /// `-c developer_instructions=<own ⧺ team text>` before the kickoff prompt.
+/// The TOML string escapes its line breaks, so the argument itself stays
+/// free of control characters and the roster keeps its lines.
 fn codex_add_team(args: &mut Vec<String>, own: Option<&str>, team: &TeamLaunch, kickoff: bool) {
     let mut parts: Vec<&str> = Vec::new();
     if let Some(own) = own.map(str::trim).filter(|t| !t.is_empty()) {
@@ -307,9 +332,10 @@ fn codex_add_team(args: &mut Vec<String>, own: Option<&str>, team: &TeamLaunch, 
     );
 }
 
-/// A team member's kickoff: the roster block first, then the usual kickoff.
+/// A team member's kickoff: the roster block first, then the usual kickoff,
+/// on one line (see [`single_line_arg`]).
 pub fn team_kickoff(team_text: &str, kickoff: &str) -> String {
-    format!("{}\n\n{kickoff}", team_text.trim())
+    single_line_arg(&format!("{team_text}\n{kickoff}"))
 }
 
 /// The `-c mcp_servers.herdr_agents.*` overrides that give a Codex launch
@@ -356,7 +382,7 @@ fn codex_argv(ctx: &LaunchCtx, kickoff: Option<&str>, no_daemon: bool) -> Vec<St
         args.push("--no-daemon".into());
     }
     if let Some(kickoff) = kickoff {
-        args.push(kickoff.to_string());
+        args.push(single_line_arg(kickoff));
     }
     args
 }
@@ -703,7 +729,75 @@ mod tests {
         );
         assert_eq!(
             team_kickoff(" ROSTER \n", "You are fixer."),
-            "ROSTER\n\nYou are fixer."
+            "ROSTER | You are fixer."
         );
+    }
+
+    #[test]
+    fn every_team_and_coordinator_launch_argument_is_one_line() {
+        // `agent.start` rejects any argument with a control character.
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-launch-one-line-{}-{}",
+            std::process::id(),
+            new_uuid()
+        ));
+        let ctx = LaunchCtx {
+            herdr_bin: PathBuf::from("/opt/herdr/herdr"),
+            dir: dir.clone(),
+            port: DEFAULT_PORT,
+        };
+        let team = TeamLaunch {
+            text: "You are \"fixer\" (pane w3:p1) in a herdr+ team (group demo).\nPurpose: ship it.\r\n\nTeammates: reviewer (idle).\tRules\u{1b}[0m apply.".into(),
+        };
+        let task = "Fix the sync.\n\n  - step one\n\t- step two";
+        let kickoff = team_kickoff(
+            &team.text,
+            &agent_kickoff(&dir, "fixer", Some("fixer"), Some("demo"), Some(task)),
+        );
+        let clean = |args: &[String]| {
+            for arg in args {
+                assert!(!arg.chars().any(char::is_control), "{arg:?} in {args:?}");
+            }
+        };
+        let claude = claude_args_with_team(
+            &ctx,
+            &ClaudeSession::New("u1".into()),
+            false,
+            Some(&kickoff),
+            Some(&team),
+        )
+        .unwrap();
+        clean(&claude);
+        let prompt = claude
+            .iter()
+            .position(|a| a == "--append-system-prompt")
+            .map(|at| claude[at + 1].clone())
+            .unwrap();
+        assert_eq!(
+            prompt,
+            "You are \"fixer\" (pane w3:p1) in a herdr+ team (group demo). | Purpose: ship it. | Teammates: reviewer (idle). Rules [0m apply."
+        );
+        let codex = codex_args_with_team(&ctx, Some(&kickoff), Some(&team));
+        clean(&codex);
+        assert_eq!(codex.last(), claude.last(), "the same kickoff");
+        assert!(codex.last().unwrap().starts_with("You are \"fixer\""));
+        assert!(codex
+            .last()
+            .unwrap()
+            .ends_with("Fix the sync. | - step one | - step two"));
+        // A kickoff with line breaks outside a team, and the coordinator's own.
+        clean(&codex_args(&ctx, Some(task)));
+        clean(&claude_args(&ctx, &ClaudeSession::New("u2".into()), false, Some(task)).unwrap());
+        clean(
+            &claude_args(
+                &ctx,
+                &ClaudeSession::Resume("u3".into()),
+                true,
+                Some(&coordinator_kickoff(&dir)),
+            )
+            .unwrap(),
+        );
+        assert_eq!(single_line_arg("a\r\n\r\nb\u{7}c  d\n"), "a | b c d");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
