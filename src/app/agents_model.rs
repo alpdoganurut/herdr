@@ -2467,10 +2467,23 @@ impl App {
                     }
                     self.state.rebuild_team_index();
                 }
-                let _ = self.call_method(Method::TabClose(crate::api::schema::TabTarget {
-                    tab_id: tab_public,
-                }));
-                Err(err)
+                // The start's own error code, and what became of the tab.
+                let fate = match self.call_method(Method::TabClose(crate::api::schema::TabTarget {
+                    tab_id: tab_public.clone(),
+                })) {
+                    Ok(_) => format!("tab {tab_public} closed"),
+                    Err(close) => {
+                        tracing::warn!(code = %close.code, tab = %tab_public, "agents model: cannot close the tab of a failed start");
+                        format!(
+                            "tab {tab_public} pane {pane_public} stays open: {}",
+                            close.message
+                        )
+                    }
+                };
+                Err(ModelError::new(
+                    &err.code,
+                    format!("{} ({fate})", err.message),
+                ))
             }
         }
     }
@@ -3171,6 +3184,56 @@ pub(crate) mod tests {
         );
         assert_eq!(code(&result), "failed", "{result}");
         assert_eq!(app.state.workspaces[1].tabs.len(), tabs_before);
+    }
+
+    #[tokio::test]
+    async fn a_failed_start_closes_the_new_tab_and_keeps_the_start_error_code() {
+        let mut app = model_app();
+        let dir = temp_dir("open-start-fails");
+        app.agents_model.dir = Some(dir.clone());
+        let lead_pane = pane(&app, 1, 0);
+        let lead = public(&app, 1, 0);
+        user_turn(&mut app, lead_pane);
+        let tabs_before = app.state.workspaces[1].tabs.len();
+        let members_before = app.state.workspaces[1]
+            .team
+            .as_ref()
+            .map(|team| team.members.len());
+        // Another agent already holds the name the role gives: agent.start
+        // fails after the tab and the team pre-join were made.
+        let fixer = pane(&app, 1, 1);
+        terminal_mut(&mut app, fixer).set_agent_name("tester".into());
+        let result = call(
+            &mut app,
+            Method::AgentsOpenTab(AgentsOpenTabParams {
+                caller_pane: lead,
+                agent: Some("claude".into()),
+                role: Some("tester".into()),
+                kickoff: Some("Line one.\n\nLine two.".into()),
+                ..Default::default()
+            }),
+        );
+        let code = code(&result).to_string();
+        assert_eq!(code, "agent_name_taken", "the start's own code: {result}");
+        let message = result["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("closed)"),
+            "the tab's fate is named: {result}"
+        );
+        assert_eq!(
+            app.state.workspaces[1].tabs.len(),
+            tabs_before,
+            "no orphan tab"
+        );
+        assert_eq!(
+            app.state.workspaces[1]
+                .team
+                .as_ref()
+                .map(|team| team.members.len()),
+            members_before,
+            "no half-joined member"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
