@@ -336,6 +336,12 @@ impl App {
 
     /// Add a pane to its group's team and log the join; whether it joined.
     fn team_add_member(&mut self, ws_idx: usize, pane: PaneId, role: Option<String>) -> bool {
+        // Fork (agents v2): the role lives on the pane; a member without one
+        // takes the pane's (it survives leaving and rejoining).
+        let role = role.or_else(|| {
+            self.team_terminal(ws_idx, pane)
+                .and_then(|terminal| terminal.agent_meta().role.clone())
+        });
         let now = crate::coordinator::now_unix();
         let name = self.team_display_name(ws_idx, pane, role.as_deref());
         let agent = self.team_agent_kind(ws_idx, pane);
@@ -374,6 +380,18 @@ impl App {
             return false;
         }
         team.record(format!("{name} left"));
+        // Fork (agents v2): the exclusion follows the pane (a close and
+        // reopen does not rejoin); the role stays on the pane.
+        let workspace_id = exclude.then(|| self.state.workspaces[ws_idx].id.clone());
+        self.write_meta(ws_idx, pane, |meta| {
+            if meta.role.is_none() && !meta.role_cleared {
+                meta.role = role;
+            }
+            if let Some(workspace_id) = workspace_id {
+                meta.team_excluded = Some(workspace_id);
+            }
+        });
+
         self.state.team_index.remove(&pane);
         self.team_tombstones
             .insert(pane, REMOVED_LINE, crate::coordinator::now_unix());
@@ -596,6 +614,15 @@ impl App {
                 None => format!("{name}'s role cleared"),
             });
         }
+        // Fork (agents v2): the pane's meta holds the role; the member's is
+        // its mirror (an older build reads the mirror back).
+        let meta_role = role.clone();
+        self.write_meta(ws_idx, pane, |meta| {
+            if meta.role != meta_role {
+                meta.role_cleared = meta_role.is_none();
+                meta.role = meta_role;
+            }
+        });
         role.as_ref()?;
         self.team_apply_role_name(ws_idx, pane)
     }
@@ -698,12 +725,34 @@ impl App {
             self.mark_coordinator_input_dirty();
             return;
         }
-        if released || team.is_excluded(pane) || self.is_coordinator_pane(ws_idx, pane) {
+        if released
+            || team.is_excluded(pane)
+            || self.meta_excludes_team(ws_idx, pane)
+            || self.is_coordinator_pane(ws_idx, pane)
+        {
             return;
         }
         if self.team_add_member(ws_idx, pane, None) {
             tracing::info!(event = "team.join", pane = %public_pane, "agent joined its team group's team");
             self.teams_changed();
+        }
+    }
+
+    /// Fork (agents v2): the pane's meta names this group's team as one it
+    /// left or was removed from.
+    fn meta_excludes_team(&self, ws_idx: usize, pane: PaneId) -> bool {
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return false;
+        };
+        self.team_terminal(ws_idx, pane).is_some_and(|terminal| {
+            terminal.agent_meta().team_excluded.as_deref() == Some(ws.id.as_str())
+        })
+    }
+
+    /// Fork (agents v2): clear the pane's exclusion from this group's team.
+    fn clear_meta_exclusion(&mut self, ws_idx: usize, pane: PaneId) {
+        if self.meta_excludes_team(ws_idx, pane) {
+            self.write_meta(ws_idx, pane, |meta| meta.team_excluded = None);
         }
     }
 
@@ -754,6 +803,8 @@ impl App {
         if ws.id == previous_workspace_id || team.is_member(pane) {
             return false;
         }
+        // Fork (agents v2): moving in clears a removal from this team.
+        self.clear_meta_exclusion(ws_idx, pane);
         if !self.team_pane_has_agent(ws_idx, pane) || self.is_coordinator_pane(ws_idx, pane) {
             // It may join later, on detection: moving in cleared a removal.
             if let Some(team) = self.team_mut(ws_idx) {
@@ -899,9 +950,22 @@ impl App {
             .collect();
         for pane in candidates {
             if self.team_pane_has_agent(ws_idx, pane) && !self.is_coordinator_pane(ws_idx, pane) {
-                team.join(pane, None, now);
+                // Fork (agents v2): the pane's role comes along.
+                let role = self
+                    .team_terminal(ws_idx, pane)
+                    .and_then(|terminal| terminal.agent_meta().role.clone());
+                team.join(pane, role, now);
                 self.team_tombstones.clear(pane);
             }
+        }
+        // Fork (agents v2): making the team clears the panes' exclusions.
+        let panes: Vec<PaneId> = self.state.workspaces[ws_idx]
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.layout.pane_ids())
+            .collect();
+        for pane in panes {
+            self.clear_meta_exclusion(ws_idx, pane);
         }
         tracing::info!(
             event = "team.make",
@@ -1044,6 +1108,8 @@ impl App {
                 ),
             ));
         }
+        // Fork (agents v2): an explicit join clears the pane's exclusion.
+        self.clear_meta_exclusion(ws_idx, pane);
         let revision = self.team_revision(ws_idx);
         let joined = self.team_add_member(ws_idx, pane, None);
         if !joined {

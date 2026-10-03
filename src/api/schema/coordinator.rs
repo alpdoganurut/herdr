@@ -131,7 +131,9 @@ pub struct CoordinatorWakeInfo {
     pub next_periodic_at: Option<u64>,
 }
 
-/// One managed agent.
+/// One agent the coordinator watches (agents v2: in its wake scope; the
+/// field keeps its v1 name `managed`). `project` is no longer filled (U3:
+/// folded into the note).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct CoordinatorManagedInfo {
     pub name: String,
@@ -221,6 +223,16 @@ pub struct CoordinatorGetInfo {
     /// stays queued and is sent once the coordinator is idle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake_queued: Option<String>,
+    /// `[coordinator] wake_scope` (agents v2): which agents wake the
+    /// coordinator, and so which ones `managed` lists (`opened`, `teams`,
+    /// `all`). Absent from older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_scope: Option<String>,
+    /// `managed.json` entries the agents-v2 migration could not place on a
+    /// pane (their roles and notes were not carried over); absent before the
+    /// migration ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration_unmatched: Option<u32>,
 }
 
 fn default_true() -> bool {
@@ -251,6 +263,8 @@ impl Default for CoordinatorGetInfo {
             coordinator_dir: String::new(),
             notify: true,
             wake_queued: None,
+            wake_scope: None,
+            migration_unmatched: None,
         }
     }
 }

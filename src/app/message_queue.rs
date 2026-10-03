@@ -421,6 +421,7 @@ impl App {
                 wait: None,
                 guard_user_typing: true,
             },
+            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
         );
         match queued {
             Ok(_) => Ok(()),

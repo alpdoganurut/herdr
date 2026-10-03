@@ -184,6 +184,51 @@ fn apply_scroll(
     Ok(())
 }
 
+/// Fork (agents v2): where a batch of client-shell input events came from,
+/// for the turn origin; `None` when it is not input (mouse only, key
+/// releases). A submit is an Enter press or text with a line break; a paste
+/// alone is not.
+pub(super) fn client_input_source(
+    events: &[ClientPaneInputEvent],
+) -> Option<crate::agents_model::InputSource> {
+    let mut input = false;
+    let mut submit = false;
+    for event in events {
+        match event {
+            ClientPaneInputEvent::Mouse { .. } => {}
+            ClientPaneInputEvent::Key { code, kind, .. } => {
+                if matches!(kind, crate::protocol::ClientKeyKind::Release) {
+                    continue;
+                }
+                input = true;
+                submit |= code.to_crossterm() == KeyCode::Enter;
+            }
+            ClientPaneInputEvent::TextCommit(text) => {
+                input = true;
+                submit |= text.contains(['\n', '\r']);
+            }
+            ClientPaneInputEvent::Paste(_) => input = true,
+        }
+    }
+    input.then_some(crate::agents_model::InputSource::Client {
+        submit,
+        attach: false,
+    })
+}
+
+/// Fork (agents v2): terminal-attach bytes as input for the turn origin. A
+/// CR or LF submits (one `memchr`-style scan, no allocation).
+pub(super) fn attach_input_source(data: &[u8]) -> crate::agents_model::InputSource {
+    // An SGR mouse report is not typing.
+    if data.starts_with(b"\x1b[<") || data.starts_with(b"\x1b[M") {
+        return crate::agents_model::InputSource::Internal;
+    }
+    crate::agents_model::InputSource::Client {
+        submit: data.iter().any(|byte| matches!(byte, b'\r' | b'\n')),
+        attach: true,
+    }
+}
+
 pub(super) fn apply_terminal_attach_input(
     runtime: &crate::terminal::TerminalRuntime,
     data: Vec<u8>,
@@ -363,6 +408,60 @@ fn apply_client_terminal_input_events(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn client_input_classifies_submits_and_skips_mouse_and_releases() {
+        use crate::agents_model::InputSource;
+        use crate::protocol::{ClientKeyCode, ClientKeyKind};
+        let key = |code, kind| ClientPaneInputEvent::Key {
+            code,
+            modifiers: 0,
+            kind,
+            repeat_count: 1,
+            shifted_codepoint: None,
+            generated_text: None,
+            tracks_release: false,
+            physical_key_id: None,
+            windows_record: None,
+        };
+        let client = |submit| {
+            Some(InputSource::Client {
+                submit,
+                attach: false,
+            })
+        };
+        assert_eq!(
+            super::client_input_source(&[key(ClientKeyCode::Esc, ClientKeyKind::Press)]),
+            client(false)
+        );
+        assert_eq!(
+            super::client_input_source(&[
+                ClientPaneInputEvent::Paste("a\nb".into()),
+                key(ClientKeyCode::Enter, ClientKeyKind::Press)
+            ]),
+            client(true)
+        );
+        assert_eq!(
+            super::client_input_source(&[ClientPaneInputEvent::Paste("a\nb".into())]),
+            client(false)
+        );
+        assert_eq!(
+            super::client_input_source(&[ClientPaneInputEvent::TextCommit("y\r".into())]),
+            client(true)
+        );
+        assert_eq!(
+            super::client_input_source(&[key(ClientKeyCode::Enter, ClientKeyKind::Release)]),
+            None
+        );
+        assert_eq!(super::client_input_source(&[]), None);
+        assert_eq!(
+            super::attach_input_source(b"ls\r"),
+            InputSource::Client {
+                submit: true,
+                attach: true
+            }
+        );
+    }
+
     use super::*;
 
     #[tokio::test]

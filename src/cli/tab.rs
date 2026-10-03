@@ -1,6 +1,11 @@
 use std::collections::HashMap;
 
-use crate::api::schema::{TabCreateParams, TabListParams, TabRenameParams};
+use crate::api::schema::agents_model::{
+    AgentsCheckAction, AgentsCloseTabParams, AgentsOpenTabParams, AgentsRenameTabParams,
+};
+use crate::api::schema::{Method, TabCreateParams, TabListParams, TabRenameParams};
+
+use super::agent_route as route;
 
 pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
@@ -119,6 +124,23 @@ fn tab_create(args: &[String]) -> std::io::Result<i32> {
         }
     }
 
+    // Fork (agents v2): an agent opens a shell tab through the check.
+    match route::route()? {
+        Err(code) => return Ok(code),
+        Ok(route::Route::Agent(pane)) => {
+            return route::call(
+                "cli:agents.open_tab",
+                Method::AgentsOpenTab(AgentsOpenTabParams {
+                    caller_pane: pane,
+                    group: workspace_id,
+                    cwd,
+                    label,
+                    ..AgentsOpenTabParams::default()
+                }),
+            )
+        }
+        Ok(route::Route::User | route::Route::OldServer) => {}
+    }
     super::runtime::tab_create(TabCreateParams {
         workspace_id,
         cwd,
@@ -160,10 +182,24 @@ fn tab_rename(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     }
 
-    super::runtime::tab_rename(TabRenameParams {
-        tab_id: super::normalize_tab_id(&args[0]),
-        label: args[1..].join(" "),
-    })
+    let tab_id = super::normalize_tab_id(&args[0]);
+    let label = args[1..].join(" ");
+    // Fork (agents v2): an agent renames through the check.
+    match route::route()? {
+        Err(code) => return Ok(code),
+        Ok(route::Route::Agent(pane)) => {
+            return route::call(
+                "cli:agents.rename_tab",
+                Method::AgentsRenameTab(AgentsRenameTabParams {
+                    caller_pane: pane,
+                    target: tab_id,
+                    name: label,
+                }),
+            )
+        }
+        Ok(route::Route::User | route::Route::OldServer) => {}
+    }
+    super::runtime::tab_rename(TabRenameParams { tab_id, label })
 }
 
 fn tab_color(args: &[String]) -> std::io::Result<i32> {
@@ -183,13 +219,15 @@ fn tab_color(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
 
-    super::print_response(&super::send_request(&crate::api::schema::Request {
-        id: "cli:tab:color".into(),
-        method: crate::api::schema::Method::TabSetColor(crate::api::schema::TabSetColorParams {
-            tab_id: super::normalize_tab_id(raw_tab_id),
-            color,
-        }),
-    })?)
+    let tab_id = super::normalize_tab_id(raw_tab_id);
+    route::checked(AgentsCheckAction::Cosmetic, Some(tab_id.clone()), || {
+        super::print_response(&super::send_request(&crate::api::schema::Request {
+            id: "cli:tab:color".into(),
+            method: crate::api::schema::Method::TabSetColor(
+                crate::api::schema::TabSetColorParams { tab_id, color },
+            ),
+        })?)
+    })
 }
 
 fn tab_important(args: &[String]) -> std::io::Result<i32> {
@@ -230,15 +268,18 @@ fn send_reminder(
     every: Option<crate::api::schema::TabRemindEvery>,
     id: &str,
 ) -> std::io::Result<i32> {
-    use crate::api::schema::{Method, Request, TabSetReminderParams};
-    super::print_response(&super::send_request(&Request {
-        id: id.into(),
-        method: Method::TabSetReminder(TabSetReminderParams {
-            tab_id: super::normalize_tab_id(raw_tab_id),
-            important,
-            every,
-        }),
-    })?)
+    use crate::api::schema::{Request, TabSetReminderParams};
+    let tab_id = super::normalize_tab_id(raw_tab_id);
+    route::checked(AgentsCheckAction::Cosmetic, Some(tab_id.clone()), || {
+        super::print_response(&super::send_request(&Request {
+            id: id.into(),
+            method: Method::TabSetReminder(TabSetReminderParams {
+                tab_id,
+                important,
+                every,
+            }),
+        })?)
+    })
 }
 
 fn tab_close(args: &[String]) -> std::io::Result<i32> {
@@ -251,7 +292,24 @@ fn tab_close(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     }
 
-    super::runtime::tab_close(super::normalize_tab_id(raw_tab_id))
+    let tab_id = super::normalize_tab_id(raw_tab_id);
+    // Fork (agents v2): an agent closes through the check (graceful exits,
+    // resumable, only on its user's request).
+    match route::route()? {
+        Err(code) => return Ok(code),
+        Ok(route::Route::Agent(pane)) => {
+            return route::call(
+                "cli:agents.close_tab",
+                Method::AgentsCloseTab(AgentsCloseTabParams {
+                    caller_pane: pane,
+                    target: tab_id,
+                    ..AgentsCloseTabParams::default()
+                }),
+            )
+        }
+        Ok(route::Route::User | route::Route::OldServer) => {}
+    }
+    super::runtime::tab_close(tab_id)
 }
 
 fn print_tab_help() {

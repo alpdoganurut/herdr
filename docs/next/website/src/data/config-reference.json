@@ -1798,7 +1798,7 @@
           "key": "coordinator.periodic_minutes",
           "type": "integer",
           "default": "60",
-          "description": "Minutes after the last wake at which low-priority events that are still pending (for example a change in the managed-agent registry) wake the coordinator. Nothing pending means no periodic wake. Counted against the wake caps. The `HERDR_COORDINATOR_PERIODIC_S` environment variable (seconds) on the server process overrides it."
+          "description": "Minutes after the last wake at which low-priority events that are still pending (for example an agent that appeared) wake the coordinator. Nothing pending means no periodic wake. Counted against the wake caps. The `HERDR_COORDINATOR_PERIODIC_S` environment variable (seconds) on the server process overrides it."
         },
         {
           "key": "coordinator.relaunch_cap_hour",
@@ -1829,6 +1829,12 @@
           "type": "integer",
           "default": "7718",
           "description": "Port on `127.0.0.1` where the server serves the coordinator's HTML dashboard (`/`, `/board.json`, `/live.json`) while it holds the coordinator lock. `0` disables serving. A port in use is not fatal: the dashboard reports unavailable and the bind is retried every minute. Open it with Open dashboard on the coordinator row's menu, the settings section, or `herdr coordinator dashboard`. A value that is not a port reports a config warning and falls back to the default."
+        },
+        {
+          "key": "coordinator.wake_scope",
+          "type": "string",
+          "default": "\"opened\"",
+          "description": "Which agents wake the coordinator. `opened` (the default): status changes of the agents the coordinator opened with `agents_open_tab`, messages to it that were not typed in, and loop guards that involve it. `teams`: also every team member's status changes, messages among the agents in scope and their refused actions. `all`: every agent. Every agent still shows on the dashboard and in `live.json` whatever the scope; `herdr coordinator status` lists the watched set. A value that is not one of these reports a config warning and falls back to `opened`."
         }
       ]
     },

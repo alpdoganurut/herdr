@@ -134,10 +134,19 @@ fn workspace_rename(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     }
 
-    super::runtime::workspace_rename(WorkspaceRenameParams {
-        workspace_id: super::normalize_workspace_id(&args[0]),
-        label: args[1..].join(" "),
-    })
+    let workspace_id = super::normalize_workspace_id(&args[0]);
+    let label = args[1..].join(" ");
+    // Fork (agents v2): a group rename is team structure for agents.
+    super::agent_route::checked(
+        crate::api::schema::agents_model::AgentsCheckAction::TeamStructure,
+        Some(workspace_id.clone()),
+        || {
+            super::runtime::workspace_rename(WorkspaceRenameParams {
+                workspace_id,
+                label,
+            })
+        },
+    )
 }
 
 fn workspace_report_metadata(args: &[String]) -> std::io::Result<i32> {
@@ -235,6 +244,17 @@ fn workspace_close(args: &[String]) -> std::io::Result<i32> {
         }
     };
 
+    // Fork (agents v2): an agent never closes a whole group.
+    match super::agent_route::route()? {
+        Err(code) => return Ok(code),
+        Ok(super::agent_route::Route::Agent(_)) => {
+            return Ok(super::agent_route::refuse(
+                crate::api::schema::agents_model::error_code::AGENT_REFUSED,
+                "close tabs one by one with agents_close_tab, or ask your user",
+            ))
+        }
+        Ok(super::agent_route::Route::User | super::agent_route::Route::OldServer) => {}
+    }
     super::runtime::workspace_close(crate::api::schema::WorkspaceCloseParams {
         workspace_id: super::normalize_workspace_id(raw_workspace_id),
         close_group,

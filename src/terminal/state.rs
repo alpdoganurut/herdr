@@ -113,6 +113,8 @@ pub struct SuspendedAgent {
     /// Agent name at suspend time, restored on activation.
     pub name: Option<String>,
     pub session: crate::agent_resume::PersistedAgentSession,
+    /// Fork (agents v2): who suspended it; `None` counts as the user (D4).
+    pub suspended_by: Option<crate::api::schema::agents_model::AgentsWho>,
     /// Set while the process is still expected to exit; escalation clears it.
     exit_deadline: Option<Instant>,
     escalation: SuspendExitEscalation,
@@ -292,6 +294,15 @@ pub struct TerminalState {
         crate::agent_resume::AgentSessionRefKind,
         String,
     )>,
+    /// Fork (agents v2): the pane's role, note, opener and team exclusion.
+    /// Persisted with the pane snapshot; carried through close and reopen.
+    agent_meta: crate::agents_model::PaneAgentMeta,
+    /// Fork (agents v2): where the current turn came from. Runtime only:
+    /// never persisted or handed off.
+    turn: crate::agents_model::turn::TurnState,
+    /// Fork (agents v2): when this terminal state was created (a restore
+    /// creates it anew), for the `managed.json` migration's pane matches.
+    created_unix: u64,
 }
 
 /// Most subagents a pane tracks; further starts are ignored until some stop.
@@ -341,7 +352,45 @@ impl TerminalState {
             active_subagents: std::collections::HashSet::new(),
             subagent_snapshot_seen: false,
             subagent_session: None,
+            agent_meta: crate::agents_model::PaneAgentMeta::default(),
+            turn: crate::agents_model::turn::TurnState::default(),
+            created_unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs())
+                .unwrap_or(0),
         }
+    }
+
+    /// Fork (agents v2): when this terminal state was created.
+    pub fn created_unix(&self) -> u64 {
+        self.created_unix
+    }
+
+    /// Fork (agents v2): the pane's agent meta, for the agents model's writers.
+    pub fn agent_meta_mut(&mut self) -> &mut crate::agents_model::PaneAgentMeta {
+        &mut self.agent_meta
+    }
+
+    /// Fork (agents v2): the pane's turn tracker.
+    pub fn turn(&self) -> &crate::agents_model::turn::TurnState {
+        &self.turn
+    }
+
+    /// Fork (agents v2): the pane's turn tracker, for input and status edges.
+    pub fn turn_mut(&mut self) -> &mut crate::agents_model::turn::TurnState {
+        &mut self.turn
+    }
+
+    /// Fork (agents v2): this terminal came from a restore or a live
+    /// handoff: its turn is `Unknown` and its first edge out of `unknown`
+    /// does not capture.
+    pub fn mark_restored(&mut self) {
+        self.turn = crate::agents_model::turn::TurnState::restored();
+    }
+
+    /// Fork (agents v2): the pane's agent meta.
+    pub fn agent_meta(&self) -> &crate::agents_model::PaneAgentMeta {
+        &self.agent_meta
     }
 
     /// Remember where an integration says the native transcript for
@@ -2474,6 +2523,7 @@ impl TerminalState {
             agent: session.agent.clone(),
             name: self.agent_name.clone(),
             session,
+            suspended_by: None,
             exit_deadline: Some(exit_deadline),
             escalation: SuspendExitEscalation::Pending,
             exit_observed: false,
@@ -2498,6 +2548,7 @@ impl TerminalState {
             agent,
             name,
             session,
+            suspended_by: None,
             exit_deadline: None,
             escalation: SuspendExitEscalation::Pending,
             exit_observed: true,

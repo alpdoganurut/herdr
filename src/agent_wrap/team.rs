@@ -19,24 +19,13 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::config::Config;
-use crate::coordinator::launch::{LaunchCtx, MCP_KEY};
+use crate::coordinator::launch::LaunchCtx;
 
 use super::{instructions, WrapEnv};
 
-/// The herdr_agents tools a team member's launch pre-approves: everything
-/// but the tab and group tools (those still prompt) and the opt-in tools.
-pub const TEAM_TOOLS: [&str; 10] = [
-    "agents_whoami",
-    "agents_notify",
-    "agents_list",
-    "agents_get",
-    "agents_read",
-    "agents_messages",
-    "agents_wait_for_message",
-    "agents_wait",
-    "agents_send_message",
-    "agents_team",
-];
+/// Teammates a roster block names before `+N more` (the full block, the
+/// update's roster line, `agents_whoami`): a 15-member team stays readable.
+pub const ROSTER_MAX: usize = 12;
 
 /// The team text is capped at this many bytes (whole characters).
 pub const MAX_TEXT_BYTES: usize = 2 * 1024;
@@ -105,13 +94,23 @@ fn you_have_role(t: &TeamTextInput<'_>) -> bool {
     t.you.role.is_some_and(|role| !role.trim().is_empty())
 }
 
-/// The limits paragraph: the MCP server's rate limit and loop guard.
+/// The limits paragraph: herdr's message limits (one tier, loose: they only
+/// stop a runaway loop).
 fn limits_sentence() -> String {
-    use crate::coordinator::mcp::{LOOP_MAX, LOOP_WINDOW_S, PAIR_GAP_S, SENDER_PER_HOUR};
+    use crate::agents_model::limits::{PAIR_GAP_S, SENDER_PER_HOUR};
     format!(
-        "You may message and wake idle teammates with agents_send_message (to = their name) to work on the purpose; no need to ask your user. A working teammate answers `busy` unless you pass wait_s. Limits: one message per teammate per {PAIR_GAP_S} s, {SENDER_PER_HOUR} per hour, {LOOP_MAX} per teammate per {} minutes; keep exchanges short.",
-        LOOP_WINDOW_S / 60
+        "You may message and wake idle teammates with agents_send_message (to = their name) to work on the purpose; no need to ask your user. A working teammate answers `busy` unless you pass wait_s. Limits: about {SENDER_PER_HOUR} messages an hour, {PAIR_GAP_S} s between messages to the same agent; a loop is stopped. Keep exchanges short."
     )
+}
+
+/// What a member may do in its team (agents v2), the same rights the MCP
+/// texts and the server's check state.
+pub const TEAM_RIGHTS: &str = "In this team you may also rename and move tabs, set roles and notes, add to teammates' notes and checkpoints, and open new teammates (agents_open_tab group=<this group> role=…); closing any tab needs your user's request. The coordinator is a member of every team.";
+
+/// The teammates part of a roster: at most [`ROSTER_MAX`], and how many more.
+fn capped<'a, 'b>(others: &'a [TeamTextMember<'b>]) -> (&'a [TeamTextMember<'b>], usize) {
+    let shown = others.len().min(ROSTER_MAX);
+    (&others[..shown], others.len() - shown)
 }
 
 /// The purpose line of the full block.
@@ -145,12 +144,18 @@ pub fn full_text(t: &TeamTextInput<'_>) -> String {
             field(t.you.pane, 32)
         )
     };
-    let teammates = if t.others.is_empty() {
+    let (shown, more) = capped(&t.others);
+    let teammates = if shown.is_empty() {
         "Teammates: none yet.".to_string()
     } else {
+        let more = if more > 0 {
+            format!("; +{more} more (agents_list team={group})")
+        } else {
+            String::new()
+        };
         format!(
-            "Teammates: {}.",
-            t.others
+            "Teammates: {}{more}.",
+            shown
                 .iter()
                 .map(|m| member_facts(m, true))
                 .collect::<Vec<_>>()
@@ -163,6 +168,7 @@ pub fn full_text(t: &TeamTextInput<'_>) -> String {
         teammates,
         limits_sentence(),
         TEAMMATE_RULE.to_string(),
+        TEAM_RIGHTS.to_string(),
         "Roster changes reach you at your next turn; agents_whoami always shows the current team."
             .to_string(),
     ];
@@ -177,11 +183,18 @@ fn roster_line(t: &TeamTextInput<'_>) -> String {
         "new member (no role)".to_string()
     };
     let mut parts = vec![format!("you={you}")];
+    let (shown, more) = capped(&t.others);
     parts.extend(
-        t.others
+        shown
             .iter()
             .map(|m| format!("{} ({})", field(m.name, 40), field(m.status, 32))),
     );
+    if more > 0 {
+        parts.push(format!(
+            "+{more} more (agents_list team={})",
+            field(t.group_label, 40)
+        ));
+    }
     format!("roster: {}", parts.join(" · "))
 }
 
@@ -384,15 +397,6 @@ pub fn write_claude_settings(ctx: &LaunchCtx) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// The Claude allowlist value for a team member's launch.
-pub fn claude_allow_list() -> String {
-    TEAM_TOOLS
-        .iter()
-        .map(|tool| format!("mcp__{MCP_KEY}__{tool}"))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
 // ---------------------------------------------------------------------------
 // The hook
 
@@ -505,11 +509,18 @@ mod tests {
         );
         assert_eq!(lines[2], "Teammates: reviewer (claude, w3:p2, idle).");
         assert!(lines[3].starts_with("You may message and wake idle teammates"));
-        assert!(lines[3].contains(
-            "one message per teammate per 10 s, 30 per hour, 10 per teammate per 10 minutes"
-        ));
+        {
+            use crate::agents_model::limits::{PAIR_GAP_S, SENDER_PER_HOUR};
+            assert!(lines[3].contains(&format!(
+                "about {SENDER_PER_HOUR} messages an hour, {PAIR_GAP_S} s between messages to the same agent; a loop is stopped"
+            )));
+        }
         assert_eq!(lines[4], TEAMMATE_RULE);
-        assert!(lines[5].starts_with("Roster changes reach you at your next turn"));
+        assert_eq!(lines[5], TEAM_RIGHTS);
+        assert!(lines[5].contains("rename and move tabs"));
+        assert!(lines[5].contains("closing any tab needs your user's request"));
+        assert!(lines[5].contains("The coordinator is a member of every team."));
+        assert!(lines[6].starts_with("Roster changes reach you at your next turn"));
     }
 
     #[test]
@@ -559,6 +570,33 @@ mod tests {
             "[herdr+ team update] reviewer-2 (codex, w3:p4) joined · purpose: fix calendar sync → ship the sync fix\nroster: you=fixer · reviewer (idle) · reviewer-2 (working)"
         );
         assert!(delta_text(&t, &[]).starts_with("[herdr+ team update] the roster changed\n"));
+    }
+
+    #[test]
+    fn a_large_team_names_twelve_teammates_then_how_many_more() {
+        let mut t = input();
+        let names: Vec<String> = (0..15).map(|i| format!("m{i}")).collect();
+        t.others = names
+            .iter()
+            .map(|name| member(name, "w3:p9", "idle"))
+            .collect();
+        let full = full_text(&t);
+        let teammates = full.lines().nth(2).unwrap();
+        assert!(teammates.contains("m11 (claude"), "{teammates}");
+        assert!(!teammates.contains("m12 (claude"), "{teammates}");
+        assert!(
+            teammates.ends_with("; +3 more (agents_list team=search-it)."),
+            "{teammates}"
+        );
+        let delta = delta_text(&t, &[]);
+        let roster = delta.lines().nth(1).unwrap();
+        assert!(
+            roster.ends_with("m11 (idle) · +3 more (agents_list team=search-it)"),
+            "{roster}"
+        );
+        // Twelve fit without a fold.
+        t.others.truncate(ROSTER_MAX);
+        assert!(!full_text(&t).contains("more (agents_list"));
     }
 
     #[test]

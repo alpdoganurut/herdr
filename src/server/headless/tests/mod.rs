@@ -11,6 +11,8 @@ mod surface_interest_tests;
 // fork: smoke tests run by name in the sync gate (FORK.md section 10).
 #[path = "agent_notices_smoke.rs"]
 mod agent_notices_smoke;
+#[path = "agents_model_smoke.rs"]
+mod agents_model_smoke;
 #[path = "fork_smoke.rs"]
 mod fork_smoke;
 #[path = "teams_smoke.rs"]

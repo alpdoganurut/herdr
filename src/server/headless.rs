@@ -1272,11 +1272,20 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
-                if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
+                let terminal_id = terminal_id.clone();
+                if let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) {
                     let payload = paste_payload_for_runtime(runtime, &path);
                     if let Err(err) = runtime.try_send_bytes(Bytes::from(payload)) {
                         warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach clipboard image paste failed");
                     }
+                    // Fork (agents v2): client input, for the turn origin.
+                    self.app.note_terminal_input(
+                        &terminal_id,
+                        crate::agents_model::InputSource::Client {
+                            submit: false,
+                            attach: true,
+                        },
+                    );
                 }
                 true
             }
@@ -1315,6 +1324,15 @@ impl HeadlessServer {
                 ) {
                     warn!(client_id, pane_id, err = %err, "client shell clipboard image paste failed");
                 }
+                // Fork (agents v2): client input, for the turn origin.
+                self.app.note_pane_input(
+                    workspace_index,
+                    runtime_pane_id,
+                    crate::agents_model::InputSource::Client {
+                        submit: false,
+                        attach: false,
+                    },
+                );
                 true
             }
             protocol::ClientClipboardImageTarget::Popup(terminal_id) => {
@@ -2182,10 +2200,14 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
-                if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
+                let terminal_id = terminal_id.clone();
+                let source = super::pane_input::attach_input_source(&data);
+                if let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) {
                     if let Err(err) = apply_terminal_attach_input(runtime, data) {
                         warn!(client_id, terminal_id = %terminal_id, err = %err);
                     }
+                    // Fork (agents v2): client input, for the turn origin.
+                    self.app.note_terminal_input(&terminal_id, source);
                 }
                 true
             }
@@ -2527,7 +2549,15 @@ impl HeadlessServer {
                 if let Err(err) = apply_client_pane_input_events(runtime, &events) {
                     warn!(client_id, pane_id, err = %err, "targeted client shell input failed");
                 }
-                foreground_changed | geometry_changed || runtime.scroll_metrics() != scroll_before
+                let changed = foreground_changed
+                    | geometry_changed
+                    | (runtime.scroll_metrics() != scroll_before);
+                // Fork (agents v2): client input, for the turn origin.
+                if let Some(source) = super::pane_input::client_input_source(&events) {
+                    self.app
+                        .note_pane_input(workspace_index, runtime_pane_id, source);
+                }
+                changed
             }
             ServerEvent::ClientShellPopupInput {
                 client_id,
@@ -3468,6 +3498,10 @@ impl HeadlessServer {
         changed |= self.app.handle_message_queue_tasks(now);
         self.flush_coordinator_notifications(now);
         self.flush_news_notifications(now);
+        // Fork (agents v2): closes in flight, before the exit escalation,
+        // and the `managed.json` migration's mtime check.
+        changed |= self.app.drive_pending_agent_closes(now);
+        changed |= self.app.maybe_run_agents_migration(now);
         changed |= self.app.escalate_suspended_agent_exits(now);
         changed |= self.app.start_pending_agent_restarts(now);
 

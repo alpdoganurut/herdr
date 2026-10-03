@@ -248,6 +248,57 @@ pub enum ResponseResult {
     CheckpointContext {
         context: super::notes::CheckpointContextInfo,
     },
+    // fork: the agents model (agents v2). `agents.notes_append` answers
+    // `NotesWrite` and `agents.checkpoint` answers `CheckpointWrite`.
+    /// `agents.actor`.
+    AgentsActor {
+        actor: super::agents_model::AgentsActorInfo,
+    },
+    /// `agents.directory`.
+    AgentsDirectory {
+        directory: super::agents_model::AgentsDirectory,
+    },
+    /// `agents.read`.
+    AgentsRead {
+        read: super::agents_model::AgentsReadResult,
+    },
+    /// `agents.open_tab`.
+    AgentsOpenTab {
+        open: super::agents_model::AgentsOpenResult,
+    },
+    /// `agents.send_message`.
+    AgentsMessage {
+        message: super::agents_model::AgentsMessageResult,
+    },
+    /// `agents.rename_tab`.
+    AgentsRenameTab {
+        rename: super::agents_model::AgentsRenameResult,
+    },
+    /// `agents.move_tab`.
+    AgentsMoveTab {
+        moved: super::agents_model::AgentsMoveResult,
+    },
+    /// `agents.set_meta`.
+    AgentsSetMeta {
+        meta: super::agents_model::AgentsSetMetaResult,
+    },
+    /// `agents.close_tab`.
+    AgentsCloseTab {
+        close: super::agents_model::AgentsCloseResult,
+    },
+    /// `agents.reopen_tab`.
+    AgentsReopenTab {
+        reopen: super::agents_model::AgentsReopenResult,
+    },
+    /// `agents.actions`: newest first.
+    AgentsActions {
+        #[serde(default)]
+        entries: Vec<super::agents_model::AgentActionEntry>,
+    },
+    /// `agents.check`: an allowed action (a denial is an error).
+    AgentsCheck {
+        allowed: bool,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

@@ -1960,6 +1960,246 @@
           ],
           "type": "object"
         },
+        "AgentsActionsParams": {
+          "description": "`agents.actions`: the newest action-log entries.",
+          "properties": {
+            "actor": {
+              "description": "Only entries by this actor (pane id or name).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "limit": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "target": {
+              "description": "Only entries about this pane or tab.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "AgentsActorParams": {
+          "description": "`agents.actor`: who the caller is, its team, its turn and its rights, with\nthe `team.context` change it has not been told yet (one call per MCP tool\ncall).",
+          "properties": {
+            "ack": {
+              "default": false,
+              "description": "Mark the team change as told (as `team.context`'s `ack`).",
+              "type": "boolean"
+            },
+            "ack_key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ack_revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "caller_pane": {
+              "type": "string"
+            },
+            "full": {
+              "default": false,
+              "description": "The whole roster, not just the changes since the last ack.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "caller_pane"
+          ],
+          "type": "object"
+        },
+        "AgentsCheckAction": {
+          "description": "The action `agents.check` decides, for CLI verbs without a dedicated\nmethod.",
+          "oneOf": [
+            {
+              "const": "cosmetic",
+              "description": "Tab color, important, reminders.",
+              "type": "string"
+            },
+            {
+              "const": "suspend_restart",
+              "description": "Suspend or restart an agent.",
+              "type": "string"
+            },
+            {
+              "const": "activate",
+              "description": "Activate a suspended agent.",
+              "type": "string"
+            },
+            {
+              "const": "shell_input",
+              "description": "Type into a shell pane.",
+              "type": "string"
+            },
+            {
+              "const": "close_pane",
+              "description": "Close a pane that is not its tab's last.",
+              "type": "string"
+            },
+            {
+              "const": "team_structure",
+              "description": "Make a team, set its purpose, rename or move a group.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An action this side does not know (a newer peer); always denied.",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentsCheckParams": {
+          "description": "`agents.check`: decide an action for the CLI route and log it.",
+          "properties": {
+            "action": {
+              "$ref": "#/schemas/request/$defs/AgentsCheckAction"
+            },
+            "caller_pane": {
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "caller_pane",
+            "action"
+          ],
+          "type": "object"
+        },
+        "AgentsCheckpointParams": {
+          "description": "`agents.checkpoint`: add a checkpoint to another pane's timeline.",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "description": "`decision`, `milestone`, `failure`, `bookmark` or `note`.",
+              "type": "string"
+            },
+            "tags": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "target": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "target",
+            "kind",
+            "title"
+          ],
+          "type": "object"
+        },
+        "AgentsCloseTabParams": {
+          "description": "`agents.close_tab`: exit the tab's agents gracefully, then close it, with\nevery agent resumable from the closed sessions.",
+          "properties": {
+            "allow_unresumable": {
+              "default": false,
+              "description": "Close even when an agent cannot be reopened.",
+              "type": "boolean"
+            },
+            "caller_pane": {
+              "type": "string"
+            },
+            "force": {
+              "default": false,
+              "description": "Close a shell running a job, or an agent without a graceful exit.",
+              "type": "boolean"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "target"
+          ],
+          "type": "object"
+        },
+        "AgentsDirectoryParams": {
+          "description": "`agents.directory`: every group and tab, scoped. Without a filter and\nwith a caller: the caller's group in full plus every group's counts.",
+          "properties": {
+            "agents_only": {
+              "default": false,
+              "description": "Leave out shell-only tabs.",
+              "type": "boolean"
+            },
+            "all": {
+              "default": false,
+              "description": "Every group's tabs.",
+              "type": "boolean"
+            },
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "group": {
+              "description": "A group id or label.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "include_closed": {
+              "default": false,
+              "description": "Also the recently closed tabs (reads the closed-sessions store).",
+              "type": "boolean"
+            },
+            "limit": {
+              "description": "The most tab rows (the rest is counted in `truncated`).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "team": {
+              "description": "A team's group id or label.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "AgentsFixParams": {
           "description": "`agents.fix`: the checks to fix; empty = every fixable check. A fix with\n`edits_files` runs only when `confirm` is true.",
           "properties": {
@@ -1975,6 +2215,320 @@
               "type": "array"
             }
           },
+          "type": "object"
+        },
+        "AgentsMoveTabParams": {
+          "description": "`agents.move_tab`: into a group, a new group, or the top space.",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            },
+            "group": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "new_group": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "priority": {
+              "default": false,
+              "type": "boolean"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "target"
+          ],
+          "type": "object"
+        },
+        "AgentsNotesAppendParams": {
+          "description": "`agents.notes_append`: append to another pane's notes (a teammate's).",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            },
+            "section": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stamp": {
+              "default": false,
+              "type": "boolean"
+            },
+            "target": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "target",
+            "text"
+          ],
+          "type": "object"
+        },
+        "AgentsOpenTabParams": {
+          "description": "`agents.open_tab`: open a tab (a shell without `agent`), set its meta,\njoin its team and type the kickoff, in one step.",
+          "properties": {
+            "agent": {
+              "description": "`claude` or `codex`; absent opens a shell tab.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "caller_pane": {
+              "type": "string"
+            },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "group": {
+              "description": "An existing group id or label.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kickoff": {
+              "description": "The first instruction for the new agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "label": {
+              "description": "The tab label (default: the agent name).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "The agent name (outside a team; in a team the role names it).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "new_group": {
+              "description": "A new group with this label.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "priority": {
+              "default": false,
+              "description": "The top space (ungrouped).",
+              "type": "boolean"
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "caller_pane"
+          ],
+          "type": "object"
+        },
+        "AgentsReadFormat": {
+          "description": "How `agents.read` returns the screen.",
+          "oneOf": [
+            {
+              "enum": [
+                "text",
+                "ansi"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A format this side does not know (a newer peer): plain text.",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentsReadParams": {
+          "description": "`agents.read`: a pane's screen, as `pane.read` reads it; shell screens only\nfor the pane's team and the coordinator (U6).",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            },
+            "format": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/AgentsReadFormat"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lines": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "source": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/AgentsReadSource"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "target": {
+              "description": "A pane id, agent name, tab id or unique tab label.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "target"
+          ],
+          "type": "object"
+        },
+        "AgentsReadSource": {
+          "description": "The screen `agents.read` reads.",
+          "oneOf": [
+            {
+              "enum": [
+                "visible",
+                "recent",
+                "recent_unwrapped",
+                "detection"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A source this side does not know (a newer peer): read `recent`.",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentsRenameTabParams": {
+          "description": "`agents.rename_tab`.",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "target",
+            "name"
+          ],
+          "type": "object"
+        },
+        "AgentsReopenTabParams": {
+          "description": "`agents.reopen_tab`: a closed tab from the closed sessions.",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            },
+            "closed_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "closed_id"
+          ],
+          "type": "object"
+        },
+        "AgentsSendMessageParams": {
+          "description": "`agents.send_message`: type a message into an idle agent. Never waits.",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            },
+            "reply_to": {
+              "description": "The id of the message this answers.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "to": {
+              "description": "An agent pane id, agent name or unique tab label.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "to",
+            "text"
+          ],
+          "type": "object"
+        },
+        "AgentsSetMetaParams": {
+          "description": "`agents.set_meta` (client-shell): a pane's role and note. An absent field\nstays; an empty one clears it. Absent `caller_pane` means the user.",
+          "properties": {
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
           "type": "object"
         },
         "AgentsSettingsSetParams": {
@@ -9367,6 +9921,230 @@
         {
           "properties": {
             "method": {
+              "const": "agents.actor",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsActorParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.directory",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsDirectoryParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.read",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsReadParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.open_tab",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsOpenTabParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.send_message",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsSendMessageParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.rename_tab",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsRenameTabParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.move_tab",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsMoveTabParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.set_meta",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsSetMetaParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.close_tab",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsCloseTabParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.reopen_tab",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsReopenTabParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.notes_append",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsNotesAppendParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.checkpoint",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsCheckpointParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.actions",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsActionsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.check",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsCheckParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -10560,6 +11338,135 @@
     },
     "success_response": {
       "$defs": {
+        "AgentActionEntry": {
+          "description": "One line of `actions.jsonl`: an agent action, a denial, a completion, or\na user action on tabs and teams.",
+          "properties": {
+            "action": {
+              "description": "`close_tab`, `rename_tab`, `send_message`, ...",
+              "type": "string"
+            },
+            "actor": {
+              "$ref": "#/schemas/success_response/$defs/AgentActorKind"
+            },
+            "actor_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "actor_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "closed_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "code": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "origin_detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentsOriginDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outcome": {
+              "$ref": "#/schemas/success_response/$defs/AgentsActionOutcome"
+            },
+            "target_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target_tab": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "team": {
+              "description": "The actor's team (group id).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "turn_origin": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentsTurnOrigin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "unix": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "unix",
+            "id",
+            "actor",
+            "action",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        "AgentActorKind": {
+          "description": "Who acts.",
+          "oneOf": [
+            {
+              "enum": [
+                "user",
+                "coordinator",
+                "agent"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "shell",
+              "description": "A pane with no live agent (its user types there).",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An actor this side does not know (a newer peer).",
+              "type": "string"
+            }
+          ]
+        },
         "AgentInfo": {
           "properties": {
             "agent": {
@@ -10898,6 +11805,27 @@
             }
           ]
         },
+        "AgentPaneKind": {
+          "description": "What a pane hosts.",
+          "oneOf": [
+            {
+              "enum": [
+                "shell"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "agent",
+              "description": "An agent pane: live, suspended or launch-pending.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A kind this side does not know (a newer peer).",
+              "type": "string"
+            }
+          ]
+        },
         "AgentSessionInfo": {
           "properties": {
             "agent": {
@@ -10995,6 +11923,160 @@
           ],
           "type": "object"
         },
+        "AgentsAccess": {
+          "description": "What a caller may do to a tab.",
+          "oneOf": [
+            {
+              "const": "self",
+              "description": "The caller's own tab.",
+              "type": "string"
+            },
+            {
+              "const": "edit",
+              "description": "A tab in the caller's team (or any tab, for the coordinator).",
+              "type": "string"
+            },
+            {
+              "const": "read_message",
+              "description": "Read and message only.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An access this side does not know (a newer peer).",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentsActionOutcome": {
+          "description": "What an action did.",
+          "oneOf": [
+            {
+              "enum": [
+                "ok",
+                "denied",
+                "deferred",
+                "closing",
+                "aborted",
+                "failed"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An outcome this side does not know (a newer peer).",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentsActorInfo": {
+          "description": "`agents.actor`.",
+          "properties": {
+            "ack_key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/AgentActorKind"
+            },
+            "live": {
+              "default": false,
+              "description": "A live agent runs in the pane (not suspended, not launch-pending).",
+              "type": "boolean"
+            },
+            "name": {
+              "description": "The agent name, else the agent kind.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "description": "The caller's canonical public pane id.",
+              "type": "string"
+            },
+            "rights": {
+              "default": "",
+              "description": "One line: what the caller may do.",
+              "type": "string"
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "team": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentsTeamRef"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The caller's team (absent outside a team, or when it left it)."
+            },
+            "team_revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "team_update": {
+              "description": "The team change the caller has not been told yet.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "turn": {
+              "$ref": "#/schemas/success_response/$defs/AgentsTurnInfo",
+              "default": {
+                "origin": "unknown",
+                "poisoned": false,
+                "user_turn": false
+              }
+            },
+            "workspace_id": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "kind"
+          ],
+          "type": "object"
+        },
         "AgentsCheckInfo": {
           "description": "One status check (`shell_hook`, `claude`, `codex`).",
           "properties": {
@@ -11055,6 +12137,601 @@
               "type": "string"
             }
           ]
+        },
+        "AgentsCloseOutcome": {
+          "description": "What `agents.close_tab` did.",
+          "oneOf": [
+            {
+              "const": "closed",
+              "description": "The tab is closed.",
+              "type": "string"
+            },
+            {
+              "const": "closing",
+              "description": "The agents are exiting; the tab closes once they have.",
+              "type": "string"
+            },
+            {
+              "const": "deferred",
+              "description": "The caller's own tab: it closes once the caller is idle.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An outcome this side does not know (a newer peer).",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentsCloseResult": {
+          "description": "`agents.close_tab`.",
+          "properties": {
+            "closed_ids": {
+              "description": "The closed-session ids (`closed` only).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "outcome": {
+              "$ref": "#/schemas/success_response/$defs/AgentsCloseOutcome"
+            },
+            "resumable": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/AgentsResumableInfo"
+              },
+              "type": "array"
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "unresumable": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/AgentsUnresumableInfo"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "tab_id",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        "AgentsClosedInfo": {
+          "description": "A recently closed tab, for `agents_reopen_tab`.",
+          "properties": {
+            "agents": {
+              "default": [],
+              "description": "The agents' names.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "closed_at": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "closed_by": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentsWho"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "closed_id": {
+              "type": "string"
+            },
+            "label": {
+              "default": "",
+              "type": "string"
+            },
+            "workspace_id": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "closed_id"
+          ],
+          "type": "object"
+        },
+        "AgentsDirectory": {
+          "description": "`agents.directory`.",
+          "properties": {
+            "caller": {
+              "description": "The caller's canonical pane id.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "generated_unix": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "groups": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/AgentsGroupInfo"
+              },
+              "type": "array"
+            },
+            "recently_closed": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/AgentsClosedInfo"
+              },
+              "type": "array"
+            },
+            "tabs": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/AgentsTabInfo"
+              },
+              "type": "array"
+            },
+            "truncated": {
+              "default": 0,
+              "description": "Tabs left out by `limit`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "generated_unix"
+          ],
+          "type": "object"
+        },
+        "AgentsGroupInfo": {
+          "description": "One sidebar group (space), in sidebar order.",
+          "properties": {
+            "agent_count": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "label": {
+              "default": "",
+              "type": "string"
+            },
+            "number": {
+              "default": 0,
+              "description": "1-based sidebar position (1 is the top space).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tab_count": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "team": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentsGroupTeam"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
+          ],
+          "type": "object"
+        },
+        "AgentsGroupTeam": {
+          "description": "A group's team, in the directory.",
+          "properties": {
+            "member_count": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "purpose": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "AgentsMessageOutcome": {
+          "description": "What `agents.send_message` did.",
+          "oneOf": [
+            {
+              "const": "sent",
+              "description": "Typed into the target.",
+              "type": "string"
+            },
+            {
+              "const": "logged",
+              "description": "Only logged (a reply to an asker that is busy now).",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An outcome this side does not know (a newer peer).",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentsMessageResult": {
+          "description": "`agents.send_message`.",
+          "properties": {
+            "cross_team": {
+              "default": false,
+              "description": "The target is not in the sender's team.",
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/schemas/success_response/$defs/AgentsMessageOutcome"
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "team": {
+              "description": "The target's team (group id), when it is a member.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "to_name": {
+              "default": "",
+              "type": "string"
+            },
+            "to_pane": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "outcome",
+            "to_pane"
+          ],
+          "type": "object"
+        },
+        "AgentsMoveResult": {
+          "description": "`agents.move_tab`.",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "previous_pane_id": {
+              "type": "string"
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "previous_pane_id",
+            "pane_id",
+            "tab_id",
+            "workspace_id"
+          ],
+          "type": "object"
+        },
+        "AgentsOpenResult": {
+          "description": "`agents.open_tab`.",
+          "properties": {
+            "member": {
+              "default": false,
+              "description": "The new agent joined its group's team.",
+              "type": "boolean"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "pane_id",
+            "workspace_id"
+          ],
+          "type": "object"
+        },
+        "AgentsOriginDetail": {
+          "description": "A detail on a turn origin.",
+          "oneOf": [
+            {
+              "const": "bridged",
+              "description": "The turn carried over a short screen-detected idle flap.",
+              "type": "string"
+            },
+            {
+              "const": "client_attach",
+              "description": "The user input came through a terminal-attach session.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A detail this side does not know (a newer peer).",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentsPaneInfo": {
+          "description": "One pane of a directory tab.",
+          "properties": {
+            "agent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cwd": {
+              "description": "Omitted for a shell outside the caller's team (U6).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/AgentPaneKind"
+            },
+            "launch_pending": {
+              "default": false,
+              "type": "boolean"
+            },
+            "member": {
+              "default": false,
+              "description": "A member of its group's team.",
+              "type": "boolean"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "opened_by": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentsWho"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "screen": {
+              "$ref": "#/schemas/success_response/$defs/AgentsScreenAccess"
+            },
+            "session": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "subagents": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "suspended": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "pane_id",
+            "kind",
+            "screen"
+          ],
+          "type": "object"
+        },
+        "AgentsReadResult": {
+          "description": "`agents.read`.",
+          "properties": {
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/AgentPaneKind"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "truncated": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "pane_id",
+            "kind",
+            "text"
+          ],
+          "type": "object"
+        },
+        "AgentsRenameResult": {
+          "description": "`agents.rename_tab`.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "name"
+          ],
+          "type": "object"
+        },
+        "AgentsReopenResult": {
+          "description": "`agents.reopen_tab`.",
+          "properties": {
+            "pane_ids": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "tab_id"
+          ],
+          "type": "object"
+        },
+        "AgentsResumableInfo": {
+          "description": "An agent `agents.close_tab` keeps resumable.",
+          "properties": {
+            "agent": {
+              "default": "",
+              "type": "string"
+            },
+            "name": {
+              "default": "",
+              "type": "string"
+            },
+            "session": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "AgentsScreenAccess": {
+          "description": "Whether a caller may read a pane's screen (U6).",
+          "oneOf": [
+            {
+              "enum": [
+                "full"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "exists",
+              "description": "Only that the pane exists (a shell outside the caller's team).",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An access this side does not know (a newer peer).",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentsSetMetaResult": {
+          "description": "`agents.set_meta`.",
+          "properties": {
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "renamed": {
+              "description": "A team member's name now follows the role.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
         },
         "AgentsSettingsInfo": {
           "description": "`agents.settings`: the section's picture.",
@@ -11121,6 +12798,266 @@
             "instructions"
           ],
           "type": "object"
+        },
+        "AgentsTabInfo": {
+          "description": "One tab of the directory.",
+          "properties": {
+            "access": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentsAccess"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the caller may do here (only with a caller)."
+            },
+            "label": {
+              "default": "",
+              "type": "string"
+            },
+            "panes": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/AgentsPaneInfo"
+              },
+              "type": "array"
+            },
+            "protected": {
+              "default": false,
+              "description": "The coordinator's tab: no agent renames, moves or closes it.",
+              "type": "boolean"
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "workspace_id"
+          ],
+          "type": "object"
+        },
+        "AgentsTeamRef": {
+          "description": "A caller's or a directory row's team.",
+          "properties": {
+            "label": {
+              "default": "",
+              "type": "string"
+            },
+            "member_count": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "members": {
+              "description": "The members, in join order (only in `agents.actor`).",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/TeamMemberInfo"
+              },
+              "type": "array"
+            },
+            "purpose": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "purpose_by": {
+              "description": "Who set the purpose, as shown (`the user`, `the coordinator`, a name).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
+          ],
+          "type": "object"
+        },
+        "AgentsTurnInfo": {
+          "description": "A pane's current turn.",
+          "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentsOriginDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "from_pane": {
+              "description": "Its sender's pane.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message_id": {
+              "description": "The message that started the turn (`agent_message`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "origin": {
+              "$ref": "#/schemas/success_response/$defs/AgentsTurnOrigin",
+              "description": "The effective origin: a scripted write into a user turn makes it that\nwrite's origin."
+            },
+            "poisoned": {
+              "default": false,
+              "type": "boolean"
+            },
+            "started_unix": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "user_turn": {
+              "default": false,
+              "description": "The origin is the user's and nothing programmatic landed since.",
+              "type": "boolean"
+            },
+            "wake_seq": {
+              "description": "The wake that started the turn (`herdr_wake`).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "origin"
+          ],
+          "type": "object"
+        },
+        "AgentsTurnOrigin": {
+          "description": "Where a pane's current turn came from.",
+          "oneOf": [
+            {
+              "const": "user",
+              "description": "The pane's user submitted input.",
+              "type": "string"
+            },
+            {
+              "const": "agent_message",
+              "description": "Another agent's message.",
+              "type": "string"
+            },
+            {
+              "const": "herdr_wake",
+              "description": "A herdr wake-up (the coordinator).",
+              "type": "string"
+            },
+            {
+              "const": "programmatic",
+              "description": "A scripted prompt (`agent.prompt`, `pane.send_*`).",
+              "type": "string"
+            },
+            {
+              "const": "self_started",
+              "description": "The agent started it on its own (a background completion, a queued\nprompt).",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "Not known: after a restart, a handoff, a reopen, or an origin this\nside does not know.",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentsUnresumableInfo": {
+          "description": "An agent `agents.close_tab` cannot keep resumable.",
+          "properties": {
+            "agent": {
+              "default": "",
+              "type": "string"
+            },
+            "name": {
+              "default": "",
+              "type": "string"
+            },
+            "reason": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "AgentsWho": {
+          "description": "Who did something (opened a tab, closed it, suspended an agent): set by\nthe server, never from parameters.",
+          "oneOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "user",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "coordinator",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An agent, named as it was at the time.",
+              "properties": {
+                "kind": {
+                  "const": "agent",
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "name"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An actor this side does not know (a newer peer).",
+              "properties": {
+                "kind": {
+                  "const": "unknown",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
         },
         "AgentsWrapSource": {
           "description": "Where the effective `wrap` value comes from.",
@@ -12442,6 +14379,15 @@
               },
               "type": "array"
             },
+            "migration_unmatched": {
+              "description": "`managed.json` entries the agents-v2 migration could not place on a\npane (their roles and notes were not carried over); absent before the\nmigration ran.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "model": {
               "type": [
                 "string",
@@ -12516,6 +14462,13 @@
                 "string",
                 "null"
               ]
+            },
+            "wake_scope": {
+              "description": "`[coordinator] wake_scope` (agents v2): which agents wake the\ncoordinator, and so which ones `managed` lists (`opened`, `teams`,\n`all`). Absent from older servers.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -12524,7 +14477,7 @@
           "type": "object"
         },
         "CoordinatorManagedInfo": {
-          "description": "One managed agent.",
+          "description": "One agent the coordinator watches (agents v2: in its wake scope; the\nfield keeps its v1 name `managed`). `project` is no longer filled (U3:\nfolded into the note).",
           "properties": {
             "agent": {
               "description": "The agent kind (`claude`, `codex`, …).",
@@ -16610,6 +18563,213 @@
               "required": [
                 "type",
                 "context"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.actor`.",
+              "properties": {
+                "actor": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsActorInfo"
+                },
+                "type": {
+                  "const": "agents_actor",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "actor"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.directory`.",
+              "properties": {
+                "directory": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsDirectory"
+                },
+                "type": {
+                  "const": "agents_directory",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "directory"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.read`.",
+              "properties": {
+                "read": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsReadResult"
+                },
+                "type": {
+                  "const": "agents_read",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "read"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.open_tab`.",
+              "properties": {
+                "open": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsOpenResult"
+                },
+                "type": {
+                  "const": "agents_open_tab",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "open"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.send_message`.",
+              "properties": {
+                "message": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsMessageResult"
+                },
+                "type": {
+                  "const": "agents_message",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "message"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.rename_tab`.",
+              "properties": {
+                "rename": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsRenameResult"
+                },
+                "type": {
+                  "const": "agents_rename_tab",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "rename"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.move_tab`.",
+              "properties": {
+                "moved": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsMoveResult"
+                },
+                "type": {
+                  "const": "agents_move_tab",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "moved"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.set_meta`.",
+              "properties": {
+                "meta": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsSetMetaResult"
+                },
+                "type": {
+                  "const": "agents_set_meta",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "meta"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.close_tab`.",
+              "properties": {
+                "close": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsCloseResult"
+                },
+                "type": {
+                  "const": "agents_close_tab",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "close"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.reopen_tab`.",
+              "properties": {
+                "reopen": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsReopenResult"
+                },
+                "type": {
+                  "const": "agents_reopen_tab",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "reopen"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.actions`: newest first.",
+              "properties": {
+                "entries": {
+                  "default": [],
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/AgentActionEntry"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "agents_actions",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.check`: an allowed action (a denial is an error).",
+              "properties": {
+                "allowed": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "agents_check",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "allowed"
               ],
               "type": "object"
             },

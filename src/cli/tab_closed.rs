@@ -76,6 +76,20 @@ pub(super) fn tab_reopen(args: &[String]) -> std::io::Result<i32> {
             return Ok(1);
         }
     };
+    // Fork (agents v2): an agent reopens through the check.
+    match super::agent_route::route()? {
+        Err(code) => return Ok(code),
+        Ok(super::agent_route::Route::Agent(pane)) => {
+            return super::agent_route::call(
+                "cli:agents.reopen_tab",
+                Method::AgentsReopenTab(crate::api::schema::agents_model::AgentsReopenTabParams {
+                    caller_pane: pane,
+                    closed_id: entry.id.clone(),
+                }),
+            )
+        }
+        Ok(super::agent_route::Route::User | super::agent_route::Route::OldServer) => {}
+    }
     super::print_response(&super::send_request(&Request {
         id: "cli:tab:reopen".into(),
         method: Method::SessionClosedReopen(ClosedSessionTarget {

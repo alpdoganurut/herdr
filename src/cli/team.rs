@@ -247,6 +247,39 @@ fn refuse_agent_caller(api: &impl Api, env_pane: Option<&str>) -> Result<(), Str
     ))
 }
 
+/// Fork (agents v2): a team verb run by an agent. `Some(exit code)` when it
+/// is finished here (refused, or routed to `agents.set_meta`); `None` lets
+/// the old method run.
+fn route_team_verb(command: &Command, method: &Method, pane: &str) -> std::io::Result<Option<i32>> {
+    use crate::api::schema::agents_model::{AgentsCheckAction, AgentsSetMetaParams};
+    match (command, method) {
+        (Command::Make { .. }, Method::TeamMake(params)) => super::agent_route::check(
+            pane,
+            AgentsCheckAction::TeamStructure,
+            Some(params.workspace_id.clone()),
+        ),
+        (Command::Purpose { .. }, Method::TeamSetPurpose(params)) => super::agent_route::check(
+            pane,
+            AgentsCheckAction::TeamStructure,
+            Some(params.workspace_id.clone()),
+        ),
+        (_, Method::TeamSetRole(params)) => super::agent_route::call(
+            "cli:agents.set_meta",
+            Method::AgentsSetMeta(AgentsSetMetaParams {
+                caller_pane: Some(pane.to_string()),
+                target: params.pane_id.clone(),
+                role: Some(params.role.clone().unwrap_or_default()),
+                note: None,
+            }),
+        )
+        .map(Some),
+        _ => Ok(Some(super::agent_route::refuse(
+            crate::api::schema::agents_model::error_code::AGENT_REFUSED,
+            "team membership is your user's; ask them",
+        ))),
+    }
+}
+
 /// `herdr team hook …` (any further arguments are ignored).
 fn is_hook(args: &[String]) -> bool {
     args.first().map(String::as_str) == Some("hook")
@@ -282,12 +315,27 @@ pub fn run_team_command(args: &[String]) -> std::io::Result<i32> {
         },
     };
     if changes_a_team(&parsed.command) {
-        let env_pane = super::target::caller_pane_id();
-        if let Err(message) =
-            refuse_agent_caller(&super::coordinator::SocketApi, env_pane.as_deref())
-        {
-            eprintln!("herdr team: {message}");
-            return Ok(1);
+        // Fork (agents v2): an agent's make and purpose go through the
+        // check, its role through agents.set_meta; join, leave and disband
+        // stay its user's. An older server keeps the v1 refusal.
+        match super::agent_route::route()? {
+            Err(code) => return Ok(code),
+            Ok(super::agent_route::Route::Agent(pane)) => {
+                if let Some(code) = route_team_verb(&parsed.command, &method, &pane)? {
+                    return Ok(code);
+                }
+            }
+            // A v2 server said this is the user's.
+            Ok(super::agent_route::Route::User) => {}
+            Ok(super::agent_route::Route::OldServer) => {
+                let env_pane = super::target::caller_pane_id();
+                if let Err(message) =
+                    refuse_agent_caller(&super::coordinator::SocketApi, env_pane.as_deref())
+                {
+                    eprintln!("herdr team: {message}");
+                    return Ok(1);
+                }
+            }
         }
     }
     if matches!(parsed.command, Command::Get(None)) {

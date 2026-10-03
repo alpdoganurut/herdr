@@ -457,11 +457,55 @@ fn pane_read(args: &[String]) -> std::io::Result<i32> {
         }
     };
 
+    // Fork (agents v2): an agent reads through the check (shell screens
+    // only in its team, U6).
+    match super::agent_route::route()? {
+        Err(code) => return Ok(code),
+        Ok(super::agent_route::Route::Agent(pane)) => {
+            return agent_read_through_model("cli:agents.read", pane, &params)
+        }
+        Ok(super::agent_route::Route::User | super::agent_route::Route::OldServer) => {}
+    }
     let response = super::send_request(&Request {
         id: "cli:pane:read".into(),
         method: Method::PaneRead(params),
     })?;
 
+    super::print_read_response(&response)
+}
+
+/// Fork (agents v2): `agents.read` for a `pane read` / `agent read` run by an
+/// agent; prints like `pane read`.
+pub(super) fn agent_read_through_model(
+    id: &str,
+    caller_pane: String,
+    params: &PaneReadParams,
+) -> std::io::Result<i32> {
+    use crate::api::schema::agents_model::{AgentsReadFormat, AgentsReadParams, AgentsReadSource};
+    let response = super::send_request(&Request {
+        id: id.into(),
+        method: Method::AgentsRead(AgentsReadParams {
+            caller_pane,
+            target: params.pane_id.clone(),
+            lines: params.lines,
+            source: Some(match params.source {
+                ReadSource::Visible => AgentsReadSource::Visible,
+                ReadSource::Recent => AgentsReadSource::Recent,
+                ReadSource::RecentUnwrapped => AgentsReadSource::RecentUnwrapped,
+                ReadSource::Detection => AgentsReadSource::Detection,
+            }),
+            format: Some(match params.format {
+                ReadFormat::Text => AgentsReadFormat::Text,
+                ReadFormat::Ansi => AgentsReadFormat::Ansi,
+            }),
+        }),
+    })?;
+    if let Some(error) = response.get("error").filter(|e| !e.is_null()) {
+        return Ok(super::agent_route::refuse(
+            error["code"].as_str().unwrap_or("error"),
+            error["message"].as_str().unwrap_or(""),
+        ));
+    }
     super::print_read_response(&response)
 }
 
@@ -760,6 +804,47 @@ fn pane_move(args: &[String]) -> std::io::Result<i32> {
         }
     };
 
+    // Fork (agents v2): an agent moves a tab into a group (or a new one)
+    // through the check; other pane moves stay its user's.
+    match super::agent_route::route()? {
+        Err(code) => return Ok(code),
+        Ok(super::agent_route::Route::Agent(pane)) => {
+            use crate::api::schema::agents_model::AgentsMoveTabParams;
+            let (group, new_group) = match &params.destination {
+                crate::api::schema::PaneMoveDestination::NewTab { workspace_id, .. } => (
+                    workspace_id.clone().or_else(|| {
+                        // The pane's own group (`wN:pM`).
+                        params
+                            .pane_id
+                            .rsplit_once(":p")
+                            .map(|(workspace, _)| workspace.to_string())
+                    }),
+                    None,
+                ),
+                crate::api::schema::PaneMoveDestination::NewWorkspace { label, .. } => (
+                    None,
+                    Some(label.clone().unwrap_or_else(|| "group".into())),
+                ),
+                crate::api::schema::PaneMoveDestination::Tab { .. } => {
+                    return Ok(super::agent_route::refuse(
+                        "outside_team",
+                        "moving a pane into another tab stays with your user; move whole tabs into groups",
+                    ))
+                }
+            };
+            return super::agent_route::call(
+                "cli:agents.move_tab",
+                Method::AgentsMoveTab(AgentsMoveTabParams {
+                    caller_pane: pane,
+                    target: params.pane_id.clone(),
+                    group,
+                    new_group,
+                    priority: false,
+                }),
+            );
+        }
+        Ok(super::agent_route::Route::User | super::agent_route::Route::OldServer) => {}
+    }
     super::runtime::pane_move(params)
 }
 
@@ -1011,7 +1096,69 @@ fn pane_close(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     }
 
-    super::runtime::pane_close(super::normalize_pane_id(raw_pane_id))
+    let pane_id = super::normalize_pane_id(raw_pane_id);
+    // Fork (agents v2): an agent closes a tab's last pane like the tab, and
+    // another pane through the check.
+    match super::agent_route::route()? {
+        Err(code) => return Ok(code),
+        Ok(super::agent_route::Route::Agent(pane)) => {
+            if pane_is_its_tabs_last(&pane_id)? {
+                return super::agent_route::call(
+                    "cli:agents.close_tab",
+                    Method::AgentsCloseTab(
+                        crate::api::schema::agents_model::AgentsCloseTabParams {
+                            caller_pane: pane,
+                            target: pane_id,
+                            ..Default::default()
+                        },
+                    ),
+                );
+            }
+            if let Some(code) = super::agent_route::check(
+                &pane,
+                crate::api::schema::agents_model::AgentsCheckAction::ClosePane,
+                Some(pane_id.clone()),
+            )? {
+                return Ok(code);
+            }
+        }
+        Ok(super::agent_route::Route::User | super::agent_route::Route::OldServer) => {}
+    }
+    super::runtime::pane_close(pane_id)
+}
+
+/// Whether the pane is the only one of its tab (`pane.get`, then the tab).
+fn pane_is_its_tabs_last(pane_id: &str) -> std::io::Result<bool> {
+    let response = super::send_request(&Request {
+        id: "cli:pane:get".into(),
+        method: Method::PaneGet(crate::api::schema::PaneTarget {
+            pane_id: pane_id.to_string(),
+        }),
+    })?;
+    let Some(tab_id) = response["result"]["pane"]["tab_id"].as_str() else {
+        return Ok(false);
+    };
+    let response = super::send_request(&Request {
+        id: "cli:tab:get".into(),
+        method: Method::TabGet(crate::api::schema::TabTarget {
+            tab_id: tab_id.to_string(),
+        }),
+    })?;
+    Ok(response["result"]["tab"]["pane_count"].as_u64() == Some(1))
+}
+
+/// Fork (agents v2): typing into a pane from an agent: a shell pane goes
+/// through the check, another agent's pane is refused (messages go through
+/// `agents_send_message`).
+fn checked_shell_input(
+    pane_id: &str,
+    old: impl FnOnce() -> std::io::Result<i32>,
+) -> std::io::Result<i32> {
+    super::agent_route::checked(
+        crate::api::schema::agents_model::AgentsCheckAction::ShellInput,
+        Some(pane_id.to_string()),
+        old,
+    )
 }
 
 fn pane_send_text(args: &[String]) -> std::io::Result<i32> {
@@ -1022,7 +1169,9 @@ fn pane_send_text(args: &[String]) -> std::io::Result<i32> {
 
     let pane_id = super::normalize_pane_id(&args[0]);
     let text = args[1..].join(" ");
-    super::send_ok_request(Method::PaneSendText(PaneSendTextParams { pane_id, text }))
+    checked_shell_input(&pane_id.clone(), || {
+        super::send_ok_request(Method::PaneSendText(PaneSendTextParams { pane_id, text }))
+    })
 }
 
 fn pane_send_keys(args: &[String]) -> std::io::Result<i32> {
@@ -1033,7 +1182,9 @@ fn pane_send_keys(args: &[String]) -> std::io::Result<i32> {
 
     let pane_id = super::normalize_pane_id(&args[0]);
     let keys = args[1..].to_vec();
-    super::send_ok_request(Method::PaneSendKeys(PaneSendKeysParams { pane_id, keys }))
+    checked_shell_input(&pane_id.clone(), || {
+        super::send_ok_request(Method::PaneSendKeys(PaneSendKeysParams { pane_id, keys }))
+    })
 }
 
 fn pane_run(args: &[String]) -> std::io::Result<i32> {
@@ -1044,11 +1195,13 @@ fn pane_run(args: &[String]) -> std::io::Result<i32> {
 
     let pane_id = super::normalize_pane_id(&args[0]);
     let text = args[1..].join(" ");
-    super::send_ok_request(Method::PaneSendInput(PaneSendInputParams {
-        pane_id,
-        text,
-        keys: vec!["Enter".into()],
-    }))
+    checked_shell_input(&pane_id.clone(), || {
+        super::send_ok_request(Method::PaneSendInput(PaneSendInputParams {
+            pane_id,
+            text,
+            keys: vec!["Enter".into()],
+        }))
+    })
 }
 
 fn pane_wait_output(args: &[String]) -> std::io::Result<i32> {

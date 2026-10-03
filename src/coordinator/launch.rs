@@ -1,4 +1,4 @@
-//! Launch argv for managed agents: the flags that give a Claude Code or Codex
+//! Launch argv for the agents herdr+ starts: the flags that give a Claude Code or Codex
 //! session the `herdr coordinator mcp` server for this launch only (nothing is
 //! written to the user's global agent configs), its permission allowlist and
 //! its kickoff prompt. Pure builders apart from the Claude MCP config file.
@@ -26,13 +26,27 @@ use crate::agent_wrap::team::TeamLaunch;
 
 /// The MCP server key everywhere (Codex `-c` takes a dotted path: no dash).
 pub const MCP_KEY: &str = "herdr_agents";
-/// Claude allowlist for a managed agent: every herdr_agents tool.
-pub const CLAUDE_ALLOW_AGENT: &str = "mcp__herdr_agents";
+/// Claude allowlist for an agent herdr+ starts: every herdr_agents tool but
+/// close and reopen (those ask the user first; the server's turn check is
+/// the gate either way).
+pub fn claude_allow_agent() -> String {
+    crate::agent_wrap::claude_allow_list_value()
+}
+
+/// The coordinator's read-only `herdr coordinator` verbs and the browser.
+const COORDINATOR_EXTRA_ALLOW: &str =
+    "mcp__herdr-browser,Bash(herdr coordinator status:*),Bash(herdr coordinator messages:*)";
 /// Claude allowlist for the coordinator: the herdr_agents and browser tools and
 /// the read-only `herdr coordinator` verbs. The CLI's write verbs (manage, unmanage,
 /// wake, start, clear-turn) are not pre-approved: they would get
 /// around the MCP tools' non-user-turn guard without a prompt.
-pub const CLAUDE_ALLOW_COORDINATOR: &str = "mcp__herdr_agents,mcp__herdr-browser,Bash(herdr coordinator status:*),Bash(herdr coordinator messages:*)";
+/// The coordinator keeps the whole herdr_agents server: it acts only on its
+/// user's request, which the server enforces (`refuse_in_coordinator_turn`),
+/// and a permission prompt in its pinned tab would stall it unseen. It also
+/// keeps its launch line short.
+pub fn claude_allow_coordinator() -> String {
+    format!("mcp__{MCP_KEY},{COORDINATOR_EXTRA_ALLOW}")
+}
 /// `1` adds `--append-system-prompt-file=<dir>/coordinator.md` to the coordinator.
 pub const SYSPROMPT_FILE_ENV: &str = "HERDR_COORDINATOR_SYSPROMPT_FILE";
 /// `1` adds `--no-daemon` to Codex (when no shell hook adds it).
@@ -241,7 +255,7 @@ fn claude_argv(
     if coordinator {
         args.push("--permission-mode".into());
         args.push("acceptEdits".into());
-        args.push(format!("--allowedTools={CLAUDE_ALLOW_COORDINATOR}"));
+        args.push(format!("--allowedTools={}", claude_allow_coordinator()));
         if sysprompt_file {
             args.push(format!(
                 "--append-system-prompt-file={}",
@@ -249,7 +263,7 @@ fn claude_argv(
             ));
         }
     } else {
-        args.push(format!("--allowedTools={CLAUDE_ALLOW_AGENT}"));
+        args.push(format!("--allowedTools={}", claude_allow_agent()));
     }
     args.push("--".into());
     if let Some(kickoff) = kickoff {
@@ -363,7 +377,9 @@ pub fn codex_mcp_overrides(ctx: &LaunchCtx, approve_all: bool) -> Vec<String> {
     if approve_all {
         // Under `-a never` Codex rejects an MCP call that needs approval
         // ("requires approval, but approval policy is never"); pre-approve
-        // this one server, like Claude's `--allowedTools=mcp__herdr_agents`.
+        // this one server. Unlike Claude's allowlist this covers close and
+        // reopen too: under `-a never` an unapproved tool is rejected
+        // outright (no prompt), and the server's turn check gates them.
         args.push("-c".into());
         args.push(format!("{key}.default_tools_approval_mode=\"approve\""));
     }
@@ -418,7 +434,7 @@ pub fn agent_kickoff(
         .filter(|t| !t.is_empty())
         .unwrap_or("Wait for the user's instructions.");
     format!(
-        "You are {name}, a herdr+ managed agent{tags}. Call agents_whoami once to see the agent tools and etiquette. {task}"
+        "You are {name}, a herdr+ agent{tags}. Call agents_whoami once to see who you are, what you may do and the etiquette. {task}"
     )
 }
 
@@ -476,7 +492,7 @@ mod tests {
                 "--session-id",
                 "u1",
                 "--mcp-config=/home/u/.config/herdr-dev/coordinator/mcp/claude.json",
-                "--allowedTools=mcp__herdr_agents",
+                &format!("--allowedTools={}", claude_allow_agent()),
                 "--",
                 "--hello",
             ]
@@ -497,7 +513,7 @@ mod tests {
                 "--mcp-config=/home/u/.config/herdr-dev/coordinator/mcp/claude.json",
                 "--permission-mode",
                 "acceptEdits",
-                "--allowedTools=mcp__herdr_agents,mcp__herdr-browser,Bash(herdr coordinator status:*),Bash(herdr coordinator messages:*)",
+                &format!("--allowedTools={}", claude_allow_coordinator()),
                 "--",
             ]
         );
@@ -518,10 +534,15 @@ mod tests {
             ]
         );
         // Every allowlist entry starts with the MCP key the configs register.
-        assert!(CLAUDE_ALLOW_AGENT == format!("mcp__{MCP_KEY}"));
-        assert!(CLAUDE_ALLOW_COORDINATOR.starts_with(CLAUDE_ALLOW_AGENT));
+        let agent = claude_allow_agent();
+        for entry in agent.split(',') {
+            assert!(entry.starts_with(&format!("mcp__{MCP_KEY}__")), "{entry}");
+        }
+        assert!(agent.contains("mcp__herdr_agents__agents_send_message"));
+        assert!(!agent.contains("agents_close_tab") && !agent.contains("agents_reopen_tab"));
+        assert!(claude_allow_coordinator().starts_with(&format!("mcp__{MCP_KEY},")));
         // Only read-only CLI verbs are pre-approved for the coordinator.
-        for entry in CLAUDE_ALLOW_COORDINATOR.split(',') {
+        for entry in claude_allow_coordinator().split(',') {
             if let Some(command) = entry.strip_prefix("Bash(") {
                 assert!(
                     ["herdr coordinator status:", "herdr coordinator messages:"]
@@ -646,11 +667,11 @@ mod tests {
         );
         assert_eq!(
             agent_kickoff(dir, "rev", Some("reviewer"), Some("demo"), Some("Review lead's branch.")),
-            "You are rev, a herdr+ managed agent (role reviewer, project demo). Call agents_whoami once to see the agent tools and etiquette. Review lead's branch."
+            "You are rev, a herdr+ agent (role reviewer, project demo). Call agents_whoami once to see who you are, what you may do and the etiquette. Review lead's branch."
         );
         assert_eq!(
             agent_kickoff(dir, "lead", None, None, None),
-            "You are lead, a herdr+ managed agent. Call agents_whoami once to see the agent tools and etiquette. Wait for the user's instructions."
+            "You are lead, a herdr+ agent. Call agents_whoami once to see who you are, what you may do and the etiquette. Wait for the user's instructions."
         );
     }
 

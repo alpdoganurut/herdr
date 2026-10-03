@@ -151,7 +151,11 @@ impl App {
             params
         };
         let legacy_params = legacy.then(|| params.clone());
-        match self.queue_agent_prompt(request.id.clone(), params) {
+        match self.queue_agent_prompt(
+            request.id.clone(),
+            params,
+            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
+        ) {
             Ok((id, agent, completion)) => {
                 std::thread::spawn(move || {
                     let response = match completion.recv() {
@@ -192,6 +196,7 @@ impl App {
         &mut self,
         id: String,
         params: AgentPromptParams,
+        source: crate::agents_model::InputSource,
     ) -> Result<
         (
             String,
@@ -324,6 +329,7 @@ impl App {
                 submit_deadline,
             )
             .map_err(|err| encode_error(id.clone(), "agent_prompt_failed", err.to_string()))?;
+        self.note_input(&terminal_id, source);
         Ok((id, agent, completion))
     }
 
@@ -523,6 +529,12 @@ impl App {
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             return encode_error(id, "agent_send_keys_failed", err.to_string());
         }
+        // Fork (agents v2): a scripted write, for the turn origin.
+        self.note_pane_input(
+            resolved.ws_idx,
+            resolved.pane_id,
+            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
+        );
 
         encode_success(id, ResponseResult::Ok {})
     }

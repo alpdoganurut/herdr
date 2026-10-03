@@ -1804,6 +1804,7 @@ impl AppState {
         self.terminals
             .values()
             .filter_map(crate::terminal::TerminalState::suspended_agent_exit_deadline)
+            .chain(self.agents_close_deadline)
             .min()
     }
 

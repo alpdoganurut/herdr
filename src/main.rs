@@ -14,6 +14,7 @@ const NESTED_HERDR_MESSAGES: [&str; 6] = [
 mod agent_resume;
 mod agent_view_eval;
 mod agent_wrap;
+mod agents_model;
 mod api;
 mod app;
 mod browser;
@@ -515,7 +516,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # mcp_agents = ["claude", "codex"]
 
 [coordinator]
-# Run the coordinator agent (a Claude session that watches your managed agents) in a
+# Run the coordinator agent (a Claude session that watches your agents) in a
 # pinned `coordinator` tab, started and monitored by the herdr server (fork feature).
 # enabled = false
 # Claude model for the coordinator; applies at its next launch. Unset uses Claude's default.
@@ -534,6 +535,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # quiet_hours = ""
 # The coordinator dashboard on http://127.0.0.1:<port>/; 0 disables serving.
 # dashboard_port = 7718
+# Which agents wake the coordinator: "opened" (the agents it opened), "teams" (also every
+# team member) or "all". Every agent still shows on the dashboard.
+# wake_scope = "opened"
 
 [agents]
 # Plain claude / codex in herdr+ panes run through `herdr agent wrap` (the shell hook from

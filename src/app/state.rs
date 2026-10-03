@@ -900,9 +900,86 @@ pub struct AppState {
     /// Fork teams: bumped by every change a client renders (structure,
     /// member ids or labels), never by status; `0` until the first team.
     pub(crate) teams_view_rev: u64,
+    /// Fork (agents v2): the next look at agents-model closes in flight.
+    pub(crate) agents_close_deadline: Option<std::time::Instant>,
 }
 
 impl AppState {
+    /// Fork (agents v2): remember an old public id on the pane's meta.
+    pub(crate) fn remember_public_alias(
+        &mut self,
+        terminal_id: &crate::terminal::TerminalId,
+        public_id: &str,
+    ) {
+        if let Some(terminal) = self.terminals.get_mut(terminal_id) {
+            let meta = terminal.agent_meta_mut();
+            if !meta.public_aliases.iter().any(|alias| alias == public_id) {
+                meta.public_aliases.push(public_id.to_string());
+                // Bounded: an agent moved back and forth keeps the newest.
+                if meta.public_aliases.len() > 8 {
+                    meta.public_aliases.remove(0);
+                }
+            }
+        }
+    }
+
+    /// Fork (agents v2): rebuild the public id aliases from the pane meta
+    /// after a restore or a live handoff. A live id wins: an alias equal to
+    /// any pane's current public id is dropped.
+    pub(crate) fn restore_public_aliases_from_meta(&mut self) {
+        let mut live = std::collections::HashSet::new();
+        let mut found = Vec::new();
+        for ws in &self.workspaces {
+            for tab in &ws.tabs {
+                for (pane_id, pane) in &tab.panes {
+                    if let Some(number) = ws.public_pane_number(*pane_id) {
+                        live.insert(crate::workspace::public_pane_id_for_number(&ws.id, number));
+                    }
+                    if let Some(terminal) = self.terminals.get(&pane.attached_terminal_id) {
+                        for alias in &terminal.agent_meta().public_aliases {
+                            found.push((alias.clone(), *pane_id));
+                        }
+                    }
+                }
+            }
+        }
+        for (alias, pane_id) in found {
+            if !live.contains(&alias) {
+                self.public_pane_id_aliases.insert(alias, pane_id);
+            }
+        }
+    }
+
+    /// Fork (agents v2): after a restore, a member with a mirror role and no
+    /// pane meta role takes the mirror (the upgrade path for team roles);
+    /// the member mirror then equals the meta.
+    pub(crate) fn adopt_member_roles_into_meta(&mut self) {
+        for ws in &mut self.workspaces {
+            let Some(team) = ws.team.as_mut() else {
+                continue;
+            };
+            for member in &mut team.members {
+                let Some(terminal_id) = ws
+                    .tabs
+                    .iter()
+                    .find_map(|tab| tab.panes.get(&member.pane_id))
+                    .map(|pane| pane.attached_terminal_id.clone())
+                else {
+                    continue;
+                };
+                let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+                    continue;
+                };
+                let meta = terminal.agent_meta_mut();
+                match (&meta.role, &member.role) {
+                    (None, Some(role)) if !meta.role_cleared => meta.role = Some(role.clone()),
+                    (Some(role), _) => member.role = Some(role.clone()),
+                    _ => {}
+                }
+            }
+        }
+    }
+
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
     }
@@ -1121,6 +1198,7 @@ impl AppState {
             team_index: std::collections::HashMap::new(),
             team_count: 0,
             teams_view_rev: 0,
+            agents_close_deadline: None,
         }
     }
 
@@ -1270,6 +1348,29 @@ impl AppState {
         }
         for (public_id, &pane_id) in &self.public_pane_id_aliases {
             assert_live_pane(pane_id, &format!("public pane alias {public_id}"));
+        }
+        // Fork (agents v2): a team member's role mirror equals its pane meta
+        // role whenever the meta holds one.
+        for ws in &self.workspaces {
+            let Some(team) = ws.team.as_ref() else {
+                continue;
+            };
+            for member in &team.members {
+                let meta_role = ws
+                    .tabs
+                    .iter()
+                    .find_map(|tab| tab.panes.get(&member.pane_id))
+                    .and_then(|pane| self.terminals.get(&pane.attached_terminal_id))
+                    .and_then(|terminal| terminal.agent_meta().role.clone());
+                if let Some(role) = meta_role {
+                    assert_eq!(
+                        member.role.as_deref(),
+                        Some(role.as_str()),
+                        "member {:?}'s role mirror differs from its pane meta",
+                        member.pane_id
+                    );
+                }
+            }
         }
         if let Some(focus) = &self.previous_pane_focus {
             assert_workspace_pane(&focus.workspace_id, focus.pane_id, "previous pane focus");

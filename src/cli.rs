@@ -50,6 +50,232 @@ mod team;
 mod workspace;
 mod worktree;
 
+/// Fork (agents v2): a `herdr …` command an agent runs from its own pane is
+/// checked as that agent (U8). The route applies only when `HERDR_PANE_ID`
+/// names a pane hosting a live agent; a shell pane, a suspended agent's pane
+/// (its user types there), no pane id, or a server without `agents.actor`
+/// keeps the user path. An id that does not resolve, or a process not
+/// started from that pane, is refused (`caller_unresolved`), never the
+/// user path.
+pub(super) mod agent_route {
+    use crate::api::schema::agents_model::{
+        AgentActorKind, AgentsActorInfo, AgentsActorParams, AgentsCheckAction, AgentsCheckParams,
+    };
+    use crate::api::schema::{Method, Request};
+
+    /// The hint every refusal on this route ends with.
+    pub(in crate::cli) const USER_HINT: &str =
+        "if you are the user, run it from a shell pane or the TUI";
+
+    /// Who the command acts for.
+    pub(in crate::cli) enum Route {
+        User,
+        /// A server without the agents model: the old path (and its own
+        /// v1 guards).
+        OldServer,
+        /// A live agent in this canonical pane.
+        Agent(String),
+    }
+
+    /// Print a refusal of this route (stderr) and give the exit code 1.
+    pub(in crate::cli) fn refuse(code: &str, message: &str) -> i32 {
+        eprintln!("herdr: {code}: {message} ({USER_HINT})");
+        1
+    }
+
+    /// Whether an error means the server does not know the method (an older
+    /// server: the old path).
+    fn unknown_method(code: &str, message: &str) -> bool {
+        code == "not_implemented"
+            || message.contains("unknown variant")
+            || message.contains("agents.actor")
+    }
+
+    /// The route of this process: `Err(exit code)` when it is refused.
+    pub(in crate::cli) fn route() -> std::io::Result<Result<Route, i32>> {
+        let Some(env_pane) = super::target::caller_pane_id() else {
+            return Ok(Ok(Route::User));
+        };
+        let response = super::send_request_unchecked(&Request {
+            id: "cli:agents.actor".into(),
+            method: Method::AgentsActor(AgentsActorParams {
+                caller_pane: env_pane.clone(),
+                ..AgentsActorParams::default()
+            }),
+        })?;
+        Ok(route_from_actor(&response, || started_here(&env_pane)))
+    }
+
+    /// The route from an `agents.actor` reply; `started_here` checks the
+    /// process ancestry (`None` = cannot tell).
+    pub(in crate::cli) fn route_from_actor(
+        response: &serde_json::Value,
+        started_here: impl FnOnce() -> Option<bool>,
+    ) -> Result<Route, i32> {
+        if let Some(error) = response.get("error").filter(|e| !e.is_null()) {
+            let code = error["code"].as_str().unwrap_or("error");
+            let message = error["message"].as_str().unwrap_or("");
+            if unknown_method(code, message) {
+                return Ok(Route::OldServer);
+            }
+            return Err(refuse(code, message));
+        }
+        let Ok(actor) =
+            serde_json::from_value::<AgentsActorInfo>(response["result"]["actor"].clone())
+        else {
+            return Err(refuse("caller_unresolved", "herdr did not say who you are"));
+        };
+        let agent = matches!(
+            actor.kind,
+            AgentActorKind::Agent | AgentActorKind::Coordinator
+        );
+        if !agent || !actor.live {
+            return Ok(Route::User);
+        }
+        if started_here() == Some(false) {
+            return Err(refuse(
+                "caller_unresolved",
+                &format!(
+                    "this process was not started from pane {}; your herdr pane id does not point at your pane",
+                    actor.pane_id
+                ),
+            ));
+        }
+        Ok(Route::Agent(actor.pane_id))
+    }
+
+    /// Whether this process descends from the pane's shell.
+    fn started_here(env_pane: &str) -> Option<bool> {
+        let response = super::send_request_unchecked(&Request {
+            id: "cli:browser.resolve_caller".into(),
+            method: Method::BrowserResolveCaller(crate::api::schema::BrowserCaller {
+                pane_id: env_pane.to_string(),
+            }),
+        })
+        .ok()?;
+        let actor: crate::api::schema::BrowserActor =
+            serde_json::from_value(response["result"]["actor"].clone()).ok()?;
+        let crate::api::schema::BrowserActor::Pane { shell_pid, .. } = actor else {
+            return Some(false);
+        };
+        super::browser_mcp::started_from_pane(
+            shell_pid,
+            &super::browser_mcp::ancestors(std::process::id()),
+        )
+    }
+
+    /// Send an agents-model method and print its reply (a refusal with the
+    /// route's hint).
+    pub(in crate::cli) fn call(id: &str, method: Method) -> std::io::Result<i32> {
+        let response = super::send_request(&Request {
+            id: id.into(),
+            method,
+        })?;
+        if let Some(error) = response.get("error").filter(|e| !e.is_null()) {
+            return Ok(refuse(
+                error["code"].as_str().unwrap_or("error"),
+                error["message"].as_str().unwrap_or(""),
+            ));
+        }
+        println!("{response}");
+        Ok(0)
+    }
+
+    /// `agents.check` for a verb without its own method: `Some(exit code)`
+    /// when refused.
+    pub(in crate::cli) fn check(
+        pane: &str,
+        action: AgentsCheckAction,
+        target: Option<String>,
+    ) -> std::io::Result<Option<i32>> {
+        let response = super::send_request(&Request {
+            id: "cli:agents.check".into(),
+            method: Method::AgentsCheck(AgentsCheckParams {
+                caller_pane: pane.to_string(),
+                action,
+                target,
+            }),
+        })?;
+        Ok(response.get("error").filter(|e| !e.is_null()).map(|error| {
+            refuse(
+                error["code"].as_str().unwrap_or("error"),
+                error["message"].as_str().unwrap_or(""),
+            )
+        }))
+    }
+
+    /// Run `old` unless the route refuses it; `check` decides an agent.
+    pub(in crate::cli) fn checked(
+        action: AgentsCheckAction,
+        target: Option<String>,
+        old: impl FnOnce() -> std::io::Result<i32>,
+    ) -> std::io::Result<i32> {
+        match route()? {
+            Err(code) => Ok(code),
+            Ok(Route::User | Route::OldServer) => old(),
+            Ok(Route::Agent(pane)) => match check(&pane, action, target)? {
+                Some(code) => Ok(code),
+                None => old(),
+            },
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn actor(kind: &str, live: bool) -> serde_json::Value {
+            serde_json::json!({"id": "x", "result": {"type": "agents_actor", "actor": {
+                "pane_id": "w1:p2", "kind": kind, "live": live
+            }}})
+        }
+
+        #[test]
+        fn a_live_agent_routes_and_everything_else_keeps_the_user_path() {
+            assert!(matches!(
+                route_from_actor(&actor("agent", true), || Some(true)),
+                Ok(Route::Agent(pane)) if pane == "w1:p2"
+            ));
+            assert!(matches!(
+                route_from_actor(&actor("coordinator", true), || None),
+                Ok(Route::Agent(_))
+            ));
+            // A suspended agent's pane is a shell its user types into.
+            assert!(matches!(
+                route_from_actor(&actor("agent", false), || Some(true)),
+                Ok(Route::User)
+            ));
+            assert!(matches!(
+                route_from_actor(&actor("shell", false), || Some(true)),
+                Ok(Route::User)
+            ));
+        }
+
+        #[test]
+        fn an_unresolved_or_foreign_caller_fails_closed() {
+            let unresolved = serde_json::json!({"id": "x", "error": {
+                "code": "caller_unresolved", "message": "gone"
+            }});
+            assert!(matches!(route_from_actor(&unresolved, || None), Err(1)));
+            assert!(matches!(
+                route_from_actor(&actor("agent", true), || Some(false)),
+                Err(1)
+            ));
+        }
+
+        #[test]
+        fn an_old_server_keeps_the_old_path() {
+            let old = serde_json::json!({"id": "x", "error": {
+                "code": "invalid_request", "message": "unknown variant `agents.actor`, expected one of ..."
+            }});
+            assert!(matches!(
+                route_from_actor(&old, || None),
+                Ok(Route::OldServer)
+            ));
+        }
+    }
+}
+
 const TERMINAL_SESSION_OBSERVE_USAGE: &str =
     "usage: herdr terminal session observe <target> [--cols N] [--rows N]";
 const TERMINAL_SESSION_CONTROL_USAGE: &str =

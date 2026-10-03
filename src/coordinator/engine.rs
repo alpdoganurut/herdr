@@ -1,18 +1,23 @@
 //! The coordinator worker: one thread per herdr server with the coordinator
-//! enabled. It owns every file under the coordinator directory (registry
-//! relinks, the message log tail and rotation, the turn marker, wake-up
+//! enabled. It owns every file under the coordinator directory it writes
+//! (the message log tail and rotation, the turn marker, wake-up
 //! digests, `wakeups.log`, `live.json`, `watch_state.json`, the board) and
 //! the dashboard HTTP thread, so the server's event loop never blocks on a
 //! flock, file I/O or a socket. It never touches App state.
 //!
 //! The App sends typed [`WorkerMsg`]s (a coalesced [`CoordinatorPassInput`]
-//! built from scalar accessors when agents change, wake outcomes, the
-//! coordinator's registration, config changes); the worker answers with a
+//! built from scalar accessors when agents change, wake outcomes, config
+//! changes); the worker answers with a
 //! [`CoordinatorPassOutput`] through the sink given to [`WorkerHandle::spawn`]
 //! — only when something the App reads changed or an effect is owed, so an
 //! idle worker does not wake the main loop. Its own 5 s timer covers the file
-//! facts (new messages, registry and board edits, the periodic check and the
-//! `live.json` heartbeat).
+//! facts (new messages and action-log lines, board edits, the periodic check
+//! and the `live.json` heartbeat).
+//!
+//! Agents v2: the worker never writes `managed.json` (the registry is read
+//! only by the one-time migration and the POC hand-over below); the
+//! coordinator is the server's own record, and the wake scope decides which
+//! agents wake it.
 //!
 //! Lifecycle: migrate the POC directory (`plus/` → `coordinator/`), take
 //! [`WATCH_LOCK`] (retrying every 30 s while another server or a legacy
@@ -32,17 +37,18 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::launch::{self, LaunchCtx};
-use super::live::{self, CoordinatorAgentFact, FactInputs, GroupFact, LiveAgent, LiveData};
+use super::live::{
+    self, CoordinatorAgentFact, FactInputs, GroupFact, LiveAgent, LiveData, TabFact,
+};
 use super::lock::{self, DirLock};
 use super::messages::{self, AgentMessage};
-use super::registry::{self, ManagePatch, Registry};
 use super::serve::DashboardServer;
 use super::turn::{self, Turn};
-use super::watch::{self, Action, WakeCfg, WatchState};
+use super::watch::{self, Action, ExpectedCoordinator, WakeCfg, WatchState};
 use super::{
-    board_path, now_unix, one_line, registry_path, wake_dir, wake_request_path, write_atomically,
-    COORDINATOR_ROLE, WATCH_LOCK,
+    board_path, now_unix, one_line, wake_dir, wake_request_path, write_atomically, WATCH_LOCK,
 };
+use crate::agents_model::actions_log::{self, AgentActionEntry};
 
 /// The worker's own file-polling interval.
 pub const TIMER: Duration = Duration::from_secs(5);
@@ -50,8 +56,8 @@ pub const TIMER: Duration = Duration::from_secs(5);
 pub const LOCK_RETRY_S: u64 = 30;
 /// Retry interval for a dashboard port that was in use.
 pub const BIND_RETRY_S: u64 = 60;
-/// The registry `project` label of the coordinator itself.
-pub const COORDINATOR_PROJECT: &str = "coordinator";
+/// Action-log lines `live.json` carries for the dashboard.
+const LIVE_ACTIONS: usize = 50;
 /// Board text limits: the read model carries a summary only.
 const BOARD_SUMMARY_CHARS: usize = 400;
 const SUGGESTION_CHARS: usize = 200;
@@ -79,9 +85,14 @@ pub struct EngineConfig {
 pub struct CoordinatorPassInput {
     pub agents: Vec<CoordinatorAgentFact>,
     pub groups: Vec<GroupFact>,
+    /// Every tab (shell tabs included).
+    pub tabs: Vec<TabFact>,
     pub tab_labels: HashMap<String, String>,
     /// The App gave up relaunching the coordinator (its relaunch cap).
     pub coordinator_down: bool,
+    /// The coordinator the App runs (`Running`): its pane and session. Its
+    /// absence from `agents` for `missing_s` triggers a relaunch.
+    pub expected_coordinator: Option<ExpectedCoordinator>,
 }
 
 /// How the App's delivery of an [`Effect::Prompt`] went.
@@ -107,15 +118,8 @@ pub enum WorkerMsg {
         marker: Turn,
         outcome: WakeOutcome,
     },
-    /// The coordinator came up in `pane` with `session`: record it in the
-    /// registry (under its lock) as the one coordinator entry.
-    RegisterCoordinator {
-        pane: String,
-        session: Option<String>,
-        agent: String,
-    },
-    /// First native start: retire the POC's coordinator entry and report
-    /// its session for `--resume`.
+    /// First native start: report the POC's coordinator entry's session for
+    /// `--resume` (read only: v2 never writes `managed.json`).
     Migrate,
     SetWakeCfg(WakeCfg),
     SetDashboardPort(u16),
@@ -129,7 +133,10 @@ pub enum WorkerMsg {
 pub enum BlockedReason {
     /// Another herdr server, or a legacy `herdr plus run`, holds the lock.
     LockedElsewhere,
-    /// `managed.json` does not parse.
+    /// `managed.json` does not parse (agents v1). Never produced since v2
+    /// stopped depending on the registry; the variant stays because the
+    /// App's reason codes name it.
+    #[allow(dead_code)] // Kept for the published `registry_corrupt` reason code.
     RegistryCorrupt(String),
     /// The directory cannot be created or prepared.
     Unavailable(String),
@@ -255,16 +262,14 @@ pub struct CoordinatorPassOutput {
     pub board: Option<BoardSummary>,
     /// Suggestions not seen before, once each.
     pub new_suggestions: Vec<Suggestion>,
-    /// Managed agents that are running (the coordinator included).
+    /// The agents in the wake scope (the coordinator included): what
+    /// `coordinator.get.managed` reports.
     pub managed: Vec<LiveAgent>,
-    pub offline: Vec<live::OfflineAgent>,
-    /// The registry's coordinator entry.
+    /// The live coordinator's session.
     pub coordinator_session: Option<String>,
     pub coordinator_pane: Option<String>,
     /// The answer to [`WorkerMsg::Migrate`].
     pub migration: Option<MigrationOutcome>,
-    /// The answer to [`WorkerMsg::RegisterCoordinator`].
-    pub registered: Option<Result<(), String>>,
     /// The POC directory was renamed into place on this start.
     pub dir_migrated: bool,
     /// The worker that produced it: the App's sink stamps it, and the App
@@ -283,11 +288,9 @@ impl CoordinatorPassOutput {
             board: None,
             new_suggestions: Vec::new(),
             managed: Vec::new(),
-            offline: Vec::new(),
             coordinator_session: None,
             coordinator_pane: None,
             migration: None,
-            registered: None,
             dir_migrated: false,
             worker: 0,
         }
@@ -298,7 +301,6 @@ impl CoordinatorPassOutput {
         !self.effects.is_empty()
             || !self.new_suggestions.is_empty()
             || self.migration.is_some()
-            || self.registered.is_some()
             || self.dir_migrated
     }
 
@@ -308,7 +310,6 @@ impl CoordinatorPassOutput {
             effects: Vec::new(),
             new_suggestions: Vec::new(),
             migration: None,
-            registered: None,
             dir_migrated: false,
             ..self.clone()
         }
@@ -393,72 +394,26 @@ pub fn parse_board(bytes: &[u8], generated_unix: u64) -> Option<BoardSummary> {
     })
 }
 
-/// Retire the POC's coordinator entry (drop its coordinator role, keyed by
-/// its session) so the old pane is no longer treated as the coordinator.
+/// The POC's coordinator entry (the registry's `coordinator` role): its
+/// session for `--resume` and its pane. Read only: v2 never writes
+/// `managed.json`, and the coordinator is the server's record, so the old
+/// entry needs no retiring.
 pub fn retire_legacy_coordinator(dir: &Path) -> MigrationOutcome {
-    let result = registry::update(dir, |registry| {
-        let Some(index) = registry.coordinator_index() else {
-            return Ok((None, None));
-        };
-        let entry = registry.agents[index].clone();
-        registry.agents[index].role = None;
-        Ok((entry.session, entry.pane_id))
-    });
-    match result {
-        Ok((legacy_session, legacy_pane)) => MigrationOutcome {
-            legacy_session,
-            legacy_pane,
-            error: None,
-        },
+    match super::registry::load_strict(dir) {
+        Ok(registry) => {
+            let entry = registry.coordinator();
+            MigrationOutcome {
+                legacy_session: entry.and_then(|entry| entry.session.clone()),
+                legacy_pane: entry.and_then(|entry| entry.pane_id.clone()),
+                error: None,
+            }
+        }
         Err(err) => MigrationOutcome {
             legacy_session: None,
             legacy_pane: None,
-            error: Some(err),
+            error: Some(err.to_string()),
         },
     }
-}
-
-/// Record the coordinator as the one entry with the coordinator role.
-pub fn register_coordinator(
-    dir: &Path,
-    pane: &str,
-    session: Option<&str>,
-    agent: &str,
-) -> Result<(), String> {
-    registry::update(dir, |registry| {
-        // The session the coordinator resumed may still sit on a retired
-        // (role-less) entry: that entry is the coordinator again.
-        let by_session = registry.find_by_session(session);
-        let holder = registry.coordinator_index();
-        match (holder, by_session) {
-            (Some(index), Some(other)) if index != other => {
-                registry.agents[index].role = None;
-                registry.set_keys(other, session, Some(pane));
-                registry.agents[other].role = Some(COORDINATOR_ROLE.into());
-                registry.agents[other].project = Some(COORDINATOR_PROJECT.into());
-            }
-            (Some(index), _) => {
-                // A fresh session differs from the stored one, so `find`
-                // would refuse the pane: overwrite the keys instead.
-                registry.set_keys(index, session, Some(pane));
-                registry.agents[index].agent = Some(agent.to_string());
-                registry.agents[index].project = Some(COORDINATOR_PROJECT.into());
-            }
-            (None, _) => {
-                registry.manage(
-                    session,
-                    Some(pane),
-                    Some(agent),
-                    &ManagePatch {
-                        role: Some(COORDINATOR_ROLE.into()),
-                        project: Some(COORDINATOR_PROJECT.into()),
-                        note: None,
-                    },
-                )?;
-            }
-        }
-        Ok(())
-    })
 }
 
 /// The worker's state; driven by [`Engine::handle`] and [`Engine::tick`]
@@ -477,6 +432,10 @@ pub struct Engine {
     input: Option<CoordinatorPassInput>,
     wake_requested: bool,
     recent: VecDeque<AgentMessage>,
+    /// The newest action-log lines, newest last (`live.json.actions`).
+    actions: VecDeque<AgentActionEntry>,
+    /// `actions.jsonl`'s mtime at the last read (`None`: not read yet).
+    actions_mtime_ms: Option<u64>,
     last_live: Option<LiveData>,
     last_live_write: u64,
     last_state: Vec<u8>,
@@ -507,6 +466,8 @@ impl Engine {
             input: None,
             wake_requested: false,
             recent: VecDeque::new(),
+            actions: VecDeque::new(),
+            actions_mtime_ms: None,
             last_live: None,
             last_live_write: 0,
             last_state: Vec::new(),
@@ -686,23 +647,6 @@ impl Engine {
                 self.wake_outcome(seq, &marker, outcome, now);
                 true
             }
-            WorkerMsg::RegisterCoordinator {
-                pane,
-                session,
-                agent,
-            } => {
-                let result = if self.lock.is_some() {
-                    register_coordinator(self.dir(), &pane, session.as_deref(), &agent)
-                } else {
-                    Err("the coordinator directory is not locked by this server".into())
-                };
-                match &result {
-                    Ok(()) => self.log(now, &format!("coordinator registered -> {pane}")),
-                    Err(err) => self.log(now, &format!("coordinator not registered: {err}")),
-                }
-                self.owed.registered = Some(result);
-                true
-            }
             WorkerMsg::Migrate => {
                 let outcome = if self.lock.is_some() {
                     retire_legacy_coordinator(self.dir())
@@ -718,7 +662,7 @@ impl Engine {
                 if let Some(session) = &outcome.legacy_session {
                     self.log(
                         now,
-                        &format!("retired the POC coordinator entry ({session})"),
+                        &format!("found the POC coordinator's session ({session})"),
                     );
                 }
                 self.owed.migration = Some(outcome);
@@ -776,7 +720,6 @@ impl Engine {
             if !had_lock && self.dir_migrated {
                 out.dir_migrated = true;
             }
-            self.refresh_registry_status();
             out.status = self.status.clone();
             self.pass(now, &mut out);
         }
@@ -793,20 +736,6 @@ impl Engine {
         owed
     }
 
-    /// With the lock: `Blocked(RegistryCorrupt)` while managed.json does not
-    /// parse, `Ready` otherwise.
-    fn refresh_registry_status(&mut self) {
-        self.status = match registry::load_strict(self.dir()) {
-            Ok(_) => EngineStatus::Ready,
-            Err(registry::LoadError::Corrupt(err)) => {
-                EngineStatus::Blocked(BlockedReason::RegistryCorrupt(err))
-            }
-            Err(registry::LoadError::Io(err)) => EngineStatus::Blocked(BlockedReason::Unavailable(
-                format!("cannot read managed.json: {err}"),
-            )),
-        };
-    }
-
     /// An output the App never received: forget it was sent (the next pass
     /// sends the read model again) and keep its one-shot answers. A dropped
     /// prompt heals on its own (its marker expires unworked, the wake stays
@@ -815,9 +744,6 @@ impl Engine {
         self.last_sent = None;
         if self.owed.migration.is_none() {
             self.owed.migration = out.migration;
-        }
-        if self.owed.registered.is_none() {
-            self.owed.registered = out.registered;
         }
         self.owed.dir_migrated |= out.dir_migrated;
         let mut suggestions = out.new_suggestions;
@@ -843,10 +769,6 @@ impl Engine {
             return;
         };
         let dir = self.cfg.dir.clone();
-        let registry_file = registry_path(&dir);
-        let observed_mtime = watch::mtime_ms(&registry_file);
-        let mut registry_changed = observed_mtime != self.state.registry_mtime_ms;
-        let mut registry_mtime = observed_mtime;
         let last_change: HashMap<String, u64> = self
             .state
             .last_change
@@ -856,32 +778,13 @@ impl Engine {
         let inputs = FactInputs {
             agents: &input.agents,
             groups: &input.groups,
+            tabs: &input.tabs,
             tab_labels: &input.tab_labels,
         };
-        let mut registry = Registry::load(&dir);
-        let (mut live, relinked) =
-            live::build_facts(&inputs, &mut registry, Vec::new(), &last_change, false, now);
-        if relinked {
-            // Relink under the lock, over the freshly loaded registry. A write
-            // by someone else since the check above is still a change.
-            let result = registry::update(&dir, |locked| {
-                let foreign = watch::mtime_ms(&registry_file) != registry_mtime;
-                let wrote =
-                    live::build_facts(&inputs, locked, Vec::new(), &last_change, false, now).1;
-                Ok((wrote, foreign))
-            });
-            match result {
-                Ok((wrote, foreign)) => {
-                    registry_changed |= foreign;
-                    if wrote {
-                        // Our own relink write is not a registry change.
-                        registry_mtime = watch::mtime_ms(&registry_file);
-                    }
-                }
-                Err(err) => self.log(now, &format!("relink not saved: {err}")),
-            }
-        }
-        self.state.registry_mtime_ms = registry_mtime;
+        let mut live =
+            live::build_facts(&inputs, self.cfg.wake.scope, Vec::new(), &last_change, now);
+        self.state.expected_coordinator = input.expected_coordinator.clone();
+        let new_actions = self.read_actions(&dir);
 
         let (new_msgs, offset) = messages::since_offset(&dir, self.state.msg_offset);
         self.state.msg_offset = offset;
@@ -910,7 +813,7 @@ impl Engine {
             &mut self.state,
             &live,
             &new_msgs,
-            registry_changed,
+            &new_actions,
             turn.as_ref(),
             wake_requested,
             &self.cfg.wake,
@@ -972,17 +875,56 @@ impl Engine {
                 .unwrap_or(0);
         }
         live.messages = self.recent.iter().cloned().collect();
+        live.actions = self.actions.iter().cloned().collect();
         live.watch = self.state.summary(&self.cfg.wake, turn_now.is_some(), now);
         out.summary = Some(live.watch.clone());
         out.turn = turn_now;
-        out.managed = live.agents.clone();
-        out.offline = live.offline.clone();
+        out.managed = live
+            .agents
+            .iter()
+            .filter(|agent| agent.managed)
+            .cloned()
+            .collect();
         out.coordinator_pane = live.coordinator_pane.clone();
-        out.coordinator_session = registry
-            .coordinator()
-            .and_then(|entry| entry.session.clone());
+        out.coordinator_session = live
+            .agents
+            .iter()
+            .find(|agent| agent.coordinator)
+            .and_then(|agent| agent.session.clone());
         self.publish(live, now);
         self.persist_state();
+    }
+
+    /// The action-log lines appended since the last read (oldest first),
+    /// read only when `actions.jsonl` changed. The first read after the
+    /// lock is a baseline: it fills the dashboard's list and queues nothing.
+    fn read_actions(&mut self, dir: &Path) -> Vec<AgentActionEntry> {
+        let mtime = watch::mtime_ms(&actions_log::actions_path(dir));
+        if self.actions_mtime_ms == Some(mtime) {
+            return Vec::new();
+        }
+        let first = self.actions_mtime_ms.is_none();
+        self.actions_mtime_ms = Some(mtime);
+        // Newest first.
+        let tail = actions_log::read_tail(dir, LIVE_ACTIONS);
+        let last = self.actions.back().map(|entry| entry.id.clone());
+        let fresh: Vec<AgentActionEntry> = match &last {
+            Some(last) => tail
+                .into_iter()
+                .take_while(|entry| &entry.id != last)
+                .collect(),
+            None => tail,
+        };
+        let fresh: Vec<AgentActionEntry> = fresh.into_iter().rev().collect();
+        self.actions.extend(fresh.iter().cloned());
+        while self.actions.len() > LIVE_ACTIONS {
+            self.actions.pop_front();
+        }
+        if first {
+            Vec::new()
+        } else {
+            fresh
+        }
     }
 
     /// Write the digest and take the turn marker; the App types the prompt.
@@ -1244,8 +1186,8 @@ fn run(mut engine: Engine, rx: &mpsc::Receiver<WorkerMsg>, sink: &OutputSink, st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordinator::registry::ManagedAgent;
-    use crate::coordinator::{live_path, test_dir, turn_path};
+    use crate::agents_model::OpenedBy;
+    use crate::coordinator::{live_path, registry_path, test_dir, turn_path};
 
     fn config(dir: &Path) -> EngineConfig {
         EngineConfig {
@@ -1271,40 +1213,39 @@ mod tests {
         }
     }
 
+    /// The coordinator herdr runs (w1:p1, session cs).
+    fn expected() -> Option<ExpectedCoordinator> {
+        Some(ExpectedCoordinator {
+            pane_id: Some("w1:p1".into()),
+            session: Some("cs".into()),
+        })
+    }
+
     fn input(agents: Vec<CoordinatorAgentFact>) -> WorkerMsg {
         WorkerMsg::Pass(Box::new(CoordinatorPassInput {
             agents,
+            expected_coordinator: expected(),
             ..CoordinatorPassInput::default()
         }))
     }
 
-    /// A ready engine with a registered coordinator (w1:p1, session cs) and
-    /// one managed agent (w2:p1, session a).
+    /// A ready engine; [`agents`] gives the coordinator (w1:p1, session cs)
+    /// and one agent it opened (w2:p1, session a).
     fn ready(name: &str) -> (PathBuf, Engine) {
         let root = test_dir(name);
         let dir = root.join("coordinator");
         let mut engine = Engine::new(config(&dir));
         engine.tick(0);
         assert_eq!(engine.status(), &EngineStatus::Ready);
-        register_coordinator(&dir, "w1:p1", Some("cs"), "claude").unwrap();
-        registry::update(&dir, |registry| {
-            registry.manage(
-                Some("a"),
-                Some("w2:p1"),
-                Some("claude"),
-                &ManagePatch::default(),
-            )?;
-            Ok(())
-        })
-        .unwrap();
         (root, engine)
     }
 
     fn agents(status: &str) -> Vec<CoordinatorAgentFact> {
-        vec![
-            fact("w1:p1", "coordinator", "cs", "idle"),
-            fact("w2:p1", "lead", "a", status),
-        ]
+        let mut coordinator = fact("w1:p1", "coordinator", "cs", "idle");
+        coordinator.coordinator = true;
+        let mut lead = fact("w2:p1", "lead", "a", status);
+        lead.opened_by = Some(OpenedBy::Coordinator);
+        vec![coordinator, lead]
     }
 
     fn prompts(out: &CoordinatorPassOutput) -> Vec<&Effect> {
@@ -1607,7 +1548,7 @@ mod tests {
     #[test]
     fn a_missing_coordinator_yields_a_relaunch_effect_unless_down() {
         let (root, mut engine) = ready("engine-relaunch");
-        let gone = vec![fact("w2:p1", "lead", "a", "idle")];
+        let gone = vec![agents("idle")[1].clone()];
         engine.handle(input(gone.clone()), 0);
         engine.tick(0);
         let out = engine.tick(30).expect("relaunch");
@@ -1619,8 +1560,9 @@ mod tests {
         );
         engine.handle(
             WorkerMsg::Pass(Box::new(CoordinatorPassInput {
-                agents: gone,
+                agents: gone.clone(),
                 coordinator_down: true,
+                expected_coordinator: expected(),
                 ..CoordinatorPassInput::default()
             })),
             31,
@@ -1628,6 +1570,18 @@ mod tests {
         let out = engine.tick(61).expect("down shows in the summary");
         assert!(out.effects.is_empty());
         assert!(out.summary.is_some_and(|summary| summary.coordinator_down));
+        // A coordinator herdr does not run (off, starting) is never relaunched.
+        let (root2, mut idle) = ready("engine-relaunch-off");
+        idle.handle(
+            WorkerMsg::Pass(Box::new(CoordinatorPassInput {
+                agents: gone,
+                ..CoordinatorPassInput::default()
+            })),
+            0,
+        );
+        idle.tick(0);
+        assert!(idle.tick(90).is_none_or(|out| out.effects.is_empty()));
+        let _ = std::fs::remove_dir_all(&root2);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1697,23 +1651,12 @@ mod tests {
     }
 
     #[test]
-    fn migration_retires_the_poc_coordinator_entry() {
+    fn migration_reads_the_poc_coordinator_entry_and_never_writes_the_registry() {
         let root = test_dir("engine-retire");
         let dir = root.join("coordinator");
-        registry::update(&dir, |registry| {
-            registry.manage(
-                Some("old"),
-                Some("w9:p1"),
-                Some("claude"),
-                &ManagePatch {
-                    role: Some(COORDINATOR_ROLE.into()),
-                    project: Some("herdr+".into()),
-                    note: None,
-                },
-            )?;
-            Ok(())
-        })
-        .unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let v1 = br#"{"agents":[{"session":"old","pane_id":"w9:p1","agent":"claude","role":"coordinator","project":"herdr+","added_unix":1}]}"#;
+        std::fs::write(registry_path(&dir), v1).unwrap();
         std::fs::write(wake_request_path(&dir), "1").unwrap();
         let mut engine = Engine::new(config(&dir));
         engine.tick(0);
@@ -1726,70 +1669,135 @@ mod tests {
         let migration = out.migration.expect("answered");
         assert_eq!(migration.legacy_session.as_deref(), Some("old"));
         assert_eq!(migration.legacy_pane.as_deref(), Some("w9:p1"));
-        let registry = Registry::load(&dir);
-        assert!(registry.coordinator().is_none(), "retired");
         assert_eq!(
-            registry.agents.len(),
-            1,
-            "the entry stays, without the role"
+            std::fs::read(registry_path(&dir)).unwrap(),
+            v1,
+            "managed.json is the rollback source: byte for byte"
         );
-
-        // The resumed session registers again: the retired entry is reused.
-        engine.handle(
-            WorkerMsg::RegisterCoordinator {
-                pane: "w1:p1".into(),
-                session: Some("old".into()),
-                agent: "claude".into(),
-            },
-            2,
-        );
-        let out = engine.tick(2).expect("registered");
-        assert_eq!(out.registered, Some(Ok(())));
-        let registry = Registry::load(&dir);
-        assert_eq!(registry.agents.len(), 1);
-        let entry: &ManagedAgent = registry.coordinator().expect("coordinator");
-        assert_eq!(entry.pane_id.as_deref(), Some("w1:p1"));
-        assert_eq!(entry.project.as_deref(), Some(COORDINATOR_PROJECT));
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn a_fresh_session_overwrites_the_coordinator_keys() {
-        let (root, mut engine) = ready("engine-register");
-        let dir = root.join("coordinator");
-        engine.handle(
-            WorkerMsg::RegisterCoordinator {
-                pane: "w1:p2".into(),
-                session: Some("new".into()),
-                agent: "claude".into(),
-            },
-            1,
-        );
-        assert_eq!(engine.tick(1).and_then(|out| out.registered), Some(Ok(())));
-        let registry = Registry::load(&dir);
-        let entry = registry.coordinator().expect("coordinator");
-        assert_eq!(entry.session.as_deref(), Some("new"));
-        assert_eq!(entry.pane_id.as_deref(), Some("w1:p2"));
-        assert_eq!(registry.agents.len(), 2);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_corrupt_registry_blocks_but_keeps_the_lock() {
+    fn a_corrupt_registry_no_longer_blocks_the_coordinator() {
         let (root, mut engine) = ready("engine-corrupt");
         let dir = root.join("coordinator");
         std::fs::write(registry_path(&dir), "{oops").unwrap();
-        let out = engine.tick(1).expect("blocked");
-        assert!(matches!(
-            out.status,
-            EngineStatus::Blocked(BlockedReason::RegistryCorrupt(_))
-        ));
-        assert!(engine.lock.is_some());
-        std::fs::write(registry_path(&dir), "{}").unwrap();
+        engine.handle(input(agents("idle")), 1);
+        let out = engine.tick(1).expect("a pass");
+        assert_eq!(out.status, EngineStatus::Ready);
+        assert_eq!(std::fs::read(registry_path(&dir)).unwrap(), b"{oops");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_wake_scope_decides_what_managed_lists_and_what_wakes() {
+        let (root, mut engine) = ready("engine-scope");
+        let dir = root.join("coordinator");
+        let mut facts = agents("working");
+        let mut member = fact("w3:p1", "fixer", "f", "working");
+        member.member = true;
+        let plain = fact("w4:p1", "solo", "p", "working");
+        facts.extend([member, plain]);
+        engine.handle(input(facts.clone()), 0);
+        let out = engine.tick(0).expect("first pass");
+        let managed: Vec<&str> = out.managed.iter().map(|a| a.pane_id.as_str()).collect();
         assert_eq!(
-            engine.tick(2).map(|out| out.status),
-            Some(EngineStatus::Ready)
+            managed,
+            ["w1:p1", "w2:p1"],
+            "opened: the coordinator and its own"
         );
+        let live: LiveData =
+            serde_json::from_slice(&std::fs::read(live_path(&dir)).unwrap()).unwrap();
+        assert_eq!(live.agents.len(), 4, "the dashboard lists every agent");
+        assert_eq!(live.wake_scope, "opened");
+        // A member and a plain agent finishing create nothing under `opened`.
+        for fact in facts.iter_mut().skip(2) {
+            fact.status = "idle".into();
+        }
+        engine.handle(input(facts.clone()), 5);
+        engine.tick(5);
+        assert!(
+            engine.state.pending.is_empty(),
+            "{:?}",
+            engine.state.pending
+        );
+        // Under `teams` the member's next edge is news, the plain agent's not.
+        engine.handle(
+            WorkerMsg::SetWakeCfg(WakeCfg {
+                scope: watch::WakeScope::Teams,
+                ..WakeCfg::default()
+            }),
+            6,
+        );
+        engine.handle(input(facts.clone()), 6);
+        let out = engine.tick(6).expect("scope changed");
+        assert_eq!(out.managed.len(), 3);
+        for fact in facts.iter_mut().skip(2) {
+            fact.status = "working".into();
+        }
+        engine.handle(input(facts), 7);
+        engine.tick(7);
+        let keys: Vec<String> = engine
+            .state
+            .pending
+            .iter()
+            .filter_map(|ev| match ev {
+                watch::Ev::Status { key, .. } => Some(key.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(keys, ["f"], "{:?}", engine.state.pending);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn new_action_log_lines_reach_live_json_after_a_baseline() {
+        let (root, mut engine) = ready("engine-actions");
+        let dir = root.join("coordinator");
+        let entry = |id: &str| AgentActionEntry {
+            unix: 1,
+            id: id.into(),
+            actor: crate::api::schema::agents_model::AgentActorKind::Agent,
+            actor_pane: Some("w2:p1".into()),
+            actor_name: Some("lead".into()),
+            action: "rename_tab".into(),
+            target_tab: Some("w3:t1".into()),
+            target_pane: None,
+            target_name: None,
+            team: None,
+            turn_origin: None,
+            origin_detail: None,
+            outcome: crate::api::schema::agents_model::AgentsActionOutcome::Denied,
+            code: Some("outside_team".into()),
+            detail: None,
+            closed_ids: Vec::new(),
+        };
+        actions_log::append(&dir, &entry("a1")).unwrap();
+        assert!(
+            engine.read_actions(&dir).is_empty(),
+            "the first read is a baseline"
+        );
+        assert_eq!(engine.actions.len(), 1);
+        // The mtime check is coarse: force a re-read.
+        engine.actions_mtime_ms = Some(0);
+        actions_log::append(&dir, &entry("a2")).unwrap();
+        actions_log::append(&dir, &entry("a3")).unwrap();
+        let fresh: Vec<String> = engine
+            .read_actions(&dir)
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(fresh, ["a2", "a3"], "oldest first");
+        assert!(
+            engine.read_actions(&dir).is_empty(),
+            "unchanged: not read again"
+        );
+        engine.handle(input(agents("idle")), 2);
+        engine.tick(2);
+        let live: LiveData =
+            serde_json::from_slice(&std::fs::read(live_path(&dir)).unwrap()).unwrap();
+        let ids: Vec<&str> = live.actions.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["a1", "a2", "a3"], "newest last");
         let _ = std::fs::remove_dir_all(&root);
     }
 

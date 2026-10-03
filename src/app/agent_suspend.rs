@@ -55,8 +55,31 @@ pub(super) enum AgentSuspendError {
     NotSuspendable {
         target: String,
         reason: String,
+        /// Fork (agents v2): the typed reason; the text above is unchanged.
+        kind: NotSuspendableReason,
     },
     InputFailed(String),
+}
+
+/// Fork (agents v2): why an agent cannot be suspended, typed (the close flow
+/// decides on it; no string matching).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotSuspendableReason {
+    /// No native session reference is known yet.
+    NoSession,
+    /// The agent has no native resume plan.
+    NoResumePlan,
+    /// The agent has no graceful exit command.
+    NoGracefulExit,
+    /// The agent is the pane's own process (close the tab instead).
+    PaneProcess,
+}
+
+/// What a suspend needs once every check passed.
+struct SuspendReady {
+    terminal_id: TerminalId,
+    session: crate::agent_resume::PersistedAgentSession,
+    exit_input: &'static str,
 }
 
 pub(super) enum AgentRestartError {
@@ -122,10 +145,43 @@ impl App {
     /// The suspended record is stored before the exit input is sent because
     /// the process-exit path wipes the live session fields it is built from.
     pub(super) fn suspend_agent(&mut self, target: &str) -> Result<String, AgentSuspendError> {
+        self.suspend_agent_by(target, None)
+    }
+
+    /// Fork (agents v2): [`Self::suspend_agent`], recording who suspended it
+    /// (`None` is the user).
+    pub(super) fn suspend_agent_by(
+        &mut self,
+        target: &str,
+        by: Option<crate::api::schema::agents_model::AgentsWho>,
+    ) -> Result<String, AgentSuspendError> {
         let resolved = self
             .resolve_agent_target(target)
             .map_err(AgentSuspendError::Target)?;
-        self.suspend_resolved_agent(target, &resolved)
+        let suspended = self.suspend_resolved_agent(target, &resolved)?;
+        if let Some(by) = by {
+            if let Some(record) = self
+                .state
+                .workspaces
+                .get(resolved.ws_idx)
+                .and_then(|ws| ws.terminal_id(resolved.pane_id))
+                .cloned()
+                .and_then(|terminal_id| self.state.terminals.get_mut(&terminal_id))
+                .and_then(|terminal| terminal.suspended_agent.as_mut())
+            {
+                record.suspended_by = Some(by);
+            }
+        }
+        Ok(suspended)
+    }
+
+    /// Fork (agents v2): whether the agent in a pane could be suspended now,
+    /// without writing anything.
+    pub(super) fn check_suspend(&self, target: &str) -> Result<(), AgentSuspendError> {
+        let resolved = self
+            .resolve_agent_target(target)
+            .map_err(AgentSuspendError::Target)?;
+        self.suspend_checks(target, &resolved).map(|_| ())
     }
 
     fn suspend_resolved_agent(
@@ -133,6 +189,61 @@ impl App {
         target: &str,
         resolved: &TerminalTarget,
     ) -> Result<String, AgentSuspendError> {
+        let SuspendReady {
+            terminal_id,
+            session,
+            exit_input,
+        } = self.suspend_checks(target, resolved)?;
+        let not_found = || {
+            AgentSuspendError::Target(TerminalTargetError::NotFound {
+                target: target.to_string(),
+            })
+        };
+        let runtime = self
+            .terminal_runtimes
+            .get(&terminal_id)
+            .ok_or_else(not_found)?;
+        let (text, enter) = super::api_helpers::encode_api_submission_parts(runtime, exit_input);
+
+        let now = Instant::now();
+        let terminal = self
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .ok_or_else(not_found)?;
+        terminal.begin_agent_suspend(session.clone(), now + SUSPEND_GRACEFUL_EXIT_GRACE);
+        if let Err(err) = runtime.queue_user_input_submission(
+            Bytes::from(text),
+            Bytes::from(enter),
+            super::api::AGENT_PROMPT_SUBMIT_DELAY,
+            None,
+        ) {
+            terminal.take_suspended_agent();
+            return Err(AgentSuspendError::InputFailed(err.to_string()));
+        }
+        // Fork (agents v2): a scripted write, for the turn origin.
+        self.note_input(
+            &terminal_id,
+            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
+        );
+        // The parked session must outlive the agent's own transcript
+        // retention; queue it for the next backup pass rather than waiting
+        // for the periodic interval.
+        self.queue_agent_transcript_backup(resolved.ws_idx, resolved.pane_id, session);
+        self.state.mark_session_dirty();
+        self.schedule_session_save();
+        self.emit_agent_status_transition(resolved.ws_idx, resolved.pane_id);
+        Ok(self
+            .public_pane_id(resolved.ws_idx, resolved.pane_id)
+            .unwrap_or_else(|| target.to_string()))
+    }
+
+    /// Every check a suspend makes, in order, without writing.
+    fn suspend_checks(
+        &self,
+        target: &str,
+        resolved: &TerminalTarget,
+    ) -> Result<SuspendReady, AgentSuspendError> {
         let not_found = || {
             AgentSuspendError::Target(TerminalTargetError::NotFound {
                 target: target.to_string(),
@@ -182,6 +293,7 @@ impl App {
             return Err(AgentSuspendError::NotSuspendable {
                 target: target.to_string(),
                 reason: "no native session reference is known for it yet".into(),
+                kind: NotSuspendableReason::NoSession,
             });
         };
         if crate::agent_resume::plan(&session.source, &session.agent, &session.session_ref)
@@ -190,12 +302,14 @@ impl App {
             return Err(AgentSuspendError::NotSuspendable {
                 target: target.to_string(),
                 reason: format!("{} has no native resume plan", session.agent),
+                kind: NotSuspendableReason::NoResumePlan,
             });
         }
         let Some(exit_input) = crate::agent_resume::graceful_exit_input(&session.agent) else {
             return Err(AgentSuspendError::NotSuspendable {
                 target: target.to_string(),
                 reason: format!("{} has no graceful exit command", session.agent),
+                kind: NotSuspendableReason::NoGracefulExit,
             });
         };
         let runtime = self
@@ -215,36 +329,14 @@ impl App {
             return Err(AgentSuspendError::NotSuspendable {
                 target: target.to_string(),
                 reason: "it is the pane's process; close the tab instead".into(),
+                kind: NotSuspendableReason::PaneProcess,
             });
         }
-        let (text, enter) = super::api_helpers::encode_api_submission_parts(runtime, exit_input);
-
-        let now = Instant::now();
-        let terminal = self
-            .state
-            .terminals
-            .get_mut(&terminal_id)
-            .ok_or_else(not_found)?;
-        terminal.begin_agent_suspend(session.clone(), now + SUSPEND_GRACEFUL_EXIT_GRACE);
-        if let Err(err) = runtime.queue_user_input_submission(
-            Bytes::from(text),
-            Bytes::from(enter),
-            super::api::AGENT_PROMPT_SUBMIT_DELAY,
-            None,
-        ) {
-            terminal.take_suspended_agent();
-            return Err(AgentSuspendError::InputFailed(err.to_string()));
-        }
-        // The parked session must outlive the agent's own transcript
-        // retention; queue it for the next backup pass rather than waiting
-        // for the periodic interval.
-        self.queue_agent_transcript_backup(resolved.ws_idx, resolved.pane_id, session);
-        self.state.mark_session_dirty();
-        self.schedule_session_save();
-        self.emit_agent_status_transition(resolved.ws_idx, resolved.pane_id);
-        Ok(self
-            .public_pane_id(resolved.ws_idx, resolved.pane_id)
-            .unwrap_or_else(|| target.to_string()))
+        Ok(SuspendReady {
+            terminal_id,
+            session,
+            exit_input,
+        })
     }
 
     /// Exit the live agent hosted by `target` and relaunch it in the same
@@ -469,6 +561,13 @@ impl App {
                 terminal.restore_suspended_agent(record.agent, record.name, record.session);
                 return Err(AgentActivateError::InputFailed(err.to_string()));
             }
+            // Fork (agents v2): a scripted write, for the turn origin.
+            terminal.turn_mut().note_input(
+                &crate::agents_model::InputSource::Programmatic(
+                    crate::agents_model::Programmatic::Api,
+                ),
+                now,
+            );
             if managed.is_some() {
                 terminal.set_managed_agent_launch_session(record.session);
             } else {
@@ -725,7 +824,7 @@ impl App {
                 code: "agent_already_suspended".into(),
                 message: format!("agent {target} is already suspended"),
             },
-            AgentSuspendError::NotSuspendable { target, reason } => crate::api::schema::ErrorBody {
+            AgentSuspendError::NotSuspendable { target, reason, .. } => crate::api::schema::ErrorBody {
                 code: "agent_not_suspendable".into(),
                 message: format!("agent {target} cannot be suspended: {reason}"),
             },

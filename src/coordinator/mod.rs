@@ -1,12 +1,12 @@
 //! The coordinator (fork): the herdr server runs it. The server's worker
-//! ([`engine`]) owns the files under [`coordinator_dir`] — the managed-agent
-//! registry, the agent message log, the live dashboard data, the turn marker
-//! and the wake-up digests — and serves the dashboard; the App side
-//! (`app::coordinator`) drives the coordinator agent's lifecycle. The
-//! `herdr coordinator mcp` servers agents use and the CLI are separate
-//! processes that share the same files, which is also why state survives
-//! server restarts (pane ids are remapped on restore; the registry matches
-//! agents by native session id first).
+//! ([`engine`]) owns the files under [`coordinator_dir`] it writes — the
+//! message log rotation, the live dashboard data, the turn marker and the
+//! wake-up digests — and serves the dashboard; the App side
+//! (`app::coordinator`) drives the coordinator agent's lifecycle and writes
+//! the message and action logs (agents v2). The `herdr coordinator mcp`
+//! servers agents use and the CLI are separate processes that read the same
+//! files. The agents-v1 registry (`managed.json`) is only read (the
+//! migration and the POC hand-over), never written.
 
 pub mod api;
 pub mod engine;
@@ -54,7 +54,6 @@ pub const BOARD_TEMPLATE: &str = "{}\n";
 
 /// Lock names under the coordinator directory (`<name>.lock`).
 pub const WATCH_LOCK: &str = "watcher";
-pub const REGISTRY_LOCK: &str = "registry";
 
 /// `~/.config/herdr/coordinator` (`herdr-dev` for debug builds), or `$HERDR_COORDINATOR_DIR`.
 pub fn coordinator_dir() -> PathBuf {
@@ -145,40 +144,6 @@ pub fn one_line(value: &str, max: usize) -> String {
         .collect()
 }
 
-/// Message text as typed into a pane: control characters other than newline
-/// and tab are dropped (an ESC could end the bracketed paste and turn the
-/// rest into keystrokes); `\r\n` and lone `\r` become `\n`. A line that
-/// starts like herdr+'s own framing (`[herdr+ …`, the `[answer with …`
-/// footer) gets a full-width bracket, so a body cannot forge an envelope or
-/// a team update line inside the typed block.
-pub fn message_text(value: &str) -> String {
-    let cleaned: String = value
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .chars()
-        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
-        .collect();
-    cleaned
-        .split('\n')
-        .map(defuse_framing_line)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// The line, with a leading `[` of a framing look-alike made full-width.
-fn defuse_framing_line(line: &str) -> std::borrow::Cow<'_, str> {
-    let body = line.trim_start();
-    let lower = body.get(..16).unwrap_or(body).to_ascii_lowercase();
-    let framing = ["[herdr", "[answer with"]
-        .iter()
-        .any(|prefix| lower.starts_with(prefix));
-    if !framing {
-        return std::borrow::Cow::Borrowed(line);
-    }
-    let indent = &line[..line.len() - body.len()];
-    std::borrow::Cow::Owned(format!("{indent}\u{ff3b}{}", &body[1..]))
-}
-
 /// Write through a sibling temp file and rename, so readers never see half a file.
 pub fn write_atomically(path: &Path, content: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
@@ -241,6 +206,7 @@ pub(crate) fn test_dir(name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents_model::envelope::message_text;
 
     #[test]
     fn agent_text_cannot_forge_framing_or_keystrokes() {

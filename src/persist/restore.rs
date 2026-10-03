@@ -300,7 +300,9 @@ fn restore_with_imports_and_failures(
         );
         failed_imports += workspace_failed_imports;
         if let Some((workspace, restored_terminals, restored_runtimes)) = restored {
-            for terminal in restored_terminals {
+            for mut terminal in restored_terminals {
+                // Fork (agents v2): a restored pane's turn is unknown.
+                terminal.mark_restored();
                 terminals.insert(terminal.id.clone(), terminal);
             }
             terminal_runtimes.extend(restored_runtimes);
@@ -546,6 +548,34 @@ fn reinstate_suspended_agent(
         return;
     };
     terminal.restore_suspended_agent(suspended.agent.clone(), suspended.name.clone(), session);
+    if let Some(record) = terminal.suspended_agent.as_mut() {
+        record.suspended_by = suspended.suspended_by.clone();
+    }
+}
+
+/// Fork (agents v2): the pane meta back on the restored terminals, by the
+/// panes' old raw ids.
+fn reinstate_agent_meta(
+    snap: &TabSnapshot,
+    panes: &HashMap<PaneId, PaneState>,
+    reverse_id_map: &HashMap<PaneId, u32>,
+    terminals: &mut [TerminalState],
+) {
+    for (new_id, pane) in panes {
+        let Some(meta) = reverse_id_map
+            .get(new_id)
+            .and_then(|old_id| snap.panes.get(old_id))
+            .and_then(|saved| saved.agent_meta.as_ref())
+        else {
+            continue;
+        };
+        if let Some(terminal) = terminals
+            .iter_mut()
+            .find(|terminal| terminal.id == pane.attached_terminal_id)
+        {
+            *terminal.agent_meta_mut() = meta.clone();
+        }
+    }
 }
 
 fn restored_worktree_space_membership(
@@ -858,6 +888,7 @@ fn restore_tab(
         return (None, failed_imports);
     };
     let layout = TileLayout::from_saved(node, focus);
+    reinstate_agent_meta(snap, &panes, &reverse_id_map, &mut terminals);
 
     (
         Some((
@@ -1777,6 +1808,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            agent_meta: Default::default(),
                             cwd,
                             label: None,
                             agent_name: Some("reviewer".into()),
@@ -1784,6 +1816,7 @@ mod tests {
                             agent_session: Some(session.clone()),
                             launch_argv: None,
                             suspended_agent: Some(super::super::snapshot::SuspendedAgentSnapshot {
+                                suspended_by: Default::default(),
                                 agent: "claude".into(),
                                 name: Some("reviewer".into()),
                                 session,
@@ -1965,6 +1998,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            agent_meta: Default::default(),
                             cwd,
                             label: Some("reviewer".into()),
                             agent_name: Some("reviewer".into()),
@@ -2028,6 +2062,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_carries_the_agents_model_meta_and_starts_the_turn_unknown() {
+        let cwd = std::env::current_dir().unwrap();
+        let meta = crate::agents_model::PaneAgentMeta {
+            role: Some("fixer".into()),
+            note: Some("owns the API".into()),
+            opened_by: Some(crate::api::schema::agents_model::AgentsWho::Agent {
+                name: "lead".into(),
+            }),
+            team_excluded: Some("w3".into()),
+            public_aliases: vec!["w2:p7".into()],
+            role_cleared: false,
+            note_cleared: false,
+            pending_rename: false,
+            updated_unix: 42,
+        };
+        let pane = super::super::snapshot::PaneSnapshot {
+            agent_meta: Some(meta.clone()),
+            cwd: cwd.clone(),
+            label: None,
+            agent_name: None,
+            managed_agent_kind: None,
+            agent_session: None,
+            launch_argv: None,
+            suspended_agent: None,
+        };
+        // An older reader ignores the field; an older snapshot has none.
+        let json = serde_json::to_value(&pane).unwrap();
+        assert_eq!(json["agent_meta"]["role"], "fixer");
+        let mut old = json.clone();
+        old.as_object_mut().unwrap().remove("agent_meta");
+        let old: super::super::snapshot::PaneSnapshot = serde_json::from_value(old).unwrap();
+        assert_eq!(old.agent_meta, None);
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                team: None,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    color: None,
+                    remind: false,
+                    important: false,
+                    remind_every: None,
+                    layout: LayoutSnapshot::Pane(5),
+                    panes: HashMap::from([(5, pane)]),
+                    zoomed: false,
+                    focused: Some(5),
+                    root_pane: Some(5),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+        let (_workspaces, terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let terminal = terminals.values().next().expect("restored terminal");
+        assert_eq!(terminal.agent_meta(), &meta);
+        // The turn never survives a restore (fail closed).
+        let turn = terminal.turn().effective(
+            crate::agents_model::turn::EdgeStatus::Idle,
+            std::time::Instant::now(),
+            1,
+        );
+        assert_eq!(turn.origin, crate::agents_model::TurnOrigin::Unknown);
+        let suspended = super::super::snapshot::SuspendedAgentSnapshot {
+            agent: "claude".into(),
+            name: None,
+            session: super::super::snapshot::PaneAgentSessionSnapshot {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                value: "s1".into(),
+                transcript_path: None,
+            },
+            suspended_by: Some(crate::api::schema::agents_model::AgentsWho::Agent {
+                name: "lead".into(),
+            }),
+        };
+        let back: super::super::snapshot::SuspendedAgentSnapshot =
+            serde_json::from_value(serde_json::to_value(&suspended).unwrap()).unwrap();
+        assert_eq!(back, suspended);
+    }
+
+    #[tokio::test]
     async fn restore_preserves_public_id_mapping_after_pane_id_remap() {
         let cwd = std::env::current_dir().unwrap();
         let snapshot = SessionSnapshot {
@@ -2058,6 +2199,7 @@ mod tests {
                         (
                             10,
                             super::super::snapshot::PaneSnapshot {
+                                agent_meta: Default::default(),
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -2070,6 +2212,7 @@ mod tests {
                         (
                             20,
                             super::super::snapshot::PaneSnapshot {
+                                agent_meta: Default::default(),
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -2124,6 +2267,7 @@ mod tests {
             (
                 id.parse::<u32>().unwrap(),
                 super::super::snapshot::PaneSnapshot {
+                    agent_meta: Default::default(),
                     cwd: cwd.clone(),
                     label: None,
                     agent_name: None,
@@ -2135,6 +2279,7 @@ mod tests {
             )
         };
         let final_pane = super::super::snapshot::PaneSnapshot {
+            agent_meta: Default::default(),
             cwd: cwd.clone(),
             label: Some("planner".into()),
             agent_name: Some("planner".into()),
@@ -2315,6 +2460,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            agent_meta: Default::default(),
                             cwd,
                             label: None,
                             agent_name: None,
@@ -2725,6 +2871,7 @@ mod tests {
         panes.insert(
             0,
             super::super::snapshot::PaneSnapshot {
+                agent_meta: Default::default(),
                 cwd: cwd.clone(),
                 label: None,
                 agent_name: None,

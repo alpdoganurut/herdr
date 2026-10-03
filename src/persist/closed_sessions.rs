@@ -148,6 +148,54 @@ pub fn save(path: &Path, entries: &[ClosedSessionInfo]) -> io::Result<()> {
     result
 }
 
+/// Fork (agents v2): the side file with each closed session's agent meta
+/// and who closed it, keyed by [`session_key`]. A side file, so the record
+/// (and every client type built from it) keeps its shape; an older build
+/// ignores it.
+pub const AGENTS_FILE_NAME: &str = "closed-sessions-agents.json";
+
+/// Fork (agents v2): what the side file keeps for one closed session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClosedAgentRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_meta: Option<crate::agents_model::PaneAgentMeta>,
+    /// Who closed the tab; absent counts as the user (D4, fail closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_by: Option<crate::api::schema::agents_model::AgentsWho>,
+}
+
+/// The side file next to the record at `store`.
+pub fn agents_path(store: &Path) -> PathBuf {
+    store.with_file_name(AGENTS_FILE_NAME)
+}
+
+/// Every side record, by session key. A missing or corrupt file is empty.
+pub fn load_agents(store: &Path) -> std::collections::HashMap<String, ClosedAgentRecord> {
+    fs::read_to_string(agents_path(store))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Add side records and drop those whose session left the record.
+pub fn record_agents(store: &Path, records: Vec<(String, ClosedAgentRecord)>) -> io::Result<()> {
+    let mut all = load_agents(store);
+    all.extend(records);
+    let live: std::collections::HashSet<String> = load(store).iter().map(session_key).collect();
+    all.retain(|key, _| live.contains(key));
+    let path = agents_path(store);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_file_name(format!(".{AGENTS_FILE_NAME}.tmp-{}", std::process::id()));
+    let json = serde_json::to_string_pretty(&all)?;
+    let result = fs::write(&tmp, json).and_then(|()| fs::rename(&tmp, &path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// Which native session an entry names: one entry per session.
 pub fn session_key(entry: &ClosedSessionInfo) -> String {
     format!(

@@ -674,6 +674,8 @@ impl App {
     }
 
     pub(crate) fn emit_pane_state_update(&mut self, update: &crate::app::actions::PaneStateUpdate) {
+        // Fork (agents v2): the turn origin's status edge, O(1).
+        self.note_turn_edge(update);
         let Some(pane_id) = self.public_pane_id(update.ws_idx, update.pane_id) else {
             return;
         };
@@ -1000,6 +1002,8 @@ impl App {
         use crate::api::schema::{
             ErrorBody, ErrorResponse, Method, ResponseResult, SuccessResponse,
         };
+        // Fork (agents v2): user actions on tabs and teams are logged too.
+        self.log_user_request(&request.method);
 
         let response = match request.method {
             Method::ServerStop(_) => {
@@ -1317,6 +1321,41 @@ impl App {
             Method::CheckpointsContext(params) => {
                 return self.handle_checkpoints_context(request.id, params)
             }
+            // Fork: the agents model (agents v2).
+            Method::AgentsActor(params) => return self.handle_agents_actor(request.id, params),
+            Method::AgentsDirectory(params) => {
+                return self.handle_agents_directory(request.id, params)
+            }
+            Method::AgentsRead(params) => return self.handle_agents_read(request.id, params),
+            Method::AgentsOpenTab(params) => {
+                return self.handle_agents_open_tab(request.id, params)
+            }
+            Method::AgentsSendMessage(params) => {
+                return self.handle_agents_send_message(request.id, params)
+            }
+            Method::AgentsRenameTab(params) => {
+                return self.handle_agents_rename_tab(request.id, params)
+            }
+            Method::AgentsMoveTab(params) => {
+                return self.handle_agents_move_tab(request.id, params)
+            }
+            Method::AgentsSetMeta(params) => {
+                return self.handle_agents_set_meta(request.id, params)
+            }
+            Method::AgentsCloseTab(params) => {
+                return self.handle_agents_close_tab(request.id, params)
+            }
+            Method::AgentsReopenTab(params) => {
+                return self.handle_agents_reopen_tab(request.id, params)
+            }
+            Method::AgentsNotesAppend(params) => {
+                return self.handle_agents_notes_append(request.id, params)
+            }
+            Method::AgentsCheckpoint(params) => {
+                return self.handle_agents_checkpoint(request.id, params)
+            }
+            Method::AgentsActions(params) => return self.handle_agents_actions(request.id, params),
+            Method::AgentsCheck(params) => return self.handle_agents_check(request.id, params),
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

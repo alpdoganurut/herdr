@@ -4,6 +4,7 @@ pub mod agent_messages;
 pub mod agent_notices;
 pub mod agent_wrap;
 pub mod agents;
+pub mod agents_model;
 pub mod browser;
 pub mod closed_sessions;
 pub mod commands;
@@ -299,6 +300,35 @@ pub enum Method {
     CheckpointsRemove(notes::CheckpointTarget),
     #[serde(rename = "checkpoints.context")]
     CheckpointsContext(notes::CheckpointsContextParams),
+    // fork: the agents model (agents v2).
+    #[serde(rename = "agents.actor")]
+    AgentsActor(agents_model::AgentsActorParams),
+    #[serde(rename = "agents.directory")]
+    AgentsDirectory(agents_model::AgentsDirectoryParams),
+    #[serde(rename = "agents.read")]
+    AgentsRead(agents_model::AgentsReadParams),
+    #[serde(rename = "agents.open_tab")]
+    AgentsOpenTab(agents_model::AgentsOpenTabParams),
+    #[serde(rename = "agents.send_message")]
+    AgentsSendMessage(agents_model::AgentsSendMessageParams),
+    #[serde(rename = "agents.rename_tab")]
+    AgentsRenameTab(agents_model::AgentsRenameTabParams),
+    #[serde(rename = "agents.move_tab")]
+    AgentsMoveTab(agents_model::AgentsMoveTabParams),
+    #[serde(rename = "agents.set_meta")]
+    AgentsSetMeta(agents_model::AgentsSetMetaParams),
+    #[serde(rename = "agents.close_tab")]
+    AgentsCloseTab(agents_model::AgentsCloseTabParams),
+    #[serde(rename = "agents.reopen_tab")]
+    AgentsReopenTab(agents_model::AgentsReopenTabParams),
+    #[serde(rename = "agents.notes_append")]
+    AgentsNotesAppend(agents_model::AgentsNotesAppendParams),
+    #[serde(rename = "agents.checkpoint")]
+    AgentsCheckpoint(agents_model::AgentsCheckpointParams),
+    #[serde(rename = "agents.actions")]
+    AgentsActions(agents_model::AgentsActionsParams),
+    #[serde(rename = "agents.check")]
+    AgentsCheck(agents_model::AgentsCheckParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

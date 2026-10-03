@@ -8,13 +8,14 @@
 //! Lifecycle ([`CoordPhase`]): enabling spawns the worker, which migrates the
 //! POC directory, takes the watcher lock and reports `Ready`
 //! (`WaitingForLock` until then; `Blocked` while another server holds the
-//! lock or the registry is corrupt). The first native start retires the
-//! POC's coordinator entry (`Migrating`). `Starting` opens the `coordinator`
-//! tab in the first space (never focused) and calls `start_agent` once the
-//! pane is at its shell; `Launching` follows herdr's own managed-agent launch
-//! state until it is interactive (`Running`, and the worker records the
-//! coordinator in the registry). A coordinator that goes missing is a
-//! relaunch trigger from the worker; relaunches count against
+//! lock). The first native start reads the POC's coordinator entry for its
+//! session (`Migrating`). `Starting` opens the `coordinator` tab in the first
+//! space (never focused) and calls `start_agent` once the pane is at its
+//! shell; `Launching` follows herdr's own managed-agent launch state until it
+//! is interactive (`Running`). Agents v2: the coordinator is this record (its
+//! tab, pane and session in `coordinator.json`), not a registry role. A
+//! coordinator that goes missing is a relaunch trigger from the worker
+//! (the pass input names the coordinator it expects); relaunches count against
 //! `relaunch_cap_hour`, past which the coordinator is `Down` until
 //! `coordinator.start`.
 //!
@@ -48,8 +49,8 @@ use crate::coordinator::engine::{
     WakeOutcome, WorkerHandle, WorkerMsg,
 };
 use crate::coordinator::launch::LaunchCtx;
-use crate::coordinator::live::{CoordinatorAgentFact, GroupFact};
-use crate::coordinator::watch::WakeCfg;
+use crate::coordinator::live::{CoordinatorAgentFact, GroupFact, TabFact};
+use crate::coordinator::watch::{ExpectedCoordinator, WakeCfg};
 use crate::persist::coordinator::{
     self as store, CoordinatorNotifyRecord, CoordinatorRecord, PendingCoordinatorNotify,
     PersistedDown,
@@ -226,6 +227,9 @@ pub(crate) struct CoordinatorState {
     /// A fresh start was asked while the coordinator was alive: release the
     /// suspended record once its exit is observed, then start.
     release_suspended: bool,
+    /// `agents-v2.json`'s unmatched count, keyed by the file's mtime: the
+    /// read model is pulled on every client tick, the file changes rarely.
+    migration_unmatched: std::cell::RefCell<Option<(std::time::SystemTime, Option<u32>)>>,
     /// Tests: the local minute of day and the day the policy goes by.
     #[cfg(test)]
     pub(crate) local_override: Option<(u16, &'static str)>,
@@ -307,6 +311,7 @@ impl CoordinatorState {
             terminal_id: None,
             notify_retry_at: None,
             release_suspended: false,
+            migration_unmatched: std::cell::RefCell::new(None),
             #[cfg(test)]
             local_override: None,
             #[cfg(test)]
@@ -710,6 +715,8 @@ impl App {
         let terminal = pane.and_then(|pane| self.coordinator_terminal(pane));
         let out = state.last_output.as_ref();
         let summary = out.and_then(|out| out.summary.as_ref());
+        // The agents the coordinator watches (its wake scope, itself
+        // included): `managed` keeps that meaning for older clients.
         let managed = out
             .map(|out| {
                 out.managed
@@ -717,7 +724,7 @@ impl App {
                     .map(|agent| CoordinatorManagedInfo {
                         name: agent.name.clone(),
                         role: agent.role.clone(),
-                        project: agent.project.clone(),
+                        project: None,
                         note: agent.note.clone(),
                         pane_id: Some(agent.pane_id.clone()),
                         tab_id: Some(agent.tab_id.clone()).filter(|id| !id.is_empty()),
@@ -725,23 +732,6 @@ impl App {
                         status: Some(agent.status.clone()),
                         last_change_at: Some(agent.last_change_unix).filter(|at| *at > 0),
                     })
-                    .chain(out.offline.iter().map(|entry| {
-                        CoordinatorManagedInfo {
-                            name: entry
-                                .role
-                                .clone()
-                                .or_else(|| entry.pane_id.clone())
-                                .unwrap_or_else(|| "offline".into()),
-                            role: entry.role.clone(),
-                            project: entry.project.clone(),
-                            note: None,
-                            pane_id: entry.pane_id.clone(),
-                            tab_id: None,
-                            agent: entry.agent.clone(),
-                            status: Some("offline".into()),
-                            last_change_at: None,
-                        }
-                    }))
                     .collect()
             })
             .unwrap_or_default();
@@ -816,7 +806,31 @@ impl App {
             coordinator_dir: state.dir.display().to_string(),
             notify: state.notify.enabled,
             wake_queued: None,
+            wake_scope: Some(state.cfg.scope.as_str().to_string()),
+            migration_unmatched: self.agents_migration_unmatched(),
         }
+    }
+
+    /// `managed.json` entries the agents-v2 migration could not place
+    /// (`agents-v2.json`), for `coordinator status`. One small file read,
+    /// only on this read path.
+    fn agents_migration_unmatched(&self) -> Option<u32> {
+        let path = crate::app::agents_migrate::marker_path(&self.coordinator.dir);
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+        let mut cache = self.coordinator.migration_unmatched.borrow_mut();
+        if let Some((at, count)) = cache.as_ref() {
+            if *at == mtime {
+                return *count;
+            }
+        }
+        let count = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| {
+                serde_json::from_str::<crate::app::agents_migrate::MigrationMarker>(&text).ok()
+            })
+            .map(|marker| marker.unmatched.len() as u32);
+        *cache = Some((mtime, count));
+        count
     }
 
     /// The coordinator tab as a notification target: space, tab and pane ids.
@@ -969,9 +983,12 @@ impl App {
 
     // ----- methods ---------------------------------------------------------
 
-    /// `in_coordinator_turn`: the caller is the coordinator pane and a
-    /// herdr+ turn (a wake-up or an agent message) is live, so the request
-    /// did not come from the user. Absent `caller_pane` is the user.
+    /// `in_coordinator_turn`, the single coordinator turn check (agents v2,
+    /// §3.6): the caller is the coordinator pane and its current turn is not
+    /// an effective user turn (it started from a wake-up, an agent's message,
+    /// a script or nothing, or a script typed into it since), or a herdr+
+    /// turn marker is live. Both signals must agree that the user asked.
+    /// Absent `caller_pane` is the user.
     pub(crate) fn refuse_in_coordinator_turn(
         &self,
         caller_pane: Option<&str>,
@@ -985,19 +1002,93 @@ impl App {
         let Some(pane) = self.existing_coordinator_pane() else {
             return Ok(());
         };
-        if self.public_pane_id(pane.ws_idx, pane.pane_id).as_deref() != Some(caller) {
+        // A stale id of the coordinator pane (an alias after a move)
+        // resolves to it too.
+        let named = self.public_pane_id(pane.ws_idx, pane.pane_id).as_deref() == Some(caller)
+            || self
+                .parse_pane_id(caller)
+                .is_some_and(|(ws_idx, pane_id)| ws_idx == pane.ws_idx && pane_id == pane.pane_id);
+        if !named {
             return Ok(());
         }
-        // Read the marker itself: an MCP server may have set it since the
+        if self.coordinator_user_turn(pane.ws_idx, pane.pane_id) {
+            return Ok(());
+        }
+        Err(CoordinatorError::new(
+            error_code::IN_TURN,
+            "refused: this turn of the coordinator did not start from the user's own input (a herdr+ wake-up, an agent's message or a script); suggest it on the board instead",
+        ))
+    }
+
+    /// Whether the coordinator pane's current turn is its user's: an
+    /// effective user turn (`agents_model`) and no live herdr+ turn marker
+    /// (`turn.json`, written for a wake-up or an agent's message). The agent
+    /// policy's coordinator turn should read this too, so the two checks
+    /// cannot disagree.
+    pub(crate) fn coordinator_user_turn(&self, ws_idx: usize, pane: crate::layout::PaneId) -> bool {
+        if !self.pane_user_turn(ws_idx, pane) {
+            return false;
+        }
+        // Read the marker itself: the server may have set it since the
         // worker's last pass. One small file, only on this path.
         let now = crate::coordinator::now_unix();
-        if crate::coordinator::turn::read_live(&self.coordinator.dir, now).is_some() {
-            return Err(CoordinatorError::new(
-                error_code::IN_TURN,
-                "refused during a herdr+ turn of the coordinator (not the user); suggest it on the board instead",
-            ));
+        crate::coordinator::turn::read_live(&self.coordinator.dir, now).is_none()
+    }
+
+    /// Forget the stored coordinator tab and pane once they no longer
+    /// resolve (closed): a tab or pane id issued again later, after a
+    /// restart, must not inherit the coordinator's identity. A renamed tab
+    /// keeps them (`existing_coordinator_pane` checks the label). O(1).
+    fn clear_stale_coordinator_ids(&mut self) {
+        // Only ids this server lifetime has seen resolve (a known terminal):
+        // never before the session is restored at startup.
+        if self.coordinator.terminal_id.is_none() {
+            return;
         }
-        Ok(())
+        let Some(tab_id) = self.coordinator.tab_id.as_deref() else {
+            return;
+        };
+        let tab = self.parse_tab_id(tab_id);
+        let pane_ok = match (tab, self.coordinator.pane_id.as_deref()) {
+            (None, _) => false,
+            (Some(_), None) => true,
+            (Some((ws_idx, tab_idx)), Some(pane)) => {
+                self.parse_pane_id(pane).is_some_and(|(pane_ws, pane_id)| {
+                    pane_ws == ws_idx
+                        && self
+                            .state
+                            .workspaces
+                            .get(ws_idx)
+                            .and_then(|ws| ws.tabs.get(tab_idx))
+                            .is_some_and(|tab| tab.panes.contains_key(&pane_id))
+                }) && self.coordinator_terminal_matches(ws_idx, pane)
+            }
+        };
+        if pane_ok {
+            return;
+        }
+        tracing::info!(
+            event = "coordinator.tab",
+            outcome = "forgotten",
+            tab_id = tab_id,
+            "the coordinator tab or pane closed; its stored ids are cleared"
+        );
+        self.coordinator.tab_id = None;
+        self.coordinator.pane_id = None;
+        self.coordinator.terminal_id = None;
+        self.sync_coordinator_suppression();
+        self.coordinator.persist();
+    }
+
+    /// The stored pane still hosts the coordinator's terminal (when one is
+    /// known): an id reused in this server lifetime is not the coordinator.
+    fn coordinator_terminal_matches(&self, ws_idx: usize, pane: &str) -> bool {
+        let Some(known) = self.coordinator.terminal_id.as_ref() else {
+            return true;
+        };
+        self.parse_pane_id(pane)
+            .and_then(|(_, pane_id)| self.state.workspaces.get(ws_idx)?.terminal_id(pane_id))
+            .is_some_and(|terminal| terminal == known)
     }
 
     /// `coordinator.open`: ensure the tab, focus it, and start the
@@ -1407,6 +1498,7 @@ impl App {
     /// focused, drive the phase, post agent facts when they changed.
     /// Returns whether the read model changed.
     pub(crate) fn handle_coordinator_tasks(&mut self, now: Instant) -> bool {
+        self.clear_stale_coordinator_ids();
         let mut changed = self.clear_coordinator_unread_when_focused();
         changed |= self.drive_coordinator(now);
         self.post_coordinator_input(now);
@@ -1443,9 +1535,6 @@ impl App {
         }
         if let Some(migration) = out.migration.take() {
             self.finish_coordinator_migration(migration);
-        }
-        if let Some(Err(err)) = out.registered.take() {
-            tracing::warn!(event = "coordinator.register", error = %err, "coordinator not recorded in the registry");
         }
         let new_suggestions = std::mem::take(&mut out.new_suggestions);
         if !new_suggestions.is_empty() {
@@ -1889,27 +1978,31 @@ impl App {
         }
     }
 
-    /// Record the running coordinator in the registry (on the worker).
+    /// Record the running coordinator: its session in `coordinator.json`
+    /// (the relaunch resumes it) and its pane id for the worker's next pass
+    /// (agents v2: the server's record is the coordinator, no registry).
     fn register_running_coordinator(&mut self) {
         let Some(pane) = self.existing_coordinator_pane() else {
             return;
         };
-        let Some(pane_id) = self.public_pane_id(pane.ws_idx, pane.pane_id) else {
-            return;
-        };
+        let public = self.public_pane_id(pane.ws_idx, pane.pane_id);
         let session = self
             .coordinator_terminal(pane)
             .and_then(terminal_session)
             .or_else(|| self.coordinator.session.clone());
+        let mut changed = false;
         if session.is_some() && session != self.coordinator.session {
-            self.coordinator.session = session.clone();
+            self.coordinator.session = session;
+            changed = true;
+        }
+        if public.is_some() && public != self.coordinator.pane_id {
+            self.coordinator.pane_id = public;
+            changed = true;
+        }
+        if changed {
             self.coordinator.persist();
         }
-        self.coordinator.send(WorkerMsg::RegisterCoordinator {
-            pane: pane_id,
-            session,
-            agent: "claude".into(),
-        });
+        self.coordinator.input_dirty = true;
     }
 
     /// While running: the coordinator blocked on a prompt raises its own
@@ -2148,8 +2241,8 @@ impl App {
         let ours = existing
             .filter(|own| self.public_pane_id(own.ws_idx, own.pane_id).as_deref() == Some(pane));
         let Some(own) = ours else {
-            // The registry points elsewhere while the coordinator still runs
-            // in its own pane: record that pane again.
+            // The worker's facts name another pane while the coordinator
+            // still runs in its own: record that pane again.
             if existing.is_some_and(|own| self.agent_alive_in(own)) {
                 self.register_running_coordinator();
                 self.coordinator.input_dirty = true;
@@ -2163,6 +2256,15 @@ impl App {
             reply(&mut self.coordinator, WakeOutcome::Held(status.to_string()));
             return;
         }
+        // The typing guard (agents v2, always on): the user is typing into
+        // the coordinator; a wake-up would land in their draft.
+        if self.pane_user_typing(own.ws_idx, own.pane_id) {
+            reply(
+                &mut self.coordinator,
+                WakeOutcome::Held("user typing".into()),
+            );
+            return;
+        }
         let queued = self.queue_agent_prompt(
             format!("coordinator:wake-{seq}"),
             AgentPromptParams {
@@ -2171,6 +2273,9 @@ impl App {
                 wait: None,
                 guard_user_typing: true,
             },
+            crate::agents_model::InputSource::Programmatic(
+                crate::agents_model::Programmatic::HerdrWake { seq },
+            ),
         );
         match queued {
             Ok((_, _, completion)) => {
@@ -2242,7 +2347,9 @@ impl App {
     pub(crate) fn build_coordinator_input(&self) -> CoordinatorPassInput {
         let mut agents = Vec::new();
         let mut groups = Vec::with_capacity(self.state.workspaces.len());
+        let mut tabs = Vec::new();
         let mut tab_labels = HashMap::new();
+        let own = self.existing_coordinator_pane();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
             let workspace_id = self.public_workspace_id(ws_idx);
             groups.push(GroupFact {
@@ -2264,6 +2371,14 @@ impl App {
                 if let Some(label) = tab.custom_name.as_ref().filter(|label| !label.is_empty()) {
                     tab_labels.insert(tab_id.clone(), label.clone());
                 }
+                let mut tab_fact = TabFact {
+                    tab_id: tab_id.clone(),
+                    workspace_id: workspace_id.clone(),
+                    panes: tab.panes.len() as u64,
+                    agents: 0,
+                    protected: own
+                        .is_some_and(|own| own.ws_idx == ws_idx && own.tab_idx == tab_idx),
+                };
                 for pane_id in tab.layout.pane_ids() {
                     let Some(pane) = ws.pane_state(pane_id) else {
                         continue;
@@ -2275,6 +2390,7 @@ impl App {
                     if !terminal.is_agent_terminal() {
                         continue;
                     }
+                    tab_fact.agents += 1;
                     let Some(public) = self.public_pane_id(ws_idx, pane_id) else {
                         continue;
                     };
@@ -2305,16 +2421,37 @@ impl App {
                         cwd: None,
                         subagents: u64::from(terminal.active_subagent_count()),
                         team: member.map(|_| workspace_id.clone()),
-                        team_role: member.and_then(|member| member.role.clone()),
+                        role: member
+                            .and_then(|member| member.role.clone())
+                            .or_else(|| terminal.agent_meta().role.clone()),
+                        note: terminal.agent_meta().note.clone(),
+                        opened_by: terminal.agent_meta().opened_by.clone(),
+                        member: member.is_some(),
+                        coordinator: own
+                            .is_some_and(|own| own.ws_idx == ws_idx && own.pane_id == pane_id),
                     });
                 }
+                tabs.push(tab_fact);
             }
         }
+        // While herdr runs the coordinator, its absence from the facts is a
+        // relaunch trigger for the worker.
+        // Also after its tab closed (no pane any more): the relaunch opens a
+        // new one.
+        let expected_coordinator =
+            matches!(self.coordinator.phase, CoordPhase::Running).then(|| ExpectedCoordinator {
+                pane_id: own
+                    .and_then(|own| self.public_pane_id(own.ws_idx, own.pane_id))
+                    .or_else(|| self.coordinator.pane_id.clone()),
+                session: self.coordinator.session.clone(),
+            });
         CoordinatorPassInput {
             agents,
             groups,
+            tabs,
             tab_labels,
             coordinator_down: matches!(self.coordinator.phase, CoordPhase::Down { .. }),
+            expected_coordinator,
         }
     }
 
@@ -2533,11 +2670,9 @@ mod tests {
             board: None,
             new_suggestions: Vec::new(),
             managed: Vec::new(),
-            offline: Vec::new(),
             coordinator_session: None,
             coordinator_pane: None,
             migration: None,
-            registered: None,
             dir_migrated: false,
             worker: 0,
         })
@@ -2646,11 +2781,14 @@ mod tests {
         assert!(terminal.managed_agent_interactive_ready(), "launch settled");
         app.handle_coordinator_tasks(settle);
         assert_eq!(app.coordinator.phase, CoordPhase::Running);
-        assert!(app
-            .coordinator
-            .sent
-            .iter()
-            .any(|msg| matches!(msg, WorkerMsg::RegisterCoordinator { .. })));
+        // Agents v2: the record is the coordinator (no registry write);
+        // the next pass names it as the expected coordinator.
+        let expected = app
+            .build_coordinator_input()
+            .expected_coordinator
+            .expect("running: expected");
+        assert_eq!(expected.pane_id, app.coordinator.pane_id);
+        assert_eq!(expected.session, app.coordinator.session);
         let info = app.coordinator_get_info();
         assert_eq!(info.state, CoordinatorStateInfo::Running);
         assert_eq!(
@@ -2968,8 +3106,19 @@ mod tests {
             },
         )
         .unwrap();
+        // Agents v2: both signals must say the user asked: an effective
+        // user turn and no live marker.
+        settled(&mut app, pane.pane_id);
+        crate::app::agents_model::tests::user_turn(&mut app, pane.pane_id);
         let err = app.refuse_in_coordinator_turn(Some(&own)).unwrap_err();
         assert_eq!(err.code, "in_coordinator_turn");
+        // The agents-model policy reads the same check: a live marker makes
+        // the coordinator's turn not the user's there too.
+        let mut caller = app.required_caller(&own).unwrap();
+        // The test pane hosts no detected agent; as the coordinator it would.
+        caller.actor = crate::agents_model::policy::Actor::Coordinator;
+        assert!(caller.turn.user_turn(), "the pane's own turn is the user's");
+        assert!(!app.model_facts(&caller, String::new(), None).user_turn);
         assert!(app.refuse_in_coordinator_turn(None).is_ok(), "the user");
         assert!(
             app.refuse_in_coordinator_turn(Some("w9:p9")).is_ok(),
@@ -2981,7 +3130,150 @@ mod tests {
         );
         crate::coordinator::turn::clear(&app.coordinator.dir);
         assert!(app.refuse_in_coordinator_turn(Some(&own)).is_ok());
+        assert!(app.model_facts(&caller, String::new(), None).user_turn);
         let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+    }
+
+    #[tokio::test]
+    async fn the_coordinator_writes_only_in_a_turn_its_user_started() {
+        let mut app = coordinator_app(true);
+        launching(&mut app);
+        let pane = app.existing_coordinator_pane().unwrap();
+        let own = app.public_pane_id(pane.ws_idx, pane.pane_id).unwrap();
+        std::fs::create_dir_all(&app.coordinator.dir).unwrap();
+        // No input since idle (a self-started or unknown turn): refused,
+        // with no marker at all.
+        assert!(!app.coordinator_user_turn(pane.ws_idx, pane.pane_id));
+        assert_eq!(
+            app.refuse_in_coordinator_turn(Some(&own)).unwrap_err().code,
+            "in_coordinator_turn"
+        );
+        assert!(
+            app.set_coordinator_notify(false).is_ok(),
+            "the user's own path"
+        );
+        settled(&mut app, pane.pane_id);
+        crate::app::agents_model::tests::user_turn(&mut app, pane.pane_id);
+        assert!(app.coordinator_user_turn(pane.ws_idx, pane.pane_id));
+        assert!(app.refuse_in_coordinator_turn(Some(&own)).is_ok());
+        // A script typed into the user's turn poisons it.
+        app.note_pane_input(
+            pane.ws_idx,
+            pane.pane_id,
+            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
+        );
+        assert!(app.refuse_in_coordinator_turn(Some(&own)).is_err());
+        let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+    }
+
+    #[tokio::test]
+    async fn a_wake_is_typed_as_a_herdr_wake_and_holds_while_the_user_types() {
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        let own = app.existing_coordinator_pane().unwrap();
+        let pane = app.public_pane_id(own.ws_idx, own.pane_id).unwrap();
+        // The user typed into the coordinator (no submit yet): held.
+        app.note_pane_input(
+            own.ws_idx,
+            own.pane_id,
+            crate::agents_model::InputSource::Client {
+                submit: false,
+                attach: false,
+            },
+        );
+        prompt_effect(&mut app, &pane);
+        assert_eq!(
+            wake_outcomes(&app),
+            vec![WakeOutcome::Held("user typing".into())]
+        );
+        // Without typing the wake is typed in, recorded as herdr's wake-up:
+        // the turn it starts is not the user's.
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        let own = app.existing_coordinator_pane().unwrap();
+        let pane = app.public_pane_id(own.ws_idx, own.pane_id).unwrap();
+        settled(&mut app, own.pane_id);
+        prompt_effect(&mut app, &pane);
+        assert_eq!(wake_outcomes(&app), vec![WakeOutcome::Delivered]);
+        let terminal = app.state.workspaces[own.ws_idx]
+            .terminal_id(own.pane_id)
+            .cloned()
+            .unwrap();
+        let turn = app.effective_turn(&terminal).expect("a turn");
+        assert_eq!(
+            turn.origin,
+            crate::agents_model::TurnOrigin::HerdrWake { seq: 7 }
+        );
+        assert!(!app.coordinator_user_turn(own.ws_idx, own.pane_id));
+    }
+
+    #[tokio::test]
+    async fn closing_the_coordinator_tab_forgets_its_stored_ids() {
+        // Ids not seen in this lifetime (before the restore) are kept.
+        let mut fresh = coordinator_app(true);
+        fresh.coordinator.tab_id = Some("w9:t9".into());
+        fresh.coordinator.pane_id = Some("w9:p9".into());
+        fresh.handle_coordinator_tasks(Instant::now());
+        assert_eq!(fresh.coordinator.tab_id.as_deref(), Some("w9:t9"));
+        let mut app = coordinator_app(true);
+        launching(&mut app);
+        let pane = app.existing_coordinator_pane().unwrap();
+        assert!(app.coordinator.tab_id.is_some());
+        // A rename keeps the ids (the label check covers identity).
+        app.state.workspaces[pane.ws_idx].tabs[pane.tab_idx].set_custom_name("mine".into());
+        app.handle_coordinator_tasks(Instant::now());
+        assert!(app.coordinator.tab_id.is_some(), "renamed, not closed");
+        // Closed: the ids no longer resolve and are cleared, so an id issued
+        // again later cannot inherit the coordinator's identity.
+        let tab_id = app.coordinator.tab_id.clone().unwrap();
+        app.state.workspaces[pane.ws_idx].tabs.remove(pane.tab_idx);
+        app.handle_coordinator_tasks(Instant::now());
+        assert!(app.parse_tab_id(&tab_id).is_none() || app.coordinator.tab_id.is_none());
+        assert_eq!(app.coordinator.tab_id, None);
+        assert_eq!(app.coordinator.pane_id, None);
+    }
+
+    #[tokio::test]
+    async fn a_running_coordinator_whose_tab_closed_is_still_expected_for_a_relaunch() {
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        let pane = app.existing_coordinator_pane().unwrap();
+        app.state.workspaces[pane.ws_idx].tabs.remove(pane.tab_idx);
+        app.handle_coordinator_tasks(Instant::now());
+        assert_eq!(app.coordinator.tab_id, None);
+        let expected = app
+            .build_coordinator_input()
+            .expected_coordinator
+            .expect("still running: the worker relaunches it");
+        assert_eq!(expected.pane_id, None);
+        assert_eq!(expected.session, app.coordinator.session);
+    }
+
+    #[test]
+    fn the_pass_input_names_the_coordinator_its_tabs_and_who_opened_each_agent() {
+        let mut app = coordinator_app(true);
+        app.coordinator.phase = CoordPhase::Running;
+        let input = app.build_coordinator_input();
+        assert_eq!(
+            input.expected_coordinator,
+            Some(ExpectedCoordinator {
+                pane_id: None,
+                session: None
+            }),
+            "running without a tab: still expected (a relaunch opens one)"
+        );
+        app.coordinator.phase = CoordPhase::Off;
+        assert!(app.build_coordinator_input().expected_coordinator.is_none());
+        assert_eq!(
+            input.tabs.len(),
+            app.state
+                .workspaces
+                .iter()
+                .map(|ws| ws.tabs.len())
+                .sum::<usize>(),
+            "every tab, shell tabs included"
+        );
+        assert!(input.tabs.iter().all(|tab| !tab.protected));
     }
 
     fn suggestion(text: &str) -> Suggestion {
@@ -3228,7 +3520,7 @@ mod tests {
             .find(|fact| Some(&fact.pane_id) == app.public_pane_id(1, member).as_ref())
             .unwrap();
         assert_eq!(member_fact.team.as_ref(), Some(&workspace_id));
-        assert_eq!(member_fact.team_role.as_deref(), Some("fixer"));
+        assert_eq!(member_fact.role.as_deref(), Some("fixer"));
         let other_fact = input
             .agents
             .iter()
@@ -3421,7 +3713,7 @@ mod tests {
     }
 
     #[test]
-    fn the_managed_read_model_lists_live_and_offline_agents() {
+    fn the_managed_read_model_lists_the_watched_agents_and_the_scope() {
         let mut app = coordinator_app(true);
         app.coordinator.engine = EngineStatus::Ready;
         let mut out = output(EngineStatus::Ready);
@@ -3435,17 +3727,13 @@ mod tests {
             last_change_unix: 5,
             ..LiveAgent::default()
         }];
-        out.offline = vec![crate::coordinator::live::OfflineAgent {
-            pane_id: Some("w1:p3".into()),
-            role: Some("reviewer".into()),
-            ..Default::default()
-        }];
         app.apply_coordinator_output(out);
         let info = app.coordinator_get_info();
-        assert_eq!(info.managed.len(), 2);
+        assert_eq!(info.managed.len(), 1);
         assert_eq!(info.managed[0].status.as_deref(), Some("working"));
         assert_eq!(info.managed[0].last_change_at, Some(5));
-        assert_eq!(info.managed[1].status.as_deref(), Some("offline"));
+        assert_eq!(info.managed[0].project, None, "folded into the note (U3)");
+        assert_eq!(info.wake_scope.as_deref(), Some("opened"));
     }
 
     fn session(id: &str) -> crate::agent_resume::PersistedAgentSession {
@@ -3495,6 +3783,21 @@ mod tests {
             items: 1,
         });
         app.apply_coordinator_output(out);
+    }
+
+    /// The coordinator's agent was seen idle: the launch command herdr typed
+    /// is behind an idle edge, as after a real launch.
+    fn settled(app: &mut App, pane: crate::layout::PaneId) {
+        use crate::agents_model::turn::EdgeStatus;
+        crate::app::agents_model::tests::terminal_mut(app, pane)
+            .turn_mut()
+            .on_status_edge(
+                EdgeStatus::Unknown,
+                EdgeStatus::Idle,
+                false,
+                Instant::now(),
+                1,
+            );
     }
 
     fn wake_outcomes(app: &App) -> Vec<WakeOutcome> {
@@ -3555,23 +3858,16 @@ mod tests {
         assert_eq!(app.coordinator.phase, CoordPhase::Running, "not restarted");
         assert!(app.coordinator.relaunches.is_empty(), "not counted");
         assert!(app.coordinator.input_dirty, "fresh facts follow");
-        assert!(matches!(
-            app.coordinator.sent.last(),
-            Some(WorkerMsg::RegisterCoordinator { .. })
-        ));
     }
 
     #[tokio::test]
-    async fn a_wake_for_a_moved_registry_entry_is_held_and_re_registers() {
+    async fn a_wake_for_another_pane_is_held_and_re_records_the_coordinator() {
         let mut app = coordinator_app(true);
         running(&mut app);
+        app.coordinator.input_dirty = false;
         prompt_effect(&mut app, "w9:p9");
         assert_eq!(wake_outcomes(&app), vec![WakeOutcome::Held("moved".into())]);
-        assert!(app
-            .coordinator
-            .sent
-            .iter()
-            .any(|msg| matches!(msg, WorkerMsg::RegisterCoordinator { .. })));
+        assert!(app.coordinator.input_dirty, "the next pass names its pane");
     }
 
     #[tokio::test]

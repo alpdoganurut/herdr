@@ -1,7 +1,7 @@
 use super::test_support::TempHome;
 use super::*;
 use crate::cli::BROWSER_STEERING;
-use crate::coordinator::launch::{ClaudeSession, CLAUDE_ALLOW_AGENT};
+use crate::coordinator::launch::{claude_allow_agent, ClaudeSession};
 
 fn s(args: &[&str]) -> Vec<String> {
     args.iter().map(|a| a.to_string()).collect()
@@ -44,8 +44,10 @@ fn claude_flag() -> String {
     format!("--mcp-config={DIR}/mcp/claude.json")
 }
 
-const CLAUDE_ALLOW: &str =
-    "--allowedTools=mcp__herdr_agents__agents_whoami,mcp__herdr_agents__agents_notify";
+/// Every wrapped launch's allowlist: all herdr_agents tools but close and reopen.
+fn claude_allow() -> String {
+    format!("--allowedTools={}", claude_allow_list_value())
+}
 
 fn developer_instructions(args: &[String]) -> Option<String> {
     let value = args
@@ -112,7 +114,7 @@ fn every_switch_combination_builds_the_expected_claude_argv() {
                     format!("tools={tools} instructions={instructions} steer={steer}: {args:?}");
                 assert_eq!(args[0], "0000-uuid", "claude-z's $1 stays first: {label}");
                 assert_eq!(args.contains(&claude_flag()), tools, "{label}");
-                assert_eq!(args.iter().any(|a| a == CLAUDE_ALLOW), tools, "{label}");
+                assert_eq!(args.iter().any(|a| *a == claude_allow()), tools, "{label}");
                 let prompt = args
                     .iter()
                     .position(|a| a == "--append-system-prompt")
@@ -153,14 +155,14 @@ fn every_switch_combination_builds_the_expected_claude_argv() {
     let plan = plan_for(true, true, true);
     let prompt = format!(
         "{}\n\n{BROWSER_STEERING}",
-        instructions::DEFAULT_NOTIFY_PARAGRAPH
+        instructions::default_paragraph(true, false)
     );
     assert_eq!(
         wrap_args("claude", &plan, &s(&["-p", "--", "prompt text"])),
         [
             "-p".to_string(),
             claude_flag(),
-            CLAUDE_ALLOW.to_string(),
+            claude_allow(),
             "--append-system-prompt".to_string(),
             prompt,
             "--no-chrome".to_string(),
@@ -203,7 +205,11 @@ fn every_switch_combination_builds_the_expected_codex_argv() {
                     .iter()
                     .filter(|a| a.ends_with(".approval_mode=\"approve\""))
                     .count();
-                assert_eq!(approvals, if tools { 2 } else { 0 }, "{label}");
+                assert_eq!(
+                    approvals,
+                    if tools { wrap_tools().len() } else { 0 },
+                    "{label}"
+                );
                 let text = developer_instructions(&args);
                 assert_eq!(text.is_some(), instructions || steer, "{label}");
                 if let Some(text) = text {
@@ -395,7 +401,8 @@ fn user_flags_win_and_the_allowlist_is_merged_into_one_value() {
     let args = wrap_args("claude", &plan, &s(&["--no-chrome"]));
     assert_eq!(args.iter().filter(|a| *a == "--no-chrome").count(), 1);
     // the user's allowlist gets ours merged, never a second flag
-    let allow = "mcp__herdr_agents__agents_whoami,mcp__herdr_agents__agents_notify";
+    let allow = claude_allow_list_value();
+    let allow = allow.as_str();
     let args = wrap_args(
         "claude",
         &plan,
@@ -420,7 +427,7 @@ fn user_flags_win_and_the_allowlist_is_merged_into_one_value() {
     // resume keeps its id first
     let args = wrap_args("claude", &plan, &s(&["--resume", "abc"]));
     assert_eq!(&args[..2], ["--resume", "abc"]);
-    assert_eq!(CLAUDE_ALLOW_AGENT, "mcp__herdr_agents");
+    assert_eq!(claude_allow_agent(), claude_allow_list_value());
 }
 
 #[test]
@@ -694,7 +701,7 @@ fn settings_arg() -> String {
 }
 
 fn team_allow() -> String {
-    format!("--allowedTools={}", team::claude_allow_list())
+    claude_allow()
 }
 
 #[test]
@@ -722,11 +729,13 @@ fn a_team_launch_with_the_master_off_gets_only_the_team_bits() {
         args.iter().filter(|a| a.starts_with("--settings")).count(),
         1
     );
-    // every team tool is pre-approved, the tab tools are not
-    for tool in team::TEAM_TOOLS {
+    // every tool is pre-approved but close and reopen (agents v2)
+    for tool in wrap_tools() {
         assert!(team_allow().contains(&format!("mcp__herdr_agents__{tool}")));
     }
-    assert!(!team_allow().contains("agents_open_tab"));
+    assert!(team_allow().contains("agents_open_tab"));
+    assert!(!team_allow().contains("agents_close_tab"));
+    assert!(!team_allow().contains("agents_reopen_tab"));
     // no team: the master-off wrap is unchanged
     let plain = plan_for_off();
     assert!(!uses_claude_mcp_config(&plain, &user));
@@ -820,7 +829,7 @@ fn the_users_own_claude_flags_win_with_a_warning() {
     let i = args.iter().position(|a| a == "--allowedTools").unwrap();
     assert_eq!(
         args[i + 1],
-        format!("Bash(ls),{}", team::claude_allow_list())
+        format!("Bash(ls),{}", claude_allow_list_value())
     );
     assert!(!args.iter().any(|a| a == TEAM_TEXT));
     assert_eq!(&args[args.len() - 2..], ["--", "hi"]);
@@ -869,9 +878,15 @@ fn codex_in_a_team_gets_the_server_the_team_approvals_and_the_roster() {
     assert_eq!(args[0], "--no-daemon");
     assert_eq!(args.last().unwrap(), "resume");
     assert!(!args.iter().any(|a| a == "--disable"));
-    for tool in team::TEAM_TOOLS {
+    for tool in wrap_tools() {
         let approval = format!("mcp_servers.herdr_agents.tools.{tool}.approval_mode=\"approve\"");
         assert!(args.contains(&approval), "{tool}");
+    }
+    for tool in crate::coordinator::mcp::UNAPPROVED_TOOLS {
+        assert!(
+            !args.iter().any(|a| a.contains(&format!("tools.{tool}."))),
+            "{tool}"
+        );
     }
     assert_eq!(
         developer_instructions(&args).as_deref(),
@@ -894,7 +909,7 @@ fn a_managed_team_launch_gets_nothing_added() {
         &crate::coordinator::launch::mcp_config_flag(
             &crate::coordinator::launch::claude_mcp_config_path(dir),
         ),
-        &format!("--allowedTools={CLAUDE_ALLOW_AGENT}"),
+        &format!("--allowedTools={}", claude_allow_agent()),
         &settings_arg(),
         "--append-system-prompt",
         TEAM_TEXT,
@@ -960,7 +975,7 @@ fn the_lookup_runs_only_for_team_eligible_launches() {
         "claude",
         &user
     ));
-    let managed = s(&[&format!("--allowedTools={CLAUDE_ALLOW_AGENT}")]);
+    let managed = s(&[&format!("--allowedTools={}", claude_allow_agent())]);
     assert!(!team::should_lookup(
         &cfg,
         &env(),
@@ -1023,11 +1038,7 @@ fn a_failed_lookup_is_a_plain_wrap() {
     assert!(plan.team.is_none());
     assert_eq!(
         wrap_args("claude", &plan, &[]),
-        [
-            claude_flag(),
-            CLAUDE_ALLOW.to_string(),
-            "--no-chrome".to_string()
-        ]
+        [claude_flag(), claude_allow(), "--no-chrome".to_string()]
     );
 }
 

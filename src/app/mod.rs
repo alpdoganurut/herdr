@@ -13,6 +13,10 @@ mod agent_wrap_settings;
 #[cfg(unix)]
 pub(crate) use agent_suspend::SUSPEND_GRACEFUL_EXIT_GRACE;
 mod agents;
+// fork: the agents model (agents v2).
+mod agents_close;
+pub(crate) mod agents_migrate;
+pub(crate) mod agents_model;
 mod browser;
 mod closed_sessions;
 pub(crate) mod coordinator;
@@ -188,6 +192,9 @@ pub struct App {
     pub(crate) team_follow_calls: usize,
     /// Notes and checkpoints (fork): stores, caches and the notes worker.
     pub(crate) notes: crate::notes::NotesRuntime,
+    /// The agents model (fork, agents v2): limits, reply index, closes in
+    /// flight, migration.
+    pub(crate) agents_model: agents_model::AgentsModelRuntime,
     agent_transcript_backup_thread:
         Option<std::thread::JoinHandle<agent_transcripts::AgentTranscriptBackupPass>>,
     /// The most recent finished backup pass, for `agent.transcripts`.
@@ -588,11 +595,15 @@ impl App {
             team_index: std::collections::HashMap::new(),
             team_count: 0,
             teams_view_rev: 0,
+            agents_close_deadline: None,
         };
 
         state.terminals = restored_terminals;
         // Fork teams: restored teams rebuild their index.
         state.rebuild_team_index();
+        // Fork (agents v2): public id aliases ride the pane meta.
+        state.restore_public_aliases_from_meta();
+        state.adopt_member_roles_into_meta();
 
         for ws_idx in 0..state.workspaces.len() {
             let cwd = state.workspaces[ws_idx]
@@ -693,6 +704,11 @@ impl App {
             #[cfg(test)]
             team_follow_calls: 0,
             notes: notes::runtime_for(&config.notes),
+            agents_model: agents_model::AgentsModelRuntime::new(
+                policy
+                    .persist_session
+                    .then(crate::coordinator::coordinator_dir),
+            ),
             agent_transcript_backup_thread: None,
             agent_transcript_backup_last: None,
             agent_transcript_backup_pending: std::collections::BTreeMap::new(),
@@ -759,6 +775,9 @@ impl App {
         // Fork teams: a live handoff keeps teams; rebuild their index.
         app.state.rebuild_team_index();
         app.state.terminals = terminals;
+        // Fork (agents v2): public id aliases ride the pane meta.
+        app.state.restore_public_aliases_from_meta();
+        app.state.adopt_member_roles_into_meta();
         app.terminal_runtimes = runtimes.into();
         app.state.active = snapshot
             .active

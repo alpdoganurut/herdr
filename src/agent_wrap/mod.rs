@@ -31,9 +31,12 @@ pub const NO_WRAP_ENV: &str = "HERDR_NO_WRAP";
 /// a wrap that finds it equal to its own pane runs inside that agent (a
 /// `claude -p` or `codex exec` from its Bash tool), not as the pane's agent.
 pub const WRAPPED_PANE_ENV: &str = "HERDR_WRAPPED_PANE";
-/// The herdr_agents tools an unmanaged wrapped agent can use (the others
-/// need a managed agent).
-pub const WRAP_TOOLS: [&str; 2] = ["agents_whoami", "agents_notify"];
+/// The herdr_agents tools a wrapped launch pre-approves (agents v2: every
+/// agent has the tools, and the herdr server checks what it may do): every
+/// tool but close and reopen, which ask the user first as a courtesy.
+pub fn wrap_tools() -> Vec<&'static str> {
+    crate::coordinator::mcp::preapproved_tools().collect()
+}
 /// Codex's per-tool approval (`mcp_servers.<key>.tools.<tool>.approval_mode`):
 /// the key parses with codex-cli 0.160.0 (`codex mcp get`) and unknown keys
 /// are tolerated, so emitting it cannot break a launch. Whether it is
@@ -420,12 +423,15 @@ fn prompt_parts(plan: &WrapPlan, managed: bool) -> Vec<&str> {
     parts
 }
 
-/// The comma list for Claude's allowlist (the team set for a team member).
-fn claude_allow_list(plan: &WrapPlan) -> String {
-    if plan.team.is_some() {
-        return team::claude_allow_list();
-    }
-    WRAP_TOOLS
+/// The comma list for Claude's allowlist: the same for every launch (a
+/// team member's included).
+fn claude_allow_list(_plan: &WrapPlan) -> String {
+    claude_allow_list_value()
+}
+
+/// `mcp__herdr_agents__<tool>,…` for [`wrap_tools`].
+pub(crate) fn claude_allow_list_value() -> String {
+    wrap_tools()
         .iter()
         .map(|tool| format!("mcp__{MCP_KEY}__{tool}"))
         .collect::<Vec<_>>()
@@ -433,12 +439,8 @@ fn claude_allow_list(plan: &WrapPlan) -> String {
 }
 
 /// The tools a Codex launch pre-approves.
-fn codex_approved_tools(plan: &WrapPlan) -> &'static [&'static str] {
-    if plan.team.is_some() {
-        &team::TEAM_TOOLS
-    } else {
-        &WRAP_TOOLS
-    }
+fn codex_approved_tools(_plan: &WrapPlan) -> Vec<&'static str> {
+    wrap_tools()
 }
 
 /// Merge `allow` into the first user `--allowedTools` value of `pre`

@@ -570,12 +570,19 @@ fn agent_suspend(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
 
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:suspend".into(),
-        method: Method::AgentSuspend(AgentSuspendParams {
-            target: target.clone(),
-        }),
-    })?)
+    // Fork (agents v2): an agent goes through the check.
+    super::agent_route::checked(
+        crate::api::schema::agents_model::AgentsCheckAction::SuspendRestart,
+        Some(target.clone()),
+        || {
+            super::print_response(&super::send_request(&Request {
+                id: "cli:agent:suspend".into(),
+                method: Method::AgentSuspend(AgentSuspendParams {
+                    target: target.clone(),
+                }),
+            })?)
+        },
+    )
 }
 
 fn agent_activate(args: &[String]) -> std::io::Result<i32> {
@@ -584,12 +591,19 @@ fn agent_activate(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
 
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:activate".into(),
-        method: Method::AgentActivate(AgentActivateParams {
-            target: target.clone(),
-        }),
-    })?)
+    // Fork (agents v2): an agent goes through the check.
+    super::agent_route::checked(
+        crate::api::schema::agents_model::AgentsCheckAction::Activate,
+        Some(target.clone()),
+        || {
+            super::print_response(&super::send_request(&Request {
+                id: "cli:agent:activate".into(),
+                method: Method::AgentActivate(AgentActivateParams {
+                    target: target.clone(),
+                }),
+            })?)
+        },
+    )
 }
 
 fn agent_restart(args: &[String]) -> std::io::Result<i32> {
@@ -598,12 +612,19 @@ fn agent_restart(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
 
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:restart".into(),
-        method: Method::AgentRestart(AgentRestartParams {
-            target: target.clone(),
-        }),
-    })?)
+    // Fork (agents v2): an agent goes through the check.
+    super::agent_route::checked(
+        crate::api::schema::agents_model::AgentsCheckAction::SuspendRestart,
+        Some(target.clone()),
+        || {
+            super::print_response(&super::send_request(&Request {
+                id: "cli:agent:restart".into(),
+                method: Method::AgentRestart(AgentRestartParams {
+                    target: target.clone(),
+                }),
+            })?)
+        },
+    )
 }
 
 fn agent_attach(args: &[String]) -> std::io::Result<i32> {
@@ -952,6 +973,25 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
         eprintln!("--timeout requires --wait");
         return Ok(2);
     }
+    // Fork (agents v2): a prompt from an agent is a message from it (the
+    // envelope, the limits, idle targets only).
+    match super::agent_route::route()? {
+        Err(code) => return Ok(code),
+        Ok(super::agent_route::Route::Agent(pane)) => {
+            return super::agent_route::call(
+                "cli:agents.send_message",
+                Method::AgentsSendMessage(
+                    crate::api::schema::agents_model::AgentsSendMessageParams {
+                        caller_pane: pane,
+                        to: target.clone(),
+                        text: text.clone(),
+                        reply_to: None,
+                    },
+                ),
+            )
+        }
+        Ok(super::agent_route::Route::User | super::agent_route::Route::OldServer) => {}
+    }
     let response = super::send_request(&Request {
         id: "cli:agent:prompt".into(),
         method: Method::AgentPrompt(AgentPromptParams {
@@ -974,13 +1014,21 @@ fn agent_send_keys(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     }
 
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:send-keys".into(),
-        method: Method::AgentSendKeys(AgentSendKeysParams {
-            target: args[0].clone(),
-            keys: args[1..].to_vec(),
-        }),
-    })?)
+    // Fork (agents v2): keys into another agent are refused for agents
+    // (messages go through agents_send_message).
+    super::agent_route::checked(
+        crate::api::schema::agents_model::AgentsCheckAction::ShellInput,
+        Some(args[0].clone()),
+        || {
+            super::print_response(&super::send_request(&Request {
+                id: "cli:agent:send-keys".into(),
+                method: Method::AgentSendKeys(AgentSendKeysParams {
+                    target: args[0].clone(),
+                    keys: args[1..].to_vec(),
+                }),
+            })?)
+        },
+    )
 }
 
 fn agent_read(args: &[String]) -> std::io::Result<i32> {

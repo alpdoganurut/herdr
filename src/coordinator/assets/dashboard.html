@@ -1,7 +1,9 @@
 <!doctype html>
 <!-- herdr+ dashboard. Owned by the coordinator agent; template.html is the reseeded reference.
      Contract: GET /live.json (LiveData: generated_unix, agents[], offline[], groups[], unmanaged_count,
-     coordinator_pane, messages[], watch{}) every 2 s; GET /board.json (coordinator content) every 5 s.
+     coordinator_pane, messages[], watch{}, and since agents v2 tabs[] (shell tabs included), wake_scope and
+     actions[] (the action log, newest last); agents[] lists every agent, `managed` = in the wake scope;
+     offline[] and unmanaged_count stay empty) every 2 s; GET /board.json (coordinator content) every 5 s.
      Render all data with textContent only. -->
 <html lang="en">
 <head>
@@ -107,6 +109,9 @@
          margin-left: 6px; font-weight: 600; }
   .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
   .agent-note { font-size: 12.5px; color: var(--ink); }
+  .card.unwatched { opacity: 0.82; }
+  .shells { margin-top: 8px; font-size: 12.5px; color: var(--dim); }
+  .shells span + span::before { content: " · "; }
   .board-note { font-size: 12.5px; color: var(--gold); }
 
   .pill { flex: none; font-size: 11.5px; font-weight: 600; padding: 1px 9px; border-radius: 999px;
@@ -140,6 +145,7 @@
   .outcome.bad { color: var(--warn); }
   .outcome.pending { color: var(--dim); }
   .reply { color: var(--accent); }
+  .log-row.denied .outcome, .log-row.denied .text { color: var(--warn); }
 
   footer { margin-top: 26px; font-size: 12px; color: var(--dim); display: flex; gap: 14px; }
   footer a { color: var(--muted); }
@@ -190,10 +196,10 @@
         <div class="panel" id="threads"></div>
       </section>
       <section>
-        <h2>Offline managed agents</h2>
-        <div class="panel" id="offline"></div>
+        <h2>Agent actions</h2>
+        <div class="panel"><div class="log" id="actions"></div></div>
       </section>
-      <div id="unmanaged" class="muted"></div>
+      <div id="scope" class="muted"></div>
     </aside>
   </div>
 
@@ -375,7 +381,7 @@ function renderSuggestions(board) {
 function agentCard(agent, board) {
   const a = obj(agent);
   const status = str(a.status) || "unknown";
-  const card = el("article", "card" + (a.coordinator === true ? " coord" : "") + (status === "blocked" ? " blocked" : ""));
+  const card = el("article", "card" + (a.coordinator === true ? " coord" : "") + (status === "blocked" ? " blocked" : "") + (a.managed === true ? "" : " unwatched"));
 
   const top = el("div", "card-top");
   add(top, icon(a.coordinator === true ? "coordinator" : "agent", "mark"));
@@ -383,8 +389,9 @@ function agentCard(agent, board) {
   const name = el("div", "name", str(a.name) || str(a.pane_id));
   if (a.coordinator === true && str(a.name) !== "coordinator") add(name, el("span", "tag", "coordinator"));
   if (str(a.team)) add(name, el("span", "tag", "team"));
-  const roleProject = [str(a.role), str(a.project)].filter(Boolean).join("/");
-  add(who, name, el("div", "sub", [str(a.agent) || "agent", roleProject].filter(Boolean).join(" · ")));
+  if (a.managed === true && a.coordinator !== true) add(name, el("span", "tag", "watched"));
+  const opened = str(a.opened_by) && str(a.opened_by) !== "the user" ? "opened by " + str(a.opened_by) : "";
+  add(who, name, el("div", "sub", [str(a.agent) || "agent", str(a.role), opened].filter(Boolean).join(" · ")));
   add(top, who, pill(status));
   add(card, top);
 
@@ -418,21 +425,30 @@ function renderGroups(live, board) {
   const box = document.getElementById("groups");
   box.replaceChildren();
   if (!state.live) return add(box, el("div", "panel empty", "Waiting for live data."));
-  const agents = arr(live.agents).filter((a) => obj(a).managed !== false);
-  if (!agents.length) {
+  // Every tab is part of herdr+: every agent, and the shell tabs as dim rows.
+  const agents = arr(live.agents);
+  const shellTabs = arr(live.tabs).map(obj).filter((t) => num(t.agents) === 0);
+  if (!agents.length && !shellTabs.length) {
     const blank = el("div", "panel empty-state");
-    add(blank, icon("empty"), el("div", "", "No managed agents yet."));
+    add(blank, icon("empty"), el("div", "", "No agents yet."));
     add(blank, withCode(el("div", "empty"),
-      "Ask the coordinator to open one, or opt a pane in with `herdr coordinator manage <pane>`."));
+      "Start claude or codex in a tab, or ask the coordinator to open one."));
     return add(box, blank);
   }
   const groups = arr(live.groups).map(obj);
   const order = groups.map((g) => str(g.workspace_id));
   const byGroup = new Map();
+  const shellsBy = new Map();
   for (const agent of agents) {
     const key = str(obj(agent).workspace_id);
     if (!byGroup.has(key)) byGroup.set(key, []);
     byGroup.get(key).push(agent);
+  }
+  for (const tab of shellTabs) {
+    const key = str(tab.workspace_id);
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    if (!shellsBy.has(key)) shellsBy.set(key, []);
+    shellsBy.get(key).push(tab);
   }
   const keys = [...byGroup.keys()].sort((x, y) => {
     const ix = order.indexOf(x), iy = order.indexOf(y);
@@ -448,10 +464,25 @@ function renderGroups(live, board) {
     if (typeof info.team_purpose === "string") add(head, el("span", "team-purpose", "\u25c6 " + (str(info.team_purpose) || "team")));
     if (key) add(head, el("span", "mono dim", key));
     const tabs = num(info.tab_count);
-    add(head, el("span", "muted", members.length + " managed" + (tabs ? " · " + tabs + " tab" + (tabs === 1 ? "" : "s") : "")));
+    const watched = members.filter((a) => obj(a).managed === true).length;
+    const counts = [members.length + " agent" + (members.length === 1 ? "" : "s")];
+    if (watched) counts.push(watched + " watched");
+    if (tabs) counts.push(tabs + " tab" + (tabs === 1 ? "" : "s"));
+    add(head, el("span", "muted", counts.join(" · ")));
     const cards = el("div", "cards");
     for (const agent of members) add(cards, agentCard(agent, board));
-    add(group, head, cards);
+    add(group, head);
+    if (members.length) add(group, cards);
+    const shells = shellsBy.get(key) || [];
+    if (shells.length) {
+      const line = el("div", "shells");
+      for (const tab of shells) {
+        const span = el("span", "", "shell " + (str(tab.label) || str(tab.tab_id)));
+        span.title = str(tab.tab_id);
+        add(line, span);
+      }
+      add(group, line);
+    }
     add(box, group);
   }
 }
@@ -491,32 +522,35 @@ function renderThreads(board) {
   add(box, list);
 }
 
-function renderOffline(live) {
-  const box = document.getElementById("offline");
+function renderActions(live) {
+  const box = document.getElementById("actions");
   box.replaceChildren();
-  const rows = arr(live.offline).map(obj);
-  if (!rows.length) return add(box, empty("None."));
-  const list = el("ul", "plain");
-  for (const o of rows) {
-    const li = el("li", "dim");
-    const roleProject = [str(o.role), str(o.project)].filter(Boolean).join("/") || "managed agent";
-    add(li, el("span", "", roleProject));
-    const bits = [str(o.agent), str(o.pane_id) ? "was " + str(o.pane_id) : ""].filter(Boolean);
-    if (bits.length) add(li, document.createTextNode(" · " + bits.join(" · ")));
-    if (str(o.session)) {
-      const s = el("span", "mono", " · " + str(o.session).slice(0, 8));
-      s.title = str(o.session);
-      add(li, s);
-    }
-    add(list, li);
+  const rows = arr(live.actions).map(obj).slice(-MESSAGE_ROWS).reverse();
+  if (!rows.length) return add(box, empty("No agent actions yet."));
+  for (const a of rows) {
+    const outcome = str(a.outcome) || "?";
+    const row = el("div", "log-row" + (outcome === "denied" ? " denied" : ""));
+    add(row, el("span", "when", hhmm(a.unix)));
+    const body = el("div");
+    const who = str(a.actor_name) || str(a.actor_pane) || str(a.actor) || "?";
+    const target = str(a.target_name) || str(a.target_tab) || str(a.target_pane);
+    add(body, el("span", "route", who + " " + str(a.action) + (target ? " " + target : "") + " "));
+    add(body, el("span", "outcome" + (outcome === "ok" ? "" : " bad"),
+      "[" + outcome + (str(a.code) ? " " + str(a.code) : "") + "] "));
+    if (str(a.detail)) add(body, el("span", "text", cut(a.detail, TEXT_CUT)));
+    row.title = [str(a.id), str(a.turn_origin) ? "turn " + str(a.turn_origin) : "",
+      arr(a.closed_ids).length ? "closed " + arr(a.closed_ids).map(str).join(",") : ""].filter(Boolean).join("  ");
+    add(row, body);
+    add(box, row);
   }
-  add(box, list);
 }
 
-function renderUnmanaged(live) {
-  const n = num(live.unmanaged_count);
-  document.getElementById("unmanaged").textContent =
-    n + " unmanaged tab" + (n === 1 ? "" : "s") + ", invisible to herdr+";
+function renderScope(live) {
+  const scope = str(live.wake_scope) || "opened";
+  const watched = arr(live.agents).filter((a) => obj(a).managed === true && obj(a).coordinator !== true).length;
+  document.getElementById("scope").textContent =
+    "wake scope " + scope + ": " + watched + " watched agent" + (watched === 1 ? "" : "s") +
+    " wake the coordinator; every tab shows here";
 }
 
 function renderMessages(live) {
@@ -562,8 +596,8 @@ function renderBody() {
   renderGroups(live, board);
   renderProjects(board);
   renderThreads(board);
-  renderOffline(live);
-  renderUnmanaged(live);
+  renderActions(live);
+  renderScope(live);
   renderMessages(live);
 }
 

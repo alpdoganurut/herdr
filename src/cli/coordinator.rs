@@ -1,9 +1,11 @@
-//! `herdr coordinator` (fork): the coordinator and its managed agents from the
-//! command line. The herdr server runs the coordinator and serves its
+//! `herdr coordinator` (fork): the coordinator and the agents it watches from
+//! the command line. The herdr server runs the coordinator and serves its
 //! dashboard; these verbs switch it on or off, start, wake and inspect it over
 //! the `coordinator.*` API methods, and keep the file-based verbs (the stdio
-//! MCP server agents use, seeding, the registry, the message log and the turn
-//! marker).
+//! MCP server agents use, seeding, the message log and the turn marker).
+//! Agents v2: `managed.json` is retired (read once by the server's
+//! migration); `manage` sets a role or note through `agents.set_meta` and
+//! `unmanage` only says there is nothing to opt out of.
 //!
 //! This file is also the only socket adapter for `crate::coordinator`: [`SocketApi`]
 //! implements `coordinator::api::Api` over the protocol-checked [`super::send_request`].
@@ -20,32 +22,36 @@ use crate::api::schema::coordinator::{
 };
 use crate::api::schema::{Method, Request};
 use crate::coordinator::api::{self as coordinator_api, Api, ApiError, Verdict};
-use crate::coordinator::registry::{self, ManagePatch, Registry};
 use crate::coordinator::{self, messages, DEFAULT_PORT};
 
 const USAGE: &str = "usage: herdr coordinator <enable|disable|start|wake|status|dashboard|messages|manage|unmanage|clear-turn|seed|mcp>";
 
 const HELP: &str = "herdr coordinator — the coordinator: a Claude Code agent the herdr server runs in a pinned
-`coordinator` tab, the agents it manages, their messages and its dashboard.
+`coordinator` tab, the agents it watches, their messages and its dashboard.
 
   herdr coordinator enable | disable           switch the coordinator on or off ([coordinator] enabled)
   herdr coordinator start [--new]              start or restart the coordinator agent (--new: a fresh session)
   herdr coordinator wake                       wake the coordinator now (it reads what changed)
-  herdr coordinator status [--json]            state, wake-ups, dashboard and the managed agents
+  herdr coordinator status [--json]            state, wake-ups, dashboard and the watched agents
+                                               ([coordinator] wake_scope)
   herdr coordinator dashboard [--print]        open the dashboard (herdr's browser, else the system browser);
                                                --print only prints its URL
   herdr coordinator messages [--dir D] [--limit N] [--json]
                                                the agent message log
-  herdr coordinator manage <pane|name> [--role R] [--project P] [--note N] [--dir D]
-  herdr coordinator unmanage <pane|name|session> [--dir D]
+  herdr coordinator manage <pane|name> [--role R] [--note N] [--project P]
+                                               set a pane's role or note (agents_set_meta; a
+                                               project goes into the note). Every agent is part of
+                                               herdr+ now: there is nothing to opt in
+  herdr coordinator unmanage <pane|name>       nothing to opt out of any more (prints why)
   herdr coordinator clear-turn [--dir D]       end the coordinator's turn marker (its write tools refuse
                                                while one is live; for a turn stuck working or blocked)
   herdr coordinator seed [--dir D]             seed or refresh the coordinator files and print their paths
   herdr coordinator mcp [--dir D] [--port N]   stdio MCP server; started per launch by Claude and Codex
 
 The dashboard is served by the herdr server on 127.0.0.1:<[coordinator] dashboard_port> (default 7718).
-start, wake, enable, disable, manage, unmanage and clear-turn refuse when the coordinator agent runs
-them in a turn herdr started (a wake-up or an agent message).
+start, wake, enable, disable and clear-turn refuse when the coordinator agent runs them in a turn
+that did not start from its user (a wake-up, an agent message or a script). Run from an agent's pane,
+manage is checked as that agent.
 
 Environment (read by the herdr server unless noted):
   HERDR_COORDINATOR_DIR                the coordinator directory (default <config dir>/coordinator;
@@ -478,10 +484,20 @@ fn format_info(info: &CoordinatorGetInfo, now: u64) -> String {
         "notifications: {}\n",
         if info.notify { "on" } else { "off" }
     ));
+    if let Some(unmatched) = info.migration_unmatched.filter(|n| *n > 0) {
+        out.push_str(&format!(
+            "migration: {unmatched} managed.json entr{} could not be matched to a pane (roles and notes not carried over){}\n",
+            if unmatched == 1 { "y" } else { "ies" },
+            migration_names(&info.coordinator_dir)
+                .map(|names| format!(": {names}"))
+                .unwrap_or_default()
+        ));
+    }
     for agent in &info.managed {
         let opt = |value: &Option<String>| value.clone().unwrap_or_else(|| "-".into());
         let role_project = match (agent.role.as_deref(), agent.project.as_deref()) {
             (None, None) => "-".to_string(),
+            (Some(role), None) => role.to_string(),
             (role, project) => format!("{}/{}", role.unwrap_or("-"), project.unwrap_or("-")),
         };
         let since = agent
@@ -504,7 +520,11 @@ fn format_info(info: &CoordinatorGetInfo, now: u64) -> String {
         out.push_str(line.trim_end());
         out.push('\n');
     }
-    out.push_str(&format!("{} managed\n", info.managed.len()));
+    out.push_str(&format!(
+        "{} watched (wake scope {})\n",
+        info.managed.len(),
+        info.wake_scope.as_deref().unwrap_or("managed")
+    ));
     if !info.coordinator_dir.is_empty() {
         out.push_str(&format!("dir: {}\n", info.coordinator_dir));
     }
@@ -513,6 +533,36 @@ fn format_info(info: &CoordinatorGetInfo, now: u64) -> String {
 
 fn short(session: &str) -> String {
     session.chars().take(8).collect()
+}
+
+/// The unmatched entries' names from `agents-v2.json` when the coordinator
+/// directory is readable here (a local server); `None` otherwise.
+fn migration_names(dir: &str) -> Option<String> {
+    if dir.is_empty() {
+        return None;
+    }
+    let path = crate::app::agents_migrate::marker_path(Path::new(dir));
+    let marker: crate::app::agents_migrate::MigrationMarker =
+        serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+    let names: Vec<String> = marker
+        .unmatched
+        .iter()
+        .take(10)
+        .map(|entry| {
+            let mut name = coordinator::one_line(&entry.name, 40);
+            if let Some(agent) = &entry.agent {
+                name.push_str(&format!(" ({agent})"));
+            }
+            name
+        })
+        .collect();
+    let more = marker.unmatched.len().saturating_sub(names.len());
+    let mut text = names.join(", ");
+    if more > 0 {
+        text.push_str(&format!(", +{more} more"));
+    }
+    text.push_str(&format!(" — see {}", path.display()));
+    (!names.is_empty()).then_some(text)
 }
 
 // ----- argument parsing ---------------------------------------------------
@@ -632,11 +682,21 @@ fn mcp(args: &[String]) -> Result<i32, Fail> {
     parsed.at_most_positionals(0)?;
     let env_pane = super::target::caller_pane_id();
     let verdict = caller_verdict(&SocketApi, env_pane.as_deref());
+    // The canonical pane may change (the tab moved, or the id now names
+    // another pane): the verdict is computed again for the new one.
+    let reverify: coordinator::mcp::Reverify = Box::new(|pane: &str| {
+        verdict_for(
+            &SocketApi,
+            pane,
+            &super::browser_mcp::ancestors(std::process::id()),
+        )
+    });
     let opts = coordinator::mcp::McpOpts {
         dir: parsed.dir()?,
         env_pane,
         verdict,
         port: parsed.port()?,
+        reverify: Some(reverify),
     };
     Ok(coordinator::mcp::run(SocketApi, opts)?)
 }
@@ -653,7 +713,6 @@ fn seed(args: &[String]) -> Result<i32, Fail> {
         coordinator::dashboard_dir(&dir).join("template.html"),
         coordinator::board_path(&dir),
         coordinator::memory_index_path(&dir),
-        coordinator::registry_path(&dir),
         coordinator::messages_path(&dir),
         coordinator::live_path(&dir),
     ] {
@@ -695,7 +754,9 @@ fn caller_pane() -> Option<String> {
 /// started its turn: the CLI must not get around the non-user-turn guard of
 /// the MCP write tools. Anyone else (the user in another pane, a script
 /// outside herdr) is not affected. The server verbs pass the pane as
-/// `caller_pane` and the server applies the same rule.
+/// `caller_pane` and the server applies the same rule (agents v2: also a
+/// turn that did not start from the user's own input). The coordinator pane
+/// is the server's record (`coordinator.get`), no registry role.
 fn refuse_in_herdr_turn(
     api: &impl Api,
     dir: &Path,
@@ -711,9 +772,10 @@ fn refuse_in_herdr_turn(
     let pane = coordinator_api::resolve_caller(api, env_pane)
         .map(|caller| caller.pane_id)
         .unwrap_or_else(|_| env_pane.to_string());
-    let registered = Registry::load(dir)
-        .coordinator()
-        .and_then(|entry| entry.pane_id.clone());
+    let registered = api
+        .call(Method::CoordinatorGet(crate::api::schema::EmptyParams {}))
+        .ok()
+        .and_then(|result| result["info"]["pane_id"].as_str().map(str::to_string));
     if pane == turn.coordinator_pane || registered.as_deref() == Some(pane.as_str()) {
         return Err(Fail::Error(format!(
             "this turn was started by herdr ({} {}), not the user; the coordinator cannot change herdr from it. Record a suggestion on the board instead.",
@@ -723,135 +785,97 @@ fn refuse_in_herdr_turn(
     Ok(())
 }
 
+/// What `manage` and `unmanage` say since agents v2.
+const MANAGE_NOTICE: &str = "every tab is part of herdr+ now: there is nothing to opt in or out (managed.json is no longer used); roles and notes live on the pane (herdr coordinator manage <pane> --role R --note N, or agents_set_meta)";
+
 fn manage(args: &[String]) -> Result<i32, Fail> {
     let parsed = parse(args, &["--role", "--project", "--note"], &[])?;
     parsed.at_most_positionals(1)?;
     let Some(target) = parsed.positionals.first() else {
         return Err(Fail::Usage(
-            "usage: herdr coordinator manage <pane|name> [--role R] [--project P] [--note N]"
+            "usage: herdr coordinator manage <pane|name> [--role R] [--note N] [--project P]"
                 .into(),
         ));
     };
-    let patch = ManagePatch {
-        role: parsed.value("--role").map(str::to_string),
-        project: parsed.value("--project").map(str::to_string),
-        note: parsed.value("--note").map(str::to_string),
+    let role = parsed.value("--role").map(str::to_string);
+    let note = manage_note(
+        parsed.value("--note").map(str::to_string),
+        parsed.value("--project"),
+    );
+    if role.is_none() && note.is_none() {
+        println!("{MANAGE_NOTICE}");
+        return Ok(0);
+    }
+    // From an agent's pane the server checks it as that agent (U8).
+    let caller_pane = match super::agent_route::route()? {
+        Err(code) => return Ok(code),
+        Ok(super::agent_route::Route::Agent(pane)) => Some(pane),
+        Ok(super::agent_route::Route::User) => None,
+        Ok(super::agent_route::Route::OldServer) => {
+            return Err(Fail::Error(
+                "this herdr server predates agents v2: managed.json is not used by this build; update the server (herdr server live-handoff)".into(),
+            ))
+        }
     };
-    let dir = parsed.dir()?;
-    refuse_in_herdr_turn(
-        &SocketApi,
-        &dir,
-        caller_pane().as_deref(),
-        coordinator::now_unix(),
-    )?;
-    let line = manage_target(&SocketApi, &dir, target, &patch).map_err(Fail::Error)?;
+    let line = manage_target(&SocketApi, caller_pane, target, role, note).map_err(Fail::Error)?;
     println!("{line}");
     Ok(0)
 }
 
-/// Opt a live agent in (or update it); the user-side path, so it may also
-/// hand out the coordinator role.
+/// The note `manage` sets: `--note`, else a legacy `--project` folded in.
+fn manage_note(note: Option<String>, project: Option<&str>) -> Option<String> {
+    note.or_else(|| {
+        project
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(|project| format!("project: {project}"))
+    })
+}
+
+/// `agents.set_meta` for `target` (the user's when `caller_pane` is `None`).
 fn manage_target(
     api: &impl Api,
-    dir: &Path,
+    caller_pane: Option<String>,
     target: &str,
-    patch: &ManagePatch,
+    role: Option<String>,
+    note: Option<String>,
 ) -> Result<String, String> {
-    let agent = coordinator_api::agent_get(api, target).map_err(|err| err.to_string())?;
-    let pane = agent["pane_id"]
-        .as_str()
-        .ok_or_else(|| format!("{target} has no pane"))?
-        .to_string();
-    let session = session_of(&agent);
-    let kind = agent_kind(&agent);
-    let entry = registry::update(dir, |registry| {
-        registry.manage(session.as_deref(), Some(&pane), kind.as_deref(), patch)
-    })?;
-    let name = agent["name"].as_str().unwrap_or(&pane);
+    let result = api
+        .call(Method::AgentsSetMeta(
+            crate::api::schema::agents_model::AgentsSetMetaParams {
+                caller_pane,
+                target: target.to_string(),
+                role,
+                note,
+            },
+        ))
+        .map_err(|err| err.to_string())?;
+    let meta: crate::api::schema::agents_model::AgentsSetMetaResult =
+        serde_json::from_value(result["meta"].clone())
+            .map_err(|err| format!("unreadable answer: {err}"))?;
     Ok(format!(
-        "managed {name} ({pane}, {}){}{}{}",
-        entry.agent.as_deref().unwrap_or("agent"),
-        tag(" role=", &entry.role),
-        tag(" project=", &entry.project),
-        tag(" note=", &entry.note),
+        "{} ({}): role {}, note {}{}",
+        meta.name.as_deref().unwrap_or(&meta.pane_id),
+        meta.pane_id,
+        meta.role.as_deref().unwrap_or("-"),
+        meta.note.as_deref().unwrap_or("-"),
+        match meta.renamed {
+            Some(true) => " (renamed after its role)",
+            _ => "",
+        }
     ))
-}
-
-/// The native session id of an `agent.get` entry.
-fn session_of(agent: &Value) -> Option<String> {
-    agent["agent_session"]["value"]
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-/// The agent kind of an `agent.get`/`agent.list` entry.
-fn agent_kind(agent: &Value) -> Option<String> {
-    agent["agent"]
-        .as_str()
-        .or_else(|| agent["agent_session"]["agent"].as_str())
-        .filter(|kind| !kind.is_empty())
-        .map(str::to_string)
-}
-
-fn tag(prefix: &str, value: &Option<String>) -> String {
-    value
-        .as_deref()
-        .map(|value| format!("{prefix}{value}"))
-        .unwrap_or_default()
 }
 
 fn unmanage(args: &[String]) -> Result<i32, Fail> {
     let parsed = parse(args, &[], &[])?;
     parsed.at_most_positionals(1)?;
-    let Some(target) = parsed.positionals.first() else {
+    if parsed.positionals.is_empty() {
         return Err(Fail::Usage(
-            "usage: herdr coordinator unmanage <pane|name|session>".into(),
+            "usage: herdr coordinator unmanage <pane|name>".into(),
         ));
-    };
-    let dir = parsed.dir()?;
-    refuse_in_herdr_turn(
-        &SocketApi,
-        &dir,
-        caller_pane().as_deref(),
-        coordinator::now_unix(),
-    )?;
-    let line = unmanage_target(&SocketApi, &dir, target).map_err(Fail::Error)?;
-    println!("{line}");
-    Ok(0)
-}
-
-/// Opt an agent out: a live agent by pane or name, or an offline entry by
-/// its recorded pane id or session id.
-fn unmanage_target(api: &impl Api, dir: &Path, target: &str) -> Result<String, String> {
-    let (session, pane, kind) = match coordinator_api::agent_get(api, target) {
-        Ok(agent) => (
-            session_of(&agent),
-            agent["pane_id"].as_str().map(str::to_string),
-            agent_kind(&agent),
-        ),
-        Err(err) if err.code == "server_unavailable" => return Err(err.to_string()),
-        Err(_) => (None, None, None),
-    };
-    let removed = registry::update(dir, |registry| {
-        let index = registry
-            .find(session.as_deref(), pane.as_deref(), kind.as_deref())
-            .or_else(|| {
-                registry.agents.iter().position(|entry| {
-                    entry.pane_id.as_deref() == Some(target)
-                        || entry.session.as_deref() == Some(target)
-                })
-            });
-        Ok(index.map(|index| registry.agents.remove(index)))
-    })?;
-    match removed {
-        Some(entry) => Ok(format!(
-            "unmanaged {} ({})",
-            entry.pane_id.as_deref().unwrap_or("?"),
-            entry.session.as_deref().unwrap_or("no session"),
-        )),
-        None => Err(format!("{target} is not a managed agent")),
     }
+    println!("{MANAGE_NOTICE}");
+    Ok(0)
 }
 
 fn messages_cmd(args: &[String]) -> Result<i32, Fail> {
@@ -1227,6 +1251,8 @@ mod tests {
             }),
             unread_suggestions: 1,
             coordinator_dir: "/cfg/coordinator".into(),
+            wake_scope: Some("opened".into()),
+            migration_unmatched: Some(2),
             ..CoordinatorGetInfo::default()
         };
         let text = format_info(&info, 100);
@@ -1239,7 +1265,8 @@ mod tests {
             "board: 2 suggestions (1 unread) — calendar sync is half done",
             "notifications: on",
             "w2:p4    calendar-fix     codex   fixer/search-it    working    1m",
-            "1 managed",
+            "1 watched (wake scope opened)",
+            "migration: 2 managed.json entries could not be matched to a pane (roles and notes not carried over)",
             "dir: /cfg/coordinator",
         ] {
             assert!(text.contains(expected), "{expected:?} in\n{text}");
@@ -1271,70 +1298,53 @@ mod tests {
         );
     }
 
-    fn agent_api() -> impl Fn(Method) -> Result<Value, ApiError> {
-        |method| match method {
-            Method::AgentGet(target) if target.target == "rev" || target.target == "w2:p4" => {
-                Ok(json!({ "type": "agent_info", "agent": {
-                    "pane_id": "w2:p4", "name": "rev", "agent": "codex", "agent_status": "idle",
-                    "agent_session": { "agent": "codex", "value": "s-rev" } } }))
-            }
-            Method::AgentGet(_) => Err(ApiError::new("agent_not_found", "no such agent")),
-            _ => Err(ApiError::new("unexpected", "")),
-        }
-    }
-
     #[test]
-    fn manage_and_unmanage_go_through_the_registry() {
-        let dir = test_dir("manage");
-        let patch = ManagePatch {
-            role: Some("reviewer".into()),
-            project: Some("demo".into()),
-            note: None,
+    fn manage_sets_the_meta_and_unmanage_only_explains() {
+        let sent = RefCell::new(Vec::new());
+        let api = |method: Method| -> Result<Value, ApiError> {
+            match method {
+                Method::AgentsSetMeta(params) => {
+                    sent.borrow_mut().push(params.clone());
+                    Ok(json!({ "type": "agents_set_meta", "meta": {
+                        "pane_id": "w2:p4", "name": "reviewer", "role": params.role,
+                        "note": params.note, "renamed": true } }))
+                }
+                _ => Err(ApiError::new("unexpected", "")),
+            }
         };
         assert_eq!(
-            manage_target(&agent_api(), &dir, "rev", &patch).unwrap(),
-            "managed rev (w2:p4, codex) role=reviewer project=demo"
+            manage_target(
+                &api,
+                None,
+                "rev",
+                Some("reviewer".into()),
+                manage_note(None, Some("demo"))
+            )
+            .unwrap(),
+            "reviewer (w2:p4): role reviewer, note project: demo (renamed after its role)"
         );
-        let registry = Registry::load(&dir);
-        assert_eq!(registry.agents.len(), 1);
-        assert_eq!(registry.agents[0].session.as_deref(), Some("s-rev"));
-        // The user-side path may hand out the coordinator role.
-        let coordinator = ManagePatch {
-            role: Some(coordinator::COORDINATOR_ROLE.into()),
-            ..ManagePatch::default()
-        };
-        manage_target(&agent_api(), &dir, "w2:p4", &coordinator).unwrap();
-        assert!(Registry::load(&dir).coordinator().is_some());
-        assert!(manage_target(&agent_api(), &dir, "ghost", &patch)
-            .unwrap_err()
-            .contains("agent_not_found"));
-        // Offline entries are removed by their recorded session id.
+        let params = sent.borrow()[0].clone();
+        assert_eq!(params.caller_pane, None, "the user's own path");
+        assert_eq!(params.target, "rev");
         assert_eq!(
-            unmanage_target(&agent_api(), &dir, "s-rev").unwrap(),
-            "unmanaged w2:p4 (s-rev)"
+            manage_note(Some("n".into()), Some("demo")).as_deref(),
+            Some("n")
         );
-        assert!(Registry::load(&dir).agents.is_empty());
-        assert!(unmanage_target(&agent_api(), &dir, "rev")
-            .unwrap_err()
-            .contains("not a managed agent"));
+        assert_eq!(manage_note(None, Some("  ")), None);
+        let dir = test_dir("unmanage");
+        // Nothing is written: managed.json is retired.
+        assert_eq!(
+            unmanage(&strings(&["rev", "--dir", dir.to_str().unwrap()])).ok(),
+            Some(0)
+        );
+        assert!(!coordinator::registry_path(&dir).exists());
+        assert!(MANAGE_NOTICE.contains("nothing to opt in or out"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn write_verbs_refuse_the_coordinator_in_a_herdr_turn_only() {
         let dir = test_dir("guard");
-        registry::update(&dir, |registry| {
-            registry.manage(
-                Some("s-c"),
-                Some("w2:p3"),
-                Some("claude"),
-                &ManagePatch {
-                    role: Some(coordinator::COORDINATOR_ROLE.into()),
-                    ..ManagePatch::default()
-                },
-            )
-        })
-        .unwrap();
         // actor_api resolves any pane to w2:p3, the coordinator.
         let api = actor_api(Some(40));
         let guard = |pane: Option<&str>| refuse_in_herdr_turn(&api, &dir, pane, 100);
@@ -1441,11 +1451,9 @@ mod tests {
                     "coordinator_disabled",
                     "[coordinator] enabled = false",
                 )),
-                Method::BrowserResolveCaller(_) => Ok(json!({ "type": "browser_actor", "actor": {
-                    "kind": "pane", "pane_id": "w2:p3", "tab_id": "w2:t1", "workspace_id": "w2",
-                    "shell_pid": 7 } })),
-                // A bare shell pane: no agent.
-                Method::AgentGet(_) => Err(ApiError::new("agent_not_found", "no agent")),
+                Method::AgentsActor(_) => Ok(json!({ "type": "agents_actor", "actor": {
+                    "pane_id": "w2:p3", "kind": "agent", "live": true, "workspace_id": "w2",
+                    "tab_id": "w2:t1", "name": "lead", "agent": "claude" } })),
                 Method::NotesGet(_) => Ok(json!({ "type": "notes_get", "notes": {
                     "key": "tab-w2-t1", "path": "/notes/tab-w2-t1.md", "revision": "none",
                     "exists": false, "bytes": 0 } })),
@@ -1465,6 +1473,7 @@ mod tests {
                 env_pane: Some("w2:p3".into()),
                 verdict: Verdict::Verified,
                 port: DEFAULT_PORT,
+                reverify: None,
             },
         );
         let mut tool = |id: u64, name: &str, arguments: Value| {
@@ -1496,15 +1505,19 @@ mod tests {
             who.contains("notes: tab-w2-t1 (/notes/tab-w2-t1.md)"),
             "{who}"
         );
+        // whoami names the coordinator when there is one; a disabled one
+        // answers an error, which reads as not running.
+        assert!(who.contains("coordinator: not running"), "{who}");
         let list = session
             .handle(&json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/list" }))
             .expect("a reply");
-        assert_eq!(list["result"]["tools"].as_array().map(Vec::len), Some(21));
+        assert_eq!(list["result"]["tools"].as_array().map(Vec::len), Some(25));
         assert!(
-            !calls
+            calls
                 .borrow()
                 .iter()
-                .any(|name| name.starts_with("coordinator.")),
+                .filter(|name| name.starts_with("coordinator."))
+                .all(|name| *name == "coordinator.get"),
             "{:?}",
             calls.borrow()
         );

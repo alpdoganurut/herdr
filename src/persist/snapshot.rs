@@ -181,6 +181,10 @@ pub struct PaneSnapshot {
     /// A parked agent: restored as suspended, never relaunched automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suspended_agent: Option<SuspendedAgentSnapshot>,
+    /// Fork (agents v2): the pane's role, note, opener, team exclusion and
+    /// public id aliases. An older build drops it on read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_meta: Option<crate::agents_model::PaneAgentMeta>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,6 +204,9 @@ pub struct SuspendedAgentSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub session: PaneAgentSessionSnapshot,
+    /// Fork (agents v2): who suspended it; absent counts as the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspended_by: Option<crate::api::schema::agents_model::AgentsWho>,
 }
 
 impl PaneAgentSessionSnapshot {
@@ -452,6 +459,7 @@ fn capture_tab(
                     session: PaneAgentSessionSnapshot::from_persisted(
                         &terminal.attach_transcript_path(record.session.clone()),
                     ),
+                    suspended_by: record.suspended_by.clone(),
                 })
         });
         // The parked session is the one that relaunches the agent; live
@@ -471,6 +479,10 @@ fn capture_tab(
                 agent_session,
                 launch_argv,
                 suspended_agent,
+                agent_meta: terminal
+                    .map(|terminal| terminal.agent_meta())
+                    .filter(|meta| !meta.is_empty())
+                    .cloned(),
             },
         );
     }
@@ -792,6 +804,7 @@ mod tests {
             transcript_path: Some(transcript_path.clone()),
         };
         let pane = PaneSnapshot {
+            agent_meta: Default::default(),
             cwd: PathBuf::from("/tmp"),
             label: None,
             agent_name: Some("reviewer".into()),
@@ -799,6 +812,7 @@ mod tests {
             agent_session: Some(session.clone()),
             launch_argv: None,
             suspended_agent: Some(SuspendedAgentSnapshot {
+                suspended_by: Default::default(),
                 agent: "claude".into(),
                 name: Some("reviewer".into()),
                 session: session.clone(),
@@ -882,6 +896,7 @@ mod tests {
         panes.insert(
             0,
             PaneSnapshot {
+                agent_meta: Default::default(),
                 cwd: PathBuf::from("/home/can/Projects/herdr"),
                 label: None,
                 agent_name: None,
@@ -894,6 +909,7 @@ mod tests {
         panes.insert(
             1,
             PaneSnapshot {
+                agent_meta: Default::default(),
                 cwd: PathBuf::from("/home/can/Projects/website"),
                 label: Some("website".into()),
                 agent_name: None,
@@ -1553,6 +1569,7 @@ mod tests {
         panes.insert(
             0,
             PaneSnapshot {
+                agent_meta: Default::default(),
                 cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test"),
                 label: None,
                 agent_name: None,
@@ -1565,6 +1582,7 @@ mod tests {
         panes.insert(
             1,
             PaneSnapshot {
+                agent_meta: Default::default(),
                 cwd: std::env::var("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| PathBuf::from("/tmp")),

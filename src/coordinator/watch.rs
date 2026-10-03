@@ -2,7 +2,9 @@
 //! bookkeeping and the pure [`tick`].
 //!
 //! Every pass the worker rebuilds `live.json` from herdr's agent facts, diffs
-//! the managed agents against what it saw last, and queues the changes. A
+//! the agents in the wake scope (`[coordinator] wake_scope`, default: the
+//! agents the coordinator opened) against what it saw last, and queues the
+//! changes. Nothing outside the scope creates a pending item. A
 //! wake-up (`agent.prompt` into the coordinator agent, pointing at a digest
 //! file) fires only for an idle, settled coordinator with no live turn,
 //! within the gap and the hourly/daily caps, and only when something is
@@ -19,7 +21,8 @@ use serde::{Deserialize, Serialize};
 use super::live::{LiveAgent, LiveData, WatchSummary};
 use super::messages::{self, AgentMessage};
 use super::turn::{self, Turn, TurnStep};
-use super::{now_unix, wake_dir, wakeups_path, write_atomically, COORDINATOR_ROLE};
+use super::{now_unix, wake_dir, wakeups_path, write_atomically};
+use crate::api::schema::agents_model::{error_code, AgentActionEntry, AgentsActionOutcome};
 
 pub const DEBOUNCE_ENV: &str = "HERDR_COORDINATOR_WAKE_DEBOUNCE_S";
 pub const GAP_ENV: &str = "HERDR_COORDINATOR_WAKE_GAP_S";
@@ -39,6 +42,8 @@ pub(crate) const HELD_RETRY_S: u64 = 30;
 /// A sender's refused messages to the coordinator wake it at most once per
 /// this window.
 const REFUSAL_REPEAT_S: u64 = 600;
+/// The same denial (actor, action, target, code) is queued once per window.
+const DENIAL_REPEAT_S: u64 = 60;
 pub(super) const LIVE_REFRESH_S: u64 = 10;
 pub(super) const ROTATE_EVERY_S: u64 = 300;
 pub(super) const ROTATE_BYTES: u64 = 5 * 1024 * 1024;
@@ -47,8 +52,58 @@ pub(super) const LIVE_MESSAGES: usize = 50;
 const HOUR: u64 = 3600;
 const DAY: u64 = 86_400;
 
+/// Which agents wake the coordinator (`[coordinator] wake_scope`). Every
+/// agent still shows in `live.json` and the dashboard; only the scope's
+/// agents (and messages among them) create wake-up items.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeScope {
+    /// The agents the coordinator opened (`agents_open_tab`), its own
+    /// messages and refusals, and loop guards that involve it.
+    #[default]
+    Opened,
+    /// Also every team member, messages among in-scope agents, and their
+    /// denials.
+    Teams,
+    /// Every agent.
+    All,
+}
+
+impl WakeScope {
+    pub const NAMES: [&'static str; 3] = ["opened", "teams", "all"];
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "opened" => Some(Self::Opened),
+            "teams" => Some(Self::Teams),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Opened => "opened",
+            Self::Teams => "teams",
+            Self::All => "all",
+        }
+    }
+
+    /// Whether an agent with these facts is in the scope (the coordinator
+    /// itself is always watched, apart from the scope).
+    pub fn covers(self, opened_by_coordinator: bool, member: bool) -> bool {
+        match self {
+            Self::Opened => opened_by_coordinator,
+            Self::Teams => opened_by_coordinator || member,
+            Self::All => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WakeCfg {
+    /// Which agents wake the coordinator.
+    pub scope: WakeScope,
     pub debounce_s: u64,
     pub gap_s: u64,
     pub gap_high_s: u64,
@@ -65,6 +120,7 @@ pub struct WakeCfg {
 impl Default for WakeCfg {
     fn default() -> Self {
         Self {
+            scope: WakeScope::Opened,
             debounce_s: 60,
             gap_s: 120,
             gap_high_s: 45,
@@ -80,8 +136,9 @@ impl Default for WakeCfg {
 impl WakeCfg {
     /// The configured caps and periodic check (`[coordinator]`), with the
     /// `HERDR_COORDINATOR_*` overrides applied on top.
-    pub fn from_config(cap_hour: u32, cap_day: u32, periodic_s: u64) -> Self {
+    pub fn from_config(scope: WakeScope, cap_hour: u32, cap_day: u32, periodic_s: u64) -> Self {
         Self {
+            scope,
             cap_hour,
             cap_day,
             periodic_s: periodic_s.max(1),
@@ -142,7 +199,7 @@ pub enum Prio {
     High,
 }
 
-/// A managed agent as the digest names it.
+/// An agent in the wake scope as the digest names it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Who {
     pub name: String,
@@ -151,8 +208,6 @@ pub struct Who {
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
 }
 
 impl Who {
@@ -162,20 +217,17 @@ impl Who {
             pane_id: agent.pane_id.clone(),
             agent: agent.agent.clone(),
             role: agent.role.clone(),
-            project: agent.project.clone(),
         }
     }
 
-    /// `rev (w2:p4, codex, reviewer/demo)`.
+    /// `rev (w2:p4, codex, reviewer)`.
     fn label(&self) -> String {
         let mut parts = vec![self.pane_id.clone()];
         if let Some(agent) = &self.agent {
             parts.push(agent.clone());
         }
-        match (&self.role, &self.project) {
-            (Some(role), Some(project)) => parts.push(format!("{role}/{project}")),
-            (Some(tag), None) | (None, Some(tag)) => parts.push(tag.clone()),
-            (None, None) => {}
+        if let Some(role) = &self.role {
+            parts.push(role.clone());
         }
         format!("{} ({})", self.name, parts.join(", "))
     }
@@ -218,7 +270,8 @@ pub enum Ev {
         /// A known agent under a new pane id (moved, restored).
         relinked: bool,
     },
-    /// A managed agent stopped running (its registry entry is offline).
+    /// An agent in the wake scope stopped running (its tab closed, it
+    /// exited, or it left the scope).
     Gone { key: String, who: Who, at: u64 },
     Messages {
         scope: MsgScope,
@@ -227,10 +280,21 @@ pub enum Ev {
         first_at: u64,
         at: u64,
     },
+    /// `managed.json` changed (agents v1); never queued since v2 retired the
+    /// registry, kept so a persisted `watch_state.json` still parses.
+    #[allow(dead_code)] // Read back from older watch_state.json files only.
     Registry {
         first_at: u64,
         at: u64,
         changes: u32,
+    },
+    /// Actions herdr refused agents in the wake scope (`actions.jsonl`:
+    /// `non_user_turn`, `outside_team`), under the `teams` and `all` scopes.
+    Denials {
+        count: usize,
+        preview: Vec<String>,
+        first_at: u64,
+        at: u64,
     },
     /// Older items folded away by the pending cap (digest only).
     Earlier { count: u64, since: u64 },
@@ -272,8 +336,7 @@ impl Ev {
                     Prio::Low
                 }
             }
-            Ev::Appeared { .. } => Prio::Normal,
-            Ev::Gone { .. } => Prio::High,
+            Ev::Appeared { .. } | Ev::Gone { .. } | Ev::Denials { .. } => Prio::Normal,
             Ev::Messages { scope, .. } => match scope {
                 MsgScope::ToCoordinator => Prio::High,
                 MsgScope::Between => Prio::Normal,
@@ -287,7 +350,8 @@ impl Ev {
         match self {
             Ev::Status { first_at, .. }
             | Ev::Messages { first_at, .. }
-            | Ev::Registry { first_at, .. } => *first_at,
+            | Ev::Registry { first_at, .. }
+            | Ev::Denials { first_at, .. } => *first_at,
             Ev::Appeared { at, .. } | Ev::Gone { at, .. } => *at,
             Ev::Earlier { since, .. } => *since,
         }
@@ -314,6 +378,7 @@ impl Ev {
 struct Seen {
     status: String,
     pane_id: String,
+    who: Who,
     since: u64,
     blocked_ticks: u32,
 }
@@ -339,8 +404,6 @@ pub struct WatchState {
     /// Byte offset into `messages.jsonl`.
     #[serde(default)]
     pub msg_offset: u64,
-    #[serde(default)]
-    pub registry_mtime_ms: u64,
     /// `herdr coordinator wake` is waiting for an idle coordinator.
     #[serde(default)]
     pub forced: bool,
@@ -378,6 +441,23 @@ pub struct WatchState {
     /// When each sender's last refused message to the coordinator was queued.
     #[serde(skip)]
     refusal_queued: BTreeMap<String, u64>,
+    /// When each denial (actor, action, target, code) was last queued.
+    #[serde(skip)]
+    denial_queued: BTreeMap<String, u64>,
+    /// The coordinator herdr runs, while it should be running: its pane and
+    /// session (`coordinator.json`, set by the server before every tick).
+    /// Missing from the live facts for `missing_s` triggers a relaunch.
+    #[serde(skip)]
+    pub expected_coordinator: Option<ExpectedCoordinator>,
+}
+
+/// The coordinator the server expects to run (its own record).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExpectedCoordinator {
+    /// Its pane; `None` once its tab closed (the relaunch opens a new one).
+    pub pane_id: Option<String>,
+    /// Its Claude session, for `--resume`.
+    pub session: Option<String>,
 }
 
 impl WatchState {
@@ -550,18 +630,32 @@ impl WatchState {
         });
     }
 
-    fn registry_changed(&mut self, now: u64) {
-        for ev in &mut self.pending {
-            if let Ev::Registry { at, changes, .. } = ev {
-                *at = now;
-                *changes += 1;
-                return;
-            }
+    fn add_denials(&mut self, previews: Vec<String>, now: u64) {
+        let count = previews.len();
+        if count == 0 {
+            return;
         }
-        self.pending.push(Ev::Registry {
+        if let Some(Ev::Denials {
+            count: c,
+            preview,
+            at,
+            ..
+        }) = self
+            .pending
+            .iter_mut()
+            .find(|ev| matches!(ev, Ev::Denials { .. }))
+        {
+            *c += count;
+            *at = now;
+            let room = PREVIEWS.saturating_sub(preview.len());
+            preview.extend(previews.into_iter().take(room));
+            return;
+        }
+        self.pending.push(Ev::Denials {
+            count,
+            preview: previews.into_iter().take(PREVIEWS).collect(),
             first_at: now,
             at: now,
-            changes: 1,
         });
     }
 
@@ -631,14 +725,12 @@ fn agent_key(agent: &LiveAgent) -> String {
         .unwrap_or_else(|| agent.pane_id.clone())
 }
 
-/// The coordinator's pane: live, else its offline registry entry's last pane.
-fn coordinator_pane(live: &LiveData) -> Option<&str> {
-    live.coordinator_pane.as_deref().or_else(|| {
-        live.offline
-            .iter()
-            .find(|entry| entry.role.as_deref() == Some(COORDINATOR_ROLE))
-            .and_then(|entry| entry.pane_id.as_deref())
-    })
+/// The coordinator's pane: live, else the one the server expects it in.
+fn coordinator_pane<'a>(state: &'a WatchState, live: &'a LiveData) -> Option<&'a str> {
+    live.coordinator_pane.as_deref().or(state
+        .expected_coordinator
+        .as_ref()
+        .and_then(|expected| expected.pane_id.as_deref()))
 }
 
 /// Pure core: diff + policy. No I/O.
@@ -647,7 +739,7 @@ pub fn tick(
     state: &mut WatchState,
     live: &LiveData,
     new_msgs: &[AgentMessage],
-    registry_changed: bool,
+    new_actions: &[AgentActionEntry],
     turn: Option<&Turn>,
     wake_requested: bool,
     cfg: &WakeCfg,
@@ -675,17 +767,15 @@ pub fn tick(
     // the server says down until `coordinator.start`, and a down
     // coordinator gets no wake-ups even when its agent is back.
     let down = state.coordinator_down;
-    liveness(state, live, coordinator, cfg, now, &mut actions);
+    liveness(state, coordinator, cfg, now, &mut actions);
     if !state.baselined {
         baseline(state, live, now);
         actions.push(Action::Log("baseline".into()));
         return actions;
     }
     diff_agents(state, live, now);
-    queue_messages(state, live, new_msgs, now);
-    if registry_changed {
-        state.registry_changed(now);
-    }
+    queue_messages(state, live, new_msgs, cfg.scope, now);
+    queue_denials(state, live, new_actions, cfg.scope, now);
     state.cap_pending();
     gate(state, coordinator, down, turn_live, cfg, now, &mut actions);
     actions
@@ -712,7 +802,6 @@ fn track_last_change(state: &mut WatchState, live: &LiveData, now: u64) {
 
 fn liveness(
     state: &mut WatchState,
-    live: &LiveData,
     coordinator: Option<&LiveAgent>,
     cfg: &WakeCfg,
     now: u64,
@@ -735,12 +824,8 @@ fn liveness(
         return;
     }
     state.coord_idle_since = None;
-    let entry = live
-        .offline
-        .iter()
-        .find(|entry| entry.role.as_deref() == Some(COORDINATOR_ROLE));
-    let Some(entry) = entry else {
-        // No coordinator registered: nothing to relaunch.
+    let Some(expected) = state.expected_coordinator.clone() else {
+        // herdr does not run a coordinator now: nothing to relaunch.
         state.coord_missing_since = None;
         return;
     };
@@ -755,15 +840,13 @@ fn liveness(
     // missing: the server relaunches it through herdr's agent lifecycle and
     // counts the relaunches against its own cap (then sets `coordinator_down`).
     state.coord_missing_since = Some(now);
-    let resume = if entry.agent.as_deref() == Some("claude") {
-        entry.session.clone()
-    } else {
-        None
-    };
-    actions.push(Action::Relaunch { resume });
+    // The coordinator is always Claude: its recorded session resumes it.
+    actions.push(Action::Relaunch {
+        resume: expected.session,
+    });
 }
 
-/// Managed agents other than the coordinator, with their keys.
+/// Agents in the wake scope other than the coordinator, with their keys.
 fn managed_others(live: &LiveData) -> Vec<(String, &LiveAgent)> {
     live.agents
         .iter()
@@ -776,6 +859,7 @@ fn seen_now(agent: &LiveAgent, now: u64) -> Seen {
     Seen {
         status: agent.status.clone(),
         pane_id: agent.pane_id.clone(),
+        who: Who::of(agent),
         since: now,
         blocked_ticks: u32::from(agent.status == "blocked"),
     }
@@ -829,39 +913,25 @@ fn diff_agents(state: &mut WatchState, live: &LiveData, now: u64) {
         let Some(seen) = state.seen.remove(&key) else {
             continue;
         };
-        // Gone from the live list but still registered: offline. Not
-        // registered any more: it was unmanaged (the registry item covers that).
-        let offline = live.offline.iter().any(|entry| {
-            entry.session.as_deref() == Some(key.as_str())
-                || entry.pane_id.as_deref() == Some(seen.pane_id.as_str())
+        // An appearance not reported yet and gone again is no news.
+        let unreported = state.pending.iter().any(|ev| {
+            matches!(
+                ev,
+                Ev::Appeared {
+                    relinked: false,
+                    ..
+                }
+            ) && ev.key() == Some(&key)
         });
-        if !offline {
+        if unreported {
+            state.pending.retain(|ev| ev.key() != Some(key.as_str()));
             continue;
         }
-        let who = state
-            .pending
-            .iter()
-            .find_map(|ev| match ev {
-                Ev::Status { key: k, who, .. } | Ev::Appeared { key: k, who, .. } if *k == key => {
-                    Some(who.clone())
-                }
-                _ => None,
-            })
-            .or_else(|| {
-                let entry = live.offline.iter().find(|entry| {
-                    entry.session.as_deref() == Some(key.as_str())
-                        || entry.pane_id.as_deref() == Some(seen.pane_id.as_str())
-                })?;
-                Some(Who {
-                    name: entry.role.clone().unwrap_or_else(|| seen.pane_id.clone()),
-                    pane_id: seen.pane_id.clone(),
-                    agent: entry.agent.clone(),
-                    role: entry.role.clone(),
-                    project: entry.project.clone(),
-                })
-            })
-            .unwrap_or_default();
-        state.pending.push(Ev::Gone { key, who, at: now });
+        state.pending.push(Ev::Gone {
+            key,
+            who: seen.who,
+            at: now,
+        });
     }
     for (key, agent) in current {
         let who = Who::of(agent);
@@ -881,6 +951,7 @@ fn diff_agents(state: &mut WatchState, live: &LiveData, now: u64) {
         };
         let relinked = seen.pane_id != agent.pane_id;
         seen.pane_id = agent.pane_id.clone();
+        seen.who = who.clone();
         let changed = (seen.status != agent.status).then(|| seen.status.clone());
         if changed.is_some() {
             seen.status = agent.status.clone();
@@ -939,8 +1010,22 @@ fn preview(message: &AgentMessage) -> String {
 /// The refusal code of the per-pair loop guard (`agents_send_message`).
 const TEAM_LOOP_GUARD: &str = "loop_guard";
 
-fn queue_messages(state: &mut WatchState, live: &LiveData, new_msgs: &[AgentMessage], now: u64) {
-    let coordinator = coordinator_pane(live);
+fn queue_messages(
+    state: &mut WatchState,
+    live: &LiveData,
+    new_msgs: &[AgentMessage],
+    scope: WakeScope,
+    now: u64,
+) {
+    let coordinator = coordinator_pane(state, live).map(str::to_string);
+    let coordinator = coordinator.as_deref();
+    let in_scope = |pane: Option<&str>| {
+        pane.is_some_and(|pane| {
+            live.agents
+                .iter()
+                .any(|agent| agent.managed && agent.pane_id == pane)
+        })
+    };
     let mut to_coordinator = Vec::new();
     let mut between = Vec::new();
     let mut from_coordinator = Vec::new();
@@ -990,18 +1075,98 @@ fn queue_messages(state: &mut WatchState, live: &LiveData, new_msgs: &[AgentMess
             }
         } else if coordinator.is_some() && message.from_pane.as_deref() == coordinator {
             from_coordinator.push(preview(message));
-        } else if message.team.is_some() && message.outcome != TEAM_LOOP_GUARD {
-            // Teammates talk to each other freely: their chatter stays in the
-            // log and the live view but never wakes the coordinator (the
-            // brief leaves it alone); a tripped loop guard does.
+        } else if scope == WakeScope::Opened {
+            // Under `opened` only the coordinator's own traffic wakes it:
+            // other agents' messages (teammate chatter included) stay in the
+            // log and the dashboard. Loop guards that involve it are
+            // refusals to or from it (above).
             continue;
-        } else {
+        } else if in_scope(message.from_pane.as_deref()) && in_scope(Some(&message.to_pane)) {
+            // Among agents in the scope; a teammate's ordinary chatter only
+            // under `all`, a tripped loop guard always.
+            if message.team.is_some()
+                && message.outcome != TEAM_LOOP_GUARD
+                && scope != WakeScope::All
+            {
+                continue;
+            }
             between.push(preview(message));
         }
     }
     state.add_messages(MsgScope::ToCoordinator, to_coordinator, now);
     state.add_messages(MsgScope::Between, between, now);
     state.add_messages(MsgScope::FromCoordinator, from_coordinator, now);
+}
+
+/// `lead outside_team rename_tab w2:t3`.
+fn denial_preview(entry: &AgentActionEntry) -> String {
+    let who = entry
+        .actor_name
+        .as_deref()
+        .or(entry.actor_pane.as_deref())
+        .unwrap_or("?");
+    let target = entry
+        .target_name
+        .as_deref()
+        .or(entry.target_tab.as_deref())
+        .or(entry.target_pane.as_deref())
+        .unwrap_or("-");
+    format!(
+        "{who} {} {} {target}",
+        entry.code.as_deref().unwrap_or("denied"),
+        entry.action
+    )
+}
+
+/// The refusals of agents in the scope (`teams`/`all` only): one normal-lane
+/// line each, the same (actor, action, target, code) once per minute. The
+/// raw lines stay in `actions.jsonl` and the dashboard.
+fn queue_denials(
+    state: &mut WatchState,
+    live: &LiveData,
+    new_actions: &[AgentActionEntry],
+    scope: WakeScope,
+    now: u64,
+) {
+    if scope == WakeScope::Opened {
+        return;
+    }
+    state
+        .denial_queued
+        .retain(|_, at| now.saturating_sub(*at) < DENIAL_REPEAT_S);
+    let mut previews = Vec::new();
+    for entry in new_actions {
+        let code = entry.code.as_deref().unwrap_or("");
+        if entry.outcome != AgentsActionOutcome::Denied
+            || !matches!(code, error_code::NON_USER_TURN | error_code::OUTSIDE_TEAM)
+        {
+            continue;
+        }
+        let in_scope = entry.actor_pane.as_deref().is_some_and(|pane| {
+            live.agents
+                .iter()
+                .any(|agent| agent.managed && agent.pane_id == pane)
+        });
+        if !in_scope {
+            continue;
+        }
+        let key = format!(
+            "{}|{}|{}|{code}",
+            entry.actor_pane.as_deref().unwrap_or(""),
+            entry.action,
+            entry
+                .target_tab
+                .as_deref()
+                .or(entry.target_pane.as_deref())
+                .unwrap_or("")
+        );
+        if state.denial_queued.contains_key(&key) {
+            continue;
+        }
+        state.denial_queued.insert(key, now);
+        previews.push(denial_preview(entry));
+    }
+    state.add_denials(previews, now);
 }
 
 /// Why a triggered wake-up waits (`held`/`suppressed` and the reason), if it does.
@@ -1182,7 +1347,7 @@ fn digest_line(ev: &Ev) -> String {
             at,
             relinked: false,
             ..
-        } => format!("- {}: new managed agent at {}", who.label(), clock(*at)),
+        } => format!("- {}: new agent at {}", who.label(), clock(*at)),
         Ev::Appeared { who, at, .. } => {
             format!(
                 "- {}: now in pane {} ({})",
@@ -1191,7 +1356,7 @@ fn digest_line(ev: &Ev) -> String {
                 clock(*at)
             )
         }
-        Ev::Gone { who, at, .. } => format!("- {}: OFFLINE since {}", who.label(), clock(*at)),
+        Ev::Gone { who, at, .. } => format!("- {}: gone since {}", who.label(), clock(*at)),
         Ev::Messages {
             scope,
             count,
@@ -1214,6 +1379,14 @@ fn digest_line(ev: &Ev) -> String {
             "- registry changed (opt-ins, roles or notes; {changes}\u{d7}, last {})",
             clock(*at)
         ),
+        Ev::Denials { count, preview, .. } => {
+            let mut line = format!("- refused agent actions: {count} new");
+            for item in preview {
+                line.push_str("; ");
+                line.push_str(item);
+            }
+            line
+        }
         Ev::Earlier { count, since } => {
             format!("- +{count} earlier changes since {}", clock(*since))
         }
@@ -1313,7 +1486,6 @@ pub(super) fn prune_digests(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordinator::live::OfflineAgent;
     use std::collections::HashMap;
 
     fn agent(pane: &str, name: &str, status: &str) -> LiveAgent {
@@ -1332,7 +1504,6 @@ mod tests {
     fn coord(status: &str) -> LiveAgent {
         LiveAgent {
             coordinator: true,
-            role: Some(COORDINATOR_ROLE.into()),
             ..agent("w1:p1", "coordinator", status)
         }
     }
@@ -1353,7 +1524,7 @@ mod tests {
     }
 
     fn quiet(state: &mut WatchState, data: &LiveData, cfg: &WakeCfg, now: u64) -> Vec<Action> {
-        tick(state, data, &[], false, None, false, cfg, now)
+        tick(state, data, &[], &[], None, false, cfg, now)
     }
 
     fn wakes(actions: &[Action]) -> Vec<(u64, usize)> {
@@ -1406,7 +1577,7 @@ mod tests {
             &mut state,
             &data,
             &[message("w2:p1", "w2:p2", "sent")],
-            true,
+            &[],
             None,
             false,
             &cfg(),
@@ -1607,10 +1778,11 @@ mod tests {
         quiet(&mut state, &data, &cfg, 0);
         // Nothing pending: no periodic wake, ever.
         assert!(quiet(&mut state, &data, &cfg, 1000).is_empty());
-        // A low item (a registry change) waits for the periodic check.
+        // A low item (the coordinator's own message) waits for the periodic check.
         let mut state = WatchState::default();
         quiet(&mut state, &data, &cfg, 0);
-        tick(&mut state, &data, &[], true, None, false, &cfg, 10);
+        let own = message("w1:p1", "w2:p1", "sent");
+        tick(&mut state, &data, &[own], &[], None, false, &cfg, 10);
         assert_eq!(state.pending[0].prio(), Some(Prio::Low));
         assert!(quiet(&mut state, &data, &cfg, 299).is_empty());
         assert_eq!(wakes(&quiet(&mut state, &data, &cfg, 300)), vec![(1, 1)]);
@@ -1620,7 +1792,7 @@ mod tests {
     fn no_wake_while_the_coordinator_is_busy_unsettled_or_in_a_turn() {
         let cfg = cfg();
         let request = |state: &mut WatchState, data: &LiveData, turn: Option<&Turn>, now| {
-            tick(state, data, &[], false, turn, true, &cfg, now)
+            tick(state, data, &[], &[], turn, true, &cfg, now)
         };
         let mut state = WatchState::default();
         quiet(&mut state, &live(vec![coord("working")]), &cfg, 0);
@@ -1673,7 +1845,7 @@ mod tests {
             &mut state,
             &live(vec![coord("working")]),
             &[],
-            false,
+            &[],
             Some(&turn),
             false,
             &cfg,
@@ -1688,7 +1860,7 @@ mod tests {
             &mut state,
             &live(vec![coord("idle")]),
             &[],
-            false,
+            &[],
             Some(&worked),
             false,
             &cfg,
@@ -1711,7 +1883,7 @@ mod tests {
             &mut state,
             &live(vec![coord("working")]),
             &[],
-            false,
+            &[],
             None,
             true,
             &cfg,
@@ -1756,14 +1928,17 @@ mod tests {
     fn a_missing_coordinator_triggers_a_relaunch_every_missing_window_until_down() {
         let cfg = cfg();
         let mut state = WatchState::default();
-        let mut gone = live(vec![]);
-        gone.offline.push(OfflineAgent {
-            pane_id: Some("w1:p1".into()),
-            session: Some("cs".into()),
-            agent: Some("claude".into()),
-            role: Some(COORDINATOR_ROLE.into()),
-            project: None,
-        });
+        let gone = live(vec![]);
+        // Nothing expected (herdr does not run one): never a relaunch.
+        quiet(&mut state, &gone, &cfg, 0);
+        assert!(quiet(&mut state, &gone, &cfg, 100).is_empty());
+        let mut state = WatchState {
+            expected_coordinator: Some(ExpectedCoordinator {
+                pane_id: Some("w1:p1".into()),
+                session: Some("cs".into()),
+            }),
+            ..WatchState::default()
+        };
         let relaunches = |actions: &[Action]| {
             actions
                 .iter()
@@ -1787,6 +1962,19 @@ mod tests {
             1,
             "no cap here: the server counts"
         );
+        // Its tab closed (no pane any more): still a relaunch.
+        let mut tabless = WatchState {
+            expected_coordinator: Some(ExpectedCoordinator {
+                pane_id: None,
+                session: None,
+            }),
+            ..WatchState::default()
+        };
+        quiet(&mut tabless, &gone, &cfg, 0);
+        assert_eq!(
+            quiet(&mut tabless, &gone, &cfg, 30),
+            vec![Action::Relaunch { resume: None }]
+        );
         // The server gave up (its relaunch cap): no more triggers.
         state.coordinator_down = true;
         assert!(state.summary(&cfg, false, 150).coordinator_down);
@@ -1807,8 +1995,8 @@ mod tests {
         tick(
             &mut state,
             &live(vec![coord("idle")]),
+            &[message("w1:p1", "w2:p1", "sent")],
             &[],
-            true,
             None,
             false,
             &cfg,
@@ -1819,8 +2007,8 @@ mod tests {
         tick(
             &mut state,
             &live(vec![coord("idle")]),
+            &[message("w1:p1", "w2:p1", "sent")],
             &[],
-            true,
             None,
             false,
             &cfg,
@@ -1871,7 +2059,7 @@ mod tests {
     }
 
     #[test]
-    fn offline_unmanaged_relinked_and_rekeyed_agents() {
+    fn gone_relinked_and_rekeyed_agents() {
         let cfg = cfg();
         let mut state = WatchState::default();
         let a = agent("w2:p1", "a", "idle");
@@ -1886,31 +2074,28 @@ mod tests {
             &cfg,
             0,
         );
-        // a goes offline (still registered); b was unmanaged; c learns its
-        // session id; and a moves panes when it comes back.
-        let mut next = live(vec![
-            coord("idle"),
-            LiveAgent {
-                session: Some("s-c".into()),
-                ..pane_only
-            },
-        ]);
-        next.offline.push(OfflineAgent {
-            session: Some("s-a".into()),
-            pane_id: Some("w2:p1".into()),
-            ..OfflineAgent::default()
-        });
+        // a and b are gone (their tabs closed, or they left the scope); c
+        // learns its session id; and a moves panes when it comes back.
+        let c = LiveAgent {
+            session: Some("s-c".into()),
+            ..pane_only
+        };
+        let next = live(vec![coord("idle"), c.clone()]);
         quiet(&mut state, &next, &cfg, 10);
-        assert_eq!(state.pending.len(), 1, "{:?}", state.pending);
-        assert!(matches!(&state.pending[0], Ev::Gone { key, .. } if key == "s-a"));
-        assert_eq!(state.pending[0].prio(), Some(Prio::High));
+        assert_eq!(state.pending.len(), 2, "{:?}", state.pending);
+        assert!(
+            matches!(&state.pending[0], Ev::Gone { key, who, .. } if key == "s-a" && who.name == "a")
+        );
+        assert!(matches!(&state.pending[1], Ev::Gone { key, .. } if key == "s-b"));
+        assert_eq!(state.pending[0].prio(), Some(Prio::Normal));
+        state.pending.retain(|ev| ev.key() != Some("s-b"));
         let moved = LiveAgent {
             pane_id: "w3:p1".into(),
             ..a
         };
         quiet(
             &mut state,
-            &live(vec![coord("idle"), moved.clone()]),
+            &live(vec![coord("idle"), moved.clone(), c.clone()]),
             &cfg,
             11,
         );
@@ -1930,6 +2115,7 @@ mod tests {
                     pane_id: "w4:p1".into(),
                     ..moved
                 },
+                c,
             ]),
             &cfg,
             12,
@@ -1941,9 +2127,16 @@ mod tests {
 
     #[test]
     fn messages_are_classified_by_their_relation_to_the_coordinator() {
-        let cfg = cfg();
+        let cfg = WakeCfg {
+            scope: WakeScope::All,
+            ..cfg()
+        };
         let mut state = WatchState::default();
-        let data = live(vec![coord("idle"), agent("w2:p1", "a", "idle")]);
+        let data = live(vec![
+            coord("idle"),
+            agent("w2:p1", "a", "idle"),
+            agent("w2:p2", "b", "idle"),
+        ]);
         quiet(&mut state, &data, &cfg, 0);
         let mut long = message("w2:p1", "w2:p2", "sent");
         long.text = "x".repeat(200);
@@ -1954,7 +2147,7 @@ mod tests {
             long,
             message("w2:p2", "w2:p1", "sent"),
         ];
-        tick(&mut state, &data, &msgs, false, None, false, &cfg, 10);
+        tick(&mut state, &data, &msgs, &[], None, false, &cfg, 10);
         let scopes: Vec<(MsgScope, usize, Option<Prio>)> = state
             .pending
             .iter()
@@ -1984,9 +2177,16 @@ mod tests {
 
     #[test]
     fn teammate_chatter_never_wakes_the_coordinator_but_a_loop_guard_does() {
-        let cfg = cfg();
+        let cfg = WakeCfg {
+            scope: WakeScope::Teams,
+            ..cfg()
+        };
         let mut state = WatchState::default();
-        let data = live(vec![coord("idle"), agent("w3:p1", "fixer", "idle")]);
+        let data = live(vec![
+            coord("idle"),
+            agent("w3:p1", "fixer", "idle"),
+            agent("w3:p2", "reviewer", "idle"),
+        ]);
         quiet(&mut state, &data, &cfg, 0);
         let teammate = |outcome: &str| {
             let mut m = message("w3:p1", "w3:p2", outcome);
@@ -1994,7 +2194,7 @@ mod tests {
             m
         };
         let msgs = [teammate("sent"), teammate("busy"), teammate("sent")];
-        tick(&mut state, &data, &msgs, false, None, false, &cfg, 10);
+        tick(&mut state, &data, &msgs, &[], None, false, &cfg, 10);
         assert!(
             !state
                 .pending
@@ -2007,7 +2207,7 @@ mod tests {
             &mut state,
             &data,
             &[teammate(TEAM_LOOP_GUARD)],
-            false,
+            &[],
             None,
             false,
             &cfg,
@@ -2028,6 +2228,140 @@ mod tests {
         assert_eq!(between, vec![1], "only the loop guard is queued");
     }
 
+    fn denial(actor: &str, target: &str, code: &str) -> AgentActionEntry {
+        AgentActionEntry {
+            unix: 1,
+            id: format!("a-{actor}-{target}-{code}"),
+            actor: crate::api::schema::agents_model::AgentActorKind::Agent,
+            actor_pane: Some(actor.into()),
+            actor_name: Some("fixer".into()),
+            action: "close_tab".into(),
+            target_tab: Some(target.into()),
+            target_pane: None,
+            target_name: None,
+            team: None,
+            turn_origin: None,
+            origin_detail: None,
+            outcome: AgentsActionOutcome::Denied,
+            code: Some(code.into()),
+            detail: None,
+            closed_ids: Vec::new(),
+        }
+    }
+
+    fn denials(state: &WatchState) -> Vec<(usize, Option<Prio>)> {
+        state
+            .pending
+            .iter()
+            .filter_map(|ev| match ev {
+                Ev::Denials { count, .. } => Some((*count, ev.prio())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn refusals_of_agents_in_scope_queue_one_deduped_normal_line_under_teams() {
+        let data = live(vec![
+            coord("idle"),
+            agent("w3:p1", "fixer", "idle"),
+            LiveAgent {
+                managed: false,
+                ..agent("w4:p1", "solo", "idle")
+            },
+        ]);
+        let refused = [
+            denial("w3:p1", "w2:t3", "outside_team"),
+            denial("w3:p1", "w2:t3", "outside_team"),
+            denial("w3:p1", "w3:t2", "non_user_turn"),
+            denial("w3:p1", "w3:t2", "rate_limited"),
+            denial("w4:p1", "w2:t3", "outside_team"),
+        ];
+        // Under `opened` a refusal never wakes the coordinator.
+        let mut state = WatchState::default();
+        quiet(&mut state, &data, &cfg(), 0);
+        tick(&mut state, &data, &[], &refused, None, false, &cfg(), 10);
+        assert!(denials(&state).is_empty(), "{:?}", state.pending);
+        // Under `teams`: in-scope agents' non_user_turn / outside_team only,
+        // the same refusal once a minute, the normal lane.
+        let teams = WakeCfg {
+            scope: WakeScope::Teams,
+            ..cfg()
+        };
+        let mut state = WatchState::default();
+        quiet(&mut state, &data, &teams, 0);
+        tick(&mut state, &data, &[], &refused, None, false, &teams, 10);
+        assert_eq!(denials(&state), vec![(2, Some(Prio::Normal))]);
+        tick(
+            &mut state,
+            &data,
+            &[],
+            &refused[..1],
+            None,
+            false,
+            &teams,
+            30,
+        );
+        assert_eq!(denials(&state), vec![(2, Some(Prio::Normal))], "deduped");
+        tick(
+            &mut state,
+            &data,
+            &[],
+            &refused[..1],
+            None,
+            false,
+            &teams,
+            71,
+        );
+        assert_eq!(
+            denials(&state),
+            vec![(3, Some(Prio::Normal))],
+            "a minute later"
+        );
+        let digest = digest_markdown(1, &state.digest_events(), 80);
+        assert!(
+            digest.contains("- refused agent actions: 3 new; fixer outside_team close_tab w2:t3"),
+            "{digest}"
+        );
+    }
+
+    #[test]
+    fn under_opened_only_the_agents_the_coordinator_opened_create_items() {
+        let cfg = cfg();
+        let opened = agent("w2:p1", "mine", "working");
+        let other = LiveAgent {
+            managed: false,
+            ..agent("w3:p1", "theirs", "working")
+        };
+        let mut state = WatchState::default();
+        quiet(
+            &mut state,
+            &live(vec![coord("idle"), opened.clone(), other.clone()]),
+            &cfg,
+            0,
+        );
+        let blocked = |a: &LiveAgent| LiveAgent {
+            status: "blocked".into(),
+            ..a.clone()
+        };
+        // The other agent blocks for two ticks: nothing; the opened one does.
+        let data = live(vec![coord("idle"), opened.clone(), blocked(&other)]);
+        quiet(&mut state, &data, &cfg, 10);
+        quiet(&mut state, &data, &cfg, 15);
+        assert!(state.pending.is_empty(), "{:?}", state.pending);
+        let data = live(vec![coord("idle"), blocked(&opened), blocked(&other)]);
+        quiet(&mut state, &data, &cfg, 20);
+        quiet(&mut state, &data, &cfg, 25);
+        assert!(
+            matches!(
+                &state.pending[..],
+                [Ev::Status { key, blocked_since: Some(_), .. }] if key == "s-mine"
+            ),
+            "{:?}",
+            state.pending
+        );
+    }
+
     #[test]
     fn a_reply_logged_for_the_coordinator_is_not_a_refusal() {
         let cfg = cfg();
@@ -2036,7 +2370,7 @@ mod tests {
         quiet(&mut state, &data, &cfg, 0);
         let mut reply = message("w2:p1", "w1:p1", messages::OUTCOME_LOGGED);
         reply.reply_to = Some("m1abc".into());
-        tick(&mut state, &data, &[reply], false, None, false, &cfg, 10);
+        tick(&mut state, &data, &[reply], &[], None, false, &cfg, 10);
         let scopes: Vec<(MsgScope, Option<Prio>)> = state
             .pending
             .iter()
@@ -2102,24 +2436,24 @@ mod tests {
                 _ => None,
             })
         };
-        tick(&mut state, &data, &busy, false, None, false, &cfg, 10);
+        tick(&mut state, &data, &busy, &[], None, false, &cfg, 10);
         // A repeat while the first is pending rides along with it.
-        tick(&mut state, &data, &busy, false, None, false, &cfg, 15);
+        tick(&mut state, &data, &busy, &[], None, false, &cfg, 15);
         assert_eq!(to_coordinator(&state), Some(2));
         // After the wake-up delivered them, repeats wait in the log...
         state.pending.clear();
-        tick(&mut state, &data, &busy, false, None, false, &cfg, 60);
+        tick(&mut state, &data, &busy, &[], None, false, &cfg, 60);
         assert_eq!(to_coordinator(&state), None);
         // ...but another sender, or the same one after the window, wakes it.
         let other = [message("w2:p2", "w1:p1", "busy")];
-        tick(&mut state, &data, &other, false, None, false, &cfg, 61);
+        tick(&mut state, &data, &other, &[], None, false, &cfg, 61);
         assert_eq!(to_coordinator(&state), Some(1));
         state.pending.clear();
         tick(
             &mut state,
             &data,
             &busy,
-            false,
+            &[],
             None,
             false,
             &cfg,

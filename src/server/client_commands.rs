@@ -19,6 +19,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "agent.suspend",
     "agent.transcripts",
     "agents.fix",
+    "agents.set_meta",
     "agents.settings",
     "agents.settings.set",
     "browser.fix",
@@ -499,6 +500,11 @@ mod tests {
             actual.remove("agents.settings.set").as_deref(),
             Some("1b012b44b0d82bfa63daaf37373d75b76289217c1677345bfd4dc8c27c2b59d0")
         );
+        // fork: the agents model (agents v2).
+        assert_eq!(
+            actual.remove("agents.set_meta").as_deref(),
+            Some("09a29ef4894ed7e5a78254457e1846c6fd96b7e48eb119895ae948eac235a512")
+        );
         // fork: teams.
         assert_eq!(
             actual.remove("team.disband").as_deref(),
@@ -632,6 +638,61 @@ mod tests {
                 }
                 assert!(
                     name.starts_with("Team") || name == "EmptyParams",
+                    "{method} references the existing type {name}"
+                );
+                if let Some(definition) = definitions.get(&name) {
+                    collect_schema_refs(definition, &mut referenced);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_set_meta_of_the_agents_model_is_advertised_to_client_shells() {
+        use crate::api::schema::agents_model::method;
+        for name in method::ALL {
+            assert_eq!(
+                supports_client_shell_method_name(name),
+                method::CLIENT_SHELL.contains(&name),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn agents_model_params_reference_no_existing_schema_type() {
+        // Digest hygiene: an agents-model request branch references only the
+        // agents-model parameter types, so no other schema change can move
+        // its digest (and no existing enum is frozen a second time).
+        let schema = serde_json::to_value(schemars::schema_for!(crate::api::schema::Request))
+            .expect("request schema");
+        let definitions = schema
+            .get("$defs")
+            .and_then(serde_json::Value::as_object)
+            .expect("request definitions");
+        let branches = schema
+            .get("oneOf")
+            .and_then(serde_json::Value::as_array)
+            .expect("request method branches");
+        for method in crate::api::schema::agents_model::method::ALL {
+            let branch = branches
+                .iter()
+                .find(|branch| {
+                    branch
+                        .pointer("/properties/method/const")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(method)
+                })
+                .unwrap_or_else(|| panic!("missing request schema branch for {method}"));
+            let mut referenced = BTreeSet::new();
+            collect_schema_refs(branch, &mut referenced);
+            let mut visited = BTreeSet::new();
+            while let Some(name) = referenced.pop_first() {
+                if !visited.insert(name.clone()) {
+                    continue;
+                }
+                assert!(
+                    crate::api::schema::agents_model::PARAM_TYPES.contains(&name.as_str()),
                     "{method} references the existing type {name}"
                 );
                 if let Some(definition) = definitions.get(&name) {

@@ -82,6 +82,12 @@ impl App {
         let terminal_id = tab.terminal_id(pane_id)?;
         let terminal = self.state.terminals.get(terminal_id)?;
         let session = terminal.persistable_agent_session()?;
+        // Fork (agents v2): the pane's meta and who closed it ride the side
+        // file, keyed by the session (the record makes ids unique later).
+        let side = closed_sessions::ClosedAgentRecord {
+            agent_meta: Some(terminal.agent_meta().clone()).filter(|meta| !meta.is_empty()),
+            closed_by: self.agents_model.close_actor.clone(),
+        };
         let cwd = self
             .terminal_runtimes
             .get(terminal_id)
@@ -108,6 +114,12 @@ impl App {
             space_name: workspace.display_name_from(&self.state.terminals, &self.terminal_runtimes),
             cwd: cwd.display().to_string(),
             closed_at,
+        })
+        .inspect(|entry| {
+            self.agents_model
+                .closing_records
+                .borrow_mut()
+                .insert(closed_sessions::session_key(entry), side);
         })
     }
 
@@ -181,13 +193,33 @@ impl App {
             return;
         }
         let count = entries.len();
-        match closed_sessions::record(&closed_sessions::store_path(), entries) {
-            Ok(_) => tracing::info!(
-                event = "session.closed.record",
-                outcome = "recorded",
-                count,
-                "recorded closed agent sessions"
-            ),
+        let keys: Vec<String> = entries.iter().map(closed_sessions::session_key).collect();
+        let store = closed_sessions::store_path();
+        match closed_sessions::record(&store, entries) {
+            Ok(written) => {
+                // Fork (agents v2): the ids as written, and the side records.
+                let ids = written
+                    .iter()
+                    .filter(|entry| keys.contains(&closed_sessions::session_key(entry)))
+                    .map(|entry| entry.id.clone())
+                    .collect();
+                *self.agents_model.last_closed_ids.borrow_mut() = ids;
+                let side: Vec<(String, closed_sessions::ClosedAgentRecord)> = {
+                    let mut pending = self.agents_model.closing_records.borrow_mut();
+                    keys.iter()
+                        .filter_map(|key| pending.remove(key).map(|record| (key.clone(), record)))
+                        .collect()
+                };
+                if let Err(err) = closed_sessions::record_agents(&store, side) {
+                    tracing::warn!(err = %err, "failed to record the closed sessions' agent meta");
+                }
+                tracing::info!(
+                    event = "session.closed.record",
+                    outcome = "recorded",
+                    count,
+                    "recorded closed agent sessions"
+                )
+            }
             Err(err) => tracing::warn!(
                 event = "session.closed.record",
                 outcome = "error",
@@ -255,6 +287,16 @@ impl App {
             Ok(reopened) => reopened,
             Err(err) => return encode_error(id, "tab_create_failed", err.to_string()),
         };
+        // Fork (agents v2): the pane's meta comes back; its turn is unknown.
+        let side = closed_sessions::load_agents(&path)
+            .remove(&closed_sessions::session_key(&entry))
+            .unwrap_or_default();
+        if let Some(terminal) = self.state.terminals.get_mut(&reopened.terminal_id) {
+            terminal.mark_restored();
+            if let Some(meta) = side.agent_meta.clone() {
+                *terminal.agent_meta_mut() = meta;
+            }
+        }
         if let Err(err) = self.launch_closed_session_resume(&reopened.terminal_id, session, &plan) {
             // The tab exists as a plain shell; announce it and keep the entry.
             self.announce_reopened_tab(&reopened);
@@ -383,6 +425,11 @@ impl App {
         if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
             terminal.set_persisted_agent_session(session);
         }
+        // Fork (agents v2): a scripted write, for the turn origin.
+        self.note_input(
+            terminal_id,
+            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
+        );
         Ok(())
     }
 }

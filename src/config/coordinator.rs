@@ -9,7 +9,7 @@
 use serde::{Deserialize, Deserializer};
 
 use super::news::{parse_quiet_hours, QuietHours};
-use crate::coordinator::watch::WakeCfg;
+use crate::coordinator::watch::{WakeCfg, WakeScope};
 
 pub const DEFAULT_CAP_HOUR: u32 = 12;
 pub const DEFAULT_CAP_DAY: u32 = 80;
@@ -52,6 +52,13 @@ pub struct CoordinatorConfig {
     /// a key of its own: filled from `dashboard_port`).
     #[serde(skip)]
     pub invalid_dashboard_port: Option<String>,
+    /// Which agents wake the coordinator: `opened` (the agents it opened),
+    /// `teams` (also every team member) or `all`. Default: `opened`.
+    pub wake_scope: WakeScope,
+    /// The `wake_scope` value as written when it was not a scope (filled
+    /// from `wake_scope`).
+    #[serde(skip)]
+    pub invalid_wake_scope: Option<String>,
 }
 
 impl Default for CoordinatorConfig {
@@ -68,6 +75,8 @@ impl Default for CoordinatorConfig {
             quiet_hours: String::new(),
             dashboard_port: DEFAULT_DASHBOARD_PORT,
             invalid_dashboard_port: None,
+            wake_scope: WakeScope::Opened,
+            invalid_wake_scope: None,
         }
     }
 }
@@ -87,6 +96,7 @@ struct RawCoordinatorConfig {
     notify_daily_cap: u32,
     quiet_hours: String,
     dashboard_port: PortSetting,
+    wake_scope: String,
 }
 
 impl Default for RawCoordinatorConfig {
@@ -103,6 +113,7 @@ impl Default for RawCoordinatorConfig {
             notify_daily_cap: config.notify_daily_cap,
             quiet_hours: config.quiet_hours,
             dashboard_port: PortSetting::Port(config.dashboard_port),
+            wake_scope: config.wake_scope.as_str().to_string(),
         }
     }
 }
@@ -112,6 +123,10 @@ impl From<RawCoordinatorConfig> for CoordinatorConfig {
         let (dashboard_port, invalid_dashboard_port) = match raw.dashboard_port {
             PortSetting::Port(port) => (port, None),
             PortSetting::Invalid(value) => (DEFAULT_DASHBOARD_PORT, Some(value)),
+        };
+        let (wake_scope, invalid_wake_scope) = match WakeScope::parse(&raw.wake_scope) {
+            Some(scope) => (scope, None),
+            None => (WakeScope::default(), Some(raw.wake_scope)),
         };
         Self {
             enabled: raw.enabled,
@@ -125,6 +140,8 @@ impl From<RawCoordinatorConfig> for CoordinatorConfig {
             quiet_hours: raw.quiet_hours,
             dashboard_port,
             invalid_dashboard_port,
+            wake_scope,
+            invalid_wake_scope,
         }
     }
 }
@@ -217,6 +234,7 @@ impl CoordinatorConfig {
     pub fn wake_cfg(&self) -> WakeCfg {
         let (cap_hour, cap_day) = self.caps();
         WakeCfg::from_config(
+            self.wake_scope,
             cap_hour,
             cap_day,
             self.periodic_minutes.max(1).saturating_mul(60),
@@ -233,6 +251,12 @@ impl CoordinatorConfig {
         if let Some(value) = &self.invalid_dashboard_port {
             diagnostics.push(format!(
                 "coordinator.dashboard_port = {value} is not a port (0-65535); using {DEFAULT_DASHBOARD_PORT}"
+            ));
+        }
+        if let Some(value) = &self.invalid_wake_scope {
+            diagnostics.push(format!(
+                "coordinator.wake_scope = {value:?} is not one of {}; using opened",
+                WakeScope::NAMES.join(", ")
             ));
         }
         if let Err(err) = validate_caps(self.cap_hour, self.cap_day) {
@@ -302,6 +326,21 @@ mod tests {
             assert_eq!(config.diagnostics().len(), 1, "{bad}");
         }
         assert_eq!(parse("model = '  '\n").model(), None);
+    }
+
+    #[test]
+    fn the_wake_scope_defaults_to_opened_and_a_bad_one_falls_back() {
+        assert_eq!(parse("").wake_scope, WakeScope::Opened);
+        assert_eq!(parse("").wake_cfg().scope, WakeScope::Opened);
+        assert_eq!(parse("wake_scope = 'teams'\n").wake_scope, WakeScope::Teams);
+        assert_eq!(
+            parse("wake_scope = ' ALL '\n").wake_cfg().scope,
+            WakeScope::All
+        );
+        let bad = parse("wake_scope = 'everyone'\n");
+        assert_eq!(bad.wake_scope, WakeScope::Opened);
+        assert_eq!(bad.diagnostics().len(), 1);
+        assert!(bad.diagnostics()[0].contains("wake_scope"));
     }
 
     #[test]

@@ -234,6 +234,11 @@ impl App {
         if let Some(session) = persisted_agent_session {
             terminal.set_managed_agent_launch_session(session);
         }
+        // Fork (agents v2): a scripted write, for the turn origin.
+        self.note_input(
+            &terminal_id,
+            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
+        );
         self.state.mark_session_dirty();
         self.schedule_session_save();
 

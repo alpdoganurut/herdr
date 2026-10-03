@@ -1170,6 +1170,11 @@ impl App {
             self.state
                 .public_pane_id_aliases
                 .insert(previous_pane_id.clone(), source_pane_id);
+            // Fork (agents v2): the alias rides the pane's meta, so it
+            // survives a restart and a live handoff with the pane.
+            let moved_terminal = moved.pane_state.attached_terminal_id.clone();
+            self.state
+                .remember_public_alias(&moved_terminal, &previous_pane_id);
         }
 
         let mut closed_workspace_id = None;
@@ -1883,6 +1888,12 @@ impl App {
         if let Err(err) = runtime.try_send_bytes(Bytes::from(params.text)) {
             return encode_error(id, "pane_send_failed", err.to_string());
         }
+        // Fork (agents v2): a scripted write, for the turn origin.
+        self.note_pane_input(
+            ws_idx,
+            pane_id,
+            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
+        );
 
         encode_success(id, ResponseResult::Ok {})
     }
@@ -1909,6 +1920,12 @@ impl App {
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             return encode_error(id, "pane_send_failed", err.to_string());
         }
+        // Fork (agents v2): a scripted write, for the turn origin.
+        self.note_pane_input(
+            ws_idx,
+            pane_id,
+            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
+        );
 
         encode_success(id, ResponseResult::Ok {})
     }
@@ -2011,6 +2028,12 @@ impl App {
                 return encode_error(id, "pane_send_failed", err.to_string());
             }
         }
+        // Fork (agents v2): a scripted write, for the turn origin.
+        self.note_pane_input(
+            ws_idx,
+            pane_id,
+            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
+        );
 
         encode_success(id, ResponseResult::Ok {})
     }
