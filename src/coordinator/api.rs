@@ -202,6 +202,18 @@ pub fn team_set_purpose(
     }))
 }
 
+/// `agent.message_claim`: whether the queued message `id` was taken off the
+/// queue for `pane` (its target): agents_wait_for_message returned it.
+pub fn message_claim(api: &impl Api, id: &str, pane: &str) -> Result<bool, ApiError> {
+    let result = api.call(Method::AgentMessageClaim(
+        crate::api::schema::AgentMessageClaimParams {
+            id: id.to_string(),
+            pane: pane.to_string(),
+        },
+    ))?;
+    Ok(result["claimed"].as_bool().unwrap_or(false))
+}
+
 /// Upper bound for every coordinator wait (a socket is never held for minutes).
 pub const MAX_WAIT_S: u64 = 120;
 

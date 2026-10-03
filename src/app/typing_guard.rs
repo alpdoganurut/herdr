@@ -61,6 +61,27 @@ pub(crate) fn typing_block(
     (unsent_draft(agent, &bottom_ansi()) == Some(true)).then_some(TypingBlock::UnsentDraft)
 }
 
+/// The guard for a pane's terminal runtime: `agent` is its known agent
+/// (`None`: no agent, the recent-input check alone). The one typing guard:
+/// agent messages, coordinator wake-ups (through `agent.prompt` with
+/// `guard_user_typing`) and the agents model's close check all use it.
+pub(crate) fn runtime_typing_block(
+    agent: Option<Agent>,
+    runtime: &crate::terminal::TerminalRuntime,
+    now: Instant,
+) -> Option<TypingBlock> {
+    let last_user_input = runtime.last_user_input();
+    match agent {
+        Some(agent) => typing_block(agent, last_user_input, now, || {
+            let rows = usize::from(runtime.current_size().0.max(1));
+            runtime.recent_ansi_snapshot(rows).text
+        }),
+        None => last_user_input
+            .is_some_and(|at| now.saturating_duration_since(at) < USER_INPUT_QUIET)
+            .then_some(TypingBlock::RecentInput),
+    }
+}
+
 fn draft_detection_supported(agent: Agent) -> bool {
     matches!(agent, Agent::Claude | Agent::Codex)
 }

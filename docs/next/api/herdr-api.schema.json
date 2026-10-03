@@ -12364,8 +12364,8 @@
               "type": "string"
             },
             {
-              "const": "logged",
-              "description": "Only logged (a reply to an asker that is busy now).",
+              "const": "queued",
+              "description": "Queued by the server (logged `queued`): typed in once the target is\nfree (src/app/message_queue.rs), or taken by the target's\nagents_wait_for_message.",
               "type": "string"
             },
             {
@@ -12388,6 +12388,13 @@
             },
             "outcome": {
               "$ref": "#/schemas/success_response/$defs/AgentsMessageOutcome"
+            },
+            "reason": {
+              "description": "Why a queued message was not typed in now (working, blocked, its\nuser typing, earlier messages waiting, ...).",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "status": {
               "anyOf": [

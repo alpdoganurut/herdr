@@ -99,7 +99,7 @@ fn you_have_role(t: &TeamTextInput<'_>) -> bool {
 fn limits_sentence() -> String {
     use crate::agents_model::limits::{PAIR_GAP_S, SENDER_PER_HOUR};
     format!(
-        "You may message and wake idle teammates with agents_send_message (to = their name) to work on the purpose; no need to ask your user. A working teammate answers `busy` unless you pass wait_s. Limits: about {SENDER_PER_HOUR} messages an hour, {PAIR_GAP_S} s between messages to the same agent; a loop is stopped. Keep exchanges short."
+        "You may message and wake idle teammates with agents_send_message (to = their name) to work on the purpose; no need to ask your user. A busy teammate gets it queued (`queued`) and typed in once it is free: do not resend. Limits: about {SENDER_PER_HOUR} messages an hour, {PAIR_GAP_S} s between messages to the same agent; a loop is stopped. Keep exchanges short."
     )
 }
 

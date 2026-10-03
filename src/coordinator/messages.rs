@@ -153,20 +153,6 @@ impl AgentMessage {
             team: message.team.clone(),
         }
     }
-
-    /// Whether the message counts against the sender's rate limits and the
-    /// loop guard: typed in or accepted for delivery when it was sent.
-    pub fn counts_as_sent(&self) -> bool {
-        !self.is_update()
-            && matches!(
-                self.outcome.as_str(),
-                OUTCOME_SENT
-                    | OUTCOME_QUEUED
-                    | OUTCOME_DELIVERED
-                    | OUTCOME_EXPIRED
-                    | OUTCOME_DROPPED
-            )
-    }
 }
 
 /// Fold the update lines into the messages they name (the last update for an
@@ -432,7 +418,6 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].outcome, OUTCOME_DELIVERED);
         assert_eq!(all[0].text, "later");
-        assert!(all[0].counts_as_sent());
         // The live tail folds the same way.
         let mut window = std::collections::VecDeque::new();
         fold_into(&mut window, queued.clone());
@@ -453,12 +438,6 @@ mod tests {
         append(&dir, &reply).unwrap();
         let found = find_reply(&dir, "a", Some("mq0"), None, 0, None, &HashSet::new()).unwrap();
         assert_eq!(found.text, "answer");
-        let refused = AgentMessage {
-            kind: Some(KIND_REFUSAL.into()),
-            outcome: "offline".into(),
-            ..message("a", "b", "x")
-        };
-        assert!(!refused.counts_as_sent());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

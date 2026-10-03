@@ -232,6 +232,11 @@ async fn fork_smoke_client_typing_in_an_agent_holds_messages_back() {
             reply_to: None,
         }),
     );
-    assert_eq!(held["error"]["code"], "user_typing", "{held}");
+    // Queued, not refused: typed in once the user is quiet (the queue's
+    // typing guard).
+    let message = &held["result"]["message"];
+    assert_eq!(message["outcome"], "queued", "{held}");
+    assert_eq!(message["reason"], "its user is typing in it", "{held}");
+    assert!(input.try_recv().is_err(), "nothing typed over the draft");
     shutdown_test_runtimes(&mut server);
 }

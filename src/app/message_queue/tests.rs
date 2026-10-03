@@ -450,6 +450,7 @@ fn only_agent_events_mark_a_non_empty_queue_due() {
         session: None,
         expires_unix: u64::MAX,
         legacy: false,
+        from_terminal: None,
     });
     app.note_message_queue_event(&EventKind::TabRenamed);
     assert!(!app.message_queue.due);

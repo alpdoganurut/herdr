@@ -274,7 +274,7 @@ impl App {
                     .last_client_input()
                     .is_some_and(|at| at > since)
             });
-            if !self_pane && (terminal.turn().user_typing(now) || typed_since) {
+            if !self_pane && (self.pane_user_typing(target.ws_idx, pane) || typed_since) {
                 return Err(ModelError::new(
                     error_code::USER_TYPING,
                     format!("your user is typing in {name}; ask again later"),

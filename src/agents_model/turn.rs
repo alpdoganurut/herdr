@@ -17,8 +17,6 @@ use crate::api::schema::agents_model::{AgentsOriginDetail, AgentsTurnInfo, Agent
 pub const BRIDGE: Duration = Duration::from_secs(5);
 /// A user submit counts for the next turn only this long.
 pub const USER_SUBMIT_WINDOW: Duration = Duration::from_secs(10 * 60);
-/// The typing guard's cap after the last client keystroke (U7).
-pub const TYPING_GUARD: Duration = Duration::from_secs(super::limits::TYPING_GUARD_S);
 
 /// The coarse agent status a status edge is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +44,7 @@ impl From<crate::detect::AgentState> for EdgeStatus {
 struct InputProvenance {
     last_client_input: Option<Instant>,
     last_client_submit: Option<Instant>,
-    /// Any client keystroke since the last idle edge (the typing guard).
+    /// Any client keystroke since the last idle edge.
     client_input_since_idle: bool,
     /// A client submit since the last idle edge (user evidence).
     client_submit_since_idle: bool,
@@ -325,16 +323,6 @@ impl TurnState {
         }
     }
 
-    /// The typing guard (§3.7): client input since the last idle edge, at
-    /// most [`TYPING_GUARD`] after the last keystroke.
-    pub fn user_typing(&self, now: Instant) -> bool {
-        self.prov.client_input_since_idle
-            && self
-                .prov
-                .last_client_input
-                .is_some_and(|at| now.saturating_duration_since(at) < TYPING_GUARD)
-    }
-
     /// The last client keystroke.
     pub fn last_client_input(&self) -> Option<Instant> {
         self.prov.last_client_input
@@ -503,7 +491,6 @@ mod tests {
         let t0 = Instant::now();
         let mut turn = idle(t0);
         turn.note_input(&InputSource::Internal, secs(t0, 1));
-        assert!(!turn.user_typing(secs(t0, 1)));
         turn.on_status_edge(Idle, Working, false, secs(t0, 2), 2);
         assert_eq!(origin(&turn, Working, secs(t0, 3)), TurnOrigin::SelfStarted);
     }
@@ -587,15 +574,6 @@ mod tests {
     }
 
     #[test]
-    fn the_typing_guard_holds_without_an_edge_and_expires() {
-        let t0 = Instant::now();
-        let mut turn = idle(t0);
-        turn.note_input(&KEY, secs(t0, 1));
-        assert!(turn.user_typing(secs(t0, 60)));
-        assert!(!turn.user_typing(secs(t0, 122)));
-    }
-
-    #[test]
     fn keys_mid_turn_never_reach_the_next_turn() {
         let t0 = Instant::now();
         let mut turn = idle(t0);
@@ -604,7 +582,6 @@ mod tests {
         turn.note_input(&KEY, secs(t0, 2));
         turn.note_input(&SUBMIT, secs(t0, 3));
         turn.on_status_edge(Working, Idle, true, secs(t0, 4), 4);
-        assert!(!turn.user_typing(secs(t0, 5)));
         turn.on_status_edge(Idle, Working, true, secs(t0, 6), 6);
         assert_eq!(origin(&turn, Working, secs(t0, 7)), TurnOrigin::SelfStarted);
     }

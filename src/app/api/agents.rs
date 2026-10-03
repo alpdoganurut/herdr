@@ -270,12 +270,10 @@ impl App {
         // Fork typing guard, checked on the thread that also applies client
         // input, right before anything is written.
         if params.guard_user_typing {
-            let rows = usize::from(runtime.current_size().0.max(1));
-            let block = crate::app::typing_guard::typing_block(
-                expected_agent,
-                runtime.last_user_input(),
+            let block = crate::app::typing_guard::runtime_typing_block(
+                Some(expected_agent),
+                runtime,
                 std::time::Instant::now(),
-                || runtime.recent_ansi_snapshot(rows).text,
             );
             if let Some(block) = block {
                 return Err(encode_error(

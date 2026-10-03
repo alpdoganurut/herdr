@@ -1,5 +1,8 @@
 //! Agent message delivery (fork): `agent.message_send`, `agent.message_claim`
-//! and the server-side queue behind them.
+//! and the server-side queue behind them. The agents model's
+//! `agents.send_message` (src/app/agents_model.rs) checks, limits and builds
+//! its envelope, then delivers through [`App::deliver_agent_message`] here:
+//! one delivery path for both methods.
 //!
 //! A `herdr_agents` message is typed into its target now when the target can
 //! take it (its agent is live, idle or done, not starting, its user is not
@@ -89,6 +92,10 @@ pub(crate) struct QueuedMessage {
     /// are written here).
     #[serde(default)]
     pub(crate) legacy: bool,
+    /// The sender's terminal, for the target's turn origin (agents v2);
+    /// `None` for an older sender (the delivery counts as an API write).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) from_terminal: Option<crate::terminal::TerminalId>,
 }
 
 impl QueuedMessage {
@@ -319,6 +326,60 @@ fn retryable(code: &str) -> bool {
     matches!(code, "user_typing" | "agent_blocked" | "agent_not_ready")
 }
 
+/// A target's deliverability, read once by the sender (opaque outside).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MessageCheck(Check);
+
+impl MessageCheck {
+    /// The sender-facing status: `idle`, why it waits, or `offline`.
+    pub(crate) fn status(&self) -> String {
+        match &self.0 {
+            Check::Ready { .. } => "idle".to_string(),
+            Check::Wait(reason) => reason.clone(),
+            Check::Missing => "offline".to_string(),
+        }
+    }
+}
+
+/// How [`App::deliver_agent_message`] delivered a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MessageDelivery {
+    /// Typed in now (the caller logs it as `sent`).
+    Sent,
+    /// Queued (and logged `queued`); why it was not typed in now.
+    Queued { reason: String },
+}
+
+/// Why a message was neither typed in nor queued: an error code and message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MessageRefused {
+    pub(crate) code: String,
+    pub(crate) message: String,
+}
+
+impl MessageRefused {
+    fn new(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            message: message.into(),
+        }
+    }
+
+    fn from_response(response: &str) -> Self {
+        let value = serde_json::from_str::<serde_json::Value>(response).unwrap_or_default();
+        Self {
+            code: value["error"]["code"]
+                .as_str()
+                .unwrap_or("failed")
+                .to_string(),
+            message: value["error"]["message"]
+                .as_str()
+                .unwrap_or("the prompt failed")
+                .to_string(),
+        }
+    }
+}
+
 /// What the shim does with an older sender's `agent.prompt`.
 pub(crate) enum LegacyPrompt {
     /// Type it now through the normal path (the typing guard forced on).
@@ -402,6 +463,7 @@ impl App {
         text: String,
         coordinator: bool,
         message_id: &str,
+        from: Option<&crate::terminal::TerminalId>,
     ) -> Result<(), String> {
         let marker = if coordinator {
             match self.write_coordinator_message_turn(pane, message_id) {
@@ -421,7 +483,13 @@ impl App {
                 wait: None,
                 guard_user_typing: true,
             },
-            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
+            crate::agents_model::InputSource::Programmatic(match from {
+                Some(from) => crate::agents_model::Programmatic::AgentMessage {
+                    id: message_id.to_string(),
+                    from: from.clone(),
+                },
+                None => crate::agents_model::Programmatic::Api,
+            }),
         );
         match queued {
             Ok(_) => Ok(()),
@@ -440,6 +508,7 @@ impl App {
         message: AgentMessage,
         envelope: String,
         legacy: bool,
+        from_terminal: Option<crate::terminal::TerminalId>,
         now_unix: u64,
     ) -> QueuedMessage {
         let session = self
@@ -455,6 +524,7 @@ impl App {
             session,
             expires_unix: now_unix + MESSAGE_TTL_S,
             legacy,
+            from_terminal,
         }
     }
 
@@ -471,7 +541,7 @@ impl App {
         let Ok(target) = self.resolve_agent_target(&params.target) else {
             return encode_error(id, "offline", format!("{} is not running", params.target));
         };
-        let check = self.message_check(&target);
+        let check = self.agent_message_check(&target);
         let to_name = params.to_name.or_else(|| {
             self.state
                 .terminals
@@ -499,43 +569,104 @@ impl App {
             kind: None,
             team: params.team,
         };
-        let status = |check: &Check| match check {
-            Check::Ready { .. } => "idle".to_string(),
-            Check::Wait(reason) => reason.clone(),
-            Check::Missing => "offline".to_string(),
-        };
-        let reason = match &check {
+        let status = check.status();
+        // An older sender of this method logs a message it was told was
+        // typed in; the server logs the queued ones.
+        let from_terminal = message
+            .from_pane
+            .as_deref()
+            .and_then(|pane| self.resolve_agent_target(pane).ok())
+            .map(|from| from.terminal_id)
+            .and_then(|from| {
+                self.state
+                    .terminals
+                    .keys()
+                    .find(|terminal| terminal.as_str() == from)
+                    .cloned()
+            });
+        match self.deliver_agent_message(
+            &id,
+            &target,
+            check,
+            message,
+            params.envelope,
+            from_terminal,
+            now_unix,
+        ) {
+            Ok(MessageDelivery::Sent) => encode_success(
+                id,
+                ResponseResult::AgentMessageSend {
+                    id: params.id,
+                    outcome: AgentMessageOutcome::Sent,
+                    status,
+                    reason: None,
+                },
+            ),
+            Ok(MessageDelivery::Queued { reason }) => encode_success(
+                id,
+                ResponseResult::AgentMessageSend {
+                    id: params.id,
+                    outcome: AgentMessageOutcome::Queued,
+                    status,
+                    reason: Some(reason),
+                },
+            ),
+            Err(refused) => encode_error(id, &refused.code, refused.message),
+        }
+    }
+
+    /// Whether the agent in `target` can take a message now (for
+    /// [`App::deliver_agent_message`] and the sender's status line).
+    pub(crate) fn agent_message_check(
+        &self,
+        target: &super::terminal_targets::TerminalTarget,
+    ) -> MessageCheck {
+        MessageCheck(self.message_check(target))
+    }
+
+    /// The one delivery path for an agent message (`agent.message_send` and
+    /// `agents.send_message`): typed in now when the target can take it
+    /// (guarded) and nothing is queued for it, else queued. `message` is its
+    /// log line (the queue logs it as `queued`; a message typed in now is
+    /// logged by the caller); `from` is the sender's terminal, the target's
+    /// turn origin.
+    #[allow(clippy::too_many_arguments)] // One message's parts, each from a different source.
+    pub(crate) fn deliver_agent_message(
+        &mut self,
+        request_id: &str,
+        target: &super::terminal_targets::TerminalTarget,
+        check: MessageCheck,
+        message: AgentMessage,
+        envelope: String,
+        from: Option<crate::terminal::TerminalId>,
+        now_unix: u64,
+    ) -> Result<MessageDelivery, MessageRefused> {
+        let message_id = message.id.clone().unwrap_or_default();
+        let reason = match check.0 {
             Check::Missing => {
-                return encode_error(id, "offline", format!("{} is not running", message.to_pane))
+                return Err(MessageRefused::new(
+                    "offline",
+                    format!("{} is not running", message.to_pane),
+                ))
             }
             _ if self.message_queue.queued_for(&target.terminal_id) => {
                 "earlier messages are waiting for it".to_string()
             }
-            Check::Wait(reason) => reason.clone(),
+            Check::Wait(reason) => reason,
             Check::Ready { pane, coordinator } => {
-                let (pane, coordinator) = (pane.clone(), *coordinator);
                 match self.type_message(
-                    id.clone(),
+                    request_id.to_string(),
                     &pane,
-                    params.envelope.clone(),
+                    envelope.clone(),
                     coordinator,
-                    &params.id,
+                    &message_id,
+                    from.as_ref(),
                 ) {
-                    Ok(()) => {
-                        return encode_success(
-                            id,
-                            ResponseResult::AgentMessageSend {
-                                id: params.id,
-                                outcome: AgentMessageOutcome::Sent,
-                                status: status(&check),
-                                reason: None,
-                            },
-                        )
-                    }
+                    Ok(()) => return Ok(MessageDelivery::Sent),
                     Err(response) => {
                         let code = error_code(&response);
                         if !retryable(&code) && code != "busy" {
-                            return response;
+                            return Err(MessageRefused::from_response(&response));
                         }
                         match code.as_str() {
                             "user_typing" => "its user is typing in it".to_string(),
@@ -547,19 +678,14 @@ impl App {
             }
         };
         if self.message_queue.entries.len() >= MAX_QUEUED {
-            return encode_error(id, "queue_full", "too many queued agent messages");
+            return Err(MessageRefused::new(
+                "queue_full",
+                "too many queued agent messages",
+            ));
         }
-        let entry = self.queued_message(&target, message, params.envelope, false, now_unix);
+        let entry = self.queued_message(target, message, envelope, false, from, now_unix);
         self.message_queue.push(entry);
-        encode_success(
-            id,
-            ResponseResult::AgentMessageSend {
-                id: params.id,
-                outcome: AgentMessageOutcome::Queued,
-                status: status(&check),
-                reason: Some(reason),
-            },
-        )
+        Ok(MessageDelivery::Queued { reason })
     }
 
     /// `agent.message_claim`.
@@ -647,7 +773,7 @@ impl App {
             id: message_id.or_else(|| Some(messages::new_id())),
             ..AgentMessage::default()
         };
-        let entry = self.queued_message(&target, message, params.text, true, now_unix);
+        let entry = self.queued_message(&target, message, params.text, true, None, now_unix);
         self.message_queue.push(entry);
         tracing::info!(
             request = request_id,
@@ -813,12 +939,20 @@ impl App {
             ids.push(entry.id().to_string());
         }
         let first = ids.first().cloned().unwrap_or_default();
+        // One paste, one turn: its origin is the first message's sender.
+        let from = self
+            .message_queue
+            .entries
+            .iter()
+            .find(|entry| entry.id() == first)
+            .and_then(|entry| entry.from_terminal.clone());
         match self.type_message(
             format!("agent-message:{first}"),
             &pane,
             text,
             coordinator,
             &first,
+            from.as_ref(),
         ) {
             Ok(()) => {
                 self.message_queue.ready_since.remove(&terminal_id);

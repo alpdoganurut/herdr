@@ -81,14 +81,10 @@ pub mod error_code {
     pub const INVALID_TARGET: &str = "invalid_target";
     /// A message to a shell pane.
     pub const NOT_AN_AGENT: &str = "not_an_agent";
-    /// The target is working; not typed in.
-    pub const BUSY: &str = "busy";
     /// The user is typing in the target.
     pub const USER_TYPING: &str = "user_typing";
-    /// The target is suspended, launch-pending or gone.
+    /// The target is gone (a message to it is neither typed in nor queued).
     pub const OFFLINE: &str = "offline";
-    /// The target is blocked on its user.
-    pub const BLOCKED: &str = "blocked";
     /// A message rate limit.
     pub const RATE_LIMITED: &str = "rate_limited";
     /// Two agents answering each other forever.
@@ -235,8 +231,10 @@ pub enum AgentsCloseOutcome {
 pub enum AgentsMessageOutcome {
     /// Typed into the target.
     Sent,
-    /// Only logged (a reply to an asker that is busy now).
-    Logged,
+    /// Queued by the server (logged `queued`): typed in once the target is
+    /// free (src/app/message_queue.rs), or taken by the target's
+    /// agents_wait_for_message.
+    Queued,
     /// An outcome this side does not know (a newer peer).
     #[serde(other)]
     Unknown,
@@ -789,6 +787,10 @@ pub struct AgentsMessageResult {
     /// The target is not in the sender's team.
     #[serde(default)]
     pub cross_team: bool,
+    /// Why a queued message was not typed in now (working, blocked, its
+    /// user typing, earlier messages waiting, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// `agents.rename_tab`.

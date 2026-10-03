@@ -19,8 +19,6 @@ pub const SPAWNS_PER_HOUR: usize = 20;
 pub const TEAM_AGENT_SPAWNED_MAX: usize = 40;
 /// Soft edits (rename, meta, notes, cosmetic, ...) per caller per hour.
 pub const SOFT_EDITS_PER_HOUR: usize = 300;
-/// The typing guard holds at most this long after the last client keystroke.
-pub const TYPING_GUARD_S: u64 = 120;
 
 use std::collections::{HashMap, VecDeque};
 

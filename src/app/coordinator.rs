@@ -2256,15 +2256,6 @@ impl App {
             reply(&mut self.coordinator, WakeOutcome::Held(status.to_string()));
             return;
         }
-        // The typing guard (agents v2, always on): the user is typing into
-        // the coordinator; a wake-up would land in their draft.
-        if self.pane_user_typing(own.ws_idx, own.pane_id) {
-            reply(
-                &mut self.coordinator,
-                WakeOutcome::Held("user typing".into()),
-            );
-            return;
-        }
         let queued = self.queue_agent_prompt(
             format!("coordinator:wake-{seq}"),
             AgentPromptParams {
@@ -3167,27 +3158,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_wake_is_typed_as_a_herdr_wake_and_holds_while_the_user_types() {
-        let mut app = coordinator_app(true);
-        running(&mut app);
-        let own = app.existing_coordinator_pane().unwrap();
-        let pane = app.public_pane_id(own.ws_idx, own.pane_id).unwrap();
-        // The user typed into the coordinator (no submit yet): held.
-        app.note_pane_input(
-            own.ws_idx,
-            own.pane_id,
-            crate::agents_model::InputSource::Client {
-                submit: false,
-                attach: false,
-            },
-        );
-        prompt_effect(&mut app, &pane);
-        assert_eq!(
-            wake_outcomes(&app),
-            vec![WakeOutcome::Held("user typing".into())]
-        );
-        // Without typing the wake is typed in, recorded as herdr's wake-up:
-        // the turn it starts is not the user's.
+    async fn a_wake_is_typed_as_a_herdr_wake() {
+        // The typing guard's hold: a_wake_is_held_while_the_user_types_in_the_coordinator.
+        // The wake is typed in, recorded as herdr's wake-up: the turn it
+        // starts is not the user's.
         let mut app = coordinator_app(true);
         running(&mut app);
         let own = app.existing_coordinator_pane().unwrap();

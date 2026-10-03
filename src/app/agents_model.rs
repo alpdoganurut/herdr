@@ -13,7 +13,7 @@ use crate::agents_model::limits::Limiter;
 use crate::agents_model::policy::{self, Action, Actor, Decision, Dest, Facts, Relation};
 use crate::agents_model::reply_index::ReplyIndex;
 use crate::agents_model::turn::{EdgeStatus, EffectiveTurn};
-use crate::agents_model::{InputSource, Programmatic, TurnOrigin};
+use crate::agents_model::{InputSource, TurnOrigin};
 use crate::api::schema::agents_model::{
     error_code, AgentActorKind, AgentPaneKind, AgentsAccess, AgentsActionOutcome,
     AgentsActionsParams, AgentsActorInfo, AgentsActorParams, AgentsCheckAction, AgentsCheckParams,
@@ -247,11 +247,16 @@ impl App {
             .is_some_and(|turn| turn.user_turn())
     }
 
-    /// Whether the pane's user is typing (the typing guard, §3.7): every
-    /// programmatic delivery into an agent holds back while it holds.
+    /// Whether the pane's user is typing in it or holds an unsent draft in
+    /// its agent's input box (the fork's typing guard, app::typing_guard).
     pub(crate) fn pane_user_typing(&self, ws_idx: usize, pane_id: PaneId) -> bool {
-        self.model_terminal(ws_idx, pane_id)
-            .is_some_and(|terminal| terminal.turn().user_typing(Instant::now()))
+        let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
+            return false;
+        };
+        let agent = self
+            .model_terminal(ws_idx, pane_id)
+            .and_then(crate::terminal::TerminalState::effective_known_agent);
+        crate::app::typing_guard::runtime_typing_block(agent, runtime, Instant::now()).is_some()
     }
 
     // ----- lookups -----------------------------------------------------------
@@ -1960,44 +1965,13 @@ impl App {
             && caller.team_ws == Some(target.ws_idx)
             && target_team.is_some();
         let log_team = target_team.clone().filter(|_| teammate);
-        // The idle-only rule and the typing guard, checked in the same
-        // `&mut App` borrow as the write below: no client input lands in
-        // between.
-        let (status, deliverable) = self.message_target_state(target.ws_idx, pane);
-        if let Err((code, why)) = deliverable {
-            // A reply to an asker that is busy now: logged; the asker reads
-            // it from the log (agents_wait_for_message).
-            if reply && code == error_code::BUSY {
-                self.reply_index().insert(
-                    id.clone(),
-                    caller.public.clone(),
-                    to_public.clone(),
-                    now,
-                    now,
-                );
-                self.log_message(
-                    &caller,
-                    &to_public,
-                    &to_name,
-                    &text,
-                    Some(&id),
-                    reply_to,
-                    crate::coordinator::messages::OUTCOME_LOGGED,
-                    log_team,
-                );
-                self.agents_model
-                    .limiter
-                    .record_message(&caller.terminal_id, &to_terminal, now);
-                return Ok(AgentsMessageResult {
-                    id,
-                    outcome: AgentsMessageOutcome::Logged,
-                    to_pane: to_public,
-                    to_name,
-                    status,
-                    team: target_team,
-                    cross_team: !teammate,
-                });
-            }
+        // One delivery path (src/app/message_queue.rs): typed in now when
+        // the target can take it (idle, settled, its user neither typing nor
+        // holding a draft, no coordinator turn live, nothing queued ahead),
+        // else queued and typed in once it is free. Checked in this same
+        // `&mut App` borrow as the write: no client input lands in between.
+        let status = self.message_status(target.ws_idx, pane);
+        let Ok(queue_target) = self.resolve_agent_target(&to_public) else {
             self.log_message(
                 &caller,
                 &to_public,
@@ -2005,40 +1979,15 @@ impl App {
                 &text,
                 Some(&id),
                 reply_to,
-                code,
+                error_code::OFFLINE,
                 None,
             );
-            return Err(ModelError::new(code, why));
-        }
-        // The coordinator target's message marker: its write tools refuse
-        // while it is live. The server is its only writer.
-        let marker =
-            if self.is_coordinator_pane(target.ws_idx, pane) && self.agents_model.dir.is_some() {
-                let marker = crate::coordinator::turn::Turn {
-                    source: "message".into(),
-                    id: id.clone(),
-                    started_unix: now,
-                    coordinator_pane: to_public.clone(),
-                    seen_working: false,
-                };
-                let wrote =
-                    crate::coordinator::turn::write_if_absent(&self.coordinator.dir, &marker, now)
-                        .map_err(|err| {
-                            ModelError::new(
-                                error_code::FAILED,
-                                format!("cannot mark the coordinator's turn: {err}"),
-                            )
-                        })?;
-                if !wrote {
-                    return Err(ModelError::new(
-                        error_code::BUSY,
-                        format!("{to_name} is in a turn herdr+ started; not typed in, retry later"),
-                    ));
-                }
-                Some(marker)
-            } else {
-                None
-            };
+            return Err(ModelError::new(
+                error_code::OFFLINE,
+                format!("{to_name} is not running"),
+            ));
+        };
+        let check = self.agent_message_check(&queue_target);
         let sender = crate::agents_model::envelope::EnvelopeSender {
             name: caller.name.clone(),
             pane: caller.public.clone(),
@@ -2050,39 +1999,56 @@ impl App {
         };
         let typed =
             crate::agents_model::envelope::envelope(&sender, &id, reply_to, &text, now, teammate);
-        let queued = self.queue_agent_prompt(
-            format!("agents-model:{id}"),
-            crate::api::schema::AgentPromptParams {
-                target: to_public.clone(),
-                text: typed,
-                wait: None,
-                guard_user_typing: true,
-            },
-            InputSource::Programmatic(Programmatic::AgentMessage {
-                id: id.clone(),
-                from: caller.terminal_id.clone(),
-            }),
+        let line = self.message_line(
+            &caller,
+            &to_public,
+            &to_name,
+            &text,
+            Some(&id),
+            reply_to,
+            crate::coordinator::messages::OUTCOME_QUEUED,
+            log_team.clone(),
         );
-        if let Err(response) = queued {
-            if let Some(marker) = &marker {
-                crate::coordinator::turn::clear_if(&self.coordinator.dir, marker);
+        let delivered = self.deliver_agent_message(
+            &format!("agents-model:{id}"),
+            &queue_target,
+            check,
+            line,
+            typed,
+            Some(caller.terminal_id.clone()),
+            now,
+        );
+        let reason = match delivered {
+            Ok(crate::app::message_queue::MessageDelivery::Sent) => {
+                self.log_message(
+                    &caller,
+                    &to_public,
+                    &to_name,
+                    &text,
+                    Some(&id),
+                    reply_to,
+                    crate::coordinator::messages::OUTCOME_SENT,
+                    log_team,
+                );
+                None
             }
-            let message = serde_json::from_str::<serde_json::Value>(&response)
-                .ok()
-                .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-                .unwrap_or_else(|| "the prompt failed".into());
-            self.log_message(
-                &caller,
-                &to_public,
-                &to_name,
-                &text,
-                Some(&id),
-                reply_to,
-                "failed",
-                None,
-            );
-            return Err(ModelError::new(error_code::FAILED, message));
-        }
+            // Logged `queued` by the queue.
+            Ok(crate::app::message_queue::MessageDelivery::Queued { reason }) => Some(reason),
+            Err(refused) => {
+                self.log_message(
+                    &caller,
+                    &to_public,
+                    &to_name,
+                    &text,
+                    Some(&id),
+                    reply_to,
+                    &refused.code,
+                    None,
+                );
+                return Err(ModelError::new(&refused.code, refused.message));
+            }
+        };
+        // Queued messages count against the limits from when they were sent.
         self.agents_model
             .limiter
             .record_message(&caller.terminal_id, &to_terminal, now);
@@ -2093,103 +2059,43 @@ impl App {
             now,
             now,
         );
-        self.log_message(
-            &caller,
-            &to_public,
-            &to_name,
-            &text,
-            Some(&id),
-            reply_to,
-            crate::coordinator::messages::OUTCOME_SENT,
-            log_team,
-        );
         Ok(AgentsMessageResult {
             id,
-            outcome: AgentsMessageOutcome::Sent,
+            outcome: if reason.is_some() {
+                AgentsMessageOutcome::Queued
+            } else {
+                AgentsMessageOutcome::Sent
+            },
             to_pane: to_public,
             to_name,
             status,
             team: target_team,
             cross_team: !teammate,
+            reason,
         })
     }
 
-    /// The target's status and whether a message may be typed in now: idle
-    /// or done, not suspended, blocked, starting, or typed in by its user.
-    #[allow(clippy::type_complexity)] // A status plus its verdict, read once.
-    fn message_target_state(
+    /// The target's status for the sender's result.
+    fn message_status(
         &self,
         ws_idx: usize,
         pane: PaneId,
-    ) -> (
-        Option<crate::api::schema::AgentStatus>,
-        Result<(), (&'static str, String)>,
-    ) {
-        use crate::api::schema::AgentStatus;
-        let Some(pane_state) = self
+    ) -> Option<crate::api::schema::AgentStatus> {
+        let pane_state = self
             .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.pane_state(pane))
-        else {
-            return (
-                None,
-                Err((error_code::OFFLINE, "the target is gone".into())),
-            );
-        };
-        let Some(terminal) = self.state.terminals.get(&pane_state.attached_terminal_id) else {
-            return (
-                None,
-                Err((error_code::OFFLINE, "the target is gone".into())),
-            );
-        };
-        let name = terminal
-            .agent_name
-            .clone()
-            .unwrap_or_else(|| "the agent".into());
-        let status = crate::workspace::agent_status(
+            .and_then(|ws| ws.pane_state(pane))?;
+        let terminal = self.state.terminals.get(&pane_state.attached_terminal_id)?;
+        Some(crate::workspace::agent_status(
             terminal.state,
             pane_state.seen,
             terminal.suspended_agent.is_some(),
-        );
-        let verdict =
-            if terminal.suspended_agent.is_some() || terminal.managed_agent_launch_pending() {
-                Err((
-                    error_code::OFFLINE,
-                    format!("{name} is suspended or starting"),
-                ))
-            } else {
-                match status {
-                    AgentStatus::Idle | AgentStatus::Done => {
-                        if terminal.turn().user_typing(Instant::now()) {
-                            Err((
-                                error_code::USER_TYPING,
-                                format!("your user is typing in {name}; not typed in, retry later"),
-                            ))
-                        } else {
-                            Ok(())
-                        }
-                    }
-                    AgentStatus::Blocked => Err((
-                        error_code::BLOCKED,
-                        format!(
-                        "{name} is blocked on its user (a question or an approval); tell your user"
-                    ),
-                    )),
-                    AgentStatus::Working | AgentStatus::Unknown => Err((
-                        error_code::BUSY,
-                        format!(
-                            "{name} is {}; not typed in (logged). Retry later or pass wait_s",
-                            status_word(status)
-                        ),
-                    )),
-                    _ => Err((error_code::OFFLINE, format!("{name} is offline"))),
-                }
-            };
-        (Some(status), verdict)
+        ))
     }
 
-    /// Append the message log line (every outcome).
+    /// Append the message log line (every outcome but `queued`, which the
+    /// queue logs).
     #[allow(clippy::too_many_arguments)] // One flat log line; a struct would only rename the fields.
     fn log_message(
         &mut self,
@@ -2205,9 +2111,29 @@ impl App {
         let Some(dir) = self.agents_model.dir.clone() else {
             return;
         };
-        let sent = outcome == crate::coordinator::messages::OUTCOME_SENT
-            || outcome == crate::coordinator::messages::OUTCOME_LOGGED;
-        let message = crate::coordinator::messages::AgentMessage {
+        let message =
+            self.message_line(caller, to_pane, to_name, text, id, reply_to, outcome, team);
+        if let Err(err) = crate::coordinator::messages::append(&dir, &message) {
+            tracing::warn!(err = %err, "agents model: cannot append to the message log");
+        }
+    }
+
+    /// A message log line; anything but sent or queued is a refusal.
+    #[allow(clippy::too_many_arguments)] // One flat log line; a struct would only rename the fields.
+    fn message_line(
+        &self,
+        caller: &ModelCaller,
+        to_pane: &str,
+        to_name: &str,
+        text: &str,
+        id: Option<&str>,
+        reply_to: Option<&str>,
+        outcome: &str,
+        team: Option<String>,
+    ) -> crate::coordinator::messages::AgentMessage {
+        let delivered = outcome == crate::coordinator::messages::OUTCOME_SENT
+            || outcome == crate::coordinator::messages::OUTCOME_QUEUED;
+        crate::coordinator::messages::AgentMessage {
             unix: now_unix(),
             from_pane: Some(caller.public.clone()),
             from_name: Some(caller.name.clone()),
@@ -2220,11 +2146,8 @@ impl App {
             from_role: self
                 .model_terminal(caller.ws_idx, caller.pane_id)
                 .and_then(|terminal| terminal.agent_meta().role.clone()),
-            kind: (!sent).then(|| crate::coordinator::messages::KIND_REFUSAL.to_string()),
+            kind: (!delivered).then(|| crate::coordinator::messages::KIND_REFUSAL.to_string()),
             team,
-        };
-        if let Err(err) = crate::coordinator::messages::append(&dir, &message) {
-            tracing::warn!(err = %err, "agents model: cannot append to the message log");
         }
     }
 
@@ -2638,13 +2561,6 @@ pub(crate) fn valid_agent_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
-fn status_word(status: crate::api::schema::AgentStatus) -> String {
-    serde_json::to_value(status)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_else(|| "busy".into())
-}
-
 /// The workspace, tab and pane ids of a `workspace.create` / `tab.create`
 /// reply.
 fn created_ids(result: &ResponseResult) -> ModelResult<(String, String, String)> {
@@ -3014,8 +2930,8 @@ pub(crate) mod tests {
         assert_eq!(app.model_relation(&lead_caller, 1, 1), Relation::Other);
     }
 
-    #[test]
-    fn closing_needs_the_users_turn_and_a_teammate_shell_tab_closes_now() {
+    #[tokio::test]
+    async fn closing_needs_the_users_turn_and_a_teammate_shell_tab_closes_now() {
         let mut app = model_app();
         // A shell tab in the team.
         app.state.workspaces[1].test_add_tab(Some("shell"));
@@ -3055,14 +2971,10 @@ pub(crate) mod tests {
         let fixer_tab = app.public_tab_id(1, 1).unwrap();
         let result = close(&mut app, &fixer_tab);
         assert_eq!(code(&result), "target_busy", "{result}");
-        // Typing in a target refuses the close.
-        terminal_mut(&mut app, fixer).turn_mut().note_input(
-            &InputSource::Client {
-                submit: false,
-                attach: false,
-            },
-            Instant::now(),
-        );
+        // Typing in a target refuses the close (the typing guard).
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.note_user_input(Instant::now());
+        app.state.insert_test_runtime(fixer, runtime);
         let result = close(&mut app, &fixer_tab);
         assert_eq!(code(&result), "user_typing", "{result}");
         // Its own tab: deferred until it is stably idle.
@@ -3111,8 +3023,8 @@ pub(crate) mod tests {
         assert_eq!(code(&result), "protected_tab", "{result}");
     }
 
-    #[test]
-    fn messages_go_to_agents_only_and_wait_for_the_users_typing() {
+    #[tokio::test]
+    async fn messages_go_to_agents_only_and_wait_for_the_users_typing() {
         let mut app = model_app();
         let lead = public(&app, 1, 0);
         let notes = public(&app, 2, 1);
@@ -3137,14 +3049,12 @@ pub(crate) mod tests {
             }),
         );
         assert_eq!(code(&result), "invalid_target", "{result}");
+        // The user types in the target: queued (src/app/message_queue.rs),
+        // nothing typed in.
         let fixer = pane(&app, 1, 1);
-        terminal_mut(&mut app, fixer).turn_mut().note_input(
-            &InputSource::Client {
-                submit: false,
-                attach: false,
-            },
-            Instant::now(),
-        );
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.note_user_input(Instant::now());
+        app.state.insert_test_runtime(fixer, runtime);
         let result = call(
             &mut app,
             Method::AgentsSendMessage(AgentsSendMessageParams {
@@ -3154,7 +3064,37 @@ pub(crate) mod tests {
                 reply_to: None,
             }),
         );
-        assert_eq!(code(&result), "user_typing", "{result}");
+        let message = &result["result"]["message"];
+        assert_eq!(message["outcome"], "queued", "{result}");
+        assert_eq!(message["reason"], "its user is typing in it", "{result}");
+        assert!(rx.try_recv().is_err(), "nothing typed");
+        assert_eq!(app.message_queue.entries.len(), 1);
+        let queued = &app.message_queue.entries[0];
+        assert!(queued.envelope.contains("hi"));
+        assert_eq!(
+            queued.from_terminal.as_ref(),
+            app.state.workspaces[1].terminal_id(pane(&app, 1, 0)),
+            "the sender, for the target's turn origin"
+        );
+        let id = queued.message.id.clone().unwrap();
+        let from = queued.from_terminal.clone().unwrap();
+        // The user is quiet again: typed in once settled, and the turn it
+        // starts is the sender's message, not the user's.
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(fixer, runtime);
+        app.coordinator.assume_shell_ready = true;
+        let t0 = Instant::now();
+        let now = now_unix();
+        app.message_queue_pass(t0, now);
+        assert!(app.message_queue_pass(t0 + crate::app::message_queue::SETTLE, now));
+        assert!(app.message_queue.entries.is_empty());
+        let typed = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await;
+        assert!(matches!(typed, Ok(Some(_))), "typed in");
+        let terminal = app.state.workspaces[1].terminal_id(fixer).cloned().unwrap();
+        assert_eq!(
+            app.effective_turn(&terminal).expect("a turn").origin,
+            TurnOrigin::AgentMessage { id, from }
+        );
     }
 
     #[test]
