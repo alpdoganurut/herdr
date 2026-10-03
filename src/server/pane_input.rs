@@ -148,7 +148,7 @@ fn apply_scroll(
             }
             return Ok(());
         }
-        return apply_terminal_attach_input(runtime, input);
+        return send_terminal_attach_input(runtime, input);
     }
 
     match runtime.wheel_routing() {
@@ -185,6 +185,17 @@ fn apply_scroll(
 }
 
 pub(super) fn apply_terminal_attach_input(
+    runtime: &crate::terminal::TerminalRuntime,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    if !data.is_empty() {
+        runtime.note_user_input(std::time::Instant::now());
+    }
+    send_terminal_attach_input(runtime, data)
+}
+
+/// The attach input without the user-input stamp (page keys only scroll).
+fn send_terminal_attach_input(
     runtime: &crate::terminal::TerminalRuntime,
     data: Vec<u8>,
 ) -> Result<(), String> {
@@ -311,6 +322,9 @@ fn apply_client_terminal_input_events(
                 }
 
                 runtime.scroll_reset();
+                if key_event.kind != KeyEventKind::Release {
+                    runtime.note_user_input(std::time::Instant::now());
+                }
                 let bytes = runtime.encode_terminal_key(key);
                 if !bytes.is_empty() {
                     runtime
@@ -320,12 +334,14 @@ fn apply_client_terminal_input_events(
             }
             crate::raw_input::RawInputEvent::Text(text) => {
                 runtime.scroll_reset();
+                runtime.note_user_input(std::time::Instant::now());
                 runtime
                     .try_send_bytes(Bytes::copy_from_slice(text.as_str().as_bytes()))
                     .map_err(|err| format!("targeted pane text input failed: {err}"))?;
             }
             crate::raw_input::RawInputEvent::Paste(text) => {
                 runtime.scroll_reset();
+                runtime.note_user_input(std::time::Instant::now());
                 runtime
                     .try_send_paste(text)
                     .map_err(|err| format!("targeted pane paste failed: {err}"))?;
@@ -511,5 +527,64 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    fn key(kind: crate::protocol::ClientKeyKind) -> ClientPaneInputEvent {
+        ClientPaneInputEvent::Key {
+            code: crate::protocol::ClientKeyCode::Char('a'),
+            modifiers: 0,
+            kind,
+            repeat_count: 1,
+            shifted_codepoint: None,
+            generated_text: None,
+            tracks_release: false,
+            physical_key_id: None,
+            windows_record: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn typing_into_a_pane_stamps_its_last_user_input_and_mouse_or_release_does_not() {
+        let (runtime, _rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(20, 5, 16);
+        assert_eq!(runtime.last_user_input(), None);
+        apply_client_pane_input_events(
+            &runtime,
+            &[
+                ClientPaneInputEvent::Mouse {
+                    kind: crate::protocol::ClientMouseKind::Moved,
+                    position: crate::protocol::ClientMousePosition::Cell { column: 1, row: 1 },
+                    geometry: None,
+                    modifiers: 0,
+                    lines: 1,
+                },
+                key(crate::protocol::ClientKeyKind::Release),
+            ],
+        )
+        .unwrap();
+        assert_eq!(runtime.last_user_input(), None, "no typing yet");
+
+        let before = std::time::Instant::now();
+        apply_client_pane_input_events(&runtime, &[key(crate::protocol::ClientKeyKind::Press)])
+            .unwrap();
+        let pressed = runtime.last_user_input().expect("a key press stamps");
+        assert!(pressed >= before);
+
+        apply_client_pane_input_events(&runtime, &[ClientPaneInputEvent::Paste("x".into())])
+            .unwrap();
+        assert!(
+            runtime.last_user_input().unwrap() >= pressed,
+            "a paste stamps"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_attach_input_stamps_but_an_empty_write_does_not() {
+        let (runtime, _rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(20, 5, 16);
+        apply_terminal_attach_input(&runtime, Vec::new()).unwrap();
+        assert_eq!(runtime.last_user_input(), None);
+        apply_terminal_attach_input(&runtime, b"a".to_vec()).unwrap();
+        assert!(runtime.last_user_input().is_some());
     }
 }

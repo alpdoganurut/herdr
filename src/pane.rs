@@ -1293,6 +1293,9 @@ pub struct PaneRuntime {
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
     pending_release: Arc<Mutex<Option<PendingAgentRelease>>>,
+    /// Fork: when a client last sent key, text or paste input to this pane
+    /// (automatic typing waits while the user types).
+    last_user_input: Cell<Option<std::time::Instant>>,
     preserve_processes_on_drop: bool,
     // Task handles for deterministic shutdown
     compression: TerminalCompressionTask,
@@ -2452,6 +2455,7 @@ impl PaneRuntime {
             full_lifecycle_authority_active,
             detect_reset_notify,
             pending_release,
+            last_user_input: Cell::new(None),
             preserve_processes_on_drop: true,
             compression,
             detect_handle: Some(detect_handle),
@@ -3030,6 +3034,7 @@ impl PaneRuntime {
             full_lifecycle_authority_active,
             detect_reset_notify,
             pending_release,
+            last_user_input: Cell::new(None),
             preserve_processes_on_drop: false,
             compression,
             detect_handle,
@@ -3067,6 +3072,15 @@ impl PaneRuntime {
     pub(crate) fn current_size(&self) -> (u16, u16) {
         let (rows, cols, _, _) = self.current_size.get();
         (rows, cols)
+    }
+
+    /// Fork: record that a client sent the user's key, text or paste input.
+    pub(crate) fn note_user_input(&self, at: std::time::Instant) {
+        self.last_user_input.set(Some(at));
+    }
+
+    pub(crate) fn last_user_input(&self) -> Option<std::time::Instant> {
+        self.last_user_input.get()
     }
 
     pub(crate) fn content_seq(&self) -> u64 {
@@ -3733,6 +3747,7 @@ impl PaneRuntime {
                 full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
                 detect_reset_notify: Arc::new(Notify::new()),
                 pending_release: Arc::new(Mutex::new(None)),
+                last_user_input: Cell::new(None),
                 preserve_processes_on_drop: true,
                 compression,
                 detect_handle: Some(tokio::spawn(async {}).abort_handle()),
@@ -4901,6 +4916,7 @@ mod tests {
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
+            last_user_input: Cell::new(None),
             preserve_processes_on_drop: true,
             compression,
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
@@ -4940,6 +4956,7 @@ mod tests {
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
+            last_user_input: Cell::new(None),
             preserve_processes_on_drop: true,
             compression,
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),

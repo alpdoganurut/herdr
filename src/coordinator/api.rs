@@ -201,12 +201,15 @@ pub fn read(
 }
 
 /// `agent.prompt` without waiting. The server accepts working targets: the
-/// idle gate is the caller's job.
+/// idle gate is the caller's job. Guarded: the server refuses with
+/// `user_typing` (nothing typed) while the user types in the target pane or
+/// has an unsent draft there.
 pub fn prompt(api: &impl Api, target: &str, text: &str) -> Result<(), ApiError> {
     api.call(Method::AgentPrompt(AgentPromptParams {
         target: target.to_string(),
         text: text.to_string(),
         wait: None,
+        guard_user_typing: true,
     }))?;
     Ok(())
 }
@@ -644,6 +647,7 @@ mod tests {
                 target: "w1:p2".into(),
                 text: "hi".into(),
                 wait: None,
+                guard_user_typing: true,
             })
         );
         let refused = |_: Method| -> Result<Value, ApiError> { Err(err("agent_blocked")) };

@@ -416,13 +416,31 @@ fn agent_start_and_prompt_requests_round_trip() {
             target: "reviewer".into(),
             text: "review this".into(),
             wait: None,
+            guard_user_typing: false,
         }),
     };
     let prompt_json = serde_json::to_value(&prompt).unwrap();
     assert_eq!(prompt_json["method"], "agent.prompt");
+    // Fork: the typing guard is optional and absent unless set.
+    assert!(prompt_json["params"].get("guard_user_typing").is_none());
     assert_eq!(
         serde_json::from_value::<Request>(prompt_json).unwrap(),
         prompt
+    );
+    let guarded = Request {
+        id: "guarded".into(),
+        method: Method::AgentPrompt(AgentPromptParams {
+            target: "reviewer".into(),
+            text: "review this".into(),
+            wait: None,
+            guard_user_typing: true,
+        }),
+    };
+    let guarded_json = serde_json::to_value(&guarded).unwrap();
+    assert_eq!(guarded_json["params"]["guard_user_typing"], true);
+    assert_eq!(
+        serde_json::from_value::<Request>(guarded_json).unwrap(),
+        guarded
     );
 
     let prompt_and_wait = Request {
@@ -435,6 +453,7 @@ fn agent_start_and_prompt_requests_round_trip() {
                 timeout_ms: Some(120_000),
                 submission_deadline: None,
             }),
+            guard_user_typing: false,
         }),
     };
     let prompt_and_wait_json = serde_json::to_value(&prompt_and_wait).unwrap();

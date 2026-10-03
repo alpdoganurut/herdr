@@ -42,6 +42,8 @@ pub(crate) mod team;
 mod terminal_targets;
 mod terminal_titles;
 mod theme_sync;
+/// Fork: automatic typing waits while the user types or has a draft.
+pub(crate) mod typing_guard;
 mod window_title;
 mod worktrees;
 

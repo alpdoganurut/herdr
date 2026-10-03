@@ -104,6 +104,8 @@ const READ_MAX_LINES: u64 = 200;
 const MESSAGES_DEFAULT: u64 = 20;
 const MESSAGES_MAX: u64 = 200;
 const WAIT_DEFAULT_S: u64 = 60;
+/// How often a send with wait_s re-tries a target whose user is typing.
+const TYPING_RETRY_S: u64 = 2;
 const START_TIMEOUT_MS: u64 = 60_000;
 const CHECKPOINTS_DEFAULT: u64 = 20;
 const CHECKPOINTS_MAX: u64 = 500;
@@ -1180,8 +1182,9 @@ impl<A: Api> Session<A> {
         // A reply to a busy asker is not a refusal: the asker is usually
         // inside agents_wait_for_message (so `working`) and receives it from
         // the log. Logging it as `busy` read as "not delivered" to everyone.
-        let logged_reply =
-            matches!(&outcome, Err(error) if error.code == "busy") && entry.reply_to.is_some();
+        // A target whose user is typing (`user_typing`) is the same case.
+        let logged_reply = matches!(&outcome, Err(error) if matches!(error.code.as_str(), "busy" | "user_typing"))
+            && entry.reply_to.is_some();
         match &outcome {
             Ok(_) => entry.outcome = messages::OUTCOME_SENT.into(),
             Err(_) if logged_reply => entry.outcome = messages::OUTCOME_LOGGED.into(),
@@ -1201,7 +1204,7 @@ impl<A: Api> Session<A> {
         if logged_reply {
             return Ok(Reply::new(
                 format!(
-                    "reply {id} logged for {to_name} ({}): they were busy, so it was not typed in; \
+                    "reply {id} logged for {to_name} ({}): they were busy (or their user was typing), so it was not typed in; \
                      the asker receives it through agents_wait_for_message / agents_messages. \
                      Do not resend unless they ask again",
                     entry.to_pane
@@ -1259,59 +1262,7 @@ impl<A: Api> Session<A> {
             entry.team = target.team.clone();
         }
         self.rate_check(caller, &target.pane_id, entry.unix)?;
-        let mut status = self.target_status(&target)?;
-        if delivery_decision(&status, wait_s) == Delivery::Wait {
-            let wait = api::wait_status(
-                &self.api,
-                &target.pane_id,
-                &["idle", "done", "blocked"],
-                wait_s,
-                &*self.sleep,
-            );
-            if let Err(error) = wait {
-                if error.code != "timeout" {
-                    return Err(error);
-                }
-            }
-            status = self.target_status(&target)?;
-        }
-        refuse_unless_deliverable(&target, &status)?;
-        // Re-check right before typing: the target may have started working.
-        let status = self.target_status(&target)?;
-        refuse_unless_deliverable(&target, &status)?;
         let id = entry.id.clone().unwrap_or_default();
-        let wrote_turn = if target.coordinator {
-            let marker = Turn {
-                source: "message".into(),
-                id: id.clone(),
-                started_unix: (self.now)(),
-                coordinator_pane: target.pane_id.clone(),
-                seen_working: false,
-            };
-            // Fail closed: without the marker the coordinator's write tools
-            // would take this agent's request for the user's. A live marker
-            // (a wake-up or another message just typed in, not yet seen as
-            // working) is not overwritten: this message waits its turn.
-            let wrote =
-                turn::write_if_absent(&self.opts.dir, &marker, (self.now)()).map_err(|error| {
-                    err(
-                        "turn_marker_failed",
-                        format!("cannot mark the coordinator's turn: {error}"),
-                    )
-                })?;
-            if !wrote {
-                return Err(err(
-                    "busy",
-                    format!(
-                        "{} is in a turn herdr+ started; not typed in, retry later or pass wait_s",
-                        target.name
-                    ),
-                ));
-            }
-            Some(marker)
-        } else {
-            None
-        };
         let text = envelope(
             caller,
             &id,
@@ -1320,13 +1271,93 @@ impl<A: Api> Session<A> {
             entry.unix,
             teammate,
         );
-        if let Err(error) = api::prompt(&self.api, &target.pane_id, &text) {
+        // One wait budget for both the status wait and the typing guard.
+        let deadline = (self.now)().saturating_add(wait_s);
+        loop {
+            let remaining = deadline.saturating_sub((self.now)());
+            let mut status = self.target_status(&target)?;
+            if delivery_decision(&status, remaining) == Delivery::Wait {
+                let wait = api::wait_status(
+                    &self.api,
+                    &target.pane_id,
+                    &["idle", "done", "blocked"],
+                    remaining,
+                    &*self.sleep,
+                );
+                if let Err(error) = wait {
+                    if error.code != "timeout" {
+                        return Err(error);
+                    }
+                }
+                status = self.target_status(&target)?;
+            }
+            refuse_unless_deliverable(&target, &status)?;
+            // Re-check right before typing: the target may have started working.
+            let status = self.target_status(&target)?;
+            refuse_unless_deliverable(&target, &status)?;
+            let wrote_turn = self.mark_coordinator_turn(&target, &id)?;
+            // The server re-checks the typing guard right before it types.
+            let Err(error) = api::prompt(&self.api, &target.pane_id, &text) else {
+                return Ok(status);
+            };
             if let Some(marker) = &wrote_turn {
                 turn::clear_if(&self.opts.dir, marker);
             }
-            return Err(error);
+            if error.code != "user_typing" {
+                return Err(error);
+            }
+            let remaining = deadline.saturating_sub((self.now)());
+            if remaining == 0 {
+                return Err(err(
+                    "user_typing",
+                    format!(
+                        "{}'s user is typing in it or has an unsent draft in its input box; not typed in \
+                         (logged, so agents_wait_for_message on their side still sees it). Pass wait_s or retry later",
+                        target.name
+                    ),
+                ));
+            }
+            (self.sleep)(Duration::from_secs(TYPING_RETRY_S.min(remaining)));
         }
-        Ok(status)
+    }
+
+    /// For a coordinator target: the turn marker of this message, written
+    /// before it is typed in. Fail closed: without the marker the
+    /// coordinator's write tools would take this agent's request for the
+    /// user's. A live marker (a wake-up or another message just typed in, not
+    /// yet seen as working) is not overwritten: this message waits its turn.
+    fn mark_coordinator_turn(
+        &self,
+        target: &LiveAgent,
+        id: &str,
+    ) -> Result<Option<Turn>, ApiError> {
+        if !target.coordinator {
+            return Ok(None);
+        }
+        let marker = Turn {
+            source: "message".into(),
+            id: id.to_string(),
+            started_unix: (self.now)(),
+            coordinator_pane: target.pane_id.clone(),
+            seen_working: false,
+        };
+        let wrote =
+            turn::write_if_absent(&self.opts.dir, &marker, (self.now)()).map_err(|error| {
+                err(
+                    "turn_marker_failed",
+                    format!("cannot mark the coordinator's turn: {error}"),
+                )
+            })?;
+        if !wrote {
+            return Err(err(
+                "busy",
+                format!(
+                    "{} is in a turn herdr+ started; not typed in, retry later or pass wait_s",
+                    target.name
+                ),
+            ));
+        }
+        Ok(Some(marker))
     }
 
     fn target_status(&self, target: &LiveAgent) -> Result<String, ApiError> {
@@ -3045,12 +3076,12 @@ pub fn tools() -> Vec<Value> {
                 "lines": { "type": "integer", "minimum": 1, "maximum": READ_MAX_LINES, "description": "Lines to read (default 60)" },
                 "source": { "type": "string", "enum": ["visible", "recent"], "description": "Default visible" },
             }), &["target"]) }),
-        json!({ "name": "agents_send_message", "description": "Message another managed agent: the text is typed into it, marked as coming from you, only when it is idle (otherwise `busy`; pass wait_s to wait). A reply (reply_to) to a busy asker is `logged` instead: delivered through the log, the asker gets it from agents_wait_for_message / agents_messages. Only when your user asked or approved. Returns the message id for agents_wait_for_message.",
+        json!({ "name": "agents_send_message", "description": "Message another managed agent: the text is typed into it, marked as coming from you, only when it is idle (otherwise `busy`; pass wait_s to wait) and its user is not typing in it or holding an unsent draft (otherwise `user_typing`; wait_s waits for that too). A reply (reply_to) to a busy asker is `logged` instead: delivered through the log, the asker gets it from agents_wait_for_message / agents_messages. Only when your user asked or approved. Returns the message id for agents_wait_for_message.",
             "inputSchema": schema(json!({
                 "to": target,
                 "text": { "type": "string", "maxLength": MAX_MESSAGE_CHARS, "description": "Self-contained: what you need, why, what to send back" },
                 "reply_to": string("The id of the message you are answering"),
-                "wait_s": wait_seconds("Wait up to this long for a working target to become idle (default 0)"),
+                "wait_s": wait_seconds("Wait up to this long for a working target to become idle, or for its user to stop typing (default 0)"),
             }), &["to", "text"]) }),
         json!({ "name": "agents_wait_for_message", "description": "Wait for a message to you: the reply to a message id, or the next message from an agent.",
             "inputSchema": schema(json!({
@@ -4418,6 +4449,101 @@ mod tests {
         );
         assert!(out.text.contains("error blocked:"), "{}", out.text);
         assert_eq!(last_log(&dir).kind.as_deref(), Some(KIND_REFUSAL));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The server's typing guard refusing the prompt, as the real server does.
+    fn user_typing() -> ApiError {
+        ApiError::new(
+            "user_typing",
+            "not typed into w2:p4: the user is typing in it; retry later",
+        )
+    }
+
+    #[test]
+    fn a_target_whose_user_is_typing_gets_nothing_typed() {
+        let dir = super::super::test_dir("mcp-user-typing");
+        seed_registry(&dir);
+        let world = World::standard();
+        *world.prompt_error.borrow_mut() = Some(user_typing());
+        let mut s = session(&world, &dir, "w2:p3", Verdict::Verified);
+        let out = call(
+            &mut s,
+            "agents_send_message",
+            json!({ "to": "rev", "text": "review please" }),
+        );
+        assert!(out.is_error);
+        assert!(
+            out.text.contains("error user_typing: rev's user is typing"),
+            "{}",
+            out.text
+        );
+        // The one prompt asked for the guard; the server refused it.
+        let calls = world.calls.borrow();
+        let guarded: Vec<bool> = calls
+            .iter()
+            .filter_map(|m| match m {
+                Method::AgentPrompt(p) => Some(p.guard_user_typing),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(guarded, vec![true]);
+        drop(calls);
+        let log = last_log(&dir);
+        assert_eq!(log.outcome, "user_typing");
+        assert_eq!(log.kind.as_deref(), Some(KIND_REFUSAL));
+
+        // A reply is logged as delivered instead, like a reply to a busy asker.
+        let out = call(
+            &mut s,
+            "agents_send_message",
+            json!({ "to": "rev", "text": "done", "reply_to": "m1abc" }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(out.data["outcome"], "logged");
+        assert_eq!(last_log(&dir).outcome, messages::OUTCOME_LOGGED);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wait_s_waits_for_the_user_to_stop_typing_then_sends() {
+        let dir = super::super::test_dir("mcp-user-typing-wait");
+        seed_registry(&dir);
+        let world = World::standard();
+        *world.prompt_error.borrow_mut() = Some(user_typing());
+        *world.on_sleep.borrow_mut() = Some(Box::new(|world, now| {
+            if now >= NOW + 4 {
+                *world.prompt_error.borrow_mut() = None;
+            }
+        }));
+        let mut s = session(&world, &dir, "w2:p3", Verdict::Verified);
+        let out = call(
+            &mut s,
+            "agents_send_message",
+            json!({ "to": "rev", "text": "review please", "wait_s": 10 }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(out.data["outcome"], "sent");
+        // Refused at NOW and NOW + 2, typed in at NOW + 4.
+        assert_eq!(world.prompts().len(), 3);
+        assert_eq!(last_log(&dir).outcome, "sent");
+
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The guard never clears within wait_s: refused at the deadline.
+        let dir = super::super::test_dir("mcp-user-typing-deadline");
+        seed_registry(&dir);
+        let world = World::standard();
+        *world.prompt_error.borrow_mut() = Some(user_typing());
+        let mut s = session(&world, &dir, "w2:p3", Verdict::Verified);
+        let out = call(
+            &mut s,
+            "agents_send_message",
+            json!({ "to": "rev", "text": "again", "wait_s": 3 }),
+        );
+        assert!(out.text.contains("error user_typing"), "{}", out.text);
+        // Refused at NOW and NOW + 2; the last try at NOW + 3 (the deadline).
+        assert_eq!(world.prompts().len(), 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1369,6 +1369,10 @@
         },
         "AgentPromptParams": {
           "properties": {
+            "guard_user_typing": {
+              "description": "Fork: refuse with `user_typing` (nothing typed) while the user typed\ninto the pane in the last few seconds or has an unsent draft in the\nagent's input box. Set by automatic callers (agent messages); a\nuser's own `agent prompt` leaves it off.",
+              "type": "boolean"
+            },
             "target": {
               "type": "string"
             },

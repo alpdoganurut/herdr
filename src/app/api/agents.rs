@@ -231,6 +231,28 @@ impl App {
                 ),
             ));
         }
+        // Fork typing guard, checked on the thread that also applies client
+        // input, right before anything is written.
+        if params.guard_user_typing {
+            let rows = usize::from(runtime.current_size().0.max(1));
+            let block = crate::app::typing_guard::typing_block(
+                expected_agent,
+                runtime.last_user_input(),
+                std::time::Instant::now(),
+                || runtime.recent_ansi_snapshot(rows).text,
+            );
+            if let Some(block) = block {
+                return Err(encode_error(
+                    id,
+                    "user_typing",
+                    format!(
+                        "not typed into {}: {}; retry later",
+                        params.target,
+                        block.reason()
+                    ),
+                ));
+            }
+        }
         #[cfg(windows)]
         let submit_deadline = params
             .wait
@@ -670,6 +692,7 @@ mod tests {
                 target: public_pane_id,
                 text: "A != B".into(),
                 wait: None,
+                guard_user_typing: false,
             },
         );
         assert!(response_rx.try_recv().is_err());
@@ -699,6 +722,7 @@ mod tests {
                 target: "reviewer".into(),
                 text: "A != B".into(),
                 wait: None,
+                guard_user_typing: false,
             },
         );
         let raw: SuccessResponse = serde_json::from_str(&raw).unwrap();
@@ -714,6 +738,7 @@ mod tests {
                 target: "opencode".into(),
                 text: "wrong target".into(),
                 wait: None,
+                guard_user_typing: false,
             },
         );
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&rejected).unwrap();
@@ -755,6 +780,7 @@ mod tests {
                 target: "reviewer".into(),
                 text: "late prompt".into(),
                 wait: None,
+                guard_user_typing: false,
             },
         );
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
@@ -838,6 +864,7 @@ mod tests {
                 target: "reviewer".into(),
                 text: "unrelated prompt".into(),
                 wait: None,
+                guard_user_typing: false,
             },
         );
 
@@ -878,6 +905,7 @@ mod tests {
                 target: "reviewer".into(),
                 text: "A != B".into(),
                 wait: None,
+                guard_user_typing: false,
             },
         );
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
@@ -957,6 +985,7 @@ mod tests {
                 target: "reviewer".into(),
                 text: "A != B".into(),
                 wait: None,
+                guard_user_typing: false,
             },
         );
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
@@ -1026,5 +1055,84 @@ mod tests {
                 Some("shell-pane")
             );
         }
+    }
+
+    /// An idle Claude agent pane named `reviewer` whose screen shows
+    /// `screen`; returns the pane id and the write side of its runtime.
+    fn guarded_claude(
+        app: &mut App,
+        screen: &[u8],
+    ) -> (crate::layout::PaneId, tokio::sync::mpsc::Receiver<Bytes>) {
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        let (runtime, rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                40, 8, 0, b"", 4,
+            );
+        runtime.test_process_pty_bytes(screen);
+        app.state.insert_test_runtime(pane_id, runtime);
+        (pane_id, rx)
+    }
+
+    fn guarded_prompt(guard: bool) -> AgentPromptParams {
+        AgentPromptParams {
+            target: "reviewer".into(),
+            text: "message".into(),
+            wait: None,
+            guard_user_typing: guard,
+        }
+    }
+
+    const CLAUDE_DRAFT: &[u8] = "\r\n─────\r\n❯ my unsent draft\r\n─────\r\n  footer".as_bytes();
+    const CLAUDE_EMPTY: &[u8] =
+        "\r\n─────\r\n❯ \x1b[2mTry \"something\"\x1b[0m\r\n─────\r\n  footer".as_bytes();
+
+    #[tokio::test]
+    async fn a_guarded_prompt_types_nothing_into_an_unsent_draft() {
+        let mut app = app_with_agent();
+        let (_, mut rx) = guarded_claude(&mut app, CLAUDE_DRAFT);
+        let response = run_deferred_agent_prompt(&mut app, "req", guarded_prompt(true));
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "user_typing");
+        assert!(error.error.message.contains("unsent draft"));
+        assert!(rx.try_recv().is_err(), "nothing typed");
+
+        // A user's own prompt is not guarded.
+        let response = run_deferred_agent_prompt(&mut app, "req", guarded_prompt(false));
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_guarded_prompt_waits_for_recent_typing_and_types_into_a_placeholder() {
+        let mut app = app_with_agent();
+        let (pane_id, mut rx) = guarded_claude(&mut app, CLAUDE_EMPTY);
+        app.lookup_runtime_sender(0, pane_id)
+            .unwrap()
+            .note_user_input(std::time::Instant::now());
+        let response = run_deferred_agent_prompt(&mut app, "req", guarded_prompt(true));
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "user_typing");
+        assert!(error.error.message.contains("typing"));
+        assert!(rx.try_recv().is_err(), "nothing typed");
+
+        // Quiet again, with only the faint placeholder in the box.
+        let (_, mut rx) = guarded_claude(&mut app, CLAUDE_EMPTY);
+        let response = run_deferred_agent_prompt(&mut app, "req", guarded_prompt(true));
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+        assert!(rx.try_recv().is_ok(), "typed in");
     }
 }

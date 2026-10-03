@@ -2138,6 +2138,7 @@ impl App {
                 target: pane.to_string(),
                 text,
                 wait: None,
+                guard_user_typing: true,
             },
         );
         match queued {
@@ -2169,10 +2170,15 @@ impl App {
                 }
             }
             Err(response) => {
-                reply(
-                    &mut self.coordinator,
-                    WakeOutcome::Failed(error_code(&response)),
-                );
+                let code = error_code(&response);
+                // The user is typing in the coordinator, or left a draft
+                // there: hold the wake-up (retried after the held backoff).
+                let outcome = if code == "user_typing" {
+                    WakeOutcome::Held("you are typing in the coordinator".into())
+                } else {
+                    WakeOutcome::Failed(code)
+                };
+                reply(&mut self.coordinator, outcome);
             }
         }
     }
@@ -3535,6 +3541,37 @@ mod tests {
             .sent
             .iter()
             .any(|msg| matches!(msg, WorkerMsg::RegisterCoordinator { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_wake_is_held_while_the_user_types_in_the_coordinator() {
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        let own = app.existing_coordinator_pane().unwrap();
+        let pane = app.public_pane_id(own.ws_idx, own.pane_id).unwrap();
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.note_user_input(Instant::now());
+        app.state.insert_test_runtime(own.pane_id, runtime);
+        prompt_effect(&mut app, &pane);
+        assert_eq!(
+            wake_outcomes(&app),
+            vec![WakeOutcome::Held(
+                "you are typing in the coordinator".into()
+            )]
+        );
+        assert!(rx.try_recv().is_err(), "nothing typed into the coordinator");
+
+        // Once the user is quiet the same wake-up is typed in.
+        app.coordinator.sent.clear();
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(own.pane_id, runtime);
+        prompt_effect(&mut app, &pane);
+        assert_eq!(wake_outcomes(&app), vec![WakeOutcome::Delivered]);
+        let written = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
+        assert!(
+            matches!(written, Ok(Some(_))),
+            "the wake-up text was written"
+        );
     }
 
     #[tokio::test]

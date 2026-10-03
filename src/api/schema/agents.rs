@@ -219,6 +219,12 @@ pub struct AgentPromptParams {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<AgentPromptWaitOptions>,
+    /// Fork: refuse with `user_typing` (nothing typed) while the user typed
+    /// into the pane in the last few seconds or has an unsent draft in the
+    /// agent's input box. Set by automatic callers (agent messages); a
+    /// user's own `agent prompt` leaves it off.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub guard_user_typing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

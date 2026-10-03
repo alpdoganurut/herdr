@@ -582,6 +582,16 @@ impl TerminalRuntime {
         self.0.current_size()
     }
 
+    /// Fork: record that a client sent the user's key, text or paste input.
+    pub(crate) fn note_user_input(&self, at: std::time::Instant) {
+        self.0.note_user_input(at);
+    }
+
+    /// Fork: when a client last sent the user's input to this terminal.
+    pub(crate) fn last_user_input(&self) -> Option<std::time::Instant> {
+        self.0.last_user_input()
+    }
+
     pub(crate) fn content_seq(&self) -> u64 {
         self.0.content_seq()
     }
