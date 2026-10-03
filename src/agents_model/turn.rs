@@ -39,6 +39,20 @@ impl From<crate::detect::AgentState> for EdgeStatus {
     }
 }
 
+/// What a status edge did to the turn ([`TurnState::on_status_edge`]); the
+/// automatic checkpoints (`crate::notes::auto`) read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnEdge {
+    /// Nothing for the turn.
+    None,
+    /// A new turn started; `user`: from the pane's own user.
+    Started { user: bool },
+    /// A short idle flap carried the turn over.
+    Bridged,
+    /// The turn ended (working or blocked to idle or unknown).
+    Ended,
+}
+
 /// What landed in the pane since the last idle edge.
 #[derive(Debug, Clone, Default)]
 struct InputProvenance {
@@ -202,13 +216,20 @@ impl TurnState {
         hook: bool,
         now: Instant,
         now_unix: u64,
-    ) {
+    ) -> TurnEdge {
         if previous == next {
-            return;
+            return TurnEdge::None;
         }
         match (previous, next) {
             (EdgeStatus::Idle | EdgeStatus::Unknown, EdgeStatus::Working) if !self.restored => {
-                self.capture(now, now_unix)
+                self.capture(now, now_unix);
+                if self.record.bridged {
+                    TurnEdge::Bridged
+                } else {
+                    TurnEdge::Started {
+                        user: self.record.origin == TurnOrigin::User,
+                    }
+                }
             }
             (EdgeStatus::Idle | EdgeStatus::Unknown, EdgeStatus::Working) => {
                 // A restored, handed-off or reopened pane (it may start out
@@ -217,11 +238,13 @@ impl TurnState {
                 self.record = TurnRecord::default();
                 self.in_turn = true;
                 self.clear_since_idle();
+                TurnEdge::Started { user: false }
             }
             // blocked→working does not re-capture.
-            (_, EdgeStatus::Working) => {}
+            (_, EdgeStatus::Working) => TurnEdge::None,
             (EdgeStatus::Working | EdgeStatus::Blocked, EdgeStatus::Idle | EdgeStatus::Unknown) => {
                 self.idle_edge(next == EdgeStatus::Idle && hook, now);
+                TurnEdge::Ended
             }
             (EdgeStatus::Unknown, EdgeStatus::Idle) => {
                 // An agent came up idle: no turn ran.
@@ -229,8 +252,9 @@ impl TurnState {
                 self.in_turn = false;
                 self.prov.last_idle_at = None;
                 self.clear_since_idle();
+                TurnEdge::None
             }
-            _ => {}
+            _ => TurnEdge::None,
         }
     }
 
@@ -469,6 +493,52 @@ mod tests {
         assert_eq!(
             origin(&turn, Working, secs(t0, 27)),
             TurnOrigin::SelfStarted
+        );
+    }
+
+    #[test]
+    fn status_edges_report_what_they_did_to_the_turn() {
+        let t0 = Instant::now();
+        let mut turn = idle(t0);
+        turn.note_input(&SUBMIT, secs(t0, 1));
+        assert_eq!(
+            turn.on_status_edge(Idle, Working, false, secs(t0, 2), 2),
+            TurnEdge::Started { user: true }
+        );
+        assert_eq!(
+            turn.on_status_edge(Working, Blocked, false, secs(t0, 3), 3),
+            TurnEdge::None
+        );
+        assert_eq!(
+            turn.on_status_edge(Blocked, Working, false, secs(t0, 4), 4),
+            TurnEdge::None
+        );
+        assert_eq!(
+            turn.on_status_edge(Working, Idle, false, secs(t0, 10), 10),
+            TurnEdge::Ended
+        );
+        assert_eq!(
+            turn.on_status_edge(Idle, Working, false, secs(t0, 12), 12),
+            TurnEdge::Bridged
+        );
+        assert_eq!(
+            turn.on_status_edge(Working, Idle, false, secs(t0, 20), 20),
+            TurnEdge::Ended
+        );
+        turn.note_input(&api(), secs(t0, 30));
+        assert_eq!(
+            turn.on_status_edge(Idle, Working, false, secs(t0, 31), 31),
+            TurnEdge::Started { user: false }
+        );
+        assert_eq!(
+            turn.on_status_edge(Working, Working, false, secs(t0, 32), 32),
+            TurnEdge::None
+        );
+        // a restored pane's first turn is not captured but still starts
+        let mut restored = TurnState::restored();
+        assert_eq!(
+            restored.on_status_edge(Unknown, Working, false, t0, 1),
+            TurnEdge::Started { user: false }
         );
     }
 

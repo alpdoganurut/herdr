@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use super::checkpoints::{
     AnchorRecord, CheckpointPatch, CheckpointStore, NewCheckpoint, MAX_ADDS_PER_HOUR,
-    MAX_PARSE_BYTES,
+    MAX_AUTO_ADDS_PER_HOUR, MAX_PARSE_BYTES,
 };
 use super::*;
 use crate::agent_resume::{AgentSessionRef, AgentSessionRefKind};
@@ -580,6 +580,48 @@ fn same_title_adds_fold_within_two_minutes_and_adds_are_rate_limited() {
             at + 3_600_000,
         )
         .unwrap();
+}
+
+#[test]
+fn automatic_adds_have_their_own_hourly_cap_and_never_use_the_agents() {
+    let dir = TempDir::new("rate-auto");
+    let mut store = CheckpointStore::new(dir.path());
+    let key = "claude-s1";
+    let auto = |title: &str| NewCheckpoint {
+        tags: vec![super::recall::AUTO_TAG.into()],
+        ..new_checkpoint(CheckpointKind::Bookmark, title)
+    };
+    let mut at = 1_800_000_000_000;
+    for index in 0..MAX_AUTO_ADDS_PER_HOUR {
+        store.add(key, auto(&format!("you: {index}")), at).unwrap();
+        at += 1000;
+    }
+    let err = store.add(key, auto("one too many"), at).unwrap_err();
+    assert_eq!(err.code(), "rate_limited");
+    // prompt bookmarks never starve herdr's milestones and failures
+    let milestone = NewCheckpoint {
+        tags: vec![super::recall::AUTO_TAG.into()],
+        ..new_checkpoint(CheckpointKind::Milestone, "commit: ship it")
+    };
+    store.add(key, milestone, at).unwrap();
+    at += 1000;
+    // the agent's own budget is untouched
+    for index in 0..MAX_ADDS_PER_HOUR {
+        store
+            .add(
+                key,
+                new_checkpoint(CheckpointKind::Note, &format!("n{index}")),
+                at,
+            )
+            .unwrap();
+        at += 1000;
+    }
+    assert!(store
+        .add(key, new_checkpoint(CheckpointKind::Note, "over"), at)
+        .is_err());
+    // and the cap survives a reparse of the file
+    let mut reread = CheckpointStore::new(dir.path());
+    assert!(reread.add(key, auto("still over"), at).is_err());
 }
 
 #[test]

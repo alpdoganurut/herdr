@@ -187,9 +187,14 @@ impl App {
     }
 
     /// A pane state update's status edge, for the turn origin. O(tabs).
-    pub(crate) fn note_turn_edge(&mut self, update: &crate::app::actions::PaneStateUpdate) {
+    /// What it did to the turn (the automatic checkpoints read it).
+    pub(crate) fn note_turn_edge(
+        &mut self,
+        update: &crate::app::actions::PaneStateUpdate,
+    ) -> crate::agents_model::turn::TurnEdge {
+        use crate::agents_model::turn::TurnEdge;
         if update.previous_state == update.state {
-            return;
+            return TurnEdge::None;
         }
         let Some(terminal_id) = self
             .state
@@ -198,10 +203,10 @@ impl App {
             .and_then(|ws| ws.pane_state(update.pane_id))
             .map(|pane| &pane.attached_terminal_id)
         else {
-            return;
+            return TurnEdge::None;
         };
         let Some(terminal) = self.state.terminals.get_mut(terminal_id) else {
-            return;
+            return TurnEdge::None;
         };
         let hook = terminal.full_lifecycle_hook_authority_active();
         terminal.turn_mut().on_status_edge(
@@ -210,7 +215,7 @@ impl App {
             hook,
             Instant::now(),
             now_unix(),
-        );
+        )
     }
 
     /// The effective turn of a terminal now.

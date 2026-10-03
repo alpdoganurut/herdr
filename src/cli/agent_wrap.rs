@@ -14,7 +14,8 @@ Runs the agent with what [agents] adds: the herdr_agents tools (tools), the herd
 from [browser], the browser steering and no built-in browser — only while [agents] wrap is on. Codex always gets
 --no-daemon (attribution); claude runs through claude-z when it is on PATH.
 In a team group ([agents] team_roster) the launch also gets the team's roster, the team tools and, for Claude,
-the per-turn hook settings, whether or not the wrap is on.
+the per-turn hook settings, whether or not the wrap is on. With [notes] enabled, wrapped and team launches get
+their notes back: Claude through a SessionStart hook (herdr notes hook), Codex in its developer instructions.
 Per launch: --no-herdr (before a `--`) or HERDR_NO_WRAP=1 runs the agent as typed; `command claude` skips herdr.
 --print shows the binary, then one argument per line (newlines inside an argument as \\n), then warnings; nothing runs.";
 
@@ -106,18 +107,20 @@ fn render_print(
 }
 
 /// The files the Claude flags point at (exec path only; `--print` writes
-/// nothing): `mcp/claude.json` and, in a team group, the hook settings.
-/// Both go through the same gate; a failed write drops its flag.
+/// nothing): `mcp/claude.json` and the settings file (the team's hooks,
+/// else the wrap's notes recall). A failed write drops its flag.
 fn write_launch_files(agent: &str, plan: &mut agent_wrap::WrapPlan, user: &[String]) {
-    if agent != "claude" || !agent_wrap::uses_claude_mcp_config(plan, user) {
+    if agent != "claude" {
         return;
     }
-    if let Err(err) = crate::coordinator::launch::write_claude_mcp_config(&plan.ctx) {
-        tracing::warn!(event = "agent.wrap", %err, "cannot write the herdr_agents MCP config");
-        plan.warnings.push(format!(
-            "cannot write the herdr_agents MCP config ({err}); launching without the agent tools"
-        ));
-        plan.tools = false;
+    if agent_wrap::uses_claude_mcp_config(plan, user) {
+        if let Err(err) = crate::coordinator::launch::write_claude_mcp_config(&plan.ctx) {
+            tracing::warn!(event = "agent.wrap", %err, "cannot write the herdr_agents MCP config");
+            plan.warnings.push(format!(
+                "cannot write the herdr_agents MCP config ({err}); launching without the agent tools"
+            ));
+            plan.tools = false;
+        }
     }
     if agent_wrap::uses_team_settings(plan, user) {
         if let Err(err) = team::write_claude_settings(&plan.ctx) {
@@ -127,6 +130,30 @@ fn write_launch_files(agent: &str, plan: &mut agent_wrap::WrapPlan, user: &[Stri
             ));
             plan.team_hook = false;
         }
+    }
+    // Not the team's file (none, or it failed): the notes recall's own.
+    let wrap_file = team::wrap_settings_path(&plan.ctx.dir);
+    if agent_wrap::claude_settings_file(plan, user).as_deref() == Some(wrap_file.as_path()) {
+        if let Err(err) = team::write_wrap_settings(&plan.ctx) {
+            tracing::warn!(event = "agent.wrap", %err, "cannot write the notes hook settings");
+            plan.warnings.push(format!(
+                "cannot write the notes hook settings ({err}); your notes are not recalled after /clear"
+            ));
+            plan.notes_hook = false;
+        }
+    }
+}
+
+/// The notes recall for a Codex launch in a herdr pane (best effort,
+/// [`crate::notes::recall::LAUNCH_BUDGET`]).
+fn fetch_codex_recall(env: &WrapEnv, plan: &mut agent_wrap::WrapPlan, user: &[String]) {
+    if env.nested || !agent_wrap::codex_wants_recall(plan, user) {
+        return;
+    }
+    if let Some(pane) = env.pane_id.as_deref() {
+        // A launch is a fresh start: never the pane's earlier session's notes.
+        plan.recall =
+            crate::notes::recall::text_for_pane(pane, false, crate::notes::recall::LAUNCH_BUDGET);
     }
 }
 
@@ -154,7 +181,12 @@ pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
     if !parsed.print {
         write_launch_files(agent, &mut plan, &user);
     }
+    if agent == "codex" {
+        fetch_codex_recall(&env, &mut plan, &user);
+    }
     let conflicts = agent_wrap::team_conflicts(agent, &plan, &user);
+    plan.warnings.extend(conflicts);
+    let conflicts = agent_wrap::notes_conflicts(agent, &plan, &user);
     plan.warnings.extend(conflicts);
     let argv = agent_wrap::wrap_args(agent, &plan, &user);
     let names = binary_names(agent);

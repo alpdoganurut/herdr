@@ -24,6 +24,7 @@ pub(crate) mod coordinator;
 pub(crate) mod message_queue;
 pub(crate) mod news;
 mod notes;
+mod notes_auto;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
 #[cfg(test)]
@@ -997,6 +998,7 @@ impl App {
 
         if !invalid_section("notes") {
             self.notes.enabled = config.notes.enabled;
+            self.notes.auto = config.notes.auto_checkpoints;
         }
 
         if !invalid_section("browser") {

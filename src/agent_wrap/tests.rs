@@ -44,6 +44,11 @@ fn claude_flag() -> String {
     format!("--mcp-config={DIR}/mcp/claude.json")
 }
 
+/// The notes recall settings of a wrapped launch outside teams.
+fn wrap_settings_flag() -> String {
+    format!("--settings={DIR}/wrap/claude-settings.json")
+}
+
 /// Every wrapped launch's allowlist: all herdr_agents tools but close and reopen.
 fn claude_allow() -> String {
     format!("--allowedTools={}", claude_allow_list_value())
@@ -1044,7 +1049,12 @@ fn a_failed_lookup_is_a_plain_wrap() {
     assert!(plan.team.is_none());
     assert_eq!(
         wrap_args("claude", &plan, &[]),
-        [claude_flag(), claude_allow(), "--no-chrome".to_string()]
+        [
+            claude_flag(),
+            claude_allow(),
+            wrap_settings_flag(),
+            "--no-chrome".to_string()
+        ]
     );
 }
 
@@ -1205,4 +1215,159 @@ fn a_relaunch_through_the_wrap_still_honours_herdr_no_wrap() {
     let args = wrap_args("claude", &on, &user);
     assert_eq!(&args[..2], user.as_slice());
     assert!(args.contains(&claude_flag()), "{args:?}");
+}
+
+#[test]
+fn the_notes_tools_are_pre_approved_for_every_wrapped_and_team_launch() {
+    let notes = crate::coordinator::mcp::NOTES_TOOLS;
+    for tool in notes {
+        assert!(wrap_tools().contains(&tool), "{tool}");
+        assert!(
+            crate::coordinator::mcp::preapproved_tools().any(|t| t == tool),
+            "{tool}"
+        );
+    }
+    for plan in [plan_for(true, false, false), team_plan("")] {
+        let claude = wrap_args("claude", &plan, &s(&["uuid"]));
+        let allow = claude
+            .iter()
+            .find_map(|a| a.strip_prefix("--allowedTools="))
+            .unwrap();
+        let codex = wrap_args("codex", &plan, &[]);
+        for tool in notes {
+            assert!(
+                allow
+                    .split(',')
+                    .any(|e| e == format!("mcp__herdr_agents__{tool}")),
+                "{tool} in {allow}"
+            );
+            let approval =
+                format!("mcp_servers.herdr_agents.tools.{tool}.approval_mode=\"approve\"");
+            assert!(codex.contains(&approval), "{approval} in {codex:?}");
+        }
+    }
+    // managed launches: Codex approves the whole server, the coordinator's
+    // Claude allowlist names the server
+    let ctx = launch::LaunchCtx {
+        herdr_bin: PathBuf::from("/opt/herdr/herdr"),
+        dir: PathBuf::from(DIR),
+        port: crate::coordinator::DEFAULT_PORT,
+    };
+    assert!(launch::codex_args(&ctx, None)
+        .iter()
+        .any(|a| a == "mcp_servers.herdr_agents.default_tools_approval_mode=\"approve\""));
+    assert!(launch::claude_allow_coordinator()
+        .split(',')
+        .any(|e| e == "mcp__herdr_agents"));
+}
+
+#[test]
+fn a_wrapped_claude_launch_gets_the_notes_recall_settings_unless_something_wins() {
+    let on = plan_for(true, false, false);
+    assert!(on.notes_hook);
+    let user = s(&["uuid"]);
+    let args = wrap_args("claude", &on, &user);
+    assert_eq!(
+        args.iter().filter(|a| a.starts_with("--settings")).count(),
+        1
+    );
+    assert!(args.contains(&wrap_settings_flag()), "{args:?}");
+    assert!(notes_conflicts("claude", &on, &user).is_empty());
+    // without the tools no recall: it points at tools the agent lacks
+    let toolless = plan_for(false, false, false);
+    assert!(!toolless.notes_hook);
+    assert!(!wrap_args("claude", &toolless, &user).contains(&wrap_settings_flag()));
+    // [notes] enabled = false: no hook
+    let off = plan(
+        &config("[agents]\nwrap = true\ntools = true\n[notes]\nenabled = false\n"),
+        &env(),
+    );
+    assert!(!off.notes_hook);
+    assert!(!wrap_args("claude", &off, &user)
+        .iter()
+        .any(|a| a.starts_with("--settings")));
+    // the user's --settings wins, with a warning
+    let theirs = s(&["--settings", "/mine.json"]);
+    let args = wrap_args("claude", &on, &theirs);
+    assert_eq!(
+        args.iter().filter(|a| a.starts_with("--settings")).count(),
+        1
+    );
+    assert_eq!(notes_conflicts("claude", &on, &theirs).len(), 1);
+    // a `-p` run, a pass-through and a managed launch get none
+    for user in [s(&["-p", "hi"]), s(&["mcp", "list"])] {
+        assert!(
+            !wrap_args("claude", &on, &user)
+                .iter()
+                .any(|a| a.starts_with("--settings")),
+            "{user:?}"
+        );
+    }
+    let managed = s(&[&claude_flag(), "--", "go"]);
+    assert_eq!(claude_settings_file(&on, &managed), None);
+    // the wrap off, nested or opted out: none
+    assert_eq!(claude_settings_file(&plan_for_off(), &user), None);
+    let nested = plan(
+        &config("[agents]\nwrap = true\ntools = true\n"),
+        &WrapEnv {
+            nested: true,
+            ..env()
+        },
+    );
+    assert!(!nested.notes_hook);
+    let mut opted = plan_for(true, false, false);
+    opted.disable();
+    assert!(!opted.notes_hook && opted.recall.is_none());
+    // a team launch: the team's file, which carries the recall (one flag)
+    let team = team_plan("");
+    assert!(team.notes_hook);
+    let args = wrap_args("claude", &team, &user);
+    assert!(args.contains(&settings_arg()));
+    assert!(!args.contains(&wrap_settings_flag()));
+    // a team launch whose hook file failed falls back to the recall file
+    let mut failed = team_plan("");
+    failed.team_hook = false;
+    assert_eq!(
+        claude_settings_file(&failed, &user),
+        Some(PathBuf::from(DIR).join("wrap/claude-settings.json"))
+    );
+}
+
+#[test]
+fn a_codex_launch_carries_the_recall_in_its_developer_instructions() {
+    let mut plan = plan_for(true, true, false);
+    assert!(codex_wants_recall(&plan, &[]));
+    plan.recall = Some("[herdr+ notes] remember the flag".into());
+    let text = developer_instructions(&wrap_args("codex", &plan, &[])).unwrap();
+    assert!(text.starts_with(instructions::INTRO), "{text}");
+    assert!(text.ends_with("[herdr+ notes] remember the flag"), "{text}");
+    // Claude gets it from the hook, never in its argv
+    assert!(!wrap_args("claude", &plan, &[])
+        .iter()
+        .any(|a| a.contains("remember the flag")));
+    // the user's own developer_instructions win; managed launches and a
+    // launch without the tools do not ask for it
+    let theirs = s(&["-c", "developer_instructions=\"mine\""]);
+    assert!(!codex_wants_recall(&plan, &theirs));
+    assert!(!wrap_args("codex", &plan, &theirs)
+        .iter()
+        .any(|a| a.contains("remember the flag")));
+    let managed = s(&["-c", "mcp_servers.herdr_agents.command=\"x\""]);
+    assert!(!codex_wants_recall(&plan, &managed));
+    assert!(!wrap_args("codex", &plan, &managed)
+        .iter()
+        .any(|a| a.contains("remember the flag")));
+    assert!(!codex_wants_recall(&plan_for(false, true, false), &[]));
+    assert!(!codex_wants_recall(&plan, &s(&["exec", "summarize"])));
+    assert!(!codex_wants_recall(
+        &plan,
+        &s(&["--yolo", "exec", "summarize"])
+    ));
+    assert!(codex_wants_recall(&plan, &s(&["resume", "--last"])));
+    let notes_off = super::plan(
+        &config("[agents]\nwrap = true\ntools = true\n[notes]\nenabled = false\n"),
+        &env(),
+    );
+    assert!(!codex_wants_recall(&notes_off, &[]));
+    assert!(codex_wants_recall(&team_plan(""), &[]));
 }

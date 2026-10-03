@@ -70,9 +70,10 @@ pub const MAX_FILE_BYTES: u64 = 8 * 1024;
 /// would make it drop the session id. Their leading `-` becomes U+2011.
 const DEFUSED_TOKENS: [&str; 4] = ["-c", "-p", "-r", "--print"];
 
-/// The built-in paragraph, with the notify sentence only when the launch
-/// gets the tools, and the team's message rule for a launch in a team group
-/// (`team`), so it never contradicts the team block before it.
+/// The built-in paragraph, with the notify sentence and the notes habit
+/// (`NOTES_HABIT`) only when the launch gets the tools, and the team's
+/// message rule for a launch in a team group (`team`), so it never
+/// contradicts the team block before it (which carries the notes habit).
 pub fn default_paragraph(tools: bool, team: bool) -> String {
     let mut text = if tools {
         format!("{INTRO} {}", notify_sentence!())
@@ -92,6 +93,8 @@ pub fn default_paragraph(tools: bool, team: bool) -> String {
     if tools {
         text.push(' ');
         text.push_str(SOLO_RIGHTS_SENTENCE);
+        text.push(' ');
+        text.push_str(crate::coordinator::mcp::NOTES_HABIT);
     }
     text
 }
@@ -253,9 +256,18 @@ mod tests {
         // rule and, with the tools, what the agent may do.
         assert_eq!(
             default_paragraph(true, false),
-            format!("{DEFAULT_NOTIFY_PARAGRAPH} {CROSS_TEAM_SENTENCE} {SOLO_RIGHTS_SENTENCE}")
+            format!(
+                "{DEFAULT_NOTIFY_PARAGRAPH} {CROSS_TEAM_SENTENCE} {SOLO_RIGHTS_SENTENCE} {}",
+                crate::coordinator::mcp::NOTES_HABIT
+            )
         );
         assert!(!default_paragraph(false, false).contains(SOLO_RIGHTS_SENTENCE));
+        // The notes habit needs the tools; in a team the team block says it.
+        assert!(!default_paragraph(false, false).contains("agents_checkpoint"));
+        for tools in [true, false] {
+            assert!(!default_paragraph(tools, true).contains("agents_checkpoint"));
+        }
+        assert!(!DEFAULT_NOTIFY_PARAGRAPH.contains("agents_checkpoint"));
         assert!(SOLO_RIGHTS_SENTENCE.contains("change only your own tab"));
         // In a team group the rule matches the team block's: teammates are
         // acted on, anyone else stays untrusted; outside teams no word of it.
@@ -273,6 +285,7 @@ mod tests {
             crate::cli::BROWSER_STEERING,
             default_paragraph(true, false).as_str(),
             default_paragraph(true, true).as_str(),
+            crate::coordinator::mcp::NOTES_HABIT,
         ] {
             assert_eq!(sanitize(text), text.trim(), "{text}");
         }

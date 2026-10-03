@@ -29,6 +29,41 @@ pub(crate) const MAX_TAGS: usize = 8;
 pub(crate) const MAX_TAG_CHARS: usize = 32;
 /// Adds per key per rolling hour.
 pub(crate) const MAX_ADDS_PER_HOUR: usize = 60;
+/// herdr's own automatic adds (tagged [`super::recall::AUTO_TAG`]) per key
+/// per rolling hour, counted apart from [`MAX_ADDS_PER_HOUR`]. Prompt
+/// bookmarks and the other automatic kinds (milestones, failures) each have
+/// a bucket of this size, so a busy prompting hour never starves them.
+pub(crate) const MAX_AUTO_ADDS_PER_HOUR: usize = 30;
+
+/// Which rate-limit bucket an add counts against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AddBucket {
+    /// Agent and user adds.
+    Own,
+    /// herdr's automatic prompt bookmarks.
+    AutoBookmark,
+    /// herdr's other automatic adds (milestones, failures).
+    Auto,
+}
+
+impl AddBucket {
+    fn of(kind: Option<CheckpointKind>, tags: &[String]) -> Self {
+        if !tags.iter().any(|tag| tag == super::recall::AUTO_TAG) {
+            Self::Own
+        } else if kind == Some(CheckpointKind::Bookmark) {
+            Self::AutoBookmark
+        } else {
+            Self::Auto
+        }
+    }
+
+    fn cap(self) -> usize {
+        match self {
+            Self::Own => MAX_ADDS_PER_HOUR,
+            Self::AutoBookmark | Self::Auto => MAX_AUTO_ADDS_PER_HOUR,
+        }
+    }
+}
 /// An add with the same kind, title and author as a checkpoint this recent
 /// (seconds) updates that checkpoint instead.
 pub(crate) const FOLD_WINDOW_SECS: u64 = 120;
@@ -186,8 +221,8 @@ struct Parsed {
     stamp: FileStamp,
     /// Folded, ordered by `(ts, id)`.
     checkpoints: Vec<Checkpoint>,
-    /// Unix seconds of every `add` record, for the rate limit.
-    add_times: Vec<u64>,
+    /// Unix seconds and rate-limit bucket of every `add` record.
+    add_times: Vec<(u64, AddBucket)>,
 }
 
 /// The checkpoint files, with a parse cache keyed by `(len, mtime)`.
@@ -398,10 +433,21 @@ impl CheckpointStore {
             });
         }
         let hour_ago = now.saturating_sub(3600);
-        let recent = parsed.add_times.iter().filter(|&&ts| ts > hour_ago).count();
-        if recent >= MAX_ADDS_PER_HOUR {
+        let bucket = AddBucket::of(Some(new.kind), &new.tags);
+        let recent = parsed
+            .add_times
+            .iter()
+            .filter(|&&(ts, was)| ts > hour_ago && was == bucket)
+            .count();
+        let cap = bucket.cap();
+        if recent >= cap {
             return Err(NotesError::RateLimited(format!(
-                "at most {MAX_ADDS_PER_HOUR} checkpoints per hour for one session"
+                "at most {cap} {}checkpoints per hour for one session",
+                if bucket == AddBucket::Own {
+                    ""
+                } else {
+                    "automatic "
+                }
             )));
         }
         let checkpoint = Checkpoint {
@@ -525,7 +571,7 @@ fn read_tail(path: &Path, len: u64) -> Result<Vec<u8>, NotesError> {
 
 /// Fold the records: the last record per id wins, `remove` drops the id and
 /// `anchor` patches only the anchor. Unreadable lines are skipped.
-fn fold(bytes: &[u8]) -> (Vec<Checkpoint>, Vec<u64>) {
+fn fold(bytes: &[u8]) -> (Vec<Checkpoint>, Vec<(u64, AddBucket)>) {
     let mut by_id: std::collections::HashMap<String, Checkpoint> = std::collections::HashMap::new();
     let mut add_times = Vec::new();
     for line in bytes.split(|&byte| byte == b'\n') {
@@ -542,7 +588,9 @@ fn fold(bytes: &[u8]) -> (Vec<Checkpoint>, Vec<u64>) {
         match record.op {
             Op::Add | Op::Update => {
                 if record.op == Op::Add {
-                    add_times.push(record.ts);
+                    let bucket =
+                        AddBucket::of(record.kind, record.tags.as_deref().unwrap_or_default());
+                    add_times.push((record.ts, bucket));
                 }
                 let existing = by_id.get(&record.id);
                 // An update keeps the add's time and, without one of its

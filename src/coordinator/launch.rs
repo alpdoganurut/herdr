@@ -176,7 +176,8 @@ pub fn claude_args(
 
 /// [`claude_args`] for a team member: also the team's hook settings
 /// (`--settings=<dir>/team/claude-settings.json`, written when it differs)
-/// and the roster as its system prompt addition. `None` is [`claude_args`].
+/// and the roster as its system prompt addition. Without a team: the notes
+/// recall settings (`--settings=<dir>/wrap/claude-settings.json`).
 pub fn claude_args_with_team(
     ctx: &LaunchCtx,
     session: &ClaudeSession,
@@ -196,6 +197,18 @@ pub fn claude_args_with_team(
     if let Some(team) = team {
         let settings = crate::agent_wrap::team::write_claude_settings(ctx)?;
         insert_before_dashes(&mut args, claude_team_flags(&settings, team));
+    } else {
+        // The notes recall (`herdr notes hook`; the team's file carries it
+        // too). A failed write launches without it.
+        match crate::agent_wrap::team::write_wrap_settings(ctx) {
+            Ok(settings) => insert_before_dashes(
+                &mut args,
+                vec![crate::agent_wrap::team::settings_flag(&settings)],
+            ),
+            Err(err) => {
+                tracing::warn!(event = "coordinator.launch", %err, "cannot write the notes hook settings");
+            }
+        }
     }
     Ok(args)
 }
@@ -546,6 +559,16 @@ mod tests {
             );
         }
         assert!(!agent.contains("agents_close_tab") && !agent.contains("agents_reopen_tab"));
+        // The notes tools never prompt: every agent herdr starts has them
+        // pre-approved, and the coordinator the whole server.
+        for tool in crate::coordinator::mcp::NOTES_TOOLS {
+            assert!(
+                agent
+                    .split(',')
+                    .any(|e| e == format!("mcp__herdr_agents__{tool}")),
+                "{tool}"
+            );
+        }
         assert!(claude_allow_coordinator().starts_with(&format!("mcp__{MCP_KEY},")));
         // Only read-only CLI verbs are pre-approved for the coordinator.
         for entry in claude_allow_coordinator().split(',') {
@@ -712,10 +735,23 @@ mod tests {
                 "go".to_string(),
             ]
         );
-        // everything else is the plain launch
+        // everything else is the plain launch, which has the notes recall
+        // settings instead (the team's file carries the recall too)
+        let wrap_settings = dir.join("wrap/claude-settings.json");
+        assert!(wrap_settings.is_file());
+        let plain_dashes = plain.iter().position(|a| a == "--").unwrap();
+        assert_eq!(
+            plain[plain_dashes - 1],
+            format!("--settings={}", wrap_settings.display())
+        );
+        assert!(std::fs::read_to_string(&settings)
+            .unwrap()
+            .contains("notes hook"));
         let mut without = args.clone();
         without.drain(dashes - 3..dashes);
-        assert_eq!(without, plain);
+        let mut plain_without = plain.clone();
+        plain_without.remove(plain_dashes - 1);
+        assert_eq!(without, plain_without);
         assert_eq!(
             claude_args_with_team(&ctx, &session, false, Some("go"), None).unwrap(),
             plain

@@ -35,11 +35,13 @@ const PANE_KEYS_PRUNE_AT: usize = 256;
 
 /// The runtime `App::new` starts with.
 pub(super) fn runtime_for(config: &crate::config::NotesConfig) -> NotesRuntime {
-    NotesRuntime::new(
+    let mut runtime = NotesRuntime::new(
         config.enabled,
         default_notes_dir(),
         crate::persist::agent_transcripts::store_dir(),
-    )
+    );
+    runtime.auto = config.auto_checkpoints;
+    runtime
 }
 
 #[cfg(not(test))]
@@ -112,7 +114,7 @@ fn now_ms() -> u64 {
 }
 
 /// The local `HH:MM`, else UTC.
-fn stamp_now() -> String {
+pub(super) fn stamp_now() -> String {
     crate::notes::local_hhmm().unwrap_or_else(|| {
         let now = crate::notes::now_unix();
         format!("{:02}:{:02}", now / 3600 % 24, now / 60 % 60)
@@ -402,7 +404,7 @@ impl App {
 
     /// Queue a job on the notes worker, starting it on first use. `false`
     /// when the queue is full or the worker cannot start.
-    fn submit_notes_job(&mut self, job: NotesJob) -> bool {
+    pub(super) fn submit_notes_job(&mut self, job: NotesJob) -> bool {
         if self.notes.worker.is_none() {
             let tx = self.event_tx.clone();
             let sink: worker::ResultSink = Box::new(move |result: NotesWorkerResult| {
@@ -491,39 +493,104 @@ impl App {
             if params.kind == CheckpointKind::Unknown {
                 return Err((error_code::INVALID_PARAMS, "unknown checkpoint kind".into()));
             }
-            let (anchor, locate) = self.checkpoint_anchor_now(&resolved);
-            let checkpoint = self
-                .notes
-                .checkpoints
-                .add(
-                    &resolved.key,
-                    NewCheckpoint {
-                        kind: params.kind,
-                        author: author_or_agent(params.author),
-                        title: params.title,
-                        detail: params.detail,
-                        tags: params.tags,
-                        anchor,
-                    },
-                    now_ms(),
-                )
-                .map_err(rejection)?;
-            let needs_anchor = checkpoint
-                .checkpoint
-                .as_ref()
-                .is_some_and(|info| !info.has_context);
-            if let (Some(locate), true, Some(info)) =
-                (locate, needs_anchor, checkpoint.checkpoint.as_ref())
-            {
-                // A full queue leaves the checkpoint without context.
-                self.submit_notes_job(NotesJob::Locate {
-                    locate,
-                    anchor_for: Some((resolved.key.clone(), info.id.clone())),
-                });
-            }
+            // The `auto` tag is herdr's own mark (`[notes] auto_checkpoints`).
+            let tags = params
+                .tags
+                .into_iter()
+                .filter(|tag| tag != crate::notes::recall::AUTO_TAG)
+                .collect();
+            let checkpoint = self.add_checkpoint_now(
+                &resolved,
+                NewCheckpoint {
+                    kind: params.kind,
+                    author: author_or_agent(params.author),
+                    title: params.title,
+                    detail: params.detail,
+                    tags,
+                    anchor: None,
+                },
+            )?;
             Ok(ResponseResult::CheckpointWrite { checkpoint })
         });
         Self::notes_reply(id, result)
+    }
+
+    /// Add a checkpoint anchored at the transcript's current end (captured
+    /// now when the live transcript is known, else located on the worker).
+    fn add_checkpoint_now(
+        &mut self,
+        resolved: &ResolvedNotes,
+        new: NewCheckpoint,
+    ) -> Result<crate::api::schema::notes::CheckpointWriteInfo, Rejection> {
+        let (anchor, locate) = self.checkpoint_anchor_now(resolved);
+        let checkpoint = self
+            .notes
+            .checkpoints
+            .add(&resolved.key, NewCheckpoint { anchor, ..new }, now_ms())
+            .map_err(rejection)?;
+        let needs_anchor = checkpoint
+            .checkpoint
+            .as_ref()
+            .is_some_and(|info| !info.has_context);
+        if let (Some(locate), true, Some(info)) =
+            (locate, needs_anchor, checkpoint.checkpoint.as_ref())
+        {
+            // A full queue leaves the checkpoint without context.
+            self.submit_notes_job(NotesJob::Locate {
+                locate,
+                anchor_for: Some((resolved.key.clone(), info.id.clone())),
+            });
+        }
+        Ok(checkpoint)
+    }
+
+    /// The notes key of the pane's agent session (`None` without one),
+    /// noted in the pane → key memory so a later `/clear` finds it as
+    /// `previous`. O(panes in the tab).
+    pub(super) fn auto_pane_key(
+        &mut self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<String> {
+        let resolved = self.resolve_pane_notes(ws_idx, pane_id)?;
+        resolved.session.as_ref()?;
+        if let Some(public) = resolved.pane_id.as_deref() {
+            let _ = self.notes.panes.observe(public, &resolved.key);
+        }
+        Some(resolved.key)
+    }
+
+    /// Add one of herdr's automatic checkpoints: tagged `auto`, author
+    /// agent, anchored like an agent's own when `pane` still holds the
+    /// session. A failure (the hourly cap, I/O) is logged, never surfaced.
+    pub(super) fn add_auto_checkpoint(
+        &mut self,
+        checkpoint: crate::notes::auto::AutoCheckpoint,
+        pane: Option<(usize, crate::layout::PaneId)>,
+    ) {
+        let resolved = pane
+            .and_then(|(ws_idx, pane_id)| self.resolve_pane_notes(ws_idx, pane_id))
+            .filter(|resolved| resolved.key == checkpoint.key)
+            .unwrap_or_else(|| ResolvedNotes {
+                key: checkpoint.key.clone(),
+                ..ResolvedNotes::default()
+            });
+        let new = NewCheckpoint {
+            kind: checkpoint.kind,
+            author: NotesAuthor::Agent,
+            title: checkpoint.title,
+            detail: checkpoint.detail,
+            tags: vec![crate::notes::recall::AUTO_TAG.to_string()],
+            anchor: None,
+        };
+        if let Err((code, message)) = self.add_checkpoint_now(&resolved, new) {
+            tracing::debug!(
+                key = %resolved.key,
+                code,
+                %message,
+                "notes: automatic checkpoint skipped"
+            );
+        }
     }
 
     pub(super) fn handle_checkpoints_update(
@@ -533,6 +600,30 @@ impl App {
     ) -> String {
         let result = self.notes_enabled().and_then(|()| {
             let resolved = self.resolve_notes_target(&params.target)?;
+            // The `auto` mark stays herdr's: never added by an edit, never
+            // lost by one.
+            let tags = match params.tags {
+                Some(tags) => {
+                    let was_auto = self
+                        .notes
+                        .checkpoints
+                        .find(&resolved.key, &params.id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|cp| {
+                            cp.tags.iter().any(|t| t == crate::notes::recall::AUTO_TAG)
+                        });
+                    let mut tags: Vec<String> = tags
+                        .into_iter()
+                        .filter(|tag| tag != crate::notes::recall::AUTO_TAG)
+                        .collect();
+                    if was_auto {
+                        tags.push(crate::notes::recall::AUTO_TAG.to_string());
+                    }
+                    Some(tags)
+                }
+                None => None,
+            };
             let checkpoint = self
                 .notes
                 .checkpoints
@@ -543,7 +634,7 @@ impl App {
                         kind: params.kind,
                         title: params.title,
                         detail: params.detail,
-                        tags: params.tags,
+                        tags,
                     },
                     crate::notes::now_unix(),
                 )
@@ -689,6 +780,15 @@ impl App {
     /// `AppEvent::NotesWorkerFinished`: fill the caches, and record an
     /// anchor captured for a checkpoint.
     pub(super) fn handle_notes_worker_finished(&mut self, result: NotesWorkerResult) {
+        if let NotesWorkerResult::GitHead {
+            probe,
+            head,
+            commits,
+        } = result
+        {
+            self.handle_auto_git(probe, head, commits);
+            return;
+        }
         let Some((key, id, anchor)) = self.notes.apply_worker_result(result, Instant::now()) else {
             return;
         };

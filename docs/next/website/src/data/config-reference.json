@@ -1888,7 +1888,13 @@
           "key": "notes.enabled",
           "type": "boolean",
           "default": "true",
-          "description": "Per-session notes and checkpoints: the info pane, `herdr notes` / `herdr checkpoint`, the notes.* and checkpoints.* API methods and the agents' notes tools. Notes are markdown files under `<config dir>/notes/` keyed by the agent session (`<agent>-<session id>.md`), or by the tab when it runs no agent; checkpoints are an append-only `<key>.checkpoints.jsonl` beside them. With false every notes method answers `notes_disabled`; the files stay on disk. Independent of the coordinator."
+          "description": "Per-session notes and checkpoints: the info pane, `herdr notes` / `herdr checkpoint`, the notes.* and checkpoints.* API methods and the agents' notes tools. Notes are markdown files under `<config dir>/notes/` keyed by the agent session (`<agent>-<session id>.md`), or by the tab when it runs no agent; checkpoints are an append-only `<key>.checkpoints.jsonl` beside them. With false every notes method answers `notes_disabled`; the files stay on disk. Independent of the coordinator. Wrapped and team launches get their notes and recent checkpoints back: Claude through a SessionStart hook (`herdr notes hook`: start, resume, /clear, compaction; herdr-started Claude agents too), wrapped Codex launches in their developer instructions at launch (not `codex exec`)."
+        },
+        {
+          "key": "notes.auto_checkpoints",
+          "type": "boolean",
+          "default": "true",
+          "description": "herdr adds checkpoints on its own, tagged `auto` and shown dimmed in the info pane: a bookmark for each prompt you send an agent, a milestone for commits made in the pane's repository during a turn (HEAD compared at turn start and end), and a failure when an agent stays blocked 10 minutes or more or exits mid-turn (not when herdr suspends or restarts it). They have their own hourly cap and never use the agent's. Needs `enabled`."
         }
       ]
     },

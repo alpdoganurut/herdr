@@ -70,6 +70,9 @@ pub(crate) enum NotesJob {
     },
     /// Read the prompt and reply around a checkpoint's anchor.
     Context(ContextJob),
+    /// Read a pane repo's HEAD (and, at a turn end, the turn's commits) for
+    /// the automatic checkpoints.
+    GitHead(super::auto::GitProbe),
 }
 
 /// A `checkpoints.context` read.
@@ -105,6 +108,12 @@ pub(crate) enum NotesWorkerResult {
         info: CheckpointContextInfo,
         /// A live transcript found on the way, for the memo.
         located: Option<(String, Option<PathBuf>)>,
+    },
+    GitHead {
+        probe: super::auto::GitProbe,
+        head: Option<String>,
+        /// `<short sha>\t<subject>`, newest first (turn ends only).
+        commits: Vec<String>,
     },
 }
 
@@ -142,6 +151,20 @@ pub(crate) fn run_job(job: NotesJob) -> NotesWorkerResult {
             }
         }
         NotesJob::Context(job) => run_context(job),
+        NotesJob::GitHead(probe) => {
+            let head = super::auto::read_head(&probe.cwd);
+            let commits = match (&probe.since, &head) {
+                (Some(since), Some(head)) if since != head => {
+                    super::auto::commits_between(&probe.cwd, since, head, probe.turn_started_unix)
+                }
+                _ => Vec::new(),
+            };
+            NotesWorkerResult::GitHead {
+                probe,
+                head,
+                commits,
+            }
+        }
     }
 }
 

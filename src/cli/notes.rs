@@ -18,7 +18,7 @@ use crate::api::schema::notes::{
 };
 use crate::api::schema::{Method, Request};
 
-const NOTES_USAGE: &str = "usage: herdr notes <read [--json]|path|append [TEXT|-] [--section S] [--stamp]|write --base REV [--file F | -]> [--tab ID|--pane ID|--key K]";
+const NOTES_USAGE: &str = "usage: herdr notes <read [--json]|path|append [TEXT|-] [--section S] [--stamp]|write --base REV [--file F | -]> [--tab ID|--pane ID|--key K]\n       herdr notes hook   (Claude's SessionStart recall hook: reads stdin, always exits 0)";
 const CHECKPOINT_USAGE: &str = "usage: herdr checkpoint <add KIND TITLE [--detail D] [--tag T]... [--as user]|list [--kind K] [--limit N] [--json]|show ID [--chars N]|rm ID|edit ID [--title T] [--detail D] [--kind K] [--tag T]...> [--tab ID|--pane ID|--key K]";
 const KINDS: &str = "decision, milestone, failure, bookmark or note";
 /// How long `checkpoint show` waits for a context that is still being read.
@@ -176,6 +176,12 @@ pub(super) fn run_notes_command(args: &[String]) -> std::io::Result<i32> {
     let Some(verb) = args.first().map(String::as_str) else {
         return usage(NOTES_USAGE, 2);
     };
+    // Claude's SessionStart hook (the wrap's settings file): never parses
+    // its arguments and always exits 0, so it cannot block a session.
+    if verb == "hook" {
+        crate::notes::recall::run_hook();
+        return Ok(0);
+    }
     let rest = &args[1..];
     if matches!(verb, "help" | "--help" | "-h") {
         return usage(NOTES_USAGE, 0);

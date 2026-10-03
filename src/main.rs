@@ -563,7 +563,12 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 [notes]
 # Per-session notes and checkpoints behind the info pane, `herdr notes`,
 # `herdr checkpoint` and the agents' notes tools (stored under <config dir>/notes).
+# Wrapped and team agents get their notes back after /clear and compaction.
 # enabled = true
+# herdr's own checkpoints, tagged `auto`: a bookmark per prompt you send an agent,
+# a milestone for commits made in the pane's repo during a turn, a failure when an
+# agent stays blocked 10+ minutes or exits mid-turn.
+# auto_checkpoints = true
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

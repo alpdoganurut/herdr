@@ -802,13 +802,18 @@ pub(crate) fn history_rows<'a>(
     for checkpoint in visible(all, filter) {
         let id = &checkpoint.id;
         let (glyph, color) = node(checkpoint);
+        // herdr's own checkpoints (`[notes] auto_checkpoints`) stay quiet.
+        let auto = crate::notes::recall::is_auto(checkpoint);
+        let color = if auto { DUSK.dim } else { color };
         let is_selected = input.selected == Some(id.as_str());
         let opened = input.expanded.contains(id);
         let bg = is_selected.then_some(DUSK.sel);
         let title_style = if is_selected {
             bold(fg_on(DUSK.ink, bg))
+        } else if opened {
+            fg_on(DUSK.ink, bg)
         } else {
-            fg_on(if opened { DUSK.ink } else { DUSK.body }, bg)
+            fg_on(if auto { DUSK.dim } else { DUSK.body }, bg)
         };
         let first = rows.len();
         let toggle = InfoDockTarget::Toggle(id.clone());
@@ -870,14 +875,21 @@ pub(crate) fn history_rows<'a>(
                     ));
                 }
             }
-            let mut meta = if checkpoint.author == NotesAuthor::User {
+            let mut meta = if auto {
+                "auto · by herdr".to_owned()
+            } else if checkpoint.author == NotesAuthor::User {
                 "by you".to_owned()
             } else {
                 format!("by {}", input.agent)
             };
-            if !checkpoint.tags.is_empty() {
+            let tags: Vec<&String> = checkpoint
+                .tags
+                .iter()
+                .filter(|tag| !auto || tag.as_str() != crate::notes::recall::AUTO_TAG)
+                .collect();
+            if !tags.is_empty() {
                 meta.push(' ');
-                for tag in &checkpoint.tags {
+                for tag in tags {
                     meta.push_str(" #");
                     meta.push_str(&clean(tag));
                 }

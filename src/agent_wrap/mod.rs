@@ -234,6 +234,14 @@ pub struct WrapPlan {
     /// Claude gets the team's `--settings` hook file (off when it could not
     /// be written).
     pub team_hook: bool,
+    /// The notes recall (`[notes] enabled`, wrapped with the herdr_agents
+    /// tools or in a team): Claude
+    /// gets the `herdr notes hook` settings (the team's file carries it, else
+    /// the wrap's; off when it could not be written), Codex [`Self::recall`].
+    pub notes_hook: bool,
+    /// The recalled notes for a Codex launch's developer instructions (the
+    /// CLI fetches them on the exec and print paths; `crate::notes::recall`).
+    pub recall: Option<String>,
     /// Things the user should know (an unusable instructions file).
     pub warnings: Vec<String>,
 }
@@ -248,6 +256,8 @@ impl WrapPlan {
         self.no_native = false;
         self.team = None;
         self.team_hook = false;
+        self.notes_hook = false;
+        self.recall = None;
     }
 }
 
@@ -283,6 +293,10 @@ pub fn plan(config: &Config, env: &WrapEnv) -> WrapPlan {
         },
         codex_own: env.codex_own_instructions.clone(),
         team_hook: team.is_some(),
+        // The recall points the agent at the herdr_agents notes tools: only
+        // launches that get them (a team forces them).
+        notes_hook: (tools || team.is_some()) && config.notes.enabled,
+        recall: None,
         // the team forces the server (with the team tools)
         tools: tools || team.is_some(),
         team,
@@ -401,6 +415,59 @@ pub fn uses_team_settings(plan: &WrapPlan, user: &[String]) -> bool {
         && plan.team_hook
         && uses_claude_mcp_config(plan, user)
         && !has_settings_flag(split_at_dashes(user).0)
+}
+
+/// Whether `pre` (Claude's flags) runs Claude non-interactively.
+fn is_print_mode(pre: &[String]) -> bool {
+    pre.iter().any(|a| a == "-p" || a == "--print")
+}
+
+/// Which settings file a Claude launch gets, if any: the team's (it
+/// carries the notes recall too), else the wrap's notes recall file. None
+/// for a pass-through, a managed launch (its argv has its own), a user
+/// `--settings` (theirs wins) and a `-p` run outside teams.
+pub fn claude_settings_file(plan: &WrapPlan, user: &[String]) -> Option<PathBuf> {
+    if (!plan.master && plan.team.is_none()) || passthrough("claude", user) {
+        return None;
+    }
+    let pre = split_at_dashes(user).0;
+    if is_managed(pre, &plan.ctx.dir) || has_settings_flag(pre) {
+        return None;
+    }
+    if plan.team.is_some() && plan.team_hook && uses_claude_mcp_config(plan, user) {
+        return Some(team::claude_settings_path(&plan.ctx.dir));
+    }
+    (plan.notes_hook && !is_print_mode(pre)).then(|| team::wrap_settings_path(&plan.ctx.dir))
+}
+
+/// Whether the CLI fetches the notes recall for a Codex launch: the notes
+/// hook is on, the launch gets the herdr_agents tools, it is not a
+/// pass-through, managed or `codex exec` launch, and the user did not set
+/// `developer_instructions` themselves.
+pub fn codex_wants_recall(plan: &WrapPlan, user: &[String]) -> bool {
+    plan.notes_hook
+        && plan.tools
+        && !passthrough("codex", user)
+        // a one-shot `codex exec` does not wait for it
+        && !crate::codex_sessions::is_exec_invocation(user)
+        && !is_managed(user, &plan.ctx.dir)
+        && !codex_sets_instructions(user)
+}
+
+/// What the user's own flags take away from the notes recall, as warnings
+/// for stderr (a team launch says it in [`team_conflicts`]).
+pub fn notes_conflicts(agent: &str, plan: &WrapPlan, user: &[String]) -> Vec<String> {
+    if agent != "claude" || !plan.notes_hook || plan.team.is_some() || passthrough(agent, user) {
+        return Vec::new();
+    }
+    let pre = split_at_dashes(user).0;
+    if is_managed(pre, &plan.ctx.dir) || !has_settings_flag(pre) {
+        return Vec::new();
+    }
+    vec![
+        "your notes are not recalled after /clear or compaction (your --settings wins); agents_notes_read still reads them"
+            .to_string(),
+    ]
 }
 
 /// What the user's own flags take away from the team bits, as warnings for
@@ -551,7 +618,17 @@ pub fn wrap_args(agent: &str, plan: &WrapPlan, user: &[String]) -> Vec<String> {
                         }
                     }
                 }
-                let parts = prompt_parts(plan, managed);
+                let mut parts = prompt_parts(plan, managed);
+                // Codex has no SessionStart hook: the notes recall goes in
+                // at launch (Claude's comes from `herdr notes hook`).
+                if let Some(recall) = plan
+                    .recall
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty() && !managed)
+                {
+                    parts.push(recall);
+                }
                 if !parts.is_empty() && !codex_sets_instructions(user) {
                     let mut all: Vec<&str> = Vec::new();
                     if let Some(own) = plan
@@ -590,10 +667,8 @@ pub fn wrap_args(agent: &str, plan: &WrapPlan, user: &[String]) -> Vec<String> {
                     ours.push(format!("--allowedTools={allow}"));
                 }
             }
-            if plan.team.is_some() && plan.team_hook && !managed && !has_settings_flag(&pre) {
-                ours.push(team::settings_flag(&team::claude_settings_path(
-                    &plan.ctx.dir,
-                )));
+            if let Some(settings) = claude_settings_file(plan, user) {
+                ours.push(team::settings_flag(&settings));
             }
             let prompt = prompt_parts(plan, managed).join("\n\n");
             if !prompt.is_empty() && !has_append_prompt(&pre) {

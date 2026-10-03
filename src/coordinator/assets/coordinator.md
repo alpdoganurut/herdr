@@ -129,6 +129,9 @@ Rules:
   overwriting it with a one-line `# retired` note and removing it from the index.
 - Never store secrets or verbatim message bodies; store what they mean. Keep the whole memory small: prune
   stale facts from files and the index during wake-ups.
+- Your own session timeline (no `target`, automatic like memory): agents_checkpoint right after a decision you
+  carried out, a finished milestone, a failure or dead end, and before you stop or hand off. herdr gives your
+  notes and recent checkpoints back to you after /clear and compaction; memory/ stays the source of truth.
 
 ## 5. Wake-ups
 

@@ -1308,6 +1308,11 @@ fn notes_command() -> Command {
                     "Replaces the notes with FILE or stdin when they are still at revision REV (notes.set; `none` for notes that do not exist yet). On a conflict prints `conflict` and exits 3; read them again and retry.",
                 ),
         ))
+        .subcommand(
+            Command::new("hook")
+                .about("Claude's SessionStart notes recall hook (reads the hook JSON on stdin; always exits 0)")
+                .override_usage("herdr notes hook"),
+        )
 }
 
 fn checkpoint_command() -> Command {
@@ -2097,6 +2102,7 @@ mod tests {
         let write = command_path(&cmd, &["notes", "write"]);
         assert!(has_option(write, "base"));
         assert!(has_option(write, "file"));
+        let _ = command_path(&cmd, &["notes", "hook"]);
     }
 
     #[test]

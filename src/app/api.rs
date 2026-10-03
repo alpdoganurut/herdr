@@ -674,8 +674,10 @@ impl App {
     }
 
     pub(crate) fn emit_pane_state_update(&mut self, update: &crate::app::actions::PaneStateUpdate) {
-        // Fork (agents v2): the turn origin's status edge, O(1).
-        self.note_turn_edge(update);
+        // Fork (agents v2): the turn origin's status edge, O(1), and the
+        // automatic checkpoints it may add (`[notes] auto_checkpoints`).
+        let turn_edge = self.note_turn_edge(update);
+        self.note_auto_checkpoints(update, turn_edge);
         let Some(pane_id) = self.public_pane_id(update.ws_idx, update.pane_id) else {
             return;
         };

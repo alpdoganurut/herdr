@@ -8,7 +8,10 @@
 //!   (`full`, never `ack`, never a join), so `--print` cannot create a member.
 //! - [`claude_settings_json`] / [`write_claude_settings`]: the per-launch
 //!   `--settings` file whose hooks run [`run_hook`] on every prompt and on
-//!   resume, clear, compaction and fork.
+//!   resume, clear, compaction and fork, and the notes recall
+//!   (`herdr notes hook`, `crate::notes::recall`) on every session start;
+//!   [`write_wrap_settings`]: the notes recall alone, for a wrapped launch
+//!   outside teams.
 //! - [`hook_output`] / [`run_hook`]: `herdr team hook`, which adds the
 //!   pending roster change to Claude's next turn and always exits 0.
 
@@ -27,8 +30,9 @@ use super::{instructions, WrapEnv};
 /// update's roster line, `agents_whoami`): a 15-member team stays readable.
 pub const ROSTER_MAX: usize = 12;
 
-/// The team text is capped at this many bytes (whole characters).
-pub const MAX_TEXT_BYTES: usize = 2 * 1024;
+/// The team text is capped at this many bytes (whole characters): a full
+/// block with twelve teammates and the notes habit line fits.
+pub const MAX_TEXT_BYTES: usize = 3 * 1024;
 /// The wrap's `team.context` lookup timeout.
 pub const LOOKUP_TIMEOUT: Duration = Duration::from_secs(1);
 /// The hook's `team.context` timeout (the hook itself has 5 s in Claude).
@@ -171,6 +175,8 @@ pub fn full_text(t: &TeamTextInput<'_>) -> String {
         TEAM_RIGHTS.to_string(),
         "Roster changes reach you at your next turn; agents_whoami always shows the current team."
             .to_string(),
+        // Last: the size cap cuts this line before the rules above it.
+        crate::coordinator::mcp::NOTES_HABIT.to_string(),
     ];
     finish(&lines.join("\n"))
 }
@@ -369,32 +375,66 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// The settings file: `herdr team hook` on every prompt and when a session
-/// resumes, is cleared, compacted or forked (a fresh start already has the
-/// roster in its system prompt).
-pub fn claude_settings_json(herdr_bin: &Path) -> String {
-    let command = format!("{} team hook", shell_quote(&herdr_bin.to_string_lossy()));
-    let hook = json!([{ "type": "command", "command": command, "timeout": 5 }]);
-    let settings = json!({
-        "hooks": {
-            "UserPromptSubmit": [ { "hooks": hook } ],
-            "SessionStart": [ { "matcher": "resume|clear|compact|fork", "hooks": hook } ],
-        }
-    });
+/// `<coordinator dir>/wrap/claude-settings.json`: a wrapped launch outside
+/// teams (the notes recall hook only).
+pub fn wrap_settings_path(dir: &Path) -> PathBuf {
+    dir.join("wrap").join("claude-settings.json")
+}
+
+/// The `SessionStart` sources that get the notes recall (`herdr notes
+/// hook`): a fresh start too, unlike the team roster, which a fresh start
+/// already has in its system prompt.
+pub const NOTES_HOOK_MATCHER: &str = "startup|resume|clear|compact";
+
+/// The settings file. `team`: `herdr team hook` on every prompt and when a
+/// session resumes, is cleared, compacted or forked (a fresh start already
+/// has the roster in its system prompt). Always: `herdr notes hook` when a
+/// session starts, resumes, is cleared or compacted (the notes recall).
+pub fn claude_settings_json(herdr_bin: &Path, team: bool) -> String {
+    let bin = shell_quote(&herdr_bin.to_string_lossy());
+    let hook = |verb: &str| json!([{ "type": "command", "command": format!("{bin} {verb} hook"), "timeout": 5 }]);
+    let notes = json!({ "matcher": NOTES_HOOK_MATCHER, "hooks": hook("notes") });
+    let settings = if team {
+        json!({
+            "hooks": {
+                "UserPromptSubmit": [ { "hooks": hook("team") } ],
+                "SessionStart": [
+                    { "matcher": "resume|clear|compact|fork", "hooks": hook("team") },
+                    notes,
+                ],
+            }
+        })
+    } else {
+        json!({ "hooks": { "SessionStart": [ notes ] } })
+    };
     let mut body = serde_json::to_string_pretty(&settings).unwrap_or_default();
     body.push('\n');
     body
 }
 
-/// Write the settings file when its content differs (it embeds the herdr
-/// binary, which a live handoff can change); its path.
-pub fn write_claude_settings(ctx: &LaunchCtx) -> io::Result<PathBuf> {
-    let path = claude_settings_path(&ctx.dir);
-    let body = claude_settings_json(&ctx.herdr_bin);
+/// Write `body` to `path` when its content differs (it embeds the herdr
+/// binary, which a live handoff can change); the path.
+fn write_settings(path: PathBuf, body: String) -> io::Result<PathBuf> {
     if std::fs::read(&path).ok().as_deref() != Some(body.as_bytes()) {
         crate::coordinator::write_atomically(&path, body.as_bytes())?;
     }
     Ok(path)
+}
+
+/// Write the team settings file ([`claude_settings_path`]); its path.
+pub fn write_claude_settings(ctx: &LaunchCtx) -> io::Result<PathBuf> {
+    write_settings(
+        claude_settings_path(&ctx.dir),
+        claude_settings_json(&ctx.herdr_bin, true),
+    )
+}
+
+/// Write the wrap settings file ([`wrap_settings_path`]); its path.
+pub fn write_wrap_settings(ctx: &LaunchCtx) -> io::Result<PathBuf> {
+    write_settings(
+        wrap_settings_path(&ctx.dir),
+        claude_settings_json(&ctx.herdr_bin, false),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -521,6 +561,8 @@ mod tests {
         assert!(lines[5].contains("closing any tab needs your user's request"));
         assert!(lines[5].contains("The coordinator is a member of every team."));
         assert!(lines[6].starts_with("Roster changes reach you at your next turn"));
+        assert_eq!(lines[7], crate::coordinator::mcp::NOTES_HABIT);
+        assert_eq!(lines.len(), 8);
     }
 
     #[test]
@@ -594,9 +636,10 @@ mod tests {
             roster.ends_with("m11 (idle) · +3 more (agents_list team=search-it)"),
             "{roster}"
         );
-        // Twelve fit without a fold.
+        // Twelve fit without a fold, the notes habit line included.
         t.others.truncate(ROSTER_MAX);
         assert!(!full_text(&t).contains("more (agents_list"));
+        assert!(full_text(&t).ends_with(crate::coordinator::mcp::NOTES_HABIT));
     }
 
     #[test]
@@ -618,7 +661,15 @@ mod tests {
         assert!(!purpose.contains('\u{1b}'));
         assert!(!format!(" {text} ").contains(" -p "));
         assert!(text.len() <= MAX_TEXT_BYTES, "{}", text.len());
-        assert!(text.ends_with('…'));
+        // every field is capped: the largest block still ends with the
+        // notes habit; anything longer is cut on a character boundary
+        assert!(
+            text.ends_with(crate::coordinator::mcp::NOTES_HABIT),
+            "{text}"
+        );
+        let long = finish(&"é".repeat(MAX_TEXT_BYTES));
+        assert!(long.len() <= MAX_TEXT_BYTES, "{}", long.len());
+        assert!(long.ends_with('…'));
     }
 
     #[test]
@@ -638,7 +689,7 @@ mod tests {
 
     #[test]
     fn the_settings_file_quotes_the_binary_and_matches_fork() {
-        let body = claude_settings_json(Path::new("/opt/it's/herdr"));
+        let body = claude_settings_json(Path::new("/opt/it's/herdr"), true);
         let value: Value = serde_json::from_str(&body).unwrap();
         let command = "'/opt/it'\\''s/herdr' team hook";
         assert_eq!(
@@ -652,6 +703,45 @@ mod tests {
         let start = &value["hooks"]["SessionStart"][0];
         assert_eq!(start["matcher"], "resume|clear|compact|fork");
         assert_eq!(start["hooks"][0]["command"], command);
+        // the notes recall rides along, a fresh start included
+        let notes = &value["hooks"]["SessionStart"][1];
+        assert_eq!(notes["matcher"], "startup|resume|clear|compact");
+        assert_eq!(
+            notes["hooks"][0]["command"],
+            "'/opt/it'\\''s/herdr' notes hook"
+        );
+    }
+
+    #[test]
+    fn the_wrap_settings_file_has_only_the_notes_recall() {
+        let value: Value =
+            serde_json::from_str(&claude_settings_json(Path::new("/a/herdr"), false)).unwrap();
+        let hooks = value["hooks"].as_object().unwrap();
+        assert_eq!(hooks.len(), 1, "{value}");
+        let start = &value["hooks"]["SessionStart"];
+        assert_eq!(start.as_array().unwrap().len(), 1);
+        assert_eq!(start[0]["matcher"], NOTES_HOOK_MATCHER);
+        for source in ["startup", "resume", "clear", "compact"] {
+            assert!(NOTES_HOOK_MATCHER.split('|').any(|s| s == source));
+        }
+        assert_eq!(start[0]["hooks"][0]["command"], "'/a/herdr' notes hook");
+        assert_eq!(start[0]["hooks"][0]["timeout"], 5);
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-wrap-settings-{}-{}",
+            std::process::id(),
+            crate::coordinator::launch::new_uuid()
+        ));
+        let ctx = LaunchCtx {
+            herdr_bin: PathBuf::from("/a/herdr"),
+            dir: dir.clone(),
+            port: crate::coordinator::DEFAULT_PORT,
+        };
+        let path = write_wrap_settings(&ctx).unwrap();
+        assert_eq!(path, dir.join("wrap/claude-settings.json"));
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("'/a/herdr' notes hook"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -8,8 +8,10 @@
 //! in the same directory renamed over the target, so a reader never sees a
 //! partial file.
 
+pub(crate) mod auto;
 pub(crate) mod bounded;
 pub(crate) mod checkpoints;
+pub(crate) mod recall;
 pub(crate) mod transcript;
 pub(crate) mod worker;
 
@@ -696,6 +698,10 @@ pub(crate) const PENDING_TTL: std::time::Duration = std::time::Duration::from_se
 pub(crate) struct NotesRuntime {
     /// `[notes] enabled`.
     pub enabled: bool,
+    /// `[notes] auto_checkpoints` (only while `enabled`).
+    pub auto: bool,
+    /// The automatic checkpoints' per-pane memory.
+    pub auto_tracker: auto::AutoTracker,
     pub store: NotesStore,
     pub checkpoints: checkpoints::CheckpointStore,
     pub panes: PaneKeys,
@@ -725,6 +731,8 @@ impl NotesRuntime {
     pub(crate) fn new(enabled: bool, dir: PathBuf, store_dir: PathBuf) -> Self {
         Self {
             enabled,
+            auto: true,
+            auto_tracker: auto::AutoTracker::default(),
             store: NotesStore::new(dir.clone()),
             checkpoints: checkpoints::CheckpointStore::new(dir),
             panes: PaneKeys::default(),
@@ -796,6 +804,8 @@ impl NotesRuntime {
                     _ => None,
                 }
             }
+            // The app handles HEAD reads itself (`App::handle_auto_git`).
+            worker::NotesWorkerResult::GitHead { .. } => None,
             worker::NotesWorkerResult::Context {
                 key,
                 id,

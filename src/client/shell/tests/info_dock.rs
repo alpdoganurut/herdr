@@ -513,6 +513,73 @@ fn history_rows_show_chips_spine_and_the_now_row() {
 }
 
 #[test]
+fn automatic_checkpoints_are_dim_and_say_auto() {
+    let mut auto = cp(
+        "cp_auto",
+        NOW,
+        CheckpointKind::Bookmark,
+        NotesAuthor::Agent,
+        "you: 12:12",
+        None,
+    );
+    auto.tags = vec!["auto".into()];
+    let own = cp(
+        "cp_own",
+        NOW,
+        CheckpointKind::Bookmark,
+        NotesAuthor::Agent,
+        "chose sqlite",
+        None,
+    );
+    let checkpoints = vec![auto, own];
+    let expanded = std::collections::HashSet::from(["cp_auto".to_owned()]);
+    let built = model::history_rows(
+        &model::HistoryInput {
+            checkpoints: &checkpoints,
+            filter: None,
+            selected: None,
+            expanded: &std::collections::HashSet::new(),
+            ctx_full: &std::collections::HashSet::new(),
+            agent: "claude",
+            now: NOW,
+            utc_offset: 0,
+            width: 42,
+        },
+        |_| model::ContextView::Loading,
+    );
+    let title_fg = |title: &str| {
+        built
+            .rows
+            .iter()
+            .flat_map(|row| row.segs.iter())
+            .find(|seg| seg.text.contains(title))
+            .and_then(|seg| seg.style.fg)
+    };
+    assert_eq!(title_fg("you: 12:12"), Some(model::DUSK.dim));
+    assert_ne!(title_fg("chose sqlite"), Some(model::DUSK.dim));
+    let opened = model::history_rows(
+        &model::HistoryInput {
+            checkpoints: &checkpoints,
+            filter: None,
+            selected: None,
+            expanded: &expanded,
+            ctx_full: &std::collections::HashSet::new(),
+            agent: "claude",
+            now: NOW,
+            utc_offset: 0,
+            width: 42,
+        },
+        |_| model::ContextView::Loading,
+    );
+    let rows: Vec<String> = opened.rows.iter().map(model::Row::text).collect();
+    assert!(
+        rows.iter().any(|row| row.contains("auto · by herdr")),
+        "{rows:?}"
+    );
+    assert!(!rows.iter().any(|row| row.contains("#auto")), "{rows:?}");
+}
+
+#[test]
 fn long_context_collapses_behind_show_more() {
     let checkpoints = vec![cp(
         "cp_1",
