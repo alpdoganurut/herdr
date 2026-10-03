@@ -20,7 +20,7 @@ pub(crate) use actions::{
 #[cfg(test)]
 pub(crate) use env::integration_env_lock;
 pub(crate) use env::{
-    apply_pane_base_env, home_dir, HERDR_PANE_ID_ENV_VAR, HERDR_TAB_ID_ENV_VAR,
+    apply_pane_base_env, codex_dir, home_dir, HERDR_PANE_ID_ENV_VAR, HERDR_TAB_ID_ENV_VAR,
     HERDR_WORKSPACE_ID_ENV_VAR,
 };
 pub(crate) use registry::{

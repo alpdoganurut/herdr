@@ -1061,6 +1061,17 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
     Some(PathBuf::from(OsStr::from_bytes(&vip_path[..nul])))
 }
 
+/// When a process started, in Unix milliseconds (fork: Codex thread matching).
+pub fn process_start_unix_ms(pid: u32) -> Option<u64> {
+    if pid == 0 {
+        return None;
+    }
+    let info = process_bsdinfo(pid)?;
+    info.pbi_start_tvsec
+        .checked_mul(1_000)?
+        .checked_add(info.pbi_start_tvusec / 1_000)
+}
+
 pub fn session_processes(child_pid: u32) -> Vec<u32> {
     if child_pid == 0 {
         return Vec::new();

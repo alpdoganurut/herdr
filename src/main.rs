@@ -22,6 +22,7 @@ mod build_info;
 mod checksum;
 mod cli;
 mod client;
+mod codex_sessions;
 mod config;
 mod coordinator;
 mod copy_mode;

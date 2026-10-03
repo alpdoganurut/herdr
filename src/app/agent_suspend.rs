@@ -1127,9 +1127,9 @@ mod tests {
         let mut app = test_app();
         host_live_agent(
             &mut app,
-            Agent::Codex,
+            Agent::GithubCopilot,
             "worker",
-            Some(("herdr:codex", "codex-session")),
+            Some(("herdr:copilot", "copilot-session")),
         );
         let terminal_id = root_terminal_id(&app);
         let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);

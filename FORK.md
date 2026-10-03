@@ -194,6 +194,8 @@ src/app/agents_close.rs
 src/app/agents_migrate.rs
 src/client/shell/tests/agents_model.rs
 src/server/headless/tests/agents_model_smoke.rs
+src/codex_sessions.rs
+src/app/codex_sessions.rs
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
 | struct | field | default |
@@ -389,6 +391,7 @@ src/server/headless/tests/agents_model_smoke.rs
 | SuspendedAgent | suspended_by | None |
 | PaneSnapshot | agent_meta | None |
 | SuspendedAgentSnapshot | suspended_by | None |
+| App | codex_sessions | codex_sessions::CodexSessionProbe::default() |
 
 ## 3. Removed or re-signatured upstream symbols (E0425/E0061 at a new upstream call site = deny)
 app::api_helpers::pane_agent_status(state, seen) -> removed; app::api_helpers::agent_status(state, seen, suspended) or app::api_helpers::terminal_agent_status(terminal, seen)
@@ -761,6 +764,13 @@ src/server/headless/tests/fork_smoke.rs  additive: the `#[path = "fork_smoke/not
 src/client/shell/preferences.rs  additive: ClientChromePreferences.info_dock_width the last field (serde default, skip_serializing_if none)
 src/cli/pane.rs  additive: agents v2: the agent_route call at the top of move, close, read, send-text, send-keys and run (pane_is_its_tabs_last, checked_shell_input and agent_read_through_model are fork helpers)
 src/cli/workspace.rs  additive: agents v2: `workspace close` refuses (agent_refused) on the agent route before any request
+src/app/mod.rs  additive: Codex sessions: `mod codex_sessions;` directly after `mod closed_sessions;`; the App field codex_sessions directly after agent_transcript_backup_deadline and its default directly after agent_transcript_backup_pending in App::new
+src/main.rs  additive: Codex sessions: `mod codex_sessions;` directly after `mod client;`
+src/integration/mod.rs  additive: Codex sessions: `codex_dir` in the `pub(crate) use env::{...}` list
+src/platform/macos.rs  additive: Codex sessions: process_start_unix_ms directly before session_processes
+src/platform/linux.rs  additive: Codex sessions: process_start_unix_ms and process_start_ticks_from_stat directly before process_agent_hint; their test first in the tests module
+src/platform/windows.rs  additive: Codex sessions: process_start_unix_ms (None) directly before process_cwd
+src/platform/fallback.rs  additive: Codex sessions: process_start_unix_ms stub directly after process_cwd
 *  deny: anything that is not a structural additive conflict (zdiff3 base empty, both sides pure insertions)
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
@@ -923,6 +933,9 @@ src/client/shell/worktrees.rs  mid-logic: the exhaustive PendingEndpointKind lis
 src/server/client_commands.rs  mid-logic: CLIENT_SHELL_METHODS lists pane.get (sorted; 93 entries) and advertised_client_shell_method_shapes_stay_at_the_v1_contract freezes its digest
 src/server/pane_input.rs  mid-logic: agents v2: client_input_source and attach_input_source (fork helpers after apply_scroll) classify client input for the turn origin (attach_input_source skips SGR and X10 mouse reports anywhere in a batch); upstream changing ClientPaneInputEvent's variants must extend client_input_source
 src/cli/pane.rs, src/cli/workspace.rs  mid-logic: agents v2: a command run from a live agent's pane is checked as that agent (agent_route) before the upstream request; a new upstream mutating subcommand needs a route call
+src/server/headless.rs  mid-logic: Codex sessions: handle_scheduled_tasks_headless runs handle_codex_session_probe directly after the transcript backup pass
+src/app/runtime.rs  mid-logic: Codex sessions: next_headless_loop_deadline_with_git_refresh chains next_codex_session_probe_deadline directly after agent_transcript_backup_deadline
+src/agent_resume.rs  mid-logic: graceful_exit_input gains a `"codex" => Some("/quit")` arm (verified on codex-cli 0.160: `/quit` exits and prints `codex resume <thread id>`), so Codex panes suspend, restart and close resumably; its test expects it
 
 ## 9. Identifier watch-list (any hit in the incoming upstream diff = deny "upstream collision")
 coordinator
@@ -1432,6 +1445,9 @@ herdr_launch_argv
 resume_shell_command
 relaunch_argv
 RELAUNCH_THROUGH_WRAP
+codex_sessions
+CodexSessionProbe
+process_start_unix_ms
 
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot
@@ -1498,6 +1514,7 @@ server::headless::tests::agents_model_smoke::fork_smoke_client_typing_in_an_agen
 - herdr browser: `[browser] activity_color = "#aa6eff"` (`#rrggbb`; invalid → default with a config diagnostic) colours the activity overlay — frame border and glow (alpha unchanged), cursor fill and ripple — and applies live after `herdr server reload-config` (the directive carries it; an overlay of another colour is re-injected); tab-group colours stay Chrome's per-pane palette.
 - herdr browser, activity overlay (`[browser] show_activity = true`): the tabs an agent pane opens or acts on sit in a Chrome tab group named `<agent> · <herdr tab>` in a stable colour per pane (a bundled MV3 companion extension loaded with `--load-extension`, driven over the DevTools port; expanded while the pane is active, collapsed after `active_glyph_secs`, dissolved when the pane is gone; tabs the user opened are never grouped and a tab the user pulls out stays out), and a purple glow frame with a macOS-style cursor is injected into the page (isolated world, closed shadow root, no pointer events) while an operation runs and for the `active_glyph_secs` window after (originally 3 s); the cursor glides to the element before click/type/fill/select/press/hover and ripples on click; batches take `animate: false` (`--no-animate`); screenshots hide the overlay; `browser status` / `doctor` report the companion (`ready`, `missing`, `off`).
 ### Fixed
+- Codex agents get their native thread id even without the Codex integration hook (codex-cli 0.160 runs threads in a shared app-server daemon, and its hooks need a trust review): the server matches the pane's Codex process (working directory, start time) to the newest thread in `$CODEX_HOME/sessions/**/rollout-*.jsonl` created after it, once the first prompt writes the file, and follows `/new` (unless another Codex runs in the same directory: a later thread there could be either one's, so it is left alone). Panes that never match are probed less often (5 s doubling to 2 min). The pane then shows `agent_session`, restores with `codex resume <id>`, and Codex agents can suspend, restart and close resumably (`/quit` is now Codex's graceful exit). Hook-reported and `codex resume <id>` sessions are never replaced; a thread picked with `/resume` inside a running Codex is not followed.
 - Agents herdr relaunches go through the agent wrap: with `[agents] wrap` on, a Claude or Codex agent that herdr itself launches (restore after a server restart, `agent restart` / `agents_restart`, activate after a suspend, a closed-session reopen, `agent.start` with a plain argv) types `<herdr> agent wrap claude|codex -- <native args>` instead of the bare resume command, so it comes back with the herdr_agents tools, the herdr+ instructions and its team roster (the session id still resumes; claude-z, Codex `--no-daemon`, `HERDR_NO_WRAP` and the nested guard are the verb's as for a typed launch). Managed argv (the coordinator's own launch) and wrap-off launches type exactly what they did; Windows is unchanged.
 - Agents model v2, audit fixes: an agent's `agents_suspend` / `agents_restart` / `agents_activate` waits while the user types in the target or holds a draft in its input box (`user_typing`), and a restart's relaunch waits for the user to be quiet in the shell; queued messages reach the coordinator one per turn, so it can answer each sender; a message to an agent herdr is still starting is queued (`starting`) instead of refused as `offline`; `agents_wait_for_message` no longer returns a refused reply (rate-limited, loop guard, offline) as a delivery; `managed.json` entries unmatched at the first migration run are retried every minute (an agent restored at start is detected later); the action log records a user's tab/team request with its real outcome (`failed` and the error code when refused); from a live agent's pane `herdr agent start --pane` is checked like `pane run`, `herdr agent rename` like a cosmetic edit, and `herdr agent prompt --wait` is refused (the reply comes with agents_wait_for_message); a mouse report coalesced with typing in a terminal-attach batch no longer hides the typing from the turn origin.
 - Automatic typing never lands in a pane while its user is typing there or has an unsent draft: an agent message (`agents_send_message`) or a coordinator wake-up used to paste into an idle agent's input box on top of the user's half-written text and press Enter, sending the user's text cut off. `agent.prompt` gains an optional `guard_user_typing` that refuses with `user_typing` (nothing typed) while a client sent key, text or paste input to the pane in the last 10 s (a per-pane stamp written on the server's client input path) or the agent's input box holds non-placeholder text (Claude Code: the text between the last two `─` rules; Codex: the last `›` line and its continuation; the faint placeholder counts as empty; other agents rely on the 10 s window). A message to such a target answers `user_typing` (a reply is `logged`, as for a busy asker) and `wait_s` waits for the guard to clear; a wake-up is held with "you are typing in the coordinator" and retried after the held backoff. `herdr agent prompt` is unchanged.

@@ -19,6 +19,7 @@ pub(crate) mod agents_migrate;
 pub(crate) mod agents_model;
 mod browser;
 mod closed_sessions;
+mod codex_sessions;
 pub(crate) mod coordinator;
 pub(crate) mod message_queue;
 pub(crate) mod news;
@@ -171,6 +172,8 @@ pub struct App {
     pub(crate) backup_agent_transcripts: bool,
     /// Next periodic transcript backup pass.
     pub(crate) agent_transcript_backup_deadline: Option<Instant>,
+    /// Fork: Codex thread ids learned from rollout files.
+    pub(crate) codex_sessions: codex_sessions::CodexSessionProbe,
     /// The AI news desk: schedule, tab and run in flight (`news.*`).
     pub(crate) news: news::NewsState,
     /// The coordinator (fork): lifecycle, tab, worker and read model.
@@ -712,6 +715,7 @@ impl App {
             agent_transcript_backup_thread: None,
             agent_transcript_backup_last: None,
             agent_transcript_backup_pending: std::collections::BTreeMap::new(),
+            codex_sessions: codex_sessions::CodexSessionProbe::default(),
             detached_process_children: Vec::new(),
             tab_bar_status_generation: 0,
             tab_bar_datetimes: Vec::new(),

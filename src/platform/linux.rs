@@ -710,6 +710,34 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
+/// When a process started, in Unix milliseconds (fork: Codex thread matching).
+/// `/proc/<pid>/stat` field 22 counts clock ticks since boot (`btime`).
+pub fn process_start_unix_ms(pid: u32) -> Option<u64> {
+    if pid == 0 {
+        return None;
+    }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let ticks = process_start_ticks_from_stat(&stat)?;
+    let boot_secs = std::fs::read_to_string("/proc/stat")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))
+        .and_then(|value| value.trim().parse::<u64>().ok())?;
+    // SAFETY: sysconf has no preconditions.
+    let ticks_per_sec = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
+        .ok()
+        .filter(|ticks| *ticks > 0)?;
+    boot_secs
+        .checked_mul(1_000)?
+        .checked_add(ticks.checked_mul(1_000)? / ticks_per_sec)
+}
+
+fn process_start_ticks_from_stat(stat: &str) -> Option<u64> {
+    let rest = stat.get(stat.rfind(')')? + 2..)?;
+    // Field 3 (state) is the first after the command name; starttime is 22.
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
 /// Read a Herdr agent identity hint from a process environment.
 pub fn process_agent_hint(pid: u32) -> Option<crate::detect::Agent> {
     if pid == 0 {
@@ -1163,6 +1191,13 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
     use std::{cell::RefCell, collections::HashMap};
+
+    #[test]
+    fn process_start_ticks_are_read_past_command_names_with_spaces() {
+        let stat = "4242 (codex (x) y) S 1 4242 4242 0 -1 4194560 100 0 0 0 5 3 0 0 20 0 9 0 123456 999 42";
+        assert_eq!(process_start_ticks_from_stat(stat), Some(123_456));
+        assert_eq!(process_start_ticks_from_stat("4242 (codex) S 1"), None);
+    }
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

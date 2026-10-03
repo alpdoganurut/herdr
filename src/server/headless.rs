@@ -3489,6 +3489,8 @@ impl HeadlessServer {
         if self.app.agent_transcript_backup_due(now) {
             self.app.sync_agent_transcript_backups();
         }
+        // Fork: Codex thread ids from rollout files (off-thread file reads).
+        changed |= self.app.handle_codex_session_probe(now);
 
         if let Some(deadline) = self
             .app

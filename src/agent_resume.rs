@@ -416,6 +416,9 @@ pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<
 pub fn graceful_exit_input(agent: &str) -> Option<&'static str> {
     match agent {
         "claude" => Some("/exit"),
+        // Fork: codex-cli 0.160 leaves on `/quit` and prints
+        // `codex resume <thread id>` for the same thread.
+        "codex" => Some("/quit"),
         _ => None,
     }
 }
@@ -797,7 +800,8 @@ mod tests {
     #[test]
     fn graceful_exit_input_is_only_known_for_verified_agents() {
         assert_eq!(graceful_exit_input("claude"), Some("/exit"));
-        for agent in ["codex", "pi", "opencode", "unknown"] {
+        assert_eq!(graceful_exit_input("codex"), Some("/quit"));
+        for agent in ["pi", "opencode", "unknown"] {
             assert_eq!(graceful_exit_input(agent), None, "{agent}");
         }
     }
