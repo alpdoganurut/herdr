@@ -1397,6 +1397,66 @@ fn the_pane_menu_toggles_the_tabs_info_pane() {
 }
 
 #[test]
+fn the_tab_menu_toggles_that_tabs_info_pane_without_focusing_it() {
+    fn pick_info_pane(state: &mut ClientShellState, tab_id: &str) -> ClientShellInput {
+        state.open_tab_context_menu(tab_id.into(), 40, 5);
+        let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_ref() else {
+            panic!("tab menu");
+        };
+        let items = menu.items();
+        let index = items
+            .iter()
+            .position(|item| item.action == ClientContextMenuAction::ToggleInfoPane)
+            .expect("Info pane item");
+        assert_eq!(items[index].label, "Info pane");
+        let close = items
+            .iter()
+            .position(|item| item.action == ClientContextMenuAction::Close)
+            .expect("close");
+        let important = items
+            .iter()
+            .position(|item| item.action == ClientContextMenuAction::Important)
+            .expect("important");
+        assert!(
+            close < index && index < important,
+            "between Close and Important"
+        );
+        let mut outcome = ClientShellInput::default();
+        state.activate_context_menu_item(index, &mut outcome);
+        assert!(
+            !info_requests(&outcome)
+                .iter()
+                .any(|(_, method)| matches!(method, Method::TabFocus(_))),
+            "the tab is not focused"
+        );
+        outcome
+    }
+
+    // The focused tab: the dock opens and the surface narrows.
+    let mut state = dock_state();
+    let outcome = pick_info_pane(&mut state, "tab_1");
+    assert!(state.info_dock_open_for_focused_tab());
+    assert!(outcome.resize);
+
+    // A background tab: state only, nothing focused or resized.
+    let mut state = dock_state();
+    let outcome = pick_info_pane(&mut state, "tab_2");
+    assert!(!state.info_dock_open_for_focused_tab());
+    assert!(!outcome.resize);
+    let key = (ClientEndpointId::Local, "tab_2".to_owned());
+    assert!(state
+        .info_dock
+        .as_deref()
+        .is_some_and(|dock| dock.open_tabs.contains(&key)));
+    // Again closes it.
+    pick_info_pane(&mut state, "tab_2");
+    assert!(!state
+        .info_dock
+        .as_deref()
+        .is_some_and(|dock| dock.open_tabs.contains(&key)));
+}
+
+#[test]
 fn the_dock_deadline_is_never_in_the_past() {
     let mut state = dock_state();
     // Another command holds the slot, so the dock's pull waits in the queue.

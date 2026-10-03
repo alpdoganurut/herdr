@@ -195,7 +195,10 @@ fn it_re_pulls_after_a_push_and_on_the_minute_tick() {
             renamed: None,
         }),
     );
-    assert!(!text(&mut state).contains("other"));
+    // (The purpose line: the rights footer says "each other".)
+    let shown = text(&mut state);
+    assert!(shown.contains("purpose   fix calendar sync"), "{shown}");
+    assert!(!shown.contains("purpose   other"), "{shown}");
 
     // The team disbanded: the overlay says so.
     state.receive_teams(&ClientEndpointId::Local, payload("boot-1", 10, Vec::new()));

@@ -28,6 +28,12 @@ pub(crate) const TEAM_OVERLAY_REFRESH_INTERVAL: std::time::Duration =
 
 const WIDTH: u16 = 72;
 const HINT: &str = "click a member to focus it · ✎ edit · × remove from team";
+/// Fork, agents model v2: the dim rights lines above the hint, on a server
+/// with `agents.set_meta` (two lines: one would not fit the panel).
+pub(crate) const RIGHTS_FOOTER: [&str; 2] = [
+    "members edit each other; closing needs the user",
+    "coordinator: member of every team",
+];
 
 /// The open Team info overlay.
 #[derive(Debug)]
@@ -52,6 +58,9 @@ pub(crate) struct ClientTeamOverlay {
     /// free of clock reads).
     pub(crate) now_unix: u64,
     pub(crate) cursor: usize,
+    /// Draw `RIGHTS_FOOTER`: the server has the v2 agents model (an older
+    /// one does not make the coordinator a member of every team).
+    pub(crate) rights_footer: bool,
 }
 
 /// A selectable row.
@@ -91,6 +100,7 @@ impl ClientTeamOverlay {
             last_pull: None,
             now_unix: super::teams::unix_now(),
             cursor: 0,
+            rights_footer: false,
         }
     }
 
@@ -229,12 +239,14 @@ impl ClientShellState {
             .map(|workspace| workspace.label.clone())
             .unwrap_or_default();
         let team = self.active_team(&workspace_id).cloned();
-        self.overlay = Some(ClientShellOverlay::TeamInfo(ClientTeamOverlay::new(
+        let mut overlay = ClientTeamOverlay::new(
             self.active_endpoint_id.clone(),
             workspace_id,
             group_label,
             team,
-        )));
+        );
+        overlay.rights_footer = self.agents_set_meta_supported();
+        self.overlay = Some(ClientShellOverlay::TeamInfo(overlay));
     }
 
     fn team_overlay(&self) -> Option<&ClientTeamOverlay> {
@@ -456,7 +468,12 @@ pub(crate) fn render_team_overlay(
         .team
         .as_ref()
         .map_or((0, 0), |team| (team.members.len(), team.excluded.len()));
-    let body_rows = 2 + members.max(1) + excluded + 2;
+    let footer_rows = if overlay.rights_footer {
+        RIGHTS_FOOTER.len()
+    } else {
+        0
+    };
+    let body_rows = 2 + members.max(1) + excluded + 2 + footer_rows;
     let height = u16::try_from(body_rows + 2).unwrap_or(u16::MAX);
     let screen = b.area;
     let width = WIDTH.min(screen.width.saturating_sub(2));
@@ -750,6 +767,24 @@ pub(crate) fn render_team_overlay(
         y += 1;
     }
     let hint_y = inner.bottom().saturating_sub(1);
+    // The rights lines sit right above the hint, each only below the rows.
+    let footer_top = hint_y.saturating_sub(u16::try_from(footer_rows).unwrap_or(0));
+    for (offset, line) in RIGHTS_FOOTER.iter().take(footer_rows).enumerate() {
+        let line_y = footer_top.saturating_add(u16::try_from(offset).unwrap_or(0));
+        if line_y > y && line_y < hint_y {
+            put(
+                b,
+                inner.x,
+                line_y,
+                inner.width,
+                vec![Span::styled(
+                    crate::ui::truncate_end(line, usize::from(inner.width)),
+                    dim,
+                )],
+                bg,
+            );
+        }
+    }
     if hint_y > y {
         put(
             b,

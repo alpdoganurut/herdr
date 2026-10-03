@@ -252,8 +252,6 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) browser_marked_tabs: HashSet<String>,
     /// Fork: the `tabs` layout's pinned coordinator row (the bottom-most).
     pub(super) coordinator_row: Option<super::coordinator::CoordinatorRow>,
-    /// Fork: tabs holding a coordinator-managed agent (the dim `+`).
-    pub(super) coordinator_managed_tabs: Option<&'a HashSet<String>>,
     /// Fork: the active endpoint's teams (group header mark, member rows).
     pub(super) teams: Option<&'a super::teams::ClientTeamsState>,
     pub(super) remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
@@ -314,7 +312,6 @@ pub(super) fn render_shell(
             && config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
         {
             let coordinator_row = state.coordinator_row.take();
-            let managed_tabs = state.coordinator_managed_tabs;
             let teams = state.teams;
             hits.coordinator_row = super::tab_sidebar::render_tab_sidebar_with(
                 buffer,
@@ -325,7 +322,6 @@ pub(super) fn render_shell(
                 &mut hits,
                 super::tab_sidebar::TabSidebarCoordinator {
                     row: coordinator_row.as_ref(),
-                    managed_tabs,
                     teams,
                 },
             );

@@ -305,23 +305,21 @@ fn a_group_without_a_team_keeps_its_plain_header() {
 }
 
 #[test]
-fn member_rows_get_the_dim_mark_in_place_of_the_managed_plus() {
+fn member_rows_get_the_dim_mark_and_no_tab_a_managed_plus() {
+    // Agents model v2: every tab is part of herdr+, so there is no `+`.
     let mut state = team_state(Some("ship it"));
-    // Members are managed too; tab_4 is managed only.
-    state.coordinator.managed_tabs.extend([
-        "tab_2".to_owned(),
-        "tab_3".to_owned(),
-        "tab_4".to_owned(),
-    ]);
     let frame = state.compose(106, 24).expect("composed frame");
     for tab_id in ["tab_2", "tab_3"] {
         let row = tab_row(&state, &frame, tab_id);
         assert!(row.contains('◆') && !row.contains('+'), "{tab_id}: {row:?}");
     }
-    let row = tab_row(&state, &frame, "tab_4");
-    assert!(row.contains('+') && !row.contains('◆'), "{row:?}");
-    let row = tab_row(&state, &frame, "tab_1");
-    assert!(!row.contains('◆') && !row.contains('+'), "{row:?}");
+    for tab_id in ["tab_1", "tab_4"] {
+        let row = tab_row(&state, &frame, tab_id);
+        assert!(
+            !row.contains('◆') && !row.contains('+'),
+            "{tab_id}: {row:?}"
+        );
+    }
     // The mark is dim.
     let buffer = frame.to_ratatui_buffer().expect("buffer");
     let (rect, _) = *state
@@ -575,28 +573,37 @@ fn the_tab_menu_offers_role_leave_or_join_in_a_team_group() {
         .position(|a| *a == Action::Close)
         .expect("close");
     assert_eq!(
-        &actions[close + 1..close + 3],
-        [Action::SetTeamRole, Action::LeaveTeam],
-        "right after Close"
+        &actions[close + 1..close + 4],
+        [Action::SetRole, Action::LeaveTeam, Action::ToggleInfoPane],
+        "right after Close, then the tab's Info pane"
     );
     assert!(!actions.contains(&Action::JoinTeam));
+    assert!(
+        !actions.contains(&Action::SetTeamRole),
+        "one role item: Set role… replaces Set team role…"
+    );
     assert_eq!(
         actions.last(),
         Some(&Action::Color),
         "the swatch row stays last"
     );
 
-    // A shell tab has no agent: no team items.
+    // A shell tab has no agent: no role or team items, but the Info pane.
     let actions: Vec<_> = tab_menu(&mut state, "tab_4")
         .into_iter()
         .map(|(_, a)| a)
         .collect();
     assert!(!actions.iter().any(|a| matches!(
         a,
-        Action::SetTeamRole | Action::LeaveTeam | Action::JoinTeam
+        Action::SetRole | Action::SetTeamRole | Action::LeaveTeam | Action::JoinTeam
     )));
+    let close = actions
+        .iter()
+        .position(|a| *a == Action::Close)
+        .expect("close");
+    assert_eq!(actions[close + 1], Action::ToggleInfoPane);
 
-    // An agent that is not a member can join.
+    // An agent that is not a member can join, and still has a role.
     let mut removed = team(Some("ship it"));
     removed.members.truncate(1);
     state.receive_teams(
@@ -607,13 +614,46 @@ fn the_tab_menu_offers_role_leave_or_join_in_a_team_group() {
         .into_iter()
         .map(|(_, a)| a)
         .collect();
-    assert!(actions.contains(&Action::JoinTeam));
+    let close = actions
+        .iter()
+        .position(|a| *a == Action::Close)
+        .expect("close");
+    assert_eq!(
+        &actions[close + 1..close + 4],
+        [Action::SetRole, Action::JoinTeam, Action::ToggleInfoPane]
+    );
     let outcome = pick(&mut state, Action::JoinTeam);
     let requests = endpoint_requests(&outcome);
     let [(_, Method::TeamJoin(params))] = &requests[..] else {
         panic!("team.join only (no focus), got {requests:?}");
     };
     assert_eq!((params.pane_id.as_str(), &params.role), ("pane_3", &None));
+
+    // A server with teams but without `agents.set_meta`: a member keeps
+    // "Set team role…", a non-member gets no role item.
+    state.set_endpoint_methods(Some(team_methods()));
+    let actions: Vec<_> = tab_menu(&mut state, "tab_2")
+        .into_iter()
+        .map(|(_, a)| a)
+        .collect();
+    let close = actions
+        .iter()
+        .position(|a| *a == Action::Close)
+        .expect("close");
+    assert_eq!(
+        &actions[close + 1..close + 4],
+        [
+            Action::SetTeamRole,
+            Action::LeaveTeam,
+            Action::ToggleInfoPane
+        ]
+    );
+    let actions: Vec<_> = tab_menu(&mut state, "tab_3")
+        .into_iter()
+        .map(|(_, a)| a)
+        .collect();
+    assert!(!actions.contains(&Action::SetRole) && !actions.contains(&Action::SetTeamRole));
+    assert!(actions.contains(&Action::JoinTeam));
 
     // Without team.get there are no team items.
     state.set_endpoint_methods(Some(vec!["tab.focus".into()]));
@@ -622,11 +662,15 @@ fn the_tab_menu_offers_role_leave_or_join_in_a_team_group() {
         .map(|(_, a)| a)
         .collect();
     assert!(!actions.contains(&Action::SetTeamRole));
+    assert!(!actions.contains(&Action::SetRole));
+    assert!(!actions.contains(&Action::LeaveTeam));
 }
 
 #[test]
 fn set_team_role_and_leave_send_their_methods() {
+    // A server without `agents.set_meta` (else "Set role…" is offered).
     let mut state = team_state(Some("ship it"));
+    state.set_endpoint_methods(Some(team_methods()));
     tab_menu(&mut state, "tab_2");
     let outcome = pick(&mut state, ClientContextMenuAction::LeaveTeam);
     let requests = endpoint_requests(&outcome);

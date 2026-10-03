@@ -1,6 +1,8 @@
 //! The coordinator on the client (fork): the client-only state behind the
-//! `tabs` sidebar's pinned coordinator row, its context menu, the managed-tab
-//! `+` marks and the `spaces` layout's coordinator-tab mark.
+//! `tabs` sidebar's pinned coordinator row, its context menu and the
+//! `spaces` layout's coordinator-tab mark. Every tab is part of herdr+ (agents
+//! model v2), so tabs carry no managed mark; the row counts the agents the
+//! coordinator watches (`coordinator.get.managed`, its wake scope).
 //!
 //! Everything shown comes from `coordinator.get`. It is pulled on the tick
 //! after the first snapshot of a connection, whenever the snapshot's
@@ -30,7 +32,6 @@ use crate::api::schema::coordinator::{CoordinatorGetInfo, CoordinatorStateInfo};
 use crate::api::schema::AgentStatus;
 use crate::app::state::Palette;
 use crate::protocol::ClientShellSnapshot;
-use std::collections::HashSet;
 
 /// How often the read model is pulled without a visible reason (a board
 /// edit with no status change shows within this bound).
@@ -39,9 +40,6 @@ pub(crate) const COORDINATOR_REFRESH_INTERVAL: std::time::Duration =
 
 /// The row's label, and the coordinator tab's label on the server.
 pub(crate) const COORDINATOR_ROW_LABEL: &str = "coordinator";
-
-/// The dim mark after a managed agent's tab label in the `tabs` layout.
-pub(crate) const MANAGED_TAB_MARK: &str = "+";
 
 /// One `coordinator.*` request the client sends. The shell maps each to its
 /// `Method` arm; the TUI never sets `caller_pane` (absent means the user).
@@ -166,9 +164,6 @@ pub(crate) struct ClientCoordinatorState {
     pub(crate) pulled_for: Option<CoordinatorSnapshotSignature>,
     /// When the last pull was sent, for the periodic refresh.
     pub(crate) last_pull: Option<std::time::Instant>,
-    /// Tabs holding a managed agent (not the coordinator's own), rebuilt
-    /// only when a reply arrives: the renderer's `+` lookup is O(1).
-    pub(crate) managed_tabs: HashSet<String>,
 }
 
 /// The pinned row's state, in priority order.
@@ -219,7 +214,7 @@ pub(crate) struct CoordinatorRow {
     pub(crate) tab_id: Option<String>,
     pub(crate) state: CoordinatorRowState,
     /// `down`, `locked`, `registry`, `n/a`, `needs you`, `waking`,
-    /// `working`, `N ideas`, `capped`, `off`, `N agents`.
+    /// `working`, `N ideas`, `capped`, `off`, `N watched`.
     pub(crate) status: String,
     pub(crate) focused: bool,
 }
@@ -239,8 +234,8 @@ impl CoordinatorRow {
 /// or running, or unknown while running), a live turn or a working
 /// coordinator, unread suggestions
 /// (not while the tab is focused: the server clears them on focus),
-/// capped, off, else the managed-agent count. A state this client does not
-/// know reads as the idle row.
+/// capped, off, else the count of agents it watches (its wake scope, without
+/// its own entry). A state this client does not know reads as the idle row.
 pub(crate) fn coordinator_row_state(
     info: &CoordinatorGetInfo,
     tab_status: Option<AgentStatus>,
@@ -298,9 +293,24 @@ pub(crate) fn coordinator_row_state(
     if !info.enabled || info.state == CoordinatorStateInfo::Off {
         return (CoordinatorRowState::Off, "off".into());
     }
-    let n = info.managed.len();
-    let noun = if n == 1 { "agent" } else { "agents" };
-    (CoordinatorRowState::Idle, format!("{n} {noun}"))
+    (
+        CoordinatorRowState::Idle,
+        format!("{} watched", watched_count(info)),
+    )
+}
+
+/// The agents the coordinator watches: `managed` without the coordinator's
+/// own entry (on its tab or pane).
+pub(crate) fn watched_count(info: &CoordinatorGetInfo) -> usize {
+    let own_tab = info.tab_id.as_deref();
+    let own_pane = info.pane_id.as_deref();
+    info.managed
+        .iter()
+        .filter(|agent| {
+            own_tab.is_none_or(|own| agent.tab_id.as_deref() != Some(own))
+                && own_pane.is_none_or(|own| agent.pane_id.as_deref() != Some(own))
+        })
+        .count()
 }
 
 /// The row's context menu items, in order.
@@ -347,13 +357,6 @@ impl ClientCoordinatorState {
     /// and from keyboard numbering. An O(1) compare.
     pub(crate) fn is_coordinator_tab(&self, tab_id: &str) -> bool {
         self.tab_id() == Some(tab_id)
-    }
-
-    /// Whether `tab_id` holds a managed agent (the `+` mark; the renderer
-    /// reads `managed_tabs` directly).
-    #[cfg(test)]
-    pub(crate) fn is_managed_tab(&self, tab_id: &str) -> bool {
-        self.managed_tabs.contains(tab_id)
     }
 
     /// The row's tab id while the snapshot lists it: the id the `tabs`
@@ -617,17 +620,6 @@ impl ClientCoordinatorState {
     }
 
     fn set_info(&mut self, info: Option<CoordinatorGetInfo>) {
-        self.managed_tabs.clear();
-        if let Some(info) = info.as_ref() {
-            let own = info.tab_id.as_deref();
-            self.managed_tabs.extend(
-                info.managed
-                    .iter()
-                    .filter_map(|agent| agent.tab_id.as_deref())
-                    .filter(|tab_id| Some(*tab_id) != own)
-                    .map(str::to_owned),
-            );
-        }
         self.info = info;
     }
 }

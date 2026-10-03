@@ -1,11 +1,11 @@
 //! The coordinator's client pieces (fork): the pinned row's state, the pull
 //! schedule, the menu and settings actions, and the `tabs` sidebar's pinned
-//! row, pinned-tab exclusion and managed marks.
+//! row and pinned-tab exclusion (agents model v2: no managed marks).
 
 use super::super::coordinator::{
-    coordinator_row_state, dashboard_url_notice, ClientCoordinatorState, CoordinatorEffect,
-    CoordinatorMenuAction, CoordinatorRequest, CoordinatorRequestKind, CoordinatorRow,
-    CoordinatorRowState, COORDINATOR_REFRESH_INTERVAL,
+    coordinator_row_state, dashboard_url_notice, watched_count, ClientCoordinatorState,
+    CoordinatorEffect, CoordinatorMenuAction, CoordinatorRequest, CoordinatorRequestKind,
+    CoordinatorRow, CoordinatorRowState, COORDINATOR_REFRESH_INTERVAL,
 };
 use super::super::settings_coordinator::{
     section_rows, ClientCoordinatorSettings, CoordinatorPicker, CoordinatorSettingsRow,
@@ -87,7 +87,7 @@ fn row_state_follows_the_priority_table() {
     let base = info();
     assert_eq!(
         row_of(&base),
-        (CoordinatorRowState::Idle, "2 agents".into())
+        (CoordinatorRowState::Idle, "2 watched".into())
     );
 
     let mut capped = base.clone();
@@ -242,7 +242,7 @@ fn an_unknown_state_reads_as_the_idle_row() {
     newer.managed.truncate(1);
     assert_eq!(
         row_of(&newer),
-        (CoordinatorRowState::Idle, "1 agent".into())
+        (CoordinatorRowState::Idle, "1 watched".into())
     );
 }
 
@@ -254,7 +254,7 @@ fn the_row_needs_a_reply_and_an_enabled_coordinator_or_its_tab() {
     let state = state_with(info(), &snapshot);
     let row = state.row(&snapshot).expect("row");
     assert_eq!(row.tab_id.as_deref(), Some("tab_c"));
-    assert_eq!(row.tab_mark(), "○ 2 agents");
+    assert_eq!(row.tab_mark(), "○ 2 watched");
 
     // Enabled without a tab: the row stays and a click opens one.
     let mut no_tab = info();
@@ -347,29 +347,28 @@ fn a_new_connection_drops_the_old_servers_state() {
     assert!(repaint);
     assert_eq!(request, Some(CoordinatorRequest::Get));
     assert!(state.info.is_none());
-    assert!(state.managed_tabs.is_empty());
 }
 
 #[test]
-fn managed_tabs_are_rebuilt_from_each_reply_without_the_coordinator() {
+fn the_watched_count_leaves_out_the_coordinators_own_entry() {
     let snapshot = coordinator_snapshot();
     let mut with_self = info();
     with_self
         .managed
         .push(managed("coordinator", Some("tab_c")));
     with_self.managed.push(managed("unplaced", None));
-    let mut state = state_with(with_self, &snapshot);
-    assert!(state.is_managed_tab("tab_2"));
-    assert!(state.is_managed_tab("tab_3"));
-    assert!(!state.is_managed_tab("tab_c"));
+    assert_eq!(watched_count(&with_self), 3, "the unplaced one counts");
+    let mut by_pane = info();
+    by_pane.managed.push(CoordinatorManagedInfo {
+        name: "coordinator".into(),
+        pane_id: Some("pane_c".into()),
+        ..CoordinatorManagedInfo::default()
+    });
+    assert_eq!(watched_count(&by_pane), 2);
+    let state = state_with(with_self, &snapshot);
+    assert_eq!(state.row(&snapshot).expect("row").status, "3 watched");
     assert!(state.is_coordinator_tab("tab_c"));
     assert!(!state.is_coordinator_tab("tab_2"));
-
-    let mut fewer = info();
-    fewer.managed.truncate(1);
-    state.on_reply(CoordinatorRequestKind::Wake, Some(fewer), Some(&snapshot));
-    assert!(state.is_managed_tab("tab_2"));
-    assert!(!state.is_managed_tab("tab_3"));
 }
 
 #[test]
@@ -807,7 +806,7 @@ fn the_coordinator_keeps_its_pinned_row_first_when_space_runs_short() {
     let coordinator = CoordinatorRow {
         tab_id: None,
         state: CoordinatorRowState::Idle,
-        status: "0 agents".into(),
+        status: "0 watched".into(),
         focused: false,
     };
     let rows = || {
@@ -858,8 +857,8 @@ fn buffer_row(buffer: &ratatui::buffer::Buffer, rect: Rect) -> String {
         .collect()
 }
 
-/// Render the `tabs` sidebar with the coordinator's row and managed set,
-/// and a News row naming `news_tab`.
+/// Render the `tabs` sidebar with the coordinator's row and a News row
+/// naming `news_tab`.
 fn render_sidebar(
     shell: &mut ClientShellState,
     snapshot: &ClientShellSnapshot,
@@ -891,7 +890,6 @@ fn render_sidebar(
         browser_row: None,
         browser_marked_tabs: HashSet::new(),
         coordinator_row: None,
-        coordinator_managed_tabs: None,
         teams: None,
         remote_collapsed_groups: &shell.remote_collapsed_groups,
         workspace_scroll: &mut shell.workspace_scroll,
@@ -917,7 +915,6 @@ fn render_sidebar(
         &mut hits,
         TabSidebarCoordinator {
             row: row.as_ref(),
-            managed_tabs: Some(&coordinator.managed_tabs),
             teams: None,
         },
     );
@@ -925,7 +922,7 @@ fn render_sidebar(
 }
 
 #[test]
-fn the_tabs_sidebar_pins_the_coordinator_below_news_and_marks_managed_tabs() {
+fn the_tabs_sidebar_pins_the_coordinator_below_news_and_marks_no_tab() {
     let mut snapshot = coordinator_snapshot();
     snapshot.tabs.push(tab("tab_n", "ws_1", "News", false));
     let mut shell = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
@@ -950,11 +947,10 @@ fn the_tabs_sidebar_pins_the_coordinator_below_news_and_marks_managed_tabs() {
         .collect();
     assert_eq!(listed, ["tab_1", "tab_2", "tab_3"]);
 
-    // Managed tabs carry the dim `+`, others do not.
+    // Every tab is part of herdr+: the watched agents' tabs carry no `+`.
     for (rect, tab_id) in &hits.sidebar_tabs {
         let text = buffer_row(&buffer, *rect);
-        let marked = text.contains(" + ");
-        assert_eq!(marked, tab_id != "tab_1", "{tab_id}: {text:?}");
+        assert!(!text.contains(" + "), "{tab_id}: {text:?}");
     }
 
     // Short on room: the coordinator keeps its row, News gives way.

@@ -972,6 +972,11 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         }
+        // Fork: "Set role…" (`teams.rs`).
+        if self.save_agent_role(&rename.target, trimmed, outcome) {
+            outcome.repaint = true;
+            return;
+        }
         let method = match rename.target {
             ClientRenameTarget::NewWorkspace {
                 source_workspace_id,
@@ -1100,7 +1105,9 @@ impl ClientShellState {
                 }
             }
             // Handled above.
-            ClientRenameTarget::TeamPurpose { .. } | ClientRenameTarget::TeamRole { .. } => None,
+            ClientRenameTarget::TeamPurpose { .. }
+            | ClientRenameTarget::TeamRole { .. }
+            | ClientRenameTarget::AgentRole { .. } => None,
         };
         if let Some(method) = method {
             self.push_endpoint_method(method, outcome);

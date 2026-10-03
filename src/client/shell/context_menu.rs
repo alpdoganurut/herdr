@@ -70,16 +70,26 @@ impl ClientContextMenuOverlay {
                     items.push(item("Copy session ID", Action::CopySessionId));
                 }
                 items.push(item("Close", Action::Close));
-                // Fork: the team items, after Close so upstream's positions
-                // hold (and absent outside team groups).
+                // Fork: the role and team items, after Close so upstream's
+                // positions hold. "Set role…" is on any agent tab of a server
+                // with `agents.set_meta`; without it a member keeps "Set team
+                // role…" and a non-member gets no role item.
+                let set_role = agent.as_ref().is_some_and(|agent| agent.set_role);
+                if set_role {
+                    items.push(item("Set role…", Action::SetRole));
+                }
                 match team {
                     Some(team) if team.member => {
-                        items.push(item("Set team role…", Action::SetTeamRole));
+                        if !set_role {
+                            items.push(item("Set team role…", Action::SetTeamRole));
+                        }
                         items.push(item("Leave team", Action::LeaveTeam));
                     }
                     Some(_) => items.push(item("Join team", Action::JoinTeam)),
                     None => {}
                 }
+                // Fork: the tab's info dock, as on the pane menu.
+                items.push(item("Info pane", Action::ToggleInfoPane));
                 // After Close, so upstream's item positions hold: the
                 // important toggle, then the two selector rows, whose labels
                 // only name them (render_context_menu draws the options).
@@ -248,6 +258,9 @@ impl ClientShellState {
         else {
             return;
         };
+        // The coordinator's role is herdr's, never set from the menu.
+        let set_role =
+            !self.coordinator.is_coordinator_tab(&tab_id) && self.agents_set_meta_supported();
         let agent = self.snapshot.as_deref().and_then(|snapshot| {
             snapshot
                 .agents
@@ -256,6 +269,7 @@ impl ClientShellState {
                 .map(|agent| ClientTabMenuAgent {
                     pane_id: agent.pane_id.clone(),
                     suspended: agent.agent_status == crate::api::schema::AgentStatus::Suspended,
+                    set_role,
                 })
         });
         let color = super::tab_color::tab_menu_color(tab.color);
@@ -376,6 +390,30 @@ impl ClientShellState {
                 if let Some(session_id) = session_id.clone() {
                     self.copy_context_menu_session_id(session_id, outcome);
                 }
+                outcome.repaint = true;
+                return;
+            }
+            // Fork: the tab menu's info dock item, like the pane menu's,
+            // does not focus the tab (a background tab opens in state only).
+            (
+                ClientContextMenuAction::ToggleInfoPane,
+                ClientContextMenuTarget::Tab { tab_id, .. },
+            ) => {
+                self.toggle_info_pane(tab_id.clone(), outcome);
+                outcome.repaint = true;
+                return;
+            }
+            // Fork: "Set role…" opens the role prompt without focusing the
+            // tab, like the team items.
+            (
+                ClientContextMenuAction::SetRole,
+                ClientContextMenuTarget::Tab {
+                    agent: Some(agent),
+                    team,
+                    ..
+                },
+            ) => {
+                self.open_agent_role_rename(agent.pane_id.clone(), team.as_ref());
                 outcome.repaint = true;
                 return;
             }

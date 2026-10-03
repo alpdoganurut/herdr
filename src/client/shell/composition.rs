@@ -74,7 +74,6 @@ impl ClientShellState {
             browser_row,
             browser_marked_tabs,
             coordinator_row,
-            coordinator_managed_tabs: Some(&self.coordinator.managed_tabs),
             teams: super::teams::active_teams_of(
                 &self.teams,
                 &self.active_endpoint_id,
@@ -247,7 +246,6 @@ impl ClientShellState {
                 browser_row,
                 browser_marked_tabs,
                 coordinator_row,
-                coordinator_managed_tabs: Some(&self.coordinator.managed_tabs),
                 teams: super::teams::active_teams_of(
                     &self.teams,
                     &self.active_endpoint_id,

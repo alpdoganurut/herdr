@@ -234,6 +234,12 @@ fn team_get_probe() -> Method {
     .method()
 }
 
+/// The `agents.set_meta` method used to gate "Set role…" (and the Team
+/// info rights line): a server advertising it has the v2 agents model.
+fn agents_set_meta_probe() -> Method {
+    Method::AgentsSetMeta(crate::api::schema::agents_model::AgentsSetMetaParams::default())
+}
+
 /// An endpoint's teams while they belong to `snapshot`'s server: what the
 /// renderer reads (field-level borrows, for the compose pass).
 pub(crate) fn active_teams_of<'a>(
@@ -262,6 +268,12 @@ impl ClientShellState {
     /// on it).
     pub(super) fn teams_supported(&self) -> bool {
         self.supports_endpoint_method(&team_get_probe())
+    }
+
+    /// The active endpoint advertises `agents.set_meta` ("Set role…" on any
+    /// agent tab).
+    pub(super) fn agents_set_meta_supported(&self) -> bool {
+        self.supports_endpoint_method(&agents_set_meta_probe())
     }
 
     /// A group's team on the active endpoint.
@@ -470,6 +482,84 @@ impl ClientShellState {
                 reopen,
             },
         }));
+    }
+
+    /// Tab menu "Set role…": the Rename modal for an agent pane's role. A
+    /// member's prompt opens with its role (and the agent is renamed to the
+    /// new one); a non-member's role is a plain label the client never sees,
+    /// so its prompt opens empty.
+    pub(super) fn open_agent_role_rename(
+        &mut self,
+        pane_id: String,
+        team: Option<&ClientTabTeamMenu>,
+    ) {
+        let member = team.filter(|team| team.member && team.pane_id == pane_id);
+        let (title, current, member) = match member {
+            Some(team) => (
+                "role (the agent is renamed to it)",
+                team.role.clone().unwrap_or_default(),
+                true,
+            ),
+            None => (
+                "role (a label agents see; not a team role)",
+                String::new(),
+                false,
+            ),
+        };
+        self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            title,
+            input: TextEditor::new(&current, false),
+            target: ClientRenameTarget::AgentRole {
+                pane_id,
+                member,
+                known: member,
+            },
+        }));
+    }
+
+    /// A saved "Set role…" modal: `agents.set_meta`, or `team.set_role` for
+    /// a member when the server no longer advertises it.
+    /// Empty clears the role, except where the current role was not known
+    /// (nothing is sent). `false` for any other target.
+    pub(super) fn save_agent_role(
+        &mut self,
+        target: &ClientRenameTarget,
+        text: &str,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        let ClientRenameTarget::AgentRole {
+            pane_id,
+            member,
+            known,
+        } = target
+        else {
+            return false;
+        };
+        let role = one_line(text);
+        if role.is_none() && !known {
+            return true;
+        }
+        if *member && !self.agents_set_meta_supported() {
+            self.push_team_request(
+                TeamRequest::SetRole {
+                    pane_id: pane_id.clone(),
+                    role,
+                },
+                outcome,
+            );
+        } else {
+            // Without the method this raises the usual "Action unavailable".
+            self.push_endpoint_method(
+                Method::AgentsSetMeta(crate::api::schema::agents_model::AgentsSetMetaParams {
+                    caller_pane: None,
+                    target: pane_id.clone(),
+                    role: Some(role.unwrap_or_default()),
+                    note: None,
+                }),
+                outcome,
+            );
+        }
+        true
     }
 
     /// The request a saved team Rename modal sends; `None` for any other

@@ -427,6 +427,16 @@ pub(super) enum ClientRenameTarget {
         workspace_id: String,
         reopen: bool,
     },
+    /// Fork: any agent pane's role (`agents.set_meta`; `team.set_role` for a
+    /// member on a server without it). `member` names the team rename rules
+    /// in the title. `known`: the prompt opened with the current role (a
+    /// member's); a non-member's role is not on the client, so an empty
+    /// save there sends nothing rather than clearing a role unseen.
+    AgentRole {
+        pane_id: String,
+        member: bool,
+        known: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -742,6 +752,8 @@ pub(super) enum ClientContextMenuAction {
     /// Fork: tab and pane menus: copy the agent's native session id
     /// (`context_menu_session.rs`).
     CopySessionId,
+    /// Fork, tab menu of any agent tab: "Set role…" (`agents.set_meta`).
+    SetRole,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -768,6 +780,9 @@ pub(super) struct ClientTabMenuRemind {
 pub(super) struct ClientTabMenuAgent {
     pub(super) pane_id: String,
     pub(super) suspended: bool,
+    /// Fork: "Set role…" is offered (the server advertised
+    /// `agents.set_meta` when the menu opened).
+    pub(super) set_role: bool,
 }
 
 #[derive(Debug)]

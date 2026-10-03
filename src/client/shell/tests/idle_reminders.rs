@@ -759,13 +759,18 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
             .collect::<Vec<_>>(),
         [
             ClientContextMenuAction::Close,
+            // Fork (agents model v2): "Set role…" on an agent tab and the
+            // tab's "Info pane" sit between Close and Important.
+            ClientContextMenuAction::SetRole,
+            ClientContextMenuAction::ToggleInfoPane,
             ClientContextMenuAction::Important,
             ClientContextMenuAction::RemindTop,
             ClientContextMenuAction::RemindBottom,
             ClientContextMenuAction::Color
         ]
     );
-    assert_eq!(items[close + 1].label, "Important \u{2713}");
+    let important = close + 3;
+    assert_eq!(items[important].label, "Important \u{2713}");
     assert_eq!(
         menu_remind(&state).1,
         ClientTabMenuRemind {
@@ -774,8 +779,8 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
         }
     );
     let frame = state.compose(106, 20).expect("menu frame");
-    let top = row_text(&frame, state.hits.context_menu_rows[close + 2].0);
-    let bottom = row_text(&frame, state.hits.context_menu_rows[close + 3].0);
+    let top = row_text(&frame, state.hits.context_menu_rows[important + 1].0);
+    let bottom = row_text(&frame, state.hits.context_menu_rows[important + 2].0);
     assert!(top.starts_with("remind  5m  10m  30m"), "{top:?}");
     assert!(bottom.starts_with("        1h [6h]  daily"), "{bottom:?}");
     let options = state.hits.context_menu_remind_options.clone();
@@ -789,7 +794,7 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
     }
 
     let on_width = state.hits.context_menu_rows[0].0.width;
-    let important_row = state.hits.context_menu_rows[close + 1].0;
+    let important_row = state.hits.context_menu_rows[important].0;
     assert!(
         row_text(&frame, important_row).starts_with("Important \u{2713} "),
         "label, one space, the check: {:?}",

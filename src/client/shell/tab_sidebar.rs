@@ -32,13 +32,13 @@
 //! The coordinator tab (`coordinator.rs`) is pinned the same way, as the
 //! bottom-most pinned row (Browser, News, coordinator from top to bottom);
 //! when not every pinned row fits it keeps its row first, then News, then
-//! Browser. Tabs holding a coordinator-managed agent get a dim `+` mark
-//! before the agent glyph (an O(1) lookup in the client's managed set).
+//! Browser. Every tab is part of herdr+ (agents model v2): no tab carries a
+//! managed mark.
 //!
 //! Fork, teams (`teams.rs`): a team group's header shows `◆ <purpose>` (the
 //! mark in accent), or `◆ <group label>` dim before a purpose exists; a
-//! member's row shows a dim `◆` in the `+` slot (members are also managed,
-//! so the `+` is skipped). Both are O(1) lookups in the client's team maps.
+//! member's row shows a dim `◆` before the agent glyph. Both are O(1)
+//! lookups in the client's team maps.
 
 use ratatui::{
     buffer::Buffer,
@@ -155,18 +155,16 @@ fn entries<'a>(
     rows
 }
 
-/// The coordinator's part of the `tabs` sidebar: its pinned row and the
-/// tabs holding a managed agent (`coordinator.rs`). Empty without the
-/// coordinator.
+/// The coordinator's part of the `tabs` sidebar: its pinned row
+/// (`coordinator.rs`), and the endpoint's teams. Empty without either.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct TabSidebarCoordinator<'a> {
     pub(super) row: Option<&'a super::coordinator::CoordinatorRow>,
-    pub(super) managed_tabs: Option<&'a HashSet<String>>,
     /// Fork: the endpoint's teams (header marks, member rows).
     pub(super) teams: Option<&'a super::teams::ClientTeamsState>,
 }
 
-/// The `tabs` sidebar, with the coordinator's row and managed marks.
+/// The `tabs` sidebar, with the coordinator's row and team marks.
 /// Returns the coordinator row's rect (empty when it was not drawn), the
 /// hit area of a click on it.
 pub(super) fn render_tab_sidebar_with(
@@ -364,19 +362,8 @@ pub(super) fn render_tab_sidebar_with(
                     .teams
                     .is_some_and(|teams| teams.is_member_tab(&tab.tab_id))
                 {
-                    // A member is managed too: its dim mark takes the `+` slot.
+                    // A member's dim mark leads the markers.
                     markers.insert(0, (super::teams::TEAM_MARK, config.palette.overlay0));
-                } else if coordinator
-                    .managed_tabs
-                    .is_some_and(|managed| managed.contains(&tab.tab_id))
-                {
-                    markers.insert(
-                        0,
-                        (
-                            super::coordinator::MANAGED_TAB_MARK,
-                            config.palette.overlay0,
-                        ),
-                    );
                 }
                 // Fork: a working tab's glyph breathes (`breathe.rs`).
                 let breathe = (tab.agent_status == crate::api::schema::AgentStatus::Working

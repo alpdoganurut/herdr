@@ -249,6 +249,7 @@ fn surface_with_popup() -> PaneSurfaceFrame {
 }
 
 mod agent_cards;
+mod agents_model;
 mod agents_worktrees_notifications;
 mod breathe;
 mod browser;
