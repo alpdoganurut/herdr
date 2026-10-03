@@ -539,6 +539,12 @@ mod tests {
             assert!(entry.starts_with(&format!("mcp__{MCP_KEY}__")), "{entry}");
         }
         assert!(agent.contains("mcp__herdr_agents__agents_send_message"));
+        for tool in ["agents_suspend", "agents_activate", "agents_restart"] {
+            assert!(
+                agent.contains(&format!("mcp__herdr_agents__{tool}")),
+                "{tool}"
+            );
+        }
         assert!(!agent.contains("agents_close_tab") && !agent.contains("agents_reopen_tab"));
         assert!(claude_allow_coordinator().starts_with(&format!("mcp__{MCP_KEY},")));
         // Only read-only CLI verbs are pre-approved for the coordinator.

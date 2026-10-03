@@ -206,7 +206,8 @@ Read freely: agents_whoami · agents_list (group=, team=, all=true) · agents_ge
 agents_wait_for_message · agents_wait · agents_actions · agents_notes_read · agents_checkpoints_list.
 Your user's request only (refused in non-user turns): agents_send_message (except answering the message that
 started the turn) · agents_open_tab · agents_rename_tab · agents_move_to_group · agents_create_group ·
-agents_team (make, purpose) · agents_set_meta · agents_close_tab · agents_reopen_tab.
+agents_team (make, purpose) · agents_set_meta · agents_close_tab · agents_reopen_tab · agents_suspend ·
+agents_activate · agents_restart (never your own tab).
 agents_manage / agents_unmanage are kept for old sessions only: every tab is part of herdr+ now.
 agents_list marks: `=` yours · `◆` you may edit (you: every tab but your own needs the user's request) ·
 `·` read and message; `[team]` on a member, `team "<purpose>"` on its group in the `groups:` line.

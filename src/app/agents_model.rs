@@ -18,12 +18,12 @@ use crate::api::schema::agents_model::{
     error_code, AgentActorKind, AgentPaneKind, AgentsAccess, AgentsActionOutcome,
     AgentsActionsParams, AgentsActorInfo, AgentsActorParams, AgentsCheckAction, AgentsCheckParams,
     AgentsCheckpointParams, AgentsDirectory, AgentsDirectoryParams, AgentsGroupInfo,
-    AgentsGroupTeam, AgentsMessageOutcome, AgentsMessageResult, AgentsMoveResult,
-    AgentsMoveTabParams, AgentsNotesAppendParams, AgentsOpenResult, AgentsOpenTabParams,
-    AgentsOriginDetail, AgentsPaneInfo, AgentsReadFormat, AgentsReadParams, AgentsReadResult,
-    AgentsReadSource, AgentsRenameResult, AgentsRenameTabParams, AgentsScreenAccess,
-    AgentsSendMessageParams, AgentsSetMetaParams, AgentsSetMetaResult, AgentsTabInfo,
-    AgentsTeamRef, AgentsWho,
+    AgentsGroupTeam, AgentsLifecycleParams, AgentsMessageOutcome, AgentsMessageResult,
+    AgentsMoveResult, AgentsMoveTabParams, AgentsNotesAppendParams, AgentsOpenResult,
+    AgentsOpenTabParams, AgentsOriginDetail, AgentsPaneInfo, AgentsReadFormat, AgentsReadParams,
+    AgentsReadResult, AgentsReadSource, AgentsRenameResult, AgentsRenameTabParams,
+    AgentsScreenAccess, AgentsSendMessageParams, AgentsSetMetaParams, AgentsSetMetaResult,
+    AgentsTabInfo, AgentsTeamRef, AgentsWho,
 };
 use crate::api::schema::{ErrorBody, Method, Request, ResponseResult};
 use crate::layout::PaneId;
@@ -1834,6 +1834,89 @@ impl App {
         Ok(())
     }
 
+    // ----- agents.suspend / agents.activate / agents.restart -------------------
+
+    pub(super) fn handle_agents_lifecycle(
+        &mut self,
+        id: String,
+        op: AgentLifecycle,
+        params: AgentsLifecycleParams,
+    ) -> String {
+        let result = self.agents_lifecycle(op, &params);
+        Self::model_reply(id, result)
+    }
+
+    /// Check (one soft edit; activating what the user suspended needs the
+    /// caller's user turn, D4), act and log, in one `&mut App` borrow. The
+    /// suspend record names the caller, so its teammates may activate it.
+    fn agents_lifecycle(
+        &mut self,
+        op: AgentLifecycle,
+        params: &AgentsLifecycleParams,
+    ) -> ModelResult<ResponseResult> {
+        let caller = self.required_caller(&params.caller_pane)?;
+        let target = self.resolve_model_tab(&params.target)?;
+        let pane = self
+            .target_pane(target)
+            .ok_or_else(|| ModelError::new(error_code::NOT_FOUND, "no pane"))?;
+        let public = self.public_pane_id(target.ws_idx, pane).unwrap_or_default();
+        let terminal = self.model_terminal(target.ws_idx, pane);
+        let suspended_by_agent = terminal
+            .and_then(|terminal| terminal.suspended_agent.as_ref())
+            .and_then(|record| record.suspended_by.as_ref())
+            .is_some_and(AgentsWho::is_agent);
+        let name = terminal
+            .and_then(|terminal| {
+                terminal.agent_name.clone().or_else(|| {
+                    terminal
+                        .suspended_agent
+                        .as_ref()
+                        .and_then(|record| record.name.clone())
+                })
+            })
+            .unwrap_or_else(|| public.clone());
+        let mut line = self.tab_line(op.action_name(), target);
+        line.target_pane = Some(public.clone());
+        line.target_name = Some(name);
+        let action = match op {
+            AgentLifecycle::Suspend | AgentLifecycle::Restart => {
+                Action::SoftEdit(policy::SoftEdit::SuspendRestart)
+            }
+            AgentLifecycle::Activate => Action::SoftEdit(policy::SoftEdit::Activate {
+                by_agent: suspended_by_agent,
+            }),
+        };
+        self.authorize_on_tab(&caller, target, action, &line)?;
+        self.take_soft_edit(&caller, &line)?;
+        let by = Some(caller.who());
+        let result = match op {
+            AgentLifecycle::Suspend => self
+                .suspend_agent_by(&public, by)
+                .map(|pane_id| ResponseResult::AgentSuspended { pane_id })
+                .map_err(|err| self.agent_suspend_error_body(err)),
+            AgentLifecycle::Activate => self
+                .activate_agent(&public)
+                .map(|pane_id| ResponseResult::AgentActivated { pane_id })
+                .map_err(|err| self.agent_activate_error_body(err)),
+            AgentLifecycle::Restart => self
+                .restart_agent_by(&public, by)
+                .map(|pane_id| ResponseResult::AgentRestarted { pane_id })
+                .map_err(|err| self.agent_restart_error_body(err)),
+        };
+        match result {
+            Ok(result) => {
+                self.log_model_action(Some(&caller), AgentsActionOutcome::Ok, line);
+                Ok(result)
+            }
+            Err(body) => {
+                line.code = Some(body.code.clone());
+                line.detail = Some(body.message.clone());
+                self.log_model_action(Some(&caller), AgentsActionOutcome::Failed, line);
+                Err(ModelError::new(&body.code, body.message))
+            }
+        }
+    }
+
     // ----- agents.send_message --------------------------------------------------
 
     pub(super) fn handle_agents_send_message(
@@ -2566,6 +2649,25 @@ impl App {
     }
 }
 
+/// What `agents.suspend`, `agents.activate` and `agents.restart` do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentLifecycle {
+    Suspend,
+    Activate,
+    Restart,
+}
+
+impl AgentLifecycle {
+    /// The action-log name.
+    fn action_name(self) -> &'static str {
+        match self {
+            Self::Suspend => "suspend",
+            Self::Activate => "activate",
+            Self::Restart => "restart",
+        }
+    }
+}
+
 /// `[a-z][a-z0-9_-]{0,31}`.
 pub(crate) fn valid_agent_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -3034,6 +3136,197 @@ pub(crate) mod tests {
             }),
         );
         assert_eq!(code(&result), "protected_tab", "{result}");
+    }
+
+    /// A live Claude with a native session and a runtime in `pane` (what
+    /// agent.suspend needs).
+    fn host_suspendable(
+        app: &mut App,
+        pane: PaneId,
+        name: &str,
+    ) -> tokio::sync::mpsc::Receiver<bytes::Bytes> {
+        let terminal = terminal_mut(app, pane);
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        terminal
+            .set_agent_session_ref(
+                "herdr:claude".into(),
+                "claude".into(),
+                crate::agent_resume::AgentSessionRef::id(format!("s-{name}")),
+                Some(1),
+            )
+            .expect("session ref accepted");
+        terminal.set_agent_name(name.into());
+        let terminal_id = terminal.id.clone();
+        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id, runtime);
+        rx
+    }
+
+    /// Detection saw the suspended agent's process exit.
+    fn observe_exit(app: &mut App, pane_id: PaneId) {
+        let observed_at = Instant::now();
+        app.handle_internal_event(crate::events::AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Claude),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: true,
+            observed_at,
+        });
+        app.handle_internal_event(crate::events::AppEvent::StateChanged {
+            pane_id,
+            agent: None,
+            state: AgentState::Unknown,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: observed_at + std::time::Duration::from_millis(10),
+        });
+    }
+
+    fn lifecycle(
+        app: &mut App,
+        op: AgentLifecycle,
+        caller: &str,
+        target: &str,
+    ) -> serde_json::Value {
+        let params = AgentsLifecycleParams {
+            caller_pane: caller.to_string(),
+            target: target.to_string(),
+        };
+        call(
+            app,
+            match op {
+                AgentLifecycle::Suspend => Method::AgentsSuspend(params),
+                AgentLifecycle::Activate => Method::AgentsActivate(params),
+                AgentLifecycle::Restart => Method::AgentsRestart(params),
+            },
+        )
+    }
+
+    fn suspended_by(app: &mut App, pane: PaneId) -> Option<AgentsWho> {
+        terminal_mut(app, pane)
+            .suspended_agent
+            .as_ref()
+            .and_then(|record| record.suspended_by.clone())
+    }
+
+    #[tokio::test]
+    async fn a_teammate_suspends_and_activates_freely_and_is_recorded() {
+        let mut app = model_app();
+        let dir = temp_dir("lifecycle");
+        app.agents_model.dir = Some(dir.clone());
+        let lead = public(&app, 1, 0);
+        let fixer = pane(&app, 1, 1);
+        let fixer_tab = app.public_tab_id(1, 1).unwrap();
+        let mut rx = host_suspendable(&mut app, fixer, "fixer");
+        // No user turn needed: a soft edit in the team.
+        let result = lifecycle(&mut app, AgentLifecycle::Suspend, &lead, &fixer_tab);
+        assert_eq!(result["result"]["type"], "agent_suspended", "{result}");
+        assert_eq!(result["result"]["pane_id"], public(&app, 1, 1));
+        assert!(
+            suspended_by(&mut app, fixer)
+                .as_ref()
+                .is_some_and(AgentsWho::is_agent),
+            "the record names the agent that suspended it"
+        );
+        let exit = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await;
+        assert!(matches!(exit, Ok(Some(_))), "the exit input was sent");
+        // An agent-suspended entry: activating it is free in the team too.
+        observe_exit(&mut app, fixer);
+        let result = lifecycle(&mut app, AgentLifecycle::Activate, &lead, &fixer_tab);
+        assert_eq!(result["result"]["type"], "agent_activated", "{result}");
+        assert!(terminal_mut(&mut app, fixer).suspended_agent.is_none());
+        let log = crate::agents_model::actions_log::read_tail(&dir, 10);
+        let actions: Vec<(&str, AgentsActionOutcome)> = log
+            .iter()
+            .map(|entry| (entry.action.as_str(), entry.outcome))
+            .collect();
+        assert!(
+            actions.contains(&("suspend", AgentsActionOutcome::Ok)),
+            "{actions:?}"
+        );
+        assert!(
+            actions.contains(&("activate", AgentsActionOutcome::Ok)),
+            "{actions:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn activating_what_the_user_suspended_needs_a_user_turn() {
+        let mut app = model_app();
+        let lead_pane = pane(&app, 1, 0);
+        let lead = public(&app, 1, 0);
+        let fixer = pane(&app, 1, 1);
+        let fixer_public = public(&app, 1, 1);
+        let _rx = host_suspendable(&mut app, fixer, "fixer");
+        // The user suspends it (agent.suspend: no caller).
+        let suspended = call(
+            &mut app,
+            Method::AgentSuspend(crate::api::schema::AgentSuspendParams {
+                target: fixer_public.clone(),
+            }),
+        );
+        assert_eq!(
+            suspended["result"]["type"], "agent_suspended",
+            "{suspended}"
+        );
+        assert_eq!(suspended_by(&mut app, fixer), None);
+        observe_exit(&mut app, fixer);
+        let result = lifecycle(&mut app, AgentLifecycle::Activate, &lead, &fixer_public);
+        assert_eq!(code(&result), "non_user_turn", "{result}");
+        assert!(terminal_mut(&mut app, fixer).suspended_agent.is_some());
+        user_turn(&mut app, lead_pane);
+        let result = lifecycle(&mut app, AgentLifecycle::Activate, &lead, &fixer_public);
+        assert_eq!(result["result"]["type"], "agent_activated", "{result}");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_outside_the_team_and_on_the_coordinator_is_refused_and_self_is_free() {
+        let mut app = model_app();
+        let lead_pane = pane(&app, 1, 0);
+        let lead = public(&app, 1, 0);
+        // A plain group's agent: outside the team, whatever the turn.
+        let other = pane(&app, 2, 0);
+        let other_public = public(&app, 2, 0);
+        let _other_rx = host_suspendable(&mut app, other, "other");
+        user_turn(&mut app, lead_pane);
+        for op in [
+            AgentLifecycle::Suspend,
+            AgentLifecycle::Restart,
+            AgentLifecycle::Activate,
+        ] {
+            let result = lifecycle(&mut app, op, &lead, &other_public);
+            assert_eq!(code(&result), "outside_team", "{op:?} {result}");
+        }
+        assert!(terminal_mut(&mut app, other).suspended_agent.is_none());
+        // The coordinator's tab: protected from every agent.
+        let coordinator_pane = pane(&app, 0, 0);
+        let _coordinator_rx = host_suspendable(&mut app, coordinator_pane, "coordinator");
+        app.state.coordinator_terminal_id = Some(
+            app.state.workspaces[0]
+                .pane_state(coordinator_pane)
+                .unwrap()
+                .attached_terminal_id
+                .clone(),
+        );
+        let coordinator_tab = app.public_tab_id(0, 0).unwrap();
+        for op in [AgentLifecycle::Suspend, AgentLifecycle::Restart] {
+            let result = lifecycle(&mut app, op, &lead, &coordinator_tab);
+            assert_eq!(code(&result), "protected_tab", "{op:?} {result}");
+        }
+        // Itself: allowed (restart: it exits and resumes the same session).
+        let _lead_rx = host_suspendable(&mut app, lead_pane, "lead");
+        let result = lifecycle(&mut app, AgentLifecycle::Restart, &lead, &lead);
+        assert_eq!(result["result"]["type"], "agent_restarted", "{result}");
+        assert!(
+            suspended_by(&mut app, lead_pane)
+                .as_ref()
+                .is_some_and(AgentsWho::is_agent),
+            "a restart that is abandoned leaves it suspended by the agent"
+        );
     }
 
     #[tokio::test]

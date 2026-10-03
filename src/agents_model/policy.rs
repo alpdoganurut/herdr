@@ -11,6 +11,7 @@
 //! | ReadShellScreen | ✓ | ✓ | shell_private | ✓ | ✓ |
 //! | Message | invalid_target | ✓ | ✓ | UT or reply | ✓ |
 //! | SoftEdit | ✓ | ✓ | outside_team | UT | protected_tab |
+//! | SuspendRestart, Activate (the coordinator too) | ✓ | ✓ | outside_team | UT | protected_tab |
 //! | Reopen/Activate of a user's entry (D4) | UT | UT | outside_team | UT | - |
 //! | MoveTab (not into another team) | ✓ | ✓ | outside_team | UT | protected_tab |
 //! | MoveTab into another team | outside_team | outside_team | outside_team | UT | protected_tab |
@@ -177,9 +178,15 @@ pub fn authorize(actor: Actor, relation: Relation, action: Action, facts: &Facts
 /// turn. It may message on its own only to answer the message that started
 /// its turn. Its own tab is protected from it too (D3).
 fn coordinator(relation: Relation, action: Action, facts: &Facts) -> Decision {
+    // Its agent's lifecycle too: suspending or restarting itself would end
+    // the turn that asked.
     let tab_change = matches!(
         action,
-        Action::Close | Action::MoveTab { .. } | Action::SoftEdit(SoftEdit::RenameTab)
+        Action::Close
+            | Action::MoveTab { .. }
+            | Action::SoftEdit(
+                SoftEdit::RenameTab | SoftEdit::SuspendRestart | SoftEdit::Activate { .. }
+            )
     );
     if relation == Relation::Protected && tab_change {
         return protected(facts);
@@ -304,7 +311,7 @@ fn outside_team(facts: &Facts) -> Decision {
 fn protected(_facts: &Facts) -> Decision {
     deny(
         error_code::PROTECTED_TAB,
-        "the coordinator's tab is the user's; no agent renames, moves or closes it".into(),
+        "the coordinator's tab is the user's; no agent renames, moves, closes, suspends or restarts it".into(),
     )
 }
 
@@ -423,13 +430,17 @@ mod tests {
         assert!(
             authorize(Actor::Coordinator, Relation::Other, Action::Message, &reply).is_allowed()
         );
-        // Its own tab is protected from it too (D3).
+        // Its own tab is protected from it too (D3), its agent's lifecycle
+        // included.
         for action in [
             Action::Close,
             Action::SoftEdit(SoftEdit::RenameTab),
             Action::MoveTab {
                 dest: Dest::PlainOrNewOrTop,
             },
+            Action::SoftEdit(SoftEdit::SuspendRestart),
+            Action::SoftEdit(SoftEdit::Activate { by_agent: true }),
+            Action::SoftEdit(SoftEdit::Activate { by_agent: false }),
         ] {
             assert_eq!(
                 code(authorize(
@@ -620,6 +631,17 @@ mod tests {
         );
         assert_eq!(agent(Relation::Teammate, activate(false), true), "allow");
         assert_eq!(agent(Relation::Other, activate(true), true), "outside_team");
+        assert_eq!(agent(Relation::SelfPane, activate(true), false), "allow");
+        assert_eq!(
+            agent(Relation::Protected, activate(true), true),
+            "protected_tab"
+        );
+        // Suspend and restart: a plain soft edit (self and teammates free).
+        let lifecycle = Action::SoftEdit(SoftEdit::SuspendRestart);
+        assert_eq!(agent(Relation::SelfPane, lifecycle, false), "allow");
+        assert_eq!(agent(Relation::Teammate, lifecycle, false), "allow");
+        assert_eq!(agent(Relation::Other, lifecycle, true), "outside_team");
+        assert_eq!(agent(Relation::Protected, lifecycle, true), "protected_tab");
     }
 
     #[test]

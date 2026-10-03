@@ -734,6 +734,12 @@ fn a_team_launch_with_the_master_off_gets_only_the_team_bits() {
         assert!(team_allow().contains(&format!("mcp__herdr_agents__{tool}")));
     }
     assert!(team_allow().contains("agents_open_tab"));
+    for tool in ["agents_suspend", "agents_activate", "agents_restart"] {
+        assert!(
+            team_allow().contains(&format!("mcp__herdr_agents__{tool}")),
+            "{tool}"
+        );
+    }
     assert!(!team_allow().contains("agents_close_tab"));
     assert!(!team_allow().contains("agents_reopen_tab"));
     // no team: the master-off wrap is unchanged

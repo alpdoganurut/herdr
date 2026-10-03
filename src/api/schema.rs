@@ -329,6 +329,12 @@ pub enum Method {
     AgentsActions(agents_model::AgentsActionsParams),
     #[serde(rename = "agents.check")]
     AgentsCheck(agents_model::AgentsCheckParams),
+    #[serde(rename = "agents.suspend")]
+    AgentsSuspend(agents_model::AgentsLifecycleParams),
+    #[serde(rename = "agents.activate")]
+    AgentsActivate(agents_model::AgentsLifecycleParams),
+    #[serde(rename = "agents.restart")]
+    AgentsRestart(agents_model::AgentsLifecycleParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

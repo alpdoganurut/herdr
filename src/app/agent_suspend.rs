@@ -347,6 +347,17 @@ impl App {
     /// activated instead. The suspend runs now; the relaunch is owed to the
     /// record and performed by [`App::start_pending_agent_restarts`].
     pub(super) fn restart_agent(&mut self, target: &str) -> Result<String, AgentRestartError> {
+        self.restart_agent_by(target, None)
+    }
+
+    /// Fork (agents v2): [`Self::restart_agent`], recording who restarted it
+    /// (`None` is the user): an abandoned restart leaves the agent suspended
+    /// by them.
+    pub(super) fn restart_agent_by(
+        &mut self,
+        target: &str,
+        by: Option<crate::api::schema::agents_model::AgentsWho>,
+    ) -> Result<String, AgentRestartError> {
         let resolved = self
             .resolve_suspended_agent_target(target)
             .map_err(|err| match err {
@@ -381,6 +392,9 @@ impl App {
         let now = Instant::now();
         if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
             terminal.mark_suspended_agent_resume_pending(now, now + RESTART_RESUME_TIMEOUT);
+            if let (Some(by), Some(record)) = (by, terminal.suspended_agent.as_mut()) {
+                record.suspended_by = Some(by);
+            }
         }
         Ok(pane_id)
     }

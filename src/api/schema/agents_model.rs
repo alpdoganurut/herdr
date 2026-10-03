@@ -33,6 +33,9 @@ pub mod method {
     pub const CHECKPOINT: &str = "agents.checkpoint";
     pub const ACTIONS: &str = "agents.actions";
     pub const CHECK: &str = "agents.check";
+    pub const SUSPEND: &str = "agents.suspend";
+    pub const ACTIVATE: &str = "agents.activate";
+    pub const RESTART: &str = "agents.restart";
 
     /// The one method advertised to client shells (the TUI's "Set role…").
     #[cfg(test)]
@@ -40,7 +43,7 @@ pub mod method {
 
     /// Every method.
     #[cfg(test)]
-    pub const ALL: [&str; 14] = [
+    pub const ALL: [&str; 17] = [
         ACTOR,
         DIRECTORY,
         READ,
@@ -55,6 +58,9 @@ pub mod method {
         CHECKPOINT,
         ACTIONS,
         CHECK,
+        SUSPEND,
+        ACTIVATE,
+        RESTART,
     ];
 }
 
@@ -534,6 +540,18 @@ pub struct AgentsCheckParams {
     pub target: Option<String>,
 }
 
+/// `agents.suspend`, `agents.activate` and `agents.restart`: an agent's
+/// lifecycle in a tab, checked like a soft edit (activating an entry the user
+/// suspended needs the caller's user turn, D4) and recorded with who did it.
+/// They answer the `agent.*` results (`agent_suspended`, `agent_activated`,
+/// `agent_restarted`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsLifecycleParams {
+    pub caller_pane: String,
+    /// A tab id, a pane id or an agent name (its tab's agent).
+    pub target: String,
+}
+
 // ----- results --------------------------------------------------------------
 
 /// A caller's or a directory row's team.
@@ -907,7 +925,7 @@ pub struct AgentActionEntry {
 
 /// The type names the params structs may reference (digest hygiene).
 #[cfg(test)]
-pub const PARAM_TYPES: [&str; 17] = [
+pub const PARAM_TYPES: [&str; 18] = [
     "AgentsActorParams",
     "AgentsDirectoryParams",
     "AgentsReadParams",
@@ -925,6 +943,7 @@ pub const PARAM_TYPES: [&str; 17] = [
     "AgentsActionsParams",
     "AgentsCheckParams",
     "AgentsCheckAction",
+    "AgentsLifecycleParams",
 ];
 
 #[cfg(test)]

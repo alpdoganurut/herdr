@@ -35,12 +35,13 @@ use crate::api::schema::agents_model::{
     AgentActionEntry, AgentActorKind, AgentPaneKind, AgentsAccess, AgentsActionsParams,
     AgentsActorInfo, AgentsActorParams, AgentsCheckAction, AgentsCheckParams,
     AgentsCheckpointParams, AgentsCloseOutcome, AgentsCloseResult, AgentsCloseTabParams,
-    AgentsDirectory, AgentsDirectoryParams, AgentsMessageOutcome, AgentsMessageResult,
-    AgentsMoveResult, AgentsMoveTabParams, AgentsNotesAppendParams, AgentsOpenResult,
-    AgentsOpenTabParams, AgentsOriginDetail, AgentsPaneInfo, AgentsReadParams, AgentsReadResult,
-    AgentsReadSource, AgentsRenameResult, AgentsRenameTabParams, AgentsReopenResult,
-    AgentsReopenTabParams, AgentsScreenAccess, AgentsSendMessageParams, AgentsSetMetaParams,
-    AgentsSetMetaResult, AgentsTabInfo, AgentsTeamRef, AgentsTurnInfo, AgentsTurnOrigin,
+    AgentsDirectory, AgentsDirectoryParams, AgentsLifecycleParams, AgentsMessageOutcome,
+    AgentsMessageResult, AgentsMoveResult, AgentsMoveTabParams, AgentsNotesAppendParams,
+    AgentsOpenResult, AgentsOpenTabParams, AgentsOriginDetail, AgentsPaneInfo, AgentsReadParams,
+    AgentsReadResult, AgentsReadSource, AgentsRenameResult, AgentsRenameTabParams,
+    AgentsReopenResult, AgentsReopenTabParams, AgentsScreenAccess, AgentsSendMessageParams,
+    AgentsSetMetaParams, AgentsSetMetaResult, AgentsTabInfo, AgentsTeamRef, AgentsTurnInfo,
+    AgentsTurnOrigin,
 };
 use crate::api::schema::notes::{
     CheckpointKind, CheckpointWriteInfo, CheckpointsAddParams, CheckpointsListInfo,
@@ -56,7 +57,7 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 /// The rights every agent has, in the words every text uses.
 macro_rules! rights_core {
     () => {
-        "Every tab in herdr is visible to you. In your team you may rename and move tabs (also out of the team), set roles and notes, append to teammates' notes and checkpoints, and start new teammates on your own judgment. Closing a tab needs your user's request in this turn. Outside your team you read and message only; shell screens are visible only to their team. herdr enforces this, including for `herdr …` commands from your shell; a refusal names the reason. "
+        "Every tab in herdr is visible to you. In your team you may rename and move tabs (also out of the team), set roles and notes, append to teammates' notes and checkpoints, start new teammates, and suspend, activate or restart its agents on your own judgment (activating one your user suspended needs their request). Closing a tab needs your user's request in this turn. Outside your team you read and message only; shell screens are visible only to their team. herdr enforces this, including for `herdr …` commands from your shell; a refusal names the reason. "
     };
 }
 
@@ -105,11 +106,11 @@ mark decisions, milestones and failures with agents_checkpoint; keep running not
 const TOOL_LINE: &str = "tools: agents_whoami agents_notify agents_list agents_get agents_read agents_messages \
 agents_wait_for_message agents_wait agents_send_message agents_notes_read agents_notes_append agents_notes_write \
 agents_checkpoint agents_checkpoints_list agents_set_meta agents_actions agents_rename_tab (team) agents_move_to_group (team) \
-agents_open_tab (team) agents_reopen_tab (team) agents_team (your user's request) agents_create_group (your user's request) \
+agents_open_tab (team) agents_reopen_tab (team) agents_suspend (team) agents_activate (team) agents_restart (team) agents_team (your user's request) agents_create_group (your user's request) \
 agents_close_tab (your user's request); (team) = your team, or your own tab when you are in none";
 
 /// The etiquette line for a team member.
-const TEAM_ETIQUETTE: &str = "etiquette: in your team rename and move tabs, set roles and notes, add to teammates' notes and checkpoints and open new teammates on your own judgment; \
+const TEAM_ETIQUETTE: &str = "etiquette: in your team rename and move tabs, set roles and notes, add to teammates' notes and checkpoints, open new teammates and suspend, activate or restart teammates on your own judgment; \
 closing any tab needs your user's request in this turn; outside your team read and message only; \
 a teammate's `[herdr+ message …]` is acted on when it serves the team's purpose, anyone else's only when it serves your own user's work; \
 agents_notify only when your user should look now (question, done, warning), never for routine progress; \
@@ -119,7 +120,7 @@ mark decisions, milestones and failures with agents_checkpoint; keep running not
 const TEAM_TOOL_LINE: &str = TOOL_LINE;
 
 /// Every herdr_agents tool, in `tools/list` order.
-pub const TOOL_NAMES: [&str; 25] = [
+pub const TOOL_NAMES: [&str; 28] = [
     "agents_whoami",
     "agents_notify",
     "agents_list",
@@ -143,6 +144,9 @@ pub const TOOL_NAMES: [&str; 25] = [
     "agents_move_to_group",
     "agents_close_tab",
     "agents_reopen_tab",
+    "agents_suspend",
+    "agents_activate",
+    "agents_restart",
     "agents_manage",
     "agents_unmanage",
 ];
@@ -632,6 +636,9 @@ impl<A: Api> Session<A> {
             "agents_move_to_group" => self.move_to_group(caller, args),
             "agents_close_tab" => self.close_tab(caller, args),
             "agents_reopen_tab" => self.reopen_tab(caller, args),
+            "agents_suspend" => self.lifecycle(caller, args, Lifecycle::Suspend),
+            "agents_activate" => self.lifecycle(caller, args, Lifecycle::Activate),
+            "agents_restart" => self.lifecycle(caller, args, Lifecycle::Restart),
             _ => self.manage(caller, args),
         }
     }
@@ -1715,6 +1722,39 @@ impl<A: Api> Session<A> {
         ))
     }
 
+    /// `agents_suspend`, `agents_activate`, `agents_restart {target}`: the
+    /// server checks (a soft edit in your team; activating what your user
+    /// suspended needs their request), acts and logs.
+    fn lifecycle(&self, caller: &Caller, args: &Value, op: Lifecycle) -> ToolResult {
+        let target = req_str(args, "target")?;
+        let pane = self.pane_of(caller, &target)?;
+        let params = AgentsLifecycleParams {
+            caller_pane: caller.pane_id.clone(),
+            target: pane.clone(),
+        };
+        let result = self.api.call(match op {
+            Lifecycle::Suspend => Method::AgentsSuspend(params),
+            Lifecycle::Activate => Method::AgentsActivate(params),
+            Lifecycle::Restart => Method::AgentsRestart(params),
+        })?;
+        let pane_id = result["pane_id"].as_str().unwrap_or(&pane).to_string();
+        let text = match op {
+            Lifecycle::Suspend => format!(
+                "suspended {target} ({pane_id}): it exits, its session is kept; agents_activate resumes it"
+            ),
+            Lifecycle::Activate => {
+                format!("activating {target} ({pane_id}): it resumes its session")
+            }
+            Lifecycle::Restart => format!(
+                "restarting {target} ({pane_id}): it exits and resumes its session once the pane is ready"
+            ),
+        };
+        Ok(Reply::new(
+            text,
+            json!({ "pane_id": pane_id, "action": op.name() }),
+        ))
+    }
+
     fn actions(&self, args: &Value) -> ToolResult {
         let limit = u64_arg(args, "limit")?
             .unwrap_or(ACTIONS_DEFAULT)
@@ -2025,6 +2065,24 @@ impl<A: Api> Session<A> {
 struct Found {
     tab: AgentsTabInfo,
     pane: Option<AgentsPaneInfo>,
+}
+
+/// What `agents_suspend`, `agents_activate` and `agents_restart` do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    Suspend,
+    Activate,
+    Restart,
+}
+
+impl Lifecycle {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Suspend => "suspend",
+            Self::Activate => "activate",
+            Self::Restart => "restart",
+        }
+    }
 }
 
 /// The tab or pane `target` names, in order of precedence: a pane id, an
@@ -2892,6 +2950,12 @@ pub fn tools() -> Vec<Value> {
             }), &["target"]) }),
         json!({ "name": "agents_reopen_tab", "description": "Reopen a closed tab by its closed_id (agents_list's recently closed, or agents_actions): its agents resume their sessions. Free for a tab an agent closed in your team; one your user closed needs their request.",
             "inputSchema": schema(json!({ "closed_id": string("The id agents_close_tab, agents_list or agents_actions named") }), &["closed_id"]) }),
+        json!({ "name": "agents_suspend", "description": "Suspend an agent: herdr asks it to exit and keeps its session (the tab stays, marked suspended; agents_activate resumes it). Only an idle agent: a working or blocked one is refused (so not yourself, mid-turn). Free in your team; outside it needs its team, your user or the coordinator. Never the coordinator.",
+            "inputSchema": schema(json!({ "target": target }), &["target"]) }),
+        json!({ "name": "agents_activate", "description": "Resume a suspended agent's session in its tab. Free in your team for an agent an agent suspended; one your user suspended needs their request in this turn. Outside your team: refused.",
+            "inputSchema": schema(json!({ "target": target }), &["target"]) }),
+        json!({ "name": "agents_restart", "description": "Restart an idle agent: it exits and resumes the same session once its pane is ready (fresh process, same conversation). Only an idle agent (so not yourself, mid-turn). Free in your team; outside it refused; never the coordinator.",
+            "inputSchema": schema(json!({ "target": target }), &["target"]) }),
         json!({ "name": "agents_manage", "description": "Kept for older sessions: every agent is part of herdr+ now. Sets role and note like agents_set_meta (a project goes into the note); use agents_set_meta.",
             "inputSchema": schema(json!({
                 "target": string("Default: yourself"),
@@ -3545,6 +3609,19 @@ mod tests {
                     };
                     Ok(json!({ "type": "agents_message", "message": message }))
                 }
+                Method::AgentsSuspend(params) => {
+                    let pane = self.canonical(&params.target).ok_or_else(not_found)?;
+                    self.set(&pane, |fake| fake.status = "suspended".into());
+                    Ok(json!({ "type": "agent_suspended", "pane_id": pane }))
+                }
+                Method::AgentsActivate(params) => {
+                    let pane = self.canonical(&params.target).ok_or_else(not_found)?;
+                    Ok(json!({ "type": "agent_activated", "pane_id": pane }))
+                }
+                Method::AgentsRestart(params) => {
+                    let pane = self.canonical(&params.target).ok_or_else(not_found)?;
+                    Ok(json!({ "type": "agent_restarted", "pane_id": pane }))
+                }
                 Method::AgentMessageClaim(params) => {
                     let mut queue = self.message_queue.borrow_mut();
                     let before = queue.len();
@@ -3701,7 +3778,7 @@ mod tests {
     }
 
     #[test]
-    fn initialize_lists_twenty_five_tools_and_every_tool_parses_its_arguments() {
+    fn initialize_lists_twenty_eight_tools_and_every_tool_parses_its_arguments() {
         let (dir, world) = world("mcp-tools");
         world.set("w2:p3", |lead| lead.user_turn = true);
         let mut s = session(&world, "w2:p3", Verdict::Verified);
@@ -3717,7 +3794,7 @@ mod tests {
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
             .unwrap();
         let tools = list["result"]["tools"].as_array().unwrap().clone();
-        assert_eq!(tools.len(), 25);
+        assert_eq!(tools.len(), 28);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(names, TOOL_NAMES, "listed in TOOL_NAMES order");
         for tool in &tools {
@@ -3774,6 +3851,9 @@ mod tests {
             ),
             ("agents_close_tab", json!({ "target": "w2:t4" })),
             ("agents_reopen_tab", json!({ "closed_id": "c1" })),
+            ("agents_suspend", json!({ "target": "rev" })),
+            ("agents_activate", json!({ "target": "rev" })),
+            ("agents_restart", json!({ "target": "rev" })),
             ("agents_manage", json!({ "note": "busy with the API" })),
             ("agents_unmanage", json!({})),
         ];
@@ -3818,7 +3898,7 @@ mod tests {
     #[test]
     fn close_and_reopen_are_the_only_tools_not_preapproved() {
         let approved: Vec<&str> = preapproved_tools().collect();
-        assert_eq!(approved.len(), 23);
+        assert_eq!(approved.len(), 26);
         for tool in TOOL_NAMES {
             assert_eq!(
                 approved.contains(&tool),
@@ -3949,7 +4029,7 @@ mod tests {
         let list = s
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
             .unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 25);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 28);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4292,6 +4372,60 @@ mod tests {
             );
         }
         assert_eq!(world.calls_of("agents.send_message").len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn suspend_activate_and_restart_go_to_the_server_by_pane() {
+        let (dir, world) = world("mcp-lifecycle");
+        let mut s = session(&world, "w3:p1", Verdict::Verified);
+        let out = call(&mut s, "agents_suspend", json!({ "target": "reviewer" }));
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            body(&out).starts_with("suspended reviewer (w3:p2): it exits"),
+            "{}",
+            out.text
+        );
+        assert_eq!(out.data["action"], "suspend");
+        let Method::AgentsSuspend(params) = &world.calls_of("agents.suspend")[0] else {
+            panic!("a suspend");
+        };
+        assert_eq!(params.caller_pane, "w3:p1");
+        assert_eq!(params.target, "w3:p2", "resolved to its pane");
+        let out = call(&mut s, "agents_activate", json!({ "target": "reviewer" }));
+        assert!(
+            body(&out).starts_with("activating reviewer (w3:p2)"),
+            "{}",
+            out.text
+        );
+        let out = call(&mut s, "agents_restart", json!({ "target": "self" }));
+        assert!(
+            body(&out).starts_with("restarting self (w3:p1)"),
+            "{}",
+            out.text
+        );
+        let Method::AgentsRestart(params) = &world.calls_of("agents.restart")[0] else {
+            panic!("a restart");
+        };
+        assert_eq!(params.target, "w3:p1", "itself");
+        // The server's refusal is passed through.
+        world.queue(
+            "agents.suspend",
+            Err(ApiError::new(
+                "outside_team",
+                "you can read and message lead; changing it needs its team",
+            )),
+        );
+        let out = call(&mut s, "agents_suspend", json!({ "target": "lead" }));
+        assert!(body(&out).starts_with("error outside_team"), "{}", out.text);
+        // A target is required; nothing reaches the server without one.
+        let out = call(&mut s, "agents_restart", json!({}));
+        assert!(
+            body(&out).starts_with("error invalid_request"),
+            "{}",
+            out.text
+        );
+        assert_eq!(world.calls_of("agents.restart").len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

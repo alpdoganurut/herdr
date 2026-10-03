@@ -570,19 +570,26 @@ fn agent_suspend(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
 
-    // Fork (agents v2): an agent goes through the check.
-    super::agent_route::checked(
-        crate::api::schema::agents_model::AgentsCheckAction::SuspendRestart,
-        Some(target.clone()),
-        || {
+    // Fork (agents v2): an agent goes through agents.suspend (checked and
+    // recorded as that agent).
+    match super::agent_route::route()? {
+        Err(code) => Ok(code),
+        Ok(super::agent_route::Route::Agent(pane)) => super::agent_route::call(
+            "cli:agents.suspend",
+            Method::AgentsSuspend(crate::api::schema::agents_model::AgentsLifecycleParams {
+                caller_pane: pane,
+                target: target.clone(),
+            }),
+        ),
+        Ok(super::agent_route::Route::User | super::agent_route::Route::OldServer) => {
             super::print_response(&super::send_request(&Request {
                 id: "cli:agent:suspend".into(),
                 method: Method::AgentSuspend(AgentSuspendParams {
                     target: target.clone(),
                 }),
             })?)
-        },
-    )
+        }
+    }
 }
 
 fn agent_activate(args: &[String]) -> std::io::Result<i32> {
@@ -591,19 +598,26 @@ fn agent_activate(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
 
-    // Fork (agents v2): an agent goes through the check.
-    super::agent_route::checked(
-        crate::api::schema::agents_model::AgentsCheckAction::Activate,
-        Some(target.clone()),
-        || {
+    // Fork (agents v2): an agent goes through agents.activate (checked and
+    // recorded as that agent).
+    match super::agent_route::route()? {
+        Err(code) => Ok(code),
+        Ok(super::agent_route::Route::Agent(pane)) => super::agent_route::call(
+            "cli:agents.activate",
+            Method::AgentsActivate(crate::api::schema::agents_model::AgentsLifecycleParams {
+                caller_pane: pane,
+                target: target.clone(),
+            }),
+        ),
+        Ok(super::agent_route::Route::User | super::agent_route::Route::OldServer) => {
             super::print_response(&super::send_request(&Request {
                 id: "cli:agent:activate".into(),
                 method: Method::AgentActivate(AgentActivateParams {
                     target: target.clone(),
                 }),
             })?)
-        },
-    )
+        }
+    }
 }
 
 fn agent_restart(args: &[String]) -> std::io::Result<i32> {
@@ -612,19 +626,26 @@ fn agent_restart(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
 
-    // Fork (agents v2): an agent goes through the check.
-    super::agent_route::checked(
-        crate::api::schema::agents_model::AgentsCheckAction::SuspendRestart,
-        Some(target.clone()),
-        || {
+    // Fork (agents v2): an agent goes through agents.restart (checked and
+    // recorded as that agent).
+    match super::agent_route::route()? {
+        Err(code) => Ok(code),
+        Ok(super::agent_route::Route::Agent(pane)) => super::agent_route::call(
+            "cli:agents.restart",
+            Method::AgentsRestart(crate::api::schema::agents_model::AgentsLifecycleParams {
+                caller_pane: pane,
+                target: target.clone(),
+            }),
+        ),
+        Ok(super::agent_route::Route::User | super::agent_route::Route::OldServer) => {
             super::print_response(&super::send_request(&Request {
                 id: "cli:agent:restart".into(),
                 method: Method::AgentRestart(AgentRestartParams {
                     target: target.clone(),
                 }),
             })?)
-        },
-    )
+        }
+    }
 }
 
 fn agent_attach(args: &[String]) -> std::io::Result<i32> {

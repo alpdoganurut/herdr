@@ -1356,6 +1356,27 @@ impl App {
             }
             Method::AgentsActions(params) => return self.handle_agents_actions(request.id, params),
             Method::AgentsCheck(params) => return self.handle_agents_check(request.id, params),
+            Method::AgentsSuspend(params) => {
+                return self.handle_agents_lifecycle(
+                    request.id,
+                    crate::app::agents_model::AgentLifecycle::Suspend,
+                    params,
+                )
+            }
+            Method::AgentsActivate(params) => {
+                return self.handle_agents_lifecycle(
+                    request.id,
+                    crate::app::agents_model::AgentLifecycle::Activate,
+                    params,
+                )
+            }
+            Method::AgentsRestart(params) => {
+                return self.handle_agents_lifecycle(
+                    request.id,
+                    crate::app::agents_model::AgentLifecycle::Restart,
+                    params,
+                )
+            }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

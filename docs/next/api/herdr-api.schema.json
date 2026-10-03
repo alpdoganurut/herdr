@@ -2217,6 +2217,23 @@
           },
           "type": "object"
         },
+        "AgentsLifecycleParams": {
+          "description": "`agents.suspend`, `agents.activate` and `agents.restart`: an agent's\nlifecycle in a tab, checked like a soft edit (activating an entry the user\nsuspended needs the caller's user turn, D4) and recorded with who did it.\nThey answer the `agent.*` results (`agent_suspended`, `agent_activated`,\n`agent_restarted`).",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            },
+            "target": {
+              "description": "A tab id, a pane id or an agent name (its tab's agent).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "target"
+          ],
+          "type": "object"
+        },
         "AgentsMoveTabParams": {
           "description": "`agents.move_tab`: into a group, a new group, or the top space.",
           "properties": {
@@ -10134,6 +10151,54 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentsCheckParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.suspend",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsLifecycleParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.activate",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsLifecycleParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.restart",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsLifecycleParams"
             }
           },
           "required": [
