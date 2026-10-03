@@ -208,7 +208,11 @@ impl App {
 
         let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
         argv.extend(params.args);
-        let command = crate::platform::interactive_shell_command(&argv, &shell_name)
+        // Fork (agent wrap): a Claude/Codex start goes through the wrap when
+        // it is on (a managed argv, like the coordinator's, stays as built);
+        // the reply keeps the native argv.
+        let typed = self.herdr_launch_argv(crate::detect::agent_label(kind), argv.clone());
+        let command = crate::platform::interactive_shell_command(&typed, &shell_name)
             .ok_or(AgentStartError::InvalidArgument)?;
         let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
         let timeout = Duration::from_millis(

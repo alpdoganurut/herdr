@@ -2982,6 +2982,96 @@ mod tests {
         assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(root));
     }
 
+    /// Fork (agent wrap): `agent.start` into a fresh pane with `[agents]
+    /// wrap` set; what the pane received and the reply.
+    #[cfg(unix)]
+    async fn started_input(
+        wrap: bool,
+        kind: &str,
+        args: Vec<String>,
+    ) -> (String, serde_json::Value) {
+        let mut app = test_app();
+        app.agents_config.wrap = Some(wrap);
+        let workspace = Workspace::test_new("agent-start-wrap");
+        let root = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let pane_id = app.pane_info(0, root).unwrap().pane_id;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id, runtime);
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_agent_start_wrap".into(),
+            method: crate::api::schema::Method::AgentStart(crate::api::schema::AgentStartParams {
+                name: "worker".into(),
+                kind: kind.into(),
+                pane_id,
+                args,
+                timeout_ms: Some(4_000),
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["result"]["type"], "agent_started", "{response}");
+        let sent = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("pane input arrives")
+            .expect("runtime channel open");
+        (String::from_utf8(sent.to_vec()).unwrap(), response)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_start_goes_through_the_agent_wrap_unless_off_or_managed() {
+        let s = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let herdr = crate::platform::launch_executable()
+            .unwrap()
+            .display()
+            .to_string();
+        let typed =
+            |argv: Vec<String>| crate::platform::interactive_shell_command(&argv, "sh").unwrap();
+        // on: claude and codex type the verb; the reply keeps the native argv
+        let (sent, response) = started_input(true, "claude", s(&["--resume", "s-1"])).await;
+        let mut wrapped = s(&[&herdr, "agent", "wrap", "claude", "--", "--resume", "s-1"]);
+        assert!(sent.contains(&typed(wrapped.clone())), "{sent:?}");
+        assert_eq!(
+            response["result"]["argv"],
+            serde_json::json!(["claude", "--resume", "s-1"])
+        );
+        let (sent, _) = started_input(true, "codex", s(&["resume", "x-1"])).await;
+        wrapped = s(&[&herdr, "agent", "wrap", "codex", "--", "resume", "x-1"]);
+        assert!(sent.contains(&typed(wrapped)), "{sent:?}");
+        // off: byte-identical to the native command
+        let (sent, _) = started_input(false, "claude", s(&["--resume", "s-1"])).await;
+        assert!(
+            sent.starts_with(&typed(s(&["claude", "--resume", "s-1"]))),
+            "{sent:?}"
+        );
+        assert!(!sent.contains("agent wrap"), "{sent:?}");
+        // a managed argv (the coordinator's launch) stays as built
+        let ctx = crate::coordinator::launch::LaunchCtx {
+            herdr_bin: std::path::PathBuf::from("/opt/herdr/herdr"),
+            dir: crate::coordinator::coordinator_dir(),
+            port: crate::coordinator::DEFAULT_PORT,
+        };
+        let managed = vec![
+            format!(
+                "--mcp-config={}",
+                crate::coordinator::launch::claude_mcp_config_path(&ctx.dir).display()
+            ),
+            "--resume".to_string(),
+            "c-1".to_string(),
+        ];
+        let (sent, _) = started_input(true, "claude", managed.clone()).await;
+        let mut native = vec!["claude".to_string()];
+        native.extend(managed);
+        assert!(sent.starts_with(&typed(native)), "{sent:?}");
+        assert!(!sent.contains("agent wrap"), "{sent:?}");
+    }
+
     #[tokio::test]
     async fn failed_agent_start_input_rolls_back_and_can_retry() {
         let mut app = test_app();

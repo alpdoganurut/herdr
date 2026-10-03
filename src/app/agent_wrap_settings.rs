@@ -34,7 +34,7 @@ impl App {
 
     /// The applied config the section describes (`[agents]` as last loaded,
     /// `[browser]` as the hub holds it).
-    fn agents_config_view(&self) -> crate::config::Config {
+    pub(super) fn agents_config_view(&self) -> crate::config::Config {
         let mut config = crate::config::Config::default();
         config.agents = self.agents_config.clone();
         config.browser = crate::browser::hub().config();

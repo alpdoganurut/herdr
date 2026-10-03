@@ -561,7 +561,8 @@ impl App {
             }
             let shell_name = available_shell_name(runtime)
                 .ok_or_else(|| AgentActivateError::PaneNotAvailable(target.to_string()))?;
-            let command = crate::platform::interactive_shell_command(&plan.argv, &shell_name)
+            let argv = self.herdr_launch_argv(&plan.agent, plan.argv.clone());
+            let command = crate::platform::interactive_shell_command(&argv, &shell_name)
                 .ok_or(AgentActivateError::InvalidArgument)?;
             let bytes = super::api_helpers::encode_api_submission(runtime, &command);
             self.restore_agent_transcript_before_resume(&record.session);
@@ -2168,6 +2169,90 @@ mod tests {
         assert_eq!(
             terminal_agent_status(&terminal, false),
             AgentStatus::Suspended
+        );
+    }
+
+    /// Fork (agent wrap): the relaunch as typed while `[agents] wrap` is on.
+    #[cfg(unix)]
+    fn wrapped_resume_command() -> String {
+        let herdr = crate::platform::launch_executable().unwrap();
+        let argv: Vec<String> = vec![
+            herdr.display().to_string(),
+            "agent".into(),
+            "wrap".into(),
+            "claude".into(),
+            "--".into(),
+            "--resume".into(),
+            "claude-session".into(),
+        ];
+        crate::platform::interactive_shell_command(&argv, "sh").unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn activate_and_restart_relaunch_through_the_agent_wrap_while_it_is_on() {
+        let mut app = test_app();
+        app.agents_config.wrap = Some(true);
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+
+        // activate after a suspend
+        assert_eq!(
+            suspend(&mut app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        assert_eq!(
+            next_input(&mut rx).await,
+            bytes::Bytes::from_static(b"/exit")
+        );
+        assert_eq!(next_input(&mut rx).await, bytes::Bytes::from_static(b"\r"));
+        observe_exit(&mut app);
+        let response = activate(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_activated", "{response}");
+        let sent = String::from_utf8(next_input(&mut rx).await.to_vec()).unwrap();
+        let expected = wrapped_resume_command();
+        assert!(
+            sent.starts_with(&expected),
+            "sent {sent:?}, expected {expected:?}"
+        );
+        assert_ne!(sent, resume_command());
+        assert_eq!(
+            app.state.terminals[&terminal_id].persisted_agent_session,
+            Some(claude_session("claude-session")),
+            "the session id is kept for the next resume"
+        );
+        while rx.try_recv().is_ok() {}
+
+        // restart: exit, then the same wrapped relaunch
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.clear_agent_name();
+        terminal.set_agent_name("reviewer".into());
+        let response = restart(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_restarted", "{response}");
+        assert_eq!(
+            next_input(&mut rx).await,
+            bytes::Bytes::from_static(b"/exit")
+        );
+        assert_eq!(next_input(&mut rx).await, bytes::Bytes::from_static(b"\r"));
+        observe_exit(&mut app);
+        assert!(app.start_pending_agent_restarts(Instant::now()));
+        let sent = String::from_utf8(next_input(&mut rx).await.to_vec()).unwrap();
+        assert!(
+            sent.starts_with(&expected),
+            "sent {sent:?}, expected {expected:?}"
         );
     }
 }

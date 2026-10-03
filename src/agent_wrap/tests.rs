@@ -1119,3 +1119,90 @@ fn the_coordinators_real_team_argv_is_seen_as_managed_through_the_hook() {
     assert!(team_conflicts("codex", &plan, &managed).is_empty());
     drop(home);
 }
+
+#[test]
+fn herdr_relaunches_type_the_wrap_verb_with_the_native_resume_arguments() {
+    let herdr = Path::new("/opt/herdr/herdr");
+    let dir = Path::new(DIR);
+    assert_eq!(
+        relaunch_argv(herdr, "claude", &s(&["claude", "--resume", "c-1"]), dir).unwrap(),
+        s(&[
+            "/opt/herdr/herdr",
+            "agent",
+            "wrap",
+            "claude",
+            "--",
+            "--resume",
+            "c-1"
+        ])
+    );
+    assert_eq!(
+        relaunch_argv(herdr, "codex", &s(&["codex", "resume", "x-1"]), dir).unwrap(),
+        s(&[
+            "/opt/herdr/herdr",
+            "agent",
+            "wrap",
+            "codex",
+            "--",
+            "resume",
+            "x-1"
+        ])
+    );
+    // a bare start: the verb alone
+    assert_eq!(
+        relaunch_argv(herdr, "claude", &s(&["claude"]), dir).unwrap(),
+        s(&["/opt/herdr/herdr", "agent", "wrap", "claude", "--"])
+    );
+    // other agents and empty argv stay native
+    assert_eq!(
+        relaunch_argv(herdr, "pi", &s(&["pi", "--session", "p"]), dir),
+        None
+    );
+    assert_eq!(relaunch_argv(herdr, "claude", &[], dir), None);
+}
+
+#[test]
+fn managed_launch_argv_never_goes_through_the_relaunch_wrap() {
+    let home = TempHome::new("wrap-relaunch-managed");
+    let dir = crate::coordinator::coordinator_dir();
+    let ctx = LaunchCtx {
+        herdr_bin: PathBuf::from("/opt/herdr/herdr"),
+        dir: dir.clone(),
+        port: crate::coordinator::DEFAULT_PORT,
+    };
+    let herdr = Path::new("/opt/herdr/herdr");
+    // the coordinator's own (re)launch argv
+    let mut claude = vec!["claude".to_string()];
+    claude.extend(
+        launch::claude_args(&ctx, &ClaudeSession::Resume("u1".into()), true, Some("go")).unwrap(),
+    );
+    assert_eq!(relaunch_argv(herdr, "claude", &claude, &dir), None);
+    let mut codex = vec!["codex".to_string()];
+    codex.extend(launch::codex_args_with_team(&ctx, Some("go"), None));
+    assert_eq!(relaunch_argv(herdr, "codex", &codex, &dir), None);
+    drop(home);
+}
+
+#[test]
+fn a_relaunch_through_the_wrap_still_honours_herdr_no_wrap() {
+    // What the verb does with a relaunch's arguments when the pane's shell
+    // has HERDR_NO_WRAP=1: the resume runs as typed.
+    let user = s(&["--resume", "c-1"]);
+    let off = plan(
+        &config("[agents]\nwrap = true\ntools = true\ninstructions = true\n"),
+        &WrapEnv {
+            herdr_no_wrap: true,
+            ..env()
+        },
+    );
+    assert_eq!(wrap_args("claude", &off, &user), user);
+    assert_eq!(
+        wrap_args("codex", &off, &s(&["resume", "x-1"])),
+        s(&["--no-daemon", "resume", "x-1"])
+    );
+    // and wrapped otherwise, the session id kept first for claude-z
+    let on = plan_for(true, true, false);
+    let args = wrap_args("claude", &on, &user);
+    assert_eq!(&args[..2], user.as_slice());
+    assert!(args.contains(&claude_flag()), "{args:?}");
+}

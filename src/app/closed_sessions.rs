@@ -411,7 +411,8 @@ impl App {
         session: PersistedAgentSession,
         plan: &AgentResumePlan,
     ) -> Result<(), String> {
-        let mut input = super::agent_resume::shell_command_from_argv(&plan.argv)
+        let mut input = self
+            .resume_shell_command(plan)
             .ok_or_else(|| "the resume command is empty".to_string())?;
         input.push('\r');
         let runtime = self
@@ -862,6 +863,57 @@ mod tests {
         );
         assert_eq!(std::str::from_utf8(&input).unwrap(), expected);
         assert!(expected.contains("typed-session"));
+        assert_eq!(
+            app.state.terminals[&reopened.terminal_id]
+                .persisted_agent_session
+                .as_ref(),
+            Some(&session)
+        );
+        super::super::api::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reopen_types_the_resume_through_the_agent_wrap_while_it_is_on() {
+        let sandbox = Sandbox::new("wrapped");
+        let mut app = app(&sandbox.project());
+        app.agents_config.wrap = Some(true);
+        let entry = record_entry(&mut app, 1, "wrapped-session");
+        let session = entry_session(&entry).unwrap();
+        let plan = crate::agent_resume::plan(&session.source, &session.agent, &session.session_ref)
+            .unwrap();
+        long_running_shell(&mut app);
+        let reopened = app
+            .create_reopened_tab(&entry, sandbox.project())
+            .expect("tab created");
+        if let Some(runtime) = app.terminal_runtimes.remove(&reopened.terminal_id) {
+            runtime.shutdown();
+        }
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes
+            .insert(reopened.terminal_id.clone(), runtime);
+
+        app.launch_closed_session_resume(&reopened.terminal_id, session.clone(), &plan)
+            .expect("resume sent");
+        let input = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("pane input arrives")
+            .expect("runtime channel open");
+        let herdr = crate::platform::launch_executable().unwrap();
+        let wrapped: Vec<String> = vec![
+            herdr.display().to_string(),
+            "agent".into(),
+            "wrap".into(),
+            "claude".into(),
+            "--".into(),
+            "--resume".into(),
+            "wrapped-session".into(),
+        ];
+        let expected = format!(
+            "{}\r",
+            super::super::agent_resume::shell_command_from_argv(&wrapped).unwrap()
+        );
+        assert_eq!(std::str::from_utf8(&input).unwrap(), expected);
         assert_eq!(
             app.state.terminals[&reopened.terminal_id]
                 .persisted_agent_session

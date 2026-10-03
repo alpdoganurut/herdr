@@ -223,6 +223,33 @@ impl App {
         changed
     }
 
+    /// Fork (agent wrap): the argv a herdr-owned launch of `agent` types into
+    /// a pane's shell. With `[agents] wrap` on, a Claude or Codex launch goes
+    /// through `<herdr> agent wrap` (absolute path: a typed `claude` may not
+    /// reach the shell hook), so a restored, restarted, activated or reopened
+    /// agent comes back with the herdr_agents tools, the instructions and
+    /// its team roster. Anything else (wrap off, other agents, managed argv)
+    /// is `native` unchanged.
+    pub(super) fn herdr_launch_argv(&self, agent: &str, native: Vec<String>) -> Vec<String> {
+        if !crate::agent_wrap::RELAUNCH_THROUGH_WRAP || !self.agents_config_view().agents_wrap().0 {
+            return native;
+        }
+        let Ok(herdr_bin) = crate::platform::launch_executable() else {
+            return native;
+        };
+        crate::agent_wrap::relaunch_argv(&herdr_bin, agent, &native, &self.coordinator.dir)
+            .unwrap_or(native)
+    }
+
+    /// The POSIX command line a deferred resume or a closed-session reopen
+    /// types for `plan` (through the wrap when it applies).
+    pub(super) fn resume_shell_command(
+        &self,
+        plan: &crate::agent_resume::AgentResumePlan,
+    ) -> Option<String> {
+        shell_command_from_argv(&self.herdr_launch_argv(&plan.agent, plan.argv.clone()))
+    }
+
     fn start_pending_agent_resume(
         &mut self,
         pane_id: crate::layout::PaneId,
@@ -238,7 +265,7 @@ impl App {
             return false;
         }
 
-        let Some(resume_command) = shell_command_from_argv(&plan.argv) else {
+        let Some(resume_command) = self.resume_shell_command(&plan) else {
             tracing::warn!(
                 pane = pane_id.raw(),
                 terminal = %terminal_id,
@@ -978,5 +1005,59 @@ mod tests {
             Some("claude --resume 'session with '\\'' quote'")
         );
         assert_eq!(shell_command_from_argv(&[]), None);
+    }
+
+    /// The command a resume types: through the wrap verb (absolute herdr
+    /// path) for Claude and Codex while `[agents] wrap` is on, the native
+    /// command otherwise.
+    #[cfg(unix)]
+    fn wrapped_resume_command(native: &[&str]) -> String {
+        let herdr = crate::platform::launch_executable().unwrap();
+        let mut argv = vec![
+            herdr.display().to_string(),
+            "agent".into(),
+            "wrap".into(),
+            native[0].to_string(),
+            "--".into(),
+        ];
+        argv.extend(native[1..].iter().map(|a| a.to_string()));
+        shell_command_from_argv(&argv).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resumes_go_through_the_agent_wrap_only_while_it_is_on() {
+        let mut app = test_app();
+        let id = crate::agent_resume::AgentSessionRef::id("s-1").unwrap();
+        let claude = crate::agent_resume::plan("herdr:claude", "claude", &id).unwrap();
+        let codex = crate::agent_resume::plan("herdr:codex", "codex", &id).unwrap();
+        let pi = crate::agent_resume::plan("herdr:pi", "pi", &id).unwrap();
+        // off (the default): byte-identical to the native command
+        for plan in [&claude, &codex, &pi] {
+            assert_eq!(
+                app.resume_shell_command(plan),
+                shell_command_from_argv(&plan.argv)
+            );
+        }
+        app.agents_config.wrap = Some(true);
+        assert_eq!(
+            app.resume_shell_command(&claude).unwrap(),
+            wrapped_resume_command(&["claude", "--resume", "s-1"])
+        );
+        assert_eq!(
+            app.resume_shell_command(&codex).unwrap(),
+            wrapped_resume_command(&["codex", "resume", "s-1"])
+        );
+        assert_eq!(
+            app.resume_shell_command(&pi),
+            shell_command_from_argv(&pi.argv),
+            "only claude and codex have a wrap"
+        );
+        // the switch read live: off again is native again
+        app.agents_config.wrap = Some(false);
+        assert_eq!(
+            app.resume_shell_command(&claude),
+            shell_command_from_argv(&claude.argv)
+        );
     }
 }

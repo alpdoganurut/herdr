@@ -73,6 +73,51 @@ const CODEX_PASSTHROUGH: [&str; 12] = [
     "--help",
 ];
 
+/// Herdr-owned launches (restore, restart, activate, reopen, `agent.start`)
+/// type the wrap verb only where the verb execs the agent in place, so the
+/// pane's foreground process is the agent itself (on Windows the verb waits
+/// on a child and would stay the foreground process).
+pub const RELAUNCH_THROUGH_WRAP: bool = cfg!(unix);
+
+/// The argv a herdr-owned launch of `agent` types instead of the native
+/// `native` (`claude --resume <id>`, `codex resume <id>`, an `agent.start`
+/// argv): `<herdr> agent wrap <kind> -- <native args…>`. The verb composes
+/// the launch exactly as for a typed `claude` / `codex` (team lookup,
+/// `HERDR_NO_WRAP`, nested guard, claude-z, codex `--no-daemon`) and picks
+/// the binary itself, so the native executable name is dropped. `None`: not
+/// a wrap launch (another agent, or a managed argv that already carries the
+/// herdr_agents server and stays exactly as built).
+pub fn relaunch_argv(
+    herdr_bin: &Path,
+    agent: &str,
+    native: &[String],
+    coordinator_dir: &Path,
+) -> Option<Vec<String>> {
+    let kind = match agent {
+        "claude" => "claude",
+        "codex" => "codex",
+        _ => return None,
+    };
+    let args = native.get(1..)?;
+    let managed = if kind == "claude" {
+        is_managed(split_at_dashes(args).0, coordinator_dir)
+    } else {
+        is_managed(args, coordinator_dir)
+    };
+    if managed {
+        return None;
+    }
+    let mut argv = vec![
+        herdr_bin.display().to_string(),
+        "agent".to_string(),
+        "wrap".to_string(),
+        kind.to_string(),
+        "--".to_string(),
+    ];
+    argv.extend(args.iter().cloned());
+    Some(argv)
+}
+
 /// The process facts a plan needs, read once per launch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrapEnv {
