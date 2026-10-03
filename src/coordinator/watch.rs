@@ -2402,7 +2402,7 @@ mod tests {
             &mut state,
             &data,
             &[queued, delivered],
-            false,
+            &[],
             None,
             false,
             &cfg,

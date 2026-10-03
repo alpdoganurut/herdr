@@ -3339,6 +3339,13 @@ pub(crate) mod tests {
                 "apply_client_terminal_input_events",
                 "client-noted-by-caller",
             ),
+            // The attach write itself: apply_terminal_attach_input's client
+            // input, or apply_scroll's page keys (internal).
+            (
+                "src/server/pane_input.rs",
+                "send_terminal_attach_input",
+                "client-noted-by-caller",
+            ),
             ("src/server/alt_screen_read.rs", "send_wheel", "internal"),
             (
                 "src/server/headless.rs",

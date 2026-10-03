@@ -602,7 +602,7 @@ mod tests {
         assert!(!supports_client_shell_method_name(
             crate::api::schema::team::method::CONTEXT
         ));
-        assert_eq!(CLIENT_SHELL_METHODS.len(), 93);
+        assert_eq!(CLIENT_SHELL_METHODS.len(), 94);
     }
 
     #[test]
