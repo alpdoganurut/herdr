@@ -539,6 +539,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::AgentNotify(_) => crate::api::schema::agent_notices::method::NOTIFY,
         Method::AgentNotices(_) => crate::api::schema::agent_notices::method::NOTICES,
         Method::AgentNoticeDismiss(_) => crate::api::schema::agent_notices::method::NOTICE_DISMISS,
+        Method::AgentMessageSend(_) => crate::api::schema::agent_messages::method::MESSAGE_SEND,
+        Method::AgentMessageClaim(_) => crate::api::schema::agent_messages::method::MESSAGE_CLAIM,
         Method::AgentsSettings(_) => crate::api::schema::agent_wrap::method::SETTINGS,
         Method::AgentsSettingsSet(_) => crate::api::schema::agent_wrap::method::SETTINGS_SET,
         Method::AgentsFix(_) => crate::api::schema::agent_wrap::method::FIX,

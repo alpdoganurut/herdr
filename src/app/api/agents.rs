@@ -136,7 +136,22 @@ impl App {
         let crate::api::schema::Method::AgentPrompt(params) = request.method else {
             return false;
         };
-        match self.queue_agent_prompt(request.id, params) {
+        // Fork: an older herdr_agents MCP server's message (module docs of
+        // crate::app::message_queue): guarded, and queued instead of refused.
+        let legacy = crate::app::message_queue::is_legacy_agent_message(&request.id);
+        let params = if legacy {
+            match self.legacy_agent_message(&request.id, params) {
+                crate::app::message_queue::LegacyPrompt::TypeNow(params) => params,
+                crate::app::message_queue::LegacyPrompt::Answered(response) => {
+                    let _ = respond_to.send(response);
+                    return true;
+                }
+            }
+        } else {
+            params
+        };
+        let legacy_params = legacy.then(|| params.clone());
+        match self.queue_agent_prompt(request.id.clone(), params) {
             Ok((id, agent, completion)) => {
                 std::thread::spawn(move || {
                     let response = match completion.recv() {
@@ -151,6 +166,22 @@ impl App {
                 });
             }
             Err(response) => {
+                let response = match legacy_params {
+                    Some(params)
+                        if matches!(
+                            serde_json::from_str::<serde_json::Value>(&response)
+                                .ok()
+                                .and_then(|value| value["error"]["code"]
+                                    .as_str()
+                                    .map(str::to_string))
+                                .as_deref(),
+                            Some("user_typing" | "agent_blocked" | "agent_not_ready")
+                        ) =>
+                    {
+                        self.queue_legacy_message(&request.id, params)
+                    }
+                    _ => response,
+                };
                 let _ = respond_to.send(response);
             }
         }

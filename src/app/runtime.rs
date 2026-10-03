@@ -165,6 +165,7 @@ impl App {
             self.next_tab_bar_status_deadline(),
             self.next_news_deadline(now),
             self.next_coordinator_deadline(now),
+            self.next_message_queue_deadline(now),
             render_deadline,
         ]
         .into_iter()

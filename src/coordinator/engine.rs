@@ -896,7 +896,9 @@ impl Engine {
                 Err(err) => tracing::warn!("coordinator: cannot rotate the message log: {err}"),
             }
         }
-        self.recent.extend(new_msgs.iter().cloned());
+        for message in &new_msgs {
+            messages::fold_into(&mut self.recent, message.clone());
+        }
         while self.recent.len() > watch::LIVE_MESSAGES {
             self.recent.pop_front();
         }

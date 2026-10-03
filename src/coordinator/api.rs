@@ -214,6 +214,47 @@ pub fn prompt(api: &impl Api, target: &str, text: &str) -> Result<(), ApiError> 
     Ok(())
 }
 
+/// What `agent.message_send` did: `Sent` (typed in now; the caller logs
+/// it) with the target's status, or `Queued` (the server logged it and types
+/// it in once the target is free) with the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageSend {
+    Sent { status: String },
+    Queued { reason: String },
+}
+
+/// `agent.message_send`. An older server without the method answers
+/// `invalid_request` (the caller falls back to `agent.prompt`).
+pub fn message_send(
+    api: &impl Api,
+    params: crate::api::schema::AgentMessageSendParams,
+) -> Result<MessageSend, ApiError> {
+    let result = api.call(Method::AgentMessageSend(params))?;
+    let status = result["status"].as_str().unwrap_or_default().to_string();
+    match result["outcome"].as_str() {
+        Some("sent") => Ok(MessageSend::Sent { status }),
+        Some("queued") => Ok(MessageSend::Queued {
+            reason: result["reason"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or(status),
+        }),
+        _ => Err(ApiError::missing("outcome")),
+    }
+}
+
+/// `agent.message_claim`: whether the queued message `id` was taken off the
+/// queue for `pane` (its target).
+pub fn message_claim(api: &impl Api, id: &str, pane: &str) -> Result<bool, ApiError> {
+    let result = api.call(Method::AgentMessageClaim(
+        crate::api::schema::AgentMessageClaimParams {
+            id: id.to_string(),
+            pane: pane.to_string(),
+        },
+    ))?;
+    Ok(result["claimed"].as_bool().unwrap_or(false))
+}
+
 /// `tab.create` in the background → `(tab id, root pane id)`.
 pub fn tab_create(
     api: &impl Api,

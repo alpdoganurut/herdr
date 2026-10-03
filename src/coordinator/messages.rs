@@ -31,6 +31,23 @@ pub const OUTCOME_SENT: &str = "sent";
 /// receives it from the log (agents_wait_for_message, agents_messages).
 pub const OUTCOME_LOGGED: &str = "logged";
 
+/// `outcome` of a message the server queued because its target could not
+/// take it (working, blocked, suspended, its user typing, a live coordinator
+/// turn). Not a refusal: the server types it in once the target is free.
+pub const OUTCOME_QUEUED: &str = "queued";
+/// A queued message was typed in (or claimed by the target's
+/// agents_wait_for_message). Only on [`KIND_UPDATE`] lines.
+pub const OUTCOME_DELIVERED: &str = "delivered";
+/// A queued message was never deliverable within its lifetime (2 h).
+pub const OUTCOME_EXPIRED: &str = "expired";
+/// A queued message's target pane or agent is gone.
+pub const OUTCOME_DROPPED: &str = "dropped";
+
+/// `kind` of a line that only moves an earlier message (same `id`) to a new
+/// outcome (`queued`, `delivered`, `expired`, `dropped`). The log stays
+/// append-only; readers fold these lines into the message ([`fold`]).
+pub const KIND_UPDATE: &str = "update";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMessage {
     pub unix: u64,
@@ -113,6 +130,84 @@ fn base36(mut value: u64) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+impl AgentMessage {
+    /// Whether this line only moves an earlier message to a new outcome.
+    pub fn is_update(&self) -> bool {
+        self.kind.as_deref() == Some(KIND_UPDATE)
+    }
+
+    /// An update line for `message` (same id, panes and names; no text).
+    pub fn update(message: &AgentMessage, outcome: &str, unix: u64) -> Self {
+        AgentMessage {
+            unix,
+            from_pane: message.from_pane.clone(),
+            from_name: message.from_name.clone(),
+            to_pane: message.to_pane.clone(),
+            to_name: message.to_name.clone(),
+            text: String::new(),
+            outcome: outcome.to_string(),
+            id: message.id.clone(),
+            reply_to: None,
+            from_role: None,
+            kind: Some(KIND_UPDATE.into()),
+            team: message.team.clone(),
+        }
+    }
+
+    /// Whether the message counts against the sender's rate limits and the
+    /// loop guard: typed in or accepted for delivery when it was sent.
+    pub fn counts_as_sent(&self) -> bool {
+        !self.is_update()
+            && matches!(
+                self.outcome.as_str(),
+                OUTCOME_SENT
+                    | OUTCOME_QUEUED
+                    | OUTCOME_DELIVERED
+                    | OUTCOME_EXPIRED
+                    | OUTCOME_DROPPED
+            )
+    }
+}
+
+/// Fold the update lines into the messages they name (the last update for an
+/// id wins, wherever it sits relative to the message: an older sender may log
+/// its line after the server's first update) and drop them. Updates whose
+/// message rotated away are dropped too.
+pub fn fold(lines: Vec<AgentMessage>) -> Vec<AgentMessage> {
+    let mut latest: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for line in lines.iter().filter(|line| line.is_update()) {
+        if let Some(id) = &line.id {
+            latest.insert(id.clone(), line.outcome.clone());
+        }
+    }
+    lines
+        .into_iter()
+        .filter(|line| !line.is_update())
+        .map(|mut line| {
+            if let Some(outcome) = line.id.as_ref().and_then(|id| latest.get(id)) {
+                line.outcome = outcome.clone();
+            }
+            line
+        })
+        .collect()
+}
+
+/// Fold one new line into a window of folded messages (the engine's live
+/// tail): an update moves its message; anything else is pushed.
+pub fn fold_into(window: &mut std::collections::VecDeque<AgentMessage>, line: AgentMessage) {
+    if !line.is_update() {
+        window.push_back(line);
+        return;
+    }
+    if let Some(message) = window
+        .iter_mut()
+        .rev()
+        .find(|message| message.id.is_some() && message.id == line.id)
+    {
+        message.outcome = line.outcome;
+    }
+}
+
 pub fn append(dir: &Path, message: &AgentMessage) -> io::Result<()> {
     let _lock = super::lock::exclusive(dir, MESSAGES_LOCK)?;
     let mut line = serde_json::to_string(message).map_err(io::Error::other)?;
@@ -125,15 +220,19 @@ pub fn append(dir: &Path, message: &AgentMessage) -> io::Result<()> {
     file.write_all(line.as_bytes())
 }
 
-/// The newest `limit` messages (oldest first), optionally only those a pane
-/// sent or received. Unparseable lines are skipped.
+/// The newest `limit` messages (oldest first, update lines folded in),
+/// optionally only those a pane sent or received. Unparseable lines are
+/// skipped.
 pub fn recent(dir: &Path, limit: usize, involving: Option<&str>) -> Vec<AgentMessage> {
     let Ok(text) = std::fs::read_to_string(messages_path(dir)) else {
         return Vec::new();
     };
-    let mut out: Vec<AgentMessage> = text
+    let lines = text
         .lines()
         .filter_map(|line| serde_json::from_str::<AgentMessage>(line).ok())
+        .collect();
+    let mut out: Vec<AgentMessage> = fold(lines)
+        .into_iter()
         .filter(|message| {
             involving.is_none_or(|pane| {
                 message.from_pane.as_deref() == Some(pane) || message.to_pane == pane
@@ -187,8 +286,9 @@ pub fn since_offset(dir: &Path, offset: u64) -> (Vec<AgentMessage>, u64) {
 /// not the clock: a message from the same second before it does not count);
 /// otherwise those at or after `after_unix`. The outcome is deliberately not
 /// checked: an agent waiting for a reply is `working`, so the reply is usually
-/// logged (`logged`) instead of being typed in, and this log line is how the
-/// waiter receives it.
+/// queued (`queued`; `logged` from older senders) instead of being typed in,
+/// and this log line is how the waiter receives it (the waiter then claims it
+/// so the server does not type it in as well). Update lines are folded in.
 pub fn find_reply(
     dir: &Path,
     to_pane: &str,
@@ -199,10 +299,11 @@ pub fn find_reply(
     skip: &HashSet<String>,
 ) -> Option<AgentMessage> {
     let text = std::fs::read_to_string(messages_path(dir)).ok()?;
-    let log: Vec<AgentMessage> = text
-        .lines()
-        .filter_map(|line| serde_json::from_str::<AgentMessage>(line).ok())
-        .collect();
+    let log: Vec<AgentMessage> = fold(
+        text.lines()
+            .filter_map(|line| serde_json::from_str::<AgentMessage>(line).ok())
+            .collect(),
+    );
     let anchor = after_id.and_then(|id| log.iter().position(|m| m.id.as_deref() == Some(id)));
     let (tail, after_unix) = match anchor {
         Some(index) => (&log[index + 1..], 0),
@@ -309,6 +410,56 @@ mod tests {
         let back: AgentMessage =
             serde_json::from_str(&serde_json::to_string(&full).unwrap()).unwrap();
         assert_eq!(back, full);
+    }
+
+    #[test]
+    fn update_lines_fold_into_their_message_in_any_order() {
+        let dir = super::super::test_dir("messages-fold");
+        let queued = AgentMessage {
+            id: Some("mq1".into()),
+            outcome: OUTCOME_QUEUED.into(),
+            ..message("a", "b", "later")
+        };
+        // An older sender logs its own line after the server's first update.
+        append(&dir, &AgentMessage::update(&queued, OUTCOME_QUEUED, 2)).unwrap();
+        append(&dir, &queued).unwrap();
+        append(&dir, &message("b", "c", "other")).unwrap();
+        let all = recent(&dir, 10, None);
+        assert_eq!(all.len(), 2, "update lines are not rows");
+        assert_eq!(all[0].outcome, OUTCOME_QUEUED);
+        append(&dir, &AgentMessage::update(&queued, OUTCOME_DELIVERED, 3)).unwrap();
+        let all = recent(&dir, 10, Some("a"));
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].outcome, OUTCOME_DELIVERED);
+        assert_eq!(all[0].text, "later");
+        assert!(all[0].counts_as_sent());
+        // The live tail folds the same way.
+        let mut window = std::collections::VecDeque::new();
+        fold_into(&mut window, queued.clone());
+        fold_into(
+            &mut window,
+            AgentMessage::update(&queued, OUTCOME_EXPIRED, 9),
+        );
+        assert_eq!(window.len(), 1);
+        assert_eq!(window[0].outcome, OUTCOME_EXPIRED);
+        // A waiter finds the queued reply (folded), never an update line.
+        let reply = AgentMessage {
+            id: Some("mr1".into()),
+            reply_to: Some("mq0".into()),
+            outcome: OUTCOME_QUEUED.into(),
+            ..message("b", "a", "answer")
+        };
+        append(&dir, &AgentMessage::update(&reply, OUTCOME_QUEUED, 4)).unwrap();
+        append(&dir, &reply).unwrap();
+        let found = find_reply(&dir, "a", Some("mq0"), None, 0, None, &HashSet::new()).unwrap();
+        assert_eq!(found.text, "answer");
+        let refused = AgentMessage {
+            kind: Some(KIND_REFUSAL.into()),
+            outcome: "offline".into(),
+            ..message("a", "b", "x")
+        };
+        assert!(!refused.counts_as_sent());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

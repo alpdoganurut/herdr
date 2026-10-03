@@ -853,6 +853,8 @@ impl App {
         {
             self.follow_teams(&event);
         }
+        // Fork: queued agent messages follow agent events (O(1) while empty).
+        self.note_message_queue_event(&event.event);
         self.run_plugin_event_hooks(&event);
         self.event_hub.push(event);
     }
@@ -1193,6 +1195,12 @@ impl App {
             }
             Method::AgentTranscripts(_) => return self.handle_agent_transcripts(request.id),
             Method::AgentNotify(params) => return self.handle_agent_notify(request.id, params),
+            Method::AgentMessageSend(params) => {
+                return self.handle_agent_message_send(request.id, params)
+            }
+            Method::AgentMessageClaim(params) => {
+                return self.handle_agent_message_claim(request.id, params)
+            }
             Method::AgentNotices(_) => return self.handle_agent_notices(request.id),
             Method::AgentNoticeDismiss(params) => {
                 return self.handle_agent_notice_dismiss(request.id, params)

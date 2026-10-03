@@ -55,6 +55,8 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::AgentActivate(_)
             | Method::AgentRestart(_)
             | Method::AgentNoticeDismiss(_)
+            | Method::AgentMessageSend(_)
+            | Method::AgentMessageClaim(_)
             | Method::TeamMake(_)
             | Method::TeamDisband(_)
             | Method::TeamSetPurpose(_)

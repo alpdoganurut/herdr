@@ -175,6 +175,21 @@ pub enum ResponseResult {
     AgentNotices {
         notices: Vec<super::agent_notices::AgentNoticeInfo>,
     },
+    /// `agent.message_send` (fork): sent now or queued; `status` is the
+    /// target's status when it was decided, `reason` why it was queued.
+    AgentMessageSend {
+        id: String,
+        outcome: super::agent_messages::AgentMessageOutcome,
+        #[serde(default)]
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// `agent.message_claim` (fork): whether a queued message was taken off
+    /// the queue (false: not queued, or not addressed to the claimer).
+    AgentMessageClaim {
+        claimed: bool,
+    },
     /// `agents.settings` and `agents.settings.set` (fork).
     AgentsSettings {
         info: super::agent_wrap::AgentsSettingsInfo,

@@ -16,6 +16,7 @@ mod agents;
 mod browser;
 mod closed_sessions;
 pub(crate) mod coordinator;
+pub(crate) mod message_queue;
 pub(crate) mod news;
 mod notes;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
@@ -172,6 +173,8 @@ pub struct App {
     pub(crate) coordinator: coordinator::CoordinatorState,
     /// Agent cards (fork): `agent.notify` notices, pushed to client shells.
     pub(crate) agent_notices: agent_notices::AgentNotices,
+    /// Agent messages (fork): the server-side delivery queue.
+    pub(crate) message_queue: message_queue::MessageQueue,
     /// `[agents]` as last applied (fork; the Agents settings section).
     pub(crate) agents_config: crate::config::AgentsConfig,
     /// Where `agents.settings` / `agents.fix` look and write; `None` = the
@@ -680,6 +683,10 @@ impl App {
                 policy.persist_session,
             ),
             agent_notices: agent_notices::AgentNotices::new(config.agents.notices),
+            message_queue: message_queue::MessageQueue::new(
+                policy.persist_session,
+                crate::coordinator::coordinator_dir(),
+            ),
             agents_config: config.agents.clone(),
             agents_setup_env: None,
             team_tombstones: team::TeamTombstones::default(),

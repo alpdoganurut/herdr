@@ -3465,6 +3465,7 @@ impl HeadlessServer {
         changed |= self.app.handle_tab_bar_status_tasks(now);
         changed |= self.app.handle_news_tasks(now);
         changed |= self.app.handle_coordinator_tasks(now);
+        changed |= self.app.handle_message_queue_tasks(now);
         self.flush_coordinator_notifications(now);
         self.flush_news_notifications(now);
         changed |= self.app.escalate_suspended_agent_exits(now);

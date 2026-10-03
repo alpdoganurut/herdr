@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+pub mod agent_messages;
 pub mod agent_notices;
 pub mod agent_wrap;
 pub mod agents;
@@ -23,6 +24,7 @@ pub mod workspaces;
 pub mod worktrees;
 
 // fork: named re-exports (each module also has `method` / `error_code`).
+pub use agent_messages::{AgentMessageClaimParams, AgentMessageOutcome, AgentMessageSendParams};
 pub use agent_notices::{
     AgentNoticeDismissParams, AgentNoticeInfo, AgentNoticeKind, AgentNotifyOutcome,
     AgentNotifyParams,
@@ -177,6 +179,10 @@ pub enum Method {
     AgentNotices(EmptyParams),
     #[serde(rename = "agent.notice_dismiss")]
     AgentNoticeDismiss(agent_notices::AgentNoticeDismissParams),
+    #[serde(rename = "agent.message_send")]
+    AgentMessageSend(agent_messages::AgentMessageSendParams),
+    #[serde(rename = "agent.message_claim")]
+    AgentMessageClaim(agent_messages::AgentMessageClaimParams),
     #[serde(rename = "agents.settings")]
     AgentsSettings(EmptyParams),
     #[serde(rename = "agents.settings.set")]

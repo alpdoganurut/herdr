@@ -616,7 +616,7 @@ fn status_text(status: AgentStatus) -> &'static str {
 
 /// The native session id a terminal reports: the parked record, the
 /// lifecycle hook, then the persisted session (as `agent.list` does).
-fn terminal_session(terminal: &crate::terminal::TerminalState) -> Option<String> {
+pub(super) fn terminal_session(terminal: &crate::terminal::TerminalState) -> Option<String> {
     if let Some(record) = terminal.suspended_agent.as_ref() {
         return Some(record.session.session_ref.value.clone());
     }
@@ -1128,6 +1128,37 @@ impl App {
             None => "coordinator is not running in its tab",
         };
         Some(reason.into())
+    }
+
+    /// Why an agent message cannot be typed into the coordinator now (the
+    /// wake-up's own check: running, idle, interactive, no live turn), or
+    /// `None` (fork message queue).
+    pub(crate) fn coordinator_message_hold(&self) -> Option<String> {
+        self.coordinator_wake_hold()
+    }
+
+    /// Write the coordinator's turn marker for agent message `id` before it
+    /// is typed in (fail closed: without it the coordinator's write tools
+    /// would take the agent's request for the user's). A live marker is not
+    /// overwritten: the message waits its turn.
+    pub(crate) fn write_coordinator_message_turn(
+        &self,
+        pane: &str,
+        id: &str,
+    ) -> Result<crate::coordinator::turn::Turn, String> {
+        let now = crate::coordinator::now_unix();
+        let marker = crate::coordinator::turn::Turn {
+            source: "message".into(),
+            id: id.to_string(),
+            started_unix: now,
+            coordinator_pane: pane.to_string(),
+            seen_working: false,
+        };
+        match crate::coordinator::turn::write_if_absent(&self.coordinator.dir, &marker, now) {
+            Ok(true) => Ok(marker),
+            Ok(false) => Err("the coordinator is in a turn herdr+ started".into()),
+            Err(err) => Err(format!("cannot mark the coordinator's turn: {err}")),
+        }
     }
 
     /// Whether the coordinator pane takes a prompt: its managed launch

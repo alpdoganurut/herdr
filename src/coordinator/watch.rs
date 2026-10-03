@@ -957,8 +957,17 @@ fn queue_messages(state: &mut WatchState, live: &LiveData, new_msgs: &[AgentMess
         )
     });
     for message in new_msgs {
+        // An update only moves a message logged before (queued → delivered,
+        // expired, dropped): nothing new to report.
+        if message.is_update() {
+            continue;
+        }
         if coordinator == Some(message.to_pane.as_str()) {
-            // Typed into the coordinator: it has seen that one already.
+            // Typed into the coordinator: it has seen that one already. A
+            // queued one is typed in once it is free, which starts its turn.
+            if message.outcome == messages::OUTCOME_QUEUED {
+                continue;
+            }
             if message.outcome == messages::OUTCOME_LOGGED {
                 // A reply logged while the coordinator was busy (usually in
                 // agents_wait_for_message, which returned it). Delivered, not a
@@ -2045,6 +2054,35 @@ mod tests {
             panic!("messages item expected");
         };
         assert!(preview[0].contains("[logged]"), "{preview:?}");
+    }
+
+    #[test]
+    fn a_message_queued_for_the_coordinator_and_its_updates_wake_nothing() {
+        let cfg = cfg();
+        let mut state = WatchState::default();
+        let data = live(vec![coord("working"), agent("w2:p1", "a", "idle")]);
+        quiet(&mut state, &data, &cfg, 0);
+        let queued = message("w2:p1", "w1:p1", messages::OUTCOME_QUEUED);
+        let delivered = AgentMessage::update(&queued, messages::OUTCOME_DELIVERED, 12);
+        tick(
+            &mut state,
+            &data,
+            &[queued, delivered],
+            false,
+            None,
+            false,
+            &cfg,
+            10,
+        );
+        assert!(
+            !state
+                .pending
+                .iter()
+                .any(|ev| matches!(ev, Ev::Messages { .. })),
+            "typed in once the coordinator is free: {:?}",
+            state.pending
+        );
+        assert!(state.refusal_queued.is_empty());
     }
 
     #[test]

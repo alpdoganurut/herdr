@@ -1302,6 +1302,95 @@
           ],
           "type": "object"
         },
+        "AgentMessageClaimParams": {
+          "description": "`agent.message_claim`: the target took a queued message some other way\n(agents_wait_for_message returned it), so it is not typed in.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "pane": {
+              "description": "The claiming pane: only the message's target may claim it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "pane"
+          ],
+          "type": "object"
+        },
+        "AgentMessageSendParams": {
+          "description": "`agent.message_send`: deliver one agent message to `target`.",
+          "properties": {
+            "envelope": {
+              "description": "The text typed into the target (the sender's envelope around the body).",
+              "type": "string"
+            },
+            "from_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "from_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "from_role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "The message id (`m...`); the key of every log line about it.",
+              "type": "string"
+            },
+            "reply_to": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "description": "The target agent (pane id or agent name, as `agent.prompt`).",
+              "type": "string"
+            },
+            "team": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "description": "The message body as the log shows it.",
+              "type": "string"
+            },
+            "to_name": {
+              "description": "The target's name as the sender knows it (the log's `to_name`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "unix": {
+              "default": 0,
+              "description": "When the sender sent it (unix seconds); `0` = now.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "target",
+            "id",
+            "envelope",
+            "text"
+          ],
+          "type": "object"
+        },
         "AgentNoticeDismissParams": {
           "description": "`agent.notice_dismiss`: the cards to remove (`all` removes every card).",
           "properties": {
@@ -8318,6 +8407,38 @@
         {
           "properties": {
             "method": {
+              "const": "agent.message_send",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentMessageSendParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.message_claim",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentMessageClaimParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agents.settings",
               "type": "string"
             },
@@ -10640,6 +10761,27 @@
             "local_override_shadowing_remote"
           ],
           "type": "object"
+        },
+        "AgentMessageOutcome": {
+          "description": "What `agent.message_send` did.",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "sent",
+              "description": "Typed into the target now; the sender logs it.",
+              "type": "string"
+            },
+            {
+              "const": "queued",
+              "description": "Queued by the server (which logged it); typed in once the target is free.",
+              "type": "string"
+            }
+          ]
         },
         "AgentNoticeInfo": {
           "description": "One card as `agent.notices`, `agent.notice_dismiss` and the\n`endpoint.agent-notices.v1` push report it. Tab and workspace are resolved\nwhen the list is built (the pane may have moved since the card was made).",
@@ -16191,6 +16333,54 @@
               "required": [
                 "type",
                 "notices"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agent.message_send` (fork): sent now or queued; `status` is the\ntarget's status when it was decided, `reason` why it was queued.",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/schemas/success_response/$defs/AgentMessageOutcome"
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "default": "",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "agent_message_send",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "outcome"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agent.message_claim` (fork): whether a queued message was taken off\nthe queue (false: not queued, or not addressed to the claimer).",
+              "properties": {
+                "claimed": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "agent_message_claim",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "claimed"
               ],
               "type": "object"
             },

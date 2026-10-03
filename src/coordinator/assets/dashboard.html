@@ -138,6 +138,7 @@
   .log-row.refusal, .log-row.refusal .text, .log-row.refusal .route { color: var(--dim); }
   .outcome { color: var(--idle); }
   .outcome.bad { color: var(--warn); }
+  .outcome.pending { color: var(--dim); }
   .reply { color: var(--accent); }
 
   footer { margin-top: 26px; font-size: 12px; color: var(--dim); display: flex; gap: 14px; }
@@ -532,9 +533,13 @@ function renderMessages(live) {
     const to = str(m.to_name) || str(m.to_pane) || "?";
     add(body, el("span", "route", from + " → " + to + " "));
     const outcome = str(m.outcome) || "?";
-    // "logged": a reply to a busy asker, delivered through the log.
-    const delivered = outcome === "sent" || outcome === "logged";
-    add(body, el("span", "outcome" + (delivered ? "" : " bad"), "[" + outcome + "] "));
+    // "logged": a reply to a busy asker, delivered through the log (older
+    // senders). "queued": waiting in herdr until the target is free (pending,
+    // not bad); "delivered": a queued one typed in; "expired" / "dropped":
+    // a queued one that never got there.
+    const delivered = outcome === "sent" || outcome === "logged" || outcome === "delivered";
+    const pending = outcome === "queued";
+    add(body, el("span", "outcome" + (delivered ? "" : pending ? " pending" : " bad"), "[" + outcome + "] "));
     if (str(m.reply_to)) add(body, el("span", "reply", "↩ " + str(m.reply_to) + " "));
     add(body, el("span", "text", cut(m.text, TEXT_CUT)));
     const tip = [str(m.id), str(m.from_pane) + " → " + str(m.to_pane)].filter(Boolean).join("  ");

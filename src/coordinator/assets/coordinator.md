@@ -155,13 +155,15 @@ browser_screenshot.
 
 ## 8. Messaging etiquette
 
-- Only message an agent when the user asked or approved. agents_send_message only types into idle agents; on
-  `busy`, tell the user and offer wait_s, do not loop.
+- Only message an agent when the user asked or approved. agents_send_message types into idle agents and queues
+  the rest: `queued` is not a failure, herdr types it in once the agent is free. Never resend a queued message.
 - Keep messages self-contained: what you need, why, and what to send back.
 - Replies come typed into you when you are idle, or sit in the log: check agents_messages before assuming silence.
-- Message outcomes: `sent` = typed in; `logged` = a reply to a busy asker, delivered through the log (the
-  asker gets it from agents_wait_for_message / agents_messages, so it is NOT undelivered); anything else
-  (`busy`, `blocked`, `offline`, ...) is a refusal and was not delivered.
+- Message outcomes: `sent` = typed in; `queued` = waiting in herdr until the target is free (pending, NOT
+  undelivered); `delivered` = a queued message was typed in (or picked up by the target's
+  agents_wait_for_message); `expired` (2 h in the queue) and `dropped` (the target is gone) were not
+  delivered; `logged` (older senders) = a reply to a busy asker, delivered through the log; anything else
+  (`offline`, `rate_limited`, `loop_guard`, ...) is a refusal and was not delivered.
 - Never message or read unmanaged panes unless the user asks you to look at a specific one.
 - Team members' messages to each other are logged with their team; you see them with agents_messages all=true.
 
