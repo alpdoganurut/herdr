@@ -186,19 +186,6 @@ impl App {
         }
     }
 
-    /// [`Self::note_input`] for a terminal named by its id string (terminal
-    /// attach).
-    pub(crate) fn note_terminal_input(&mut self, terminal_id: &str, source: InputSource) {
-        if let Some(terminal) = self
-            .state
-            .terminals
-            .values_mut()
-            .find(|terminal| terminal.id.as_str() == terminal_id)
-        {
-            terminal.turn_mut().note_input(&source, Instant::now());
-        }
-    }
-
     /// A pane state update's status edge, for the turn origin. O(tabs).
     pub(crate) fn note_turn_edge(&mut self, update: &crate::app::actions::PaneStateUpdate) {
         if update.previous_state == update.state {
@@ -767,11 +754,12 @@ impl App {
         }
     }
 
-    /// Log a user request that changes tabs or teams (TUI, user CLI, or the
-    /// JSON API without a caller). Low frequency.
-    pub(crate) fn log_user_request(&mut self, method: &Method) {
+    /// The log line of a user request that changes tabs or teams (TUI, user
+    /// CLI, or the JSON API without a caller), before it runs; `None` for
+    /// every other request. Low frequency.
+    pub(crate) fn user_request_line(&self, method: &Method) -> Option<LogLine> {
         if self.agents_model.dir.is_none() || self.agents_model.delegating > 0 {
-            return;
+            return None;
         }
         let (action, target): (&'static str, Option<&str>) = match method {
             Method::TabClose(params) => ("close_tab", Some(&params.tab_id)),
@@ -788,15 +776,34 @@ impl App {
             Method::TeamSetRole(params) if params.caller_pane.is_none() => {
                 ("set_meta", Some(&params.pane_id))
             }
-            _ => return,
+            _ => return None,
         };
-        let line = LogLine {
+        Some(LogLine {
             action,
             target_name: target.map(str::to_string),
             detail: Some("requested by the user".into()),
             ..LogLine::default()
+        })
+    }
+
+    /// Log a user request ([`Self::user_request_line`]) with its outcome,
+    /// read from the encoded `response`: `failed` with the error code when
+    /// it was refused.
+    pub(crate) fn log_user_request(&mut self, mut line: LogLine, response: &str) {
+        let error = serde_json::from_str::<serde_json::Value>(response)
+            .ok()
+            .and_then(|value| {
+                let error = value.get("error").filter(|error| !error.is_null())?;
+                Some(error["code"].as_str().unwrap_or("error").to_string())
+            });
+        let outcome = match error {
+            Some(code) => {
+                line.code = Some(code);
+                AgentsActionOutcome::Failed
+            }
+            None => AgentsActionOutcome::Ok,
         };
-        self.log_model_action(None, AgentsActionOutcome::Ok, line);
+        self.log_model_action(None, outcome, line);
     }
 
     // ----- delegation -------------------------------------------------------
@@ -1887,6 +1894,18 @@ impl App {
             }),
         };
         self.authorize_on_tab(&caller, target, action, &line)?;
+        // The typing guard: suspend and restart type the exit command into
+        // the agent's input box, activate types the resume command into the
+        // pane's shell; neither lands while its user types there or holds a
+        // draft. Before the soft edit, so a refusal costs nothing.
+        if self.pane_user_typing(target.ws_idx, pane) {
+            line.code = Some(error_code::USER_TYPING.into());
+            self.log_model_action(Some(&caller), AgentsActionOutcome::Denied, line);
+            return Err(ModelError::new(
+                error_code::USER_TYPING,
+                format!("your user is typing in {public}; ask again later"),
+            ));
+        }
         self.take_soft_edit(&caller, &line)?;
         let by = Some(caller.who());
         let result = match op {
@@ -3255,6 +3274,81 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn lifecycle_waits_while_the_user_types_in_the_target() {
+        let mut app = model_app();
+        let lead = public(&app, 1, 0);
+        let fixer = pane(&app, 1, 1);
+        let fixer_tab = app.public_tab_id(1, 1).unwrap();
+        let typing = |app: &mut App| {
+            let id = terminal_mut(app, fixer).id.clone();
+            app.terminal_runtimes
+                .get(&id)
+                .expect("runtime")
+                .note_user_input(Instant::now());
+        };
+        // Suspend and restart would type the exit command into the user's
+        // half-written prompt.
+        let _rx = host_suspendable(&mut app, fixer, "fixer");
+        typing(&mut app);
+        for op in [AgentLifecycle::Suspend, AgentLifecycle::Restart] {
+            let result = lifecycle(&mut app, op, &lead, &fixer_tab);
+            assert_eq!(code(&result), "user_typing", "{result}");
+            assert!(terminal_mut(&mut app, fixer).suspended_agent.is_none());
+        }
+        // Activate would type the resume command into the user's shell line.
+        // (A fresh runtime: the user has been quiet since.)
+        let id = terminal_mut(&mut app, fixer).id.clone();
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(id, runtime);
+        let result = lifecycle(&mut app, AgentLifecycle::Suspend, &lead, &fixer_tab);
+        assert_eq!(result["result"]["type"], "agent_suspended", "{result}");
+        observe_exit(&mut app, fixer);
+        typing(&mut app);
+        let result = lifecycle(&mut app, AgentLifecycle::Activate, &lead, &fixer_tab);
+        assert_eq!(code(&result), "user_typing", "{result}");
+        assert!(terminal_mut(&mut app, fixer).suspended_agent.is_some());
+    }
+
+    #[test]
+    fn a_user_request_is_logged_with_its_real_outcome() {
+        let mut app = model_app();
+        let dir = temp_dir("user-log");
+        app.agents_model.dir = Some(dir.clone());
+        let bogus = call(
+            &mut app,
+            Method::TabClose(crate::api::schema::TabTarget {
+                tab_id: "w9:t9".into(),
+            }),
+        );
+        let refused = code(&bogus).to_string();
+        assert_ne!(refused, "ok", "{bogus}");
+        let tab_id = app.public_tab_id(2, 1).unwrap();
+        let closed = call(
+            &mut app,
+            Method::TabClose(crate::api::schema::TabTarget { tab_id }),
+        );
+        assert_eq!(code(&closed), "ok", "{closed}");
+        let log = crate::agents_model::actions_log::read_tail(&dir, 10);
+        let lines: Vec<(&str, AgentsActionOutcome, Option<&str>)> = log
+            .iter()
+            .map(|entry| (entry.action.as_str(), entry.outcome, entry.code.as_deref()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("close_tab", AgentsActionOutcome::Ok, None),
+                (
+                    "close_tab",
+                    AgentsActionOutcome::Failed,
+                    Some(refused.as_str())
+                ),
+            ],
+            "newest first"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn activating_what_the_user_suspended_needs_a_user_turn() {
         let mut app = model_app();
         let lead_pane = pane(&app, 1, 0);
@@ -3708,7 +3802,6 @@ pub(crate) mod tests {
                     assert!(
                         body.contains("note_input")
                             || body.contains("note_pane_input")
-                            || body.contains("note_terminal_input")
                             || body.contains(".turn_mut()")
                             || function == "queue_agent_prompt",
                         "{file}: `{function}` writes ({class}) without recording provenance"

@@ -8,7 +8,7 @@
 //!   and kind, but only when the entry is newer than the terminal (a reused
 //!   pane id must not inherit a stale entry).
 //! - Each entry's fingerprint is kept in `agents-v2.json`; only new or
-//!   changed entries are applied. A meta field is written only when it is
+//!   changed entries, and entries still unmatched, are applied. A meta field is written only when it is
 //!   empty and was not cleared on purpose (the tombstone), so a re-run never
 //!   brings a cleared value back. Migration writes the meta directly, never
 //!   through the team rename path; a member's mirror follows the meta.
@@ -16,7 +16,10 @@
 //!   `agents-v2.json` (`herdr coordinator status` reads it).
 //!
 //! It runs on the first check after start and again whenever `managed.json`
-//! is newer than the marker's `source_mtime` (one `metadata()` per minute).
+//! is newer than the marker's `source_mtime` (one `metadata()` per minute),
+//! or while unmatched entries remain: those are retried every minute (an
+//! agent restored at start is detected only after the first check); a retry
+//! that matches nothing new writes nothing.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -173,7 +176,8 @@ fn entry_matches_unmatched(
 
 impl App {
     /// The scheduler's migration check: at most once a minute, one
-    /// `metadata()` call; a run only when `managed.json` changed.
+    /// `metadata()` call; a run only when `managed.json` changed or
+    /// unmatched entries remain.
     pub(crate) fn maybe_run_agents_migration(&mut self, now: Instant) -> bool {
         if self.agents_model.dir.is_none() {
             return false;
@@ -191,14 +195,19 @@ impl App {
             .is_some_and(|report| report.applied > 0)
     }
 
-    /// Run the migration when `managed.json` is newer than the marker.
+    /// Run the migration when `managed.json` is newer than the marker, or
+    /// retry its unmatched entries.
     /// `None` when there was nothing to do.
     pub(crate) fn run_agents_migration(&mut self) -> Option<MigrationReport> {
         let dir = self.agents_model.dir.clone()?;
         let source = crate::coordinator::registry_path(&dir);
         let source_mtime = mtime_secs(&source)?;
         let mut marker = load_marker(&dir);
-        if marker.migrated_unix > 0 && source_mtime <= marker.source_mtime {
+        // Unmatched entries are tried again on every check (their agent may
+        // not be detected yet, e.g. right after a server start), not only
+        // when managed.json changes.
+        let source_changed = marker.migrated_unix == 0 || source_mtime > marker.source_mtime;
+        if !source_changed && marker.unmatched.is_empty() {
             return None;
         }
         let registry = match crate::coordinator::registry::load_strict(&dir) {
@@ -214,7 +223,12 @@ impl App {
                 return None;
             }
         };
+        let unmatched_before = marker.unmatched.len();
         let report = self.apply_registry(&registry, &mut marker);
+        if !source_changed && report.applied == 0 && report.unmatched == unmatched_before {
+            // A retry that found nothing new: no write, no log line.
+            return Some(report);
+        }
         marker.source_mtime = source_mtime;
         marker.migrated_unix = super::agents_model::now_unix();
         if let Err(err) = save_marker(&dir, &marker) {
@@ -248,19 +262,18 @@ impl App {
             }
             let key = entry_key(entry);
             let print = fingerprint(entry);
-            if marker.fingerprints.get(&key) == Some(&print) {
+            let unchanged = marker.fingerprints.get(&key) == Some(&print);
+            let was_unmatched = marker
+                .unmatched
+                .iter()
+                .any(|previous| entry_matches_unmatched(entry, previous));
+            if unchanged && !was_unmatched {
                 report.skipped_unchanged += 1;
-                // It keeps its earlier classification.
-                match marker
-                    .unmatched
-                    .iter()
-                    .find(|previous| entry_matches_unmatched(entry, previous))
-                {
-                    Some(previous) => unmatched.push(previous.clone()),
-                    None => matched += 1,
-                }
+                matched += 1;
                 continue;
             }
+            // An unchanged entry that was unmatched is tried again; only a
+            // new or changed one counts as newly unmatched (the notice).
             marker.fingerprints.insert(key, print);
             match self.migration_match(entry) {
                 Some((ws_idx, pane)) => {
@@ -282,7 +295,9 @@ impl App {
                     self.mirror_member_role(ws_idx, pane);
                 }
                 None => {
-                    report.new_unmatched += 1;
+                    if !unchanged {
+                        report.new_unmatched += 1;
+                    }
                     unmatched.push(UnmatchedEntry {
                         name: entry
                             .role
@@ -517,8 +532,35 @@ mod tests {
         assert_eq!(terminal_mut(&mut app, fixer).agent_meta().role, None);
         let marker = load_marker(&dir);
         assert_eq!(marker.unmatched.len(), 2);
-        // Unchanged: no re-run until managed.json is newer.
-        assert!(app.run_agents_migration().is_none());
+        // Unchanged: the unmatched entries are retried; nothing new, so no
+        // write and no notice.
+        let written = std::fs::read(marker_path(&dir)).unwrap();
+        let retry = app.run_agents_migration().expect("retried");
+        assert_eq!(
+            (retry.applied, retry.new_unmatched, retry.unmatched),
+            (0, 0, 2)
+        );
+        assert_eq!(std::fs::read(marker_path(&dir)).unwrap(), written);
+        // The ghost's session shows up later (an agent detected only after
+        // the first run): it is matched then, without a notice.
+        terminal_mut(&mut app, fixer).set_persisted_agent_session(
+            crate::agent_resume::PersistedAgentSession {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::id("gone").unwrap(),
+                transcript_path: None,
+            },
+        );
+        let retry = app.run_agents_migration().expect("retried");
+        assert_eq!(
+            (retry.applied, retry.new_unmatched, retry.unmatched),
+            (1, 0, 1)
+        );
+        assert_eq!(
+            terminal_mut(&mut app, fixer).agent_meta().role.as_deref(),
+            Some("ghost")
+        );
+        assert_eq!(load_marker(&dir).unmatched.len(), 1);
         // A cleared role is never brought back, even when the source moves.
         app.write_meta(2, plain_agent, |meta| {
             meta.role = None;

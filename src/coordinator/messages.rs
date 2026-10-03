@@ -270,11 +270,13 @@ pub fn since_offset(dir: &Path, offset: u64) -> (Vec<AgentMessage>, u64) {
 /// ids in `skip` (already returned to this waiter). Only messages logged after
 /// the line with id `after_id` count when that line is in the log (log order,
 /// not the clock: a message from the same second before it does not count);
-/// otherwise those at or after `after_unix`. The outcome is deliberately not
-/// checked: an agent waiting for a reply is `working`, so the reply is usually
-/// queued (`queued`; `logged` from older senders) instead of being typed in,
-/// and this log line is how the waiter receives it (the waiter then claims it
-/// so the server does not type it in as well). Update lines are folded in.
+/// otherwise those at or after `after_unix`. A queued message counts: an
+/// agent waiting for a reply is `working`, so the reply is usually queued
+/// (`queued`; `logged` or a `busy` refusal from older senders) instead of
+/// being typed in, and this log line is how the waiter receives it (the
+/// waiter then claims it so the server does not type it in as well). Any
+/// other refusal (`rate_limited`, `loop_guard`, `offline`, …) was never sent
+/// and does not count. Update lines are folded in.
 pub fn find_reply(
     dir: &Path,
     to_pane: &str,
@@ -302,8 +304,17 @@ pub fn find_reply(
                 && reply_to.is_none_or(|id| message.reply_to.as_deref() == Some(id))
                 && from_pane.is_none_or(|pane| message.from_pane.as_deref() == Some(pane))
                 && message.id.as_ref().is_none_or(|id| !skip.contains(id))
+                && delivered_to_waiter(message)
         })
         .cloned()
+}
+
+/// Whether a log line reached (or will reach) its target: everything but a
+/// refusal, except the older senders' reply to a busy asker (`busy`,
+/// `logged`), which was delivered through the log.
+fn delivered_to_waiter(message: &AgentMessage) -> bool {
+    message.kind.as_deref() != Some(KIND_REFUSAL)
+        || matches!(message.outcome.as_str(), "busy" | OUTCOME_LOGGED)
 }
 
 /// Move the log to `messages.1.jsonl` (replacing the previous one) once it is
@@ -521,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn find_reply_matches_by_reply_id_or_sender_whatever_the_outcome() {
+    fn find_reply_matches_by_reply_id_or_sender_but_skips_refusals() {
         let dir = super::super::test_dir("messages-reply");
         let with =
             |unix: u64, from: &str, to: &str, text: &str, reply: Option<&str>| AgentMessage {
@@ -531,6 +542,13 @@ mod tests {
             };
         append(&dir, &with(10, "rev", "lead", "stale", Some("m1"))).unwrap();
         append(&dir, &with(20, "lead", "rev", "question", None)).unwrap();
+        // A reply the limiter refused was never sent: never a delivery.
+        let refused = AgentMessage {
+            outcome: "rate_limited".into(),
+            kind: Some(KIND_REFUSAL.into()),
+            ..with(20, "rev", "lead", "refused", Some("m1"))
+        };
+        append(&dir, &refused).unwrap();
         append(&dir, &with(21, "other", "lead", "noise", None)).unwrap();
         // The waiter was working, so the reply was logged as a busy refusal.
         let busy = AgentMessage {

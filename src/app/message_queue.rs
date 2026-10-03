@@ -427,6 +427,12 @@ impl App {
         if terminal.suspended_agent.is_some() {
             return Check::Wait("suspended".into());
         }
+        // An agent herdr is starting is not detected yet: its messages wait
+        // for it (a launch that never comes up ends as missing, then the
+        // queue's grace drops them).
+        if terminal.managed_agent_launch_pending() {
+            return Check::Wait("starting".into());
+        }
         if terminal.effective_known_agent().is_none() {
             return Check::Missing;
         }
@@ -918,6 +924,10 @@ impl App {
             return false;
         }
         // One paste: the oldest messages for this target, each with its envelope.
+        // The coordinator gets one message per turn: it may answer on its own
+        // only the message that started its turn (the turn origin and marker
+        // name one id), so a batch would leave messages 2..N unanswerable.
+        let max_combined = if coordinator { 1 } else { MAX_COMBINED };
         let mut ids = Vec::new();
         let mut text = String::new();
         for entry in self
@@ -927,7 +937,7 @@ impl App {
             .filter(|entry| entry.terminal_id == terminal_id)
         {
             if !ids.is_empty()
-                && (ids.len() >= MAX_COMBINED
+                && (ids.len() >= max_combined
                     || text.len() + entry.envelope.len() > MAX_COMBINED_CHARS)
             {
                 break;

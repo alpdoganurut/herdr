@@ -217,14 +217,36 @@ pub(super) fn client_input_source(
 }
 
 /// Fork (agents v2): terminal-attach bytes as input for the turn origin. A
-/// CR or LF submits (one `memchr`-style scan, no allocation).
+/// CR or LF submits. Mouse reports (SGR `ESC [ < … M|m`, X10 `ESC [ M` and
+/// three bytes) are not typing, wherever they sit in the batch; a batch of
+/// mouse reports only is `Internal`. One scan, no allocation.
 pub(super) fn attach_input_source(data: &[u8]) -> crate::agents_model::InputSource {
-    // An SGR mouse report is not typing.
-    if data.starts_with(b"\x1b[<") || data.starts_with(b"\x1b[M") {
+    let mut input = false;
+    let mut submit = false;
+    let mut index = 0;
+    while index < data.len() {
+        let rest = &data[index..];
+        if rest.starts_with(b"\x1b[<") {
+            // Up to and including the final M or m.
+            index += rest
+                .iter()
+                .position(|byte| matches!(byte, b'M' | b'm'))
+                .map_or(rest.len(), |end| end + 1);
+            continue;
+        }
+        if rest.starts_with(b"\x1b[M") {
+            index += 6.min(rest.len());
+            continue;
+        }
+        input = true;
+        submit |= matches!(rest[0], b'\r' | b'\n');
+        index += 1;
+    }
+    if !input {
         return crate::agents_model::InputSource::Internal;
     }
     crate::agents_model::InputSource::Client {
-        submit: data.iter().any(|byte| matches!(byte, b'\r' | b'\n')),
+        submit,
         attach: true,
     }
 }
@@ -457,6 +479,26 @@ mod tests {
             super::attach_input_source(b"ls\r"),
             InputSource::Client {
                 submit: true,
+                attach: true
+            }
+        );
+        // Mouse reports alone are not input, in any number.
+        assert_eq!(
+            super::attach_input_source(b"\x1b[<65;10;5M\x1b[<0;3;4m\x1b[M !!"),
+            InputSource::Internal
+        );
+        // A mouse report coalesced with typing: the typing still counts.
+        assert_eq!(
+            super::attach_input_source(b"\x1b[<65;10;5Mls\r"),
+            InputSource::Client {
+                submit: true,
+                attach: true
+            }
+        );
+        assert_eq!(
+            super::attach_input_source(b"x\x1b[M !!"),
+            InputSource::Client {
+                submit: false,
                 attach: true
             }
         );

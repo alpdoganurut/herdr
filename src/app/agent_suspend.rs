@@ -456,6 +456,20 @@ impl App {
                 changed = true;
                 continue;
             };
+            // Fork (agents v2): the relaunch types into the pane's shell; it
+            // waits while the user types there (the typing guard).
+            if self
+                .terminal_runtimes
+                .get(&terminal_id)
+                .is_some_and(|runtime| {
+                    super::typing_guard::runtime_typing_block(None, runtime, now).is_some()
+                })
+            {
+                if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                    terminal.defer_suspended_agent_resume(now + RESTART_RESUME_POLL_INTERVAL);
+                }
+                continue;
+            }
             let target = self
                 .public_pane_id(resolved.ws_idx, resolved.pane_id)
                 .unwrap_or_else(|| terminal_id.to_string());
@@ -1573,6 +1587,49 @@ mod tests {
         assert_ne!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
         assert_eq!(app.state.next_suspended_agent_resume_deadline(), None);
         assert!(!app.start_pending_agent_restarts(Instant::now()));
+    }
+
+    #[tokio::test]
+    async fn restart_relaunch_waits_while_the_user_types_in_the_shell() {
+        let mut app = test_app();
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        let response = restart(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_restarted", "{response}");
+        assert_eq!(
+            next_input(&mut rx).await,
+            bytes::Bytes::from_static(b"/exit")
+        );
+        assert_eq!(next_input(&mut rx).await, bytes::Bytes::from_static(b"\r"));
+        observe_exit(&mut app);
+
+        // The user typed into the shell: the resume command waits.
+        let typed_at = Instant::now();
+        app.terminal_runtimes
+            .get(&terminal_id)
+            .expect("runtime")
+            .note_user_input(typed_at);
+        assert!(!app.start_pending_agent_restarts(typed_at));
+        assert!(rx.try_recv().is_err(), "nothing was typed into the shell");
+        assert!(app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .and_then(|record| record.resume_pending())
+            .is_some());
+
+        // Once the user is quiet it relaunches.
+        let quiet = typed_at + crate::app::typing_guard::USER_INPUT_QUIET;
+        assert!(app.start_pending_agent_restarts(quiet));
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
+        let sent = String::from_utf8(next_input(&mut rx).await.to_vec()).unwrap();
+        assert!(sent.starts_with(&resume_command()), "sent {sent:?}");
     }
 
     #[tokio::test]

@@ -433,6 +433,22 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
     } else {
         Vec::new()
     };
+    // Fork (agents v2): starting an agent types into the target shell; an
+    // agent may do that only where it may type (its own or a teammate's
+    // shell), like `pane run`.
+    match super::agent_route::route()? {
+        Err(code) => return Ok(code),
+        Ok(super::agent_route::Route::Agent(pane)) => {
+            if let Some(code) = super::agent_route::check(
+                &pane,
+                crate::api::schema::agents_model::AgentsCheckAction::ShellInput,
+                Some(pane_id.clone()),
+            )? {
+                return Ok(code);
+            }
+        }
+        Ok(super::agent_route::Route::User | super::agent_route::Route::OldServer) => {}
+    }
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
     let retryable_timeout = timeout > crate::app::AGENT_START_SETTLE_DELAY
         && timeout <= crate::app::MAX_AGENT_START_TIMEOUT;
@@ -924,13 +940,21 @@ fn agent_rename(args: &[String]) -> std::io::Result<i32> {
         Some(value.clone())
     };
 
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:rename".into(),
-        method: Method::AgentRename(AgentRenameParams {
-            target: target.clone(),
-            name,
-        }),
-    })?)
+    // Fork (agents v2): an agent renames only itself or a teammate (a soft
+    // edit, checked and logged as that agent).
+    super::agent_route::checked(
+        crate::api::schema::agents_model::AgentsCheckAction::Cosmetic,
+        Some(target.clone()),
+        || {
+            super::print_response(&super::send_request(&Request {
+                id: "cli:agent:rename".into(),
+                method: Method::AgentRename(AgentRenameParams {
+                    target: target.clone(),
+                    name,
+                }),
+            })?)
+        },
+    )
 }
 
 fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
@@ -998,6 +1022,14 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
     // envelope, the limits, idle targets only).
     match super::agent_route::route()? {
         Err(code) => return Ok(code),
+        Ok(super::agent_route::Route::Agent(_)) if wait => {
+            // A message is answered by a message; waiting on the target's
+            // status would return before a queued message is even typed in.
+            return Ok(super::agent_route::refuse(
+                "invalid_params",
+                "from an agent, agent prompt sends a message and cannot --wait; send it without --wait/--until/--timeout, then wait for the reply with agents_wait_for_message",
+            ));
+        }
         Ok(super::agent_route::Route::Agent(pane)) => {
             return super::agent_route::call(
                 "cli:agents.send_message",

@@ -4044,4 +4044,59 @@ mod tests {
         assert_eq!(app.state.workspaces[0].tabs.len(), tabs, "no tab in /tmp");
         assert!(app.coordinator.tab_id.is_none());
     }
+
+    /// The coordinator may answer on its own only the message that started
+    /// its turn: queued messages go in one per turn, never batched.
+    #[tokio::test]
+    async fn queued_messages_reach_the_coordinator_one_per_turn() {
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        let own = app.existing_coordinator_pane().expect("tab");
+        let target = app
+            .public_pane_id(own.ws_idx, own.pane_id)
+            .expect("pane id");
+        coordinator_terminal_mut(&mut app).set_detected_state(
+            Some(crate::detect::Agent::Claude),
+            crate::detect::AgentState::Working,
+        );
+        for (id, from) in [("mq1", "w9:p1"), ("mq2", "w9:p2")] {
+            let reply = app.handle_agent_message_send(
+                "req".into(),
+                crate::api::schema::AgentMessageSendParams {
+                    target: target.clone(),
+                    id: id.into(),
+                    envelope: format!("[herdr+ message {id} from {from}]\nquestion {id}"),
+                    text: format!("question {id}"),
+                    from_pane: Some(from.into()),
+                    ..Default::default()
+                },
+            );
+            assert!(reply.contains("queued"), "{reply}");
+        }
+        coordinator_terminal_mut(&mut app).set_detected_state(
+            Some(crate::detect::Agent::Claude),
+            crate::detect::AgentState::Idle,
+        );
+        app.message_queue.mark_due();
+        let t0 = Instant::now();
+        app.message_queue_pass(t0, crate::coordinator::now_unix());
+        assert!(app.message_queue_pass(
+            t0 + crate::app::message_queue::SETTLE,
+            crate::coordinator::now_unix()
+        ));
+        let marker = crate::coordinator::turn::read_live(
+            &app.coordinator.dir,
+            crate::coordinator::now_unix(),
+        )
+        .expect("the turn marker");
+        assert_eq!(marker.id, "mq1");
+        let left: Vec<String> = app
+            .message_queue
+            .entries
+            .iter()
+            .map(|entry| entry.message.id.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(left, ["mq2"], "the second message waits for its own turn");
+        let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+    }
 }

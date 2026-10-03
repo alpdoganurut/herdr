@@ -998,12 +998,21 @@ impl App {
         &mut self,
         request: crate::api::schema::Request,
     ) -> String {
+        // Fork (agents v2): user actions on tabs and teams are logged too,
+        // with their outcome.
+        let user_line = self.user_request_line(&request.method);
+        let response = self.dispatch_api_request(request);
+        if let Some(line) = user_line {
+            self.log_user_request(line, &response);
+        }
+        response
+    }
+
+    fn dispatch_api_request(&mut self, request: crate::api::schema::Request) -> String {
         self.sync_pending_terminal_titles();
         use crate::api::schema::{
             ErrorBody, ErrorResponse, Method, ResponseResult, SuccessResponse,
         };
-        // Fork (agents v2): user actions on tabs and teams are logged too.
-        self.log_user_request(&request.method);
 
         let response = match request.method {
             Method::ServerStop(_) => {

@@ -1273,14 +1273,17 @@ impl HeadlessServer {
                     return false;
                 };
                 let terminal_id = terminal_id.clone();
-                if let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) {
+                let Some(id) = self.terminal_id_by_string(&terminal_id) else {
+                    return true;
+                };
+                if let Some(runtime) = self.app.terminal_runtimes.get(&id) {
                     let payload = paste_payload_for_runtime(runtime, &path);
                     if let Err(err) = runtime.try_send_bytes(Bytes::from(payload)) {
                         warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach clipboard image paste failed");
                     }
                     // Fork (agents v2): client input, for the turn origin.
-                    self.app.note_terminal_input(
-                        &terminal_id,
+                    self.app.note_input(
+                        &id,
                         crate::agents_model::InputSource::Client {
                             submit: false,
                             attach: true,
@@ -2202,12 +2205,16 @@ impl HeadlessServer {
                 };
                 let terminal_id = terminal_id.clone();
                 let source = super::pane_input::attach_input_source(&data);
-                if let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) {
-                    if let Err(err) = apply_terminal_attach_input(runtime, data) {
-                        warn!(client_id, terminal_id = %terminal_id, err = %err);
+                // Fork (agents v2): the id is resolved once, for the runtime
+                // and the turn origin.
+                if let Some(id) = self.terminal_id_by_string(&terminal_id) {
+                    if let Some(runtime) = self.app.terminal_runtimes.get(&id) {
+                        if let Err(err) = apply_terminal_attach_input(runtime, data) {
+                            warn!(client_id, terminal_id = %terminal_id, err = %err);
+                        }
+                        // Fork (agents v2): client input, for the turn origin.
+                        self.app.note_input(&id, source);
                     }
-                    // Fork (agents v2): client input, for the turn origin.
-                    self.app.note_terminal_input(&terminal_id, source);
                 }
                 true
             }

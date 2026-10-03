@@ -106,7 +106,7 @@ mark decisions, milestones and failures with agents_checkpoint; keep running not
 const TOOL_LINE: &str = "tools: agents_whoami agents_notify agents_list agents_get agents_read agents_messages \
 agents_wait_for_message agents_wait agents_send_message agents_notes_read agents_notes_append agents_notes_write \
 agents_checkpoint agents_checkpoints_list agents_set_meta agents_actions agents_rename_tab (team) agents_move_to_group (team) \
-agents_open_tab (team) agents_reopen_tab (team) agents_suspend (team) agents_activate (team) agents_restart (team) agents_team (your user's request) agents_create_group (your user's request) \
+agents_open_tab (team) agents_reopen_tab (team) agents_suspend (team, never yourself) agents_activate (team) agents_restart (team, never yourself) agents_team (your user's request) agents_create_group (your user's request) \
 agents_close_tab (your user's request); (team) = your team, or your own tab when you are in none";
 
 /// The etiquette line for a team member.

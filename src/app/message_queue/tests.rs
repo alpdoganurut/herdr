@@ -246,6 +246,26 @@ async fn blocked_and_suspended_targets_are_never_typed_into() {
 }
 
 #[tokio::test]
+async fn an_agent_herdr_is_starting_gets_its_message_queued_not_refused() {
+    let mut app = app();
+    let mut rx = fresh_runtime(&mut app);
+    // Launched (agents_open_tab, agent start) but not detected yet.
+    terminal(&mut app).begin_managed_agent(
+        "rev".into(),
+        Agent::Claude,
+        Instant::now(),
+        Duration::from_secs(1),
+        Duration::from_secs(30),
+    );
+    assert!(terminal(&mut app).effective_known_agent().is_none());
+    let reply = send(&mut app, "ma1", "welcome");
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    assert_eq!(reply["result"]["reason"], "starting");
+    assert!(typed(&mut rx).is_empty());
+    assert_eq!(app.message_queue.entries.len(), 1);
+}
+
+#[tokio::test]
 async fn queued_messages_expire_after_two_hours() {
     let mut app = app();
     rev(&mut app, AgentState::Working);
