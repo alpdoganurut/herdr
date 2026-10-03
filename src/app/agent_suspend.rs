@@ -160,7 +160,7 @@ impl App {
         }
         // Exiting stops the agent's background subagents and loses their
         // work; wait until the count reaches zero (no override). Checked before
-        // Working: live subagents also hold the agent Working.
+        // Working: an idle agent can still have background subagents.
         let subagents = terminal.active_subagent_count();
         if subagents > 0 {
             return Err(AgentSuspendError::SubagentsRunning {

@@ -3575,6 +3575,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn background_subagents_do_not_hold_back_a_wake() {
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        let own = app.existing_coordinator_pane().unwrap();
+        let pane = app.public_pane_id(own.ws_idx, own.pane_id).unwrap();
+        // The coordinator's own turn ended with a background agent still out.
+        let update = app.state.update_terminal_state(own.pane_id, |terminal| {
+            terminal.report_subagents_with_mutation(None, ["b1"])
+        });
+        assert!(update.is_none(), "the count is not a status: {update:?}");
+        let terminal = coordinator_terminal_mut(&mut app);
+        terminal.set_detected_state(
+            Some(crate::detect::Agent::Claude),
+            crate::detect::AgentState::Idle,
+        );
+        assert_eq!(terminal.active_subagent_count(), 1);
+        assert_eq!(terminal.state, crate::detect::AgentState::Idle);
+        assert_eq!(app.wake_coordinator(None).unwrap(), None, "deliverable");
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(own.pane_id, runtime);
+        app.coordinator.sent.clear();
+        prompt_effect(&mut app, &pane);
+        assert_eq!(wake_outcomes(&app), vec![WakeOutcome::Delivered]);
+        let written = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
+        assert!(matches!(written, Ok(Some(_))), "the wake-up was typed in");
+    }
+
+    #[tokio::test]
     async fn a_down_coordinator_is_not_woken_even_when_its_claude_is_up() {
         let mut app = coordinator_app(true);
         running(&mut app);

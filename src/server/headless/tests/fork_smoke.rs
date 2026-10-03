@@ -509,16 +509,11 @@ async fn claude_subagent_hooks_reach_the_client_shell_snapshot() {
         .get_mut(&terminal_id)
         .unwrap()
         .set_detected_state(Some(Agent::Claude), AgentState::Idle);
-    assert_eq!(
-        client_subagents(&server),
-        (1, AgentStatus::Working),
-        "live background agents keep the agent working after its turn ends"
-    );
+    let (subagents, status) = client_subagents(&server);
+    assert_eq!(subagents, 1, "the count outlives the turn");
     assert!(
-        server.app.state.terminals[&terminal_id]
-            .last_agent_completion_seq
-            .is_none(),
-        "not finished while an agent is out"
+        matches!(status, AgentStatus::Idle | AgentStatus::Done),
+        "background agents do not keep the agent working: {status:?}"
     );
 
     // A Stop without background_tasks (an older Claude Code) or from a
@@ -541,13 +536,7 @@ async fn claude_subagent_hooks_reach_the_client_shell_snapshot() {
     assert_eq!(subagents, 0);
     assert!(
         matches!(status, AgentStatus::Idle | AgentStatus::Done),
-        "finished when the last agent ends: {status:?}"
-    );
-    assert!(
-        server.app.state.terminals[&terminal_id]
-            .last_agent_completion_seq
-            .is_some(),
-        "the finish is a completion"
+        "still idle when the last agent ends: {status:?}"
     );
 
     shutdown_test_runtimes(&mut server);

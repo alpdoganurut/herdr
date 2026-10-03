@@ -280,9 +280,8 @@ pub struct TerminalState {
     active_subagents: std::collections::HashSet<String>,
     /// Whether this agent has sent a subagent snapshot (a Claude Code that
     /// reports `background_tasks` on Stop). Until then an idle agent drops
-    /// its set, since nothing else would heal a missed SubagentStop. Once
-    /// seen, a non-empty set holds the agent Working (see
-    /// `subagents_hold_working`).
+    /// its set, since nothing else would heal a missed SubagentStop. The set
+    /// never changes the agent's status: background work is not a turn.
     subagent_snapshot_seen: bool,
     /// The agent session the set belongs to, taken when it became non-empty:
     /// a different session (/clear, a resume of another conversation) has
@@ -2773,13 +2772,9 @@ impl TerminalState {
                 self.clear_subagents();
             }
         }
-        // Fork: live background agents keep the agent Working everywhere; it
-        // finishes when the last one ends. Blocked still wins.
-        let state = if self.subagents_hold_working(detected_state, agent_label.as_deref()) {
-            AgentState::Working
-        } else {
-            detected_state
-        };
+        // Fork: background subagents are counted, never a status: an agent
+        // whose own turn ended is idle while they run.
+        let state = detected_state;
 
         let presentation = self.effective_presentation_for_state_at(state, now);
         self.clear_expiry_pending_for_hidden_metadata();
@@ -2806,20 +2801,9 @@ impl TerminalState {
 }
 
 impl TerminalState {
-    /// Whether the agent's subagents hold it Working over a `detected` idle
-    /// (or same-label unknown) state: only once it sends snapshots, while the
-    /// set is not empty and the agent is live and not parked.
-    fn subagents_hold_working(&self, detected: AgentState, agent_label: Option<&str>) -> bool {
-        self.subagent_snapshot_seen
-            && !self.active_subagents.is_empty()
-            && self.suspended_agent.is_none()
-            && agent_label.is_some()
-            && matches!(detected, AgentState::Idle | AgentState::Unknown)
-    }
-
-    /// Apply a subagent report through the effective state (so the agent's
-    /// status follows its subagents): `start` / `stop` one (`Some(start)`),
-    /// or replace the set with a snapshot (`None`).
+    /// Apply a subagent report through the effective state (the set itself
+    /// never changes the status): `start` / `stop` one (`Some(start)`), or
+    /// replace the set with a snapshot (`None`).
     pub fn report_subagents_with_mutation<'a>(
         &mut self,
         event: Option<(bool, &str)>,

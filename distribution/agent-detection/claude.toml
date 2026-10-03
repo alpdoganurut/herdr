@@ -1,7 +1,7 @@
 id = "claude"
-version = "2026.09.11.1"
+version = "2026.10.03.1"
 min_engine_version = 2
-updated_at = "2026-09-11T00:00:00Z"
+updated_at = "2026-10-03T00:00:00Z"
 aliases = ["claude-code"]
 
 [[rules]]
@@ -14,6 +14,29 @@ visible_working = true
 regex = ['^[\x{2800}-\x{28FF}\x{25D0}-\x{25D3}] ']
 
 [[rules]]
+id = "turn_ended_idle"
+state = "idle"
+priority = 1150
+region = "above_prompt_box"
+visible_idle = true
+# Claude (2.1.288) keeps the title spinner while background agents or MCP
+# tasks run after its own turn ended, and hides the in-screen spinner while it
+# streams text, so neither the title nor a missing spinner line tells a turn
+# from background work. Its turn-end status line does: the last line above the
+# prompt box is "✻ Waiting for N background agents to finish" or the
+# completion line "✻ Worked for 1m 3s · … · N MCP tasks still running" (the
+# verb is the one word before "for": the live spinner "✻ Hashing… (3s · thought
+# for 1s)" never matches).
+# Background work is not a turn, so that line wins over the title. Only its
+# indented wrap (up to 3 lines), blank lines or right-aligned notices ("✔ Update
+# installed · …") may follow it; a new prompt ("❯ …") or a reply ("⏺ …") below
+# it puts the title back in charge.
+regex = ['(?m)^[\x{002A}\x{00B7}\x{2722}\x{2733}\x{2736}\x{273B}\x{273D}][ \t]+(?:Waiting for [1-9]\d* background agents? to finish|\S+ for \d+[smh]\b[^\n]*)[ \t]*(?:\n[ \t]+\S[^\n]*){0,3}(?:\n(?:[ \t]*|[ \t]{20,}\S[^\n]*))*\n?\z']
+not = [
+  { line_regex = ['(?i)esc to close\s*$'] },
+]
+
+[[rules]]
 id = "live_turn_working"
 state = "working"
 priority = 970
@@ -22,32 +45,6 @@ visible_working = true
 any = [
   { line_regex = ['^\s*[⏸⏵].*esc to interrupt(?:\s|·|$)'] },
   { line_regex = ['^\s*[\x{002A}\x{00B7}\x{2722}\x{2733}\x{2736}\x{273B}\x{273D}]\s+\S.*…(?:\s+\(\d+[smh](?:\s|·)|\s*$)'] },
-]
-
-[[rules]]
-id = "background_agents_working"
-state = "working"
-priority = 965
-region = "last_non_empty_above_prompt_box"
-visible_working = true
-line_regex = ['^\s*[\x{002A}\x{00B7}\x{2722}\x{2736}\x{273B}\x{273D}]\s+Waiting for [1-9]\d* background agents? to finish\s*$']
-
-[[rules]]
-id = "background_mcp_task_working"
-state = "working"
-priority = 965
-region = "bottom_non_empty_lines(12)"
-visible_working = true
-# Claude renders activity summaries at column zero; wrapped continuations are indented.
-# Keeping that shape prevents user prompt text from impersonating this signal.
-regex = ['(?m)^[\x{002A}\x{00B7}\x{2722}\x{2736}\x{273B}\x{273D}][ \t]+\S[^\n]*?(?:\n[ \t]+[^\n]*?){0,3}·(?:[ \t]+|\n[ \t]*)[1-9]\d*(?:[ \t]+|\n[ \t]*)MCP(?:[ \t]+|\n[ \t]*)tasks?(?:[ \t]+|\n[ \t]*)still(?:[ \t]+|\n[ \t]*)running[ \t]*$']
-not = [
-  { contains = ["do you want to proceed?"] },
-  { contains = ["esc to cancel"] },
-  { contains = ["waiting for permission"] },
-  { contains = ["do you want to allow this connection?"] },
-  { contains = ["tab to amend"] },
-  { contains = ["ctrl+e to explain"] },
 ]
 
 [[rules]]

@@ -8,7 +8,9 @@
 //! (`TerminalState::record_subagent`, `replace_subagents`), never persisted.
 //! It outlives the main turn: agent records carry the count whatever the
 //! agent's status (`AgentInfo.subagents`, 0 while suspended), clients show
-//! it, and suspend/restart refuse while it is not zero.
+//! it, and suspend/restart refuse while it is not zero. It never makes the
+//! agent `working`: an agent whose own turn ended is idle while its
+//! background subagents run.
 
 use crate::api::schema::{PaneReportSubagentParams, ResponseResult, SubagentEvent};
 
@@ -65,9 +67,10 @@ impl App {
                 format!("pane {} not found", params.pane_id),
             );
         }
-        // Through the effective state, so the agent's status follows its
-        // subagents (Working while they run, finishing when the last ends)
-        // with the usual completion, seen and event handling.
+        // Through the effective state, so a report that also clears the set
+        // (another agent, another session) gets the usual event handling.
+        // The count never changes the agent's status: background subagents
+        // are not a turn.
         let previous_toast = self.state.toast.clone();
         let event = match params.event {
             SubagentEvent::Start => Some((true, subagent_id)),
@@ -406,66 +409,65 @@ mod tests {
     }
 
     #[test]
-    fn live_background_agents_keep_the_agent_working_past_its_turn() {
+    fn background_agents_do_not_keep_the_agent_working_past_its_turn() {
         use crate::api::schema::AgentStatus;
         let mut app = claude_with_background_agents(&["b1", "b2"]);
-        // The main turn ends (the prompt is back) with both agents out.
+        // The main turn ends (the prompt is back) with both agents out: the
+        // agent finishes now, and the count stays.
         let updates = observe(&mut app, AgentState::Idle);
-        assert!(updates.is_empty(), "no transition: {updates:?}");
+        assert_eq!(updates.len(), 1, "the turn's own finish: {updates:?}");
         snapshot(&mut app, &["b1", "b2"]);
-        assert_eq!(status(&app), AgentStatus::Working);
-        assert_eq!(terminal(&mut app).state, AgentState::Working);
-        assert_eq!(completion(&mut app), None, "not finished yet");
-        // Later detection passes and hand-back turns keep it Working.
-        observe(&mut app, AgentState::Idle);
-        observe(&mut app, AgentState::Working);
-        observe(&mut app, AgentState::Idle);
-        snapshot(&mut app, &["b2"]);
-        assert_eq!(status(&app), AgentStatus::Working);
-        assert_eq!(completion(&mut app), None);
-    }
-
-    #[test]
-    fn the_last_agent_ending_finishes_the_agent_exactly_once() {
-        use crate::api::schema::AgentStatus;
-        let mut app = claude_with_background_agents(&["b1"]);
-        observe(&mut app, AgentState::Idle);
-        snapshot(&mut app, &["b1"]);
-        assert_eq!(completion(&mut app), None);
-
-        // The last agent reports back: the Stop snapshot lists none.
-        let pane_id = root_pane(&app);
-        let update = app.state.update_terminal_state(pane_id, |terminal| {
-            terminal.report_subagents_with_mutation(None, [])
-        });
-        let update = update.expect("a transition");
-        assert_eq!(
-            (update.previous_state, update.state),
-            (AgentState::Working, AgentState::Idle)
-        );
-        let finished = completion(&mut app);
-        assert!(finished.is_some(), "a completion");
         assert!(matches!(
             status(&app),
             AgentStatus::Idle | AgentStatus::Done
         ));
-        // Nothing more happens on later passes or an empty snapshot again.
-        assert!(observe(&mut app, AgentState::Idle).is_empty());
-        let again = app.state.update_terminal_state(pane_id, |terminal| {
+        assert_eq!(terminal(&mut app).state, AgentState::Idle);
+        assert_eq!(terminal(&mut app).active_subagent_count(), 2);
+        let finished = completion(&mut app);
+        assert!(finished.is_some(), "finished with the turn");
+        // A hand-back turn works and finishes like any other.
+        observe(&mut app, AgentState::Working);
+        assert_eq!(status(&app), AgentStatus::Working);
+        observe(&mut app, AgentState::Idle);
+        snapshot(&mut app, &["b2"]);
+        assert!(matches!(
+            status(&app),
+            AgentStatus::Idle | AgentStatus::Done
+        ));
+        assert_eq!(terminal(&mut app).active_subagent_count(), 1);
+    }
+
+    #[test]
+    fn the_last_agent_ending_changes_no_status() {
+        let mut app = claude_with_background_agents(&["b1"]);
+        observe(&mut app, AgentState::Idle);
+        snapshot(&mut app, &["b1"]);
+        let finished = completion(&mut app);
+        assert!(finished.is_some(), "the turn finished");
+
+        // The last agent reports back: the Stop snapshot lists none. No
+        // transition and no second completion.
+        let pane_id = root_pane(&app);
+        let update = app.state.update_terminal_state(pane_id, |terminal| {
             terminal.report_subagents_with_mutation(None, [])
         });
-        assert!(again.is_none(), "{again:?}");
+        assert!(update.is_none(), "{update:?}");
+        assert_eq!(terminal(&mut app).active_subagent_count(), 0);
         assert_eq!(completion(&mut app), finished, "one completion");
     }
 
     #[test]
-    fn blocked_wins_over_live_background_agents() {
+    fn detection_alone_decides_with_live_background_agents() {
         use crate::api::schema::AgentStatus;
         let mut app = claude_with_background_agents(&["b1"]);
         observe(&mut app, AgentState::Blocked);
         assert_eq!(status(&app), AgentStatus::Blocked);
         observe(&mut app, AgentState::Idle);
-        assert_eq!(status(&app), AgentStatus::Working, "back to held working");
+        assert!(
+            matches!(status(&app), AgentStatus::Idle | AgentStatus::Done),
+            "idle, not held working"
+        );
+        assert_eq!(terminal(&mut app).active_subagent_count(), 1);
     }
 
     #[test]

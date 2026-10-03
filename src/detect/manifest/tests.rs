@@ -448,6 +448,85 @@ regex = ['^progress-marker$']
 }
 
 #[test]
+fn a_screen_rule_anchored_above_the_prompt_box_outranks_a_title_rule() {
+    // The shape Claude's background-work rule uses: a higher-priority idle
+    // rule whose regex must end the region above the prompt box (`\z`) wins
+    // over a title spinner; anything after the line hands it back.
+    with_manifest_dirs("anchored-above-box", || {
+        write_local_codex(&rules_manifest(
+            r#"
+[[rules]]
+id = "title"
+state = "working"
+priority = 20
+region = "osc_title"
+regex = ['^spin ']
+
+[[rules]]
+id = "ended"
+state = "idle"
+priority = 30
+region = "above_prompt_box"
+regex = ['(?m)^\* ended line[ \t]*(?:\n[ \t]+\S[^\n]*){0,3}(?:\n(?:[ \t]*|[ \t]{20,}\S[^\n]*))*\n?\z']
+"#,
+        ));
+        let box_tail = "──────────\n> \n──────────\nfooter\n";
+        let notice = format!("{}notice\n", " ".repeat(30));
+        for (above, state, rule) in [
+            (
+                "old\n* ended line\n\n".to_string(),
+                AgentState::Idle,
+                "ended",
+            ),
+            (
+                "* ended line\n  wrapped tail\n".to_string(),
+                AgentState::Idle,
+                "ended",
+            ),
+            (format!("* ended line\n{notice}"), AgentState::Idle, "ended"),
+            (
+                "* ended line\n> new prompt\n".to_string(),
+                AgentState::Working,
+                "title",
+            ),
+            (
+                "* ended line\nstreamed reply\n".to_string(),
+                AgentState::Working,
+                "title",
+            ),
+            ("nothing ended\n".to_string(), AgentState::Working, "title"),
+        ] {
+            let screen = format!("{above}{box_tail}");
+            let result = explain_with_input(
+                Agent::Codex,
+                DetectionInput {
+                    screen: &screen,
+                    osc_title: "spin task",
+                    osc_progress: "",
+                },
+            );
+            assert_eq!(result.state, state, "{above:?}");
+            assert_eq!(
+                result.matched_rule.as_ref().map(|m| m.id.as_str()),
+                Some(rule),
+                "{above:?}"
+            );
+        }
+        // Without a prompt box the region is the whole screen, so the line
+        // must still end it: a dialog below it keeps the title in charge.
+        let dialog = explain_with_input(
+            Agent::Codex,
+            DetectionInput {
+                screen: "* ended line\n──────────\n dialog\n 1. Yes\n",
+                osc_title: "spin task",
+                osc_progress: "",
+            },
+        );
+        assert_eq!(dialog.state, AgentState::Working);
+    });
+}
+
+#[test]
 fn skip_rule_suppresses_state_update_without_visible_state_evidence() {
     with_manifest_dirs("skip-rule", || {
         write_local_codex(&rules_manifest(
