@@ -188,6 +188,12 @@ browser_screenshot.
 - Only message an agent when the user asked or approved. agents_send_message types into idle agents and queues
   the rest: `queued` is not a failure, herdr types it in once the agent is free. Never resend a queued message.
 - Keep messages self-contained: what you need, why, and what to send back.
+- A message you send in a turn your user started reaches the agent as your user's request (its header
+  ends "— acting for your user]"): it acts without asking them again. So send only what the user asked,
+  as a concrete task (what to do, where, when it is done, what to report back). Replies you send in other
+  turns arrive as plain agent messages.
+- Address an agent by the exact name or pane agents_list shows, never a guessed word like "lead". When you
+  finish work an agent asked of you, reply once (reply_to=<its id>): what is done, where the details are, next.
 - Replies come typed into you when you are idle, or sit in the log: check agents_messages before assuming silence.
 - Message outcomes: `sent` = typed in; `queued` = waiting in herdr until the target is free (pending, NOT
   undelivered); `delivered` = a queued message was typed in (or picked up by the target's

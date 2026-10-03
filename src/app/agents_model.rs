@@ -507,6 +507,75 @@ impl App {
         }
     }
 
+    /// A message's `role:<role>` target: the one other member of the
+    /// caller's team whose role is `role` (ignoring case, and punctuation as
+    /// the role slug does). The usual checks still run on the result.
+    fn resolve_team_role(&self, caller: &ModelCaller, role: &str) -> ModelResult<TabTarget> {
+        let role = crate::coordinator::one_line(role, 32);
+        if role.is_empty() {
+            return Err(ModelError::new(
+                error_code::INVALID_PARAMS,
+                "role:<role> needs a role",
+            ));
+        }
+        let team = caller.team_ws.and_then(|ws_idx| {
+            let ws = self.state.workspaces.get(ws_idx)?;
+            Some((ws_idx, ws, ws.team.as_ref()?))
+        });
+        let Some((ws_idx, ws, team)) = team else {
+            return Err(ModelError::new(
+                error_code::OUTSIDE_TEAM,
+                "role:<role> names a teammate, and you are in no team",
+            ));
+        };
+        let slug = crate::agent_wrap::team::role_slug(&role);
+        let matches = |other: &str| {
+            other.trim().eq_ignore_ascii_case(&role)
+                || (slug.is_some() && crate::agent_wrap::team::role_slug(other) == slug)
+        };
+        let hits: Vec<(usize, PaneId)> = team
+            .members
+            .iter()
+            .filter(|member| member.pane_id != caller.pane_id)
+            .filter(|member| member.role.as_deref().is_some_and(matches))
+            .filter_map(|member| {
+                ws.find_tab_index_for_pane(member.pane_id)
+                    .map(|tab_idx| (tab_idx, member.pane_id))
+            })
+            .collect();
+        match hits.as_slice() {
+            [(tab_idx, pane_id)] => Ok(TabTarget {
+                ws_idx,
+                tab_idx: *tab_idx,
+                pane_id: Some(*pane_id),
+            }),
+            [] => Err(ModelError::new(
+                error_code::NOT_FOUND,
+                format!("no teammate has role {role} (agents_whoami lists your team)"),
+            )),
+            _ => {
+                let names: Vec<String> = hits
+                    .iter()
+                    .map(|(_, pane_id)| {
+                        let public = self.public_pane_id(ws_idx, *pane_id).unwrap_or_default();
+                        match self.model_agent_name(ws_idx, *pane_id) {
+                            Some(name) => format!("{name} ({public})"),
+                            None => public,
+                        }
+                    })
+                    .collect();
+                Err(ModelError::new(
+                    error_code::INVALID_PARAMS,
+                    format!(
+                        "{} teammates have role {role}: {}; pass a name or pane",
+                        hits.len(),
+                        names.join(", ")
+                    ),
+                ))
+            }
+        }
+    }
+
     /// The pane a target names: the named pane, else the tab's only agent
     /// pane, else its root.
     pub(crate) fn target_pane(&self, target: TabTarget) -> Option<PaneId> {
@@ -1992,7 +2061,10 @@ impl App {
             .reply_to
             .as_deref()
             .filter(|id| crate::coordinator::messages::is_id(id));
-        let target = self.resolve_model_tab(&params.to)?;
+        let target = match params.to.trim().strip_prefix("role:") {
+            Some(role) => self.resolve_team_role(&caller, role)?,
+            None => self.resolve_model_tab(&params.to)?,
+        };
         let pane = self
             .target_pane(target)
             .ok_or_else(|| ModelError::new(error_code::NOT_FOUND, "no pane"))?;
@@ -2041,6 +2113,7 @@ impl App {
             _ => false,
         };
         self.model_authorize(&caller, relation, Action::Message, &facts, &line)?;
+        let for_user = matches!(caller.actor, Actor::Coordinator) && facts.user_turn;
         let now = now_unix();
         if let Err(refusal) =
             self.agents_model
@@ -2103,6 +2176,9 @@ impl App {
             role: self
                 .model_terminal(caller.ws_idx, caller.pane_id)
                 .and_then(|terminal| terminal.agent_meta().role.clone()),
+            // Server-resolved: only the real coordinator, in a turn its user
+            // started (a reply in a message turn stays a plain message).
+            coordinator_for_user: for_user,
         };
         let typed =
             crate::agents_model::envelope::envelope(&sender, &id, reply_to, &text, now, teammate);
@@ -3500,6 +3576,123 @@ pub(crate) mod tests {
             app.effective_turn(&terminal).expect("a turn").origin,
             TurnOrigin::AgentMessage { id, from }
         );
+    }
+
+    #[tokio::test]
+    async fn the_coordinators_message_in_its_users_turn_carries_the_users_authority() {
+        let mut app = model_app();
+        // Its turn marker lives in the coordinator dir: never the user's.
+        app.coordinator.dir = std::env::temp_dir().join(format!(
+            "herdr-agents-model-coordinator-{}-{}",
+            std::process::id(),
+            crate::coordinator::launch::new_uuid()
+        ));
+        std::fs::create_dir_all(&app.coordinator.dir).expect("the coordinator dir");
+        let coordinator_pane = pane(&app, 0, 0);
+        terminal_mut(&mut app, coordinator_pane)
+            .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        app.state.coordinator_terminal_id = Some(
+            app.state.workspaces[0]
+                .pane_state(coordinator_pane)
+                .unwrap()
+                .attached_terminal_id
+                .clone(),
+        );
+        user_turn(&mut app, coordinator_pane);
+        let fixer = pane(&app, 1, 1);
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.note_user_input(Instant::now());
+        app.state.insert_test_runtime(fixer, runtime);
+        let (from, to) = (public(&app, 0, 0), public(&app, 1, 1));
+        let result = call(
+            &mut app,
+            Method::AgentsSendMessage(AgentsSendMessageParams {
+                caller_pane: from,
+                to,
+                text: "run the tests".into(),
+                reply_to: None,
+            }),
+        );
+        assert_eq!(result["result"]["message"]["outcome"], "queued", "{result}");
+        let envelope = &app.message_queue.entries[0].envelope;
+        assert!(
+            envelope.contains("from the coordinator") && envelope.contains("acting for your user]"),
+            "{envelope}"
+        );
+        assert!(envelope.contains(crate::agents_model::envelope::COORDINATOR_RULE));
+        assert!(!envelope.contains("untrusted request"));
+        let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+    }
+
+    #[tokio::test]
+    async fn role_targets_resolve_to_one_teammate_only() {
+        let mut app = model_app();
+        let lead = public(&app, 1, 0);
+        let fixer = pane(&app, 1, 1);
+        let fixer_public = public(&app, 1, 1);
+        let send = |app: &mut App, from: &str, to: &str| {
+            call(
+                app,
+                Method::AgentsSendMessage(AgentsSendMessageParams {
+                    caller_pane: from.to_string(),
+                    to: to.to_string(),
+                    text: "done: see notes".into(),
+                    reply_to: None,
+                }),
+            )
+        };
+        let set_role = |app: &mut App, pane: PaneId, role: &str| {
+            let team = app.state.workspaces[1].team.as_mut().expect("team");
+            team.member_mut(pane).expect("member").role = Some(role.into());
+        };
+        let lead_pane = pane(&app, 1, 0);
+        set_role(&mut app, lead_pane, "Team Lead");
+        set_role(&mut app, fixer, "fixer");
+        // Its user types in the target: queued, so nothing needs a PTY.
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.note_user_input(Instant::now());
+        app.state.insert_test_runtime(fixer, runtime);
+        let result = send(&mut app, &lead, "role:FIXER");
+        let message = &result["result"]["message"];
+        assert_eq!(message["to_pane"], fixer_public.as_str(), "{result}");
+        let queued = &app.message_queue.entries[0];
+        assert!(queued.envelope.contains("your teammate"));
+        assert!(!queued.envelope.contains("acting for your user"));
+        // The fixer reaches the lead by its role slug; never itself.
+        let (runtime, _lead_rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.note_user_input(Instant::now());
+        app.state.insert_test_runtime(lead_pane, runtime);
+        let result = send(&mut app, &fixer_public, "role:team-lead");
+        assert_eq!(
+            result["result"]["message"]["to_pane"],
+            lead.as_str(),
+            "{result}"
+        );
+        let result = send(&mut app, &fixer_public, "role:fixer");
+        assert_eq!(code(&result), "not_found", "{result}");
+        let result = send(&mut app, &lead, "role: ");
+        assert_eq!(code(&result), "invalid_params", "{result}");
+        // Not in a team: no teammates to name.
+        let notes = public(&app, 2, 0);
+        let result = send(&mut app, &notes, "role:fixer");
+        assert_eq!(code(&result), "outside_team", "{result}");
+        // Two teammates with the role: an error naming both.
+        app.state.workspaces[1].test_add_tab(Some("fixer-2"));
+        app.state.ensure_test_terminals();
+        let second = pane(&app, 1, 2);
+        terminal_mut(&mut app, second).set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        let team = app.state.workspaces[1].team.as_mut().expect("team");
+        team.members.push(crate::workspace::team::TeamMember::new(
+            second,
+            Some("Fixer".into()),
+            0,
+        ));
+        let result = send(&mut app, &lead, "role:fixer");
+        assert_eq!(code(&result), "invalid_params", "{result}");
+        let error = result.to_string();
+        assert!(error.contains("2 teammates have role fixer"), "{error}");
+        assert!(error.contains(&fixer_public), "{error}");
+        assert!(error.contains(&public(&app, 1, 2)), "{error}");
     }
 
     #[test]
