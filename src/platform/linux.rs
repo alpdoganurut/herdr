@@ -648,6 +648,23 @@ pub fn foreground_group_leader_job(process_group_id: u32) -> Option<ForegroundJo
     })
 }
 
+/// The process on the other end of a local API connection (`SO_PEERCRED`).
+pub(crate) fn local_stream_peer_pid(stream: &crate::ipc::LocalStream) -> Option<u32> {
+    use interprocess::local_socket::traits::StreamCommon as _;
+
+    let pid = stream.peer_creds().ok()?.pid()?;
+    u32::try_from(pid).ok().filter(|pid| *pid > 0)
+}
+
+/// The parent of `pid` (`None` when it is gone).
+pub(crate) fn parent_pid(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = stat.get(stat.rfind(')')? + 2..)?;
+    // After (comm): state(0) ppid(1)
+    let ppid: u32 = rest.split_whitespace().nth(1)?.parse().ok()?;
+    (ppid > 0).then_some(ppid)
+}
+
 pub fn foreground_process_group_id(child_pid: u32) -> Option<u32> {
     // /proc/<pid>/stat format: "pid (comm) state ppid pgrp session tty_nr tpgid ..."
     // The (comm) field can contain spaces and parens, so we find the last ')' first.

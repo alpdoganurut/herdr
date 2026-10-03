@@ -143,7 +143,8 @@ impl App {
 
     pub(super) fn handle_pane_current(&mut self, id: String, params: PaneCurrentParams) -> String {
         let target = match params.caller_pane_id.as_deref() {
-            Some(caller_pane_id) => self.parse_pane_id(caller_pane_id),
+            // Fork (agents v2): a stale id finds the caller by its process.
+            Some(caller_pane_id) => self.resolve_caller_pane(caller_pane_id),
             None => self.resolve_optional_pane(None),
         };
         let Some((ws_idx, pane_id)) = target else {

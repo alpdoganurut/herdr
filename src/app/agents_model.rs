@@ -64,6 +64,10 @@ pub(crate) struct AgentsModelRuntime {
     /// Depth of in-process delegation ([`App::call_method`]): a delegated
     /// method is not logged again as a user action.
     pub(crate) delegating: u32,
+    /// The process that sent the request being handled (the socket peer),
+    /// `None` between requests and for clients: it finds a caller whose
+    /// pane id went stale ([`App::resolve_caller_pane`]).
+    pub(crate) caller_process: Option<u32>,
 }
 
 impl AgentsModelRuntime {
@@ -370,6 +374,70 @@ impl App {
             .any(|pane| self.is_coordinator_pane(ws_idx, pane))
     }
 
+    /// The pane behind a caller's own pane id. The id comes from the
+    /// caller's environment (`HERDR_PANE_ID`, set when its pane started), so
+    /// it goes stale when the tab moves to another group without an alias
+    /// (a move made by an older herdr) or names another pane by now. When
+    /// the request came from a known process, a pane whose process (its
+    /// shell or agent) is that process or one of its ancestors is the
+    /// caller: the id's own pane when it is one of them, else the single
+    /// such pane. No such pane, or several, keep the id's own resolution
+    /// (and its refusals).
+    pub(crate) fn resolve_caller_pane(&self, caller: &str) -> Option<(usize, PaneId)> {
+        let parsed = self.parse_pane_id(caller);
+        let Some(peer) = self.agents_model.caller_process else {
+            return parsed;
+        };
+        let ancestry = crate::platform::process_ancestry(peer);
+        self.caller_pane_by_ancestry(caller, parsed, &ancestry)
+    }
+
+    /// [`Self::resolve_caller_pane`] for a known process chain.
+    pub(crate) fn caller_pane_by_ancestry(
+        &self,
+        caller: &str,
+        parsed: Option<(usize, PaneId)>,
+        ancestry: &[u32],
+    ) -> Option<(usize, PaneId)> {
+        let pane_pid = |ws_idx: usize, pane_id: PaneId| {
+            let state = self.state.workspaces.get(ws_idx)?.pane_state(pane_id)?;
+            self.terminal_runtimes
+                .get(&state.attached_terminal_id)?
+                .child_pid()
+        };
+        if let Some((ws_idx, pane_id)) = parsed {
+            if pane_pid(ws_idx, pane_id).is_some_and(|pid| ancestry.contains(&pid)) {
+                return parsed;
+            }
+        }
+        let mut found = None;
+        for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
+            for tab in &ws.tabs {
+                for pane_id in tab.panes.keys() {
+                    if !pane_pid(ws_idx, *pane_id).is_some_and(|pid| ancestry.contains(&pid)) {
+                        continue;
+                    }
+                    if found.is_some() {
+                        tracing::warn!(caller, "caller process matches several panes");
+                        return parsed;
+                    }
+                    found = Some((ws_idx, *pane_id));
+                }
+            }
+        }
+        match found {
+            Some((ws_idx, pane_id)) => {
+                tracing::info!(
+                    caller,
+                    pane = ?self.public_pane_id(ws_idx, pane_id),
+                    "caller pane id is stale; found the caller by its process"
+                );
+                found
+            }
+            None => parsed,
+        }
+    }
+
     /// The caller from `caller_pane`; `None` (absent) is the user.
     pub(crate) fn model_caller(
         &self,
@@ -386,7 +454,7 @@ impl App {
                 ),
             )
         };
-        let (ws_idx, pane_id) = self.parse_pane_id(caller).ok_or_else(unresolved)?;
+        let (ws_idx, pane_id) = self.resolve_caller_pane(caller).ok_or_else(unresolved)?;
         let ws = &self.state.workspaces[ws_idx];
         let tab_idx = ws.find_tab_index_for_pane(pane_id).ok_or_else(unresolved)?;
         let terminal_id = ws

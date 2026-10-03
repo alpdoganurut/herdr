@@ -223,7 +223,12 @@ impl App {
         let Some(caller) = caller_pane.filter(|caller| !caller.trim().is_empty()) else {
             return Ok(TeamActor::User);
         };
-        let (ws_idx, pane) = self.team_pane_or_error(caller)?;
+        let (ws_idx, pane) = self.resolve_caller_pane(caller).ok_or_else(|| {
+            TeamError::new(
+                error_code::PANE_NOT_FOUND,
+                format!("pane {caller} not found"),
+            )
+        })?;
         if self.is_coordinator_pane(ws_idx, pane) {
             return Ok(TeamActor::Coordinator);
         }
@@ -1143,7 +1148,7 @@ impl App {
     /// `team.context`: read-only except `ack`, which never bumps the view
     /// revision, saves or asks for a render.
     pub(super) fn handle_team_context(&mut self, id: String, params: TeamContextParams) -> String {
-        let Some((ws_idx, pane)) = self.parse_pane_id(&params.caller_pane) else {
+        let Some((ws_idx, pane)) = self.resolve_caller_pane(&params.caller_pane) else {
             return encode_error(
                 id,
                 error_code::PANE_NOT_FOUND,

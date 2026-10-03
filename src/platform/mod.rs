@@ -347,6 +347,23 @@ pub(crate) fn begin_cli_output() {}
 #[cfg(not(unix))]
 pub(crate) fn end_cli_output() {}
 
+/// `pid` and the processes above it, nearest first; bounded, and just
+/// `pid` where the platform cannot walk parents.
+pub(crate) fn process_ancestry(pid: u32) -> Vec<u32> {
+    let mut chain = vec![pid];
+    let mut current = pid;
+    for _ in 0..64 {
+        match parent_pid(current) {
+            Some(parent) if parent > 1 && !chain.contains(&parent) => {
+                chain.push(parent);
+                current = parent;
+            }
+            _ => break,
+        }
+    }
+    chain
+}
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]

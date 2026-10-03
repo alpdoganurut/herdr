@@ -3023,6 +3023,21 @@ impl HeadlessServer {
         skip_default_workspace_for_request: bool,
         client_local: bool,
     ) -> bool {
+        // Fork (agents v2): the sending process, for the caller fallback
+        // (`App::resolve_caller_pane`), only while this request runs.
+        self.app.agents_model.caller_process = msg.peer_pid;
+        let changed =
+            self.handle_api_request_dispatch(msg, skip_default_workspace_for_request, client_local);
+        self.app.agents_model.caller_process = None;
+        changed
+    }
+
+    fn handle_api_request_dispatch(
+        &mut self,
+        msg: api::ApiRequestMessage,
+        skip_default_workspace_for_request: bool,
+        client_local: bool,
+    ) -> bool {
         if self.shutting_down {
             // During shutdown, respond with server_unavailable.
             let response = serde_json::to_string(&api::schema::ErrorResponse {

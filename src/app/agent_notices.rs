@@ -479,7 +479,7 @@ impl App {
 
     /// The sender behind `caller_pane`, from the server's pane record.
     fn notice_sender(&self, caller_pane: &str) -> Option<NoticeSender> {
-        let (ws_idx, raw) = self.parse_pane_id(caller_pane)?;
+        let (ws_idx, raw) = self.resolve_caller_pane(caller_pane)?;
         let pane_id = self.public_pane_id(ws_idx, raw)?;
         let pane = self.pane_info(ws_idx, raw)?;
         let agent_name = self

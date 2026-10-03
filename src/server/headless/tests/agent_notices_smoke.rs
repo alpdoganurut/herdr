@@ -53,6 +53,7 @@ fn public_api(server: &mut HeadlessServer, method: Method) -> serde_json::Value 
         respond_to,
         response_write_complete: None,
         stream_active: None,
+        peer_pid: None,
     });
     serde_json::from_str(&response_rx.recv().expect("api response")).expect("json response")
 }
@@ -70,6 +71,7 @@ fn client_api(server: &mut HeadlessServer, client_id: u64, method: Method) -> se
             respond_to,
             response_write_complete: None,
             stream_active: None,
+            peer_pid: None,
         },
     );
     serde_json::from_str(&response_rx.recv().expect("client response")).expect("json response")

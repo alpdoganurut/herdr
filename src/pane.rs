@@ -3699,6 +3699,11 @@ impl PaneRuntime {
         self.compression.wake();
     }
 
+    /// Tests: the pid of the pane's process (its shell or agent).
+    pub(crate) fn test_set_child_pid(&self, pid: u32) {
+        self.child_pid.store(pid, Ordering::Release);
+    }
+
     pub(crate) fn test_with_scrollback_bytes(
         cols: u16,
         rows: u16,

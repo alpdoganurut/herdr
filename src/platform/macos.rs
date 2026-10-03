@@ -908,6 +908,33 @@ fn run_clipboard_command(command: &ClipboardCommand, bytes: &[u8]) -> bool {
     child.wait().map(|status| status.success()).unwrap_or(false)
 }
 
+/// The process on the other end of a local API connection
+/// (`LOCAL_PEERPID`; `xucred` carries no pid on Darwin).
+pub(crate) fn local_stream_peer_pid(stream: &crate::ipc::LocalStream) -> Option<u32> {
+    use std::os::fd::AsRawFd as _;
+
+    let crate::ipc::LocalStream::UdSocket(stream) = stream;
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    let ret = unsafe {
+        libc::getsockopt(
+            stream.inner().as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut len,
+        )
+    };
+    (ret == 0 && pid > 0).then_some(pid as u32)
+}
+
+/// The parent of `pid` (`None` when it is gone).
+pub(crate) fn parent_pid(pid: u32) -> Option<u32> {
+    process_bsdinfo(pid)
+        .map(|info| info.pbi_ppid)
+        .filter(|ppid| *ppid > 0)
+}
+
 fn process_bsdinfo(pid: u32) -> Option<libc::proc_bsdinfo> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;

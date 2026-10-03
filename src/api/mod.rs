@@ -125,6 +125,9 @@ pub struct ApiRequestMessage {
     pub respond_to: std::sync::mpsc::Sender<String>,
     pub response_write_complete: Option<std::sync::mpsc::Receiver<()>>,
     pub stream_active: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// The process that sent the request over the local socket, when the
+    /// platform tells (it identifies a caller whose pane id went stale).
+    pub peer_pid: Option<u32>,
 }
 
 pub type ApiRequestSender = mpsc::UnboundedSender<ApiRequestMessage>;

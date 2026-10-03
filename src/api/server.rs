@@ -195,6 +195,12 @@ fn handle_connection(
     )
 }
 
+thread_local! {
+    /// The process behind the connection this thread serves (one thread per
+    /// connection); every request it dispatches carries it.
+    static CONNECTION_PEER_PID: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
 fn handle_connection_with_stop(
     mut stream: LocalStream,
     api_tx: &ApiRequestSender,
@@ -207,6 +213,7 @@ fn handle_connection_with_stop(
     if let Err(err) = stream.set_send_timeout(Some(STREAM_WRITE_TIMEOUT)) {
         debug!(err = %err, "api connection write timeout unavailable");
     }
+    CONNECTION_PEER_PID.with(|peer| peer.set(crate::platform::local_stream_peer_pid(&stream)));
 
     let Some(line) = read_initial_request_line(&mut stream)? else {
         return Ok(());
@@ -1076,6 +1083,7 @@ fn dispatch_to_app(
         respond_to,
         response_write_complete,
         stream_active,
+        peer_pid: CONNECTION_PEER_PID.with(std::cell::Cell::get),
     }) {
         if let Some(active) = request_active {
             active.store(false, Ordering::Release);
@@ -1198,6 +1206,45 @@ mod tests {
         let client = crate::ipc::connect_local_stream(&path).unwrap();
         let server = listener.accept().unwrap();
         (client, server, path)
+    }
+
+    #[test]
+    fn a_dispatched_request_carries_the_connecting_process() {
+        let (mut client, server, path) = local_stream_pair("peer-pid");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let worker = std::thread::spawn(move || {
+            let _ = handle_connection(
+                server,
+                &tx,
+                &EventHub::default(),
+                &Arc::new(AtomicBool::new(true)),
+                None,
+            );
+        });
+        write_json_line(
+            &mut client,
+            &Request {
+                id: "peer-pid".into(),
+                method: Method::PaneList(crate::api::schema::PaneListParams { workspace_id: None }),
+            },
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let msg = loop {
+            match rx.try_recv() {
+                Ok(msg) => break msg,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(err) => panic!("no request dispatched: {err}"),
+            }
+        };
+        // Same process on both ends of the test socket.
+        assert_eq!(msg.peer_pid, Some(std::process::id()));
+        msg.respond_to.send("{}".into()).unwrap();
+        drop(client);
+        worker.join().unwrap();
+        let _ = fs::remove_file(path);
     }
 
     #[test]

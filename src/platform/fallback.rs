@@ -260,3 +260,17 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
 pub fn show_desktop_notification(_title: &str, _body: Option<&str>) -> std::io::Result<bool> {
     Ok(false)
 }
+
+/// The process on the other end of a local API connection (peer credentials).
+pub(crate) fn local_stream_peer_pid(stream: &crate::ipc::LocalStream) -> Option<u32> {
+    use interprocess::local_socket::traits::StreamCommon as _;
+
+    let pid = stream.peer_creds().ok()?.pid()?;
+    u32::try_from(pid).ok().filter(|pid| *pid > 0)
+}
+
+/// Process parents are not walked here: a caller is found by its own pid
+/// only.
+pub(crate) fn parent_pid(_pid: u32) -> Option<u32> {
+    None
+}

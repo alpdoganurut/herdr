@@ -1006,7 +1006,7 @@ impl App {
         // resolves to it too.
         let named = self.public_pane_id(pane.ws_idx, pane.pane_id).as_deref() == Some(caller)
             || self
-                .parse_pane_id(caller)
+                .resolve_caller_pane(caller)
                 .is_some_and(|(ws_idx, pane_id)| ws_idx == pane.ws_idx && pane_id == pane.pane_id);
         if !named {
             return Ok(());

@@ -79,6 +79,7 @@ fn public_api(server: &mut HeadlessServer, method: Method) -> serde_json::Value 
         respond_to,
         response_write_complete: None,
         stream_active: None,
+        peer_pid: None,
     });
     serde_json::from_str(&response_rx.recv().expect("api response")).expect("json response")
 }
@@ -95,6 +96,7 @@ fn client_api(server: &mut HeadlessServer, client_id: u64, method: Method) -> se
             respond_to,
             response_write_complete: None,
             stream_active: None,
+            peer_pid: None,
         },
     );
     serde_json::from_str(&response_rx.recv().expect("client response")).expect("json response")
@@ -239,4 +241,131 @@ async fn fork_smoke_client_typing_in_an_agent_holds_messages_back() {
     assert_eq!(message["reason"], "its user is typing in it", "{held}");
     assert!(input.try_recv().is_err(), "nothing typed over the draft");
     shutdown_test_runtimes(&mut server);
+}
+
+/// Give a pane a runtime whose process (its shell or agent) is `pid`.
+fn set_pane_pid(server: &mut HeadlessServer, pane: crate::layout::PaneId, pid: u32) {
+    let id = server.app.state.workspaces[1]
+        .pane_state(pane)
+        .unwrap()
+        .attached_terminal_id
+        .clone();
+    let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"");
+    runtime.test_set_child_pid(pid);
+    server.app.terminal_runtimes.insert(id, runtime);
+}
+
+/// A request sent over the socket by process `peer`.
+fn api_from(server: &mut HeadlessServer, peer: Option<u32>, method: Method) -> serde_json::Value {
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    server.handle_api_request_with_shutdown_check(crate::api::ApiRequestMessage {
+        request: Request {
+            id: "agents-model-smoke-peer".into(),
+            method,
+        },
+        respond_to,
+        response_write_complete: None,
+        stream_active: None,
+        peer_pid: peer,
+    });
+    assert_eq!(server.app.agents_model.caller_process, None);
+    serde_json::from_str(&response_rx.recv().expect("api response")).expect("json response")
+}
+
+fn actor(server: &mut HeadlessServer, peer: Option<u32>, caller_pane: &str) -> serde_json::Value {
+    api_from(
+        server,
+        peer,
+        Method::AgentsActor(crate::api::schema::agents_model::AgentsActorParams {
+            caller_pane: caller_pane.into(),
+            ..Default::default()
+        }),
+    )
+}
+
+/// A pid no live process of the test has (nothing in the test's ancestry).
+const UNRELATED_PID: u32 = 0x7fff_fff0;
+
+#[tokio::test]
+async fn fork_smoke_agents_stale_caller_pane_is_found_by_its_process() {
+    let (mut server, _input, panes) = crew_server();
+    let me = std::process::id();
+    set_pane_pid(&mut server, panes[0], UNRELATED_PID);
+    set_pane_pid(&mut server, panes[1], me);
+    let fixer = public(&server, panes[1]);
+
+    // An id that no longer resolves (a tab moved by an older herdr).
+    let found = actor(&mut server, Some(me), "w9:p99");
+    assert_eq!(
+        found["result"]["actor"]["pane_id"],
+        fixer.as_str(),
+        "{found}"
+    );
+    assert_eq!(found["result"]["actor"]["kind"], "agent", "{found}");
+
+    // An id that now names another pane: the process wins.
+    let lead = public(&server, panes[0]);
+    let found = actor(&mut server, Some(me), &lead);
+    assert_eq!(
+        found["result"]["actor"]["pane_id"],
+        fixer.as_str(),
+        "{found}"
+    );
+
+    // The browser and MCP startup check resolve the same way.
+    let resolved = api_from(
+        &mut server,
+        Some(me),
+        Method::BrowserResolveCaller(crate::api::schema::BrowserCaller {
+            pane_id: "w9:p99".into(),
+        }),
+    );
+    assert_eq!(
+        resolved["result"]["actor"]["pane_id"],
+        fixer.as_str(),
+        "{resolved}"
+    );
+    assert_eq!(resolved["result"]["actor"]["shell_pid"], me, "{resolved}");
+}
+
+#[tokio::test]
+async fn fork_smoke_agents_stale_caller_without_its_process_is_refused() {
+    let (mut server, _input, panes) = crew_server();
+    let me = std::process::id();
+    set_pane_pid(&mut server, panes[0], UNRELATED_PID);
+    set_pane_pid(&mut server, panes[1], UNRELATED_PID + 1);
+    let lead = public(&server, panes[0]);
+
+    // No pane runs the caller: refused as before.
+    let refused = actor(&mut server, Some(me), "w9:p99");
+    assert_eq!(refused["error"]["code"], "caller_unresolved", "{refused}");
+    // A resolving id keeps its own pane (the client's ancestry check
+    // refuses a process not started there).
+    let kept = actor(&mut server, Some(me), &lead);
+    assert_eq!(kept["result"]["actor"]["pane_id"], lead.as_str(), "{kept}");
+
+    // No socket peer (a client request, a test): the id alone, as before.
+    set_pane_pid(&mut server, panes[1], me);
+    let refused = actor(&mut server, None, "w9:p99");
+    assert_eq!(refused["error"]["code"], "caller_unresolved", "{refused}");
+    let kept = actor(&mut server, None, &lead);
+    assert_eq!(kept["result"]["actor"]["pane_id"], lead.as_str(), "{kept}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn fork_smoke_agents_stale_caller_matching_several_panes_is_refused() {
+    let (mut server, _input, panes) = crew_server();
+    let me = std::process::id();
+    let chain = crate::platform::process_ancestry(me);
+    let parent = *chain.get(1).expect("the test process has a parent");
+    set_pane_pid(&mut server, panes[0], me);
+    set_pane_pid(&mut server, panes[1], parent);
+
+    let refused = actor(&mut server, Some(me), "w9:p99");
+    assert_eq!(refused["error"]["code"], "caller_unresolved", "{refused}");
+    // An id naming one of them stays that pane.
+    let fixer = public(&server, panes[1]);
+    let kept = actor(&mut server, Some(me), &fixer);
+    assert_eq!(kept["result"]["actor"]["pane_id"], fixer.as_str(), "{kept}");
 }

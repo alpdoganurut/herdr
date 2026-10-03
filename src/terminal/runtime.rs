@@ -645,6 +645,11 @@ impl TerminalRuntime {
         ))
     }
 
+    /// Tests: the pid of the pane's process (its shell or agent).
+    pub(crate) fn test_set_child_pid(&self, pid: u32) {
+        self.0.test_set_child_pid(pid);
+    }
+
     pub(crate) fn test_with_channel_and_scrollback_bytes(
         cols: u16,
         rows: u16,

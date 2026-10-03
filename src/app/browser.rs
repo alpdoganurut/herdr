@@ -361,7 +361,10 @@ impl App {
         id: String,
         params: BrowserCaller,
     ) -> String {
-        match self.browser_actor_for_pane(&params.pane_id) {
+        let actor = self
+            .resolve_caller_pane(&params.pane_id)
+            .and_then(|(ws_idx, raw)| self.browser_actor_for(ws_idx, raw));
+        match actor {
             Some(actor) => encode_success(id, ResponseResult::BrowserActor { actor }),
             None => encode_error(
                 id,
@@ -373,6 +376,10 @@ impl App {
 
     pub(crate) fn browser_actor_for_pane(&self, pane_id: &str) -> Option<BrowserActor> {
         let (ws_idx, raw) = self.parse_pane_id(pane_id)?;
+        self.browser_actor_for(ws_idx, raw)
+    }
+
+    fn browser_actor_for(&self, ws_idx: usize, raw: crate::layout::PaneId) -> Option<BrowserActor> {
         let pane = self.pane_info(ws_idx, raw)?;
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab_idx = ws.find_tab_index_for_pane(raw)?;

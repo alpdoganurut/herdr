@@ -4559,3 +4559,16 @@ mod tests {
         }
     }
 }
+
+/// The process on the other end of a local API connection (named pipe client).
+pub(crate) fn local_stream_peer_pid(stream: &crate::ipc::LocalStream) -> Option<u32> {
+    use interprocess::local_socket::traits::StreamCommon as _;
+
+    stream.peer_creds().ok()?.pid().filter(|pid| *pid > 0)
+}
+
+/// Process parents are not walked here: a caller is found by its own pid
+/// only.
+pub(crate) fn parent_pid(_pid: u32) -> Option<u32> {
+    None
+}

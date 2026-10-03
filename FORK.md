@@ -395,6 +395,7 @@ src/app/codex_sessions.rs
 | PaneSnapshot | agent_meta | None |
 | SuspendedAgentSnapshot | suspended_by | None |
 | App | codex_sessions | codex_sessions::CodexSessionProbe::default() |
+| ApiRequestMessage | peer_pid | None |
 
 ## 3. Removed or re-signatured upstream symbols (E0425/E0061 at a new upstream call site = deny)
 app::api_helpers::pane_agent_status(state, seen) -> removed; app::api_helpers::agent_status(state, seen, suspended) or app::api_helpers::terminal_agent_status(terminal, seen)
@@ -939,6 +940,13 @@ src/cli/pane.rs, src/cli/workspace.rs  mid-logic: agents v2: a command run from 
 src/server/headless.rs  mid-logic: Codex sessions: handle_scheduled_tasks_headless runs handle_codex_session_probe directly after the transcript backup pass
 src/app/runtime.rs  mid-logic: Codex sessions: next_headless_loop_deadline_with_git_refresh chains next_codex_session_probe_deadline directly after agent_transcript_backup_deadline
 src/agent_resume.rs  mid-logic: graceful_exit_input gains a `"codex" => Some("/quit")` arm (verified on codex-cli 0.160: `/quit` exits and prints `codex resume <thread id>`), so Codex panes suspend, restart and close resumably; its test expects it
+src/api/server.rs  mid-logic: stale caller ids: the CONNECTION_PEER_PID thread local (set at the top of handle_connection_with_stop from crate::platform::local_stream_peer_pid) fills ApiRequestMessage.peer_pid in dispatch_to_app
+src/api/mod.rs  mid-logic: ApiRequestMessage.peer_pid (last field; None in every upstream literal: the endpoint/client requests and tests)
+src/server/headless.rs  mid-logic: stale caller ids: handle_api_request_with_shutdown_check_inner sets app.agents_model.caller_process from msg.peer_pid around the upstream body, renamed handle_api_request_dispatch
+src/app/browser.rs  mid-logic: handle_browser_resolve_caller resolves through resolve_caller_pane; browser_actor_for_pane delegates to browser_actor_for(ws_idx, pane)
+src/app/api/panes.rs  mid-logic: handle_pane_current resolves caller_pane_id through resolve_caller_pane (a stale id finds the caller by its process)
+src/pane.rs, src/terminal/runtime.rs  mid-logic: test_set_child_pid in the cfg(test) impls (tests give a pane a process)
+src/platform/macos.rs, src/platform/linux.rs, src/platform/windows.rs, src/platform/fallback.rs, src/platform/mod.rs  mid-logic: local_stream_peer_pid (macOS LOCAL_PEERPID, else interprocess peer_creds), parent_pid (macOS proc_bsdinfo, Linux /proc stat, None elsewhere) and the shared process_ancestry wrapper before `mod linux;`
 
 ## 9. Identifier watch-list (any hit in the incoming upstream diff = deny "upstream collision")
 coordinator
@@ -1465,6 +1473,17 @@ claude_settings_file
 codex_wants_recall
 notes_conflicts
 notes_hook
+peer_pid
+CONNECTION_PEER_PID
+local_stream_peer_pid
+parent_pid
+process_ancestry
+caller_process
+resolve_caller_pane
+caller_pane_by_ancestry
+handle_api_request_dispatch
+browser_actor_for
+test_set_child_pid
 
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot
@@ -1507,6 +1526,9 @@ client::shell::tests::info_dock::fork_smoke::dock_carves_the_surface_and_resizes
 server::headless::tests::agents_model_smoke::fork_smoke_agents_set_meta_from_a_client_reaches_the_team_push
 server::headless::tests::agents_model_smoke::fork_smoke_agents_close_of_a_teammate_tab_needs_the_users_turn_and_is_logged
 server::headless::tests::agents_model_smoke::fork_smoke_client_typing_in_an_agent_holds_messages_back
+server::headless::tests::agents_model_smoke::fork_smoke_agents_stale_caller_pane_is_found_by_its_process
+server::headless::tests::agents_model_smoke::fork_smoke_agents_stale_caller_without_its_process_is_refused
+server::headless::tests::agents_model_smoke::fork_smoke_agents_stale_caller_matching_several_panes_is_refused
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 ### Added
@@ -1532,6 +1554,7 @@ server::headless::tests::agents_model_smoke::fork_smoke_client_typing_in_an_agen
 - herdr browser: `[browser] activity_color = "#aa6eff"` (`#rrggbb`; invalid → default with a config diagnostic) colours the activity overlay — frame border and glow (alpha unchanged), cursor fill and ripple — and applies live after `herdr server reload-config` (the directive carries it; an overlay of another colour is re-injected); tab-group colours stay Chrome's per-pane palette.
 - herdr browser, activity overlay (`[browser] show_activity = true`): the tabs an agent pane opens or acts on sit in a Chrome tab group named `<agent> · <herdr tab>` in a stable colour per pane (a bundled MV3 companion extension loaded with `--load-extension`, driven over the DevTools port; expanded while the pane is active, collapsed after `active_glyph_secs`, dissolved when the pane is gone; tabs the user opened are never grouped and a tab the user pulls out stays out), and a purple glow frame with a macOS-style cursor is injected into the page (isolated world, closed shadow root, no pointer events) while an operation runs and for the `active_glyph_secs` window after (originally 3 s); the cursor glides to the element before click/type/fill/select/press/hover and ripples on click; batches take `animate: false` (`--no-animate`); screenshots hide the overlay; `browser status` / `doctor` report the companion (`ready`, `missing`, `off`).
 ### Fixed
+- An agent whose pane id went stale is found by its process: an agent keeps the `HERDR_PANE_ID` its pane started with, and a tab moved to another group by a herdr before agents v2 (whose old-id aliases lived only in memory and were lost at the handoff to v2) left it with an id that no longer resolves — every `agents.*` change was refused with `caller_unresolved`, even ones its user asked for. The server now takes the requesting process from the local socket (macOS `LOCAL_PEERPID`, Linux/Windows peer credentials) and, when the caller's id does not resolve or names a pane that does not run it, picks the one pane whose process (shell or agent) is that process or an ancestor (`agents.*`, `browser.resolve_caller`, `team.*`, `agent.notify`, `pane.current`, the coordinator turn guard). No such pane or several keep today's refusals. A running herdr_agents MCP server benefits without a restart; one that started unverified re-checks at its first call.
 - Team members report finished delegated work to their lead: the team block, the herdr_agents instructions and etiquette, the wrap paragraph and the message envelope tell a member that finishes, gets blocked on or drops work a teammate gave it (or work for the team's purpose) to send one short report (what is done, where the details are, what is next) to whoever gave it, else to the member with role lead, also when the user drove the turn; the envelope says to answer once the work is done instead of "if it asks for one". Teammates are addressed by their exact roster name or pane, or `to="role:<role>"` (resolved server-side to the one teammate with that role). The team block's cap is 4 KiB.
 - The coordinator's messages carry the user's authority: a message the coordinator sends in a turn its user started arrives as "from the coordinator, acting for your user" with the rule to act on it as on the user's own message, without asking them to confirm, then report back (sender identity resolved by the server; the coordinator's replies in other turns stay plain agent messages). Every agent text says the coordinator is in every team and speaks for the user; a teammate's message is acted on when it is a reasonable request within the team's purpose, nothing destructive or out of scope without the user.
 - Codex agents get their native thread id even without the Codex integration hook (codex-cli 0.160 runs threads in a shared app-server daemon, and its hooks need a trust review): the server matches the pane's Codex process (working directory, start time) to the newest thread in `$CODEX_HOME/sessions/**/rollout-*.jsonl` created after it, once the first prompt writes the file, and follows `/new` (unless another Codex runs in the same directory: a later thread there could be either one's, so it is left alone). Panes that never match are probed less often (5 s doubling to 2 min). The pane then shows `agent_session`, restores with `codex resume <id>`, and Codex agents can suspend, restart and close resumably (`/quit` is now Codex's graceful exit). Hook-reported and `codex resume <id>` sessions are never replaced; a thread picked with `/resume` inside a running Codex is not followed.

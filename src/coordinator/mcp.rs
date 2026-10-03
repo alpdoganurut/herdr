@@ -18,7 +18,10 @@
 //! (`Wrong` refuses everything, `Unverified` is read-only). When that pane
 //! id later resolves to another canonical pane (the agent's tab moved, or a
 //! stale id now names someone else) the verdict is computed again for the
-//! new pane, and a mismatch refuses with `caller_unresolved`.
+//! new pane, and a mismatch refuses with `caller_unresolved`. An
+//! `Unverified` start is computed again at the first call. The server
+//! finds a caller whose id went stale by its process (the socket peer), so
+//! a long-running server recovers without a restart.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -603,6 +606,13 @@ impl<A: Api> Session<A> {
     fn verdict_for(&self, canonical: &str) -> Result<Verdict, ApiError> {
         let mut known = self.canonical.borrow_mut();
         let verdict = match known.as_ref() {
+            // A startup check that could not tell (the environment's pane id
+            // did not resolve then) is retried for the pane herdr names now
+            // (the server finds a caller with a stale id by its process).
+            None if self.opts.verdict == Verdict::Unverified => match &self.opts.reverify {
+                Some(reverify) => reverify(canonical),
+                None => Verdict::Unverified,
+            },
             None => self.opts.verdict.clone(),
             Some((pane, verdict)) if pane == canonical => verdict.clone(),
             Some(_) => match &self.opts.reverify {
@@ -4248,6 +4258,27 @@ mod tests {
             out.text
         );
         assert_eq!(world.writes().len(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unverified_start_re_verifies_the_pane_herdr_names() {
+        let (dir, world) = world("mcp-reverify-unverified");
+        let checked = Rc::new(RefCell::new(Vec::<String>::new()));
+        let seen = checked.clone();
+        let reverify: Reverify = Box::new(move |pane: &str| {
+            seen.borrow_mut().push(pane.to_string());
+            Verdict::Verified
+        });
+        // Started with a stale id (it did not resolve, so unverified); the
+        // server now names the caller's pane.
+        let mut s = session_with(&world, "w2:p3", Verdict::Unverified, Some(reverify));
+        let out = call(&mut s, "agents_notify", json!({ "title": "found" }));
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(*checked.borrow(), ["w2:p3"]);
+        // Once verified, the same pane is not checked again.
+        assert!(!call(&mut s, "agents_notify", json!({ "title": "again" })).is_error);
+        assert_eq!(checked.borrow().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
