@@ -24,7 +24,7 @@ you read: {"last_read_edition": N}); viewer-state.json (written here: the editio
 screen, so herdr can record what you read when the News tab is focused).
 
 Everything else is quiet: a title page with fleurons, a rust drop cap on the
-lead, justified body text, ornamental section rules, a manicule (☞) pointing at
+lead, justified body text, ornamental section rules, a manicule (›) pointing at
 the selected story, and a folio line at the bottom (theme, edition, leaf).
 
 Editions: left/right step days, up/down step editions, l jumps to the latest;
@@ -406,7 +406,7 @@ def story_block(item, g, sel, idx, lead=False, sec=-1):
     head_lines = [spaced(head)] if lead and width(spaced(head)) <= T else wrap_plain(head, T)
     m = MK.get(item_key(item))
     for n, line in enumerate(head_lines):
-        gutter = "☞ " if (selected and n == 0) else "  "
+        gutter = "› " if (selected and n == 0) else "  "
         if n == 0: heads.append((idx, len(rows)))
         rows.append((gutter, [seg(line, hs, item.get("url"))], None))
     body = (item.get("standfirst") or item.get("text", "")) if lead else item.get("text", "")
