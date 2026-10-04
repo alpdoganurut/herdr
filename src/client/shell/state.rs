@@ -201,25 +201,15 @@ pub(super) struct ShellHitMap {
     pub(super) release_notes_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) release_notes_max_scroll: usize,
     /// Fork (sidebar v2): the tabs sidebar's Active agents header row.
-    #[allow(dead_code)]
-    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
     pub(super) sidebar_active_header: Rect,
     /// Fork (sidebar v2): the Active agents entry rows (rect, tab id).
-    #[allow(dead_code)]
-    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
     pub(super) sidebar_active_rows: Vec<(Rect, String)>,
     /// Fork (sidebar v2): the Active agents `+N more` / `show fewer` row.
-    #[allow(dead_code)]
-    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
     pub(super) sidebar_active_more: Rect,
     /// Fork (sidebar v2): the detail strip under the list.
-    #[allow(dead_code)]
-    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
     pub(super) sidebar_detail: Rect,
     /// Fork (sidebar v2): when a displayed duration next changes its text
     /// (the minute clock's repaint).
-    #[allow(dead_code)]
-    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
     pub(super) sidebar_clock_deadline: Option<std::time::Instant>,
 }
 
@@ -2347,6 +2337,7 @@ impl ClientShellState {
             .chain(self.next_browser_deadline(now))
             .chain(self.next_browser_settings_deadline())
             .chain(self.next_info_dock_deadline(now))
+            .chain(self.next_sidebar_clock_deadline())
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)

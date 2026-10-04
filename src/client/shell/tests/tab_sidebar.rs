@@ -3,9 +3,15 @@ use super::*;
 use crate::config::{Config, SidebarLayoutConfig};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
+/// A tab row's status icon column (the label starts at x=7).
+const STATUS_ICON_X: u16 = 5;
+
+/// The tabs layout without the Active agents block: these tests frame the
+/// list rows, and the block (`tests/sidebar_active.rs`) would move them.
 fn tabs_config() -> Config {
     let mut config = Config::default();
     config.ui.sidebar_layout = SidebarLayoutConfig::Tabs;
+    config.ui.sidebar_active_agents = false;
     config
 }
 
@@ -803,8 +809,25 @@ fn tabs_layout_switch_tab_indexes_the_whole_list() {
     assert_eq!(tab_action(&mut spaces, KeybindAction::SwitchTab(2)), None);
 }
 
+/// Each tab row's text, trimmed at the end, in row order.
+fn tab_rows(state: &ClientShellState, frame: &FrameData) -> Vec<String> {
+    state
+        .hits
+        .sidebar_tabs
+        .iter()
+        .map(|(rect, _)| row_text(frame, *rect).trim_end().to_string())
+        .collect()
+}
+
+fn hover_tab(state: &mut ClientShellState, tab_id: &str) -> FrameData {
+    state.sidebar_hover = Some(super::super::sidebar_model::SidebarHover::Tab(
+        tab_id.into(),
+    ));
+    state.compose(106, 20).expect("composed frame")
+}
+
 #[test]
-fn tab_rows_end_with_the_agent_glyph() {
+fn harness_glyph_shows_only_on_the_selected_row() {
     let mut snapshot = two_space_snapshot();
     let mut codex = agent("pane_2", "tab_2", AgentStatus::Idle);
     codex.agent = Some("codex".into());
@@ -823,17 +846,38 @@ fn tab_rows_end_with_the_agent_glyph() {
     state.set_snapshot(Box::new(snapshot.clone()));
     state.set_pane_surface(surface());
     let frame = state.compose(106, 20).expect("composed frame");
-    let rows = state
-        .hits
-        .sidebar_tabs
-        .iter()
-        .map(|(rect, _)| row_text(&frame, *rect).trim_end().to_string())
-        .collect::<Vec<_>>();
+    // Nothing hovered: only the focused tab (claude) shows its glyph.
+    let rows = tab_rows(&state, &frame);
     assert!(rows[0].ends_with('\u{29C6}'), "claude: {rows:?}");
-    assert!(rows[1].ends_with('\u{29C7}'), "codex: {rows:?}");
-    assert!(rows[2].ends_with('\u{237E}'), "other agent: {rows:?}");
-    assert!(rows[3].ends_with('\u{29C5}'), "plain shell: {rows:?}");
     assert!(rows[0].contains("reviewer"), "{rows:?}");
+    for row in &rows[1..] {
+        assert!(row.ends_with(|c: char| c.is_alphanumeric()), "{rows:?}");
+    }
+
+    // The hovered row shows its own glyph instead, the rest none.
+    for (index, tab_id, glyph) in [
+        (1, "tab_2", '\u{29C7}'), // codex
+        (2, "tab_3", '\u{237E}'), // another agent
+        (3, "tab_4", '\u{29C5}'), // a plain shell
+    ] {
+        let frame = hover_tab(&mut state, tab_id);
+        let rows = tab_rows(&state, &frame);
+        for (row_index, row) in rows.iter().enumerate() {
+            assert_eq!(
+                row.ends_with(glyph),
+                row_index == index,
+                "{tab_id}: {rows:?}"
+            );
+        }
+        assert!(
+            !rows[0].ends_with('\u{29C6}'),
+            "the focused row gives the glyph up: {rows:?}"
+        );
+    }
+
+    // A stale hover (a tab that is gone) falls back to the focused tab.
+    let frame = hover_tab(&mut state, "tab_gone");
+    assert!(tab_rows(&state, &frame)[0].ends_with('\u{29C6}'));
 
     let mut config = tabs_config();
     config
@@ -848,14 +892,14 @@ fn tab_rows_end_with_the_agent_glyph() {
     assert!(row_text(&frame, rect).trim_end().ends_with('C'));
 }
 
-/// The glyph cell (fg, bg) of each tab row, in row order.
+/// The glyph cell (symbol, fg, bg) of each tab row, in row order.
 fn glyph_cells(state: &ClientShellState, frame: &FrameData) -> Vec<(String, u32, u32)> {
     state
         .hits
         .sidebar_tabs
         .iter()
         .map(|(rect, _)| {
-            // " <icon> <label>...<glyph> ": the glyph sits one cell in from the right.
+            // The harness glyph is the last mark, one cell in from the right.
             let x = rect.right() - 2;
             let cell = &frame.cells[(rect.y * frame.width + x) as usize];
             (cell.symbol.clone(), cell.fg, cell.bg)
@@ -884,8 +928,8 @@ fn glyph_color_state(config: &Config, focused_tab: &str) -> (ClientShellState, F
 fn focused_tab_glyph_wears_the_agent_brand_color() {
     use crate::protocol::color_to_u32;
     use ratatui::style::Color;
-    let (state, frame) = glyph_color_state(&tabs_config(), "tab_1");
-    let palette = &state.config.palette;
+    let (mut state, frame) = glyph_color_state(&tabs_config(), "tab_1");
+    let palette = state.config.palette.clone();
     let orange = color_to_u32(Color::Rgb(0xD9, 0x77, 0x57));
     let cells = glyph_cells(&state, &frame);
     assert_eq!(cells[0].0, "\u{29C6}", "{cells:?}");
@@ -895,12 +939,17 @@ fn focused_tab_glyph_wears_the_agent_brand_color() {
         color_to_u32(palette.active_row_bg),
         "keeps the selected row background"
     );
-    assert_eq!(cells[1].0, "\u{29C6}", "{cells:?}");
-    assert_ne!(
-        cells[1].1, orange,
-        "unfocused claude glyph stays monochrome"
+    assert_eq!(
+        cells[1].0, " ",
+        "an unselected row shows no glyph: {cells:?}"
     );
-    assert_eq!(cells[1].1, color_to_u32(palette.overlay0));
+
+    // A hovered row's glyph wears the brand color on the hover band.
+    let frame = hover_tab(&mut state, "tab_2");
+    let cells = glyph_cells(&state, &frame);
+    assert_eq!(cells[1].0, "\u{29C6}", "{cells:?}");
+    assert_eq!(cells[1].1, orange);
+    assert_eq!(cells[1].2, color_to_u32(palette.sidebar_hover_bg()));
 
     // A focused shell tab keeps the monochrome glyph.
     let (state, frame) = glyph_color_state(&tabs_config(), "tab_3");
@@ -908,7 +957,7 @@ fn focused_tab_glyph_wears_the_agent_brand_color() {
     assert_eq!(cells[2].0, "\u{29C5}", "{cells:?}");
     assert_eq!(cells[2].1, color_to_u32(state.config.palette.overlay0));
     assert_eq!(cells[2].2, color_to_u32(state.config.palette.active_row_bg));
-    assert_eq!(cells[0].1, color_to_u32(state.config.palette.overlay0));
+    assert_eq!(cells[0].0, " ", "{cells:?}");
 }
 
 #[test]
@@ -1078,12 +1127,18 @@ fn three_space_snapshot() -> ClientShellSnapshot {
 }
 
 fn grouped_state() -> ClientShellState {
+    grouped_state_at(24)
+}
+
+/// `grouped_state` composed at `rows` (from `TALL_ROWS` a spacer row sits
+/// before every group header).
+fn grouped_state_at(rows: u16) -> ClientShellState {
     let mut config = tabs_config();
     config.keys.move_tab_to_group = crate::config::BindingConfig::one("alt+g");
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(three_space_snapshot()));
     state.set_pane_surface(surface());
-    state.compose(106, 24).expect("composed frame");
+    state.compose(106, rows).expect("composed frame");
     state
 }
 
@@ -1116,12 +1171,13 @@ fn groups_render_headers_after_the_bucket_and_the_focused_group_never_folds() {
         .map(|(rect, id)| (row_text(&frame, *rect), id.clone()))
         .collect::<Vec<_>>();
     assert_eq!(headers.len(), 2);
+    // The fold marker at x=1, the name at x=5 (x=3 holds a team's mark).
     assert!(
-        headers[0].0.contains("▾ api") && headers[0].0.contains('1'),
+        headers[0].0.starts_with(" ▾   api") && headers[0].0.contains('1'),
         "{headers:?}"
     );
     assert_eq!(headers[0].1, "ws_2");
-    assert!(headers[1].0.contains("▾ infra"), "{headers:?}");
+    assert!(headers[1].0.starts_with(" ▾   infra"), "{headers:?}");
     let body = state.hits.agent_body;
     let rows = (0..body.height)
         .map(|offset| {
@@ -1343,8 +1399,17 @@ fn move_tab_to_group_prompt_joins_an_existing_group_or_creates_one() {
 
 #[test]
 fn header_drag_reorders_groups_and_tab_drag_moves_within_or_across_groups() {
-    let mut state = grouped_state();
+    // Tall enough for the spacer rows before the headers.
+    let mut state = grouped_state_at(TALL_ROWS);
     let (api, _) = state.hits.sidebar_groups[0];
+    assert!(
+        state
+            .hits
+            .sidebar_tabs
+            .iter()
+            .all(|(rect, _)| rect.y != api.y - 1),
+        "a spacer row sits above the header"
+    );
     let (infra, _) = state.hits.sidebar_groups[1];
     let outcome = state.handle_raw_events(vec![
         mouse(
@@ -1373,7 +1438,7 @@ fn header_drag_reorders_groups_and_tab_drag_moves_within_or_across_groups() {
         endpoint_methods(&outcome)
     );
 
-    state.compose(106, 24).expect("composed frame");
+    state.compose(106, TALL_ROWS).expect("composed frame");
     let (reviewer, _) = state.hits.sidebar_tabs[0];
     let (planner, _) = state.hits.sidebar_tabs[1];
     let outcome = state.handle_raw_events(vec![
@@ -1403,7 +1468,7 @@ fn header_drag_reorders_groups_and_tab_drag_moves_within_or_across_groups() {
         endpoint_methods(&outcome)
     );
 
-    state.compose(106, 24).expect("composed frame");
+    state.compose(106, TALL_ROWS).expect("composed frame");
     let (planner, _) = state.hits.sidebar_tabs[1];
     let (api, _) = state.hits.sidebar_groups[0];
     state.handle_raw_events(vec![mouse(
@@ -1562,7 +1627,9 @@ fn jittered_press_on_a_tab_row_still_focuses_it() {
 
 #[test]
 fn cross_group_drop_indicator_sits_on_the_target_groups_append_row() {
-    let mut state = grouped_state();
+    // Tall enough for the spacer rows: the append row is the spacer under
+    // api's last tab.
+    let mut state = grouped_state_at(TALL_ROWS);
     let (reviewer, _) = state.hits.sidebar_tabs[0];
     let (notes, _) = state.hits.sidebar_tabs[2];
     state.handle_raw_events(vec![mouse(
@@ -1777,15 +1844,15 @@ fn tab_color_tints_only_the_label_on_focused_and_unfocused_rows() {
     let (x, y) = cell_symbol_position(&frame, focused, "reviewer");
     assert!(cell(x, y).modifier & Modifier::BOLD.bits() != 0);
     assert_eq!(cell(x, y).bg, color_to_u32(palette.active_row_bg));
-    // The status icon and the brand-colored glyph keep their own colors.
+    // The status icon (x=5) and the brand-colored glyph keep their own colors.
     assert_eq!(
-        cell(focused.x + 1, focused.y).fg,
+        cell(focused.x + 5, focused.y).fg,
         color_to_u32(status_color(AgentStatus::Working, &palette))
     );
     let glyphs = glyph_cells(&state, &frame);
     assert_eq!(glyphs[0].1, color_to_u32(Color::Rgb(0xD9, 0x77, 0x57)));
 
-    // Unfocused row (red): label tinted, glyph stays monochrome.
+    // Unfocused row (red): label tinted, no glyph (not selected).
     let unfocused = rows[1].0;
     let red = color_to_u32(
         super::super::tab_color::tab_color_fg(crate::api::schema::TabColor::Red, &palette).unwrap(),
@@ -1796,10 +1863,10 @@ fn tab_color_tints_only_the_label_on_focused_and_unfocused_rows() {
     let (x, y) = cell_symbol_position(&frame, unfocused, "planner");
     assert!(cell(x, y).modifier & Modifier::BOLD.bits() == 0);
     assert_eq!(
-        cell(unfocused.x + 1, unfocused.y).fg,
+        cell(unfocused.x + 5, unfocused.y).fg,
         color_to_u32(status_color(AgentStatus::Idle, &palette))
     );
-    assert_eq!(glyphs[1].1, color_to_u32(palette.overlay0));
+    assert_eq!(glyphs[1].0, " ");
 
     // An uncolored tab keeps the default label color.
     let plain = rows[2].0;
@@ -1841,10 +1908,11 @@ fn tab_color_maps_every_name_to_a_fixed_color_and_ignores_unknown() {
     state.set_pane_surface(surface());
     let frame = state.compose(106, 20).expect("composed frame");
     let row = state.hits.sidebar_tabs[1].0;
-    let subtext = crate::protocol::color_to_u32(state.config.palette.subtext0);
+    // Uncolored, the blocked tab's label takes the status emphasis (`text`).
+    let text = crate::protocol::color_to_u32(state.config.palette.text);
     assert!(text_fgs(&frame, row, "planner")
         .iter()
-        .all(|fg| *fg == subtext));
+        .all(|fg| *fg == text));
 }
 
 #[test]
@@ -2157,7 +2225,7 @@ fn working_tab_with_subagents_shows_the_subagent_icon() {
         let frame = state.compose(106, 20).expect("composed frame");
         let icon_cell = |row: usize| {
             let (rect, _) = state.hits.sidebar_tabs[row];
-            frame.cells[(rect.y * frame.width + rect.x + 1) as usize].clone()
+            frame.cells[(rect.y * frame.width + rect.x + STATUS_ICON_X) as usize].clone()
         };
         assert_eq!(
             icon_cell(0).symbol,
@@ -2233,7 +2301,7 @@ fn subagents_show_on_idle_and_finished_agents_in_their_status_color() {
         let frame = state.compose(106, 24).expect("composed frame");
         let cell = |row: usize| {
             let (rect, _) = state.hits.sidebar_tabs[row];
-            let cell = &frame.cells[(rect.y * frame.width + rect.x + 1) as usize];
+            let cell = &frame.cells[(rect.y * frame.width + rect.x + STATUS_ICON_X) as usize];
             (cell.symbol.clone(), cell.fg)
         };
         let ring = |color| (icon.to_string(), color_to_u32(color));
@@ -2267,7 +2335,7 @@ fn a_multi_pane_tab_sums_its_agents_subagents() {
     let frame = state.compose(106, 20).expect("composed frame");
     let (rect, _) = state.hits.sidebar_tabs[0];
     assert_eq!(
-        frame.cells[(rect.y * frame.width + rect.x + 1) as usize].symbol,
+        frame.cells[(rect.y * frame.width + rect.x + STATUS_ICON_X) as usize].symbol,
         super::super::tab_sidebar::TAB_SUBAGENTS_ICON,
         "one agent's background subagents mark the whole tab"
     );
@@ -2277,7 +2345,7 @@ fn a_multi_pane_tab_sums_its_agents_subagents() {
     state.set_snapshot(Box::new(snapshot));
     let frame = state.compose(106, 20).expect("composed frame");
     assert_ne!(
-        frame.cells[(rect.y * frame.width + rect.x + 1) as usize].symbol,
+        frame.cells[(rect.y * frame.width + rect.x + STATUS_ICON_X) as usize].symbol,
         super::super::tab_sidebar::TAB_SUBAGENTS_ICON
     );
 }
@@ -2298,20 +2366,40 @@ fn status_snapshot() -> ClientShellSnapshot {
 }
 
 fn composed(config: &Config, snapshot: ClientShellSnapshot) -> (ClientShellState, FrameData) {
+    composed_at(config, snapshot, 20)
+}
+
+/// From this many rows (`tab_sidebar::SPACIOUS_HEIGHT`) the footer draws
+/// one row per status line; below it the lines share one row.
+const TALL_ROWS: u16 = 40;
+
+fn composed_at(
+    config: &Config,
+    snapshot: ClientShellSnapshot,
+    rows: u16,
+) -> (ClientShellState, FrameData) {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
     state.set_snapshot(Box::new(snapshot));
     state.set_pane_surface(wide_surface());
-    let frame = state.compose(106, 20).expect("composed frame");
+    let frame = state.compose(106, rows).expect("composed frame");
     (state, frame)
 }
 
-/// The status row sits directly under the list body.
+/// The menu row: the sidebar's last row.
+fn menu_y(state: &ClientShellState) -> u16 {
+    state.hits.sidebar_divider.bottom() - 1
+}
+
+/// The rows the list and the detail strip share between the toolbar and
+/// the pinned rows / status footer (the strip's lower rule shows only above
+/// a footer).
+fn list_and_detail(state: &ClientShellState) -> u16 {
+    state.hits.agent_body.height + state.hits.sidebar_detail.height
+}
+
+/// The status footer's last row, right above the menu row.
 fn status_row(state: &ClientShellState, frame: &FrameData) -> String {
-    let body = state.hits.agent_body;
-    row_text(
-        frame,
-        ratatui::layout::Rect::new(body.x, body.bottom(), body.width, 1),
-    )
+    status_rows(state, frame, 1).remove(0)
 }
 
 #[test]
@@ -2321,12 +2409,12 @@ fn tabs_sidebar_footer_shows_the_tab_bar_status_with_its_separator() {
     let footer = status_row(&state, &frame);
     assert_eq!(footer.trim_end(), " host · 12:00", "{footer:?}");
     assert_eq!(
-        state.hits.agent_body.height + 1,
-        plain.hits.agent_body.height,
+        list_and_detail(&state) + 1,
+        list_and_detail(&plain),
         "the footer takes one row off the list"
     );
     let cell = frame.cells
-        [(state.hits.agent_body.bottom() * frame.width + state.hits.agent_body.x + 1) as usize]
+        [((menu_y(&state) - 1) * frame.width + state.hits.agent_body.x + 1) as usize]
         .clone();
     assert_eq!(
         cell.fg,
@@ -2358,13 +2446,18 @@ fn tabs_sidebar_footer_shows_the_tab_bar_status_with_its_separator() {
 #[test]
 fn tabs_sidebar_without_status_segments_keeps_the_full_list_height() {
     let (state, frame) = composed(&tabs_config(), two_space_snapshot());
-    // 20 rows: one toolbar row and one menu row around the list.
-    assert_eq!(state.hits.agent_body.height, 18);
-    assert_eq!(state.hits.agent_body.bottom(), 19);
-    let menu_row = status_row(&state, &frame);
+    // 20 rows: one toolbar row and one menu row around the list and the
+    // detail strip.
+    assert_eq!(list_and_detail(&state), 18);
+    assert_eq!(menu_y(&state), 19);
+    let body = state.hits.agent_body;
+    let menu_row = row_text(
+        &frame,
+        ratatui::layout::Rect::new(body.x, 19, body.width, 1),
+    );
     assert!(
         menu_row.trim_start().starts_with("men"),
-        "the row under the list is the menu row: {menu_row:?}"
+        "the row under the strip is the menu row: {menu_row:?}"
     );
 
     // Segments without text do not open the footer either.
@@ -2372,7 +2465,7 @@ fn tabs_sidebar_without_status_segments_keeps_the_full_list_height() {
     empty.tab_bar_right = vec![status_segment("")];
     empty.tab_bar_right_separator = " · ".into();
     let (state, _) = composed(&tabs_config(), empty);
-    assert_eq!(state.hits.agent_body.height, 18);
+    assert_eq!(list_and_detail(&state), 18);
 }
 
 #[test]
@@ -2417,7 +2510,7 @@ fn tabs_sidebar_footer_never_hides_the_last_tab() {
     state.set_pane_surface(wide_surface());
     state.compose(106, 20).expect("first frame");
     let body = state.hits.agent_body;
-    assert_eq!(body.height, 17, "toolbar, footer and menu rows");
+    assert_eq!(list_and_detail(&state), 17, "toolbar, footer and menu rows");
     assert!(state.hits.agent_max_scroll > 0);
 
     // Scroll to the end: the last tab is the list's last visible row.
@@ -2470,17 +2563,18 @@ fn multi_line_status_snapshot() -> ClientShellSnapshot {
     snapshot
 }
 
-/// The footer rows from the list's bottom edge down.
+/// The last `count` footer rows, ending right above the menu row.
 fn status_rows(state: &ClientShellState, frame: &FrameData, count: u16) -> Vec<String> {
-    let body = state.hits.agent_body;
-    (0..count)
-        .map(|row| {
-            row_text(
-                frame,
-                ratatui::layout::Rect::new(body.x, body.bottom() + row, body.width, 1),
-            )
-        })
+    footer_rows(state, count)
+        .rows()
+        .map(|rect| row_text(frame, rect))
         .collect()
+}
+
+/// The rect of the last `count` footer rows, right above the menu row.
+fn footer_rows(state: &ClientShellState, count: u16) -> ratatui::layout::Rect {
+    let body = state.hits.agent_body;
+    ratatui::layout::Rect::new(body.x, menu_y(state) - count, body.width, count)
 }
 
 fn cell_at(
@@ -2495,15 +2589,13 @@ fn cell_at(
 #[test]
 fn tabs_sidebar_footer_draws_one_row_per_status_line_in_its_sgr_styles() {
     use ratatui::style::{Color, Modifier};
-    let (plain, _) = composed(&tabs_config(), two_space_snapshot());
-    let (state, frame) = composed(&tabs_config(), multi_line_status_snapshot());
-    let body = state.hits.agent_body;
-    assert_eq!(body.height + 3, plain.hits.agent_body.height);
-    let rows = status_rows(&state, &frame, 4);
+    let (plain, _) = composed_at(&tabs_config(), two_space_snapshot(), TALL_ROWS);
+    let (state, frame) = composed_at(&tabs_config(), multi_line_status_snapshot(), TALL_ROWS);
+    assert_eq!(list_and_detail(&state) + 3, list_and_detail(&plain));
+    let rows = status_rows(&state, &frame, 3);
     assert_eq!(rows[0].trim_end(), " host · ok", "{rows:?}");
     assert_eq!(rows[1].trim_end(), " warn plain", "{rows:?}");
     assert_eq!(rows[2].trim_end(), " err norm", "{rows:?}");
-    assert!(rows[3].trim_start().starts_with("men"), "{rows:?}");
     assert!(
         frame_rows(&frame)
             .iter()
@@ -2511,7 +2603,7 @@ fn tabs_sidebar_footer_draws_one_row_per_status_line_in_its_sgr_styles() {
         "no raw escapes reach the frame"
     );
 
-    let footer = ratatui::layout::Rect::new(body.x, body.bottom(), body.width, 3);
+    let footer = footer_rows(&state, 3);
     let dim = crate::protocol::color_to_u32(state.config.palette.overlay1);
     let host = cell_at(&frame, footer, "host");
     assert_eq!(host.fg, dim, "unstyled text keeps the footer's dim style");
@@ -2546,7 +2638,7 @@ fn tabs_sidebar_footer_truncates_each_styled_row_with_an_ellipsis() {
         "g".repeat(5),
         "x".repeat(200)
     ))];
-    let (state, frame) = composed(&tabs_config(), snapshot);
+    let (state, frame) = composed_at(&tabs_config(), snapshot, TALL_ROWS);
     let body = state.hits.agent_body;
     let rows = status_rows(&state, &frame, 2);
     assert_eq!(rows[0].trim_end(), " short");
@@ -2558,7 +2650,7 @@ fn tabs_sidebar_footer_truncates_each_styled_row_with_an_ellipsis() {
     );
     assert_eq!(rows[1].chars().last(), Some(' '), "one-cell right margin");
     assert!(rows[1].starts_with(&format!(" {}x", "g".repeat(5))));
-    let footer = ratatui::layout::Rect::new(body.x, body.bottom(), body.width, 2);
+    let footer = footer_rows(&state, 2);
     assert_eq!(
         cell_at(&frame, footer, "ggg").fg,
         crate::protocol::color_to_u32(ratatui::style::Color::Green)
@@ -2574,23 +2666,17 @@ fn tabs_sidebar_footer_truncates_each_styled_row_with_an_ellipsis() {
 fn tabs_sidebar_footer_skips_empty_lines_and_caps_at_four_rows() {
     let mut snapshot = two_space_snapshot();
     snapshot.tab_bar_right = vec![status_segment("a\n\n\x1b[31m\x1b[0m\n  \nb")];
-    let (plain, _) = composed(&tabs_config(), two_space_snapshot());
-    let (state, frame) = composed(&tabs_config(), snapshot);
-    assert_eq!(
-        state.hits.agent_body.height + 2,
-        plain.hits.agent_body.height
-    );
+    let (plain, _) = composed_at(&tabs_config(), two_space_snapshot(), TALL_ROWS);
+    let (state, frame) = composed_at(&tabs_config(), snapshot, TALL_ROWS);
+    assert_eq!(list_and_detail(&state) + 2, list_and_detail(&plain));
     let rows = status_rows(&state, &frame, 2);
     assert_eq!(rows[0].trim_end(), " a");
     assert_eq!(rows[1].trim_end(), " b");
 
     let mut snapshot = two_space_snapshot();
     snapshot.tab_bar_right = vec![status_segment("1\n2\n3\n4"), status_segment("5\n6")];
-    let (state, frame) = composed(&tabs_config(), snapshot);
-    assert_eq!(
-        state.hits.agent_body.height + 4,
-        plain.hits.agent_body.height
-    );
+    let (state, frame) = composed_at(&tabs_config(), snapshot, TALL_ROWS);
+    assert_eq!(list_and_detail(&state) + 4, list_and_detail(&plain));
     let rows = status_rows(&state, &frame, 4);
     assert_eq!(
         rows.iter().map(|row| row.trim()).collect::<Vec<_>>(),
@@ -2620,8 +2706,9 @@ fn tabs_sidebar_multi_line_footer_never_hides_the_last_tab() {
     state.compose(106, 20).expect("first frame");
     let body = state.hits.agent_body;
     assert_eq!(
-        body.height, 15,
-        "toolbar, three footer rows and the menu row"
+        list_and_detail(&state),
+        17,
+        "toolbar, the joined footer row and the menu row"
     );
 
     state.agent_scroll = usize::MAX;
@@ -2636,7 +2723,36 @@ fn tabs_sidebar_multi_line_footer_never_hides_the_last_tab() {
     assert_eq!(last_rect.y, body.bottom() - 1);
     assert!(row_text(&frame, last_rect).contains("t40"));
     assert_eq!(state.hits.sidebar_tabs.len(), usize::from(body.height));
-    assert_eq!(status_rows(&state, &frame, 1)[0].trim_end(), " host · ok");
+    assert!(
+        status_row(&state, &frame).starts_with(" host · ok  warn"),
+        "{:?}",
+        status_row(&state, &frame)
+    );
+}
+
+#[test]
+fn tabs_sidebar_footer_joins_its_lines_below_30_rows_in_their_colors() {
+    use ratatui::style::{Color, Modifier};
+    let (plain, _) = composed(&tabs_config(), two_space_snapshot());
+    let (state, frame) = composed(&tabs_config(), multi_line_status_snapshot());
+    assert_eq!(
+        list_and_detail(&state) + 1,
+        list_and_detail(&plain),
+        "one footer row"
+    );
+    let row = status_row(&state, &frame);
+    assert!(row.starts_with(" host · ok  warn plain"), "{row:?}");
+    let footer = footer_rows(&state, 1);
+    let ok = cell_at(&frame, footer, "ok");
+    assert_eq!(ok.fg, crate::protocol::color_to_u32(Color::Rgb(10, 20, 30)));
+    assert_eq!(ok.modifier & Modifier::BOLD.bits(), Modifier::BOLD.bits());
+    let warn = cell_at(&frame, footer, "warn");
+    assert_eq!(
+        warn.fg,
+        crate::protocol::color_to_u32(Color::Indexed(208)),
+        "each line keeps its own styles"
+    );
+    assert_eq!(warn.modifier & Modifier::BOLD.bits(), 0);
 }
 
 #[test]
@@ -2657,6 +2773,520 @@ fn spaces_tab_bar_shows_a_multi_line_segment_as_its_last_line_without_escapes() 
         super::super::tab_sidebar::single_line_status_text("\x1b[31mred\x1b[0m"),
         "red"
     );
+}
+
+/// One frame cell: symbol, fg, bg and whether it is bold.
+fn cell_of(frame: &FrameData, x: u16, y: u16) -> (String, u32, u32, bool) {
+    let cell = &frame.cells[(y * frame.width + x) as usize];
+    (
+        cell.symbol.clone(),
+        cell.fg,
+        cell.bg,
+        cell.modifier & ratatui::style::Modifier::BOLD.bits() != 0,
+    )
+}
+
+fn rgb(color: ratatui::style::Color) -> u32 {
+    crate::protocol::color_to_u32(color)
+}
+
+#[test]
+fn headers_have_no_band_and_bold_names() {
+    let mut snapshot = three_space_snapshot();
+    // `api` is the focused space; `infra` is a plain open group.
+    snapshot.workspaces[1].focused = true;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 24).expect("composed frame");
+    let palette = state.config.palette.clone();
+    let (api, _) = state.hits.sidebar_groups[0];
+    let (infra, _) = state.hits.sidebar_groups[1];
+    for header in [api, infra] {
+        for x in header.x..header.right() {
+            assert_eq!(
+                cell_of(&frame, x, header.y).2,
+                rgb(palette.sidebar_bg),
+                "no band at x={x}"
+            );
+        }
+        // Marker at 1, name at 5 (bold), count ending at width-4, the
+        // rolled-up status at width-2.
+        assert_eq!(cell_of(&frame, header.x + 1, header.y).0, "▾");
+        assert_eq!(
+            cell_of(&frame, header.x + 1, header.y).1,
+            rgb(palette.subtext0)
+        );
+        assert!(cell_of(&frame, header.x + 5, header.y).3, "bold name");
+        assert_eq!(cell_of(&frame, header.right() - 4, header.y).0, "1");
+        assert_ne!(cell_of(&frame, header.right() - 2, header.y).0, " ");
+    }
+    assert_eq!(
+        cell_of(&frame, api.x + 5, api.y).1,
+        rgb(palette.text),
+        "the focused group's name is bright"
+    );
+    assert_eq!(
+        cell_of(&frame, infra.x + 5, infra.y).1,
+        rgb(palette.subtext0)
+    );
+
+    // Hovered: the bar and a bright name, still no band.
+    state.sidebar_hover = Some(super::super::sidebar_model::SidebarHover::Group(
+        "ws_3".into(),
+    ));
+    let frame = state.compose(106, 24).expect("composed frame");
+    let (infra, _) = state.hits.sidebar_groups[1];
+    assert_eq!(
+        cell_of(&frame, infra.x, infra.y).0,
+        super::super::tab_sidebar::HOVER_BAR
+    );
+    assert_eq!(cell_of(&frame, infra.x, infra.y).1, rgb(palette.accent));
+    assert_eq!(cell_of(&frame, infra.x + 5, infra.y).1, rgb(palette.text));
+    assert_eq!(
+        cell_of(&frame, infra.x + 5, infra.y).2,
+        rgb(palette.sidebar_bg)
+    );
+
+    // Folded: `▸` and a dim name.
+    state.sidebar_hover = None;
+    state.collapsed_groups.insert(group_key("ws_3"));
+    state.sidebar_model.mark_dirty();
+    let frame = state.compose(106, 24).expect("composed frame");
+    let (infra, _) = state.hits.sidebar_groups[1];
+    assert_eq!(cell_of(&frame, infra.x + 1, infra.y).0, "▸");
+    assert_eq!(
+        cell_of(&frame, infra.x + 1, infra.y).1,
+        rgb(palette.overlay1)
+    );
+    assert_eq!(
+        cell_of(&frame, infra.x + 5, infra.y).1,
+        rgb(palette.overlay1)
+    );
+    assert!(cell_of(&frame, infra.x + 5, infra.y).3);
+}
+
+/// `two_space_snapshot` with `tab_1` (focused, claude) important, on a
+/// 30-minute reminder and marked by the browser.
+fn marked_state(config: &Config) -> ClientShellState {
+    use crate::api::schema::browser::{BrowserGetInfo, BrowserPaneCursor, BrowserProfileInfo};
+    let mut snapshot = two_space_snapshot();
+    snapshot.agents = vec![agent("pane_1", "tab_1", AgentStatus::Idle)];
+    snapshot.tabs[0].agent_status = AgentStatus::Idle;
+    snapshot.tabs[0].important = true;
+    snapshot.tabs[0].remind_every = Some(crate::api::schema::TabRemindInterval::M30);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.browser.info = Some(BrowserGetInfo {
+        seq: 1,
+        enabled: true,
+        profiles: vec![BrowserProfileInfo {
+            name: "main".into(),
+            state: "stopped".into(),
+            ..Default::default()
+        }],
+        recent_panes: vec![BrowserPaneCursor {
+            pane_id: "pane_1".into(),
+            tab_id: Some("tab_1".into()),
+            current: "main:t1".into(),
+            last_at: crate::app::news::unix_now(),
+        }],
+        ..Default::default()
+    });
+    state
+}
+
+#[test]
+fn marks_pack_flush_right_in_order() {
+    let mut state = marked_state(&tabs_config());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let (rect, _) = state.hits.sidebar_tabs[0];
+    let row = row_text(&frame, rect);
+    // ◎ ★ ◷ then the selected row's harness glyph, the last at width-2
+    // with a one-cell margin.
+    assert!(row.ends_with("◎ ★ ◷ \u{29C6} "), "{row:?}");
+    assert!(row.starts_with("     ○ reviewer "), "{row:?}");
+    let palette = state.config.palette.clone();
+    let fg = |offset: u16| cell_of(&frame, rect.right() - offset, rect.y).1;
+    assert_eq!(fg(8), rgb(palette.accent), "browser mark");
+    assert_eq!(fg(6), rgb(palette.overlay0), "★ unlit");
+    assert_eq!(fg(4), rgb(palette.overlay0), "◷ unlit");
+
+    // Not selected: the reminder marks move right into the glyph's place.
+    state.sidebar_hover = Some(super::super::sidebar_model::SidebarHover::Tab(
+        "tab_3".into(),
+    ));
+    let frame = state.compose(106, 20).expect("composed frame");
+    let (rect, _) = state.hits.sidebar_tabs[0];
+    assert!(row_text(&frame, rect).ends_with("◎ ★ ◷ "));
+
+    // Cramped (the narrowest sidebar): no gaps between the marks, so the
+    // label keeps more room.
+    let mut config = tabs_config();
+    config.ui.sidebar_width = 18;
+    let mut state = marked_state(&config);
+    let frame = state.compose(106, 20).expect("composed frame");
+    let (rect, _) = state.hits.sidebar_tabs[0];
+    let row = row_text(&frame, rect);
+    assert!(row.ends_with("◎★◷\u{29C6} "), "{row:?}");
+    assert!(row.contains('…'), "the label truncates: {row:?}");
+}
+
+#[test]
+fn pinned_rows_align_with_the_headers_and_take_the_hover_band() {
+    let mut state = marked_state(&tabs_config());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let palette = state.config.palette.clone();
+    let row = state.hits.browser_row;
+    assert_eq!(row.height, 1, "the Browser row is pinned");
+    // The glyph in the headers' icon slot, the label at x=5.
+    assert_eq!(cell_of(&frame, row.x + 3, row.y).0, "◌");
+    assert!(row_text(&frame, row).starts_with("   ◌ Browser"));
+    assert_eq!(cell_of(&frame, row.x, row.y).2, rgb(palette.sidebar_bg));
+
+    state.sidebar_hover = Some(super::super::sidebar_model::SidebarHover::Pinned(
+        super::super::sidebar_model::PinnedKind::Browser,
+    ));
+    let frame = state.compose(106, 20).expect("composed frame");
+    let row = state.hits.browser_row;
+    let (bar, fg, bg, _) = cell_of(&frame, row.x, row.y);
+    assert_eq!(bar, super::super::tab_sidebar::HOVER_BAR);
+    assert_eq!(fg, rgb(palette.accent));
+    assert_eq!(bg, rgb(palette.sidebar_hover_bg()));
+    assert_eq!(
+        cell_of(&frame, row.right() - 1, row.y).2,
+        rgb(palette.sidebar_hover_bg()),
+        "the band spans the row"
+    );
+    // A hovered pinned row selects no tab: no harness glyph in the list.
+    let (rect, _) = state.hits.sidebar_tabs[0];
+    assert!(row_text(&frame, rect).ends_with("◎ ★ ◷ "));
+}
+
+#[test]
+fn label_emphasis_follows_status() {
+    let statuses = [
+        AgentStatus::Working,
+        AgentStatus::Blocked,
+        AgentStatus::Idle,
+        AgentStatus::Unknown,
+        AgentStatus::Suspended,
+    ];
+    let mut snapshot = two_space_snapshot();
+    snapshot.workspaces.truncate(1);
+    snapshot.tabs = std::iter::once(tab("tab_0", "ws_1", 1, "focused", true, AgentStatus::Idle))
+        .chain(statuses.iter().enumerate().map(|(index, status)| {
+            tab(
+                &format!("tab_{}", index + 1),
+                "ws_1",
+                index + 2,
+                &format!("label{}", index + 1),
+                false,
+                *status,
+            )
+        }))
+        .collect();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("composed frame");
+    let palette = state.config.palette.clone();
+    let label = |row: usize| {
+        let (rect, _) = state.hits.sidebar_tabs[row];
+        cell_of(&frame, rect.x + 7, rect.y)
+    };
+    let (_, fg, _, bold) = label(0);
+    assert_eq!((fg, bold), (rgb(palette.text), true), "focused: bold text");
+    for (row, expected) in [
+        (1, palette.text),
+        (2, palette.text),
+        (3, palette.subtext0),
+        (4, palette.subtext0),
+        (5, palette.overlay0),
+    ] {
+        let (_, fg, _, bold) = label(row);
+        assert_eq!(fg, rgb(expected), "{:?}", statuses[row - 1]);
+        assert!(!bold);
+    }
+}
+
+/// `groups` groups of `per_group` tabs after a one-tab bucket; `tab_0` is
+/// focused.
+fn many_groups_snapshot(groups: usize, per_group: usize) -> ClientShellSnapshot {
+    let mut snapshot = two_space_snapshot();
+    let template = snapshot.workspaces[1].clone();
+    snapshot.workspaces.truncate(1);
+    snapshot.tabs = vec![tab("tab_0", "ws_1", 1, "home", true, AgentStatus::Idle)];
+    for group in 0..groups {
+        let mut workspace = template.clone();
+        workspace.workspace_id = format!("ws_g{group}");
+        workspace.number = group + 2;
+        workspace.label = format!("group {group}");
+        snapshot.workspaces.push(workspace);
+        for index in 0..per_group {
+            snapshot.tabs.push(tab(
+                &format!("tab_{group}_{index}"),
+                &format!("ws_g{group}"),
+                index + 1,
+                &format!("g{group} t{index}"),
+                false,
+                AgentStatus::Idle,
+            ));
+        }
+    }
+    snapshot
+}
+
+#[test]
+fn spacer_rows_between_groups_from_30_rows() {
+    // Below 30 rows: headers follow the row above directly.
+    let state = grouped_state_at(24);
+    let (planner, _) = state.hits.sidebar_tabs[1];
+    let (api, _) = state.hits.sidebar_groups[0];
+    assert_eq!(api.y, planner.y + 1);
+
+    // From 30 rows: one blank row before every header with a row above it.
+    let state = grouped_state_at(TALL_ROWS);
+    let (planner, _) = state.hits.sidebar_tabs[1];
+    let (notes, _) = state.hits.sidebar_tabs[2];
+    let (api, _) = state.hits.sidebar_groups[0];
+    let (infra, _) = state.hits.sidebar_groups[1];
+    assert_eq!(api.y, planner.y + 2, "a spacer above api");
+    assert_eq!(notes.y, api.y + 1, "no spacer under a header");
+    assert_eq!(infra.y, notes.y + 2, "a spacer above infra");
+
+    // The scroll metrics count the spacers: scrolled to the bottom, the last
+    // tab is the list's last visible row.
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(many_groups_snapshot(8, 4)));
+    state.set_pane_surface(surface());
+    state.compose(106, TALL_ROWS).expect("composed frame");
+    let body = state.hits.agent_body;
+    assert!(state.hits.agent_max_scroll > 0);
+    state.agent_scroll = usize::MAX;
+    let frame = state.compose(106, TALL_ROWS).expect("composed frame");
+    let (last, last_id) = state.hits.sidebar_tabs.last().cloned().expect("rows");
+    assert_eq!(last_id, "tab_7_3");
+    assert_eq!(last.y, body.bottom() - 1);
+    assert!(row_text(&frame, last).contains("g7 t3"));
+    // A header at the top of the view gets no leading blank.
+    let top_rows = state
+        .hits
+        .sidebar_tabs
+        .iter()
+        .map(|(rect, _)| rect.y)
+        .chain(state.hits.sidebar_groups.iter().map(|(rect, _)| rect.y));
+    assert_eq!(top_rows.min(), Some(body.y));
+}
+
+#[test]
+fn chrome_rows_use_sidebar_chrome_and_list_keeps_sidebar_bg() {
+    let mut snapshot = status_snapshot();
+    snapshot.tabs[0].focused = false;
+    let check = |state: &ClientShellState, frame: &FrameData, chrome: u32| {
+        let palette = &state.config.palette;
+        let body = state.hits.agent_body;
+        let menu = menu_y(state);
+        let content_right = state.hits.sidebar_divider.x;
+        for x in body.x..content_right {
+            assert_eq!(cell_of(frame, x, 0).2, chrome, "toolbar x={x}");
+            assert_eq!(cell_of(frame, x, menu).2, chrome, "menu x={x}");
+            assert_eq!(cell_of(frame, x, menu - 1).2, chrome, "footer x={x}");
+        }
+        let detail = state.hits.sidebar_detail;
+        assert!(detail.height > 0, "the detail strip shows at 40 rows");
+        for y in detail.y..detail.bottom() {
+            assert_eq!(cell_of(frame, body.x, y).2, chrome, "detail y={y}");
+        }
+        for y in body.y..body.bottom() {
+            assert_eq!(
+                cell_of(frame, body.x, y).2,
+                rgb(palette.sidebar_bg),
+                "list y={y}"
+            );
+        }
+    };
+    let (state, frame) = composed_at(&tabs_config(), snapshot.clone(), TALL_ROWS);
+    let palette = state.config.palette.clone();
+    assert_eq!(palette.sidebar_chrome(), palette.surface_dim);
+    check(&state, &frame, rgb(palette.surface_dim));
+
+    // `[theme.custom] sidebar_chrome_bg` overrides it.
+    let mut config = tabs_config();
+    config.theme.custom = Some(crate::config::CustomThemeColors {
+        sidebar_chrome_bg: Some("#123456".into()),
+        ..Default::default()
+    });
+    let (state, frame) = composed_at(&config, snapshot.clone(), TALL_ROWS);
+    check(
+        &state,
+        &frame,
+        rgb(ratatui::style::Color::Rgb(0x12, 0x34, 0x56)),
+    );
+
+    // And per appearance with `[theme.custom.light]` / `.dark`.
+    let mut config = tabs_config();
+    config.theme.auto_switch = true;
+    config.theme.custom = Some(crate::config::CustomThemeColors {
+        light: Some(crate::config::ModeThemeColors {
+            sidebar_chrome_bg: Some("#e0e0e0".into()),
+            ..Default::default()
+        }),
+        dark: Some(crate::config::ModeThemeColors {
+            sidebar_chrome_bg: Some("#101010".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let runtime = crate::app::client_theme_runtime_from_config(&config);
+    for (appearance, expected) in [
+        (
+            crate::terminal_theme::HostAppearance::Light,
+            ratatui::style::Color::Rgb(0xe0, 0xe0, 0xe0),
+        ),
+        (
+            crate::terminal_theme::HostAppearance::Dark,
+            ratatui::style::Color::Rgb(0x10, 0x10, 0x10),
+        ),
+    ] {
+        let palette = crate::app::client_palette_for_appearance(&runtime, appearance);
+        assert_eq!(palette.sidebar_chrome(), expected, "{appearance:?}");
+        let mut shell_config = ClientShellConfig::from_config(&config);
+        shell_config.palette = palette;
+        let mut state = ClientShellState::new(shell_config);
+        state.set_snapshot(Box::new(snapshot.clone()));
+        state.set_pane_surface(wide_surface());
+        let frame = state.compose(106, TALL_ROWS).expect("composed frame");
+        check(&state, &frame, rgb(expected));
+    }
+}
+
+#[test]
+fn divider_uses_surface1() {
+    let (state, frame) = composed_at(&tabs_config(), status_snapshot(), TALL_ROWS);
+    let palette = &state.config.palette;
+    let divider = state.hits.sidebar_divider;
+    assert_eq!(divider.height, TALL_ROWS);
+    for y in divider.y..divider.bottom() {
+        let (symbol, fg, bg, _) = cell_of(&frame, divider.x, y);
+        assert_eq!(symbol, "│", "y={y}");
+        assert_eq!(fg, rgb(palette.surface1), "y={y}");
+        assert_eq!(bg, rgb(palette.sidebar_bg), "never the chrome: y={y}");
+    }
+}
+
+mod plan_layout {
+    use super::super::super::tab_sidebar::{plan_layout, LayoutWants, SidebarPlan};
+    use ratatui::layout::Rect;
+
+    /// An Active agents block of `cap` lines plus its header, `+N more` and
+    /// rule.
+    fn active(cap: u16) -> u16 {
+        cap + 3
+    }
+
+    fn plan(height: u16, wants: LayoutWants) -> SidebarPlan {
+        let plan = plan_layout(Rect::new(0, 0, 30, height), wants, active);
+        // The rows stack top to bottom and fill the content.
+        let stack = [
+            plan.toolbar,
+            plan.active,
+            plan.list,
+            plan.pinned,
+            plan.detail,
+            plan.footer,
+            plan.menu,
+        ];
+        for pair in stack.windows(2) {
+            assert_eq!(pair[0].bottom(), pair[1].y, "{plan:?}");
+        }
+        assert_eq!(plan.menu.bottom(), height, "{plan:?}");
+        plan
+    }
+
+    fn wants(detail_lines: u16, active_cap: u16) -> LayoutWants {
+        LayoutWants {
+            pinned: 1,
+            status_lines: 3,
+            active_cap,
+            detail_lines,
+        }
+    }
+
+    #[test]
+    fn everything_fits_when_tall() {
+        let plan = plan(40, wants(3, 8));
+        assert_eq!(plan.active.height, 11);
+        assert_eq!(plan.pinned.height, 1);
+        assert_eq!(plan.detail.height, 5, "two rules around three lines");
+        assert_eq!(plan.footer.height, 3, "one row per line");
+        assert_eq!(plan.list.height, 18);
+    }
+
+    #[test]
+    fn the_footer_joins_below_30_rows_and_the_strip_drops_its_lower_rule_without_it() {
+        let plan = plan(20, wants(1, 4));
+        assert_eq!(plan.footer.height, 1);
+        assert_eq!(plan.detail.height, 3);
+        let no_footer = plan_layout(
+            Rect::new(0, 0, 30, 20),
+            LayoutWants {
+                status_lines: 0,
+                ..wants(1, 4)
+            },
+            active,
+        );
+        assert_eq!(no_footer.footer.height, 0);
+        assert_eq!(no_footer.detail.height, 2, "the upper rule and the line");
+    }
+
+    #[test]
+    fn the_optional_rows_give_way_in_order_for_three_list_rows() {
+        // The detail strip goes first.
+        let plan = plan(14, wants(1, 4));
+        assert_eq!(plan.detail.height, 0);
+        assert_eq!(plan.active.height, 7);
+        assert_eq!(plan.list.height, 3);
+        // Then the Active block's lines step down.
+        let plan = plan_layout(Rect::new(0, 0, 30, 12), wants(1, 4), active);
+        assert_eq!((plan.detail.height, plan.active.height), (0, 5));
+        assert_eq!(plan.list.height, 3);
+        // Then the whole block.
+        let plan = plan_layout(Rect::new(0, 0, 30, 10), wants(1, 4), active);
+        assert_eq!(plan.active.height, 0);
+        assert_eq!(plan.footer.height, 1);
+        assert_eq!(plan.list.height, 6);
+        // Then the footer; the pinned row keeps the list one row.
+        let plan = plan_layout(Rect::new(0, 0, 30, 5), wants(1, 4), active);
+        assert_eq!(plan.footer.height, 0);
+        assert_eq!(plan.pinned.height, 1);
+        assert_eq!(plan.list.height, 2);
+        let plan = plan_layout(Rect::new(0, 0, 30, 4), wants(1, 4), active);
+        assert_eq!((plan.pinned.height, plan.list.height), (1, 1));
+    }
+
+    #[test]
+    fn a_tall_footer_steps_down_to_one_row_before_none() {
+        // 30 rows (one footer row per line), many pinned rows, no block.
+        let tight = |pinned| LayoutWants {
+            pinned,
+            status_lines: 4,
+            active_cap: 8,
+            detail_lines: 0,
+        };
+        let plan = plan_layout(Rect::new(0, 0, 30, 30), tight(20), |_| 0);
+        assert_eq!((plan.footer.height, plan.list.height), (4, 4));
+        let plan = plan_layout(Rect::new(0, 0, 30, 30), tight(24), |_| 0);
+        assert_eq!(plan.footer.height, 1, "four rows would leave none");
+        assert_eq!(plan.list.height, 3);
+        let plan = plan_layout(Rect::new(0, 0, 30, 30), tight(26), |_| 0);
+        assert_eq!((plan.footer.height, plan.list.height), (0, 2));
+        // The Active block goes before the footer shrinks.
+        let plan = plan_layout(Rect::new(0, 0, 30, 30), tight(20), |cap| cap + 3);
+        assert_eq!(plan.active.height, 0);
+        assert_eq!(plan.footer.height, 4);
+    }
 }
 
 /// Fork smoke tests: FORK.md section 10 lists them by name and the sync gate
@@ -2788,9 +3418,8 @@ mod fork_smoke {
     /// joining or drawing it) would flatten or drop the color silently.
     #[test]
     fn colored_multi_line_status_reaches_the_footer_in_color() {
-        let (state, frame) = composed(&tabs_config(), multi_line_status_snapshot());
-        let body = state.hits.agent_body;
-        let footer = ratatui::layout::Rect::new(body.x, body.bottom(), body.width, 3);
+        let (state, frame) = composed_at(&tabs_config(), multi_line_status_snapshot(), TALL_ROWS);
+        let footer = footer_rows(&state, 3);
         assert_eq!(
             status_rows(&state, &frame, 3)
                 .iter()

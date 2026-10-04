@@ -77,7 +77,6 @@ pub struct Palette {
     pub sidebar_chrome_bg: Option<Color>,
 }
 
-#[allow(dead_code)] // sidebar v2 S0b: the chrome and hover bands use these in the row step
 impl Palette {
     /// Fork (sidebar v2): the tabs sidebar's chrome background,
     /// `sidebar_chrome_bg` or else `surface_dim`.
@@ -1516,6 +1515,38 @@ impl AppState {
 mod tests {
     use super::*;
     use crossterm::event::KeyEvent;
+
+    #[test]
+    fn sidebar_chrome_falls_back_to_surface_dim_and_takes_the_override() {
+        let mut palette = Palette::catppuccin();
+        assert_eq!(palette.sidebar_chrome(), palette.surface_dim);
+        let custom = crate::config::CustomThemeColors {
+            sidebar_chrome_bg: Some("#11111b".into()),
+            ..Default::default()
+        };
+        palette = palette.with_overrides(&custom);
+        assert_eq!(palette.sidebar_chrome(), Color::Rgb(0x11, 0x11, 0x1b));
+        let mode = crate::config::ModeThemeColors {
+            sidebar_chrome_bg: Some("reset".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            palette.with_mode_overrides(&mode).sidebar_chrome(),
+            Color::Reset
+        );
+    }
+
+    #[test]
+    fn sidebar_hover_bg_is_selection_bg_unless_it_would_not_show() {
+        let mut palette = Palette::catppuccin();
+        palette.selection_bg = Color::Rgb(1, 2, 3);
+        palette.sidebar_bg = Color::Rgb(4, 5, 6);
+        assert_eq!(palette.sidebar_hover_bg(), Color::Rgb(1, 2, 3));
+        palette.selection_bg = Color::Reset;
+        assert_eq!(palette.sidebar_hover_bg(), palette.surface1);
+        palette.selection_bg = palette.sidebar_bg;
+        assert_eq!(palette.sidebar_hover_bg(), palette.surface1);
+    }
 
     #[test]
     fn pane_size_estimate_uses_headless_size_before_first_view() {

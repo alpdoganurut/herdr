@@ -359,9 +359,13 @@ fn the_row_sits_above_the_status_footer_and_goes_with_the_tab() {
     deliver(&mut state, info(Some("tab_2")));
     let frame = state.compose(106, 20).expect("composed frame");
     let row = state.hits.news_row;
+    // Under the row: the detail strip (`hits.sidebar_detail`), then the
+    // footer.
+    let detail = state.hits.sidebar_detail;
+    assert!(detail.is_empty() || detail.y == row.y + 1, "{detail:?}");
     let footer = row_text(
         &frame,
-        ratatui::layout::Rect::new(row.x, row.y + 1, row.width, 1),
+        ratatui::layout::Rect::new(row.x, row.y + 1 + detail.height, row.width, 1),
     );
     assert!(
         footer.contains("cpu 12%"),

@@ -728,7 +728,8 @@ pub(crate) mod fork_smoke {
         let text = row_text(&frame, row);
         assert!(text.trim_start().starts_with("◎ Browser"), "{text:?}");
         assert!(text.contains("2 tabs"), "{text:?}");
-        let cell = &frame.cells[(row.y * frame.width + row.x + 1) as usize];
+        // The glyph sits in the headers' icon slot (x=3), the label at x=5.
+        let cell = &frame.cells[(row.y * frame.width + row.x + 3) as usize];
         assert_eq!(cell.symbol, "◎");
     }
 }

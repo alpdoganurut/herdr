@@ -7,6 +7,12 @@
 //! live voice mode, a suspended tab), a folded group, a browser-marked tab,
 //! the pinned Browser row and a three-line status footer.
 //!
+//! Sidebar v2 (rows step) re-blessed them for the new rows: headers without
+//! a band, tab rows indented under them with the marks packed flush right
+//! and the harness glyph only on the selected row, the voice mark left of
+//! the label, spacer rows between groups from 30 rows, the chrome
+//! background (`sidebar_chrome_bg`) and the surface1 divider.
+//!
 //! Each golden is the sidebar region as text plus the style runs of every row
 //! (fg, bg and bold, colours named by palette token). The expectations live in
 //! `golden/*.txt` next to this file; `HERDR_UPDATE_GOLDEN=1 cargo nextest run
@@ -25,11 +31,18 @@ use crate::protocol::ClientShellTabStatusSegment;
 /// Golden sidebar width (`ui.sidebar_width`); the frame is 106 columns.
 pub(super) const GOLDEN_SIDEBAR_WIDTH: u16 = 31;
 pub(super) const GOLDEN_COLS: u16 = 106;
+/// The short golden's terminal rows: the list (8 rows under one joined
+/// footer row and the Browser row) scrolls.
+const GOLDEN_SHORT_ROWS: u16 = 12;
 
+/// The golden config. The Active agents block is off: it repeats the
+/// attention rows above the list and has its own tests
+/// (`tests/sidebar_active.rs`), so the goldens frame the list rows alone.
 pub(super) fn golden_config() -> Config {
     let mut config = Config::default();
     config.ui.sidebar_layout = SidebarLayoutConfig::Tabs;
     config.ui.sidebar_width = GOLDEN_SIDEBAR_WIDTH;
+    config.ui.sidebar_active_agents = false;
     config
 }
 
@@ -296,6 +309,7 @@ pub(super) fn golden_palette(base: &crate::app::state::Palette) -> crate::app::s
     palette.blue = Rgb(0x10, 0x00, 0x11);
     palette.teal = Rgb(0x10, 0x00, 0x12);
     palette.peach = Rgb(0x10, 0x00, 0x13);
+    palette.sidebar_chrome_bg = Some(Rgb(0x10, 0x00, 0x14));
     palette
 }
 
@@ -374,6 +388,7 @@ fn token_name(palette: &crate::app::state::Palette, value: u32) -> String {
         ("surface0", palette.surface0),
         ("surface1", palette.surface1),
         ("surface_dim", palette.surface_dim),
+        ("sidebar_chrome_bg", palette.sidebar_chrome()),
         ("panel_bg", palette.panel_bg),
         ("red", palette.red),
         ("yellow", palette.yellow),
@@ -518,13 +533,13 @@ fn golden_list_rows_at_31_columns() {
     assert_golden("tab_sidebar_list_rows", &dump);
     let first = sidebar_lines(&frame, GOLDEN_SIDEBAR_WIDTH, body.y, body.y + 1);
     assert!(first[0].contains("scratch"), "{first:?}");
-    // Group headers sit on a surface0 band today.
+    // Group headers have no band: the list's own background.
     let (header, _) = state.hits.sidebar_groups[0];
     let (symbol, _, bg, _) = cell_style(&frame, header.x + 1, header.y);
     assert_eq!(symbol, "▾");
     assert_eq!(
         bg,
-        crate::protocol::color_to_u32(state.config.palette.surface0)
+        crate::protocol::color_to_u32(state.config.palette.sidebar_bg)
     );
     // Every listed tab, in order; the folded group's tabs are hidden.
     let ids: Vec<&str> = state
@@ -548,14 +563,29 @@ fn golden_list_rows_at_31_columns() {
 
 #[test]
 fn golden_short_height_keeps_the_last_tab() {
-    let (mut state, frame) = compose_golden(14);
-    let dump = sidebar_dump(&frame, &state.config.palette, GOLDEN_SIDEBAR_WIDTH, 0, 14);
+    let (mut state, frame) = compose_golden(GOLDEN_SHORT_ROWS);
+    let dump = sidebar_dump(
+        &frame,
+        &state.config.palette,
+        GOLDEN_SIDEBAR_WIDTH,
+        0,
+        GOLDEN_SHORT_ROWS,
+    );
     assert_golden("tab_sidebar_short", &dump);
     assert!(state.hits.agent_body.height >= 1);
+    assert!(state.hits.agent_max_scroll > 0, "the short list scrolls");
     // Scrolled to the bottom, the last list row is drawn.
     state.agent_scroll = usize::MAX;
-    let frame = state.compose(GOLDEN_COLS, 14).expect("composed frame");
-    let dump = sidebar_dump(&frame, &state.config.palette, GOLDEN_SIDEBAR_WIDTH, 0, 14);
+    let frame = state
+        .compose(GOLDEN_COLS, GOLDEN_SHORT_ROWS)
+        .expect("composed frame");
+    let dump = sidebar_dump(
+        &frame,
+        &state.config.palette,
+        GOLDEN_SIDEBAR_WIDTH,
+        0,
+        GOLDEN_SHORT_ROWS,
+    );
     assert_golden("tab_sidebar_short_scrolled", &dump);
     assert!(
         state

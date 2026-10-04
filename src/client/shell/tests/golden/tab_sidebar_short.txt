@@ -1,131 +1,111 @@
 00| ⏶                          + │|
-   00-00 -/sidebar_bg
-   01-01 overlay0/sidebar_bg
-   02-27 -/sidebar_bg
-   28-28 overlay0/sidebar_bg
-   29-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-01| ○ scratch               ◎ ⧅ ▕│|
-   00-00 -/sidebar_bg
-   01-01 green/sidebar_bg
-   02-02 -/sidebar_bg
-   03-09 subtext0/sidebar_bg
-   10-24 -/sidebar_bg
-   25-25 accent/sidebar_bg
-   26-26 -/sidebar_bg
-   27-27 overlay0/sidebar_bg
+   00-00 -/sidebar_chrome_bg
+   01-01 overlay0/sidebar_chrome_bg
+   02-27 -/sidebar_chrome_bg
+   28-28 overlay0/sidebar_chrome_bg
+   29-29 -/sidebar_chrome_bg
+   30-30 surface1/sidebar_bg
+01|     ○ scratch             ◎ ▕│|
+   00-04 -/sidebar_bg
+   05-05 green/sidebar_bg
+   06-06 -/sidebar_bg
+   07-13 subtext0/sidebar_bg
+   14-26 -/sidebar_bg
+   27-27 accent/sidebar_bg
    28-28 -/sidebar_bg
    29-29 overlay0/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-02| ▾ Planning              3 ● ▕│|
-   00-00 -/surface0
-   01-01 overlay0/surface0
-   02-02 -/surface0
-   03-10 subtext0/surface0
-   11-24 -/surface0
-   25-25 overlay0/surface0
-   26-26 -/surface0
-   27-27 red/surface0
-   28-28 -/surface0
+   30-30 surface1/sidebar_bg
+02| ▾   Planning            3 ● ▕│|
+   00-00 -/sidebar_bg
+   01-01 subtext0/sidebar_bg
+   02-04 -/sidebar_bg
+   05-12 text/sidebar_bg/b
+   13-24 -/sidebar_bg
+   25-25 overlay0/sidebar_bg
+   26-26 -/sidebar_bg
+   27-27 red/sidebar_bg
+   28-28 -/sidebar_bg
    29-29 overlay0/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-03| ⚭ sidebar redesign        ⧆ ▕│|
-   00-00 -/active_row_bg
-   01-01 yellow/active_row_bg
-   02-02 -/active_row_bg
-   03-18 text/active_row_bg/b
-   19-26 -/active_row_bg
+   30-30 surface1/sidebar_bg
+03|     ⚭ sidebar redesign    ⧆ ▕│|
+   00-04 -/active_row_bg
+   05-05 yellow/active_row_bg
+   06-06 -/active_row_bg
+   07-22 text/active_row_bg/b
+   23-26 -/active_row_bg
    27-27 #02d97757/active_row_bg
    28-28 -/active_row_bg
    29-29 overlay0/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-04| ● review api            ★ ⧆ ▕│|
-   00-00 -/sidebar_bg
-   01-01 red/sidebar_bg
-   02-02 -/sidebar_bg
-   03-12 subtext0/sidebar_bg
-   13-24 -/sidebar_bg
-   25-25 red/sidebar_bg
-   26-26 -/sidebar_bg
+   30-30 surface1/sidebar_bg
+04|     ● review api          ★ ▕│|
+   00-04 -/sidebar_bg
+   05-05 red/sidebar_bg
+   06-06 -/sidebar_bg
+   07-16 text/sidebar_bg
+   17-26 -/sidebar_bg
+   27-27 red/sidebar_bg
+   28-28 -/sidebar_bg
+   29-29 overlay0/sidebar_bg
+   30-30 surface1/sidebar_bg
+05|     ○ notes               ◑ ▕│|
+   00-04 -/sidebar_bg
+   05-05 green/sidebar_bg
+   06-06 -/sidebar_bg
+   07-11 #02b06cf5/sidebar_bg
+   12-26 -/sidebar_bg
    27-27 overlay0/sidebar_bg
    28-28 -/sidebar_bg
    29-29 overlay0/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-05| ○ notes                 ◑ ⧆ ▕│|
-   00-00 -/sidebar_bg
-   01-01 green/sidebar_bg
-   02-02 -/sidebar_bg
-   03-07 #02b06cf5/sidebar_bg
-   08-24 -/sidebar_bg
-   25-25 overlay0/sidebar_bg
-   26-26 -/sidebar_bg
-   27-27 overlay0/sidebar_bg
-   28-28 -/sidebar_bg
-   29-29 overlay0/sidebar_bg
-   30-30 surface_dim/sidebar_bg
+   30-30 surface1/sidebar_bg
 06| ▾ ◆ Search It           3 ● ▕│|
-   00-00 -/surface0
-   01-01 overlay0/surface0
-   02-02 -/surface0
-   03-03 accent/surface0
-   04-04 -/surface0
-   05-13 overlay1/surface0
-   14-24 -/surface0
-   25-25 overlay0/surface0
-   26-26 -/surface0
-   27-27 teal/surface0
-   28-28 -/surface0
+   00-00 -/sidebar_bg
+   01-01 subtext0/sidebar_bg
+   02-02 -/sidebar_bg
+   03-03 accent/sidebar_bg
+   04-04 -/sidebar_bg
+   05-13 subtext0/sidebar_bg/b
+   14-24 -/sidebar_bg
+   25-25 overlay0/sidebar_bg
+   26-26 -/sidebar_bg
+   27-27 teal/sidebar_bg
+   28-28 -/sidebar_bg
    29-29 overlay0/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-07| ● fixer                 ◆ ⧇ ▕│|
-   00-00 -/sidebar_bg
-   01-01 teal/sidebar_bg
-   02-02 -/sidebar_bg
-   03-07 subtext0/sidebar_bg
-   08-24 -/sidebar_bg
-   25-25 overlay0/sidebar_bg
-   26-26 -/sidebar_bg
-   27-27 overlay0/sidebar_bg
-   28-28 -/sidebar_bg
-   29-30 surface_dim/sidebar_bg
-08| ○ talker              ● ◆ ⧇ ▕│|
-   00-00 -/sidebar_bg
-   01-01 green/sidebar_bg
-   02-02 -/sidebar_bg
-   03-08 subtext0/sidebar_bg
-   09-22 -/sidebar_bg
-   23-23 red/sidebar_bg
-   24-24 -/sidebar_bg
-   25-25 overlay0/sidebar_bg
-   26-26 -/sidebar_bg
-   27-27 overlay0/sidebar_bg
-   28-28 -/sidebar_bg
-   29-30 surface_dim/sidebar_bg
-09| ◌ Browser            stopped │|
-   00-00 -/sidebar_bg
-   01-01 overlay0/sidebar_bg
-   02-02 -/sidebar_bg
-   03-09 subtext0/sidebar_bg
-   10-21 -/sidebar_bg
+   30-30 surface1/sidebar_bg
+07|     ● fixer                 ▕│|
+   00-04 -/sidebar_bg
+   05-05 teal/sidebar_bg
+   06-06 -/sidebar_bg
+   07-11 text/sidebar_bg
+   12-28 -/sidebar_bg
+   29-29 surface_dim/sidebar_bg
+   30-30 surface1/sidebar_bg
+08|     ○  talker              ▕│|
+   00-04 -/sidebar_bg
+   05-05 green/sidebar_bg
+   06-06 -/sidebar_bg
+   07-07 red/sidebar_bg
+   08-08 -/sidebar_bg
+   09-14 subtext0/sidebar_bg
+   15-28 -/sidebar_bg
+   29-29 surface_dim/sidebar_bg
+   30-30 surface1/sidebar_bg
+09|   ◌ Browser          stopped │|
+   00-02 -/sidebar_bg
+   03-03 overlay0/sidebar_bg
+   04-04 -/sidebar_bg
+   05-11 subtext0/sidebar_bg
+   12-21 -/sidebar_bg
    22-28 overlay1/sidebar_bg
    29-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-10| cpu 12%                      │|
-   00-00 -/sidebar_bg
-   01-07 overlay1/sidebar_bg
-   08-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-11| mem 80%                      │|
-   00-00 -/sidebar_bg
-   01-07 #00000002/sidebar_bg
-   08-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-12| net ok                       │|
-   00-00 -/sidebar_bg
-   01-06 overlay1/sidebar_bg
-   07-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-13|                          men«│|
-   00-25 -/sidebar_bg
-   26-29 overlay0/sidebar_bg
-   30-30 surface_dim/sidebar_bg
+   30-30 surface1/sidebar_bg
+10| cpu 12%  mem 80%  net ok     │|
+   00-00 -/sidebar_chrome_bg
+   01-09 overlay1/sidebar_chrome_bg
+   10-16 #00000002/sidebar_chrome_bg
+   17-24 overlay1/sidebar_chrome_bg
+   25-29 -/sidebar_chrome_bg
+   30-30 surface1/sidebar_bg
+11|                          men«│|
+   00-25 -/sidebar_chrome_bg
+   26-29 overlay0/sidebar_chrome_bg
+   30-30 surface1/sidebar_bg

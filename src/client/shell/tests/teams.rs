@@ -299,39 +299,26 @@ fn a_group_without_a_team_keeps_its_plain_header() {
     state.set_pane_surface(surface());
     let (text, _, _) = header(&mut state);
     assert!(
-        text.contains("▾ search-it") && !text.contains('◆'),
+        text.contains("▾   search-it") && !text.contains('◆'),
         "{text:?}"
     );
 }
 
 #[test]
-fn member_rows_get_the_dim_mark_and_no_tab_a_managed_plus() {
-    // Agents model v2: every tab is part of herdr+, so there is no `+`.
+fn team_mark_only_on_the_header() {
+    // Sidebar v2: the team's `◆` sits on its header only. Agents model v2:
+    // every tab is part of herdr+, so there is no `+`.
     let mut state = team_state(Some("ship it"));
     let frame = state.compose(106, 24).expect("composed frame");
-    for tab_id in ["tab_2", "tab_3"] {
-        let row = tab_row(&state, &frame, tab_id);
-        assert!(row.contains('◆') && !row.contains('+'), "{tab_id}: {row:?}");
-    }
-    for tab_id in ["tab_1", "tab_4"] {
+    for tab_id in ["tab_1", "tab_2", "tab_3", "tab_4"] {
         let row = tab_row(&state, &frame, tab_id);
         assert!(
             !row.contains('◆') && !row.contains('+'),
             "{tab_id}: {row:?}"
         );
     }
-    // The mark is dim.
-    let buffer = frame.to_ratatui_buffer().expect("buffer");
-    let (rect, _) = *state
-        .hits
-        .sidebar_tabs
-        .iter()
-        .find(|(_, id)| id == "tab_2")
-        .expect("row");
-    let x = (rect.x..rect.right())
-        .find(|x| buffer[(*x, rect.y)].symbol() == "◆")
-        .expect("mark");
-    assert_eq!(buffer[(x, rect.y)].fg, state.config.palette.overlay0);
+    let (text, _, _) = header(&mut state);
+    assert!(text.contains("▾ ◆ ship it"), "{text:?}");
 }
 
 #[test]

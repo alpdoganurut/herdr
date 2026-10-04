@@ -276,12 +276,8 @@ pub(super) struct ShellRenderState<'a> {
     /// builds a one-off model).
     pub(super) sidebar_model: Option<&'a super::sidebar_model::SidebarModel>,
     /// Fork (sidebar v2): the hovered tabs sidebar row.
-    #[allow(dead_code)]
-    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
     pub(super) sidebar_hover: Option<&'a super::sidebar_model::SidebarHover>,
     /// Fork (sidebar v2): the clock durations are measured against.
-    #[allow(dead_code)]
-    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
     pub(super) now: std::time::Instant,
     /// Fork (sidebar v2): a tab to scroll into view (taken by the tabs sidebar).
     pub(super) sidebar_reveal_tab: &'a mut Option<String>,
@@ -442,7 +438,6 @@ pub(super) fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &s
 /// Fork (sidebar v2): `text` in at most `width` cells at (`x`, `y`); text
 /// that does not fit keeps `width - 1` cells and ends with `…`. Allocates
 /// nothing.
-#[allow(dead_code)] // sidebar v2 S0b: read once the rows, Active block and detail strip draw
 pub(super) fn put_truncated(
     buffer: &mut Buffer,
     x: u16,

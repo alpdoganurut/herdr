@@ -349,6 +349,36 @@ active_row_bg = "#131415"
     }
 
     #[test]
+    fn theme_custom_sidebar_chrome_bg_parses_in_every_scope() {
+        let toml = r##"
+[theme.custom]
+sidebar_chrome_bg = "#11111b"
+
+[theme.custom.light]
+sidebar_chrome_bg = "#e6e9ef"
+
+[theme.custom.dark]
+sidebar_chrome_bg = "reset"
+"##;
+        let config: Config = toml::from_str(toml).unwrap();
+        let custom = config.theme.custom.as_ref().unwrap();
+        assert_eq!(custom.sidebar_chrome_bg.as_deref(), Some("#11111b"));
+        let light = custom.light.as_ref().unwrap();
+        assert_eq!(light.sidebar_chrome_bg.as_deref(), Some("#e6e9ef"));
+        let dark = custom.dark.as_ref().unwrap();
+        assert_eq!(dark.sidebar_chrome_bg.as_deref(), Some("reset"));
+
+        let config: Config = toml::from_str("[theme.custom]\naccent = \"#010203\"\n").unwrap();
+        assert!(config
+            .theme
+            .custom
+            .as_ref()
+            .unwrap()
+            .sidebar_chrome_bg
+            .is_none());
+    }
+
+    #[test]
     fn theme_defaults_when_missing() {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.theme.name.is_none());

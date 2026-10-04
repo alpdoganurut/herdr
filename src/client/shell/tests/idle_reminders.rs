@@ -999,15 +999,27 @@ fn rows_show_star_and_clock_before_the_glyph_and_light_them_once_fired() {
         .iter()
         .map(|(rect, _)| row_text(&frame, *rect))
         .collect::<Vec<_>>();
+    // Packed flush right; the harness glyph only on the selected row.
     assert!(
-        rows[1].trim_end().ends_with("\u{2605} \u{25F7} \u{29C6}"),
-        "star, clock, glyph: {rows:?}"
+        rows[1].trim_end().ends_with("\u{2605} \u{25F7}"),
+        "star, clock: {rows:?}"
     );
     assert!(!rows[0].contains('\u{2605}') && !rows[0].contains('\u{25F7}'));
     assert_eq!(
         unicode_width::UnicodeWidthStr::width(rows[0].as_str()),
         unicode_width::UnicodeWidthStr::width(rows[1].as_str())
     );
+    let (_, hovered) = state.hits.sidebar_tabs[1].clone();
+    state.sidebar_hover = Some(super::super::sidebar_model::SidebarHover::Tab(hovered));
+    let frame = state.compose(106, 20).expect("composed frame");
+    let (rect, _) = state.hits.sidebar_tabs[1];
+    assert!(
+        row_text(&frame, rect)
+            .trim_end()
+            .ends_with("\u{2605} \u{25F7} \u{29C6}"),
+        "star, clock, glyph when selected"
+    );
+    state.sidebar_hover = None;
 
     let t0 = Instant::now();
     state.tick_notifications(t0);

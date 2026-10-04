@@ -2,11 +2,14 @@
 //! endpoint's panes in voice mode, as its last `endpoint.voice.v1` push
 //! listed them (server side: src/server/headless/voice.rs).
 //!
-//! The `tabs` sidebar marks a tab whose agent is in voice mode: a red `●`
-//! while the microphone is live, a dim `◌` while it is muted, nothing when
-//! voice mode is off. The lookup map is built once per push, so the mark is
-//! an O(1) lookup in the sidebar's one pass over the snapshot's agents. A
-//! state is used only while its `boot_id` is the active snapshot's.
+//! The `tabs` sidebar marks a tab whose agent is in voice mode, left of its
+//! label: a red microphone (U+F130) while it is live, a dim crossed-out one
+//! (U+F131) while it is muted, nothing when voice mode is off. Both are Nerd
+//! Font symbols; `ui.tab_agent_glyphs.voice_live` / `voice_muted` override
+//! them (an exact-key lookup, e.g. `voice_live = "●"` for fonts without the
+//! symbols). The lookup map is built once per push, so the mark is an O(1)
+//! lookup in the sidebar model's pass over the snapshot's agents. A state is
+//! used only while its `boot_id` is the active snapshot's.
 
 use std::collections::HashMap;
 
@@ -14,10 +17,15 @@ use super::*;
 use crate::api::schema::AgentVoiceMode;
 use crate::server::headless::voice::VoicePayload;
 
-/// The mark of a tab whose agent listens (microphone live).
-pub(crate) const VOICE_LIVE_MARK: &str = "●";
-/// The mark of a tab whose agent's voice session is muted.
-pub(crate) const VOICE_MUTED_MARK: &str = "◌";
+/// The mark of a tab whose agent listens (microphone live): Nerd Font
+/// `nf-fa-microphone`, one cell wide.
+pub(crate) const VOICE_LIVE_MARK: &str = "\u{F130}";
+/// The mark of a tab whose agent's voice session is muted: Nerd Font
+/// `nf-fa-microphone_slash`, one cell wide.
+pub(crate) const VOICE_MUTED_MARK: &str = "\u{F131}";
+/// `ui.tab_agent_glyphs` keys that override the two marks.
+pub(crate) const VOICE_LIVE_GLYPH_KEY: &str = "voice_live";
+pub(crate) const VOICE_MUTED_GLYPH_KEY: &str = "voice_muted";
 
 /// One endpoint's panes in voice mode, as its last push listed them.
 #[derive(Debug, Default, Clone)]
@@ -60,17 +68,25 @@ pub(crate) fn louder(
 }
 
 /// The tab mark of a voice mode and its color (an unknown mode counts as
-/// live: the voice session is on). The glyph borrows the config (sidebar
-/// v2: `ui.tab_agent_glyphs` may override it).
+/// live: the voice session is on). The glyph borrows the config:
+/// `ui.tab_agent_glyphs.voice_live` / `voice_muted` override it (exact key,
+/// no `other` fallback).
 pub(crate) fn voice_mark(
     voice: AgentVoiceMode,
     config: &ClientShellConfig,
 ) -> (&str, ratatui::style::Color) {
     let palette = &config.palette;
-    match voice {
-        AgentVoiceMode::Muted => (VOICE_MUTED_MARK, palette.overlay0),
-        AgentVoiceMode::Live | AgentVoiceMode::Unknown => (VOICE_LIVE_MARK, palette.red),
-    }
+    let (key, builtin, color) = match voice {
+        AgentVoiceMode::Muted => (VOICE_MUTED_GLYPH_KEY, VOICE_MUTED_MARK, palette.overlay0),
+        AgentVoiceMode::Live | AgentVoiceMode::Unknown => {
+            (VOICE_LIVE_GLYPH_KEY, VOICE_LIVE_MARK, palette.red)
+        }
+    };
+    let glyph = config
+        .tab_agent_glyphs
+        .get(key)
+        .map_or(builtin, String::as_str);
+    (glyph, color)
 }
 
 /// The active endpoint's voice state, while it belongs to the active

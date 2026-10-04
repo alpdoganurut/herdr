@@ -22,7 +22,8 @@
 //! only while at least one segment has text. A command entry with `lines > 1`
 //! sends its lines joined with `\n` and one with `ansi = true` keeps SGR
 //! sequences; the footer draws one row per line (at most
-//! `MAX_STATUS_ROWS`) and parses the SGR into styles.
+//! `MAX_STATUS_ROWS`) and parses the SGR into styles. Below
+//! `SPACIOUS_HEIGHT` rows the lines share one row, two spaces apart.
 //!
 //! The News tab (`news.rs`) is pinned: it leaves the scrolling list and takes
 //! one row between the list and the status footer (`hits.news_row`), with a
@@ -35,31 +36,69 @@
 //! Browser. Every tab is part of herdr+ (agents model v2): no tab carries a
 //! managed mark.
 //!
-//! Fork, teams (`teams.rs`): a team group's header shows `◆ <purpose>` (the
-//! mark in accent), or `◆ <group label>` dim before a purpose exists; a
-//! member's row shows a dim `◆` before the agent glyph. Both are O(1)
+//! Fork, teams (`teams.rs`): a team group's header shows `◆` in its icon
+//! slot and its purpose as the name (the mark in accent), or the group label
+//! dim before a purpose exists. Member rows carry no mark. Both are O(1)
 //! lookups in the client's team maps.
+//!
+//! Fork, sidebar v2 (the rows). Columns, from the content's left edge: the
+//! hover bar `▎` at 0; a header's fold marker at 1, its icon slot (team `◆`)
+//! at 3 and its name at 5; a tab's status icon at 5, its voice mark at 7 and
+//! its label at 7 (9 after a voice mark). Headers have no band (only while
+//! dragged). A tab row's marks (browser `◎`, `★`, the reminder) are packed
+//! flush right in that order with a one-cell margin, stride 2 (1 when the
+//! label would get fewer than `MIN_LABEL_CELLS`); the selected row (the
+//! hovered one, else the focused tab: `sidebar_model::resolve_selected`)
+//! adds the agent's harness glyph last, in its brand color, breathing while
+//! the tab works. From `SPACIOUS_HEIGHT` rows a blank spacer row sits before
+//! every header with a row above it (`SidebarModel::gaps_after`, so scroll
+//! math counts it). The chrome rows (toolbar, Active agents block, detail
+//! strip, status footer, menu row) sit on `Palette::sidebar_chrome()`; the
+//! list and pinned rows keep `sidebar_bg`, the divider is `surface1`.
+
+use std::fmt::Write as _;
 
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Paragraph, Widget},
+    style::{Color, Modifier, Style},
+    text::Span,
 };
 
-use super::render::{put_right_text, put_text, render_sidebar_background, ShellRenderState};
-use super::sidebar_model::{Row, SidebarModel};
+use super::render::{
+    put_right_text, put_text, put_truncated, render_sidebar_background, ShellRenderState,
+};
+use super::sidebar_model::{
+    resolve_selected, PinnedKind, Row, Selected, SidebarHover, SidebarModel, StackStr, TabFacts,
+};
 use super::*;
 
 const TOOLBAR_ROWS: u16 = 1;
 const FOOTER_ROWS: u16 = 1;
 /// The most `ui.tab_bar_right` status rows between the list and the menu row.
 const MAX_STATUS_ROWS: usize = crate::config::MAX_TAB_BAR_COMMAND_LINES as usize;
+/// From this sidebar content height the status footer gets one row per line
+/// and spacer rows separate the groups; below it the footer lines share one
+/// row.
+pub(super) const SPACIOUS_HEIGHT: u16 = 30;
+/// The list keeps this many rows while the optional blocks shrink
+/// (`plan_layout`).
+pub(super) const MIN_LIST_ROWS: u16 = 3;
+/// The Active agents block's line caps tried in turn while the list is short.
+const ACTIVE_CAP_STEPS: [u16; 3] = [6, 4, 2];
+/// A tab label narrower than this packs the marks without gaps.
+const MIN_LABEL_CELLS: u16 = 8;
+/// The hovered row's bar (accent), at the content's left edge.
+pub(super) const HOVER_BAR: &str = "\u{258E}"; // ▎
+/// A drop indicator's cell.
+const RULE: &str = "\u{2500}"; // ─
 /// Toolbar glyphs: the fold toggle shows the action it will take.
 pub(super) const FOLD_ALL_LABEL: &str = "\u{23F6}"; // ⏶ black medium up-pointing triangle
 pub(super) const UNFOLD_ALL_LABEL: &str = "\u{23F7}"; // ⏷ black medium down-pointing triangle
 pub(super) const NEW_GROUP_LABEL: &str = "+";
+/// A group header's fold marker.
+const GROUP_OPEN_MARKER: &str = "\u{25BE}"; // ▾
+const GROUP_FOLDED_MARKER: &str = "\u{25B8}"; // ▸
 
 /// The space holding the focused tab; its group is always drawn open.
 fn focused_workspace(snapshot: &ClientShellSnapshot) -> Option<&str> {
@@ -107,7 +146,7 @@ pub(super) fn is_group_index(index: usize) -> bool {
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct TabSidebarCoordinator<'a> {
     pub(super) row: Option<&'a super::coordinator::CoordinatorRow>,
-    /// Fork: the endpoint's teams (header marks, member rows).
+    /// Fork: the endpoint's teams (the header marks).
     pub(super) teams: Option<&'a super::teams::ClientTeamsState>,
 }
 
@@ -131,19 +170,19 @@ pub(super) fn render_tab_sidebar_with(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
+    // Fork (sidebar v2): the divider in surface1 on the list's background
+    // (a surface_dim one would vanish next to the chrome rows).
+    let divider = Style::default().fg(palette.surface1).bg(palette.sidebar_bg);
+    for y in hits.sidebar_divider.y..hits.sidebar_divider.bottom() {
+        if let Some(cell) = buffer.cell_mut((hits.sidebar_divider.x, y)) {
+            cell.set_style(divider);
+        }
+    }
     hits.sidebar_section_divider = Rect::default();
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.is_empty() {
         return coordinator_rect;
     }
-
-    render_toolbar(
-        buffer,
-        content,
-        all_groups_folded(snapshot, state.collapsed_groups),
-        config,
-        hits,
-    );
 
     let status_lines = status_footer_lines(snapshot);
     let pinned: Vec<PinnedRow<'_>> = state
@@ -178,20 +217,40 @@ pub(super) fn render_tab_sidebar_with(
             &one_off
         }
     };
-    let active_rows = super::tab_sidebar_active::active_block_rows(
-        model,
-        state.active_view,
-        super::tab_sidebar_active::active_cap(content.height),
-    );
+    let active_view = state.active_view;
     let plan = plan_layout(
         content,
-        u16::try_from(pinned.len()).unwrap_or(u16::MAX),
-        status_lines.len(),
-        active_rows,
-        super::tab_sidebar_detail::detail_lines(content.height),
+        LayoutWants {
+            pinned: u16::try_from(pinned.len()).unwrap_or(u16::MAX),
+            status_lines: status_lines.len(),
+            active_cap: super::tab_sidebar_active::active_cap(content.height),
+            detail_lines: super::tab_sidebar_detail::detail_lines(content.height),
+        },
+        |cap| super::tab_sidebar_active::active_block_rows(model, active_view, cap),
     );
+
+    // The chrome rows first; the blocks draw on top of their background.
+    let chrome = Style::default().bg(palette.sidebar_chrome());
+    for rect in [
+        plan.toolbar,
+        plan.active,
+        plan.detail,
+        plan.footer,
+        plan.menu,
+    ] {
+        buffer.set_style(rect, chrome);
+    }
+    render_toolbar(
+        buffer,
+        content,
+        all_groups_folded(snapshot, state.collapsed_groups),
+        config,
+        hits,
+    );
+
+    let hover = state.sidebar_hover;
+    let selected = resolve_selected(snapshot, model, hover);
     let pinned = pinned_rows_that_fit(pinned, plan.pinned.height);
-    let body = plan.list;
     // Top-down from the list's bottom edge: Browser, News, coordinator.
     for (offset, row) in pinned.iter().enumerate() {
         let rect = Rect::new(
@@ -200,19 +259,13 @@ pub(super) fn render_tab_sidebar_with(
             content.width,
             1,
         );
+        let kind = row.kind();
+        let hovered = matches!(hover, Some(SidebarHover::Pinned(hovered)) if *hovered == kind);
+        render_pinned_row(buffer, rect, row, hovered, config);
         match row {
-            PinnedRow::Browser(row) => {
-                render_browser_row(buffer, rect, row, config);
-                hits.browser_row = rect;
-            }
-            PinnedRow::News(row) => {
-                render_news_row(buffer, rect, row, config);
-                hits.news_row = rect;
-            }
-            PinnedRow::Coordinator(row) => {
-                render_coordinator_row(buffer, rect, row, config);
-                coordinator_rect = rect;
-            }
+            PinnedRow::Browser(_) => hits.browser_row = rect,
+            PinnedRow::News(_) => hits.news_row = rect,
+            PinnedRow::Coordinator(_) => coordinator_rect = rect,
         }
     }
     if !plan.active.is_empty() {
@@ -221,7 +274,7 @@ pub(super) fn render_tab_sidebar_with(
             plan.active,
             snapshot,
             model,
-            state.active_view,
+            active_view,
             config,
             state,
             hits,
@@ -239,14 +292,9 @@ pub(super) fn render_tab_sidebar_with(
         );
     }
     if plan.footer.height > 0 {
-        render_tab_status_footer(
-            buffer,
-            content,
-            plan.footer.y,
-            &status_lines[..usize::from(plan.footer.height).min(status_lines.len())],
-            palette,
-        );
+        render_tab_status_footer(buffer, plan.footer, &status_lines, palette);
     }
+    let body = plan.list;
     hits.agent_body = body;
     // The space drag machinery reads these as the list bounds.
     hits.workspace_body = body;
@@ -255,7 +303,12 @@ pub(super) fn render_tab_sidebar_with(
 
     let rows = &model.rows;
     let row_heights = &model.row_heights;
-    let gaps = &model.no_gaps;
+    // Spacer rows before the group headers once there is room for them.
+    let gaps = if content.height >= SPACIOUS_HEIGHT {
+        &model.gaps_after
+    } else {
+        &model.no_gaps
+    };
     let list_tab = |row: &Row| match row {
         Row::Tab { tab } => snapshot.tabs.get(*tab as usize),
         Row::Header { .. } => None,
@@ -314,19 +367,36 @@ pub(super) fn render_tab_sidebar_with(
     let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
     let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
 
+    // The selected tab (hovered, else focused) shows its harness glyph; a
+    // hovered row also gets the bar and the band.
+    let selected_tab = match selected {
+        Selected::Tab(index) | Selected::ActiveEntry(index) => Some(index),
+        _ => None,
+    };
+    let hovered_group = match selected {
+        Selected::Group(index) => Some(index),
+        _ => None,
+    };
+    let hovered_tab_id = match hover {
+        Some(SidebarHover::Tab(tab_id)) => Some(tab_id.as_str()),
+        _ => None,
+    };
     let mut y = body.y;
-    for row in rows.iter().skip(*state.agent_scroll) {
+    for (index, row) in rows.iter().enumerate().skip(*state.agent_scroll) {
         if y >= body.bottom() {
             break;
         }
         let rect = Rect::new(body.x, y, content_width, 1);
+        y = y
+            .saturating_add(1)
+            .saturating_add(gaps.get(index).copied().unwrap_or(0));
         match *row {
             Row::Header {
-                workspace,
+                workspace: workspace_index,
                 folded,
                 members,
             } => {
-                let Some(workspace) = snapshot.workspaces.get(workspace as usize) else {
+                let Some(workspace) = snapshot.workspaces.get(workspace_index as usize) else {
                     continue;
                 };
                 let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
@@ -337,9 +407,12 @@ pub(super) fn render_tab_sidebar_with(
                     buffer,
                     rect,
                     workspace,
-                    folded,
-                    usize::from(members),
-                    dragged,
+                    HeaderLook {
+                        folded,
+                        members,
+                        dragged,
+                        hovered: hovered_group == Some(workspace_index),
+                    },
                     team,
                     config,
                 );
@@ -353,56 +426,49 @@ pub(super) fn render_tab_sidebar_with(
                     group_toggle: None,
                 });
             }
-            Row::Tab { tab: index } => {
+            Row::Tab { tab: tab_index } => {
                 let (Some(tab), Some(facts)) =
-                    (snapshot.tabs.get(index as usize), model.tab(index))
+                    (snapshot.tabs.get(tab_index as usize), model.tab(tab_index))
                 else {
                     continue;
                 };
-                let glyph_key = facts
-                    .primary_agent
-                    .and_then(|agent| snapshot.agents.get(agent as usize))
-                    .map_or("shell", |agent| agent.agent.as_deref().unwrap_or("other"));
-                let glyph = crate::config::tab_agent_glyph(&config.tab_agent_glyphs, glyph_key);
-                // Only the focused row wears the agent's brand color.
-                let glyph_color = tab.focused.then(|| {
-                    crate::config::tab_agent_glyph_color(&config.tab_agent_glyph_colors, glyph_key)
-                });
-                let subagents = facts.subagents;
-                let mut markers: Vec<(&str, ratatui::style::Color)> =
-                    reminder_markers(tab, state, &config.palette);
-                if coordinator
-                    .teams
-                    .is_some_and(|teams| teams.is_member_tab(&tab.tab_id))
-                {
-                    // A member's dim mark leads the markers.
-                    markers.insert(0, (super::teams::TEAM_MARK, config.palette.overlay0));
+                let hovered = hovered_tab_id == Some(tab.tab_id.as_str());
+                let background = if hovered {
+                    palette.sidebar_hover_bg()
+                } else if tab.focused {
+                    palette.active_row_bg
+                } else {
+                    palette.sidebar_bg
+                };
+                let mut marks = Marks::default();
+                push_reminder_marks(&mut marks, tab, state, palette);
+                if selected_tab == Some(tab_index) {
+                    if let Some(harness) =
+                        harness_mark(snapshot, tab, facts, background, state, config)
+                    {
+                        hits.breathing |= harness.breathing;
+                        marks.push(harness.glyph, harness.color);
+                    }
                 }
-                // Fork: an agent in voice mode leads them all (red while it
-                // listens, dim while muted).
-                if let Some(voice) = facts.voice {
-                    markers.insert(0, super::voice::voice_mark(voice, config));
-                }
-                // Fork: a working tab's glyph breathes (`breathe.rs`).
-                let breathe = (tab.agent_status == crate::api::schema::AgentStatus::Working
-                    && !glyph.is_empty())
-                .then_some((state.breathe_phase, state.breathe_reset_rgb));
-                hits.breathing |= breathe.is_some();
+                let voice = facts
+                    .voice
+                    .map(|voice| super::voice::voice_mark(voice, config));
                 render_tab_row(
                     buffer,
                     rect,
                     tab,
-                    glyph,
-                    glyph_color.flatten(),
-                    subagents,
-                    &markers,
-                    breathe,
+                    facts.subagents,
+                    TabRowLook {
+                        hovered,
+                        background: (hovered || tab.focused).then_some(background),
+                        voice,
+                        marks: marks.as_slice(),
+                    },
                     config,
                 );
                 hits.sidebar_tabs.push((rect, tab.tab_id.clone()));
             }
         }
-        y = y.saturating_add(1);
     }
 
     if show_scrollbar {
@@ -417,14 +483,10 @@ pub(super) fn render_tab_sidebar_with(
         .or(state.sidebar_tab_drop_row)
         .filter(|row| *row >= body.y && *row < body.bottom());
     if let Some(row) = indicator {
-        put_text(
-            buffer,
-            body.x,
-            row,
-            content_width,
-            &"─".repeat(content_width as usize),
-            Style::default().fg(palette.accent),
-        );
+        let style = Style::default().fg(palette.accent);
+        for x in body.x..body.x.saturating_add(content_width) {
+            put_text(buffer, x, row, 1, RULE, style);
+        }
     }
 
     if config.mouse_capture && content.height > TOOLBAR_ROWS {
@@ -485,68 +547,126 @@ pub(super) fn render_tab_sidebar_with(
 }
 
 /// Fork (sidebar v2): the tabs sidebar's rows, top to bottom (`plan_layout`).
+/// Every rect spans the content width. `toolbar`, `active`, `detail`,
+/// `footer` and `menu` are chrome rows (painted with
+/// `Palette::sidebar_chrome()` before anything draws on them).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct SidebarPlan {
     pub(super) toolbar: Rect,
-    /// The Active agents block (`tab_sidebar_active.rs`).
+    /// The Active agents block (`tab_sidebar_active.rs`): exactly the rows
+    /// `active_block_rows` asked for at the cap the layout settled on
+    /// (header, lines, `+N more`, rule), or empty.
     pub(super) active: Rect,
     /// The scrolling list.
     pub(super) list: Rect,
     /// The pinned rows (Browser, News, coordinator).
     pub(super) pinned: Rect,
-    /// The detail strip (`tab_sidebar_detail.rs`).
+    /// The detail strip (`tab_sidebar_detail.rs`): its upper rule on the
+    /// first row, then the text rows, then its lower rule on the last row
+    /// when `footer` has rows. Empty when the strip does not fit.
     pub(super) detail: Rect,
     /// The `ui.tab_bar_right` status rows.
     pub(super) footer: Rect,
     pub(super) menu: Rect,
 }
 
-/// The height budget of `content` (pure): `pinned_wanted` pinned rows,
-/// `status_lines` footer lines, and the Active block and detail strip rows
-/// their modules ask for. Rows left under the toolbar and above the menu
-/// row; the status keeps one of them for the list once it has more than one
-/// line, and the pinned rows (Browser, News, coordinator) take one each
-/// while they show (`pinned_rows_that_fit` picks which in
-/// `plan.pinned.height`).
+/// What the optional rows of `plan_layout` ask for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct LayoutWants {
+    /// Pinned rows (Browser, News, coordinator) that want to show.
+    pub(super) pinned: u16,
+    /// Status footer lines (`status_footer_lines`).
+    pub(super) status_lines: usize,
+    /// The Active agents block's line cap (`active_cap`).
+    pub(super) active_cap: u16,
+    /// The detail strip's text rows (`detail_lines`), without its rules.
+    pub(super) detail_lines: u16,
+}
+
+/// The rows the detail strip takes for `lines` text rows: its upper rule,
+/// the text, and the lower rule while the footer shows.
+fn detail_rows(lines: u16, footer: u16) -> u16 {
+    if lines == 0 {
+        0
+    } else {
+        lines + 1 + u16::from(footer > 0)
+    }
+}
+
+/// The height budget of `content` (pure). The toolbar and the menu row take
+/// one row each; the status footer one row per line from `SPACIOUS_HEIGHT`
+/// rows, else one row for all of them; the Active agents block the rows
+/// `active_rows(cap)` asks for; the detail strip its text rows and rules;
+/// the pinned rows one each while the list keeps a row
+/// (`pinned_rows_that_fit` picks which stay in `plan.pinned.height`). The
+/// list takes the rest. While it has fewer than `MIN_LIST_ROWS` rows the
+/// optional rows give way in turn: the detail strip, then the Active block's
+/// lines (cap 6, 4, 2), then the whole block, then the footer (one row, then
+/// none).
 pub(super) fn plan_layout(
     content: Rect,
-    pinned_wanted: u16,
-    status_lines: usize,
-    active_rows: u16,
-    detail_lines: u16,
+    wants: LayoutWants,
+    active_rows: impl Fn(u16) -> u16,
 ) -> SidebarPlan {
-    let available = content.height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS);
-    let pinned_rows = pinned_wanted.min(available.saturating_sub(1));
-    let available = available.saturating_sub(pinned_rows);
-    let status_rows = (status_lines.min(usize::from(u16::MAX)) as u16)
-        .min(available.saturating_sub(1).max(1))
-        .min(available);
-    let active_rows = active_rows.min(available.saturating_sub(status_rows));
-    let detail_rows = detail_lines.min(available.saturating_sub(status_rows + active_rows));
-    let list_height = content.height.saturating_sub(
-        TOOLBAR_ROWS + FOOTER_ROWS + status_rows + pinned_rows + active_rows + detail_rows,
-    );
+    let height = content.height;
+    let room = height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS);
+    let status_lines = wants.status_lines.min(MAX_STATUS_ROWS);
+    let mut footer = if height < SPACIOUS_HEIGHT {
+        status_lines.min(1)
+    } else {
+        status_lines
+    } as u16;
+    let mut detail = wants.detail_lines;
+    let mut active = active_rows(wants.active_cap);
+    // The pinned rows keep one list row (the floor that never hides the
+    // last tab); `pinned_rows_that_fit` ranks them.
+    let pinned = wants.pinned.min(room.saturating_sub(1));
+    let list = |footer: u16, detail: u16, active: u16, pinned: u16| {
+        room.saturating_sub(
+            footer
+                .saturating_add(detail_rows(detail, footer))
+                .saturating_add(active)
+                .saturating_add(pinned),
+        )
+    };
+    let short =
+        |footer, detail, active, pinned| list(footer, detail, active, pinned) < MIN_LIST_ROWS;
+    if short(footer, detail, active, pinned) {
+        detail = 0;
+    }
+    for cap in ACTIVE_CAP_STEPS {
+        if !short(footer, detail, active, pinned) {
+            break;
+        }
+        if cap < wants.active_cap {
+            active = active.min(active_rows(cap));
+        }
+    }
+    if short(footer, detail, active, pinned) {
+        active = 0;
+    }
+    while footer > 0 && short(footer, detail, active, pinned) {
+        footer = if footer > 1 { 1 } else { 0 };
+    }
+    let list_height = list(footer, detail, active, pinned);
+    let detail_height = detail_rows(detail, footer);
+
     let toolbar = Rect::new(
         content.x,
         content.y,
         content.width,
-        TOOLBAR_ROWS.min(content.height),
+        TOOLBAR_ROWS.min(height),
     );
-    let active = Rect::new(
-        content.x,
-        content.y.saturating_add(TOOLBAR_ROWS),
-        content.width,
-        active_rows,
-    );
+    let active = Rect::new(content.x, toolbar.bottom(), content.width, active);
     let list = Rect::new(content.x, active.bottom(), content.width, list_height);
-    let pinned = Rect::new(content.x, list.bottom(), content.width, pinned_rows);
-    let detail = Rect::new(content.x, pinned.bottom(), content.width, detail_rows);
-    let footer = Rect::new(content.x, detail.bottom(), content.width, status_rows);
+    let pinned = Rect::new(content.x, list.bottom(), content.width, pinned);
+    let detail = Rect::new(content.x, pinned.bottom(), content.width, detail_height);
+    let footer = Rect::new(content.x, detail.bottom(), content.width, footer);
     let menu = Rect::new(
         content.x,
         content.bottom().saturating_sub(FOOTER_ROWS),
         content.width,
-        FOOTER_ROWS.min(content.height),
+        FOOTER_ROWS.min(height),
     );
     SidebarPlan {
         toolbar,
@@ -576,6 +696,14 @@ impl PinnedRow<'_> {
             Self::Browser(_) => 2,
         }
     }
+
+    fn kind(&self) -> PinnedKind {
+        match self {
+            Self::Browser(_) => PinnedKind::Browser,
+            Self::News(_) => PinnedKind::News,
+            Self::Coordinator(_) => PinnedKind::Coordinator,
+        }
+    }
 }
 
 /// The pinned rows to draw in `room` rows, still in drawing order (Browser,
@@ -594,134 +722,105 @@ pub(super) fn pinned_rows_that_fit(rows: Vec<PinnedRow<'_>>, room: u16) -> Vec<P
         .collect()
 }
 
-/// The pinned Browser row: ` <glyph> Browser … <status> `, the glyph lit
-/// (accent) while an agent uses a tab, the status dim and right-aligned.
-fn render_browser_row(
+/// A pinned row: ` ▎ <glyph> <label> … <status> `, the glyph at x=3 in its
+/// state's color, the label at x=5, the status dim and right-aligned with a
+/// one-cell margin. The focused News / coordinator row has the focused row
+/// background and a bold label; a hovered row has the bar and the hover
+/// band. On the Browser and coordinator rows the label wins over the status
+/// in a narrow sidebar (the status is truncated first); on the News row the
+/// status wins.
+fn render_pinned_row(
     buffer: &mut Buffer,
     rect: Rect,
-    row: &super::browser::BrowserRow,
+    row: &PinnedRow<'_>,
+    hovered: bool,
     config: &ClientShellConfig,
 ) {
     let palette = &config.palette;
-    let glyph = row.state.glyph();
-    let lead = 1 + display_width(glyph) as u16 + 1;
-    // The label wins over the status in a narrow sidebar: the status is
-    // truncated first, the label only when nothing else is left.
-    let label_width = display_width(super::browser::BROWSER_ROW_LABEL) as u16;
-    let status_room = rect.width.saturating_sub(lead + label_width + 2) as usize;
-    let status = crate::ui::truncate_end(&row.status, status_room);
-    let status_cells = display_width(&status) as u16 + 1;
-    let available = rect.width.saturating_sub(lead + status_cells + 1) as usize;
-    let label = crate::ui::truncate_end(super::browser::BROWSER_ROW_LABEL, available);
-    let pad = rect
-        .width
-        .saturating_sub(lead + display_width(&label) as u16 + status_cells);
-    let spans = vec![
-        Span::raw(" "),
-        Span::styled(
-            glyph,
-            Style::default().fg(row.state.color(palette, row.active)),
+    let (glyph, glyph_color, label, status, focused, label_first) = match row {
+        PinnedRow::Browser(row) => (
+            row.state.glyph(),
+            row.state.color(palette, row.active),
+            super::browser::BROWSER_ROW_LABEL,
+            row.status.as_str(),
+            false,
+            true,
         ),
-        Span::raw(" "),
-        Span::styled(label, Style::default().fg(palette.subtext0)),
-        Span::raw(" ".repeat(usize::from(pad))),
-        Span::styled(status, Style::default().fg(palette.overlay1)),
-        Span::raw(" "),
-    ];
-    Paragraph::new(Line::from(spans)).render(rect, buffer);
-}
-
-/// The pinned News row: ` <glyph> News … <status> `, the label bold on the
-/// focused tab's row (with the focused row background), the glyph in the
-/// state's color, the status dim and right-aligned.
-fn render_news_row(
-    buffer: &mut Buffer,
-    rect: Rect,
-    row: &super::news::NewsRow,
-    config: &ClientShellConfig,
-) {
-    let palette = &config.palette;
-    let row_style = if row.focused {
-        Style::default().bg(palette.active_row_bg)
-    } else {
-        Style::default()
+        PinnedRow::News(row) => (
+            row.state.glyph(),
+            row.state.color(palette),
+            super::news::NEWS_ROW_LABEL,
+            row.status.as_str(),
+            row.focused,
+            false,
+        ),
+        PinnedRow::Coordinator(row) => (
+            row.state.glyph(),
+            row.state.color(palette),
+            super::coordinator::COORDINATOR_ROW_LABEL,
+            row.status.as_str(),
+            row.focused,
+            true,
+        ),
     };
-    let label_style = if row.focused {
-        Style::default()
-            .fg(palette.text)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(palette.subtext0)
-    };
-    let glyph = row.state.glyph();
-    let lead = 1 + display_width(glyph) as u16 + 1;
-    let status_cells = display_width(&row.status) as u16 + 1;
-    let available = rect.width.saturating_sub(lead + status_cells + 1) as usize;
-    let label = crate::ui::truncate_end(super::news::NEWS_ROW_LABEL, available);
-    let pad = rect
-        .width
-        .saturating_sub(lead + display_width(&label) as u16 + status_cells);
-    let spans = vec![
-        Span::raw(" "),
-        Span::styled(glyph, Style::default().fg(row.state.color(palette))),
-        Span::raw(" "),
-        Span::styled(label, label_style),
-        Span::raw(" ".repeat(usize::from(pad))),
-        Span::styled(row.status.clone(), Style::default().fg(palette.overlay1)),
-        Span::raw(" "),
-    ];
-    Paragraph::new(Line::from(spans))
-        .style(row_style)
-        .render(rect, buffer);
-}
-
-/// The pinned coordinator row: ` <glyph> coordinator … <status> `, styled
-/// as the News row (bold label and row background while focused, the glyph
-/// in the state's color, the status dim and right-aligned).
-fn render_coordinator_row(
-    buffer: &mut Buffer,
-    rect: Rect,
-    row: &super::coordinator::CoordinatorRow,
-    config: &ClientShellConfig,
-) {
-    let palette = &config.palette;
-    let row_style = if row.focused {
-        Style::default().bg(palette.active_row_bg)
-    } else {
-        Style::default()
-    };
-    let label_style = if row.focused {
+    if hovered {
+        buffer.set_style(rect, Style::default().bg(palette.sidebar_hover_bg()));
+        put_text(
+            buffer,
+            rect.x,
+            rect.y,
+            1,
+            HOVER_BAR,
+            Style::default().fg(palette.accent),
+        );
+    } else if focused {
+        buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+    }
+    let label_style = if focused {
         Style::default()
             .fg(palette.text)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(palette.subtext0)
     };
-    let glyph = row.state.glyph();
-    let lead = 1 + display_width(glyph) as u16 + 1;
-    // The label wins over the status in a narrow sidebar, as on the
-    // Browser row.
-    let label_width = display_width(super::coordinator::COORDINATOR_ROW_LABEL) as u16;
-    let status_room = rect.width.saturating_sub(lead + label_width + 2) as usize;
-    let status = crate::ui::truncate_end(&row.status, status_room);
-    let status_cells = display_width(&status) as u16 + 1;
-    let available = rect.width.saturating_sub(lead + status_cells + 1) as usize;
-    let label = crate::ui::truncate_end(super::coordinator::COORDINATOR_ROW_LABEL, available);
-    let pad = rect
-        .width
-        .saturating_sub(lead + display_width(&label) as u16 + status_cells);
-    let spans = vec![
-        Span::raw(" "),
-        Span::styled(glyph, Style::default().fg(row.state.color(palette))),
-        Span::raw(" "),
-        Span::styled(label, label_style),
-        Span::raw(" ".repeat(usize::from(pad))),
-        Span::styled(status, Style::default().fg(palette.overlay1)),
-        Span::raw(" "),
-    ];
-    Paragraph::new(Line::from(spans))
-        .style(row_style)
-        .render(rect, buffer);
+    const GLYPH_X: u16 = 3;
+    const LABEL_X: u16 = 5;
+    put_text(
+        buffer,
+        rect.x.saturating_add(GLYPH_X),
+        rect.y,
+        rect.width.saturating_sub(GLYPH_X).min(display_width(glyph)),
+        glyph,
+        Style::default().fg(glyph_color),
+    );
+    // Cells for the status: all of it, or (label first) what the label and
+    // the gaps around it leave.
+    let status_width = display_width(status);
+    let status_cells = if label_first {
+        status_width.min(
+            rect.width
+                .saturating_sub(LABEL_X + display_width(label) + 2),
+        )
+    } else {
+        status_width
+    };
+    let label_cells = rect.width.saturating_sub(LABEL_X + status_cells + 2);
+    put_truncated(
+        buffer,
+        rect.x.saturating_add(LABEL_X),
+        rect.y,
+        label_cells,
+        label,
+        label_style,
+    );
+    put_truncated(
+        buffer,
+        rect.right().saturating_sub(1 + status_cells),
+        rect.y,
+        status_cells,
+        status,
+        Style::default().fg(palette.overlay1),
+    );
 }
 
 /// The footer's lines: the non-empty status segments joined with the
@@ -749,24 +848,39 @@ pub(super) fn status_footer_lines(snapshot: &ClientShellSnapshot) -> Vec<String>
         .collect()
 }
 
-/// The status footer, dim, one row per line from `y` down, with the rows'
+/// The status footer in `footer`, dim, one row per line with the rows'
 /// one-cell margins; SGR styles apply over the dim base and each row is
-/// truncated from the right with `…`.
+/// truncated from the right with `…`. With fewer rows than lines the last
+/// row joins the rest, two spaces apart; each line's styles are parsed on
+/// their own (they reset per line), so the colors do not shift.
 fn render_tab_status_footer(
     buffer: &mut Buffer,
-    content: Rect,
-    y: u16,
+    footer: Rect,
     lines: &[String],
     palette: &Palette,
 ) {
-    let width = content.width.saturating_sub(2);
+    const JOIN: &str = "  ";
+    let width = footer.width.saturating_sub(2);
     let base = Style::default().fg(palette.overlay1);
-    for (row, line) in lines.iter().enumerate() {
-        let spans = truncate_status_spans(styled_status_spans(line, base), usize::from(width));
+    let rows = usize::from(footer.height);
+    for row in 0..rows.min(lines.len()) {
+        let spans = if row + 1 == rows && lines.len() > rows {
+            let mut joined = Vec::new();
+            for (index, line) in lines[row..].iter().enumerate() {
+                if index > 0 {
+                    joined.push(Span::styled(JOIN, base));
+                }
+                joined.extend(styled_status_spans(line, base));
+            }
+            joined
+        } else {
+            styled_status_spans(&lines[row], base)
+        };
+        let spans = truncate_status_spans(spans, usize::from(width));
         put_status_spans(
             buffer,
-            content.x.saturating_add(1),
-            y.saturating_add(row as u16),
+            footer.x.saturating_add(1),
+            footer.y.saturating_add(row as u16),
             width,
             &spans,
         );
@@ -988,13 +1102,13 @@ fn render_toolbar(
         } else {
             FOLD_ALL_LABEL
         };
-        let toggle_width = display_width(toggle) as u16;
+        let toggle_width = display_width(toggle);
         put_text(buffer, x, y, toggle_width, toggle, style);
         if config.mouse_capture {
             hits.group_toggle_all = Rect::new(x, y, toggle_width, 1);
         }
     }
-    let new_width = display_width(NEW_GROUP_LABEL) as u16;
+    let new_width = display_width(NEW_GROUP_LABEL);
     let new_x = content.right().saturating_sub(new_width + 1);
     put_text(buffer, new_x, y, new_width, NEW_GROUP_LABEL, style);
     if config.mouse_capture {
@@ -1002,123 +1116,247 @@ fn render_toolbar(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // one row's facts; a struct would only rename them
+/// One group header's state for a frame.
+#[derive(Debug, Clone, Copy)]
+struct HeaderLook {
+    folded: bool,
+    /// Non-pinned member tabs.
+    members: u16,
+    dragged: bool,
+    hovered: bool,
+}
+
+/// A group header: ` ▾ ◆ <name> … <count> <status> `. No band (only a
+/// surface1 one while dragged); the hovered header has the bar. The name is
+/// bold: `text` for the focused or hovered group, `overlay1` folded,
+/// `subtext0` otherwise; a team shows `◆` in the icon slot and its purpose
+/// (or its label in overlay0 before it has one). The name is the only part
+/// that truncates.
 fn render_group_header(
     buffer: &mut Buffer,
     rect: Rect,
     workspace: &crate::protocol::ClientShellWorkspace,
-    folded: bool,
-    members: usize,
-    dragged: bool,
+    look: HeaderLook,
     team: Option<&crate::api::schema::team::TeamInfo>,
     config: &ClientShellConfig,
 ) {
+    const MARKER_X: u16 = 1;
+    const MARK_X: u16 = 3;
+    const NAME_X: u16 = 5;
     let palette = &config.palette;
-    // Headers are dividers, not items: a quiet band with dim text so the tab
-    // rows stay the visually dominant lines.
-    let row_style = if dragged {
-        Style::default().bg(palette.surface1)
-    } else {
-        Style::default().bg(palette.surface0)
-    };
-    let marker = if folded { "▸" } else { "▾" };
-    let name_style = Style::default().fg(if workspace.focused {
-        palette.subtext0
-    } else {
-        palette.overlay1
-    });
-    let count = format!("{members}");
-    let status_icon_text = status_icon(workspace.agent_status, config.status_indicators);
-    let tail_width = display_width(&count) as u16 + 1 + display_width(status_icon_text) as u16 + 1;
-    // Fork: a team group leads with the mark and shows its purpose (the
-    // group label, dim, until there is one).
-    let team_mark = team.map(|_| super::teams::TEAM_MARK);
-    let (text, text_style, mark_style) = match team {
-        Some(team) => match super::teams::header_label(team, &workspace.label) {
-            (purpose, false) => (purpose, name_style, Style::default().fg(palette.accent)),
-            (label, true) => (
-                label,
-                Style::default().fg(palette.overlay0),
-                Style::default().fg(palette.overlay0),
-            ),
-        },
-        None => (workspace.label.as_str(), name_style, name_style),
-    };
-    let mark_width = team_mark.map_or(0, |mark| display_width(mark) as u16 + 1);
-    let lead = 1 + display_width(marker) as u16 + 1 + mark_width;
-    let available = rect.width.saturating_sub(lead + tail_width + 1) as usize;
-    let label = crate::ui::truncate_end(text, available);
-    let pad = rect
-        .width
-        .saturating_sub(lead + display_width(&label) as u16 + tail_width + 1);
-    let dim = Style::default().fg(palette.overlay0);
-    let mut spans = vec![
-        Span::raw(" "),
-        Span::styled(marker.to_string(), dim),
-        Span::raw(" "),
-    ];
-    if let Some(mark) = team_mark {
-        spans.push(Span::styled(mark, mark_style));
-        spans.push(Span::raw(" "));
+    let (x, y, width) = (rect.x, rect.y, rect.width);
+    if look.dragged {
+        buffer.set_style(rect, Style::default().bg(palette.surface1));
     }
-    spans.extend([
-        Span::styled(label, text_style),
-        Span::raw(" ".repeat(usize::from(pad) + 1)),
-        Span::styled(count, dim),
-        Span::raw(" "),
-        Span::styled(
-            status_icon_text,
-            Style::default().fg(status_color(workspace.agent_status, palette)),
-        ),
-        Span::raw(" "),
-    ]);
-    Paragraph::new(Line::from(spans))
-        .style(row_style)
-        .render(rect, buffer);
+    if look.hovered {
+        put_text(
+            buffer,
+            x,
+            y,
+            1,
+            HOVER_BAR,
+            Style::default().fg(palette.accent),
+        );
+    }
+    let (marker, marker_color) = if look.folded {
+        (GROUP_FOLDED_MARKER, palette.overlay1)
+    } else {
+        (GROUP_OPEN_MARKER, palette.subtext0)
+    };
+    put_text(
+        buffer,
+        x.saturating_add(MARKER_X),
+        y,
+        width.saturating_sub(MARKER_X).min(1),
+        marker,
+        Style::default().fg(marker_color),
+    );
+    let name_color = if workspace.focused || look.hovered {
+        palette.text
+    } else if look.folded {
+        palette.overlay1
+    } else {
+        palette.subtext0
+    };
+    let (name, name_color) = match team {
+        Some(team) => {
+            let (name, placeholder) = super::teams::header_label(team, &workspace.label);
+            let mark_color = if placeholder {
+                palette.overlay0
+            } else {
+                palette.accent
+            };
+            put_text(
+                buffer,
+                x.saturating_add(MARK_X),
+                y,
+                width.saturating_sub(MARK_X).min(1),
+                super::teams::TEAM_MARK,
+                Style::default().fg(mark_color),
+            );
+            (
+                name,
+                if placeholder {
+                    palette.overlay0
+                } else {
+                    name_color
+                },
+            )
+        }
+        None => (workspace.label.as_str(), name_color),
+    };
+    let mut count = StackStr::<8>::new();
+    let _ = write!(count, "{}", look.members);
+    let count_width = display_width(count.as_str());
+    // `<count> <status> ` at the right edge: the count ends at width-4.
+    put_text(
+        buffer,
+        x.saturating_add(width.saturating_sub(3 + count_width)),
+        y,
+        count_width.min(width),
+        count.as_str(),
+        Style::default().fg(palette.overlay0),
+    );
+    let status = status_icon(workspace.agent_status, config.status_indicators);
+    put_text(
+        buffer,
+        x.saturating_add(width.saturating_sub(2)),
+        y,
+        width.min(1),
+        status,
+        Style::default().fg(status_color(workspace.agent_status, palette)),
+    );
+    put_truncated(
+        buffer,
+        x.saturating_add(NAME_X),
+        y,
+        width.saturating_sub(NAME_X + count_width + 4),
+        name,
+        Style::default().fg(name_color).add_modifier(Modifier::BOLD),
+    );
 }
 
-/// A tab row's reminder markers, in order: `★` when the tab is important,
-/// the interval's marker (`remind_marker`) when it has a scheduled reminder. Each is overlay0, or the fired
-/// reminder's color while it is lit.
-fn reminder_markers(
+/// A tab row's right-hand marks, at most four (browser `◎`, `★`, the
+/// reminder, the harness glyph), on the stack.
+#[derive(Debug, Clone, Copy)]
+struct Marks<'c> {
+    items: [(&'c str, Color); 4],
+    len: usize,
+}
+
+impl Default for Marks<'_> {
+    fn default() -> Self {
+        Self {
+            items: [("", Color::Reset); 4],
+            len: 0,
+        }
+    }
+}
+
+impl<'c> Marks<'c> {
+    fn push(&mut self, glyph: &'c str, color: Color) {
+        if let Some(slot) = self.items.get_mut(self.len) {
+            *slot = (glyph, color);
+            self.len += 1;
+        }
+    }
+
+    fn as_slice(&self) -> &[(&'c str, Color)] {
+        &self.items[..self.len]
+    }
+}
+
+/// A tab row's reminder marks, in order: browser `◎` (accent) when a pane
+/// of the tab used the herdr browser recently, `★` when the tab is
+/// important, the interval's marker (`remind_marker`) when it has a
+/// scheduled reminder. The reminder marks are overlay0, or the fired
+/// reminder's color while lit.
+fn push_reminder_marks(
+    marks: &mut Marks<'_>,
     tab: &crate::protocol::ClientShellTab,
     state: &ShellRenderState<'_>,
     palette: &Palette,
-) -> Vec<(&'static str, ratatui::style::Color)> {
-    let key = (state.active_endpoint_id.clone(), tab.tab_id.clone());
-    let mut markers = Vec::new();
-    // A pane of this tab used the herdr browser recently.
+) {
     if state.browser_marked_tabs.contains(&tab.tab_id) {
-        markers.push((super::browser::TAB_BROWSER_MARKER, palette.accent));
+        marks.push(super::browser::TAB_BROWSER_MARKER, palette.accent);
     }
+    let remind_every = tab
+        .remind_every
+        .filter(|every| *every != crate::api::schema::TabRemindInterval::Unknown);
+    if !tab.important && remind_every.is_none() {
+        return;
+    }
+    let key = (state.active_endpoint_id.clone(), tab.tab_id.clone());
     if tab.important {
         let lit = state
             .idle_reminders
             .get(&key)
             .and_then(|reminder| reminder.lit);
-        markers.push((
+        marks.push(
             TAB_IMPORTANT_MARKER,
             lit.map_or(palette.overlay0, |lit| lit.color(palette)),
-        ));
+        );
     }
-    if let Some(every) = tab
-        .remind_every
-        .filter(|every| *every != crate::api::schema::TabRemindInterval::Unknown)
-    {
+    if let Some(every) = remind_every {
         let lit = state
             .scheduled_reminders
             .get(&key)
             .is_some_and(|reminder| reminder.lit);
-        markers.push((
+        marks.push(
             remind_marker(every),
             if lit {
                 super::idle_reminders::ClientReminderLit::Scheduled.color(palette)
             } else {
                 palette.overlay0
             },
-        ));
+        );
     }
-    markers
+}
+
+/// The selected row's harness glyph (`ui.tab_agent_glyphs` for the tab's
+/// last agent, `shell` without one) in its brand color, breathing over
+/// `background` while the tab works. `None` for an empty glyph.
+struct HarnessMark<'c> {
+    glyph: &'c str,
+    color: Color,
+    breathing: bool,
+}
+
+fn harness_mark<'c>(
+    snapshot: &ClientShellSnapshot,
+    tab: &crate::protocol::ClientShellTab,
+    facts: &TabFacts,
+    background: Color,
+    state: &ShellRenderState<'_>,
+    config: &'c ClientShellConfig,
+) -> Option<HarnessMark<'c>> {
+    let glyph_key = facts
+        .primary_agent
+        .and_then(|agent| snapshot.agents.get(agent as usize))
+        .map_or("shell", |agent| agent.agent.as_deref().unwrap_or("other"));
+    let glyph = crate::config::tab_agent_glyph(&config.tab_agent_glyphs, glyph_key);
+    if glyph.is_empty() {
+        return None;
+    }
+    let normal = crate::config::tab_agent_glyph_color(&config.tab_agent_glyph_colors, glyph_key)
+        .unwrap_or(config.palette.overlay0);
+    // Fork: a working tab's glyph breathes (`breathe.rs`).
+    let breathing = tab.agent_status == crate::api::schema::AgentStatus::Working;
+    let color = if breathing {
+        super::breathe::glyph_color(
+            normal,
+            background,
+            state.breathe_reset_rgb,
+            state.breathe_phase,
+        )
+    } else {
+        normal
+    };
+    Some(HarnessMark {
+        glyph,
+        color,
+        breathing,
+    })
 }
 
 /// The status icon of a tab whose agent has subagents running.
@@ -1150,104 +1388,131 @@ pub(super) fn remind_marker(every: crate::api::schema::TabRemindInterval) -> &'s
     }
 }
 
-/// A breathing glyph's phase and the terminal default background's RGB.
-type Breath = (f32, Option<(u8, u8, u8)>);
+/// One tab row's look for a frame.
+struct TabRowLook<'a, 'c> {
+    hovered: bool,
+    /// The row band: the hover band, else the focused row's; `None` keeps
+    /// the sidebar background.
+    background: Option<Color>,
+    /// The voice mark (`voice::voice_mark`), left of the label.
+    voice: Option<(&'c str, Color)>,
+    /// The right-hand marks, left to right.
+    marks: &'a [(&'c str, Color)],
+}
 
+/// The cells the marks take at the right edge, the one-cell margin
+/// included: each mark and, with `gap`, one blank after every mark but the
+/// last.
+fn marks_cells(marks: &[(&str, Color)], gap: u16) -> u16 {
+    if marks.is_empty() {
+        return 0;
+    }
+    let glyphs: u16 = marks.iter().map(|(glyph, _)| display_width(glyph)).sum();
+    glyphs + gap * (marks.len() as u16 - 1) + 1
+}
+
+/// A tab row: ` ▎   <status> <voice> <label> … <marks> `. The status icon
+/// sits at x=5 (`sidebar_model::tab_row_icon`: the subagent icon while
+/// subagents run), the voice mark at x=7 with the label after it, else the
+/// label at x=7. The marks are packed flush right with a one-cell margin,
+/// one blank between them (none when that leaves the label fewer than
+/// `MIN_LABEL_CELLS`); the label gives way to them and is the only part that
+/// truncates. The label is bold in the focused tab (tag color or `text`);
+/// elsewhere it takes its tag color, else `text` while the agent works,
+/// waits or finished, `overlay0` suspended and `subtext0` otherwise.
 fn render_tab_row(
     buffer: &mut Buffer,
     rect: Rect,
     tab: &crate::protocol::ClientShellTab,
-    glyph: &str,
-    glyph_color: Option<ratatui::style::Color>,
     subagents: u32,
-    markers: &[(&str, ratatui::style::Color)],
-    breathe: Option<Breath>,
+    look: TabRowLook<'_, '_>,
     config: &ClientShellConfig,
 ) {
+    use crate::api::schema::AgentStatus;
+    const ICON_X: u16 = 5;
+    const LABEL_X: u16 = 7;
     let palette = &config.palette;
-    let row_style = if tab.focused {
-        Style::default().bg(palette.active_row_bg)
-    } else {
-        Style::default()
-    };
-    // A color tag only changes the label's foreground; background, bold,
-    // the status icon and the glyph keep their own styling.
+    let (x, y, width) = (rect.x, rect.y, rect.width);
+    if let Some(background) = look.background {
+        buffer.set_style(rect, Style::default().bg(background));
+    }
+    if look.hovered {
+        put_text(
+            buffer,
+            x,
+            y,
+            1,
+            HOVER_BAR,
+            Style::default().fg(palette.accent),
+        );
+    }
+    let icon =
+        super::sidebar_model::tab_row_icon(tab.agent_status, subagents, config.status_indicators);
+    put_text(
+        buffer,
+        x.saturating_add(ICON_X),
+        y,
+        width.saturating_sub(ICON_X).min(display_width(icon)),
+        icon,
+        Style::default().fg(status_color(tab.agent_status, palette)),
+    );
+    let mut label_x = LABEL_X;
+    if let Some((glyph, color)) = look.voice {
+        let glyph_width = display_width(glyph);
+        put_text(
+            buffer,
+            x.saturating_add(LABEL_X),
+            y,
+            width.saturating_sub(LABEL_X).min(glyph_width),
+            glyph,
+            Style::default().fg(color),
+        );
+        label_x = LABEL_X + glyph_width + 1;
+    }
+    // A color tag only changes the label's foreground; background, the
+    // status icon and the marks keep their own styling.
     let tag_fg = super::tab_color::tab_label_fg(tab.color, palette);
     let label_style = if tab.focused {
         Style::default()
             .fg(tag_fg.unwrap_or(palette.text))
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(tag_fg.unwrap_or(palette.subtext0))
+        Style::default().fg(tag_fg.unwrap_or(match tab.agent_status {
+            AgentStatus::Working | AgentStatus::Blocked | AgentStatus::Done => palette.text,
+            AgentStatus::Suspended => palette.overlay0,
+            AgentStatus::Idle | AgentStatus::Unknown => palette.subtext0,
+        }))
     };
-    let icon_style = Style::default().fg(status_color(tab.agent_status, palette));
-    // An agent with Claude Code subagents running (in the background too)
-    // shows the subagent icon in its status color, in either indicator style:
-    // yellow working, green idle, teal finished.
-    let icon =
-        super::sidebar_model::tab_row_icon(tab.agent_status, subagents, config.status_indicators);
-    // " <icon> <label>...<glyph> ": the agent glyph is right-aligned with a one
-    // cell margin and the label gives way to it. A tab with reminders shows
-    // their markers just before the glyph.
-    let glyph_width = display_width(glyph) as u16;
-    let glyph_cells = if glyph_width > 0 { glyph_width + 2 } else { 0 };
-    // Each marker is followed by a space; without a glyph, the last one's
-    // space is the margin and one more cell separates them from the label.
-    let remind_cells = if markers.is_empty() {
-        0
-    } else {
-        markers
-            .iter()
-            .map(|(marker, _)| display_width(marker) as u16 + 1)
-            .sum::<u16>()
-            + u16::from(glyph_cells == 0)
-    };
-    let lead = 1 + display_width(icon) as u16 + 1;
-    let available = rect.width.saturating_sub(lead + glyph_cells + remind_cells) as usize;
-    let label = crate::ui::truncate_end(&tab.label, available);
-    let pad = rect
-        .width
-        .saturating_sub(lead + display_width(&label) as u16 + glyph_cells + remind_cells);
-    let mut spans = vec![
-        Span::raw(" "),
-        Span::styled(icon, icon_style),
-        Span::raw(" "),
-        Span::styled(label, label_style),
-    ];
-    if remind_cells > 0 {
-        spans.push(Span::raw(" ".repeat(usize::from(pad) + 1)));
-        for (marker, color) in markers {
-            spans.push(Span::styled(*marker, Style::default().fg(*color)));
-            spans.push(Span::raw(" "));
-        }
+    let label_cells = |marks_width: u16| width.saturating_sub(label_x + marks_width + 1);
+    let mut gap = 1;
+    let mut marks_width = marks_cells(look.marks, gap);
+    if !look.marks.is_empty() && label_cells(marks_width) < MIN_LABEL_CELLS {
+        gap = 0;
+        marks_width = marks_cells(look.marks, gap);
     }
-    if glyph_cells > 0 {
-        let gap = if remind_cells > 0 {
-            0
-        } else {
-            usize::from(pad) + 1
-        };
-        spans.push(Span::raw(" ".repeat(gap)));
-        let normal = glyph_color.unwrap_or(palette.overlay0);
-        let fg = match breathe {
-            Some((phase, reset)) => {
-                let background = if tab.focused {
-                    palette.active_row_bg
-                } else {
-                    palette.sidebar_bg
-                };
-                super::breathe::glyph_color(normal, background, reset, phase)
-            }
-            None => normal,
-        };
-        spans.push(Span::styled(glyph.to_string(), Style::default().fg(fg)));
-        spans.push(Span::raw(" "));
+    put_truncated(
+        buffer,
+        x.saturating_add(label_x),
+        y,
+        label_cells(marks_width),
+        &tab.label,
+        label_style,
+    );
+    let mut mark_x = x.saturating_add(width.saturating_sub(marks_width));
+    for (glyph, color) in look.marks {
+        let glyph_width = display_width(glyph);
+        put_text(
+            buffer,
+            mark_x,
+            y,
+            glyph_width.min(rect.right().saturating_sub(mark_x)),
+            glyph,
+            Style::default().fg(*color),
+        );
+        mark_x = mark_x.saturating_add(glyph_width + gap);
     }
-    Paragraph::new(Line::from(spans))
-        .style(row_style)
-        .render(rect, buffer);
 }
 
-fn display_width(text: &str) -> usize {
-    unicode_width::UnicodeWidthStr::width(text)
+fn display_width(text: &str) -> u16 {
+    unicode_width::UnicodeWidthStr::width(text).min(usize::from(u16::MAX)) as u16
 }

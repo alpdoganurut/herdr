@@ -1937,6 +1937,13 @@ impl ClientShellState {
                 if !self.config.mouse_capture {
                     return;
                 }
+                // Fork (sidebar v2): an Active agents entry gets its tab's menu.
+                if let Some(tab_id) = self.sidebar_active_entry_at(point) {
+                    self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
+                    self.request_context_menu_session(outcome);
+                    outcome.repaint = true;
+                    return;
+                }
                 let workspace_id = (!self.sidebar_collapsed)
                     .then(|| self.active_endpoint_workspace_at(point))
                     .flatten();
@@ -2049,6 +2056,8 @@ impl ClientShellState {
                 let next = self.agent_scroll.saturating_sub(1);
                 if next != self.agent_scroll {
                     self.agent_scroll = next;
+                    // Fork (sidebar v2): the row under the pointer moved.
+                    self.sidebar_hover = None;
                     outcome.repaint = true;
                 }
             }
@@ -2059,6 +2068,8 @@ impl ClientShellState {
                     .min(self.hits.agent_max_scroll);
                 if next != self.agent_scroll {
                     self.agent_scroll = next;
+                    // Fork (sidebar v2): the row under the pointer moved.
+                    self.sidebar_hover = None;
                     outcome.repaint = true;
                 }
             }
@@ -2277,6 +2288,10 @@ impl ClientShellState {
                 if super::contains(self.hits.coordinator_row, point) {
                     // Like the News row: focus (or open) on the press.
                     self.activate_coordinator_row(outcome);
+                    return;
+                }
+                // Fork (sidebar v2): the Active agents block (no drag).
+                if self.sidebar_active_press(point, outcome) {
                     return;
                 }
                 let sidebar_tab_press = self
@@ -2511,6 +2526,8 @@ impl ClientShellState {
             MouseEventKind::Up(MouseButton::Left | MouseButton::Middle)
             | MouseEventKind::Drag(MouseButton::Left | MouseButton::Middle) => {}
             MouseEventKind::Moved => {
+                // Fork (sidebar v2): the hovered tabs sidebar row.
+                self.update_sidebar_hover(point, outcome);
                 if let Some(hit) = self
                     .hits
                     .panes

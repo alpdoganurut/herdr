@@ -14,10 +14,6 @@
 //! the selected-row rule (`resolve_selected`), the tab status icon
 //! (`tab_row_icon`), the hover target (`SidebarHover`) and `StackStr`.
 
-// Sidebar v2 S0b: the Active block, detail strip and hover wiring read the
-// rest of this model in later steps; until then parts are unused.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -43,6 +39,10 @@ pub(crate) struct TabFacts {
     pub(crate) panes: u16,
     /// The News or coordinator tab (never a list row).
     pub(crate) pinned: bool,
+    /// Index into `snapshot.workspaces` of the tab's space.
+    pub(crate) workspace: Option<u32>,
+    /// Some agent of the tab is parked (`Suspended`).
+    pub(crate) parked: bool,
 }
 
 impl Default for TabFacts {
@@ -56,6 +56,8 @@ impl Default for TabFacts {
             agents: 0,
             panes: 0,
             pinned: false,
+            workspace: None,
+            parked: false,
         }
     }
 }
@@ -234,7 +236,7 @@ impl SidebarModel {
         voice: Option<&super::voice::ClientVoiceState>,
         times: Option<&super::agent_times::ClientAgentTimesState>,
         pinned_ids: (Option<&str>, Option<&str>),
-        _enabled: bool,
+        enabled: bool,
     ) {
         self.dirty = false;
         if self.pinned_ids.0.as_deref() != pinned_ids.0 {
@@ -271,6 +273,7 @@ impl SidebarModel {
             let facts = &mut self.tabs[tab_index as usize];
             facts.primary_agent = Some(agent_index as u32);
             facts.agents = facts.agents.saturating_add(1);
+            facts.parked |= agent.agent_status == AgentStatus::Suspended;
             if agent.subagents > 0 && shows_subagents(agent.agent_status) {
                 facts.subagents = facts.subagents.saturating_add(agent.subagents);
             }
@@ -318,11 +321,13 @@ impl SidebarModel {
             .collect();
         let mut members: Vec<Vec<u32>> = vec![Vec::new(); snapshot.workspaces.len()];
         for (tab_index, tab) in snapshot.tabs.iter().enumerate() {
+            let workspace = position.get(tab.workspace_id.as_str()).copied();
+            self.tabs[tab_index].workspace = workspace.map(|index| index as u32);
             if is_pinned(&tab.tab_id) {
                 continue;
             }
-            if let Some(index) = position.get(tab.workspace_id.as_str()) {
-                members[*index].push(tab_index as u32);
+            if let Some(index) = workspace {
+                members[index].push(tab_index as u32);
             }
         }
         self.rows.clear();
@@ -355,15 +360,62 @@ impl SidebarModel {
             }
         }
 
-        // The Active agents list is filled in by the Active block step.
+        // The Active agents list: blocked, then live voice, then working,
+        // then finished; within a class the longest in its state first.
         self.active.clear();
         self.active_classes = 0;
         self.any_subagents_active = false;
+        if enabled {
+            for (index, (tab, facts)) in snapshot.tabs.iter().zip(&self.tabs).enumerate() {
+                if facts.pinned {
+                    continue;
+                }
+                let Some(class) = active_class(tab.agent_status, facts.voice) else {
+                    continue;
+                };
+                self.active.push(ActiveEntry {
+                    tab: index as u32,
+                    class,
+                });
+                self.active_classes |= 1 << class;
+                self.any_subagents_active |= facts.subagents > 0;
+            }
+            let tabs = &self.tabs;
+            self.active.sort_unstable_by_key(|entry| {
+                let seq = tabs
+                    .get(entry.tab as usize)
+                    .map_or(u64::MAX, |facts| facts.status_seq);
+                (entry.class, seq, entry.tab)
+            });
+        }
     }
 
     /// The facts of `snapshot.tabs[tab]`.
     pub(crate) fn tab(&self, tab: u32) -> Option<&TabFacts> {
         self.tabs.get(tab as usize)
+    }
+}
+
+/// Active agents classes, in display order.
+pub(crate) const CLASS_BLOCKED: u8 = 0;
+pub(crate) const CLASS_VOICE: u8 = 1;
+pub(crate) const CLASS_WORKING: u8 = 2;
+pub(crate) const CLASS_DONE: u8 = 3;
+
+/// A tab's Active agents class: blocked, live voice (`Unknown` counts as
+/// live, as `voice::voice_mark` draws it), working, finished; `None` for an
+/// idle, unknown or suspended tab without live voice.
+pub(crate) fn active_class(status: AgentStatus, voice: Option<AgentVoiceMode>) -> Option<u8> {
+    if status == AgentStatus::Blocked {
+        return Some(CLASS_BLOCKED);
+    }
+    if matches!(voice, Some(AgentVoiceMode::Live | AgentVoiceMode::Unknown)) {
+        return Some(CLASS_VOICE);
+    }
+    match status {
+        AgentStatus::Working => Some(CLASS_WORKING),
+        AgentStatus::Done => Some(CLASS_DONE),
+        _ => None,
     }
 }
 
@@ -423,6 +475,35 @@ pub(crate) fn resolve_selected(
     hovered.unwrap_or_else(|| model.focused_tab.map_or(Selected::None, Selected::Tab))
 }
 
+/// A time in state at minute granularity, at most 5 cells: `<1m`, `{m}m`,
+/// `{h}h{mm}`, `{d}d{h}h` under 10 days, else `{d}d`.
+pub(crate) fn format_age(age: std::time::Duration) -> StackStr<8> {
+    use std::fmt::Write as _;
+    let minutes = age.as_secs() / 60;
+    let (hours, days) = (minutes / 60, minutes / (60 * 24));
+    let mut text = StackStr::new();
+    // Every form fits the buffer (`9d23h`, at most 6 digits of days).
+    let _ = if minutes == 0 {
+        text.write_str("<1m")
+    } else if minutes < 60 {
+        write!(text, "{minutes}m")
+    } else if hours < 24 {
+        write!(text, "{hours}h{:02}", minutes % 60)
+    } else if days < 10 {
+        write!(text, "{days}d{}h", hours % 24)
+    } else {
+        write!(text, "{}d", days.min(999_999))
+    };
+    text
+}
+
+/// When a time in state since `since` next changes its text at `now`: the
+/// next whole minute of its age.
+pub(crate) fn next_age_tick(since: Instant, now: Instant) -> Instant {
+    let minutes = now.saturating_duration_since(since).as_secs() / 60;
+    since + std::time::Duration::from_secs((minutes + 1) * 60)
+}
+
 /// A small stack string for durations and counts (`fmt::Write`; a write that
 /// does not fit fails and leaves the content unchanged).
 #[derive(Debug, Clone, Copy)]
@@ -475,6 +556,61 @@ mod tests {
         assert_eq!(text.as_str(), "3d4h");
         assert!(write!(text, "xy").is_err());
         assert_eq!(text.as_str(), "3d4h", "a write that does not fit leaves it");
+    }
+
+    #[test]
+    fn ages_format_at_minute_granularity_in_five_cells() {
+        let age = |secs: u64| format_age(std::time::Duration::from_secs(secs));
+        assert_eq!(age(0).as_str(), "<1m");
+        assert_eq!(age(59).as_str(), "<1m");
+        assert_eq!(age(60).as_str(), "1m");
+        assert_eq!(age(59 * 60 + 59).as_str(), "59m");
+        assert_eq!(age(3600 + 5 * 60).as_str(), "1h05");
+        assert_eq!(age(23 * 3600 + 59 * 60).as_str(), "23h59");
+        assert_eq!(age(24 * 3600).as_str(), "1d0h");
+        assert_eq!(age(9 * 86_400 + 23 * 3600).as_str(), "9d23h");
+        assert_eq!(age(10 * 86_400).as_str(), "10d");
+        assert_eq!(age(u64::MAX).as_str(), "999999d");
+        for secs in [0, 61, 7_000, 90_000, 900_000, 90_000_000] {
+            assert!(age(secs).as_str().len() <= 7);
+        }
+        let since = Instant::now();
+        assert_eq!(
+            next_age_tick(since, since + std::time::Duration::from_secs(125)),
+            since + std::time::Duration::from_secs(180)
+        );
+        assert_eq!(
+            next_age_tick(since + std::time::Duration::from_secs(5), since),
+            since + std::time::Duration::from_secs(65),
+            "a clock behind a stale since ticks a minute after it"
+        );
+    }
+
+    #[test]
+    fn active_classes_put_blocked_then_live_voice_then_working_then_done() {
+        assert_eq!(
+            active_class(AgentStatus::Blocked, Some(AgentVoiceMode::Live)),
+            Some(CLASS_BLOCKED)
+        );
+        assert_eq!(
+            active_class(AgentStatus::Idle, Some(AgentVoiceMode::Live)),
+            Some(CLASS_VOICE)
+        );
+        assert_eq!(
+            active_class(AgentStatus::Idle, Some(AgentVoiceMode::Unknown)),
+            Some(CLASS_VOICE)
+        );
+        assert_eq!(
+            active_class(AgentStatus::Idle, Some(AgentVoiceMode::Muted)),
+            None
+        );
+        assert_eq!(
+            active_class(AgentStatus::Working, Some(AgentVoiceMode::Muted)),
+            Some(CLASS_WORKING)
+        );
+        assert_eq!(active_class(AgentStatus::Done, None), Some(CLASS_DONE));
+        assert_eq!(active_class(AgentStatus::Suspended, None), None);
+        assert_eq!(active_class(AgentStatus::Unknown, None), None);
     }
 
     #[test]

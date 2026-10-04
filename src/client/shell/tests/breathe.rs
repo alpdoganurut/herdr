@@ -87,7 +87,14 @@ fn tabs_state(statuses: [AgentStatus; 3]) -> ClientShellState {
     state
 }
 
+/// Hover a tab row (`None`: nothing hovered, the focused tab is selected).
+fn hover(state: &mut ClientShellState, tab_id: Option<&str>) {
+    state.sidebar_hover =
+        tab_id.map(|tab_id| super::super::sidebar_model::SidebarHover::Tab(tab_id.into()));
+}
+
 /// The glyph cell's fg on each tab row, composed at `phase` of the breath.
+/// Only the selected row (hovered, else focused) shows the glyph.
 fn glyph_fgs(state: &mut ClientShellState, phase: f32) -> Vec<u32> {
     state.breathe_clock =
         Some(state.breathe_epoch + Duration::from_secs_f32(PERIOD.as_secs_f32() * phase));
@@ -145,12 +152,9 @@ fn working_glyphs_breathe_through_a_cycle_and_others_stay() {
     let full = glyph_fgs(&mut state, 1.0);
     let quarter = glyph_fgs(&mut state, 0.25);
     assert_eq!(full, rest, "a whole breath comes back");
-    for row in [0, 1] {
-        assert_ne!(half[row], rest[row], "working row {row} dims half way");
-        assert_ne!(quarter[row], rest[row]);
-        assert_ne!(quarter[row], half[row], "a smooth fade, not a toggle");
-    }
-    assert_eq!(half[2], rest[2], "an idle tab does not breathe");
+    assert_ne!(half[0], rest[0], "the focused working row dims half way");
+    assert_ne!(quarter[0], rest[0]);
+    assert_ne!(quarter[0], half[0], "a smooth fade, not a toggle");
     // The focused row's brand color dims toward its highlight.
     let palette = state.config.palette.clone();
     let expected = glyph_color(
@@ -160,6 +164,41 @@ fn working_glyphs_breathe_through_a_cycle_and_others_stay() {
         0.5,
     );
     assert_eq!(half[0], color_to_u32(expected));
+
+    // A hovered working row breathes over the hover band.
+    hover(&mut state, Some("tab_2"));
+    let rest = glyph_fgs(&mut state, 0.0);
+    let half = glyph_fgs(&mut state, 0.5);
+    assert_ne!(half[1], rest[1], "the hovered working row dims half way");
+    let expected = glyph_color(
+        Color::Rgb(0xD9, 0x77, 0x57),
+        palette.sidebar_hover_bg(),
+        state.breathe_reset_rgb(),
+        0.5,
+    );
+    assert_eq!(half[1], color_to_u32(expected));
+
+    // A hovered idle row shows its glyph, steady.
+    hover(&mut state, Some("tab_3"));
+    let rest = glyph_fgs(&mut state, 0.0);
+    let half = glyph_fgs(&mut state, 0.5);
+    assert_eq!(half[2], rest[2], "an idle tab does not breathe");
+    assert_eq!(half[2], color_to_u32(Color::Rgb(0xD9, 0x77, 0x57)));
+}
+
+#[test]
+fn an_unselected_working_tab_does_not_breathe() {
+    // tab_1 (focused) idle, tab_2 working: nothing selected works.
+    let mut state = tabs_state([AgentStatus::Idle, AgentStatus::Working, AgentStatus::Idle]);
+    state.compose(106, 20).expect("composed frame");
+    assert!(!state.hits.breathing, "the working row shows no glyph");
+    assert_eq!(state.next_breathe_deadline(), None);
+
+    // Hovering the working row selects it: its glyph breathes.
+    hover(&mut state, Some("tab_2"));
+    state.compose(106, 20).expect("composed frame");
+    assert!(state.hits.breathing);
+    assert!(state.next_breathe_deadline().is_some());
 }
 
 #[test]
@@ -239,11 +278,16 @@ mod fork_smoke {
 
     #[test]
     fn a_working_tab_glyph_breathes_and_schedules_frames() {
+        // The focused (selected) tab works: its glyph breathes.
         let mut state = tabs_state(WORKING);
         let rest = glyph_fgs(&mut state, 0.0);
         let half = glyph_fgs(&mut state, 0.5);
-        assert_ne!(half[1], rest[1], "the working glyph dims half way");
-        assert_eq!(half[2], rest[2], "the idle one does not");
+        assert_ne!(half[0], rest[0], "the working glyph dims half way");
         assert!(state.next_breathe_deadline().is_some());
+        // A selected idle tab's glyph does not.
+        hover(&mut state, Some("tab_3"));
+        let rest = glyph_fgs(&mut state, 0.0);
+        let half = glyph_fgs(&mut state, 0.5);
+        assert_eq!(half[2], rest[2], "the idle one does not");
     }
 }

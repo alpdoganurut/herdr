@@ -1,121 +1,103 @@
-01| ○ scratch                ◎ ⧅ │|
-   00-00 -/sidebar_bg
-   01-01 green/sidebar_bg
-   02-02 -/sidebar_bg
-   03-09 subtext0/sidebar_bg
-   10-25 -/sidebar_bg
-   26-26 accent/sidebar_bg
-   27-27 -/sidebar_bg
-   28-28 overlay0/sidebar_bg
+01|     ○ scratch              ◎ │|
+   00-04 -/sidebar_bg
+   05-05 green/sidebar_bg
+   06-06 -/sidebar_bg
+   07-13 subtext0/sidebar_bg
+   14-27 -/sidebar_bg
+   28-28 accent/sidebar_bg
    29-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-02| ▾ Planning               3 ● │|
-   00-00 -/surface0
-   01-01 overlay0/surface0
-   02-02 -/surface0
-   03-10 subtext0/surface0
-   11-25 -/surface0
-   26-26 overlay0/surface0
-   27-27 -/surface0
-   28-28 red/surface0
-   29-29 -/surface0
-   30-30 surface_dim/sidebar_bg
-03| ⚭ sidebar redesign         ⧆ │|
-   00-00 -/active_row_bg
-   01-01 yellow/active_row_bg
-   02-02 -/active_row_bg
-   03-18 text/active_row_bg/b
-   19-27 -/active_row_bg
+   30-30 surface1/sidebar_bg
+02|                              │|
+   00-29 -/sidebar_bg
+   30-30 surface1/sidebar_bg
+03| ▾   Planning             3 ● │|
+   00-00 -/sidebar_bg
+   01-01 subtext0/sidebar_bg
+   02-04 -/sidebar_bg
+   05-12 text/sidebar_bg/b
+   13-25 -/sidebar_bg
+   26-26 overlay0/sidebar_bg
+   27-27 -/sidebar_bg
+   28-28 red/sidebar_bg
+   29-29 -/sidebar_bg
+   30-30 surface1/sidebar_bg
+04|     ⚭ sidebar redesign     ⧆ │|
+   00-04 -/active_row_bg
+   05-05 yellow/active_row_bg
+   06-06 -/active_row_bg
+   07-22 text/active_row_bg/b
+   23-27 -/active_row_bg
    28-28 #02d97757/active_row_bg
    29-29 -/active_row_bg
-   30-30 surface_dim/sidebar_bg
-04| ● review api             ★ ⧆ │|
-   00-00 -/sidebar_bg
-   01-01 red/sidebar_bg
-   02-02 -/sidebar_bg
-   03-12 subtext0/sidebar_bg
-   13-25 -/sidebar_bg
-   26-26 red/sidebar_bg
-   27-27 -/sidebar_bg
+   30-30 surface1/sidebar_bg
+05|     ● review api           ★ │|
+   00-04 -/sidebar_bg
+   05-05 red/sidebar_bg
+   06-06 -/sidebar_bg
+   07-16 text/sidebar_bg
+   17-27 -/sidebar_bg
+   28-28 red/sidebar_bg
+   29-29 -/sidebar_bg
+   30-30 surface1/sidebar_bg
+06|     ○ notes                ◑ │|
+   00-04 -/sidebar_bg
+   05-05 green/sidebar_bg
+   06-06 -/sidebar_bg
+   07-11 #02b06cf5/sidebar_bg
+   12-27 -/sidebar_bg
    28-28 overlay0/sidebar_bg
    29-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-05| ○ notes                  ◑ ⧆ │|
-   00-00 -/sidebar_bg
-   01-01 green/sidebar_bg
-   02-02 -/sidebar_bg
-   03-07 #02b06cf5/sidebar_bg
-   08-25 -/sidebar_bg
-   26-26 overlay0/sidebar_bg
-   27-27 -/sidebar_bg
-   28-28 overlay0/sidebar_bg
-   29-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-06| ▾ ◆ Search It            3 ● │|
-   00-00 -/surface0
-   01-01 overlay0/surface0
-   02-02 -/surface0
-   03-03 accent/surface0
-   04-04 -/surface0
-   05-13 overlay1/surface0
-   14-25 -/surface0
-   26-26 overlay0/surface0
-   27-27 -/surface0
-   28-28 teal/surface0
-   29-29 -/surface0
-   30-30 surface_dim/sidebar_bg
-07| ● fixer                  ◆ ⧇ │|
-   00-00 -/sidebar_bg
-   01-01 teal/sidebar_bg
-   02-02 -/sidebar_bg
-   03-07 subtext0/sidebar_bg
-   08-25 -/sidebar_bg
-   26-26 overlay0/sidebar_bg
-   27-27 -/sidebar_bg
-   28-28 overlay0/sidebar_bg
-   29-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-08| ○ talker               ● ◆ ⧇ │|
-   00-00 -/sidebar_bg
-   01-01 green/sidebar_bg
-   02-02 -/sidebar_bg
-   03-08 subtext0/sidebar_bg
-   09-23 -/sidebar_bg
-   24-24 red/sidebar_bg
-   25-25 -/sidebar_bg
-   26-26 overlay0/sidebar_bg
-   27-27 -/sidebar_bg
-   28-28 overlay0/sidebar_bg
-   29-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-09| ◌ parked                 ◆ ⧆ │|
-   00-00 -/sidebar_bg
-   01-01 overlay0/sidebar_bg
-   02-02 -/sidebar_bg
-   03-08 subtext0/sidebar_bg
-   09-25 -/sidebar_bg
-   26-26 overlay0/sidebar_bg
-   27-27 -/sidebar_bg
-   28-28 overlay0/sidebar_bg
-   29-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-10| ▸ Bird sort              2 ● │|
-   00-00 -/surface0
-   01-01 overlay0/surface0
-   02-02 -/surface0
-   03-11 overlay1/surface0
-   12-25 -/surface0
-   26-26 overlay0/surface0
-   27-27 -/surface0
-   28-28 yellow/surface0
-   29-29 -/surface0
-   30-30 surface_dim/sidebar_bg
-11|                              │|
+   30-30 surface1/sidebar_bg
+07|                              │|
    00-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
+   30-30 surface1/sidebar_bg
+08| ▾ ◆ Search It            3 ● │|
+   00-00 -/sidebar_bg
+   01-01 subtext0/sidebar_bg
+   02-02 -/sidebar_bg
+   03-03 accent/sidebar_bg
+   04-04 -/sidebar_bg
+   05-13 subtext0/sidebar_bg/b
+   14-25 -/sidebar_bg
+   26-26 overlay0/sidebar_bg
+   27-27 -/sidebar_bg
+   28-28 teal/sidebar_bg
+   29-29 -/sidebar_bg
+   30-30 surface1/sidebar_bg
+09|     ● fixer                  │|
+   00-04 -/sidebar_bg
+   05-05 teal/sidebar_bg
+   06-06 -/sidebar_bg
+   07-11 text/sidebar_bg
+   12-29 -/sidebar_bg
+   30-30 surface1/sidebar_bg
+10|     ○  talker               │|
+   00-04 -/sidebar_bg
+   05-05 green/sidebar_bg
+   06-06 -/sidebar_bg
+   07-07 red/sidebar_bg
+   08-08 -/sidebar_bg
+   09-14 subtext0/sidebar_bg
+   15-29 -/sidebar_bg
+   30-30 surface1/sidebar_bg
+11|     ◌ parked                 │|
+   00-04 -/sidebar_bg
+   05-05 overlay0/sidebar_bg
+   06-06 -/sidebar_bg
+   07-12 overlay0/sidebar_bg
+   13-29 -/sidebar_bg
+   30-30 surface1/sidebar_bg
 12|                              │|
    00-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
-13|                              │|
-   00-29 -/sidebar_bg
-   30-30 surface_dim/sidebar_bg
+   30-30 surface1/sidebar_bg
+13| ▸   Bird sort            2 ● │|
+   00-00 -/sidebar_bg
+   01-01 overlay1/sidebar_bg
+   02-04 -/sidebar_bg
+   05-13 overlay1/sidebar_bg/b
+   14-25 -/sidebar_bg
+   26-26 overlay0/sidebar_bg
+   27-27 -/sidebar_bg
+   28-28 yellow/sidebar_bg
+   29-29 -/sidebar_bg
+   30-30 surface1/sidebar_bg

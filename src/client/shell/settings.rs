@@ -13,6 +13,10 @@ fn theme_index(name: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// Fork (sidebar v2): the Indicators section's row that toggles
+/// `ui.sidebar_active_agents` (rows 0 and 1 are the indicator styles).
+pub(super) const INDICATORS_ACTIVE_AGENTS_ROW: usize = 2;
+
 fn indicator_index(style: crate::config::StatusIndicatorStyle) -> usize {
     usize::from(style == crate::config::StatusIndicatorStyle::Symbols)
 }
@@ -159,7 +163,8 @@ impl ClientShellState {
         match self.overlay.as_ref() {
             Some(ClientShellOverlay::Settings(settings)) => match settings.section {
                 ClientSettingsSection::Theme => crate::config::THEME_NAMES.len(),
-                ClientSettingsSection::Indicators => 2,
+                // Fork (sidebar v2): the two styles, then the Active agents toggle.
+                ClientSettingsSection::Indicators => 3,
                 ClientSettingsSection::Sound => sound_rows,
                 ClientSettingsSection::Toast => 4,
                 ClientSettingsSection::ClosedSessions => {
@@ -267,6 +272,18 @@ impl ClientShellState {
                 };
                 if self.save_settings_edit(crate::config::ConfigEdit::Theme(name), outcome) {
                     self.overlay = None;
+                }
+            }
+            // Fork (sidebar v2): row 2 toggles the tabs sidebar's Active
+            // agents block; the overlay stays open on it.
+            ClientSettingsSection::Indicators if selected == INDICATORS_ACTIVE_AGENTS_ROW => {
+                let enabled = !self.config.sidebar_active_agents;
+                self.save_settings_edit(
+                    crate::config::ConfigEdit::SidebarActiveAgents(enabled),
+                    outcome,
+                );
+                if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                    settings.selected = INDICATORS_ACTIVE_AGENTS_ROW;
                 }
             }
             ClientSettingsSection::Indicators => {

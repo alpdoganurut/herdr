@@ -64,7 +64,6 @@ pub(crate) enum ConfigEdit<'a> {
     /// Fork: `[agents] instructions_file`; `None` removes it (the built-in text).
     AgentsInstructionsFile(Option<&'a str>),
     /// Fork: `ui.sidebar_active_agents` (the tabs sidebar's Active agents block).
-    #[allow(dead_code)] // sidebar v2 S0b: the Settings → indicators toggle saves it
     SidebarActiveAgents(bool),
 }
 

@@ -209,6 +209,15 @@ pub(super) fn render_settings_overlay(
                 palette,
                 &mut choice_hits,
             );
+            // Fork (sidebar v2): the tabs sidebar's Active agents block.
+            render_active_agents_toggle(
+                buffer,
+                content,
+                config.sidebar_active_agents,
+                settings.selected,
+                palette,
+                &mut choice_hits,
+            );
         }
         ClientSettingsSection::Sound => {
             render_sound_section(buffer, content, settings, config, palette, &mut choice_hits);
@@ -403,6 +412,41 @@ fn render_choice_section(
         let rect = Rect::new(area.x, y, area.width, 1);
         draw_choice(buffer, rect, choice, index == selected, false, palette);
         hits.push((rect, index));
+    }
+}
+
+/// Fork (sidebar v2): the Indicators section's third row, under the two
+/// styles: `active agents block: on|off` and a dim line saying what it is.
+fn render_active_agents_toggle(
+    buffer: &mut Buffer,
+    area: Rect,
+    enabled: bool,
+    selected: usize,
+    palette: &Palette,
+    hits: &mut Vec<(Rect, usize)>,
+) {
+    let row = super::super::settings::INDICATORS_ACTIVE_AGENTS_ROW;
+    let y = area.y + 6;
+    if y >= area.bottom() {
+        return;
+    }
+    let rect = Rect::new(area.x, y, area.width, 1);
+    let label = if enabled {
+        "active agents block: on"
+    } else {
+        "active agents block: off"
+    };
+    draw_choice(buffer, rect, label, selected == row, false, palette);
+    hits.push((rect, row));
+    if y + 1 < area.bottom() {
+        put_text(
+            buffer,
+            area.x + 3,
+            y + 1,
+            area.width.saturating_sub(3),
+            "blocked, voice, working and finished agents above the list",
+            Style::default().fg(palette.overlay1).bg(palette.panel_bg),
+        );
     }
 }
 
