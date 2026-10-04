@@ -526,22 +526,22 @@ async fn fork_smoke_agents_hook_report_with_a_good_id_is_not_redirected() {
 }
 
 #[tokio::test]
-async fn fork_smoke_agents_hook_report_naming_another_process_pane_is_redirected() {
+async fn fork_smoke_agents_hook_report_naming_another_process_pane_is_kept() {
     let (mut server, _input, panes) = crew_server();
     let me = std::process::id();
     set_pane_pid(&mut server, panes[0], UNRELATED_PID);
     set_pane_pid(&mut server, panes[1], me);
     let lead = public(&server, panes[0]);
 
-    // A stale id that now names another pane (with another known process):
-    // the reporter's own pane takes it; the live id is not aliased.
+    // An id that names a live pane is used as given, even when that pane
+    // runs another known process than the reporter's.
     let landed = report_session(&mut server, Some(me), &lead);
     assert_eq!(landed["result"]["type"], "ok", "{landed}");
     assert_eq!(
-        reported_session(&mut server, panes[1]).as_deref(),
+        reported_session(&mut server, panes[0]).as_deref(),
         Some(SESSION)
     );
-    assert_eq!(reported_session(&mut server, panes[0]), None);
+    assert_eq!(reported_session(&mut server, panes[1]), None);
     assert!(server.app.state.public_pane_id_aliases.is_empty());
     assert_eq!(server.app.parse_pane_id(&lead), Some((1, panes[0])));
 }
