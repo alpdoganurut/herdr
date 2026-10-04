@@ -1,0 +1,7 @@
+00| ⏶                          + │|
+   00-00 -/sidebar_bg
+   01-01 overlay0/sidebar_bg
+   02-27 -/sidebar_bg
+   28-28 overlay0/sidebar_bg
+   29-29 -/sidebar_bg
+   30-30 surface_dim/sidebar_bg

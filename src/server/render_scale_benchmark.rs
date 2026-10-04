@@ -222,10 +222,74 @@ fn print_stage(
 
 fn print_profiles(label: &str, build: fn(usize) -> Vec<Workspace>) {
     let rows = CARDINALITIES.map(|count| (count, profile(build, count)));
+    print_profile_rows(label, &rows);
+}
+
+/// `Config::default()` with the `tabs` sidebar layout.
+fn tabs_config() -> Config {
+    let mut config = Config::default();
+    config.ui.sidebar_layout = crate::config::SidebarLayoutConfig::Tabs;
+    config
+}
+
+/// Fork (sidebar v2): `build(count)` under `config`, with agent statuses
+/// driven server-side in tab order, one root pane per tab (every third agent working, the second
+/// and third blocked, the rest idle with a completion), the snapshot
+/// re-projected and one pane's voice live, so the tabs sidebar draws every
+/// row kind and the server's agent pushes have something to send.
+fn print_profiles_with_config(label: &str, build: fn(usize) -> Vec<Workspace>, config: &Config) {
+    let rows = CARDINALITIES.map(|count| {
+        let mut pipeline = RenderPipeline::with_config(build(count), config);
+        pipeline.app.state.ensure_test_terminals();
+        let terminal_ids: Vec<_> = pipeline
+            .app
+            .state
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.tabs.iter())
+            .filter_map(|tab| tab.panes.get(&tab.root_pane))
+            .map(|pane| pane.attached_terminal_id.clone())
+            .collect();
+        for (index, terminal_id) in terminal_ids.iter().enumerate() {
+            let Some(terminal) = pipeline.app.state.terminals.get_mut(terminal_id) else {
+                continue;
+            };
+            let state = match index {
+                1 | 2 => crate::detect::AgentState::Blocked,
+                index if index % 3 == 0 => crate::detect::AgentState::Working,
+                _ => crate::detect::AgentState::Idle,
+            };
+            terminal.set_detected_state(Some(crate::detect::Agent::Claude), state);
+            terminal.last_agent_state_change_seq = Some(index as u64 + 1);
+            if state == crate::detect::AgentState::Idle {
+                terminal.last_agent_completion_seq = Some(index as u64 + 1);
+            }
+        }
+        let snapshot = super::client_shell::snapshot(&pipeline.app, "bench-boot", 1, None, None);
+        let live_pane = snapshot.agents.first().map(|agent| agent.pane_id.clone());
+        pipeline.client.set_snapshot(Box::new(snapshot));
+        if let Some(pane_id) = live_pane {
+            let voice: super::headless::voice::VoicePayload =
+                serde_json::from_value(serde_json::json!({
+                    "boot_id": "bench-boot",
+                    "revision": 1,
+                    "panes": [{ "pane_id": pane_id, "voice": "live" }],
+                }))
+                .expect("benchmark voice payload");
+            pipeline
+                .client
+                .receive_voice(&crate::client::endpoint::ClientEndpointId::Local, voice);
+        }
+        (count, profile_pipeline(pipeline))
+    });
+    print_profile_rows(label, &rows);
+}
+
+fn print_profile_rows(label: &str, rows: &[(usize, PipelineStats)]) {
     println!("{label}");
-    print_stage("server pane surface", &rows, |stats| stats.server);
-    print_stage("client shell composition", &rows, |stats| stats.client);
-    print_stage("combined pipeline", &rows, |stats| stats.total);
+    print_stage("server pane surface", rows, |stats| stats.server);
+    print_stage("client shell composition", rows, |stats| stats.client);
+    print_stage("combined pipeline", rows, |stats| stats.total);
 }
 
 fn profile_snapshot_encoding(
@@ -580,6 +644,11 @@ async fn render_scale_profile() {
     print_profiles("background workspaces (one pane each)", workspaces);
     print_snapshot_encoding_profiles("background workspaces", workspaces);
     print_profiles("active panes (one workspace)", active_panes);
+    print_profiles_with_config(
+        "tabs sidebar, background workspaces",
+        workspaces,
+        &tabs_config(),
+    );
     print_snapshot_encoding_profiles("active panes", active_panes);
     print_token_rule_profiles();
     print_surface_reuse_profiles();

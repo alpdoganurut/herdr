@@ -1,0 +1,28 @@
+35| ◌ Browser            stopped │|
+   00-00 -/sidebar_bg
+   01-01 overlay0/sidebar_bg
+   02-02 -/sidebar_bg
+   03-09 subtext0/sidebar_bg
+   10-21 -/sidebar_bg
+   22-28 overlay1/sidebar_bg
+   29-29 -/sidebar_bg
+   30-30 surface_dim/sidebar_bg
+36| cpu 12%                      │|
+   00-00 -/sidebar_bg
+   01-07 overlay1/sidebar_bg
+   08-29 -/sidebar_bg
+   30-30 surface_dim/sidebar_bg
+37| mem 80%                      │|
+   00-00 -/sidebar_bg
+   01-07 #00000002/sidebar_bg
+   08-29 -/sidebar_bg
+   30-30 surface_dim/sidebar_bg
+38| net ok                       │|
+   00-00 -/sidebar_bg
+   01-06 overlay1/sidebar_bg
+   07-29 -/sidebar_bg
+   30-30 surface_dim/sidebar_bg
+39|                          men«│|
+   00-25 -/sidebar_bg
+   26-29 overlay0/sidebar_bg
+   30-30 surface_dim/sidebar_bg
