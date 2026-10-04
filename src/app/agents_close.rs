@@ -145,6 +145,11 @@ impl App {
         let tab_id = self
             .public_tab_id(target.ws_idx, target.tab_idx)
             .unwrap_or_default();
+        // A session no hook reported is read from the agent's argv, so the
+        // close can still reopen it.
+        for terminal_id in self.tab_terminals(target) {
+            self.fill_process_agent_session(&terminal_id, false);
+        }
         let plan = match self.close_plan(target, params, since, Some(caller)) {
             Ok(plan) => plan,
             Err(err) => {

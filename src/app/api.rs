@@ -335,8 +335,21 @@ impl App {
             };
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
         let pane_died = matches!(ev, AppEvent::PaneDied { .. });
+        // Fork: a newly detected agent's session is read from its argv.
+        let agent_detected_pane = match &ev {
+            AppEvent::AgentProcessDetected { pane_id, .. } => Some(*pane_id),
+            _ => None,
+        };
         let previous_toast = self.state.toast.clone();
         let mut pane_updates = self.state.handle_app_event(ev);
+        if let Some(pane_id) = agent_detected_pane {
+            if let Some(terminal_id) = self
+                .find_pane(pane_id)
+                .map(|(_, pane)| pane.attached_terminal_id.clone())
+            {
+                self.fill_process_agent_session(&terminal_id, true);
+            }
+        }
         // Fork: `pane.exited` is emitted before the pane goes; drop the
         // cards of panes the exit removed.
         if pane_died && !self.agent_notices.is_empty() {

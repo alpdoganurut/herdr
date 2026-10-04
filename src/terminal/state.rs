@@ -303,6 +303,11 @@ pub struct TerminalState {
     /// Fork (agents v2): when this terminal state was created (a restore
     /// creates it anew), for the `managed.json` migration's pane matches.
     created_unix: u64,
+    /// Fork: the session the running agent was launched into, read from its
+    /// process argv when no hook reported one (`App::fill_process_agent_session`).
+    /// The last fallback of the session readers, only while its agent is the
+    /// live one; hook routing never sees it, so any reported session wins.
+    process_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
 }
 
 /// Most subagents a pane tracks; further starts are ignored until some stop.
@@ -358,6 +363,7 @@ impl TerminalState {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_secs())
                 .unwrap_or(0),
+            process_agent_session: None,
         }
     }
 
@@ -491,7 +497,28 @@ impl TerminalState {
         }
         self.persisted_agent_session
             .clone()
+            .or_else(|| self.process_agent_session())
             .map(|session| self.attach_transcript_path(session))
+    }
+
+    /// Fork: the argv-derived session while its agent is the live one.
+    pub fn process_agent_session(&self) -> Option<crate::agent_resume::PersistedAgentSession> {
+        let session = self.process_agent_session.as_ref()?;
+        let live = self.effective_known_agent()?;
+        (crate::detect::parse_agent_label(&session.agent) == Some(live)).then(|| session.clone())
+    }
+
+    /// Fork: set or clear the argv-derived session.
+    pub fn set_process_agent_session(
+        &mut self,
+        session: Option<crate::agent_resume::PersistedAgentSession>,
+    ) {
+        self.process_agent_session = session;
+    }
+
+    /// Fork: whether an argv-derived session is stored (live or not).
+    pub fn has_process_agent_session(&self) -> bool {
+        self.process_agent_session.is_some()
     }
 
     pub fn set_detected_agent_process_at(
@@ -2500,7 +2527,8 @@ impl TerminalState {
         let live_agent = self.effective_known_agent()?;
         let session = self
             .hook_authority_session()
-            .or_else(|| self.persisted_agent_session.clone())?;
+            .or_else(|| self.persisted_agent_session.clone())
+            .or_else(|| self.process_agent_session())?;
         (crate::detect::parse_agent_label(&session.agent) == Some(live_agent)
             && crate::agent_resume::is_official_agent_source(&session.source, &session.agent))
         .then(|| self.attach_transcript_path(session))

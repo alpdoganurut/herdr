@@ -238,6 +238,70 @@ pub fn persisted_session_from_launch_args(
     })
 }
 
+/// Fork: the native session a running agent was launched into, read from its
+/// process argv (`argv[0]` is the program). Claude Code: `--session-id
+/// <uuid>`, else `--resume <uuid>` / `-r <uuid>` (also `--flag=<uuid>`); a
+/// `--fork-session` launch runs a new session, so only its `--session-id`
+/// counts, and a non-UUID value (a picker search term) is none. Codex: the
+/// exact `resume <id>` launch [`persisted_session_from_launch_args`] reads.
+pub fn persisted_session_from_process_argv(
+    agent: crate::detect::Agent,
+    argv: &[String],
+) -> Option<PersistedAgentSession> {
+    let args = argv.get(1..)?;
+    match agent {
+        crate::detect::Agent::Codex => persisted_session_from_launch_args(agent, args),
+        crate::detect::Agent::Claude => {
+            let mut resume = None;
+            let mut session_id = None;
+            let mut fork = false;
+            let mut iter = args.iter();
+            while let Some(arg) = iter.next() {
+                let (flag, inline) = match arg.split_once('=') {
+                    Some((flag, value)) if flag.starts_with("--") => (flag, Some(value)),
+                    _ => (arg.as_str(), None),
+                };
+                let slot = match flag {
+                    "--resume" | "-r" => &mut resume,
+                    "--session-id" => &mut session_id,
+                    "--fork-session" => {
+                        fork = true;
+                        continue;
+                    }
+                    _ => continue,
+                };
+                let value = match inline {
+                    Some(value) => Some(value.to_string()),
+                    None => iter.next().cloned(),
+                };
+                *slot = value.filter(|value| is_uuid(value));
+            }
+            let id = if fork {
+                session_id
+            } else {
+                session_id.or(resume)
+            }?;
+            Some(PersistedAgentSession {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                session_ref: AgentSessionRef::id(id)?,
+                transcript_path: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// An 8-4-4-4-12 hex UUID.
+fn is_uuid(value: &str) -> bool {
+    let groups: Vec<&str> = value.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(group, len)| group.len() == len && group.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 pub fn normalize_session_start_source(value: Option<String>) -> Option<String> {
     match value.as_deref().map(str::trim) {
         Some(
@@ -816,6 +880,67 @@ mod tests {
             "herdr:opencode",
             "opencode"
         ));
+    }
+
+    #[test]
+    fn running_agent_session_is_read_from_its_argv() {
+        const ID: &str = "5b21611c-f122-4167-be9a-d57b522a9979";
+        const OTHER: &str = "0a1b2c3d-0000-4000-8000-123456789abc";
+        let argv = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        let claude = |parts: &[&str]| {
+            persisted_session_from_process_argv(crate::detect::Agent::Claude, &argv(parts))
+                .map(|session| (session.source, session.agent, session.session_ref.value))
+        };
+        let expect = |id: &str| Some(("herdr:claude".into(), "claude".into(), id.to_string()));
+        assert_eq!(
+            claude(&[
+                "/u/.local/bin/claude",
+                "--resume",
+                ID,
+                "--mcp-config=x.json"
+            ]),
+            expect(ID)
+        );
+        assert_eq!(claude(&["claude", "-r", ID]), expect(ID));
+        assert_eq!(claude(&["claude", &format!("--resume={ID}")]), expect(ID));
+        assert_eq!(claude(&["claude", "--session-id", ID]), expect(ID));
+        assert_eq!(
+            claude(&["node", "/x/cli.js", "--session-id", ID]),
+            expect(ID)
+        );
+        // A picker search term is not a session.
+        assert_eq!(claude(&["claude", "--resume", "my notes"]), None);
+        assert_eq!(claude(&["claude", "--resume"]), None);
+        assert_eq!(claude(&["claude"]), None);
+        // A fork runs a new session: only its own --session-id counts.
+        assert_eq!(claude(&["claude", "--resume", ID, "--fork-session"]), None);
+        assert_eq!(
+            claude(&[
+                "claude",
+                "--resume",
+                ID,
+                "--fork-session",
+                "--session-id",
+                OTHER
+            ]),
+            expect(OTHER)
+        );
+
+        let codex = |parts: &[&str]| {
+            persisted_session_from_process_argv(crate::detect::Agent::Codex, &argv(parts))
+                .map(|session| (session.source, session.session_ref.value))
+        };
+        assert_eq!(
+            codex(&["codex", "resume", "codex-session"]),
+            Some(("herdr:codex".into(), "codex-session".into()))
+        );
+        assert_eq!(codex(&["codex", "resume", "--last"]), None);
+        assert_eq!(codex(&["codex"]), None);
+        assert!(persisted_session_from_process_argv(
+            crate::detect::Agent::GithubCopilot,
+            &argv(&["copilot", "--resume", ID])
+        )
+        .is_none());
     }
 
     #[test]

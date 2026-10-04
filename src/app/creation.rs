@@ -437,13 +437,19 @@ fn terminal_agent_session_info(
         }
     }
 
-    terminal
-        .persisted_agent_session
-        .as_ref()
-        .map(|session| crate::api::schema::AgentSessionInfo {
-            source: session.source.clone(),
-            agent: session.agent.clone(),
-            kind: session.session_ref.kind,
-            value: session.session_ref.value.clone(),
-        })
+    // Fork: the session read from the agent's argv, last.
+    let from_argv;
+    let session = match terminal.persisted_agent_session.as_ref() {
+        Some(session) => session,
+        None => {
+            from_argv = terminal.process_agent_session()?;
+            &from_argv
+        }
+    };
+    Some(crate::api::schema::AgentSessionInfo {
+        source: session.source.clone(),
+        agent: session.agent.clone(),
+        kind: session.session_ref.kind,
+        value: session.session_ref.value.clone(),
+    })
 }

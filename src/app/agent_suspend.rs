@@ -140,6 +140,129 @@ pub(super) fn agent_is_pane_process(
 }
 
 impl App {
+    /// Fork: store the session a live Claude Code or Codex agent was
+    /// launched into, read from its process argv
+    /// ([`crate::agent_resume::persisted_session_from_process_argv`]), when
+    /// neither a hook nor a restore gave the pane one (a lost SessionStart
+    /// report). It is the readers' last fallback, so a later hook report
+    /// wins. `rederive` (a newly detected agent) drops the previous value and
+    /// reads again; otherwise a stored value is kept and a foreground group
+    /// whose argv named nothing is not read again. One process read, only
+    /// on detection and lifecycle/API requests, never while rendering.
+    pub(crate) fn fill_process_agent_session(
+        &mut self,
+        terminal_id: &crate::terminal::TerminalId,
+        rederive: bool,
+    ) {
+        let Some(terminal) = self.state.terminals.get_mut(terminal_id) else {
+            self.agents_model.process_session_misses.remove(terminal_id);
+            return;
+        };
+        if rederive {
+            terminal.set_process_agent_session(None);
+            self.agents_model.process_session_misses.remove(terminal_id);
+        } else if terminal.has_process_agent_session() {
+            return;
+        }
+        let Some(agent) = terminal.effective_known_agent().filter(|agent| {
+            matches!(
+                agent,
+                crate::detect::Agent::Claude | crate::detect::Agent::Codex
+            )
+        }) else {
+            return;
+        };
+        if terminal.suspended_agent.is_some() || terminal.suspendable_agent_session().is_some() {
+            return;
+        }
+        let (argvs, group) = self.agent_process_argvs(terminal_id, rederive);
+        let Some(argvs) = argvs else {
+            return;
+        };
+        let session = argvs
+            .iter()
+            .find_map(|argv| crate::agent_resume::persisted_session_from_process_argv(agent, argv));
+        match session {
+            Some(session) => {
+                tracing::info!(
+                    terminal = %terminal_id,
+                    session = %session.session_ref.value,
+                    "agent session read from its command line"
+                );
+                if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
+                    terminal.set_process_agent_session(Some(session));
+                }
+                self.state.mark_session_dirty();
+            }
+            None => {
+                if let (false, Some(group)) = (rederive, group) {
+                    let terminals = &self.state.terminals;
+                    self.agents_model
+                        .process_session_misses
+                        .retain(|id, _| terminals.contains_key(id));
+                    self.agents_model
+                        .process_session_misses
+                        .insert(terminal_id.clone(), group);
+                }
+            }
+        }
+    }
+
+    /// Fork: [`Self::fill_process_agent_session`] for every live agent.
+    pub(crate) fn fill_process_agent_sessions(&mut self) {
+        let terminal_ids: Vec<_> = self
+            .state
+            .terminals
+            .values()
+            .filter(|terminal| {
+                terminal.suspended_agent.is_none()
+                    && matches!(
+                        terminal.effective_known_agent(),
+                        Some(crate::detect::Agent::Claude | crate::detect::Agent::Codex)
+                    )
+            })
+            .map(|terminal| terminal.id.clone())
+            .collect();
+        for terminal_id in terminal_ids {
+            self.fill_process_agent_session(&terminal_id, false);
+        }
+    }
+
+    /// The argv of every process in the terminal's foreground job, and the
+    /// job's process group; `None` when the group already named nothing
+    /// (unless `rederive`) or the job cannot be read.
+    fn agent_process_argvs(
+        &self,
+        terminal_id: &crate::terminal::TerminalId,
+        rederive: bool,
+    ) -> (Option<Vec<Vec<String>>>, Option<u32>) {
+        #[cfg(test)]
+        if let Some(argvs) = self.agents_model.test_process_argvs.get(terminal_id) {
+            return (Some(argvs.clone()), None);
+        }
+        let Some(pid) = self
+            .terminal_runtimes
+            .get(terminal_id)
+            .and_then(|runtime| runtime.child_pid())
+        else {
+            return (None, None);
+        };
+        let group = crate::detect::foreground_process_group_id(pid);
+        if !rederive
+            && group.is_some()
+            && self.agents_model.process_session_misses.get(terminal_id) == group.as_ref()
+        {
+            return (None, group);
+        }
+        let argvs = crate::detect::foreground_job(pid).map(|job| {
+            job.processes
+                .into_iter()
+                .filter_map(|process| process.argv)
+                .collect()
+        });
+        (argvs, group)
+    }
+
     /// Park the live agent hosted by `target`.
     ///
     /// The suspended record is stored before the exit input is sent because
@@ -158,6 +281,7 @@ impl App {
         let resolved = self
             .resolve_agent_target(target)
             .map_err(AgentSuspendError::Target)?;
+        self.fill_resolved_process_agent_session(&resolved);
         let suspended = self.suspend_resolved_agent(target, &resolved)?;
         if let Some(by) = by {
             if let Some(record) = self
@@ -173,6 +297,16 @@ impl App {
             }
         }
         Ok(suspended)
+    }
+
+    /// Fork: [`Self::fill_process_agent_session`] for a resolved target.
+    fn fill_resolved_process_agent_session(&mut self, resolved: &TerminalTarget) {
+        if let Some(terminal_id) = self
+            .state
+            .terminal_id_for_pane(resolved.ws_idx, resolved.pane_id)
+        {
+            self.fill_process_agent_session(&terminal_id, false);
+        }
     }
 
     /// Fork (agents v2): whether the agent in a pane could be suspended now,
@@ -386,6 +520,7 @@ impl App {
         if terminal.state == crate::detect::AgentState::Blocked {
             return Err(AgentRestartError::Blocked(target.to_string()));
         }
+        self.fill_resolved_process_agent_session(&resolved);
         let pane_id = self
             .suspend_resolved_agent(target, &resolved)
             .map_err(AgentRestartError::Suspend)?;
@@ -1107,6 +1242,166 @@ mod tests {
 
         let again = suspend(&mut app, "reviewer");
         assert_eq!(again["error"]["code"], "agent_already_suspended");
+    }
+
+    const ARGV_SESSION: &str = "5b21611c-f122-4167-be9a-d57b522a9979";
+
+    fn give_argv(app: &mut App, argv: &[&str]) {
+        let terminal_id = root_terminal_id(app);
+        app.agents_model.test_process_argvs.insert(
+            terminal_id,
+            vec![
+                vec!["-zsh".into()],
+                argv.iter().map(|part| part.to_string()).collect(),
+            ],
+        );
+    }
+
+    fn reported_session(app: &mut App, target: &str) -> Option<String> {
+        app.agent_info_for_target(target)
+            .ok()?
+            .agent_session
+            .map(|session| session.value)
+    }
+
+    #[tokio::test]
+    async fn suspend_reads_a_missing_session_from_the_agent_argv() {
+        let mut app = test_app();
+        host_live_agent(&mut app, Agent::Claude, "reviewer", None);
+        let terminal_id = root_terminal_id(&app);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        give_argv(
+            &mut app,
+            &[
+                "/Users/u/.local/bin/claude",
+                "--resume",
+                ARGV_SESSION,
+                "--mcp-config=/tmp/x.json",
+            ],
+        );
+
+        // agent.get reports it.
+        let got = request(
+            &mut app,
+            Method::AgentGet(crate::api::schema::AgentTarget {
+                target: "reviewer".into(),
+            }),
+        );
+        assert_eq!(
+            got["result"]["agent"]["agent_session"]["value"], ARGV_SESSION,
+            "{got}"
+        );
+
+        let response = suspend(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_suspended", "{response}");
+        let record = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .expect("record stored");
+        assert_eq!(record.session, claude_session(ARGV_SESSION));
+        assert_eq!(
+            next_input(&mut rx).await,
+            bytes::Bytes::from_static(b"/exit")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_codex_resume_argv_gives_the_session() {
+        let mut app = test_app();
+        host_live_agent(&mut app, Agent::Codex, "worker", None);
+        let terminal_id = root_terminal_id(&app);
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        give_argv(&mut app, &["codex", "resume", "codex-session"]);
+
+        let response = suspend(&mut app, "worker");
+        assert_eq!(response["result"]["type"], "agent_suspended", "{response}");
+        let record = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .expect("record stored");
+        assert_eq!(record.session.source, "herdr:codex");
+        assert_eq!(record.session.session_ref.value, "codex-session");
+    }
+
+    #[tokio::test]
+    async fn a_hook_reported_session_wins_over_the_argv() {
+        let mut app = test_app();
+        host_live_agent(&mut app, Agent::Claude, "reviewer", None);
+        let terminal_id = root_terminal_id(&app);
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        give_argv(&mut app, &["claude", "--resume", ARGV_SESSION]);
+        app.fill_process_agent_sessions();
+        assert_eq!(
+            reported_session(&mut app, "reviewer").as_deref(),
+            Some(ARGV_SESSION)
+        );
+
+        // A later hook report names the session: it wins everywhere.
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_agent_session_ref(
+                "herdr:claude".into(),
+                "claude".into(),
+                crate::agent_resume::AgentSessionRef::id("hook-session"),
+                Some(1),
+            )
+            .expect("session ref accepted");
+        app.fill_process_agent_sessions();
+        assert_eq!(
+            reported_session(&mut app, "reviewer").as_deref(),
+            Some("hook-session")
+        );
+        let response = suspend(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_suspended", "{response}");
+        assert_eq!(
+            app.state.terminals[&terminal_id]
+                .suspended_agent
+                .as_ref()
+                .expect("record stored")
+                .session,
+            claude_session("hook-session")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_argv_without_a_session_leaves_the_agent_unsuspendable() {
+        let mut app = test_app();
+        host_live_agent(&mut app, Agent::Claude, "reviewer", None);
+        let terminal_id = root_terminal_id(&app);
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        give_argv(
+            &mut app,
+            &["claude", "--resume", ARGV_SESSION, "--fork-session"],
+        );
+
+        let response = suspend(&mut app, "reviewer");
+        assert_eq!(
+            response["error"]["code"], "agent_not_suspendable",
+            "{response}"
+        );
+        assert_eq!(reported_session(&mut app, "reviewer"), None);
+
+        // The derived session is only reported while its agent is the live one.
+        give_argv(&mut app, &["claude", "--session-id", ARGV_SESSION]);
+        app.fill_process_agent_sessions();
+        assert_eq!(
+            reported_session(&mut app, "reviewer").as_deref(),
+            Some(ARGV_SESSION)
+        );
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Codex), AgentState::Idle);
+        assert!(app.state.terminals[&terminal_id]
+            .process_agent_session()
+            .is_none());
     }
 
     #[tokio::test]

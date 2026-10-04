@@ -39,6 +39,8 @@ fn millis(duration: Duration) -> u64 {
 
 impl App {
     pub(super) fn handle_agent_list(&mut self, id: String) -> String {
+        // Fork: sessions no hook reported are read from the agents' argv.
+        self.fill_process_agent_sessions();
         encode_success(
             id,
             ResponseResult::AgentList {
@@ -49,6 +51,15 @@ impl App {
 
     pub(super) fn handle_agent_get(&mut self, id: String, target: AgentTarget) -> String {
         self.reconcile_managed_agent_target(&target.target);
+        // Fork: a session no hook reported is read from the agent's argv.
+        if let Ok(resolved) = self.resolve_agent_target(&target.target) {
+            if let Some(terminal_id) = self
+                .state
+                .terminal_id_for_pane(resolved.ws_idx, resolved.pane_id)
+            {
+                self.fill_process_agent_session(&terminal_id, false);
+            }
+        }
         let agent = match self.agent_info_for_target(&target.target) {
             Ok(agent) => agent,
             Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),

@@ -77,6 +77,14 @@ pub(crate) struct AgentsModelRuntime {
     /// Test seam: a recorded reader counts without the process check.
     #[cfg(test)]
     pub(crate) readers_unchecked: bool,
+    /// Terminals whose agent's argv named no session, by the foreground
+    /// process group read then: the lazy session fill
+    /// ([`App::fill_process_agent_session`]) reads a group once.
+    pub(crate) process_session_misses: HashMap<TerminalId, u32>,
+    /// Test seam: the argv lists the lazy session fill reads per terminal
+    /// instead of the terminal's foreground job.
+    #[cfg(test)]
+    pub(crate) test_process_argvs: HashMap<TerminalId, Vec<Vec<String>>>,
 }
 
 impl AgentsModelRuntime {

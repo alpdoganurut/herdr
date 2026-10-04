@@ -395,6 +395,7 @@ src/app/codex_sessions.rs
 | TerminalState | agent_meta | crate::agents_model::PaneAgentMeta::default() |
 | TerminalState | turn | crate::agents_model::turn::TurnState::default() |
 | TerminalState | created_unix | 0 |
+| TerminalState | process_agent_session | None |
 | SuspendedAgent | suspended_by | None |
 | PaneSnapshot | agent_meta | None |
 | SuspendedAgentSnapshot | suspended_by | None |
@@ -954,6 +955,11 @@ src/pane.rs, src/terminal/runtime.rs  mid-logic: test_set_child_pid in the cfg(t
 src/platform/macos.rs, src/platform/linux.rs, src/platform/windows.rs, src/platform/fallback.rs, src/platform/mod.rs  mid-logic: local_stream_peer_pid (macOS LOCAL_PEERPID, else interprocess peer_creds), parent_pid (macOS proc_bsdinfo, Linux /proc stat, None elsewhere) and the shared process_ancestry wrapper before `mod linux;`
 src/app/api/panes.rs  mid-logic: stale hook ids: handle_pane_report_agent, handle_pane_report_agent_session, handle_pane_report_metadata, handle_pane_clear_agent_authority and handle_pane_release_agent resolve params.pane_id through resolve_reported_pane (an id naming no pane finds the reporting pane by its process and becomes an alias; an id naming a live pane is kept)
 
+src/terminal/state.rs  mid-logic: argv sessions: persistable_agent_session and suspendable_agent_session fall back last to process_agent_session() (the argv-derived session, only while its agent is the live one); hook routing never reads the field
+src/app/creation.rs  mid-logic: terminal_agent_session_info falls back last to terminal.process_agent_session() (agent.get / agent.list / pane.get report an argv-derived session)
+src/app/api.rs  mid-logic: handle_internal_event_with_pane_updates calls fill_process_agent_session(rederive) after an AppEvent::AgentProcessDetected
+src/app/api/agents.rs  mid-logic: handle_agent_list calls fill_process_agent_sessions and handle_agent_get fill_process_agent_session for its target before reading (one foreground-job read per agent with no session; a group that named nothing is not read again)
+src/agent_resume.rs  mid-logic: persisted_session_from_process_argv and is_uuid before normalize_session_start_source (Claude --session-id / --resume / -r <uuid>, --fork-session only --session-id; Codex delegates to persisted_session_from_launch_args) and its test running_agent_session_is_read_from_its_argv
 ## 9. Identifier watch-list (any hit in the incoming upstream diff = deny "upstream collision")
 coordinator
 CoordinatorState
@@ -1493,6 +1499,17 @@ test_set_child_pid
 resolve_reported_pane
 reported_pane_by_ancestry
 remember_stale_pane_id
+persisted_session_from_process_argv
+is_uuid
+process_agent_session
+set_process_agent_session
+has_process_agent_session
+fill_process_agent_session
+fill_process_agent_sessions
+fill_resolved_process_agent_session
+agent_process_argvs
+process_session_misses
+test_process_argvs
 agents_reorder
 agents_reorder_tab
 agents_reorder_group
@@ -1585,6 +1602,7 @@ server::headless::tests::agents_model_smoke::fork_smoke_agents_hook_report_namin
 - herdr browser: `[browser] activity_color = "#aa6eff"` (`#rrggbb`; invalid → default with a config diagnostic) colours the activity overlay — frame border and glow (alpha unchanged), cursor fill and ripple — and applies live after `herdr server reload-config` (the directive carries it; an overlay of another colour is re-injected); tab-group colours stay Chrome's per-pane palette.
 - herdr browser, activity overlay (`[browser] show_activity = true`): the tabs an agent pane opens or acts on sit in a Chrome tab group named `<agent> · <herdr tab>` in a stable colour per pane (a bundled MV3 companion extension loaded with `--load-extension`, driven over the DevTools port; expanded while the pane is active, collapsed after `active_glyph_secs`, dissolved when the pane is gone; tabs the user opened are never grouped and a tab the user pulls out stays out), and a purple glow frame with a macOS-style cursor is injected into the page (isolated world, closed shadow root, no pointer events) while an operation runs and for the `active_glyph_secs` window after (originally 3 s); the cursor glides to the element before click/type/fill/select/press/hover and ripples on click; batches take `animate: false` (`--no-animate`); screenshots hide the overlay; `browser status` / `doctor` report the companion (`ready`, `missing`, `off`).
 ### Fixed
+- A missing agent session id is read from the agent's command line: when a Claude Code or Codex pane has no native session reference (its SessionStart hook report was lost, so `agent_session` was null and the agent could not be suspended, restarted or closed resumably), herdr reads it from the agent's foreground process argv — Claude `--session-id <uuid>`, else `--resume <uuid>` / `-r <uuid>` (also `--flag=<uuid>`; a `--fork-session` launch counts only its `--session-id`, a non-UUID picker search term never), Codex `resume <id>`. It is read when the agent is detected and lazily for agent.get / agent.list, suspend, restart and agents_close_tab (one foreground-job read per agent without a session; a process group whose argv named nothing is not read again; never in render paths), kept as the session readers' last fallback while that agent is the live one, persisted with the pane, and never seen by hook routing, so a later hook report always wins.
 - Agent messages arrive as a typed pointer line, not a paste: Claude Code marks a bracketed paste as content the user pasted (a collapsed one reaches the model inside `<pasted_content>` tags, to be followed only where the user's own message asks to; a long one was also cut to its tail), so teammates and even the coordinator's relayed user requests looked like an un-commented user paste and agents asked their user before acting. An agent whose herdr_agents server reads messages by id (it says so at start and on every tool call; herdr checks that server still runs under the pane) now gets one short line typed as plain keys — `herdr+ message <id> from <name> (teammate, <pane>): read it with agents_messages id=<id>`, `… from the coordinator acting for your user (<pane>) …`, or one line for a queued batch — and reads the full message with its sender and answer rule through `agents_messages id=…` (new `agents.read_messages`; marks it read). Only characters proven inert in Claude Code's and Codex's input box are typed (no `/ ! ? @ $ # \`). Agents without the tools and older herdr_agents servers keep the paste; the typing guard, queue, order, claims and coordinator turns are unchanged. The wrap paragraph, the herdr_agents instructions and etiquette and coordinator.md explain the line.
 - Agent hook reports from a pane whose id went stale are found by their process: the integration hooks report with the `HERDR_PANE_ID` their pane started with, so after a tab moved to another group by a herdr before agents v2 every `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.report_subagent`, `pane.clear_agent_authority` and `pane.release_agent` was dropped with `pane_not_found` (the agent never got `agent_session`, so it could not be suspended). When the id names no pane, the one pane whose process is the reporting process or an ancestor takes the report (logged at info); no match or several keep `pane_not_found`. An id that names a live pane is always used as given, never redirected: a hook (or a report sent by hand) may legitimately report for another pane, so a stale id that has come to name a different live pane still lands there (the trade-off; agent callers, which are identity, still re-resolve through their process). A stale id that named no pane becomes an alias of the found pane, kept in its meta like a move alias, so later reports and restarts resolve it directly.
 - An agent whose pane id went stale is found by its process: an agent keeps the `HERDR_PANE_ID` its pane started with, and a tab moved to another group by a herdr before agents v2 (whose old-id aliases lived only in memory and were lost at the handoff to v2) left it with an id that no longer resolves — every `agents.*` change was refused with `caller_unresolved`, even ones its user asked for. The server now takes the requesting process from the local socket (macOS `LOCAL_PEERPID`, Linux/Windows peer credentials) and, when the caller's id does not resolve or names a pane that does not run it, picks the one pane whose process (shell or agent) is that process or an ancestor (`agents.*`, `browser.resolve_caller`, `team.*`, `agent.notify`, `pane.current`, the coordinator turn guard). No such pane or several keep today's refusals. A running herdr_agents MCP server benefits without a restart; one that started unverified re-checks at its first call.
