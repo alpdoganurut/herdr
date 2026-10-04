@@ -2017,6 +2017,10 @@
               "default": false,
               "description": "The whole roster, not just the changes since the last ack.",
               "type": "boolean"
+            },
+            "reads_messages": {
+              "description": "The calling herdr_agents server reads messages by id\n(`agents.read_messages`): messages for the caller's pane are typed in\nas a one-line pointer while that server process runs, not pasted.",
+              "type": "boolean"
             }
           },
           "required": [
@@ -2389,6 +2393,26 @@
               "type": "string"
             }
           ]
+        },
+        "AgentsReadMessagesParams": {
+          "description": "`agents.read_messages`: the full text of messages herdr typed into the\ncaller as a pointer line, with their envelope (sender, relation and how\nto answer). Only messages addressed to the caller; reading marks them\nread.",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            },
+            "ids": {
+              "description": "Message ids (`m…`), at most 16.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "ids"
+          ],
+          "type": "object"
         },
         "AgentsReadParams": {
           "description": "`agents.read`: a pane's screen, as `pane.read` reads it; shell screens only\nfor the pane's team and the coordinator (U6).",
@@ -10210,6 +10234,22 @@
         {
           "properties": {
             "method": {
+              "const": "agents.read_messages",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsReadMessagesParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -12306,6 +12346,44 @@
           },
           "required": [
             "closed_id"
+          ],
+          "type": "object"
+        },
+        "AgentsDeliveredMessage": {
+          "description": "One message of `agents.read_messages`.",
+          "properties": {
+            "delivered_unix": {
+              "description": "When it was typed in (unix seconds).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "first_read": {
+              "default": false,
+              "description": "This call read it first.",
+              "type": "boolean"
+            },
+            "found": {
+              "description": "The message was delivered to the caller as a pointer line (and its\ntext is kept); `false` = unknown here, or addressed to another agent.",
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "text": {
+              "description": "The envelope as herdr would have pasted it: header, text, footer.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "found"
           ],
           "type": "object"
         },
@@ -18842,6 +18920,26 @@
               "required": [
                 "type",
                 "allowed"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.read_messages`, in the order asked.",
+              "properties": {
+                "messages": {
+                  "default": [],
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/AgentsDeliveredMessage"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "agents_read_messages",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
               ],
               "type": "object"
             },

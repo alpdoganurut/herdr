@@ -9,8 +9,10 @@
 //! typing in it or holding an unsent draft, and for the coordinator no turn
 //! is live). Otherwise the server queues it (never a refusal) and types it in
 //! once the target is free: idle for [`SETTLE`], typing guard clear. Per
-//! target FIFO; when several wait for one target they go in as one paste,
-//! each with its own envelope and id. A message is never typed into a blocked
+//! target FIFO; when several wait for one target they go in together, each
+//! with its own envelope and id. A target whose herdr_agents server reads
+//! messages by id gets one typed pointer line for them instead of the paste
+//! (src/app/message_pointer.rs). A message is never typed into a blocked
 //! target (a permission dialog) or a suspended one: it waits. It expires after
 //! [`MESSAGE_TTL_S`] and is dropped when its target pane or agent is gone for
 //! [`GONE_GRACE`] (long enough for a restart to detect the agent again).
@@ -47,7 +49,9 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::api::responses::{encode_error, encode_success};
+use super::message_pointer::{DeliveredMessage, Outgoing};
 use super::App;
+use crate::agents_model::envelope::PointerFrom;
 use crate::api::schema::{
     AgentMessageClaimParams, AgentMessageOutcome, AgentMessageSendParams, AgentPromptParams,
     ResponseResult,
@@ -96,11 +100,27 @@ pub(crate) struct QueuedMessage {
     /// `None` for an older sender (the delivery counts as an API write).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) from_terminal: Option<crate::terminal::TerminalId>,
+    /// The sender as a pointer line names it; `None` from an older queue
+    /// file or sender (read from the envelope's header).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pointer: Option<PointerFrom>,
 }
 
 impl QueuedMessage {
     fn id(&self) -> &str {
         self.message.id.as_deref().unwrap_or("")
+    }
+
+    /// The message on its way in.
+    fn outgoing(&self) -> Outgoing {
+        Outgoing {
+            id: self.id().to_string(),
+            envelope: self.envelope.clone(),
+            pointer: self
+                .pointer
+                .clone()
+                .unwrap_or_else(|| PointerFrom::from_envelope(self.id(), &self.envelope)),
+        }
     }
 }
 
@@ -109,6 +129,10 @@ struct QueueFile {
     version: u32,
     #[serde(default)]
     messages: Vec<QueuedMessage>,
+    /// Envelopes of messages typed in as a pointer line (older builds
+    /// ignore the field).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    delivered: Vec<DeliveredMessage>,
 }
 
 enum IoJob {
@@ -120,6 +144,9 @@ enum IoJob {
 #[derive(Default)]
 pub(crate) struct MessageQueue {
     pub(crate) entries: Vec<QueuedMessage>,
+    /// Envelopes of messages typed in as a pointer line, for
+    /// `agents.read_messages` (src/app/message_pointer.rs).
+    pub(crate) delivered: Vec<DeliveredMessage>,
     /// An agent event arrived since the last pass.
     due: bool,
     /// The earliest settle / retry / grace deadline.
@@ -129,7 +156,7 @@ pub(crate) struct MessageQueue {
     /// When each target terminal was first seen missing (grace).
     missing_since: HashMap<String, Instant>,
     /// `message_queue.json`; `None` = not persisted (tests, unpersisted sessions).
-    store: Option<PathBuf>,
+    pub(super) store: Option<PathBuf>,
     /// The coordinator directory (the message log); `None` = no log lines.
     log_dir: Option<PathBuf>,
     io: Option<mpsc::Sender<IoJob>>,
@@ -165,12 +192,17 @@ impl MessageQueue {
 
     /// Take the queue saved at `path` (a restart or a live handoff) and keep
     /// saving there.
-    fn load(&mut self, path: PathBuf) {
-        self.entries = std::fs::read(&path)
+    pub(super) fn load(&mut self, path: PathBuf) {
+        let file = std::fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<QueueFile>(&bytes).ok())
-            .map(|file| file.messages)
             .unwrap_or_default();
+        self.entries = file.messages;
+        self.delivered = file.delivered;
+        super::message_pointer::prune_delivered(
+            &mut self.delivered,
+            crate::coordinator::now_unix(),
+        );
         self.store = Some(path);
         // A restart looks at every target again.
         self.due = !self.entries.is_empty();
@@ -195,13 +227,14 @@ impl MessageQueue {
         }
     }
 
-    fn save(&mut self) {
+    pub(super) fn save(&mut self) {
         let Some(path) = self.store.clone() else {
             return;
         };
         let file = QueueFile {
             version: FILE_VERSION,
             messages: self.entries.clone(),
+            delivered: self.delivered.clone(),
         };
         match serde_json::to_vec_pretty(&file) {
             Ok(bytes) => self.submit(IoJob::Save(path, bytes)),
@@ -459,18 +492,23 @@ impl App {
         Check::Ready { pane, coordinator }
     }
 
-    /// Type `text` into `pane` now (guarded). For the coordinator the turn
-    /// marker is written first; it is cleared again when nothing was typed.
+    /// Type `items` into `pane` now (guarded): one pointer line when the
+    /// target reads messages by id, else the envelopes as one paste. For the
+    /// coordinator the turn marker is written first; it is cleared again
+    /// when nothing was typed. The first item's id is the turn's message.
     /// `Err` carries the error response.
+    #[allow(clippy::too_many_arguments)] // One delivery's parts, each from a different source.
     fn type_message(
         &mut self,
         request_id: String,
+        terminal_id: &str,
         pane: &str,
-        text: String,
+        items: &[Outgoing],
         coordinator: bool,
-        message_id: &str,
         from: Option<&crate::terminal::TerminalId>,
     ) -> Result<(), String> {
+        let message_id = items.first().map(|item| item.id.as_str()).unwrap_or("");
+        let input = self.message_input(terminal_id, items);
         let marker = if coordinator {
             match self.write_coordinator_message_turn(pane, message_id) {
                 Ok(marker) => Some(marker),
@@ -481,11 +519,11 @@ impl App {
         } else {
             None
         };
-        let queued = self.queue_agent_prompt(
+        let queued = self.queue_agent_prompt_as(
             request_id,
             AgentPromptParams {
                 target: pane.to_string(),
-                text,
+                text: input.text,
                 wait: None,
                 guard_user_typing: true,
             },
@@ -496,9 +534,15 @@ impl App {
                 },
                 None => crate::agents_model::Programmatic::Api,
             }),
+            input.typed,
         );
         match queued {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                if input.typed {
+                    self.remember_delivered(terminal_id, items);
+                }
+                Ok(())
+            }
             Err(response) => {
                 if let Some(marker) = marker {
                     crate::coordinator::turn::clear_if(&self.coordinator.dir, &marker);
@@ -513,6 +557,7 @@ impl App {
         target: &super::terminal_targets::TerminalTarget,
         message: AgentMessage,
         envelope: String,
+        pointer: Option<PointerFrom>,
         legacy: bool,
         from_terminal: Option<crate::terminal::TerminalId>,
         now_unix: u64,
@@ -531,6 +576,7 @@ impl App {
             expires_unix: now_unix + MESSAGE_TTL_S,
             legacy,
             from_terminal,
+            pointer,
         }
     }
 
@@ -576,6 +622,16 @@ impl App {
             team: params.team,
         };
         let status = check.status();
+        // The pointer facts from the envelope's header, with the sender
+        // this method names.
+        let mut pointer = PointerFrom::from_envelope(&params.id, &params.envelope);
+        pointer.reply_to = message.reply_to.clone();
+        if let Some(pane) = message.from_pane.clone() {
+            pointer.pane = pane;
+        }
+        if let Some(name) = message.from_name.clone() {
+            pointer.name = name;
+        }
         // An older sender of this method logs a message it was told was
         // typed in; the server logs the queued ones.
         let from_terminal = message
@@ -596,6 +652,7 @@ impl App {
             check,
             message,
             params.envelope,
+            pointer,
             from_terminal,
             now_unix,
         ) {
@@ -644,6 +701,7 @@ impl App {
         check: MessageCheck,
         message: AgentMessage,
         envelope: String,
+        pointer: PointerFrom,
         from: Option<crate::terminal::TerminalId>,
         now_unix: u64,
     ) -> Result<MessageDelivery, MessageRefused> {
@@ -660,12 +718,17 @@ impl App {
             }
             Check::Wait(reason) => reason,
             Check::Ready { pane, coordinator } => {
+                let items = [Outgoing {
+                    id: message_id.clone(),
+                    envelope: envelope.clone(),
+                    pointer: pointer.clone(),
+                }];
                 match self.type_message(
                     request_id.to_string(),
+                    &target.terminal_id,
                     &pane,
-                    envelope.clone(),
+                    &items,
                     coordinator,
-                    &message_id,
                     from.as_ref(),
                 ) {
                     Ok(()) => return Ok(MessageDelivery::Sent),
@@ -689,7 +752,15 @@ impl App {
                 "too many queued agent messages",
             ));
         }
-        let entry = self.queued_message(target, message, envelope, false, from, now_unix);
+        let entry = self.queued_message(
+            target,
+            message,
+            envelope,
+            Some(pointer),
+            false,
+            from,
+            now_unix,
+        );
         self.message_queue.push(entry);
         Ok(MessageDelivery::Queued { reason })
     }
@@ -731,12 +802,52 @@ impl App {
         let Ok(target) = self.resolve_agent_target(&params.target) else {
             return LegacyPrompt::TypeNow(params);
         };
-        if !self.message_queue.queued_for(&target.terminal_id)
-            && matches!(self.message_check(&target), Check::Ready { .. })
-        {
+        if self.message_queue.queued_for(&target.terminal_id) {
+            return LegacyPrompt::Answered(self.queue_legacy_message(request_id, params));
+        }
+        let Check::Ready { pane, coordinator } = self.message_check(&target) else {
+            return LegacyPrompt::Answered(self.queue_legacy_message(request_id, params));
+        };
+        // A target that reads messages by id gets the pointer line; the
+        // coordinator keeps the paste (an older sender writes its turn
+        // marker itself).
+        let message_id = envelope_id(&params.text);
+        let (Some(message_id), false) = (message_id, coordinator) else {
+            return LegacyPrompt::TypeNow(params);
+        };
+        if !self.reads_messages(&target.terminal_id) {
             return LegacyPrompt::TypeNow(params);
         }
-        LegacyPrompt::Answered(self.queue_legacy_message(request_id, params))
+        let items = [Outgoing {
+            pointer: PointerFrom::from_envelope(&message_id, &params.text),
+            id: message_id,
+            envelope: params.text.clone(),
+        }];
+        let typed = self.type_message(
+            request_id.to_string(),
+            &target.terminal_id,
+            &pane,
+            &items,
+            false,
+            None,
+        );
+        LegacyPrompt::Answered(match typed {
+            Ok(()) => match self.agent_info(target.ws_idx, target.pane_id) {
+                Some(agent) => encode_success(
+                    request_id.to_string(),
+                    ResponseResult::AgentPrompted { agent },
+                ),
+                None => encode_error(
+                    request_id.to_string(),
+                    "agent_not_found",
+                    format!("agent {} not found", params.target),
+                ),
+            },
+            Err(response) if retryable(&error_code(&response)) => {
+                self.queue_legacy_message(request_id, params)
+            }
+            Err(response) => response,
+        })
     }
 
     /// Queue an older sender's prompt and answer it as typed in. Without a
@@ -779,7 +890,7 @@ impl App {
             id: message_id.or_else(|| Some(messages::new_id())),
             ..AgentMessage::default()
         };
-        let entry = self.queued_message(&target, message, params.text, true, None, now_unix);
+        let entry = self.queued_message(&target, message, params.text, None, true, None, now_unix);
         self.message_queue.push(entry);
         tracing::info!(
             request = request_id,
@@ -923,31 +1034,30 @@ impl App {
             next.push(since + SETTLE);
             return false;
         }
-        // One paste: the oldest messages for this target, each with its envelope.
+        // One delivery: the oldest messages for this target, each with its
+        // envelope (one paste, or one pointer line listing their ids).
         // The coordinator gets one message per turn: it may answer on its own
         // only the message that started its turn (the turn origin and marker
         // name one id), so a batch would leave messages 2..N unanswerable.
         let max_combined = if coordinator { 1 } else { MAX_COMBINED };
-        let mut ids = Vec::new();
-        let mut text = String::new();
+        let mut items: Vec<Outgoing> = Vec::new();
+        let mut chars = 0;
         for entry in self
             .message_queue
             .entries
             .iter()
             .filter(|entry| entry.terminal_id == terminal_id)
         {
-            if !ids.is_empty()
-                && (ids.len() >= max_combined
-                    || text.len() + entry.envelope.len() > MAX_COMBINED_CHARS)
+            if !items.is_empty()
+                && (items.len() >= max_combined
+                    || chars + entry.envelope.len() > MAX_COMBINED_CHARS)
             {
                 break;
             }
-            if !text.is_empty() {
-                text.push_str("\n\n");
-            }
-            text.push_str(&entry.envelope);
-            ids.push(entry.id().to_string());
+            chars += entry.envelope.len() + 2;
+            items.push(entry.outgoing());
         }
+        let ids: Vec<String> = items.iter().map(|item| item.id.clone()).collect();
         let first = ids.first().cloned().unwrap_or_default();
         // One paste, one turn: its origin is the first message's sender.
         let from = self
@@ -958,10 +1068,10 @@ impl App {
             .and_then(|entry| entry.from_terminal.clone());
         match self.type_message(
             format!("agent-message:{first}"),
+            &terminal_id,
             &pane,
-            text,
+            &items,
             coordinator,
-            &first,
             from.as_ref(),
         ) {
             Ok(()) => {

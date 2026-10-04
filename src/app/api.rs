@@ -1388,6 +1388,9 @@ impl App {
                     params,
                 )
             }
+            Method::AgentsReadMessages(params) => {
+                return self.handle_agents_read_messages(request.id, params)
+            }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

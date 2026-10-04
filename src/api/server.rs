@@ -625,6 +625,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::AgentsSuspend(_) => crate::api::schema::agents_model::method::SUSPEND,
         Method::AgentsActivate(_) => crate::api::schema::agents_model::method::ACTIVATE,
         Method::AgentsRestart(_) => crate::api::schema::agents_model::method::RESTART,
+        Method::AgentsReadMessages(_) => crate::api::schema::agents_model::method::READ_MESSAGES,
         Method::AgentPrompt(_) => "agent.prompt",
         Method::AgentWait(_) => "agent.wait",
         Method::PaneSplit(_) => "pane.split",

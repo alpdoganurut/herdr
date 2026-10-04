@@ -36,6 +36,7 @@ pub mod method {
     pub const SUSPEND: &str = "agents.suspend";
     pub const ACTIVATE: &str = "agents.activate";
     pub const RESTART: &str = "agents.restart";
+    pub const READ_MESSAGES: &str = "agents.read_messages";
 
     /// The one method advertised to client shells (the TUI's "Set role…").
     #[cfg(test)]
@@ -43,7 +44,7 @@ pub mod method {
 
     /// Every method.
     #[cfg(test)]
-    pub const ALL: [&str; 17] = [
+    pub const ALL: [&str; 18] = [
         ACTOR,
         DIRECTORY,
         READ,
@@ -61,6 +62,7 @@ pub mod method {
         SUSPEND,
         ACTIVATE,
         RESTART,
+        READ_MESSAGES,
     ];
 }
 
@@ -348,6 +350,11 @@ pub struct AgentsActorParams {
     pub ack_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ack_key: Option<String>,
+    /// The calling herdr_agents server reads messages by id
+    /// (`agents.read_messages`): messages for the caller's pane are typed in
+    /// as a one-line pointer while that server process runs, not pasted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reads_messages: bool,
 }
 
 /// `agents.directory`: every group and tab, scoped. Without a filter and
@@ -435,6 +442,17 @@ pub struct AgentsSendMessageParams {
     /// The id of the message this answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
+}
+
+/// `agents.read_messages`: the full text of messages herdr typed into the
+/// caller as a pointer line, with their envelope (sender, relation and how
+/// to answer). Only messages addressed to the caller; reading marks them
+/// read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsReadMessagesParams {
+    pub caller_pane: String,
+    /// Message ids (`m…`), at most 16.
+    pub ids: Vec<String>,
 }
 
 /// `agents.rename_tab`.
@@ -811,6 +829,24 @@ pub struct AgentsMessageResult {
     pub reason: Option<String>,
 }
 
+/// One message of `agents.read_messages`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsDeliveredMessage {
+    pub id: String,
+    /// The message was delivered to the caller as a pointer line (and its
+    /// text is kept); `false` = unknown here, or addressed to another agent.
+    pub found: bool,
+    /// The envelope as herdr would have pasted it: header, text, footer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// When it was typed in (unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered_unix: Option<u64>,
+    /// This call read it first.
+    #[serde(default)]
+    pub first_read: bool,
+}
+
 /// `agents.rename_tab`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentsRenameResult {
@@ -925,7 +961,7 @@ pub struct AgentActionEntry {
 
 /// The type names the params structs may reference (digest hygiene).
 #[cfg(test)]
-pub const PARAM_TYPES: [&str; 18] = [
+pub const PARAM_TYPES: [&str; 19] = [
     "AgentsActorParams",
     "AgentsDirectoryParams",
     "AgentsReadParams",
@@ -944,6 +980,7 @@ pub const PARAM_TYPES: [&str; 18] = [
     "AgentsCheckParams",
     "AgentsCheckAction",
     "AgentsLifecycleParams",
+    "AgentsReadMessagesParams",
 ];
 
 #[cfg(test)]

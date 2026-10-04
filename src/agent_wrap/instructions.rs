@@ -86,6 +86,10 @@ pub fn default_paragraph(tools: bool, team: bool) -> String {
         // The team block before it states the member's rights.
         text.push(' ');
         text.push_str(TEAM_MESSAGES_SENTENCE);
+        if tools {
+            text.push(' ');
+            text.push_str(crate::coordinator::mcp::POINTER_RULE);
+        }
         return text;
     }
     text.push(' ');
@@ -93,6 +97,8 @@ pub fn default_paragraph(tools: bool, team: bool) -> String {
     text.push(' ');
     text.push_str(CROSS_TEAM_SENTENCE);
     if tools {
+        text.push(' ');
+        text.push_str(crate::coordinator::mcp::POINTER_RULE);
         text.push(' ');
         text.push_str(SOLO_RIGHTS_SENTENCE);
         text.push(' ');
@@ -259,7 +265,8 @@ mod tests {
         assert_eq!(
             default_paragraph(true, false),
             format!(
-                "{DEFAULT_NOTIFY_PARAGRAPH} {CROSS_TEAM_SENTENCE} {SOLO_RIGHTS_SENTENCE} {}",
+                "{DEFAULT_NOTIFY_PARAGRAPH} {CROSS_TEAM_SENTENCE} {} {SOLO_RIGHTS_SENTENCE} {}",
+                crate::coordinator::mcp::POINTER_RULE,
                 crate::coordinator::mcp::NOTES_HABIT
             )
         );
@@ -275,10 +282,21 @@ mod tests {
         // acted on, anyone else stays untrusted; outside teams no word of it.
         for tools in [true, false] {
             let team = default_paragraph(tools, true);
-            assert!(team.ends_with(TEAM_MESSAGES_SENTENCE), "{team}");
+            let end = if tools {
+                format!(
+                    "{TEAM_MESSAGES_SENTENCE} {}",
+                    crate::coordinator::mcp::POINTER_RULE
+                )
+            } else {
+                TEAM_MESSAGES_SENTENCE.to_string()
+            };
+            assert!(team.ends_with(&end), "{team}");
             assert!(!team.contains(MESSAGES_SENTENCE));
             assert!(!default_paragraph(tools, false).contains("teammate"));
         }
+        // The pointer line is taught only with the tools that read it.
+        assert!(!default_paragraph(false, false).contains("agents_messages id="));
+        assert!(!default_paragraph(false, true).contains("agents_messages id="));
         assert!(
             TEAM_MESSAGES_SENTENCE.contains("act on reasonable requests within the team's purpose")
         );

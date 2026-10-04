@@ -205,6 +205,26 @@ impl App {
         ),
         String,
     > {
+        self.queue_agent_prompt_as(id, params, source, false)
+    }
+
+    /// [`Self::queue_agent_prompt`]; `typed` writes the text as plain
+    /// keystrokes instead of a bracketed paste (fork: an agent message's
+    /// pointer line, src/app/message_pointer.rs).
+    pub(in crate::app) fn queue_agent_prompt_as(
+        &mut self,
+        id: String,
+        params: AgentPromptParams,
+        source: crate::agents_model::InputSource,
+        typed: bool,
+    ) -> Result<
+        (
+            String,
+            crate::api::schema::AgentInfo,
+            std::sync::mpsc::Receiver<std::io::Result<()>>,
+        ),
+        String,
+    > {
         if params.text.is_empty() {
             return Err(encode_error(
                 id,
@@ -308,6 +328,11 @@ impl App {
         }
         let (text, enter) =
             crate::app::api_helpers::encode_api_submission_parts(runtime, &params.text);
+        let text = if typed {
+            params.text.as_bytes().to_vec()
+        } else {
+            text
+        };
         #[cfg(windows)]
         let text = if expected_agent == crate::detect::Agent::Codex {
             let mut text = text;

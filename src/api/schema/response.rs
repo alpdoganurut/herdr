@@ -299,6 +299,11 @@ pub enum ResponseResult {
     AgentsCheck {
         allowed: bool,
     },
+    /// `agents.read_messages`, in the order asked.
+    AgentsReadMessages {
+        #[serde(default)]
+        messages: Vec<super::agents_model::AgentsDeliveredMessage>,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

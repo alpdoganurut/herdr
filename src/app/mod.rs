@@ -21,6 +21,7 @@ mod browser;
 mod closed_sessions;
 mod codex_sessions;
 pub(crate) mod coordinator;
+pub(crate) mod message_pointer;
 pub(crate) mod message_queue;
 pub(crate) mod news;
 mod notes;

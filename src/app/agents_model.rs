@@ -68,6 +68,15 @@ pub(crate) struct AgentsModelRuntime {
     /// `None` between requests and for clients: it finds a caller whose
     /// pane id went stale ([`App::resolve_caller_pane`]).
     pub(crate) caller_process: Option<u32>,
+    /// Terminals whose herdr_agents server reads messages by id
+    /// (`agents.actor` with `reads_messages`): the server processes that
+    /// said so, newest last. A message goes in as a pointer line while one
+    /// of them still runs under the terminal's process
+    /// (src/app/message_pointer.rs).
+    pub(crate) message_readers: HashMap<String, Vec<u32>>,
+    /// Test seam: a recorded reader counts without the process check.
+    #[cfg(test)]
+    pub(crate) readers_unchecked: bool,
 }
 
 impl AgentsModelRuntime {
@@ -991,6 +1000,11 @@ impl App {
 
     fn agents_actor(&mut self, params: &AgentsActorParams) -> ModelResult<AgentsActorInfo> {
         let caller = self.required_caller(&params.caller_pane)?;
+        if params.reads_messages {
+            if let Some(pid) = self.agents_model.caller_process {
+                self.note_message_reader(&caller.terminal_id, pid);
+            }
+        }
         let (role, note, session) = self
             .model_terminal(caller.ws_idx, caller.pane_id)
             .map(|terminal| {
@@ -2250,6 +2264,8 @@ impl App {
         };
         let typed =
             crate::agents_model::envelope::envelope(&sender, &id, reply_to, &text, now, teammate);
+        let pointer =
+            crate::agents_model::envelope::PointerFrom::new(&sender, &id, reply_to, teammate);
         let line = self.message_line(
             &caller,
             &to_public,
@@ -2266,6 +2282,7 @@ impl App {
             check,
             line,
             typed,
+            pointer,
             Some(caller.terminal_id.clone()),
             now,
         );
@@ -3961,7 +3978,7 @@ pub(crate) mod tests {
             ),
             (
                 "src/app/api/agents.rs",
-                "queue_agent_prompt",
+                "queue_agent_prompt_as",
                 "programmatic",
             ),
             (
@@ -4069,7 +4086,7 @@ pub(crate) mod tests {
                         body.contains("note_input")
                             || body.contains("note_pane_input")
                             || body.contains(".turn_mut()")
-                            || function == "queue_agent_prompt",
+                            || function == "queue_agent_prompt_as",
                         "{file}: `{function}` writes ({class}) without recording provenance"
                     );
                 }
