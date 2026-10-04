@@ -62,6 +62,7 @@ impl ClientShellState {
             collapsed_groups,
             remote_collapsed_groups,
             info_dock_width: self.info_dock_width_manual.then_some(self.info_dock_width),
+            active_agents_folded: self.active_agents_folded,
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);
@@ -72,6 +73,9 @@ impl ClientShellState {
     pub(crate) fn reload_client_config(&mut self) {
         match crate::config::load_live_config() {
             Ok(loaded) => {
+                // Fork (sidebar v2): `ui.sidebar_active_agents` and the
+                // pinned rows' config feed the sidebar model.
+                self.sidebar_model.mark_dirty();
                 let agent_panel_sort = self.config.agent_panel_sort;
                 let diagnostics = self.config.apply_live_config(
                     &loaded.config,
@@ -125,6 +129,7 @@ impl ClientShellConfig {
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_layout: config.ui.sidebar_layout,
             info_pane_width: config.ui.effective_info_pane_width(),
+            sidebar_active_agents: config.ui.sidebar_active_agents,
             tab_agent_glyphs: config.ui.tab_agent_glyphs.clone(),
             tab_agent_glyph_colors: crate::config::resolve_tab_agent_glyph_colors(
                 &config.ui.tab_agent_glyph_colors,
@@ -340,6 +345,7 @@ impl ClientShellConfig {
                 self.sidebar_collapsed_mode = ui.sidebar_collapsed_mode;
                 self.sidebar_layout = ui.sidebar_layout;
                 self.info_pane_width = ui.effective_info_pane_width();
+                self.sidebar_active_agents = ui.sidebar_active_agents;
                 self.tab_agent_glyphs = ui.tab_agent_glyphs.clone();
                 diagnostics.extend(crate::config::tab_agent_glyph_color_diagnostics(
                     &ui.tab_agent_glyph_colors,

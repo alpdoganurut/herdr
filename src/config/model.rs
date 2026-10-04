@@ -1121,6 +1121,10 @@ pub struct UiConfig {
     /// Default width (columns) of a tab's info pane until a width is dragged and remembered.
     /// 28 through 120. Default: 44.
     pub info_pane_width: u16,
+    /// Show the Active agents block (blocked, voice, working and finished agents) above the
+    /// tab list in the "tabs" sidebar layout. The block hides itself while nothing is active.
+    /// Default: true.
+    pub sidebar_active_agents: bool,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
@@ -1391,6 +1395,7 @@ impl Default for UiConfig {
             idle_reminder_minutes: DEFAULT_IDLE_REMINDER_MINUTES,
             daily_reminder_time: DEFAULT_DAILY_REMINDER_TIME.into(),
             info_pane_width: DEFAULT_INFO_PANE_WIDTH,
+            sidebar_active_agents: true,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,

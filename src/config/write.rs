@@ -63,6 +63,9 @@ pub(crate) enum ConfigEdit<'a> {
     },
     /// Fork: `[agents] instructions_file`; `None` removes it (the built-in text).
     AgentsInstructionsFile(Option<&'a str>),
+    /// Fork: `ui.sidebar_active_agents` (the tabs sidebar's Active agents block).
+    #[allow(dead_code)] // sidebar v2 S0b: the Settings → indicators toggle saves it
+    SidebarActiveAgents(bool),
 }
 
 /// Fork: minutes past midnight as a 24-hour "HH:MM".
@@ -85,7 +88,7 @@ impl ConfigEdit<'_> {
             | Self::CoordinatorWakeCaps { .. }
             | Self::CoordinatorModel(_)
             | Self::CoordinatorNotify(_) => "coordinator setting",
-            Self::SidebarLayoutTabs => "sidebar setting",
+            Self::SidebarLayoutTabs | Self::SidebarActiveAgents(_) => "sidebar setting",
             Self::BrowserBool { .. } | Self::BrowserString { .. } | Self::BrowserList { .. } => {
                 "browser setting"
             }
@@ -236,6 +239,9 @@ impl ConfigEdit<'_> {
             Self::AgentsInstructionsFile(None) => document_edit(content, |doc| {
                 remove_section_item(doc, "agents", "instructions_file");
             }),
+            Self::SidebarActiveAgents(enabled) => {
+                super::upsert_section_bool(content, "ui", "sidebar_active_agents", enabled)
+            }
         }
     }
 }
@@ -509,6 +515,24 @@ mod tests {
         let config: crate::config::Config = toml::from_str(&edited).unwrap();
         assert_eq!(config.ui.idle_reminder_minutes, 0);
         assert_eq!(edited.matches("idle_reminder_minutes").count(), 1);
+    }
+
+    #[test]
+    fn sidebar_active_agents_edit_writes_the_ui_key_and_parses_back() {
+        let content = "[ui]\nsidebar_width = 30\n";
+        assert!(crate::config::Config::default().ui.sidebar_active_agents);
+        let edited = ConfigEdit::SidebarActiveAgents(false).apply(content);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(!config.ui.sidebar_active_agents);
+        assert_eq!(config.ui.sidebar_width, 30);
+        let edited = ConfigEdit::SidebarActiveAgents(true).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(config.ui.sidebar_active_agents);
+        assert_eq!(edited.matches("sidebar_active_agents").count(), 1);
+        assert_eq!(
+            ConfigEdit::SidebarActiveAgents(true).description(),
+            "sidebar setting"
+        );
     }
 
     #[test]

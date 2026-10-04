@@ -209,6 +209,21 @@ src/client/shell/voice.rs
 src/client/shell/tests/voice.rs
 src/app/launch_gate.rs
 src/app/launch_gate/tests.rs
+src/client/shell/sidebar_model.rs
+src/client/shell/tab_sidebar_active.rs
+src/client/shell/tab_sidebar_detail.rs
+src/client/shell/agent_times.rs
+src/app/agent_times.rs
+src/server/headless/agent_times.rs
+src/client/shell/tests/tab_sidebar_golden.rs
+src/client/shell/tests/golden/tab_sidebar_footer.txt
+src/client/shell/tests/golden/tab_sidebar_list_rows.txt
+src/client/shell/tests/golden/tab_sidebar_short.txt
+src/client/shell/tests/golden/tab_sidebar_short_scrolled.txt
+src/client/shell/tests/golden/tab_sidebar_toolbar.txt
+src/client/shell/tests/sidebar_active.rs
+src/client/shell/tests/sidebar_perf.rs
+
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
 | struct | field | default |
@@ -422,6 +437,33 @@ src/app/launch_gate/tests.rs
 | ClientConnection | shell_voice_sent | None |
 | ClientShellState | voice | HashMap::new() |
 | ShellRenderState | voice | None |
+| Palette | sidebar_chrome_bg | None |
+| CustomThemeColors | sidebar_chrome_bg | None |
+| ModeThemeColors | sidebar_chrome_bg | None |
+| UiConfig | sidebar_active_agents | true |
+| ClientShellConfig | sidebar_active_agents | true |
+| TerminalState | agent_state_since_unix_ms | None |
+| AppState | agent_times_view_rev | 0 |
+| ClientConnection | shell_agent_times_sent | None |
+| ClientChromePreferences | active_agents_folded | None |
+| ShellRenderState | sidebar_model | None |
+| ShellRenderState | sidebar_hover | None |
+| ShellRenderState | now | std::time::Instant::now() |
+| ShellRenderState | sidebar_reveal_tab | &mut self.sidebar_reveal_tab |
+| ShellRenderState | active_view | sidebar_model::ActiveView::default() |
+| ShellHitMap | sidebar_active_header | Rect::default() |
+| ShellHitMap | sidebar_active_rows | Vec::new() |
+| ShellHitMap | sidebar_active_more | Rect::default() |
+| ShellHitMap | sidebar_detail | Rect::default() |
+| ShellHitMap | sidebar_clock_deadline | None |
+| ClientShellState | sidebar_model | sidebar_model::SidebarModel::new() |
+| ClientShellState | sidebar_hover | None |
+| ClientShellState | agent_times | HashMap::new() |
+| ClientShellState | active_agents_folded | preferences.active_agents_folded |
+| ClientShellState | active_agents_expanded | false |
+| ClientShellState | sidebar_reveal_tab | None |
+| ClientShellState | sidebar_clock | None |
+
 
 ## 3. Removed or re-signatured upstream symbols (E0425/E0061 at a new upstream call site = deny)
 app::api_helpers::pane_agent_status(state, seen) -> removed; app::api_helpers::agent_status(state, seen, suspended) or app::api_helpers::terminal_agent_status(terminal, seen)
@@ -441,6 +483,8 @@ app::api::agents::App::queue_agent_prompt -> pub(in crate::app) (was private; sr
 client::shell::tabs::render_tab_bar(b, area, snapshot, config, tab_scroll, reveal_focused_tab, tab_drag_insert_index, hits) -> (b, area, snapshot, config, coordinator_mark: Option<(&str, String)>, tab_scroll, reveal_focused_tab, tab_drag_insert_index, hits) (the spaces layout's coordinator tab mark)
 Visibility widened by the fork (upstream renaming or narrowing one breaks fork code): app::agents::DEFAULT_AGENT_START_TIMEOUT, app::agents::available_shell_name, app::api::agents::AGENT_PROMPT_SUBMIT_DELAY, app::terminal_targets::{terminal_targets, terminal_target_candidate}, integration::home_dir, client::shell::notification_policy::{notification_target_is_active, COMPLETION_EVIDENCE_GRACE} (pub(super)), app::agent_resume::shell_command_from_argv (pub(super); the closed-session reopen types it), app::api::sanitized_notification_text (pub(super); app::news sanitizes the editor's notification text with it), api::server::dispatch_to_app_with_timeout (pub(crate), re-exported as api::dispatch_to_app_with_timeout; browser::serve resolves the calling pane through it)
 client::shell::ClientShellConfig::layout(cols, rows, sidebar_collapsed, tab_count, sidebar_width) -> (cols, rows, sidebar_collapsed, tab_count, sidebar_width, info_dock_width: Option<u16>) (None = no info dock; the two call sites are ClientShellState::layout, which passes info_dock_width_for_focused_tab(), and ClientShellConfig::initial_surface_size, which passes None)
+client::shell::voice::voice_mark(voice, palette: &Palette) -> (&'static str, Color) -> voice_mark(voice, config: &ClientShellConfig) -> (&str, Color) (the glyph borrows the config) (fork function; sidebar v2 lets ui.tab_agent_glyphs override the glyph)
+
 
 ## 4. Owned enum variants (append last; E0004 in upstream match = deny)
 AgentStatus::Suspended   [src/api/schema/common.rs, last after Unknown; wire: JSON "suspended" in the socket API, events and the client shell snapshot, any non-human-readable serde codec encodes it as variant index 5; append-closed, deny on conflict]
@@ -635,6 +679,8 @@ AgentVoice::{Off, Live, Muted}   [src/detect/mod.rs, fork type directly after Ag
 AgentVoiceMode::{Live, Muted, Unknown}   [src/api/schema/agents.rs, fork type directly before AgentInfo; snake_case, Unknown is the serde(other) fallback (last); JSON only (AgentInfo.voice, the endpoint.voice.v1 push); append-closed]
 AgentStartError::ShellNotReady   [src/app/agents.rs, after TargetBusy; internal, surfaces as error code agent_pane_busy ("the shell … is still starting")]
 PtyIoControlCommand::InputIsRaw   [src/pty/actor/unix.rs, after ForegroundProcessGroup; internal]
+ConfigEdit::SidebarActiveAgents(bool)   [src/config/write.rs, last after AgentsInstructionsFile; `ui.sidebar_active_agents` (the tabs sidebar's Active agents block), client-local write; internal]
+
 
 ## 5. Owned API methods and digests
 agent.suspend, agent.activate, agent.restart, agent.transcripts: fork-defined (Method variants, api_method_name arms, request_changes_ui for suspend/activate/restart, CLI `herdr agent suspend|activate|restart|transcripts`).
@@ -721,6 +767,8 @@ Digest asserts in advertised_client_shell_method_shapes_stay_at_the_v1_contract:
 Any digest value change = deny (contract change, never a fixture fix). pane.move's digest covers upstream-owned PaneMoveParams/PaneMoveDestination: an upstream reshape fails it after a clean merge, and that is a deny.
 tests/fixtures/endpoint-*-v1.json and src/protocol/** frozen tests: never edited (the fork has no diff under tests/).
 Upstream adding "pane.move" or "pane.get" to CLIENT_SHELL_METHODS, or adding any section 9 identifier = deny (collision).
+endpoint.agent-times.v1 (sidebar v2): an optional JSON control, not a client-shell method shape (src/server/headless/agent_times.rs: AgentTimesPayload { boot_id, revision, server_now_unix_ms, panes: Vec<AgentTimePane { pane_id, state_change_seq, since_unix_ms }> }, the whole list of panes with a stamped state change, sent from the render pass when ClientConnection.shell_agent_times_sent != AppState.agent_times_view_rev; nothing while the revision is 0). The client measures each age on the server's clock (server_now_unix_ms - since_unix_ms) and uses a time only while its state_change_seq equals the snapshot agent's. Old clients ignore the kind; no bincode type and no PROTOCOL_VERSION change.
+
 
 ## 6. Config keys (cross-checked by scripts/config_reference_check.py)
 ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors, session.backup_agent_transcripts,
@@ -739,6 +787,8 @@ The coordinator.* keys form their own group (id `coordinator`, title Coordinator
 The agents.* keys form their own group (id `agents`, title Agents) directly after the coordinator group in config-reference.json and an `[agents]` block directly after the `[coordinator]` block in DEFAULT_CONFIG; `"agents"` sits in KNOWN_TOP_LEVEL_CONFIG_KEYS after `"advanced"` and loads as a live section after browser (src/config/io.rs); not in configuration.mdx. Defaults: everything off except notices = true and team_roster = true (team_roster works without wrap: a claude / codex launched in a team group gets the team bits only; launches elsewhere are unchanged).
 The notes.* keys form their own group (id `notes`, title Notes) directly after the agents group in config-reference.json and a `[notes]` block directly after the `[agents]` block in DEFAULT_CONFIG (its last comment lines are the `auto_checkpoints` paragraph and `# auto_checkpoints = true`); `"notes"` sits in KNOWN_TOP_LEVEL_CONFIG_KEYS after `"news"` and loads as the last live section, after agents (src/config/io.rs); not in configuration.mdx. keys.toggle_info_pane sits directly after keys.open_coordinator and ui.info_pane_width directly after ui.daily_reminder_time, in config-reference.json and as DEFAULT_CONFIG comments (not in configuration.mdx).
 After any merge touching config-reference.json: python3 -m json.tool on the file, then python3 scripts/config_reference_check.py.
+ui.sidebar_active_agents (config-reference.json directly after ui.info_pane_width; DEFAULT_CONFIG directly after `# info_pane_width = 44`), theme.custom.sidebar_chrome_bg, theme.custom.light.sidebar_chrome_bg, theme.custom.dark.sidebar_chrome_bg (each directly after its surface_dim sibling in config-reference.json; DEFAULT_CONFIG `# sidebar_chrome_bg = "#11111b"` at the end of the `[theme.custom]` comment block). The ui.tab_agent_glyphs description names the `voice_live` / `voice_muted` keys (no new key path).
+
 
 ## 7. Per-file merge rules
 docs/next/CHANGELOG.md  take-theirs: fork entries live in section 11
@@ -815,6 +865,21 @@ src/platform/macos.rs  additive: Codex sessions: process_start_unix_ms directly 
 src/platform/linux.rs  additive: Codex sessions: process_start_unix_ms and process_start_ticks_from_stat directly before process_agent_hint; their test first in the tests module
 src/platform/windows.rs  additive: Codex sessions: process_start_unix_ms (None) directly before process_cwd
 src/platform/fallback.rs  additive: Codex sessions: process_start_unix_ms stub directly after process_cwd
+src/app/state.rs  additive: Sidebar v2: Palette.sidebar_chrome_bg the last field (`sidebar_chrome_bg: None` in every theme literal), the `impl Palette` block with sidebar_chrome() / sidebar_hover_bg() directly after the struct, the sidebar_chrome_bg lines last in with_overrides and with_mode_overrides; AppState.agent_times_view_rev directly after voice_view_rev (and test_new)
+src/config/theme.rs  additive: Sidebar v2: CustomThemeColors.sidebar_chrome_bg directly after peach (before light/dark), ModeThemeColors.sidebar_chrome_bg the last field
+src/config/model.rs  additive: Sidebar v2: UiConfig.sidebar_active_agents directly after info_pane_width (and in Default)
+src/config/write.rs  additive: Sidebar v2: ConfigEdit::SidebarActiveAgents last in the enum, its description arm with SidebarLayoutTabs, its apply arm last, its unit test after the IdleReminderMinutes test
+src/server/clients.rs  additive: Sidebar v2: ClientConnection.shell_agent_times_sent directly after shell_voice_sent (struct and new())
+src/server/headless.rs  additive: Sidebar v2: `pub mod agent_times;` (with its doc line) directly after `pub mod voice;`
+src/app/mod.rs  additive: Sidebar v2: `pub(crate) mod agent_times;` (with its doc line) directly after `pub(crate) mod voice;`; AppState.agent_times_view_rev in App::new directly after voice_view_rev
+src/client/shell.rs  additive: Sidebar v2: `mod agent_times;` directly after `mod agent_cards;`, `mod sidebar_model;` directly after `mod settings_sounds;`, `mod tab_sidebar_active;` and `mod tab_sidebar_detail;` directly after `mod tab_sidebar;` (each with its doc line)
+src/client/shell/state.rs  additive: Sidebar v2: ClientShellConfig.sidebar_active_agents directly after info_pane_width; ShellHitMap.sidebar_active_header, sidebar_active_rows, sidebar_active_more, sidebar_detail, sidebar_clock_deadline the last fields; ClientShellState.sidebar_model, sidebar_hover, agent_times, active_agents_folded, active_agents_expanded, sidebar_reveal_tab, sidebar_clock the last fields (and in new())
+src/client/shell/render.rs  additive: Sidebar v2: ShellRenderState.sidebar_model, sidebar_hover, now, sidebar_reveal_tab, active_view the last fields; put_truncated directly before display_width
+src/client/shell/preferences.rs  additive: Sidebar v2: ClientChromePreferences.active_agents_folded the last field (serde default, skip_serializing_if none)
+src/client/shell/tests/mod.rs  additive: Sidebar v2: `mod sidebar_active;` and `mod sidebar_perf;` directly after `mod settings_closed;`, `mod tab_sidebar_golden;` directly after `mod tab_sidebar;`
+src/client/shell/tests/coordinator.rs  additive: Sidebar v2: the render_sidebar ShellRenderState literal gains sidebar_model, sidebar_hover, now, sidebar_reveal_tab, active_view last
+src/main.rs  additive: Sidebar v2: DEFAULT_CONFIG `# sidebar_active_agents = true` (with its comment) directly after `# info_pane_width = 44`, `# sidebar_chrome_bg = "#11111b"` (with its comment) last in the `[theme.custom]` comment block
+docs/next/website/src/data/config-reference.json  additive: Sidebar v2: entries placed per section 6
 *  deny: anything that is not a structural additive conflict (zdiff3 base empty, both sides pure insertions)
 src/app/mod.rs  additive: launch gate: `pub(crate) mod launch_gate;` (with its fork comment) directly after `mod agents_reorder;`
 
@@ -1019,6 +1084,18 @@ src/platform/unix_common.rs  mid-logic: launch gate: tty_fd_input_is_raw (tcgeta
 src/platform/mod.rs  mid-logic: launch gate: pane_shell_has_line_editor directly before is_pane_shell_process_name
 src/server/headless.rs  mid-logic: launch gate: handle_api_request_dispatch routes Method::AgentsOpenTab to App::handle_deferred_agents_open_tab directly before the AgentPrompt arm; handle_scheduled_tasks_headless runs drive_pending_launches directly after drive_pending_agent_closes
 src/app/runtime.rs  mid-logic: launch gate: next_headless_loop_deadline_with_git_refresh chains next_pending_launch_deadline directly after next_message_queue_deadline
+src/client/shell/voice.rs  mid-logic: sidebar v2: voice_mark takes the config (section 3); receive_voice marks the sidebar model dirty
+src/client/shell/config.rs  mid-logic: sidebar v2: reload_client_config marks the sidebar model dirty; persist_chrome_preferences writes active_agents_folded; from_config and apply_live_config carry ui.sidebar_active_agents
+src/client/shell/tab_sidebar.rs  mid-logic: sidebar v2: render_tab_sidebar_with reads rows and per-tab facts from sidebar_model (entries() and the per-frame glyph/subagent/voice maps are gone), plans heights with plan_layout (today's budget verbatim plus the Active block and detail strip rows), consumes sidebar_reveal_tab after the focused-workspace reveal, and calls render_active_block / render_detail_strip for non-empty plan rects
+src/client/shell/composition.rs  mid-logic: sidebar v2: compose ensures sidebar_model for the expanded single-endpoint tabs layout before building ShellRenderState; both ShellRenderState literals fill the sidebar v2 fields
+src/client/shell/state.rs  mid-logic: sidebar v2: toggle_collapsed_group marks the sidebar model dirty; new() loads active_agents_folded from the chrome preferences
+src/client/shell/mouse.rs  mid-logic: sidebar v2: set_all_groups_folded marks the sidebar model dirty
+src/client/shell/suspended_pane.rs  mid-logic: sidebar v2: refresh_suspended_pane_ids (every snapshot replacement) marks the sidebar model dirty
+src/client/shell/teams.rs  mid-logic: sidebar v2: receive_teams marks the sidebar model dirty
+src/app/actions.rs  mid-logic: sidebar v2: the state-change block stamps TerminalState.agent_state_since_unix_ms and bumps AppState.agent_times_view_rev next to last_agent_state_change_seq
+src/terminal/state.rs  mid-logic: sidebar v2: TerminalState.agent_state_since_unix_ms (runtime only) is cleared with last_agent_state_change_seq in clear_agent_runtime_identity_after_respawn
+src/server/render_scale_benchmark.rs  mid-logic: sidebar v2: print_profiles_with_config and the "tabs sidebar, background workspaces" profile (statuses driven server-side, one live voice pane)
+
 
 ## 9. Identifier watch-list (any hit in the incoming upstream diff = deny "upstream collision")
 coordinator
@@ -1618,6 +1695,19 @@ tty_fd_input_is_raw
 pane_shell_has_line_editor
 TYPED_LAUNCH_DIRECT_MAX
 SHELL_READY_TIMEOUT
+sidebar_chrome_bg
+sidebar_hover_bg
+sidebar_active_agents
+agent_state_since_unix_ms
+agent_times_view_rev
+shell_agent_times_sent
+endpoint.agent-times.v1
+AgentTimesPayload
+AgentTimePane
+SidebarModel
+SidebarHover
+active_agents_folded
+
 
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot

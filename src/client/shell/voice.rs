@@ -60,11 +60,13 @@ pub(crate) fn louder(
 }
 
 /// The tab mark of a voice mode and its color (an unknown mode counts as
-/// live: the voice session is on).
+/// live: the voice session is on). The glyph borrows the config (sidebar
+/// v2: `ui.tab_agent_glyphs` may override it).
 pub(crate) fn voice_mark(
     voice: AgentVoiceMode,
-    palette: &Palette,
-) -> (&'static str, ratatui::style::Color) {
+    config: &ClientShellConfig,
+) -> (&str, ratatui::style::Color) {
+    let palette = &config.palette;
     match voice {
         AgentVoiceMode::Muted => (VOICE_MUTED_MARK, palette.overlay0),
         AgentVoiceMode::Live | AgentVoiceMode::Unknown => (VOICE_LIVE_MARK, palette.red),
@@ -100,6 +102,7 @@ impl ClientShellState {
         }
         self.voice
             .insert(endpoint_id.clone(), ClientVoiceState::from_payload(payload));
+        self.sidebar_model.mark_dirty();
         true
     }
 }

@@ -906,6 +906,11 @@ fn render_sidebar(
         dragged_workspace_id: None,
         workspace_drop_indicator_row: None,
         sidebar_tab_drop_row: None,
+        sidebar_model: None,
+        sidebar_hover: None,
+        now: std::time::Instant::now(),
+        sidebar_reveal_tab: &mut shell.sidebar_reveal_tab,
+        active_view: super::super::sidebar_model::ActiveView::default(),
     };
     let rect = render_tab_sidebar_with(
         &mut buffer,

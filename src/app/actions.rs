@@ -1756,6 +1756,10 @@ impl AppState {
             self.next_agent_state_change_seq += 1;
             if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
                 terminal.last_agent_state_change_seq = Some(self.next_agent_state_change_seq);
+                // Fork (sidebar v2): when this state began, for the
+                // `endpoint.agent-times.v1` push (app/agent_times.rs).
+                terminal.agent_state_since_unix_ms = Some(crate::codex_sessions::now_unix_ms());
+                self.agent_times_view_rev = self.agent_times_view_rev.wrapping_add(1).max(1);
                 terminal.last_agent_completion_seq = (!suppress_completion
                     && is_completion_transition(&change))
                 .then_some(self.next_agent_state_change_seq);

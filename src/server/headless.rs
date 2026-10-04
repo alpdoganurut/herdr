@@ -73,6 +73,8 @@ use crate::server::socket_paths::{
 use crate::server::terminal_attach::paste_payload_for_runtime;
 
 pub mod agent_notices;
+/// Fork (sidebar v2): the `endpoint.agent-times.v1` push.
+pub mod agent_times;
 mod bootstrap;
 mod client_views;
 mod coordinator_notify;

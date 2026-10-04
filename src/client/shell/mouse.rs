@@ -2840,6 +2840,8 @@ impl ClientShellState {
                 self.collapsed_groups.remove(&key);
             }
         }
+        // Fork (sidebar v2): the list rows follow fold state.
+        self.sidebar_model.mark_dirty();
         outcome.repaint = true;
         self.persist_chrome_preferences(outcome);
     }

@@ -1149,6 +1149,8 @@ fn groups_render_headers_after_the_bucket_and_the_focused_group_never_folds() {
 
     state.collapsed_groups.insert(group_key("ws_2"));
     state.collapsed_groups.insert(group_key("ws_3"));
+    // Fold state changed outside the toggles: the list rows rebuild.
+    state.sidebar_model.mark_dirty();
     state.compose(106, 24).expect("composed frame");
     assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_2"]);
 

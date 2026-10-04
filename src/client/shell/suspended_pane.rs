@@ -15,6 +15,8 @@ use crate::protocol::{color_to_u32, CellData, FrameData};
 impl ClientShellState {
     /// Rebuild the suspended pane set from the active snapshot.
     pub(super) fn refresh_suspended_pane_ids(&mut self) {
+        // Fork (sidebar v2): every snapshot replacement passes here.
+        self.sidebar_model.mark_dirty();
         self.suspended_pane_ids.clear();
         if let Some(snapshot) = self.snapshot.as_deref() {
             self.suspended_pane_ids.extend(

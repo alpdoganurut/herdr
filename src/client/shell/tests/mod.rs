@@ -276,6 +276,7 @@ mod settings_agents;
 mod settings_backups;
 mod settings_browser;
 mod settings_closed;
+mod sidebar_active;
 mod sidebar_perf;
 mod startup_overlays;
 mod sticky_notifications;

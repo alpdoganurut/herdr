@@ -302,6 +302,7 @@ impl ClientShellState {
             }
         }
         self.teams.insert(endpoint_id.clone(), state);
+        self.sidebar_model.mark_dirty();
         true
     }
 

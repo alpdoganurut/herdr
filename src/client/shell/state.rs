@@ -22,6 +22,9 @@ pub(crate) struct ClientShellConfig {
     /// Fork: `ui.info_pane_width`, the info dock's width until one is
     /// dragged or stepped.
     pub(super) info_pane_width: u16,
+    /// Fork (sidebar v2): `ui.sidebar_active_agents`, the tabs sidebar's
+    /// Active agents block.
+    pub(super) sidebar_active_agents: bool,
     pub(super) tab_agent_glyphs: std::collections::BTreeMap<String, String>,
     pub(super) tab_agent_glyph_colors:
         std::collections::BTreeMap<String, Option<ratatui::style::Color>>,
@@ -197,6 +200,27 @@ pub(super) struct ShellHitMap {
     pub(super) release_notes_scrollbar: Rect,
     pub(super) release_notes_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) release_notes_max_scroll: usize,
+    /// Fork (sidebar v2): the tabs sidebar's Active agents header row.
+    #[allow(dead_code)]
+    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
+    pub(super) sidebar_active_header: Rect,
+    /// Fork (sidebar v2): the Active agents entry rows (rect, tab id).
+    #[allow(dead_code)]
+    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
+    pub(super) sidebar_active_rows: Vec<(Rect, String)>,
+    /// Fork (sidebar v2): the Active agents `+N more` / `show fewer` row.
+    #[allow(dead_code)]
+    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
+    pub(super) sidebar_active_more: Rect,
+    /// Fork (sidebar v2): the detail strip under the list.
+    #[allow(dead_code)]
+    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
+    pub(super) sidebar_detail: Rect,
+    /// Fork (sidebar v2): when a displayed duration next changes its text
+    /// (the minute clock's repaint).
+    #[allow(dead_code)]
+    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
+    pub(super) sidebar_clock_deadline: Option<std::time::Instant>,
 }
 
 #[derive(Clone)]
@@ -1341,6 +1365,22 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_error: Option<String>,
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
     pub(super) dismissed_product_announcement: Option<(String, String)>,
+    /// Fork (sidebar v2): the tabs sidebar's derived state (`sidebar_model.rs`).
+    pub(super) sidebar_model: super::sidebar_model::SidebarModel,
+    /// Fork (sidebar v2): the hovered tabs sidebar row (mouse motion).
+    pub(super) sidebar_hover: Option<super::sidebar_model::SidebarHover>,
+    /// Fork (sidebar v2): each endpoint's agent state times as its last
+    /// `endpoint.agent-times.v1` push listed them (`agent_times.rs`).
+    pub(super) agent_times: HashMap<ClientEndpointId, super::agent_times::ClientAgentTimesState>,
+    /// Fork (sidebar v2): the Active agents block folded (`None` until toggled; persisted).
+    pub(super) active_agents_folded: Option<bool>,
+    /// Fork (sidebar v2): the Active agents block shows past its cap (client-only).
+    pub(super) active_agents_expanded: bool,
+    /// Fork (sidebar v2): a tab id the tabs sidebar scrolls into view on the
+    /// next compose (taken there).
+    pub(super) sidebar_reveal_tab: Option<String>,
+    /// Fork (sidebar v2): test override of the sidebar's duration clock.
+    pub(super) sidebar_clock: Option<std::time::Instant>,
 }
 
 pub(super) fn product_announcement_state(
@@ -1404,6 +1444,7 @@ impl ClientShellState {
             .unwrap_or(config.info_pane_width)
             .max(super::info_dock::DOCK_MIN);
         let info_dock_width_manual = preferences.info_dock_width.is_some();
+        let active_agents_folded = preferences.active_agents_folded;
         if let Some(sort) = preferences.agent_panel_sort {
             config.agent_panel_sort = sort;
         }
@@ -1530,6 +1571,13 @@ impl ClientShellState {
             endpoint_error: None,
             endpoint_error_deadline: None,
             dismissed_product_announcement: None,
+            sidebar_model: super::sidebar_model::SidebarModel::new(),
+            sidebar_hover: None,
+            agent_times: HashMap::new(),
+            active_agents_folded,
+            active_agents_expanded: false,
+            sidebar_reveal_tab: None,
+            sidebar_clock: None,
         }
     }
 
@@ -1584,6 +1632,8 @@ impl ClientShellState {
         if !groups.remove(&key) {
             groups.insert(key);
         }
+        // Fork (sidebar v2): the list rows follow fold state.
+        self.sidebar_model.mark_dirty();
     }
 
     pub(super) fn navigation_workspace_entries(

@@ -271,6 +271,22 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) workspace_drop_indicator_row: Option<u16>,
     /// `tabs` layout: indicator row of an in-flight tab drag.
     pub(super) sidebar_tab_drop_row: Option<u16>,
+    /// Fork (sidebar v2): the tabs sidebar's derived state, ensured in
+    /// compose for the expanded tabs layout (`None` elsewhere: the sidebar
+    /// builds a one-off model).
+    pub(super) sidebar_model: Option<&'a super::sidebar_model::SidebarModel>,
+    /// Fork (sidebar v2): the hovered tabs sidebar row.
+    #[allow(dead_code)]
+    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
+    pub(super) sidebar_hover: Option<&'a super::sidebar_model::SidebarHover>,
+    /// Fork (sidebar v2): the clock durations are measured against.
+    #[allow(dead_code)]
+    // sidebar v2 S0b: read once the rows, Active block and detail strip draw
+    pub(super) now: std::time::Instant,
+    /// Fork (sidebar v2): a tab to scroll into view (taken by the tabs sidebar).
+    pub(super) sidebar_reveal_tab: &'a mut Option<String>,
+    /// Fork (sidebar v2): the Active agents block's view state.
+    pub(super) active_view: super::sidebar_model::ActiveView,
 }
 
 pub(super) fn render_shell(
@@ -421,6 +437,29 @@ pub(super) fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &s
         return;
     }
     buffer.set_stringn(x, y, text, width as usize, style);
+}
+
+/// Fork (sidebar v2): `text` in at most `width` cells at (`x`, `y`); text
+/// that does not fit keeps `width - 1` cells and ends with `…`. Allocates
+/// nothing.
+#[allow(dead_code)] // sidebar v2 S0b: read once the rows, Active block and detail strip draw
+pub(super) fn put_truncated(
+    buffer: &mut Buffer,
+    x: u16,
+    y: u16,
+    width: u16,
+    text: &str,
+    style: Style,
+) {
+    if width == 0 || y >= buffer.area.bottom() || x >= buffer.area.right() {
+        return;
+    }
+    if display_width(text) <= width {
+        buffer.set_stringn(x, y, text, usize::from(width), style);
+        return;
+    }
+    let (end_x, _) = buffer.set_stringn(x, y, text, usize::from(width - 1), style);
+    buffer.set_stringn(end_x, y, "…", 1, style);
 }
 
 pub(super) fn display_width(text: &str) -> u16 {

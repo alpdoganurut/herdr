@@ -71,6 +71,30 @@ pub struct Palette {
     pub teal: Color,
     /// Interrupted / warning states.
     pub peach: Color,
+    /// Fork (sidebar v2): background of the tabs sidebar's chrome rows
+    /// (toolbar, Active agents block, detail strip, status footer, menu
+    /// row); `None` falls back to `surface_dim` (`sidebar_chrome`).
+    pub sidebar_chrome_bg: Option<Color>,
+}
+
+#[allow(dead_code)] // sidebar v2 S0b: the chrome and hover bands use these in the row step
+impl Palette {
+    /// Fork (sidebar v2): the tabs sidebar's chrome background,
+    /// `sidebar_chrome_bg` or else `surface_dim`.
+    pub fn sidebar_chrome(&self) -> Color {
+        self.sidebar_chrome_bg.unwrap_or(self.surface_dim)
+    }
+
+    /// Fork (sidebar v2): the hovered sidebar row's band: `selection_bg`,
+    /// or `surface1` when `selection_bg` is `Reset` or the sidebar's own
+    /// background (it would not show).
+    pub fn sidebar_hover_bg(&self) -> Color {
+        if self.selection_bg == Color::Reset || self.selection_bg == self.sidebar_bg {
+            self.surface1
+        } else {
+            self.selection_bg
+        }
+    }
 }
 
 impl Palette {
@@ -96,6 +120,7 @@ impl Palette {
             blue: Color::Rgb(137, 180, 250),
             teal: Color::Rgb(148, 226, 213),
             peach: Color::Rgb(250, 179, 135),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -121,6 +146,7 @@ impl Palette {
             blue: Color::Rgb(30, 102, 245),
             teal: Color::Rgb(23, 146, 153),
             peach: Color::Rgb(254, 100, 11),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -146,6 +172,7 @@ impl Palette {
             blue: Color::Blue,
             teal: Color::Cyan,
             peach: Color::Yellow,
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -171,6 +198,7 @@ impl Palette {
             blue: Color::Rgb(122, 162, 247),
             teal: Color::Rgb(125, 207, 255),
             peach: Color::Rgb(255, 158, 100),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -196,6 +224,7 @@ impl Palette {
             blue: Color::Rgb(46, 125, 233),
             teal: Color::Rgb(17, 140, 116),
             peach: Color::Rgb(177, 92, 0),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -221,6 +250,7 @@ impl Palette {
             blue: Color::Rgb(139, 233, 253), // cyan-ish
             teal: Color::Rgb(139, 233, 253),
             peach: Color::Rgb(255, 184, 108),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -246,6 +276,7 @@ impl Palette {
             blue: Color::Rgb(129, 161, 193),
             teal: Color::Rgb(143, 188, 187),
             peach: Color::Rgb(208, 135, 112),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -271,6 +302,7 @@ impl Palette {
             blue: Color::Rgb(131, 165, 152),
             teal: Color::Rgb(142, 192, 124),
             peach: Color::Rgb(254, 128, 25),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -296,6 +328,7 @@ impl Palette {
             blue: Color::Rgb(7, 102, 120),
             teal: Color::Rgb(66, 123, 88),
             peach: Color::Rgb(175, 58, 3),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -321,6 +354,7 @@ impl Palette {
             blue: Color::Rgb(97, 175, 239),
             teal: Color::Rgb(86, 182, 194),
             peach: Color::Rgb(209, 154, 102),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -346,6 +380,7 @@ impl Palette {
             blue: Color::Rgb(64, 120, 242),
             teal: Color::Rgb(1, 132, 188),
             peach: Color::Rgb(152, 104, 1),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -371,6 +406,7 @@ impl Palette {
             blue: Color::Rgb(38, 139, 210),
             teal: Color::Rgb(42, 161, 152),
             peach: Color::Rgb(203, 75, 22),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -396,6 +432,7 @@ impl Palette {
             blue: Color::Rgb(38, 139, 210),
             teal: Color::Rgb(42, 161, 152),
             peach: Color::Rgb(203, 75, 22),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -421,6 +458,7 @@ impl Palette {
             blue: Color::Rgb(126, 156, 216),
             teal: Color::Rgb(127, 180, 202),
             peach: Color::Rgb(255, 160, 102),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -446,6 +484,7 @@ impl Palette {
             blue: Color::Rgb(77, 105, 155),
             teal: Color::Rgb(78, 140, 162),
             peach: Color::Rgb(204, 109, 0),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -471,6 +510,7 @@ impl Palette {
             blue: Color::Rgb(49, 116, 143),    // pine
             teal: Color::Rgb(156, 207, 216),   // foam
             peach: Color::Rgb(234, 154, 151),  // rose
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -496,6 +536,7 @@ impl Palette {
             blue: Color::Rgb(40, 105, 131),
             teal: Color::Rgb(86, 148, 159),
             peach: Color::Rgb(215, 130, 126),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -521,6 +562,7 @@ impl Palette {
             blue: Color::Rgb(176, 176, 176),
             teal: Color::Rgb(102, 221, 204),
             peach: Color::Rgb(255, 199, 153),
+            sidebar_chrome_bg: None,
         }
     }
 
@@ -609,6 +651,9 @@ impl Palette {
         if let Some(c) = &custom.peach {
             self.peach = parse_color(c);
         }
+        if let Some(c) = &custom.sidebar_chrome_bg {
+            self.sidebar_chrome_bg = Some(parse_color(c));
+        }
         self
     }
 
@@ -670,6 +715,9 @@ impl Palette {
         }
         if let Some(c) = &custom.peach {
             self.peach = parse_color(c);
+        }
+        if let Some(c) = &custom.sidebar_chrome_bg {
+            self.sidebar_chrome_bg = Some(parse_color(c));
         }
         self
     }
@@ -903,6 +951,10 @@ pub struct AppState {
     /// Fork voice: bumped whenever a pane's reported voice mode may have
     /// changed (`endpoint.voice.v1`); `0` until the first voice mode.
     pub(crate) voice_view_rev: u64,
+    /// Fork (sidebar v2): bumped by every agent state change and, once one
+    /// was seen, by moves and closes (`endpoint.agent-times.v1`); `0` until
+    /// the first state change.
+    pub(crate) agent_times_view_rev: u64,
     /// Fork (agents v2): the next look at agents-model closes in flight.
     pub(crate) agents_close_deadline: Option<std::time::Instant>,
 }
@@ -1202,6 +1254,7 @@ impl AppState {
             team_count: 0,
             teams_view_rev: 0,
             voice_view_rev: 0,
+            agent_times_view_rev: 0,
             agents_close_deadline: None,
         }
     }

@@ -20,6 +20,15 @@ fn restore_mode_bar(
 }
 
 impl ClientShellState {
+    /// Fork (sidebar v2): the Active agents block's view state.
+    fn active_view(&self) -> super::sidebar_model::ActiveView {
+        super::sidebar_model::ActiveView {
+            enabled: self.config.sidebar_active_agents,
+            folded: self.active_agents_folded.unwrap_or(false),
+            expanded: self.active_agents_expanded,
+        }
+    }
+
     fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
         let layout = self.layout(cols, rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
@@ -60,6 +69,7 @@ impl ClientShellState {
         let breathe_reset_rgb = self.breathe_reset_rgb();
         let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
+        let active_view = self.active_view();
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
@@ -102,6 +112,11 @@ impl ClientShellState {
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
             sidebar_tab_drop_row: None,
+            sidebar_model: None,
+            sidebar_hover: None,
+            now: self.sidebar_clock.unwrap_or_else(std::time::Instant::now),
+            sidebar_reveal_tab: &mut self.sidebar_reveal_tab,
+            active_view,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -231,6 +246,35 @@ impl ClientShellState {
         let breathe_reset_rgb = self.breathe_reset_rgb();
         let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
+        // Fork (sidebar v2): the tabs sidebar's derived state, rebuilt only
+        // after a data change (`sidebar_model.rs`).
+        let tabs_sidebar = self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+            && !self.sidebar_collapsed
+            && self.endpoints.len() == 1;
+        if tabs_sidebar {
+            self.sidebar_model.ensure(
+                snapshot,
+                &self.collapsed_groups,
+                super::voice::active_voice_of(
+                    &self.voice,
+                    &self.active_endpoint_id,
+                    Some(snapshot),
+                ),
+                super::agent_times::active_agent_times_of(
+                    &self.agent_times,
+                    &self.active_endpoint_id,
+                    Some(snapshot),
+                ),
+                (
+                    news_row.as_ref().and_then(|row| row.tab_id.as_deref()),
+                    coordinator_row
+                        .as_ref()
+                        .and_then(|row| row.tab_id.as_deref()),
+                ),
+                self.config.sidebar_active_agents,
+            );
+        }
+        let active_view = self.active_view();
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
         self.hits = render::render_shell(
             &mut buffer,
@@ -285,6 +329,11 @@ impl ClientShellState {
                     }) => Some(target.row),
                     _ => None,
                 },
+                sidebar_model: tabs_sidebar.then_some(&self.sidebar_model),
+                sidebar_hover: self.sidebar_hover.as_ref(),
+                now: self.sidebar_clock.unwrap_or_else(std::time::Instant::now),
+                sidebar_reveal_tab: &mut self.sidebar_reveal_tab,
+                active_view,
             },
         );
         // Fork: the info dock, into the chrome buffer; the pane surface blit

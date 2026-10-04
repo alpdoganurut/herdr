@@ -49,6 +49,7 @@ use ratatui::{
 };
 
 use super::render::{put_right_text, put_text, render_sidebar_background, ShellRenderState};
+use super::sidebar_model::{Row, SidebarModel};
 use super::*;
 
 const TOOLBAR_ROWS: u16 = 1;
@@ -96,63 +97,9 @@ pub(super) fn all_groups_folded(
     Some(keys.all(|key| collapsed_groups.contains(&key)))
 }
 
-/// One row of the tab list.
-enum Entry<'a> {
-    Header {
-        workspace: &'a crate::protocol::ClientShellWorkspace,
-        folded: bool,
-        members: usize,
-    },
-    Tab(&'a crate::protocol::ClientShellTab),
-}
-
 /// Whether the space at `index` is a group (everything but the first space).
 pub(super) fn is_group_index(index: usize) -> bool {
     index > 0
-}
-
-/// The rows to draw, honouring fold state except for the focused tab's group.
-/// One pass over the tabs, which the endpoint emits space by space. The
-/// pinned tabs (News, coordinator: `pinned_tab_ids`) are left out.
-fn entries<'a>(
-    snapshot: &'a ClientShellSnapshot,
-    collapsed_groups: &HashSet<String>,
-    pinned_tab_ids: &[&str],
-) -> Vec<Entry<'a>> {
-    let focused = focused_workspace(snapshot);
-    let position: HashMap<&str, usize> = snapshot
-        .workspaces
-        .iter()
-        .enumerate()
-        .map(|(index, workspace)| (workspace.workspace_id.as_str(), index))
-        .collect();
-    let mut members: Vec<Vec<&crate::protocol::ClientShellTab>> =
-        vec![Vec::new(); snapshot.workspaces.len()];
-    for tab in &snapshot.tabs {
-        if pinned_tab_ids.contains(&tab.tab_id.as_str()) {
-            continue;
-        }
-        if let Some(index) = position.get(tab.workspace_id.as_str()) {
-            members[*index].push(tab);
-        }
-    }
-    let mut rows = Vec::with_capacity(snapshot.tabs.len() + snapshot.workspaces.len());
-    for (index, (workspace, tabs)) in snapshot.workspaces.iter().zip(members).enumerate() {
-        let mut folded = false;
-        if is_group_index(index) {
-            folded = focused != Some(workspace.workspace_id.as_str())
-                && collapsed_groups.contains(&group_key(&workspace.workspace_id));
-            rows.push(Entry::Header {
-                workspace,
-                folded,
-                members: tabs.len(),
-            });
-        }
-        if !folded {
-            rows.extend(tabs.into_iter().map(Entry::Tab));
-        }
-    }
-    rows
 }
 
 /// The coordinator's part of the `tabs` sidebar: its pinned row
@@ -199,10 +146,6 @@ pub(super) fn render_tab_sidebar_with(
     );
 
     let status_lines = status_footer_lines(snapshot);
-    // Rows left under the toolbar and above the menu row; the status keeps
-    // one of them for the list once it has more than one line, and the
-    // pinned rows (Browser, News, coordinator) take one each while they show.
-    let available = content.height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS);
     let pinned: Vec<PinnedRow<'_>> = state
         .browser_row
         .as_ref()
@@ -211,25 +154,49 @@ pub(super) fn render_tab_sidebar_with(
         .chain(state.news_row.as_ref().map(PinnedRow::News))
         .chain(coordinator.row.map(PinnedRow::Coordinator))
         .collect();
-    let pinned = pinned_rows_that_fit(pinned, available.saturating_sub(1));
-    let news_rows = pinned.len() as u16;
-    let available = available.saturating_sub(news_rows);
-    let status_rows = (status_lines.len().min(usize::from(u16::MAX)) as u16)
-        .min(available.saturating_sub(1).max(1))
-        .min(available);
-    let body = Rect::new(
-        content.x,
-        content.y.saturating_add(TOOLBAR_ROWS),
-        content.width,
-        content
-            .height
-            .saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS + status_rows + news_rows),
+    // The pinned tabs (News, coordinator) leave the list.
+    let pinned_tab_ids = (
+        state
+            .news_row
+            .as_ref()
+            .and_then(|row| row.tab_id.as_deref()),
+        coordinator.row.and_then(|row| row.tab_id.as_deref()),
     );
+    // Fork (sidebar v2): rows and per-tab facts come from the model compose
+    // ensured; a caller without one (tests) gets a one-off build.
+    let one_off;
+    let model = match state.sidebar_model {
+        Some(model) => model,
+        None => {
+            one_off = SidebarModel::built(
+                snapshot,
+                state.collapsed_groups,
+                state.voice,
+                pinned_tab_ids,
+                config.sidebar_active_agents,
+            );
+            &one_off
+        }
+    };
+    let active_rows = super::tab_sidebar_active::active_block_rows(
+        model,
+        state.active_view,
+        super::tab_sidebar_active::active_cap(content.height),
+    );
+    let plan = plan_layout(
+        content,
+        u16::try_from(pinned.len()).unwrap_or(u16::MAX),
+        status_lines.len(),
+        active_rows,
+        super::tab_sidebar_detail::detail_lines(content.height),
+    );
+    let pinned = pinned_rows_that_fit(pinned, plan.pinned.height);
+    let body = plan.list;
     // Top-down from the list's bottom edge: Browser, News, coordinator.
     for (offset, row) in pinned.iter().enumerate() {
         let rect = Rect::new(
             content.x,
-            body.bottom().saturating_add(offset as u16),
+            plan.pinned.y.saturating_add(offset as u16),
             content.width,
             1,
         );
@@ -248,76 +215,95 @@ pub(super) fn render_tab_sidebar_with(
             }
         }
     }
-    if status_rows > 0 {
+    if !plan.active.is_empty() {
+        super::tab_sidebar_active::render_active_block(
+            buffer,
+            plan.active,
+            snapshot,
+            model,
+            state.active_view,
+            config,
+            state,
+            hits,
+        );
+    }
+    if !plan.detail.is_empty() {
+        super::tab_sidebar_detail::render_detail_strip(
+            buffer,
+            plan.detail,
+            snapshot,
+            model,
+            config,
+            state,
+            hits,
+        );
+    }
+    if plan.footer.height > 0 {
         render_tab_status_footer(
             buffer,
             content,
-            body.bottom().saturating_add(news_rows),
-            &status_lines[..usize::from(status_rows)],
+            plan.footer.y,
+            &status_lines[..usize::from(plan.footer.height).min(status_lines.len())],
             palette,
         );
     }
     hits.agent_body = body;
     // The space drag machinery reads these as the list bounds.
     hits.workspace_body = body;
-    let footer_y = content.bottom().saturating_sub(1);
+    let footer_y = plan.menu.y;
     hits.new_workspace = Rect::new(content.x, footer_y, 0, 1);
 
-    // One pass over the agents; rows then look their glyph key, running
-    // subagent count and voice mode (fork) up by tab id.
-    let mut glyph_keys = std::collections::HashMap::<&str, &str>::new();
-    let mut tab_subagents = std::collections::HashMap::<&str, u32>::new();
-    // Fork: no lookups while no pane is in voice mode; the map allocates
-    // only for a tab that is.
-    let voice = state.voice.filter(|voice| !voice.panes.is_empty());
-    let mut tab_voice =
-        std::collections::HashMap::<&str, crate::api::schema::AgentVoiceMode>::new();
-    for agent in &snapshot.agents {
-        glyph_keys.insert(
-            agent.tab_id.as_str(),
-            agent.agent.as_deref().unwrap_or("other"),
-        );
-        if agent.subagents > 0 && shows_subagents(agent.agent_status) {
-            let count = tab_subagents.entry(agent.tab_id.as_str()).or_default();
-            *count = count.saturating_add(agent.subagents);
-        }
-        if let Some(voice) = voice.and_then(|voice| voice.voice_of(&agent.pane_id)) {
-            let current = tab_voice.get(agent.tab_id.as_str()).copied();
-            if let Some(louder) = super::voice::louder(current, voice) {
-                tab_voice.insert(agent.tab_id.as_str(), louder);
-            }
-        }
-    }
-    let pinned_tab_ids: Vec<&str> = state
-        .news_row
-        .as_ref()
-        .and_then(|row| row.tab_id.as_deref())
-        .into_iter()
-        .chain(coordinator.row.and_then(|row| row.tab_id.as_deref()))
-        .collect();
-    let rows = entries(snapshot, state.collapsed_groups, &pinned_tab_ids);
-    let row_heights = vec![1u16; rows.len()];
-    let gaps = vec![0u16; rows.len()];
+    let rows = &model.rows;
+    let row_heights = &model.row_heights;
+    let gaps = &model.no_gaps;
+    let list_tab = |row: &Row| match row {
+        Row::Tab { tab } => snapshot.tabs.get(*tab as usize),
+        Row::Header { .. } => None,
+    };
     let mut metrics =
-        super::scroll::list_scroll_metrics(&row_heights, &gaps, body.height, *state.agent_scroll);
+        super::scroll::list_scroll_metrics(row_heights, gaps, body.height, *state.agent_scroll);
     if !body.is_empty() && std::mem::take(state.reveal_focused_workspace) {
         if let Some(target) = rows
             .iter()
-            .position(|row| matches!(row, Entry::Tab(tab) if tab.focused))
+            .position(|row| list_tab(row).is_some_and(|tab| tab.focused))
         {
             *state.agent_scroll = super::scroll::list_scroll_start_to_reveal(
-                &row_heights,
-                &gaps,
+                row_heights,
+                gaps,
                 body.height,
                 *state.agent_scroll,
                 target,
             );
             metrics = super::scroll::list_scroll_metrics(
-                &row_heights,
-                &gaps,
+                row_heights,
+                gaps,
                 body.height,
                 *state.agent_scroll,
             );
+        }
+    }
+    // Fork (sidebar v2): a tab named by id (an Active agents jump) is
+    // revealed before the server's focus change lands.
+    if !body.is_empty() {
+        if let Some(tab_id) = state.sidebar_reveal_tab.take() {
+            if let Some(target) = rows
+                .iter()
+                .position(|row| list_tab(row).is_some_and(|tab| tab.tab_id == tab_id))
+            {
+                *state.agent_scroll = super::scroll::list_scroll_start_to_reveal(
+                    row_heights,
+                    gaps,
+                    body.height,
+                    *state.agent_scroll,
+                    target,
+                );
+                metrics = super::scroll::list_scroll_metrics(
+                    row_heights,
+                    gaps,
+                    body.height,
+                    *state.agent_scroll,
+                );
+            }
         }
     }
     hits.agent_max_scroll = metrics.max_offset_from_bottom;
@@ -334,18 +320,28 @@ pub(super) fn render_tab_sidebar_with(
             break;
         }
         let rect = Rect::new(body.x, y, content_width, 1);
-        match row {
-            Entry::Header {
+        match *row {
+            Row::Header {
                 workspace,
                 folded,
                 members,
             } => {
+                let Some(workspace) = snapshot.workspaces.get(workspace as usize) else {
+                    continue;
+                };
                 let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
                 let team = coordinator
                     .teams
                     .and_then(|teams| teams.team(&workspace.workspace_id));
                 render_group_header(
-                    buffer, rect, workspace, *folded, *members, dragged, team, config,
+                    buffer,
+                    rect,
+                    workspace,
+                    folded,
+                    usize::from(members),
+                    dragged,
+                    team,
+                    config,
                 );
                 hits.sidebar_groups
                     .push((rect, workspace.workspace_id.clone()));
@@ -357,18 +353,24 @@ pub(super) fn render_tab_sidebar_with(
                     group_toggle: None,
                 });
             }
-            Entry::Tab(tab) => {
-                let glyph_key = glyph_keys
-                    .get(tab.tab_id.as_str())
-                    .copied()
-                    .unwrap_or("shell");
+            Row::Tab { tab: index } => {
+                let (Some(tab), Some(facts)) =
+                    (snapshot.tabs.get(index as usize), model.tab(index))
+                else {
+                    continue;
+                };
+                let glyph_key = facts
+                    .primary_agent
+                    .and_then(|agent| snapshot.agents.get(agent as usize))
+                    .map_or("shell", |agent| agent.agent.as_deref().unwrap_or("other"));
                 let glyph = crate::config::tab_agent_glyph(&config.tab_agent_glyphs, glyph_key);
                 // Only the focused row wears the agent's brand color.
                 let glyph_color = tab.focused.then(|| {
                     crate::config::tab_agent_glyph_color(&config.tab_agent_glyph_colors, glyph_key)
                 });
-                let subagents = tab_subagents.get(tab.tab_id.as_str()).copied().unwrap_or(0);
-                let mut markers = reminder_markers(tab, state, &config.palette);
+                let subagents = facts.subagents;
+                let mut markers: Vec<(&str, ratatui::style::Color)> =
+                    reminder_markers(tab, state, &config.palette);
                 if coordinator
                     .teams
                     .is_some_and(|teams| teams.is_member_tab(&tab.tab_id))
@@ -378,8 +380,8 @@ pub(super) fn render_tab_sidebar_with(
                 }
                 // Fork: an agent in voice mode leads them all (red while it
                 // listens, dim while muted).
-                if let Some(voice) = tab_voice.get(tab.tab_id.as_str()) {
-                    markers.insert(0, super::voice::voice_mark(*voice, &config.palette));
+                if let Some(voice) = facts.voice {
+                    markers.insert(0, super::voice::voice_mark(voice, config));
                 }
                 // Fork: a working tab's glyph breathes (`breathe.rs`).
                 let breathe = (tab.agent_status == crate::api::schema::AgentStatus::Working
@@ -480,6 +482,81 @@ pub(super) fn render_tab_sidebar_with(
         Style::default().fg(palette.overlay0),
     );
     coordinator_rect
+}
+
+/// Fork (sidebar v2): the tabs sidebar's rows, top to bottom (`plan_layout`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct SidebarPlan {
+    pub(super) toolbar: Rect,
+    /// The Active agents block (`tab_sidebar_active.rs`).
+    pub(super) active: Rect,
+    /// The scrolling list.
+    pub(super) list: Rect,
+    /// The pinned rows (Browser, News, coordinator).
+    pub(super) pinned: Rect,
+    /// The detail strip (`tab_sidebar_detail.rs`).
+    pub(super) detail: Rect,
+    /// The `ui.tab_bar_right` status rows.
+    pub(super) footer: Rect,
+    pub(super) menu: Rect,
+}
+
+/// The height budget of `content` (pure): `pinned_wanted` pinned rows,
+/// `status_lines` footer lines, and the Active block and detail strip rows
+/// their modules ask for. Rows left under the toolbar and above the menu
+/// row; the status keeps one of them for the list once it has more than one
+/// line, and the pinned rows (Browser, News, coordinator) take one each
+/// while they show (`pinned_rows_that_fit` picks which in
+/// `plan.pinned.height`).
+pub(super) fn plan_layout(
+    content: Rect,
+    pinned_wanted: u16,
+    status_lines: usize,
+    active_rows: u16,
+    detail_lines: u16,
+) -> SidebarPlan {
+    let available = content.height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS);
+    let pinned_rows = pinned_wanted.min(available.saturating_sub(1));
+    let available = available.saturating_sub(pinned_rows);
+    let status_rows = (status_lines.min(usize::from(u16::MAX)) as u16)
+        .min(available.saturating_sub(1).max(1))
+        .min(available);
+    let active_rows = active_rows.min(available.saturating_sub(status_rows));
+    let detail_rows = detail_lines.min(available.saturating_sub(status_rows + active_rows));
+    let list_height = content.height.saturating_sub(
+        TOOLBAR_ROWS + FOOTER_ROWS + status_rows + pinned_rows + active_rows + detail_rows,
+    );
+    let toolbar = Rect::new(
+        content.x,
+        content.y,
+        content.width,
+        TOOLBAR_ROWS.min(content.height),
+    );
+    let active = Rect::new(
+        content.x,
+        content.y.saturating_add(TOOLBAR_ROWS),
+        content.width,
+        active_rows,
+    );
+    let list = Rect::new(content.x, active.bottom(), content.width, list_height);
+    let pinned = Rect::new(content.x, list.bottom(), content.width, pinned_rows);
+    let detail = Rect::new(content.x, pinned.bottom(), content.width, detail_rows);
+    let footer = Rect::new(content.x, detail.bottom(), content.width, status_rows);
+    let menu = Rect::new(
+        content.x,
+        content.bottom().saturating_sub(FOOTER_ROWS),
+        content.width,
+        FOOTER_ROWS.min(content.height),
+    );
+    SidebarPlan {
+        toolbar,
+        active,
+        list,
+        pinned,
+        detail,
+        footer,
+        menu,
+    }
 }
 
 /// The pinned rows under the list, in drawing order.
@@ -1044,18 +1121,6 @@ fn reminder_markers(
     markers
 }
 
-/// Whether a status gives way to the subagent icon while subagents run: a
-/// working, idle or finished agent (background agents outlive the turn).
-/// Blocked keeps its icon (needing you outranks), and suspended or unknown
-/// agents have none.
-fn shows_subagents(status: crate::api::schema::AgentStatus) -> bool {
-    use crate::api::schema::AgentStatus;
-    matches!(
-        status,
-        AgentStatus::Working | AgentStatus::Idle | AgentStatus::Done
-    )
-}
-
 /// The status icon of a tab whose agent has subagents running.
 pub(super) const TAB_SUBAGENTS_ICON: &str = "\u{26AD}"; // ⚭ (two interlocking rings)
 
@@ -1119,11 +1184,8 @@ fn render_tab_row(
     // An agent with Claude Code subagents running (in the background too)
     // shows the subagent icon in its status color, in either indicator style:
     // yellow working, green idle, teal finished.
-    let icon = if shows_subagents(tab.agent_status) && subagents > 0 {
-        TAB_SUBAGENTS_ICON
-    } else {
-        status_icon(tab.agent_status, config.status_indicators)
-    };
+    let icon =
+        super::sidebar_model::tab_row_icon(tab.agent_status, subagents, config.status_indicators);
     // " <icon> <label>...<glyph> ": the agent glyph is right-aligned with a one
     // cell margin and the label gives way to it. A tab with reminders shows
     // their markers just before the glyph.

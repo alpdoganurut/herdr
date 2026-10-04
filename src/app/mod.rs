@@ -35,6 +35,8 @@ mod api;
 pub(crate) use api::test_support::exiting_test_command;
 mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
+/// Fork (sidebar v2): when each agent entered its state (`endpoint.agent-times.v1`).
+pub(crate) mod agent_times;
 mod creation;
 mod custom_commands;
 mod git_refresh;
@@ -606,6 +608,7 @@ impl App {
             team_count: 0,
             teams_view_rev: 0,
             voice_view_rev: 0,
+            agent_times_view_rev: 0,
             agents_close_deadline: None,
         };
 

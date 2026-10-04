@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 mod actions;
 mod agent_cards;
 mod agent_sidebar;
+/// Fork (sidebar v2): agent state times (`endpoint.agent-times.v1`).
+mod agent_times;
 mod aggregate_navigation;
 mod machine_diagnostics;
 mod workspace_navigation;
@@ -51,12 +53,18 @@ mod settings_coordinator;
 mod settings_daily_time;
 mod settings_news;
 mod settings_sounds;
+/// Fork (sidebar v2): the tabs sidebar's derived state.
+mod sidebar_model;
 mod state;
 mod surface_patch;
 mod suspended_pane;
 mod tab_color;
 mod tab_remind_menu;
 mod tab_sidebar;
+/// Fork (sidebar v2): the tabs sidebar's Active agents block.
+mod tab_sidebar_active;
+/// Fork (sidebar v2): the tabs sidebar's detail strip.
+mod tab_sidebar_detail;
 mod team_overlay;
 mod teams;
 mod text_editor;

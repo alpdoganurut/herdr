@@ -107,6 +107,12 @@
           "description": "Override the surface_dim color token on top of the base theme. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
+          "key": "theme.custom.sidebar_chrome_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the background of the tabs sidebar's toolbar, active-agents block, detail strip, status footer and menu row. Defaults to surface_dim. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
           "key": "theme.custom.overlay0",
           "type": "color",
           "default": "unset",
@@ -221,6 +227,12 @@
           "description": "Override the surface_dim color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
+          "key": "theme.custom.light.sidebar_chrome_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the background of the tabs sidebar's toolbar, active-agents block, detail strip, status footer and menu row when auto_switch selects a light appearance. Defaults to surface_dim. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
           "key": "theme.custom.light.overlay0",
           "type": "color",
           "default": "unset",
@@ -333,6 +345,12 @@
           "type": "color",
           "default": "unset",
           "description": "Override the surface_dim color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.sidebar_chrome_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the background of the tabs sidebar's toolbar, active-agents block, detail strip, status footer and menu row when auto_switch selects a dark appearance. Defaults to surface_dim. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
           "key": "theme.custom.dark.overlay0",
@@ -967,7 +985,7 @@
           "key": "ui.tab_agent_glyphs",
           "type": "table",
           "default": "{ claude = \"⧆\", codex = \"⧇\", other = \"⍾\", shell = \"⧅\" }",
-          "description": "Glyph at the right edge of a tab row in the \"tabs\" sidebar layout, keyed by canonical agent id, plus \"other\" (any other agent) and \"shell\" (no agent). Keys you omit keep their defaults."
+          "description": "Glyph at the right edge of a tab row in the \"tabs\" sidebar layout, keyed by canonical agent id, plus \"other\" (any other agent) and \"shell\" (no agent). Keys you omit keep their defaults. The keys \"voice_live\" and \"voice_muted\" replace the voice-mode mark (a live or muted microphone) of a tab whose agent is in voice mode."
         },
         {
           "key": "ui.tab_agent_glyph_colors",
@@ -992,6 +1010,12 @@
           "type": "integer",
           "default": "44",
           "description": "Default width in columns of a tab's info pane (keys.toggle_info_pane) until you drag its divider; a dragged width is remembered by the client. 28 through 120; out-of-range values are clamped with a config warning. The pane never takes more than 70% of the window and always leaves the terminal 30 columns; a pane surface narrower than 58 columns shows no pane until the window widens."
+        },
+        {
+          "key": "ui.sidebar_active_agents",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show the Active agents block above the tab list in the \"tabs\" sidebar layout: blocked agents, agents in voice mode, working agents and finished agents you have not looked at, each with its time in that state. The block hides itself while nothing is active. Settings → indicators toggles it too."
         },
         {
           "key": "ui.mobile_width_threshold",
