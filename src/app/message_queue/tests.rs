@@ -490,3 +490,44 @@ fn envelope_ids_are_read_from_the_header_only() {
     assert_eq!(envelope_id("hello [herdr+ message mab12"), None);
     assert_eq!(envelope_id("[herdr+ message NOPE]"), None);
 }
+
+#[tokio::test]
+async fn a_target_in_voice_mode_gets_its_messages_queued_until_voice_mode_ends() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    let pane_id = pane(&app);
+    app.apply_agent_voice(
+        pane_id,
+        crate::detect::AgentVoice::Off,
+        crate::detect::AgentVoice::Live,
+    );
+    let reply = send(&mut app, "ma1", "hi");
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    assert_eq!(reply["result"]["reason"], "voice mode");
+    assert!(
+        typed(&mut rx).is_empty(),
+        "never typed into a voice session"
+    );
+
+    // Muted is still voice mode: held.
+    app.apply_agent_voice(
+        pane_id,
+        crate::detect::AgentVoice::Live,
+        crate::detect::AgentVoice::Muted,
+    );
+    let t0 = Instant::now();
+    app.message_queue_pass(t0, now_unix());
+    assert!(!app.message_queue_pass(t0 + SETTLE, now_unix()));
+    assert!(typed(&mut rx).is_empty(), "never typed while muted either");
+    assert_eq!(app.message_queue.entries.len(), 1);
+
+    // Voice mode off: the queue is due again and the message goes in.
+    app.apply_agent_voice(
+        pane_id,
+        crate::detect::AgentVoice::Muted,
+        crate::detect::AgentVoice::Off,
+    );
+    app.message_queue_pass(t0 + SETTLE, now_unix());
+    assert!(app.message_queue_pass(t0 + SETTLE * 2, now_unix()));
+    assert!(typed(&mut rx).contains("hi"));
+}

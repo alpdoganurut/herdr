@@ -220,6 +220,41 @@ class AgentDetectionManifestCheckTests(unittest.TestCase):
             with self.assertRaisesRegex(check.CheckError, "requires min_engine_version 3"):
                 check.load_manifest_dir(bundled, engine_version=3)
 
+    def test_signal_rules_require_engine_four_and_known_neutral_values(self):
+        signal = 'signal = "voice"\nvalue = "live"\ncontains = ["ready"]'
+        with tempfile.TemporaryDirectory() as tmp:
+            bundled = Path(tmp) / "bundled"
+            bundled.mkdir()
+            content = (
+                manifest("codex", "2026.06.10.1")
+                .replace('state = "idle"\n', "")
+                .replace('contains = ["ready"]', signal)
+            )
+            (bundled / "codex.toml").write_text(content)
+            with self.assertRaisesRegex(check.CheckError, "requires min_engine_version 4"):
+                check.load_manifest_dir(bundled, engine_version=4)
+            (bundled / "codex.toml").write_text(
+                content.replace("min_engine_version = 1", "min_engine_version = 4")
+            )
+            check.load_manifest_dir(bundled, engine_version=4)
+
+        base = {"id": "voice", "contains": ["ready"]}
+        check.validate_rule(
+            Path("test.toml"), 0, {**base, "signal": "voice", "value": "muted"}, {"gates": 0, "matchers": 0}
+        )
+        for invalid in (
+            {"signal": "voice"},
+            {"signal": "voice", "value": "loud"},
+            {"signal": "camera", "value": "live"},
+            {"signal": "voice", "value": "live", "state": "idle"},
+            {"signal": "voice", "value": "live", "visible_idle": True},
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(check.CheckError):
+                    check.validate_rule(
+                        Path("test.toml"), 0, {**base, **invalid}, {"gates": 0, "matchers": 0}
+                    )
+
     def test_top_non_empty_lines_requires_canonical_positive_bounded_count(self):
         base_rule = {
             "id": "test",

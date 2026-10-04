@@ -2452,6 +2452,7 @@ mod tests {
             state: crate::detect::AgentState::Blocked,
             visible_blocker: true,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });

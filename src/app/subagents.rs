@@ -382,6 +382,7 @@ mod tests {
                 state,
                 visible_blocker: state == AgentState::Blocked,
                 visible_working: state == AgentState::Working,
+                voice: crate::detect::AgentVoice::Off,
                 process_exited: false,
                 observed_at: std::time::Instant::now(),
             })

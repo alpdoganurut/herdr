@@ -1,7 +1,7 @@
 id = "codex"
-version = "2026.09.22.1"
-min_engine_version = 3
-updated_at = "2026-09-22T00:00:00Z"
+version = "2026.10.04.1"
+min_engine_version = 4
+updated_at = "2026-10-04T00:00:00Z"
 
 [[rules]]
 id = "osc_title_blocked"
@@ -38,8 +38,20 @@ priority = 950
 region = "top_non_empty_lines(20)"
 visible_blocker = true
 all = [
-  { regex = ['\A> You are in [^\r\n]+(?:\r?\n|$)'] },
-  { regex = ['(?s)Do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+directory\?'] },
+  { any = [
+    { regex = ['\A> You are in [^\r\n]+(?:\r?\n|$)'] },
+    { contains = ["Folder access"] },
+  ] },
+  { any = [
+    { regex = ['(?s)Do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+directory\?'] },
+    { all = [
+      { contains = ["Trust this folder?", "Codex can read, edit, and run files here"] },
+      { any = [
+        { contains = ["Trust and continue"] },
+        { contains = ["enter continue"] },
+      ] },
+    ] },
+  ] },
 ]
 
 [[rules]]
@@ -104,3 +116,29 @@ not = [
   { regex = ['(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)'] },
   { contains = ["Action Required"] },
 ]
+
+# Fork: voice mode (codex-cli 0.160, features in_app_dictation and
+# realtime_conversation). While a voice session is open Codex draws a status
+# line and a level meter inside the composer box, right above the prompt:
+#    voice ● listening        ctrl+x mute     /voice stop
+#      mic ▁▁▁▁▁▁  codex ▁▁▁▁▁▁
+# Both lines must sit directly above the current prompt marker (at most a
+# few lines between), so transcript text never matches. The glyph after
+# `voice` decides: ◌ is muted, any other glyph is live, whatever the word.
+# The right-aligned key hints are not required (a narrow pane may drop them).
+# Signal rules never change the agent state: a listening Codex stays idle.
+[[rules]]
+id = "voice_muted"
+signal = "voice"
+value = "muted"
+priority = 200
+region = "before_current_prompt_marker"
+regex = ['(?m)^[ \t]*voice[ \t]+◌[ \t]+\S[^\r\n]*\r?\n[ \t]*mic[ \t]+\S[^\r\n]*[ \t]codex[ \t]+\S[^\r\n]*(?:\r?\n[^\r\n]*){0,3}?\s*\z']
+
+[[rules]]
+id = "voice_live"
+signal = "voice"
+value = "live"
+priority = 200
+region = "before_current_prompt_marker"
+regex = ['(?m)^[ \t]*voice[ \t]+[^\s◌][ \t]+\S[^\r\n]*\r?\n[ \t]*mic[ \t]+\S[^\r\n]*[ \t]codex[ \t]+\S[^\r\n]*(?:\r?\n[^\r\n]*){0,3}?\s*\z']

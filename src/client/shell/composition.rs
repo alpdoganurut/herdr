@@ -79,6 +79,11 @@ impl ClientShellState {
                 &self.active_endpoint_id,
                 self.snapshot.as_deref(),
             ),
+            voice: super::voice::active_voice_of(
+                &self.voice,
+                &self.active_endpoint_id,
+                self.snapshot.as_deref(),
+            ),
             remote_collapsed_groups: &self.remote_collapsed_groups,
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
@@ -248,6 +253,11 @@ impl ClientShellState {
                 coordinator_row,
                 teams: super::teams::active_teams_of(
                     &self.teams,
+                    &self.active_endpoint_id,
+                    self.snapshot.as_deref(),
+                ),
+                voice: super::voice::active_voice_of(
+                    &self.voice,
                     &self.active_endpoint_id,
                     self.snapshot.as_deref(),
                 ),

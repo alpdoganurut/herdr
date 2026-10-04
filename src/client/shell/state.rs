@@ -1309,6 +1309,9 @@ pub(crate) struct ClientShellState {
     /// Fork: each endpoint's teams as its last `endpoint.teams.v1` push
     /// listed them (`teams.rs`).
     pub(super) teams: HashMap<ClientEndpointId, super::teams::ClientTeamsState>,
+    /// Fork: each endpoint's panes in voice mode as its last
+    /// `endpoint.voice.v1` push listed them (`voice.rs`).
+    pub(super) voice: HashMap<ClientEndpointId, super::voice::ClientVoiceState>,
     /// Fork: the info dock; `None` until the first toggle (lazy).
     pub(super) info_dock: Option<Box<super::info_dock::ClientInfoDockState>>,
     /// Fork: the info dock's width (`ui.info_pane_width` until dragged).
@@ -1507,6 +1510,7 @@ impl ClientShellState {
             browser: super::browser::ClientBrowserState::default(),
             coordinator: super::coordinator::ClientCoordinatorState::default(),
             teams: HashMap::new(),
+            voice: HashMap::new(),
             info_dock: None,
             info_dock_width,
             info_dock_width_manual,

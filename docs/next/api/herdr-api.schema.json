@@ -11794,6 +11794,17 @@
               },
               "type": "object"
             },
+            "voice": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentVoiceMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fork: the agent's voice mode (`live`, `muted`), read from its screen;\nabsent while voice mode is off. Automatic typing (agent messages,\ncoordinator wake-ups) waits while it is present."
+            },
             "workspace_id": {
               "type": "string"
             }
@@ -12123,6 +12134,26 @@
             "failed"
           ],
           "type": "object"
+        },
+        "AgentVoiceMode": {
+          "description": "Fork: an agent's voice mode, read from its screen (detection signal\n`voice`). Absent while voice mode is off.",
+          "oneOf": [
+            {
+              "const": "live",
+              "description": "A voice session with the microphone open.",
+              "type": "string"
+            },
+            {
+              "const": "muted",
+              "description": "A voice session with the microphone muted.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A mode this client does not know.",
+              "type": "string"
+            }
+          ]
         },
         "AgentsAccess": {
           "description": "What a caller may do to a tab.",

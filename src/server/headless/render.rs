@@ -462,6 +462,8 @@ impl HeadlessServer {
         let mut agent_notice_frames = super::agent_notices::PassFrames::default();
         // Fork: teams, projected and framed at most once per pass.
         let mut teams_frame = super::teams::PassFrame::default();
+        // Fork: panes in voice mode, likewise.
+        let mut voice_frame = super::voice::PassFrame::default();
         for (client_id, (cols, rows), cell_size, _is_foreground, mode) in render_targets {
             #[cfg(unix)]
             if matches!(mode, ClientConnectionMode::TerminalObserve { .. })
@@ -600,6 +602,16 @@ impl HeadlessServer {
                     &mut teams_frame,
                 ) {
                     warn!(client_id, err = %err, "failed to send teams");
+                    broken_clients.push(client_id);
+                    continue;
+                }
+                if let Err(err) = super::voice::sync_client(
+                    &self.app,
+                    &self.client_shell_boot_id,
+                    client,
+                    &mut voice_frame,
+                ) {
+                    warn!(client_id, err = %err, "failed to send voice modes");
                     broken_clients.push(client_id);
                     continue;
                 }

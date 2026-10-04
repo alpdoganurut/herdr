@@ -263,10 +263,15 @@ pub(super) fn render_tab_sidebar_with(
     let footer_y = content.bottom().saturating_sub(1);
     hits.new_workspace = Rect::new(content.x, footer_y, 0, 1);
 
-    // One pass over the agents; rows then look their glyph key and running
-    // subagent count up by tab id.
+    // One pass over the agents; rows then look their glyph key, running
+    // subagent count and voice mode (fork) up by tab id.
     let mut glyph_keys = std::collections::HashMap::<&str, &str>::new();
     let mut tab_subagents = std::collections::HashMap::<&str, u32>::new();
+    // Fork: no lookups while no pane is in voice mode; the map allocates
+    // only for a tab that is.
+    let voice = state.voice.filter(|voice| !voice.panes.is_empty());
+    let mut tab_voice =
+        std::collections::HashMap::<&str, crate::api::schema::AgentVoiceMode>::new();
     for agent in &snapshot.agents {
         glyph_keys.insert(
             agent.tab_id.as_str(),
@@ -275,6 +280,12 @@ pub(super) fn render_tab_sidebar_with(
         if agent.subagents > 0 && shows_subagents(agent.agent_status) {
             let count = tab_subagents.entry(agent.tab_id.as_str()).or_default();
             *count = count.saturating_add(agent.subagents);
+        }
+        if let Some(voice) = voice.and_then(|voice| voice.voice_of(&agent.pane_id)) {
+            let current = tab_voice.get(agent.tab_id.as_str()).copied();
+            if let Some(louder) = super::voice::louder(current, voice) {
+                tab_voice.insert(agent.tab_id.as_str(), louder);
+            }
         }
     }
     let pinned_tab_ids: Vec<&str> = state
@@ -364,6 +375,11 @@ pub(super) fn render_tab_sidebar_with(
                 {
                     // A member's dim mark leads the markers.
                     markers.insert(0, (super::teams::TEAM_MARK, config.palette.overlay0));
+                }
+                // Fork: an agent in voice mode leads them all (red while it
+                // listens, dim while muted).
+                if let Some(voice) = tab_voice.get(tab.tab_id.as_str()) {
+                    markers.insert(0, super::voice::voice_mark(*voice, &config.palette));
                 }
                 // Fork: a working tab's glyph breathes (`breathe.rs`).
                 let breathe = (tab.agent_status == crate::api::schema::AgentStatus::Working

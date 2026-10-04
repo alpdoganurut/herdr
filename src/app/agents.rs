@@ -421,6 +421,7 @@ impl App {
             interactive_ready: terminal.managed_agent_interactive_ready(),
             state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
             subagents: terminal.active_subagent_count(),
+            voice: crate::api::schema::AgentVoiceMode::from_detected(terminal.agent_voice()),
             completion_seq: terminal.last_agent_completion_seq,
             cwd: pane.cwd,
             foreground_cwd: pane.foreground_cwd,

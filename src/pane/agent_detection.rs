@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::detect::{Agent, AgentDetection, AgentState};
+use crate::detect::{Agent, AgentDetection, AgentState, AgentVoice};
 
 pub(super) const AGENT_PENDING_IDLE_RECHECK: std::time::Duration =
     std::time::Duration::from_millis(100);
@@ -18,6 +18,8 @@ pub(super) struct DetectionPublishState {
     pub(super) visible_idle: bool,
     pub(super) visible_blocker: bool,
     pub(super) visible_working: bool,
+    /// Fork: the voice mode; a change alone publishes.
+    pub(super) voice: AgentVoice,
 }
 
 #[derive(Debug, Default)]
@@ -148,6 +150,7 @@ pub(super) fn should_publish_detection_update(
         || next.visible_idle != previous.visible_idle
         || next.visible_blocker != previous.visible_blocker
         || next.visible_working != previous.visible_working
+        || next.voice != previous.voice
         || agent_changed
         || process_exited
         || (stable_visible_signal_refresh_due && next.visible_blocker && previous.visible_blocker)
@@ -218,6 +221,7 @@ pub(super) enum DetectionPublishDecision {
         visible_idle: bool,
         visible_blocker: bool,
         visible_working: bool,
+        voice: AgentVoice,
         process_exited: bool,
     },
 }
@@ -228,6 +232,7 @@ pub(super) struct ScreenDetectionPublishInput {
     pub(super) last_visible_idle: bool,
     pub(super) last_visible_blocker: bool,
     pub(super) last_visible_working: bool,
+    pub(super) last_voice: AgentVoice,
     pub(super) last_visible_signal_refresh: Option<std::time::Instant>,
     pub(super) screen_detection: AgentDetection,
     pub(super) process_exited: bool,
@@ -250,12 +255,14 @@ pub(super) fn decide_screen_detection_publish(
         visible_idle: input.last_visible_idle,
         visible_blocker: input.last_visible_blocker,
         visible_working: input.last_visible_working,
+        voice: input.last_voice,
     };
     let next_publish = DetectionPublishState {
         state: new_state,
         visible_idle,
         visible_blocker,
         visible_working,
+        voice: detection.voice,
     };
     let stable_refresh_due = stable_visible_signal_refresh_due(
         previous_publish,
@@ -281,6 +288,7 @@ pub(super) fn decide_screen_detection_publish(
             visible_idle,
             visible_blocker,
             visible_working,
+            voice: detection.voice,
             process_exited: input.process_exited,
         },
     }
@@ -309,6 +317,7 @@ pub(super) fn detection_update_for_publish_with_osc(
             visible_idle: true,
             visible_blocker: false,
             visible_working: false,
+            voice: AgentVoice::Off,
         });
     }
 
@@ -336,6 +345,7 @@ mod tests {
             visible_idle: false,
             visible_blocker: false,
             visible_working: false,
+            voice: AgentVoice::Off,
         }
     }
 
@@ -346,6 +356,7 @@ mod tests {
             visible_idle: state == AgentState::Idle,
             visible_blocker: false,
             visible_working: state == AgentState::Working,
+            voice: AgentVoice::Off,
         }
     }
 
@@ -359,6 +370,7 @@ mod tests {
             last_visible_idle: false,
             last_visible_blocker: false,
             last_visible_working: false,
+            last_voice: AgentVoice::Off,
             last_visible_signal_refresh: None,
             screen_detection,
             process_exited: false,
@@ -506,6 +518,7 @@ mod tests {
                 visible_idle: false,
                 visible_blocker: false,
                 visible_working: true,
+                voice: AgentVoice::Off,
                 process_exited: false,
             }
         );
@@ -526,9 +539,58 @@ mod tests {
                 visible_idle: true,
                 visible_blocker: false,
                 visible_working: false,
+                voice: AgentVoice::Off,
                 process_exited: false,
             }
         );
+    }
+
+    #[test]
+    fn screen_publish_publishes_a_voice_only_change() {
+        let now = std::time::Instant::now();
+        let mut pending_idle = PendingIdleConfirmation::default();
+        let mut input =
+            screen_publish_input(AgentState::Idle, screen_detection(AgentState::Idle), now);
+        input.last_visible_idle = true;
+        assert_eq!(
+            decide_screen_detection_publish(input, &mut pending_idle),
+            DetectionPublishDecision::NoPublish,
+            "nothing changed"
+        );
+
+        input.screen_detection.voice = AgentVoice::Live;
+        assert_eq!(
+            decide_screen_detection_publish(input, &mut pending_idle),
+            DetectionPublishDecision::Publish {
+                state: AgentState::Idle,
+                visible_idle: true,
+                visible_blocker: false,
+                visible_working: false,
+                voice: AgentVoice::Live,
+                process_exited: false,
+            },
+            "voice alone publishes, the state stays idle"
+        );
+
+        input.last_voice = AgentVoice::Live;
+        assert_eq!(
+            decide_screen_detection_publish(input, &mut pending_idle),
+            DetectionPublishDecision::NoPublish
+        );
+        input.screen_detection.voice = AgentVoice::Muted;
+        assert!(matches!(
+            decide_screen_detection_publish(input, &mut pending_idle),
+            DetectionPublishDecision::Publish {
+                voice: AgentVoice::Muted,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_exited_process_reports_voice_off() {
+        let detection = detection_update_for_publish(Some(Agent::Codex), "", true).unwrap();
+        assert_eq!(detection.voice, AgentVoice::Off);
     }
 
     #[test]

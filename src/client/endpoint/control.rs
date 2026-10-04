@@ -14,6 +14,8 @@ pub(crate) enum EndpointControlMessage {
     AgentNotices(crate::server::headless::agent_notices::AgentNoticesPayload),
     /// Fork: the endpoint's teams (`endpoint.teams.v1`).
     Teams(crate::server::headless::teams::TeamsPayload),
+    /// Fork: the endpoint's panes in voice mode (`endpoint.voice.v1`).
+    Voice(crate::server::headless::voice::VoicePayload),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -43,6 +45,12 @@ pub(crate) fn decode_endpoint_control(
     if kind == crate::server::headless::teams::TEAMS_KIND {
         return Ok(crate::server::headless::teams::TeamsPayload::decode(data)
             .map(EndpointControlMessage::Teams)
+            .unwrap_or(EndpointControlMessage::Ignored));
+    }
+    // Fork: voice modes, optional like teams.
+    if kind == crate::server::headless::voice::VOICE_KIND {
+        return Ok(crate::server::headless::voice::VoicePayload::decode(data)
+            .map(EndpointControlMessage::Voice)
             .unwrap_or(EndpointControlMessage::Ignored));
     }
     if kind == crate::protocol::endpoint::AGENT_VIEW_PROJECTION_KIND {

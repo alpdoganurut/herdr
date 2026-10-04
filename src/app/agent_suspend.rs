@@ -1173,6 +1173,7 @@ mod tests {
             state: AgentState::Idle,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: true,
             observed_at,
         });
@@ -1182,6 +1183,7 @@ mod tests {
             state: AgentState::Unknown,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: observed_at + Duration::from_millis(10),
         });
@@ -1743,6 +1745,7 @@ mod tests {
             state: AgentState::Idle,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: Instant::now(),
         });

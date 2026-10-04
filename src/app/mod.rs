@@ -53,6 +53,8 @@ mod terminal_titles;
 mod theme_sync;
 /// Fork: automatic typing waits while the user types or has a draft.
 pub(crate) mod typing_guard;
+/// Fork: agents' voice mode (tab recording mark, automatic typing hold).
+pub(crate) mod voice;
 mod window_title;
 mod worktrees;
 
@@ -601,6 +603,7 @@ impl App {
             team_index: std::collections::HashMap::new(),
             team_count: 0,
             teams_view_rev: 0,
+            voice_view_rev: 0,
             agents_close_deadline: None,
         };
 
@@ -3496,6 +3499,7 @@ mod tests {
             state: AgentState::Working,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3520,6 +3524,7 @@ mod tests {
             state: AgentState::Idle,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });

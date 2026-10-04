@@ -254,6 +254,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) coordinator_row: Option<super::coordinator::CoordinatorRow>,
     /// Fork: the active endpoint's teams (group header mark, member rows).
     pub(super) teams: Option<&'a super::teams::ClientTeamsState>,
+    /// Fork: the active endpoint's panes in voice mode (tab recording mark).
+    pub(super) voice: Option<&'a super::voice::ClientVoiceState>,
     pub(super) remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) workspace_scroll: &'a mut usize,
     pub(super) agent_scroll: &'a mut usize,

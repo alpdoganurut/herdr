@@ -185,6 +185,9 @@ pub(crate) struct ClientConnection {
     /// Fork: the teams view revision last sent (`endpoint.teams.v1`); `None`
     /// until the first payload (none while the server never had a team).
     pub(crate) shell_teams_sent: Option<u64>,
+    /// Fork: the voice view revision last sent (`endpoint.voice.v1`); `None`
+    /// until the first payload (none while no pane was ever in voice mode).
+    pub(crate) shell_voice_sent: Option<u64>,
     /// View policy paired with the last coherent shell replacement.
     pub(crate) shell_agent_view: Option<crate::api::schema::AgentViewSetParams>,
     /// Monotonic shell replacement revision for this connection.
@@ -257,6 +260,7 @@ impl ClientConnection {
             shell_agent_completions: None,
             shell_agent_notices_sent: None,
             shell_teams_sent: None,
+            shell_voice_sent: None,
             shell_agent_view: None,
             shell_projection_revision: 0,
             shell_endpoint_command_in_flight: false,

@@ -1198,6 +1198,10 @@ impl App {
         let Some(own) = own else {
             return Some("coordinator tab is gone".into());
         };
+        // Fork: the user is in a voice session with the coordinator.
+        if self.pane_voice(own.pane_id).active() {
+            return Some("coordinator is in voice mode".into());
+        }
         let reason = match status {
             Some("idle" | "done") if !self.coordinator_interactive(own) => {
                 "coordinator is starting"
@@ -2254,6 +2258,14 @@ impl App {
         let interactive = self.coordinator_interactive(own);
         if !matches!(status, "idle" | "done") || !interactive {
             reply(&mut self.coordinator, WakeOutcome::Held(status.to_string()));
+            return;
+        }
+        // Fork: no wake-up is typed into a voice session (src/app/voice.rs).
+        if self.pane_voice(own.pane_id).active() {
+            reply(
+                &mut self.coordinator,
+                WakeOutcome::Held("coordinator is in voice mode".into()),
+            );
             return;
         }
         let queued = self.queue_agent_prompt(
@@ -3873,6 +3885,45 @@ mod tests {
             matches!(written, Ok(Some(_))),
             "the wake-up text was written"
         );
+    }
+
+    #[tokio::test]
+    async fn a_wake_is_held_while_the_coordinator_is_in_voice_mode() {
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        let own = app.existing_coordinator_pane().unwrap();
+        let pane = app.public_pane_id(own.ws_idx, own.pane_id).unwrap();
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(own.pane_id, runtime);
+        for voice in [
+            crate::detect::AgentVoice::Live,
+            crate::detect::AgentVoice::Muted,
+        ] {
+            app.apply_agent_voice(own.pane_id, crate::detect::AgentVoice::Off, voice);
+            assert_eq!(
+                app.coordinator_message_hold().as_deref(),
+                Some("coordinator is in voice mode"),
+                "agent messages wait too ({voice:?})"
+            );
+            app.coordinator.sent.clear();
+            prompt_effect(&mut app, &pane);
+            assert_eq!(
+                wake_outcomes(&app),
+                vec![WakeOutcome::Held("coordinator is in voice mode".into())]
+            );
+            assert!(rx.try_recv().is_err(), "nothing typed into a voice session");
+        }
+
+        // Voice mode off: the same wake-up is typed in.
+        app.apply_agent_voice(
+            own.pane_id,
+            crate::detect::AgentVoice::Muted,
+            crate::detect::AgentVoice::Off,
+        );
+        assert!(app.coordinator.input_dirty, "the change is looked at again");
+        app.coordinator.sent.clear();
+        prompt_effect(&mut app, &pane);
+        assert_eq!(wake_outcomes(&app), vec![WakeOutcome::Delivered]);
     }
 
     #[tokio::test]

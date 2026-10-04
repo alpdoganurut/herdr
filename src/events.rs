@@ -96,6 +96,8 @@ pub enum AppEvent {
         state: AgentState,
         visible_blocker: bool,
         visible_working: bool,
+        /// Fork: the screen's voice mode (manifest signal `voice`).
+        voice: crate::detect::AgentVoice,
         process_exited: bool,
         observed_at: Instant,
     },

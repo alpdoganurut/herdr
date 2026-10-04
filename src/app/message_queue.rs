@@ -483,6 +483,11 @@ impl App {
         {
             return Check::Wait("starting".into());
         }
+        // Fork: a voice session (live or muted) is the user talking to the
+        // agent; typed text would land in it (src/app/voice.rs).
+        if terminal.agent_voice().active() {
+            return Check::Wait("voice mode".into());
+        }
         let coordinator = self.is_coordinator_pane(target.ws_idx, target.pane_id);
         if coordinator {
             if let Some(reason) = self.coordinator_message_hold() {

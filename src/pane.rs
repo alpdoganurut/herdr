@@ -242,6 +242,7 @@ async fn publish_state_changed_event(
     state: AgentState,
     visible_blocker: bool,
     visible_working: bool,
+    voice: crate::detect::AgentVoice,
     process_exited: bool,
     observed_at: std::time::Instant,
 ) {
@@ -255,6 +256,7 @@ async fn publish_state_changed_event(
             state,
             visible_blocker,
             visible_working,
+            voice,
             process_exited,
             observed_at,
         })
@@ -296,9 +298,14 @@ struct AgentDetectionPublishUpdate {
     visible_idle: bool,
     visible_blocker: bool,
     visible_working: bool,
+    voice: crate::detect::AgentVoice,
     process_exited: bool,
 }
 
+// Fork: `last_voice` is the twelfth argument; the detector loops keep their
+// published facts as separate locals, so grouping them would rewrite both
+// upstream loops.
+#[allow(clippy::too_many_arguments)]
 async fn apply_agent_detection_publish_update(
     state_events: mpsc::Sender<AppEvent>,
     pane_id: PaneId,
@@ -309,6 +316,7 @@ async fn apply_agent_detection_publish_update(
     last_visible_idle: &mut bool,
     last_visible_blocker: &mut bool,
     last_visible_working: &mut bool,
+    last_voice: &mut crate::detect::AgentVoice,
     last_visible_signal_refresh: &mut Option<std::time::Instant>,
     foreground_shell_exit_reported: &mut bool,
 ) {
@@ -316,6 +324,7 @@ async fn apply_agent_detection_publish_update(
     *last_visible_idle = update.visible_idle;
     *last_visible_blocker = update.visible_blocker;
     *last_visible_working = update.visible_working;
+    *last_voice = update.voice;
     *last_visible_signal_refresh = if update.visible_blocker || update.visible_working {
         Some(observed_at)
     } else {
@@ -331,6 +340,7 @@ async fn apply_agent_detection_publish_update(
         update.state,
         update.visible_blocker,
         update.visible_working,
+        update.voice,
         update.process_exited,
         observed_at,
     )
@@ -758,6 +768,7 @@ fn spawn_basic_detection_task(
         let mut last_visible_idle = false;
         let mut last_visible_blocker = false;
         let mut last_visible_working = false;
+        let mut last_voice = crate::detect::AgentVoice::Off;
         let mut last_visible_signal_refresh = None;
         let mut last_process_check = std::time::Instant::now();
         let mut last_foreground_pgid = None;
@@ -786,6 +797,7 @@ fn spawn_basic_detection_task(
                     last_visible_idle = false;
                     last_visible_blocker = false;
                     last_visible_working = false;
+                    last_voice = crate::detect::AgentVoice::Off;
                     last_visible_signal_refresh = None;
                     last_process_check = std::time::Instant::now();
                     last_foreground_pgid = None;
@@ -899,6 +911,7 @@ fn spawn_basic_detection_task(
                             last_visible_idle = false;
                             last_visible_blocker = false;
                             last_visible_working = false;
+                            last_voice = crate::detect::AgentVoice::Off;
                             last_visible_signal_refresh = None;
                             publish_agent_process_detected_event(
                                 state_events.clone(),
@@ -994,6 +1007,7 @@ fn spawn_basic_detection_task(
                     last_visible_idle,
                     last_visible_blocker,
                     last_visible_working,
+                    last_voice,
                     last_visible_signal_refresh,
                     process_exited,
                     agent_changed,
@@ -1007,6 +1021,7 @@ fn spawn_basic_detection_task(
                     visible_idle,
                     visible_blocker,
                     visible_working,
+                    voice,
                     process_exited: publish_process_exited,
                 } => {
                     apply_agent_detection_publish_update(
@@ -1018,6 +1033,7 @@ fn spawn_basic_detection_task(
                             visible_idle,
                             visible_blocker,
                             visible_working,
+                            voice,
                             process_exited: publish_process_exited,
                         },
                         now,
@@ -1025,6 +1041,7 @@ fn spawn_basic_detection_task(
                         &mut last_visible_idle,
                         &mut last_visible_blocker,
                         &mut last_visible_working,
+                        &mut last_voice,
                         &mut last_visible_signal_refresh,
                         &mut foreground_shell_exit_reported,
                     )
@@ -2661,6 +2678,7 @@ impl PaneRuntime {
                 let mut pending_restore_probe = initial_state.detected_agent.is_some();
                 let mut last_visible_blocker = false;
                 let mut last_visible_working = false;
+                let mut last_voice = crate::detect::AgentVoice::Off;
                 let mut last_visible_signal_refresh = None;
                 let mut last_detection_text = String::new();
                 let mut last_screen_scan_detection_content_seq = None;
@@ -2699,6 +2717,7 @@ impl PaneRuntime {
                             pending_restore_probe = false;
                             last_visible_blocker = false;
                             last_visible_working = false;
+                            last_voice = crate::detect::AgentVoice::Off;
                             last_visible_signal_refresh = None;
                             last_detection_text.clear();
                             last_screen_scan_detection_content_seq = None;
@@ -2845,6 +2864,7 @@ impl PaneRuntime {
                                         last_visible_idle = false;
                                         last_visible_blocker = false;
                                         last_visible_working = false;
+                                        last_voice = crate::detect::AgentVoice::Off;
                                         last_visible_signal_refresh = None;
                                         publish_agent_process_detected_event(
                                             state_events.clone(),
@@ -2969,6 +2989,7 @@ impl PaneRuntime {
                             last_visible_idle,
                             last_visible_blocker,
                             last_visible_working,
+                            last_voice,
                             last_visible_signal_refresh,
                             process_exited,
                             agent_changed,
@@ -2982,6 +3003,7 @@ impl PaneRuntime {
                             visible_idle,
                             visible_blocker,
                             visible_working,
+                            voice,
                             process_exited: publish_process_exited,
                         } => {
                             apply_agent_detection_publish_update(
@@ -2993,6 +3015,7 @@ impl PaneRuntime {
                                     visible_idle,
                                     visible_blocker,
                                     visible_working,
+                                    voice,
                                     process_exited: publish_process_exited,
                                 },
                                 now,
@@ -3000,6 +3023,7 @@ impl PaneRuntime {
                                 &mut last_visible_idle,
                                 &mut last_visible_blocker,
                                 &mut last_visible_working,
+                                &mut last_voice,
                                 &mut last_visible_signal_refresh,
                                 &mut foreground_shell_exit_reported,
                             )
@@ -5781,6 +5805,7 @@ mod tests {
             AgentState::Idle,
             false,
             false,
+            crate::detect::AgentVoice::Off,
             false,
             std::time::Instant::now(),
         );
@@ -5819,6 +5844,7 @@ mod tests {
                 state: AgentState::Idle,
                 visible_blocker: false,
                 visible_working: false,
+                voice: crate::detect::AgentVoice::Off,
                 process_exited: false,
                 observed_at: _,
             } if delivered_pane == pane_id

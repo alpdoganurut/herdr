@@ -3427,6 +3427,7 @@ pub(crate) mod tests {
             state: AgentState::Idle,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: true,
             observed_at,
         });
@@ -3436,6 +3437,7 @@ pub(crate) mod tests {
             state: AgentState::Unknown,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: observed_at + std::time::Duration::from_millis(10),
         });

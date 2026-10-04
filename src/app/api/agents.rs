@@ -301,11 +301,18 @@ impl App {
         // Fork typing guard, checked on the thread that also applies client
         // input, right before anything is written.
         if params.guard_user_typing {
-            let block = crate::app::typing_guard::runtime_typing_block(
-                Some(expected_agent),
-                runtime,
-                std::time::Instant::now(),
-            );
+            // Fork: a voice session holds automatic typing like a typing user.
+            let voice = terminal
+                .agent_voice()
+                .active()
+                .then_some(crate::app::typing_guard::TypingBlock::VoiceMode);
+            let block = voice.or_else(|| {
+                crate::app::typing_guard::runtime_typing_block(
+                    Some(expected_agent),
+                    runtime,
+                    std::time::Instant::now(),
+                )
+            });
             if let Some(block) = block {
                 return Err(encode_error(
                     id,
@@ -715,6 +722,7 @@ mod tests {
             state: AgentState::Idle,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: true,
             observed_at,
         });

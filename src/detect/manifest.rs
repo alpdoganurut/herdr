@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use super::{
     agent_label, manifest_update::ManifestVersion, parse_agent_label, Agent, AgentDetection,
-    AgentState,
+    AgentState, AgentVoice,
 };
 
 pub const DEFAULT_KNOWN_AGENT_IDLE_FALLBACK: &str = "default_known_agent_idle_fallback";
@@ -38,6 +38,8 @@ pub struct DetectionExplain {
     pub skipped_update_reason: Option<String>,
     pub fallback_reason: Option<String>,
     pub evaluated_rules: Vec<EvaluatedRule>,
+    /// Fork: the voice mode the manifest's `signal = "voice"` rules found.
+    pub voice: AgentVoice,
     pub warning: Option<String>,
     pub manifest_version: Option<String>,
     pub cached_remote_version: Option<String>,
@@ -106,6 +108,8 @@ pub struct EvaluatedRule {
     pub evidence: RuleEvidence,
     pub state: AgentState,
     pub matched: bool,
+    /// Fork: `signal=value` of a signal rule (it never decides `state`).
+    pub signal: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +133,17 @@ struct LoadedManifest {
     warning: Option<String>,
     cached_remote_version: Option<String>,
     local_override_shadowing_remote: bool,
+    /// Fork: the bundled manifest's signal rules, kept for a remote or
+    /// override manifest that declares none (an upstream catalog manifest
+    /// must not switch the fork's voice detection off).
+    inherited_signals: Option<Arc<SignalRules>>,
+}
+
+/// Fork: signal rules (`signal`/`value`) with their compiled gates.
+#[derive(Debug)]
+struct SignalRules {
+    rules: Vec<ManifestRule>,
+    compiled: Vec<CompiledRule>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +182,12 @@ struct ManifestRule {
     visible_working: bool,
     #[serde(default)]
     skip_state_update: bool,
+    /// Fork: a signal rule (engine 4) reports `value` for `signal` when it
+    /// matches, independently of the agent state; it sets no `state`.
+    #[serde(default)]
+    signal: Option<String>,
+    #[serde(default)]
+    value: Option<String>,
     #[serde(default)]
     all: Vec<ManifestGate>,
     #[serde(default)]
@@ -179,6 +200,35 @@ struct ManifestRule {
     regex: Vec<String>,
     #[serde(default)]
     line_regex: Vec<String>,
+}
+
+/// Fork: the signals a manifest may report, each with its values.
+const SIGNALS: &[(&str, &[&str])] = &[("voice", &["live", "muted"])];
+
+/// Fork: the first engine that understands signal rules.
+const SIGNAL_RULE_ENGINE_VERSION: u32 = 4;
+
+impl ManifestRule {
+    fn is_signal(&self) -> bool {
+        self.signal.is_some()
+    }
+
+    /// The voice mode a matching `signal = "voice"` rule reports.
+    fn voice_value(&self) -> Option<AgentVoice> {
+        match (self.signal.as_deref()?, self.value.as_deref()?) {
+            ("voice", "live") => Some(AgentVoice::Live),
+            ("voice", "muted") => Some(AgentVoice::Muted),
+            _ => None,
+        }
+    }
+
+    fn signal_label(&self) -> Option<String> {
+        Some(format!(
+            "{}={}",
+            self.signal.as_deref()?,
+            self.value.as_deref().unwrap_or("")
+        ))
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -405,6 +455,7 @@ pub fn explain_for_label(agent_label: &str, screen_content: &str) -> DetectionEx
             skipped_update_reason: None,
             fallback_reason: Some("unknown_agent".to_string()),
             evaluated_rules: Vec::new(),
+            voice: AgentVoice::Off,
             warning: None,
             manifest_version: None,
             cached_remote_version: None,
@@ -441,6 +492,7 @@ impl DetectionExplain {
             visible_idle: self.visible_idle,
             visible_blocker: self.visible_blocker,
             visible_working: self.visible_working,
+            voice: self.voice,
         }
     }
 }
@@ -453,13 +505,22 @@ fn evaluate_loaded_manifest(
 ) -> DetectionExplain {
     let mut matched: Option<(&ManifestRule, String)> = None;
     let mut evaluated_rules = Vec::new();
-
-    for (rule, compiled_rule) in loaded
+    // Fork: signal rules never compete for the state; per signal the
+    // highest-priority match wins.
+    let mut voice: Option<(i32, AgentVoice)> = None;
+    let inherited = loaded.inherited_signals.as_deref();
+    let rules = loaded
         .manifest
         .rules
         .iter()
         .zip(loaded.compiled_rules.iter())
-    {
+        .chain(
+            inherited
+                .into_iter()
+                .flat_map(|signals| signals.rules.iter().zip(signals.compiled.iter())),
+        );
+
+    for (rule, compiled_rule) in rules {
         let region_text = region(input, &rule.region);
         let matched_rule = compiled_rule_matches(compiled_rule, region_text);
         evaluated_rules.push(EvaluatedRule {
@@ -472,9 +533,19 @@ fn evaluate_loaded_manifest(
                 .map(AgentState::from)
                 .unwrap_or(AgentState::Unknown),
             matched: matched_rule,
+            signal: rule.signal_label(),
         });
 
         if !matched_rule {
+            continue;
+        }
+
+        if rule.is_signal() {
+            if let Some(value) = rule.voice_value() {
+                if voice.is_none_or(|(priority, _)| rule.priority > priority) {
+                    voice = Some((rule.priority, value));
+                }
+            }
             continue;
         }
 
@@ -483,13 +554,16 @@ fn evaluate_loaded_manifest(
             _ => matched = Some((rule, rule.region.clone())),
         }
     }
+    let voice = voice.map_or(AgentVoice::Off, |(_, value)| value);
 
     let Some((rule, region_name)) = matched else {
-        return fallback_explain(
+        let mut explain = fallback_explain(
             Some(agent),
             Some((loaded, evaluated_rules)),
             include_update_status,
         );
+        explain.voice = voice;
+        return explain;
     };
 
     let state = rule
@@ -522,6 +596,7 @@ fn evaluate_loaded_manifest(
         skipped_update_reason,
         fallback_reason: None,
         evaluated_rules,
+        voice,
         warning: loaded.warning,
         manifest_version: loaded.manifest.version.as_ref().map(ToString::to_string),
         cached_remote_version: loaded.cached_remote_version,
@@ -579,6 +654,7 @@ fn fallback_explain(
         skipped_update_reason: None,
         fallback_reason: known_agent.then(|| DEFAULT_KNOWN_AGENT_IDLE_FALLBACK.to_string()),
         evaluated_rules,
+        voice: AgentVoice::Off,
         warning,
         manifest_version,
         cached_remote_version,
@@ -604,6 +680,35 @@ fn load_manifest(agent: Agent) -> Option<LoadedManifest> {
 }
 
 fn load_manifest_uncached(agent: Agent) -> Option<LoadedManifest> {
+    let mut loaded = load_active_manifest(agent)?;
+    if !matches!(loaded.source, ManifestSource::Bundled)
+        && !loaded.manifest.rules.iter().any(ManifestRule::is_signal)
+    {
+        loaded.inherited_signals = bundled_signal_rules(agent);
+    }
+    Some(loaded)
+}
+
+/// Fork: the bundled manifest's signal rules, `None` when it has none.
+fn bundled_signal_rules(agent: Agent) -> Option<Arc<SignalRules>> {
+    let bundled = bundled_manifest(agent)?;
+    let rules: Vec<ManifestRule> = bundled
+        .rules
+        .into_iter()
+        .filter(ManifestRule::is_signal)
+        .collect();
+    if rules.is_empty() {
+        return None;
+    }
+    let compiled = rules
+        .iter()
+        .map(|rule| compile_gate(&manifest_gate_from_rule(rule)).map(|gate| CompiledRule { gate }))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    Some(Arc::new(SignalRules { rules, compiled }))
+}
+
+fn load_active_manifest(agent: Agent) -> Option<LoadedManifest> {
     let bundled = bundled_manifest(agent)?;
     let mut remote = read_remote_manifest(agent, &bundled);
     let cached_remote_version = remote.as_ref().and_then(|loaded| match &loaded.source {
@@ -717,6 +822,7 @@ fn loaded_manifest(
         warning,
         cached_remote_version,
         local_override_shadowing_remote,
+        inherited_signals: None,
     })
 }
 
@@ -835,6 +941,15 @@ pub fn agent_state_label(state: AgentState) -> &'static str {
     }
 }
 
+/// Fork: the wire name of a voice mode.
+pub fn voice_label(voice: AgentVoice) -> &'static str {
+    match voice {
+        AgentVoice::Off => "off",
+        AgentVoice::Live => "live",
+        AgentVoice::Muted => "muted",
+    }
+}
+
 pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
     let matched_rule = explain.matched_rule.as_ref().map(|rule| {
         serde_json::json!({
@@ -854,6 +969,7 @@ pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
                 "region": rule.region,
                 "state": agent_state_label(rule.state),
                 "matched": rule.matched,
+                "signal": rule.signal,
                 "evidence": {
                     "contains": &rule.evidence.contains,
                     "regex": &rule.evidence.regex,
@@ -881,6 +997,7 @@ pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
         "visible_idle": explain.visible_idle,
         "visible_blocker": explain.visible_blocker,
         "visible_working": explain.visible_working,
+        "voice": voice_label(explain.voice),
         "screen_detection_skipped": explain.screen_detection_skipped,
         "skip_state_update": explain.skip_state_update,
         "skipped_update_reason": explain.skipped_update_reason,
@@ -959,6 +1076,7 @@ fn validate_manifest(manifest: &AgentManifest) -> Result<(), String> {
                 ));
             }
         }
+        validate_signal_rule(rule, manifest.min_engine_version)?;
         validate_region_name(&rule.region)
             .map_err(|err| format!("rule {} uses invalid region: {err}", rule.id))?;
         if rule.region.trim().starts_with("top_non_empty_lines(")
@@ -975,6 +1093,46 @@ fn validate_manifest(manifest: &AgentManifest) -> Result<(), String> {
             .map_err(|err| format!("rule {} has invalid matcher gates: {err}", rule.id))?;
     }
 
+    Ok(())
+}
+
+/// Fork: a signal rule names a known signal and value, needs engine 4 and
+/// carries no agent-state evidence.
+fn validate_signal_rule(
+    rule: &ManifestRule,
+    min_engine_version: Option<u32>,
+) -> Result<(), String> {
+    let (signal, value) = match (rule.signal.as_deref(), rule.value.as_deref()) {
+        (None, None) => return Ok(()),
+        (Some(signal), Some(value)) => (signal, value),
+        _ => return Err(format!("rule {} must set both signal and value", rule.id)),
+    };
+    let Some((_, values)) = SIGNALS.iter().find(|(name, _)| *name == signal) else {
+        return Err(format!("rule {} uses unknown signal {signal:?}", rule.id));
+    };
+    if !values.contains(&value) {
+        return Err(format!(
+            "rule {} uses unknown value {value:?} for signal {signal}",
+            rule.id
+        ));
+    }
+    if rule.state.is_some()
+        || rule.visible_idle
+        || rule.visible_blocker
+        || rule.visible_working
+        || rule.skip_state_update
+    {
+        return Err(format!(
+            "rule {} is a signal rule and must not set state evidence",
+            rule.id
+        ));
+    }
+    if min_engine_version.is_some_and(|version| version < SIGNAL_RULE_ENGINE_VERSION) {
+        return Err(format!(
+            "rule {} uses signal but min_engine_version is below {SIGNAL_RULE_ENGINE_VERSION}",
+            rule.id
+        ));
+    }
     Ok(())
 }
 

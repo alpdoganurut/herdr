@@ -281,3 +281,4 @@ mod sticky_notifications;
 mod tab_sidebar;
 mod team_overlay;
 mod teams;
+mod voice;

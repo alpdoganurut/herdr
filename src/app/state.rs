@@ -900,6 +900,9 @@ pub struct AppState {
     /// Fork teams: bumped by every change a client renders (structure,
     /// member ids or labels), never by status; `0` until the first team.
     pub(crate) teams_view_rev: u64,
+    /// Fork voice: bumped whenever a pane's reported voice mode may have
+    /// changed (`endpoint.voice.v1`); `0` until the first voice mode.
+    pub(crate) voice_view_rev: u64,
     /// Fork (agents v2): the next look at agents-model closes in flight.
     pub(crate) agents_close_deadline: Option<std::time::Instant>,
 }
@@ -1198,6 +1201,7 @@ impl AppState {
             team_index: std::collections::HashMap::new(),
             team_count: 0,
             teams_view_rev: 0,
+            voice_view_rev: 0,
             agents_close_deadline: None,
         }
     }

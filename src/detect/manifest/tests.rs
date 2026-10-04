@@ -864,3 +864,162 @@ contains = ["active"]
 "#;
     assert!(parse_manifest(manifest).is_err());
 }
+
+#[test]
+fn signal_rules_report_a_value_without_competing_for_the_state() {
+    with_manifest_dirs("signal-rules", || {
+        write_local_codex(&rules_manifest(
+            r#"
+[[rules]]
+id = "state"
+state = "working"
+priority = 5
+contains = ["busy"]
+
+[[rules]]
+id = "quiet"
+signal = "voice"
+value = "muted"
+priority = 20
+line_regex = ["^mode x$"]
+
+[[rules]]
+id = "loud"
+signal = "voice"
+value = "live"
+priority = 10
+contains = ["mode"]
+"#,
+        ));
+
+        // No state rule matches: the idle fallback still carries the signal.
+        let live = explain(Agent::Codex, "mode y");
+        assert_eq!(live.voice, AgentVoice::Live);
+        assert_eq!(live.state, AgentState::Idle);
+        assert!(
+            live.matched_rule.is_none(),
+            "a signal rule is no state match"
+        );
+        assert_eq!(
+            live.fallback_reason.as_deref(),
+            Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
+        );
+
+        // Per signal the highest-priority match wins; the state is decided
+        // by the state rules alone.
+        let muted = explain(Agent::Codex, "busy\nmode x");
+        assert_eq!(muted.voice, AgentVoice::Muted);
+        assert_eq!(muted.state, AgentState::Working);
+        assert_eq!(
+            muted.matched_rule.as_ref().map(|rule| rule.id.as_str()),
+            Some("state")
+        );
+        assert_eq!(
+            detect(Agent::Codex, "busy\nmode x").voice,
+            AgentVoice::Muted,
+            "the detection carries it too"
+        );
+
+        let off = explain(Agent::Codex, "busy");
+        assert_eq!(off.voice, AgentVoice::Off);
+
+        let json = explain_to_json_value(&muted);
+        assert_eq!(json["voice"], "muted");
+        let quiet = json["evaluated_rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule["id"] == "quiet")
+            .unwrap();
+        assert_eq!(quiet["signal"], "voice=muted");
+        assert_eq!(quiet["matched"], true);
+        assert_eq!(explain_to_json_value(&off)["voice"], "off");
+    });
+}
+
+#[test]
+fn a_manifest_without_signal_rules_keeps_the_bundled_ones() {
+    let bundled_has_signals = bundled_manifest(Agent::Codex)
+        .unwrap()
+        .rules
+        .iter()
+        .any(ManifestRule::is_signal);
+    with_manifest_dirs("signal-inherit", || {
+        write_remote_codex(&remote_manifest("9999.01.01.1", "blocked", "remote-ready"));
+        let remote = load_manifest(Agent::Codex).unwrap();
+        assert!(matches!(remote.source, ManifestSource::Remote { .. }));
+        assert_eq!(remote.inherited_signals.is_some(), bundled_has_signals);
+
+        write_local_codex(&rules_manifest(
+            r#"
+[[rules]]
+id = "own"
+signal = "voice"
+value = "live"
+contains = ["x"]
+"#,
+        ));
+        let local = load_manifest(Agent::Codex).unwrap();
+        assert!(matches!(local.source, ManifestSource::Override(_)));
+        assert!(
+            local.inherited_signals.is_none(),
+            "a manifest with its own signal rules inherits none"
+        );
+    });
+}
+
+#[test]
+fn manifest_validation_keeps_signal_rules_neutral_and_known() {
+    let rule = |body: &str| {
+        format!(
+            r#"
+id = "codex"
+version = "1"
+min_engine_version = 4
+
+[[rules]]
+id = "voice"
+contains = ["voice"]
+{body}
+"#
+        )
+    };
+    assert!(parse_manifest(&rule("signal = \"voice\"\nvalue = \"live\"")).is_ok());
+    assert!(parse_manifest(&rule("signal = \"voice\"\nvalue = \"muted\"")).is_ok());
+    for invalid in [
+        "signal = \"voice\"",
+        "value = \"live\"",
+        "signal = \"voice\"\nvalue = \"loud\"",
+        "signal = \"camera\"\nvalue = \"live\"",
+        "signal = \"voice\"\nvalue = \"live\"\nstate = \"idle\"",
+        "signal = \"voice\"\nvalue = \"live\"\nvisible_idle = true",
+        "signal = \"voice\"\nvalue = \"live\"\nskip_state_update = true",
+    ] {
+        assert!(
+            parse_manifest(&rule(invalid)).is_err(),
+            "accepted {invalid}"
+        );
+    }
+}
+
+#[test]
+fn signal_rules_require_engine_four_when_declared() {
+    let manifest = |engine: u32| {
+        format!(
+            r#"
+id = "codex"
+version = "1"
+min_engine_version = {engine}
+
+[[rules]]
+id = "voice"
+signal = "voice"
+value = "live"
+contains = ["voice"]
+"#
+        )
+    };
+    assert!(parse_manifest(&manifest(3)).is_err());
+    assert!(parse_manifest(&manifest(4)).is_ok());
+    assert!(parse_remote_manifest_for_agent(Agent::Codex, &manifest(4)).is_ok());
+}

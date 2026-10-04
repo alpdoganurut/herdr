@@ -36,6 +36,28 @@ pub struct AgentDetection {
     /// activity is the normal working authority; this remains diagnostic
     /// metadata and for non-PTY fallback paths.
     pub visible_working: bool,
+    /// Fork: the agent's voice mode, from the manifest's `signal = "voice"`
+    /// rules. Independent of `state`: a listening agent stays idle.
+    pub voice: AgentVoice,
+}
+
+/// Fork: an agent's voice mode as its screen shows it (manifest signal
+/// `voice`). `Off` when no voice rule matches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum AgentVoice {
+    #[default]
+    Off,
+    /// A voice session with the microphone open.
+    Live,
+    /// A voice session with the microphone muted.
+    Muted,
+}
+
+impl AgentVoice {
+    /// Voice mode is on (live or muted).
+    pub fn active(self) -> bool {
+        self != AgentVoice::Off
+    }
 }
 
 /// Which agent we detected running in a pane.
@@ -308,6 +330,7 @@ pub fn detect_agent_with_osc(
             visible_idle: false,
             visible_blocker: false,
             visible_working: false,
+            voice: AgentVoice::Off,
         };
     };
     manifest::detect_with_osc(

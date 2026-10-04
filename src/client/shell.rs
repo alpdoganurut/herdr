@@ -60,6 +60,8 @@ mod tab_sidebar;
 mod team_overlay;
 mod teams;
 mod text_editor;
+/// Fork: panes in voice mode (`endpoint.voice.v1`), the tab recording mark.
+mod voice;
 mod word_selection;
 mod worktrees;
 use text_editor::TextEditor;

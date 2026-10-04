@@ -81,6 +81,7 @@ fn observe_agent_exit(server: &mut HeadlessServer) {
             state,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited,
             observed_at: at,
         });
@@ -1633,6 +1634,91 @@ async fn browser_settings_write_the_config_and_fix_the_codex_entries_but_never_t
 }
 
 #[cfg(unix)]
+/// Every `endpoint.voice.v1` payload in a client's control stream so far.
+fn voice_payloads(
+    control: &std::sync::mpsc::Receiver<Vec<u8>>,
+) -> Vec<crate::server::headless::voice::VoicePayload> {
+    let mut payloads = Vec::new();
+    while let Ok(bytes) = control.try_recv() {
+        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+            if kind == crate::server::headless::voice::VOICE_KIND {
+                payloads.push(
+                    crate::server::headless::voice::VoicePayload::decode(&data)
+                        .expect("voice payload decodes"),
+                );
+            }
+        }
+    }
+    payloads
+}
+
+fn report_voice(server: &mut HeadlessServer, voice: crate::detect::AgentVoice) {
+    let pane_id = root_pane(server);
+    server.app.handle_internal_event(AppEvent::StateChanged {
+        pane_id,
+        agent: Some(Agent::Claude),
+        state: AgentState::Idle,
+        visible_blocker: false,
+        visible_working: false,
+        voice,
+        process_exited: false,
+        observed_at: std::time::Instant::now(),
+    });
+}
+
+/// A detected voice mode reaches every client shell once as
+/// `endpoint.voice.v1`, keyed by the same pane id the shell snapshot's agent
+/// row carries; an unchanged revision sends nothing and the agent stays idle.
+#[tokio::test]
+async fn fork_smoke_voice_mode_reaches_every_client_keyed_like_the_agent_row() {
+    let (mut server, _rx) = server_with_claude(None);
+    let (first, _first_render) = connect_test_shell(&mut server, 61, 80, 23);
+    let (second, _second_render) = connect_test_shell(&mut server, 62, 80, 23);
+    server.render_and_stream();
+    assert!(
+        voice_payloads(&first).is_empty() && voice_payloads(&second).is_empty(),
+        "a server that never saw a voice mode sends nothing"
+    );
+
+    report_voice(&mut server, crate::detect::AgentVoice::Live);
+    server.render_and_stream();
+    let snapshot = crate::server::client_shell::snapshot(&server.app, "fork-smoke", 1, None, None);
+    let agent_row = snapshot.agents[0].pane_id.clone();
+    assert_eq!(
+        snapshot.agents[0].agent_status,
+        AgentStatus::Idle,
+        "a listening agent stays idle"
+    );
+    for control in [&first, &second] {
+        let payloads = voice_payloads(control);
+        assert_eq!(payloads.len(), 1, "one payload per client");
+        assert_eq!(payloads[0].panes.len(), 1);
+        assert_eq!(payloads[0].panes[0].pane_id, agent_row);
+        assert_eq!(
+            payloads[0].panes[0].voice,
+            crate::api::schema::AgentVoiceMode::Live
+        );
+    }
+
+    // Nothing changed: no payload. Muted, then off: one each.
+    report_voice(&mut server, crate::detect::AgentVoice::Live);
+    server.render_and_stream();
+    assert!(voice_payloads(&first).is_empty());
+    report_voice(&mut server, crate::detect::AgentVoice::Muted);
+    server.render_and_stream();
+    let muted = voice_payloads(&first);
+    assert_eq!(muted.len(), 1);
+    assert_eq!(
+        muted[0].panes[0].voice,
+        crate::api::schema::AgentVoiceMode::Muted
+    );
+    report_voice(&mut server, crate::detect::AgentVoice::Off);
+    server.render_and_stream();
+    let off = voice_payloads(&first);
+    assert_eq!(off.len(), 1);
+    assert!(off[0].panes.is_empty(), "voice mode off lists no pane");
+}
+
 #[path = "fork_smoke/coordinator.rs"]
 mod coordinator;
 

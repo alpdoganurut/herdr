@@ -227,6 +227,31 @@ pub struct AgentPromptParams {
     pub guard_user_typing: bool,
 }
 
+/// Fork: an agent's voice mode, read from its screen (detection signal
+/// `voice`). Absent while voice mode is off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentVoiceMode {
+    /// A voice session with the microphone open.
+    Live,
+    /// A voice session with the microphone muted.
+    Muted,
+    /// A mode this client does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl AgentVoiceMode {
+    /// The API value of a detected voice mode; `None` while it is off.
+    pub fn from_detected(voice: crate::detect::AgentVoice) -> Option<Self> {
+        match voice {
+            crate::detect::AgentVoice::Off => None,
+            crate::detect::AgentVoice::Live => Some(Self::Live),
+            crate::detect::AgentVoice::Muted => Some(Self::Muted),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentInfo {
     pub terminal_id: String,
@@ -267,6 +292,11 @@ pub struct AgentInfo {
     /// while suspended.
     #[serde(default, skip_serializing_if = "super::is_zero")]
     pub subagents: u32,
+    /// Fork: the agent's voice mode (`live`, `muted`), read from its screen;
+    /// absent while voice mode is off. Automatic typing (agent messages,
+    /// coordinator wake-ups) waits while it is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<AgentVoiceMode>,
     /// The current idle transition completed work, independently of who has viewed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_seq: Option<u64>,

@@ -1468,6 +1468,7 @@ impl AppState {
                 state,
                 visible_blocker,
                 visible_working,
+                voice: _,
                 process_exited,
                 observed_at,
             } => self
@@ -2989,6 +2990,7 @@ mod tests {
             state: AgentState::Working,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3027,6 +3029,7 @@ mod tests {
             state: AgentState::Idle,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3060,6 +3063,7 @@ mod tests {
             state: AgentState::Idle,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3082,6 +3086,7 @@ mod tests {
             state: AgentState::Idle,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3114,6 +3119,7 @@ mod tests {
                 state,
                 visible_blocker: state == AgentState::Blocked,
                 visible_working: state == AgentState::Working,
+                voice: crate::detect::AgentVoice::Off,
                 process_exited: false,
                 observed_at: Instant::now(),
             });
@@ -3194,6 +3200,7 @@ mod tests {
                     state,
                     visible_blocker: state == AgentState::Blocked,
                     visible_working: state == AgentState::Working,
+                    voice: crate::detect::AgentVoice::Off,
                     process_exited: false,
                     observed_at: Instant::now(),
                 });
@@ -3268,6 +3275,7 @@ mod tests {
                         state,
                         visible_blocker: false,
                         visible_working: state == AgentState::Working,
+                        voice: crate::detect::AgentVoice::Off,
                         process_exited: false,
                         observed_at: Instant::now(),
                     });
@@ -3324,6 +3332,7 @@ mod tests {
                 state: AgentState::Idle,
                 visible_blocker: false,
                 visible_working: false,
+                voice: crate::detect::AgentVoice::Off,
                 process_exited: false,
                 observed_at: Instant::now(),
             })
@@ -3343,6 +3352,7 @@ mod tests {
                 state: agent_state,
                 visible_blocker: agent_state == AgentState::Blocked,
                 visible_working: agent_state == AgentState::Working,
+                voice: crate::detect::AgentVoice::Off,
                 process_exited: false,
                 observed_at: Instant::now(),
             });
@@ -3354,6 +3364,7 @@ mod tests {
                 state: AgentState::Idle,
                 visible_blocker: false,
                 visible_working: false,
+                voice: crate::detect::AgentVoice::Off,
                 process_exited: false,
                 observed_at: Instant::now(),
             })
@@ -3378,6 +3389,7 @@ mod tests {
             state: AgentState::Working,
             visible_blocker: false,
             visible_working: true,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: Instant::now(),
         });
@@ -3388,6 +3400,7 @@ mod tests {
                 state: AgentState::Idle,
                 visible_blocker: false,
                 visible_working: false,
+                voice: crate::detect::AgentVoice::Off,
                 process_exited: true,
                 observed_at: Instant::now(),
             })
@@ -3433,6 +3446,7 @@ mod tests {
             state: AgentState::Blocked,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3457,6 +3471,7 @@ mod tests {
             state: AgentState::Blocked,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3489,6 +3504,7 @@ mod tests {
             state: AgentState::Blocked,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3500,6 +3516,7 @@ mod tests {
             state: AgentState::Working,
             visible_blocker: false,
             visible_working: true,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3523,6 +3540,7 @@ mod tests {
             state: AgentState::Blocked,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3548,6 +3566,7 @@ mod tests {
             state: AgentState::Blocked,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3575,6 +3594,7 @@ mod tests {
             state: AgentState::Blocked,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3632,6 +3652,7 @@ mod tests {
             state: AgentState::Idle,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3651,6 +3672,7 @@ mod tests {
             state: AgentState::Blocked,
             visible_blocker: true,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3681,6 +3703,7 @@ mod tests {
             state: AgentState::Working,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3716,6 +3739,7 @@ mod tests {
             state: AgentState::Idle,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3742,6 +3766,7 @@ mod tests {
             state: AgentState::Working,
             visible_blocker: false,
             visible_working: true,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3803,6 +3828,7 @@ mod tests {
             state: AgentState::Idle,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3938,6 +3964,7 @@ mod tests {
             state: AgentState::Idle,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3967,6 +3994,7 @@ mod tests {
             state: AgentState::Blocked,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -3993,6 +4021,7 @@ mod tests {
             state: AgentState::Blocked,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -4016,6 +4045,7 @@ mod tests {
             state: AgentState::Blocked,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -4037,6 +4067,7 @@ mod tests {
             state: AgentState::Blocked,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });

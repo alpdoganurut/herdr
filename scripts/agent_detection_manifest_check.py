@@ -26,6 +26,8 @@ RULE_KEYS = {
     "visible_blocker",
     "visible_working",
     "skip_state_update",
+    "signal",
+    "value",
     "all",
     "any",
     "not",
@@ -35,6 +37,9 @@ RULE_KEYS = {
 }
 GATE_KEYS = {"all", "any", "not", "contains", "regex", "line_regex"}
 STATES = {"idle", "working", "blocked", "unknown"}
+# Fork: signal rules (engine 4) report a value per signal, never a state.
+SIGNALS = {"voice": {"live", "muted"}}
+SIGNAL_RULE_ENGINE_VERSION = 4
 REGION_RE = re.compile(
     r"^(whole_recent|whole_recent_without_current_prompt_marker|after_last_prompt_marker|"
     r"before_current_prompt_marker|current_prompt_block_marker|after_current_prompt_block_marker|"
@@ -163,6 +168,11 @@ def validate_manifest(path: Path, engine_version: int) -> dict:
             raise CheckError(
                 f"{path}: rule {rule['id']} region {region!r} requires min_engine_version 3"
             )
+        if "signal" in rule and min_engine < SIGNAL_RULE_ENGINE_VERSION:
+            raise CheckError(
+                f"{path}: rule {rule['id']} uses signal and requires min_engine_version "
+                f"{SIGNAL_RULE_ENGINE_VERSION}"
+            )
 
     return manifest
 
@@ -189,6 +199,18 @@ def validate_rule(path: Path, index: int, rule: object, complexity: dict[str, in
         and int(count_match.group(1)) > MAX_TOP_REGION_LINE_COUNT
     ):
         raise CheckError(f"{path}: rule {rule_id} has invalid region {region!r}")
+    if "signal" in rule or "value" in rule:
+        signal = rule.get("signal")
+        value = rule.get("value")
+        if signal not in SIGNALS:
+            raise CheckError(f"{path}: rule {rule_id} has unknown signal {signal!r}")
+        if value not in SIGNALS[signal]:
+            raise CheckError(f"{path}: rule {rule_id} has unknown {signal} value {value!r}")
+        if state is not None or any(
+            rule.get(key)
+            for key in ("visible_idle", "visible_blocker", "visible_working", "skip_state_update")
+        ):
+            raise CheckError(f"{path}: rule {rule_id} is a signal rule and must not set state evidence")
     if rule.get("skip_state_update"):
         if state != "unknown":
             raise CheckError(f"{path}: rule {rule_id} skip_state_update requires state unknown")
@@ -336,7 +358,9 @@ def validate_catalog(
         stages_new_engine_manifest = (
             staged_manifest
             == (bundled_manifest["version"], manifest["version"], published_digest)
-            and bundled_manifest["min_engine_version"] == engine_version
+            # Fork: `<=` (upstream `==`): the fork's engine 4 (signal rules)
+            # must not void upstream's engine-3 Grok staging.
+            and bundled_manifest["min_engine_version"] <= engine_version
             and manifest["min_engine_version"] < bundled_manifest["min_engine_version"]
         )
         if cmp < 0 and not stages_new_engine_manifest:

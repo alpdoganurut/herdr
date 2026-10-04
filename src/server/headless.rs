@@ -86,6 +86,8 @@ mod retained_surface;
 mod surface_interest;
 /// Fork: the `endpoint.teams.v1` push.
 pub mod teams;
+/// Fork: the `endpoint.voice.v1` push.
+pub mod voice;
 
 pub use bootstrap::run_server;
 use lifecycle::wait_for_live_handoff_response_write;

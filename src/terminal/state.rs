@@ -280,6 +280,10 @@ pub struct TerminalState {
     /// released. A turn end does not clear it: the Stop hook's snapshot
     /// replaces it instead.
     active_subagents: std::collections::HashSet<String>,
+    /// Fork: the agent's voice mode as its screen shows it (detection
+    /// signal `voice`). Runtime only, never persisted; set by the detector,
+    /// `Off` when the pane has no agent. Holds automatic typing while on.
+    agent_voice: crate::detect::AgentVoice,
     /// Whether this agent has sent a subagent snapshot (a Claude Code that
     /// reports `background_tasks` on Stop). Until then an idle agent drops
     /// its set, since nothing else would heal a missed SubagentStop. The set
@@ -355,6 +359,7 @@ impl TerminalState {
             restore_error: None,
             agent_transcript_paths: HashMap::new(),
             active_subagents: std::collections::HashSet::new(),
+            agent_voice: crate::detect::AgentVoice::Off,
             subagent_snapshot_seen: false,
             subagent_session: None,
             agent_meta: crate::agents_model::PaneAgentMeta::default(),
@@ -2970,6 +2975,25 @@ impl TerminalState {
         u32::try_from(self.active_subagents.len()).unwrap_or(u32::MAX)
     }
 
+    /// Fork: the agent's voice mode; `Off` without a known agent or while
+    /// it is suspended.
+    pub fn agent_voice(&self) -> crate::detect::AgentVoice {
+        if self.suspended_agent.is_some() || self.effective_known_agent().is_none() {
+            return crate::detect::AgentVoice::Off;
+        }
+        self.agent_voice
+    }
+
+    /// Fork: record the detector's voice mode. Returns whether the stored
+    /// or the reported value ([`Self::agent_voice`]) changed: a suspended
+    /// agent reports `Off` while its stored mode still differs, and its exit
+    /// must still refresh what clients were last told.
+    pub fn set_agent_voice(&mut self, voice: crate::detect::AgentVoice) -> bool {
+        let before = (self.agent_voice, self.agent_voice());
+        self.agent_voice = voice;
+        before != (self.agent_voice, self.agent_voice())
+    }
+
     /// Forget the subagents of an agent that went away (or a new
     /// conversation): the set, and whether it sent snapshots.
     pub(crate) fn forget_subagents(&mut self) {
@@ -3109,6 +3133,7 @@ mod tests {
             visible_idle: false,
             visible_blocker: false,
             visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
         };
 
         assert_eq!(stabilize_agent_detection(detection), AgentState::Idle);

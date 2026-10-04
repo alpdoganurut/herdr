@@ -889,6 +889,7 @@ fn render_sidebar(
         news_row,
         browser_row: None,
         browser_marked_tabs: HashSet::new(),
+        voice: None,
         coordinator_row: None,
         teams: None,
         remote_collapsed_groups: &shell.remote_collapsed_groups,

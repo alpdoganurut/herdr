@@ -33,6 +33,8 @@ pub(crate) enum TypingBlock {
     RecentInput,
     /// The agent's input box holds text the user has not sent.
     UnsentDraft,
+    /// The agent is in a voice session (live or muted, src/app/voice.rs).
+    VoiceMode,
 }
 
 impl TypingBlock {
@@ -40,6 +42,7 @@ impl TypingBlock {
         match self {
             TypingBlock::RecentInput => "the user is typing in it",
             TypingBlock::UnsentDraft => "the user has an unsent draft in its input box",
+            TypingBlock::VoiceMode => "it is in voice mode",
         }
     }
 }
