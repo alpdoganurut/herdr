@@ -2514,6 +2514,70 @@
           ],
           "type": "object"
         },
+        "AgentsReorderGroupParams": {
+          "description": "`agents.reorder_group`: move a group in the sidebar (the user's whole\nsidebar: the coordinator in its user's turn, or the user). Exactly one of\n`position`, `before` and `after`. The first space (the ungrouped tabs)\nstays first.",
+          "properties": {
+            "after": {
+              "description": "Put it directly after this group.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "before": {
+              "description": "Put it directly before this group.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "caller_pane": {
+              "type": "string"
+            },
+            "group": {
+              "description": "A group id, label or number.",
+              "type": "string"
+            },
+            "position": {
+              "description": "1-based among the groups.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "caller_pane",
+            "group"
+          ],
+          "type": "object"
+        },
+        "AgentsReorderTabParams": {
+          "description": "`agents.reorder_tab`: move a tab among its group's tabs (free in the\ncaller's team).",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            },
+            "position": {
+              "description": "1-based among its group's tabs.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "target": {
+              "description": "A tab id, pane id, agent name or tab label.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "target",
+            "position"
+          ],
+          "type": "object"
+        },
         "AgentsSendMessageParams": {
           "description": "`agents.send_message`: type a message into an idle agent. Never waits.",
           "properties": {
@@ -10250,6 +10314,38 @@
         {
           "properties": {
             "method": {
+              "const": "agents.reorder_group",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsReorderGroupParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agents.reorder_tab",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsReorderTabParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "agent.prompt",
               "type": "string"
             },
@@ -12804,6 +12900,42 @@
           },
           "required": [
             "tab_id"
+          ],
+          "type": "object"
+        },
+        "AgentsReorderResult": {
+          "description": "`agents.reorder_group` and `agents.reorder_tab`: where it is now.",
+          "properties": {
+            "id": {
+              "description": "The group's workspace id or the tab's id.",
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "moved": {
+              "description": "`false` when it already was there.",
+              "type": "boolean"
+            },
+            "of": {
+              "description": "How many groups or tabs there are.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "position": {
+              "description": "1-based, among the groups or among the group's tabs.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "position",
+            "of",
+            "moved"
           ],
           "type": "object"
         },
@@ -18940,6 +19072,23 @@
               },
               "required": [
                 "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`agents.reorder_group`, `agents.reorder_tab`.",
+              "properties": {
+                "reorder": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsReorderResult"
+                },
+                "type": {
+                  "const": "agents_reorder",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "reorder"
               ],
               "type": "object"
             },

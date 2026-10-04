@@ -304,6 +304,10 @@ pub enum ResponseResult {
         #[serde(default)]
         messages: Vec<super::agents_model::AgentsDeliveredMessage>,
     },
+    /// `agents.reorder_group`, `agents.reorder_tab`.
+    AgentsReorder {
+        reorder: super::agents_model::AgentsReorderResult,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

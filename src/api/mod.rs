@@ -73,6 +73,8 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::AgentsSuspend(_)
             | Method::AgentsActivate(_)
             | Method::AgentsRestart(_)
+            | Method::AgentsReorderGroup(_)
+            | Method::AgentsReorderTab(_)
             | Method::TabSetColor(_)
             | Method::TabSetRemind(_)
             | Method::TabSetReminder(_)

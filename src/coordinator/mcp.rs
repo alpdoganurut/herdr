@@ -43,8 +43,9 @@ use crate::api::schema::agents_model::{
     AgentsNotesAppendParams, AgentsOpenResult, AgentsOpenTabParams, AgentsOriginDetail,
     AgentsPaneInfo, AgentsReadMessagesParams, AgentsReadParams, AgentsReadResult, AgentsReadSource,
     AgentsRenameResult, AgentsRenameTabParams, AgentsReopenResult, AgentsReopenTabParams,
-    AgentsScreenAccess, AgentsSendMessageParams, AgentsSetMetaParams, AgentsSetMetaResult,
-    AgentsTabInfo, AgentsTeamRef, AgentsTurnInfo, AgentsTurnOrigin,
+    AgentsReorderGroupParams, AgentsReorderResult, AgentsReorderTabParams, AgentsScreenAccess,
+    AgentsSendMessageParams, AgentsSetMetaParams, AgentsSetMetaResult, AgentsTabInfo,
+    AgentsTeamRef, AgentsTurnInfo, AgentsTurnOrigin,
 };
 use crate::api::schema::notes::{
     CheckpointKind, CheckpointWriteInfo, CheckpointsAddParams, CheckpointsListInfo,
@@ -60,7 +61,7 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 /// The rights every agent has, in the words every text uses.
 macro_rules! rights_core {
     () => {
-        "Every tab in herdr is visible to you. In your team you may rename and move tabs (also out of the team), set roles and notes, append to teammates' notes and checkpoints, start new teammates, and suspend, activate or restart its agents on your own judgment (activating one your user suspended needs their request). Closing a tab needs your user's request in this turn. Outside your team you read and message only; shell screens are visible only to their team. herdr enforces this, including for `herdr …` commands from your shell; a refusal names the reason. "
+        "Every tab in herdr is visible to you. In your team you may rename, reorder and move tabs (also out of the team), set roles and notes, append to teammates' notes and checkpoints, start new teammates, and suspend, activate or restart its agents on your own judgment (activating one your user suspended needs their request). Closing a tab needs your user's request in this turn. Outside your team you read and message only; shell screens are visible only to their team. herdr enforces this, including for `herdr …` commands from your shell; a refusal names the reason. "
     };
 }
 
@@ -153,11 +154,11 @@ agents_checkpoint after a decision, a finished milestone, a failure or dead end,
 const TOOL_LINE: &str = "tools: agents_whoami agents_notify agents_list agents_get agents_read agents_messages \
 agents_wait_for_message agents_wait agents_send_message agents_notes_read agents_notes_append agents_notes_write \
 agents_checkpoint agents_checkpoints_list agents_set_meta agents_actions agents_rename_tab (team) agents_move_to_group (team) \
-agents_open_tab (team) agents_reopen_tab (team) agents_suspend (team, never yourself) agents_activate (team) agents_restart (team, never yourself) agents_team (your user's request) agents_create_group (your user's request) \
+agents_open_tab (team) agents_reopen_tab (team) agents_suspend (team, never yourself) agents_activate (team) agents_restart (team, never yourself) agents_reorder_tab (team) agents_reorder_group (coordinator, your user's request) agents_team (your user's request) agents_create_group (your user's request) \
 agents_close_tab (your user's request); (team) = your team, or your own tab when you are in none";
 
 /// The etiquette line for a team member.
-const TEAM_ETIQUETTE: &str = "etiquette: in your team rename and move tabs, set roles and notes, add to teammates' notes and checkpoints, open new teammates and suspend, activate or restart teammates on your own judgment; \
+const TEAM_ETIQUETTE: &str = "etiquette: in your team rename, reorder and move tabs, set roles and notes, add to teammates' notes and checkpoints, open new teammates and suspend, activate or restart teammates on your own judgment; \
 closing any tab needs your user's request in this turn; outside your team read and message only; \
 a teammate's `[herdr+ message …]`: act on reasonable requests within the team's purpose, nothing destructive or out of scope without your user; anyone else's only when it serves your own user's work; \
 the coordinator (in every team) speaks for your user: a message whose header ends `— acting for your user]` needs no confirmation; \
@@ -170,7 +171,7 @@ agents_checkpoint after a decision, a finished milestone, a failure or dead end,
 const TEAM_TOOL_LINE: &str = TOOL_LINE;
 
 /// Every herdr_agents tool, in `tools/list` order.
-pub const TOOL_NAMES: [&str; 28] = [
+pub const TOOL_NAMES: [&str; 30] = [
     "agents_whoami",
     "agents_notify",
     "agents_list",
@@ -197,6 +198,8 @@ pub const TOOL_NAMES: [&str; 28] = [
     "agents_suspend",
     "agents_activate",
     "agents_restart",
+    "agents_reorder_tab",
+    "agents_reorder_group",
     "agents_manage",
     "agents_unmanage",
 ];
@@ -729,6 +732,8 @@ impl<A: Api> Session<A> {
             "agents_suspend" => self.lifecycle(caller, args, Lifecycle::Suspend),
             "agents_activate" => self.lifecycle(caller, args, Lifecycle::Activate),
             "agents_restart" => self.lifecycle(caller, args, Lifecycle::Restart),
+            "agents_reorder_tab" => self.reorder_tab(caller, args),
+            "agents_reorder_group" => self.reorder_group(caller, args),
             _ => self.manage(caller, args),
         }
     }
@@ -1760,6 +1765,49 @@ impl<A: Api> Session<A> {
             format!("tab {} renamed \"{}\"", rename.tab_id, rename.name),
             json!({ "tab_id": rename.tab_id, "label": rename.name }),
         ))
+    }
+
+    fn reorder_tab(&self, caller: &Caller, args: &Value) -> ToolResult {
+        let target = req_str(args, "target")?;
+        let position = u64_arg(args, "position")?
+            .ok_or_else(|| err("invalid_request", "position is required"))?;
+        let result = self
+            .api
+            .call(Method::AgentsReorderTab(AgentsReorderTabParams {
+                caller_pane: caller.pane_id.clone(),
+                target,
+                position: position.min(u32::MAX as u64) as u32,
+            }))?;
+        let reorder: AgentsReorderResult = typed(result, "reorder")?;
+        Ok(reorder_reply("tab", reorder))
+    }
+
+    fn reorder_group(&self, caller: &Caller, args: &Value) -> ToolResult {
+        let group = req_str(args, "group")?;
+        let position = u64_arg(args, "position")?.map(|p| p.min(u32::MAX as u64) as u32);
+        let before = str_arg(args, "before")?;
+        let after = str_arg(args, "after")?;
+        if usize::from(position.is_some())
+            + usize::from(before.is_some())
+            + usize::from(after.is_some())
+            != 1
+        {
+            return Err(err(
+                "invalid_request",
+                "pass exactly one of position, before and after",
+            ));
+        }
+        let result = self
+            .api
+            .call(Method::AgentsReorderGroup(AgentsReorderGroupParams {
+                caller_pane: caller.pane_id.clone(),
+                group,
+                position,
+                before,
+                after,
+            }))?;
+        let reorder: AgentsReorderResult = typed(result, "reorder")?;
+        Ok(reorder_reply("group", reorder))
     }
 
     fn create_group(&self, caller: &Caller, args: &Value) -> ToolResult {
@@ -2861,6 +2909,18 @@ fn message_row(message: &AgentMessage) -> String {
     )
 }
 
+/// `group pt (w2) now 1 of 3` (or `already 1 of 3`).
+fn reorder_reply(what: &str, reorder: AgentsReorderResult) -> Reply {
+    let state = if reorder.moved { "now" } else { "already" };
+    Reply::new(
+        format!(
+            "{what} {} ({}) {state} {} of {}",
+            reorder.label, reorder.id, reorder.position, reorder.of
+        ),
+        json!({ "id": reorder.id, "label": reorder.label, "position": reorder.position, "of": reorder.of, "moved": reorder.moved }),
+    )
+}
+
 fn involves(message: &AgentMessage, who: &str) -> bool {
     message.from_pane.as_deref() == Some(who)
         || message.from_name.as_deref() == Some(who)
@@ -2991,7 +3051,7 @@ fn wait_seconds(description: &str) -> Value {
     json!({ "type": "integer", "minimum": 0, "maximum": api::MAX_WAIT_S, "description": description })
 }
 
-/// The 25 herdr_agents tools, in [`TOOL_NAMES`] order.
+/// The herdr_agents tools, in [`TOOL_NAMES`] order.
 pub fn tools() -> Vec<Value> {
     let target = string("Agent name, pane id (w2:p3), tab id (w2:t3), tab label or `coordinator`");
     let notes_target = string(
@@ -3140,6 +3200,18 @@ pub fn tools() -> Vec<Value> {
             "inputSchema": schema(json!({ "target": target }), &["target"]) }),
         json!({ "name": "agents_restart", "description": "Restart an idle agent: it exits and resumes the same session once its pane is ready (fresh process, same conversation). Only an idle agent (so not yourself, mid-turn). Free in your team; outside it refused; never the coordinator.",
             "inputSchema": schema(json!({ "target": target }), &["target"]) }),
+        json!({ "name": "agents_reorder_tab", "description": "Move a tab to another place among its group's tabs (1 = first). Free in your team (your own tab too); outside it refused; never the coordinator's tab. The coordinator: in your user's turn.",
+            "inputSchema": schema(json!({
+                "target": target,
+                "position": { "type": "integer", "minimum": 1, "description": "1-based place among the group's tabs" },
+            }), &["target", "position"]) }),
+        json!({ "name": "agents_reorder_group", "description": "Move a group in the sidebar: to a 1-based position among the groups, or directly before / after another group (exactly one). The group order is your user's whole sidebar: only the coordinator, in its user's turn, may do it (anyone else gets `coordinator_only`). The ungrouped tabs stay first.",
+            "inputSchema": schema(json!({
+                "group": string("Group id, label or number"),
+                "position": { "type": "integer", "minimum": 1, "description": "1-based place among the groups" },
+                "before": string("Put it directly before this group"),
+                "after": string("Put it directly after this group"),
+            }), &["group"]) }),
         json!({ "name": "agents_manage", "description": "Kept for older sessions: every agent is part of herdr+ now. Sets role and note like agents_set_meta (a project goes into the note); use agents_set_meta.",
             "inputSchema": schema(json!({
                 "target": string("Default: yourself"),
@@ -3817,6 +3889,10 @@ mod tests {
                     queue.retain(|id| *id != params.id);
                     Ok(json!({ "type": "agent_message_claim", "claimed": queue.len() < before }))
                 }
+                Method::AgentsReorderTab(params) => Ok(json!({ "type": "agents_reorder",
+                    "reorder": AgentsReorderResult { id: "w2:t4".into(), label: params.target, position: params.position, of: 3, moved: true } })),
+                Method::AgentsReorderGroup(params) => Ok(json!({ "type": "agents_reorder",
+                    "reorder": AgentsReorderResult { id: "w2".into(), label: params.group, position: params.position.unwrap_or(1), of: 2, moved: true } })),
                 Method::AgentsRenameTab(params) => Ok(json!({ "type": "agents_rename_tab",
                     "rename": AgentsRenameResult { tab_id: "w2:t4".into(), name: params.name } })),
                 Method::AgentsMoveTab(params) => Ok(json!({ "type": "agents_move_tab",
@@ -3967,7 +4043,7 @@ mod tests {
     }
 
     #[test]
-    fn initialize_lists_twenty_eight_tools_and_every_tool_parses_its_arguments() {
+    fn initialize_lists_thirty_tools_and_every_tool_parses_its_arguments() {
         let (dir, world) = world("mcp-tools");
         world.set("w2:p3", |lead| lead.user_turn = true);
         let mut s = session(&world, "w2:p3", Verdict::Verified);
@@ -3983,7 +4059,7 @@ mod tests {
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
             .unwrap();
         let tools = list["result"]["tools"].as_array().unwrap().clone();
-        assert_eq!(tools.len(), 28);
+        assert_eq!(tools.len(), 30);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(names, TOOL_NAMES, "listed in TOOL_NAMES order");
         for tool in &tools {
@@ -4043,6 +4119,14 @@ mod tests {
             ("agents_suspend", json!({ "target": "rev" })),
             ("agents_activate", json!({ "target": "rev" })),
             ("agents_restart", json!({ "target": "rev" })),
+            (
+                "agents_reorder_tab",
+                json!({ "target": "rev", "position": 1 }),
+            ),
+            (
+                "agents_reorder_group",
+                json!({ "group": "demo", "position": 1 }),
+            ),
             ("agents_manage", json!({ "note": "busy with the API" })),
             ("agents_unmanage", json!({})),
         ];
@@ -4087,7 +4171,7 @@ mod tests {
     #[test]
     fn close_and_reopen_are_the_only_tools_not_preapproved() {
         let approved: Vec<&str> = preapproved_tools().collect();
-        assert_eq!(approved.len(), 26);
+        assert_eq!(approved.len(), 28);
         for tool in TOOL_NAMES {
             assert_eq!(
                 approved.contains(&tool),
@@ -4246,7 +4330,7 @@ mod tests {
         let list = s
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
             .unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 28);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 30);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5255,6 +5339,43 @@ mod tests {
         assert!(last.reads_messages && last.ack);
         let bad = call(&mut s, "agents_messages", json!({ "id": "hello" }));
         assert!(bad.is_error && body(&bad).starts_with("error invalid_request"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_reorder_tools_pass_one_placement_to_the_server() {
+        let (dir, world) = world("mcp-reorder");
+        let mut s = session(&world, "w2:p3", Verdict::Verified);
+        let out = call(&mut s, "agents_reorder_group", json!({ "group": "demo" }));
+        assert!(out.is_error && body(&out).starts_with("error invalid_request"));
+        let out = call(
+            &mut s,
+            "agents_reorder_group",
+            json!({ "group": "demo", "position": 1, "after": "search-it" }),
+        );
+        assert!(out.is_error, "{}", out.text);
+        let out = call(
+            &mut s,
+            "agents_reorder_group",
+            json!({ "group": "demo", "after": "search-it" }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(body(&out), "group demo (w2) now 1 of 2");
+        let Method::AgentsReorderGroup(params) = &world.calls_of("agents.reorder_group")[0] else {
+            panic!("reorder_group");
+        };
+        assert_eq!(params.caller_pane, "w2:p3");
+        assert_eq!(params.after.as_deref(), Some("search-it"));
+        assert_eq!(params.position, None);
+        let out = call(
+            &mut s,
+            "agents_reorder_tab",
+            json!({ "target": "rev", "position": 2 }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(out.data["position"], 2);
+        let out = call(&mut s, "agents_reorder_tab", json!({ "target": "rev" }));
+        assert!(out.is_error && body(&out).starts_with("error invalid_request"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

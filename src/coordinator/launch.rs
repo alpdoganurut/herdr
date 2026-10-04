@@ -552,7 +552,13 @@ mod tests {
             assert!(entry.starts_with(&format!("mcp__{MCP_KEY}__")), "{entry}");
         }
         assert!(agent.contains("mcp__herdr_agents__agents_send_message"));
-        for tool in ["agents_suspend", "agents_activate", "agents_restart"] {
+        for tool in [
+            "agents_suspend",
+            "agents_activate",
+            "agents_restart",
+            "agents_reorder_tab",
+            "agents_reorder_group",
+        ] {
             assert!(
                 agent.contains(&format!("mcp__herdr_agents__{tool}")),
                 "{tool}"

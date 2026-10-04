@@ -21,6 +21,8 @@
 //! | OwnOnly | ✓ | own_only | own_only | UT | own_only |
 //! | Close | UT | UT | outside_team | UT | protected_tab |
 //! | TeamStructure (D2) | UT | UT | outside_team | UT | - |
+//! | ReorderTab (in a team group; no team: outside_team) | ✓ | ✓ | outside_team | UT | protected_tab |
+//! | ReorderGroup (the user's whole sidebar) | coordinator_only | coordinator_only | coordinator_only | UT | - |
 //!
 //! The user may do everything.
 
@@ -131,6 +133,10 @@ pub enum Action {
     OwnOnly(OwnOnly),
     Close,
     TeamStructure(TeamOp),
+    /// A tab's place among its group's tabs.
+    ReorderTab,
+    /// A group's place in the sidebar (every group moves with it).
+    ReorderGroup,
 }
 
 /// The caller's turn and the facts the hints name.
@@ -184,6 +190,7 @@ fn coordinator(relation: Relation, action: Action, facts: &Facts) -> Decision {
         action,
         Action::Close
             | Action::MoveTab { .. }
+            | Action::ReorderTab
             | Action::SoftEdit(
                 SoftEdit::RenameTab | SoftEdit::SuspendRestart | SoftEdit::Activate { .. }
             )
@@ -268,6 +275,17 @@ fn agent(team: bool, relation: Relation, action: Action, facts: &Facts) -> Decis
             Protected | Other => outside_team(facts),
             SelfPane | Teammate => turn_gate(facts),
         },
+        // Reordering moves the other tabs of the group too: free inside the
+        // caller's own team only (its own tab in a plain group included).
+        Action::ReorderTab => match relation {
+            Protected => protected(facts),
+            SelfPane | Teammate if team => Decision::Allow,
+            SelfPane | Teammate | Other => outside_team(facts),
+        },
+        Action::ReorderGroup => deny(
+            error_code::COORDINATOR_ONLY,
+            "the group order is your user's whole sidebar: only your user, or the coordinator at their request, reorders groups".into(),
+        ),
     }
 }
 
@@ -389,6 +407,8 @@ mod tests {
         out.push(Action::Close);
         out.push(Action::TeamStructure(TeamOp::Make));
         out.push(Action::TeamStructure(TeamOp::Purpose));
+        out.push(Action::ReorderTab);
+        out.push(Action::ReorderGroup);
         out
     }
 
@@ -441,6 +461,7 @@ mod tests {
             Action::SoftEdit(SoftEdit::SuspendRestart),
             Action::SoftEdit(SoftEdit::Activate { by_agent: true }),
             Action::SoftEdit(SoftEdit::Activate { by_agent: false }),
+            Action::ReorderTab,
         ] {
             assert_eq!(
                 code(authorize(
@@ -680,6 +701,63 @@ mod tests {
             assert_eq!(agent(Relation::SelfPane, action, true), "allow");
             assert_eq!(agent(Relation::Other, action, true), "outside_team");
         }
+    }
+
+    #[test]
+    fn tabs_reorder_inside_the_team_and_groups_only_for_the_user() {
+        let reorder = Action::ReorderTab;
+        assert_eq!(agent(Relation::SelfPane, reorder, false), "allow");
+        assert_eq!(agent(Relation::Teammate, reorder, false), "allow");
+        assert_eq!(agent(Relation::Other, reorder, true), "outside_team");
+        assert_eq!(agent(Relation::Protected, reorder, true), "protected_tab");
+        // Without a team even its own tab: it moves the group's other tabs.
+        for relation in [Relation::SelfPane, Relation::Teammate] {
+            assert_eq!(
+                code(authorize(
+                    Actor::Agent { team: false },
+                    relation,
+                    reorder,
+                    &facts(true)
+                )),
+                "outside_team"
+            );
+        }
+        for relation in RELATIONS {
+            for actor in [Actor::Agent { team: true }, Actor::Agent { team: false }] {
+                assert_eq!(
+                    code(authorize(
+                        actor,
+                        relation,
+                        Action::ReorderGroup,
+                        &facts(true)
+                    )),
+                    "coordinator_only"
+                );
+            }
+        }
+        assert_eq!(
+            code(authorize(
+                Actor::Coordinator,
+                Relation::Other,
+                Action::ReorderGroup,
+                &facts(false)
+            )),
+            "non_user_turn"
+        );
+        assert!(authorize(
+            Actor::Coordinator,
+            Relation::Other,
+            Action::ReorderGroup,
+            &facts(true)
+        )
+        .is_allowed());
+        assert!(authorize(
+            Actor::User,
+            Relation::Other,
+            Action::ReorderGroup,
+            &facts(false)
+        )
+        .is_allowed());
     }
 
     #[test]

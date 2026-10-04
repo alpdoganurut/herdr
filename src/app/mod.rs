@@ -17,6 +17,7 @@ mod agents;
 mod agents_close;
 pub(crate) mod agents_migrate;
 pub(crate) mod agents_model;
+mod agents_reorder;
 mod browser;
 mod closed_sessions;
 mod codex_sessions;

@@ -337,6 +337,10 @@ pub enum Method {
     AgentsRestart(agents_model::AgentsLifecycleParams),
     #[serde(rename = "agents.read_messages")]
     AgentsReadMessages(agents_model::AgentsReadMessagesParams),
+    #[serde(rename = "agents.reorder_group")]
+    AgentsReorderGroup(agents_model::AgentsReorderGroupParams),
+    #[serde(rename = "agents.reorder_tab")]
+    AgentsReorderTab(agents_model::AgentsReorderTabParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

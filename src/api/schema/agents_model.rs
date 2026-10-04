@@ -37,6 +37,8 @@ pub mod method {
     pub const ACTIVATE: &str = "agents.activate";
     pub const RESTART: &str = "agents.restart";
     pub const READ_MESSAGES: &str = "agents.read_messages";
+    pub const REORDER_GROUP: &str = "agents.reorder_group";
+    pub const REORDER_TAB: &str = "agents.reorder_tab";
 
     /// The one method advertised to client shells (the TUI's "Set role…").
     #[cfg(test)]
@@ -44,7 +46,7 @@ pub mod method {
 
     /// Every method.
     #[cfg(test)]
-    pub const ALL: [&str; 18] = [
+    pub const ALL: [&str; 20] = [
         ACTOR,
         DIRECTORY,
         READ,
@@ -63,6 +65,8 @@ pub mod method {
         ACTIVATE,
         RESTART,
         READ_MESSAGES,
+        REORDER_GROUP,
+        REORDER_TAB,
     ];
 }
 
@@ -111,6 +115,9 @@ pub mod error_code {
     pub const AGENT_REFUSED: &str = "agent_refused";
     /// The underlying operation failed.
     pub const FAILED: &str = "failed";
+    /// Only the user, or the coordinator in its user's turn, may do that
+    /// (the group order).
+    pub const COORDINATOR_ONLY: &str = "coordinator_only";
 }
 
 // ----- enums ----------------------------------------------------------------
@@ -453,6 +460,37 @@ pub struct AgentsReadMessagesParams {
     pub caller_pane: String,
     /// Message ids (`m…`), at most 16.
     pub ids: Vec<String>,
+}
+
+/// `agents.reorder_group`: move a group in the sidebar (the user's whole
+/// sidebar: the coordinator in its user's turn, or the user). Exactly one of
+/// `position`, `before` and `after`. The first space (the ungrouped tabs)
+/// stays first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsReorderGroupParams {
+    pub caller_pane: String,
+    /// A group id, label or number.
+    pub group: String,
+    /// 1-based among the groups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<u32>,
+    /// Put it directly before this group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    /// Put it directly after this group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+}
+
+/// `agents.reorder_tab`: move a tab among its group's tabs (free in the
+/// caller's team).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsReorderTabParams {
+    pub caller_pane: String,
+    /// A tab id, pane id, agent name or tab label.
+    pub target: String,
+    /// 1-based among its group's tabs.
+    pub position: u32,
 }
 
 /// `agents.rename_tab`.
@@ -847,6 +885,20 @@ pub struct AgentsDeliveredMessage {
     pub first_read: bool,
 }
 
+/// `agents.reorder_group` and `agents.reorder_tab`: where it is now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsReorderResult {
+    /// The group's workspace id or the tab's id.
+    pub id: String,
+    pub label: String,
+    /// 1-based, among the groups or among the group's tabs.
+    pub position: u32,
+    /// How many groups or tabs there are.
+    pub of: u32,
+    /// `false` when it already was there.
+    pub moved: bool,
+}
+
 /// `agents.rename_tab`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentsRenameResult {
@@ -961,7 +1013,7 @@ pub struct AgentActionEntry {
 
 /// The type names the params structs may reference (digest hygiene).
 #[cfg(test)]
-pub const PARAM_TYPES: [&str; 19] = [
+pub const PARAM_TYPES: [&str; 21] = [
     "AgentsActorParams",
     "AgentsDirectoryParams",
     "AgentsReadParams",
@@ -981,6 +1033,8 @@ pub const PARAM_TYPES: [&str; 19] = [
     "AgentsCheckAction",
     "AgentsLifecycleParams",
     "AgentsReadMessagesParams",
+    "AgentsReorderGroupParams",
+    "AgentsReorderTabParams",
 ];
 
 #[cfg(test)]
