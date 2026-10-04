@@ -447,6 +447,83 @@ impl App {
         }
     }
 
+    /// The pane an agent integration hook reports for (`pane.report_*`,
+    /// `pane.clear_agent_authority`, `pane.release_agent`). The hook sends
+    /// its `HERDR_PANE_ID`, which goes stale like a caller's: when the id
+    /// names no pane, or a pane whose known process is not the reporter's,
+    /// the single pane hosting the reporting process takes the report. An
+    /// id whose pane hosts the reporter, or whose process is unknown, is
+    /// never redirected; in-process calls and unknown reporters keep the
+    /// plain resolution. A stale id that named no pane becomes an alias of
+    /// the found pane (kept in its meta), so later reports and restarts
+    /// resolve it directly.
+    pub(crate) fn resolve_reported_pane(&mut self, reported: &str) -> Option<(usize, PaneId)> {
+        let parsed = self.parse_pane_id(reported);
+        let Some(peer) = self.agents_model.caller_process else {
+            return parsed;
+        };
+        if self.agents_model.delegating > 0 {
+            return parsed;
+        }
+        let ancestry = crate::platform::process_ancestry(peer);
+        self.reported_pane_by_ancestry(reported, parsed, &ancestry)
+    }
+
+    /// [`Self::resolve_reported_pane`] for a known process chain.
+    pub(crate) fn reported_pane_by_ancestry(
+        &mut self,
+        reported: &str,
+        parsed: Option<(usize, PaneId)>,
+        ancestry: &[u32],
+    ) -> Option<(usize, PaneId)> {
+        if let Some((ws_idx, pane_id)) = parsed {
+            // Only a known, different process proves the id is not the
+            // reporter's own pane.
+            let pid = self
+                .state
+                .workspaces
+                .get(ws_idx)
+                .and_then(|ws| ws.pane_state(pane_id))
+                .and_then(|state| self.terminal_runtimes.get(&state.attached_terminal_id))
+                .and_then(|runtime| runtime.child_pid());
+            if pid.is_none_or(|pid| ancestry.contains(&pid)) {
+                return parsed;
+            }
+        }
+        let found = self.caller_pane_by_ancestry(reported, parsed, ancestry);
+        if parsed.is_none() {
+            if let Some((ws_idx, pane_id)) = found {
+                self.remember_stale_pane_id(reported, ws_idx, pane_id);
+            }
+        }
+        found
+    }
+
+    /// A stale public pane id (`<group>:p<n>`) that names no pane now names
+    /// `pane_id`, live and in the pane's meta (persisted like a move alias).
+    fn remember_stale_pane_id(&mut self, stale: &str, ws_idx: usize, pane_id: PaneId) {
+        let well_formed = stale.rsplit_once(":p").is_some_and(|(group, number)| {
+            !group.is_empty() && crate::workspace::decode_public_number(number).is_some()
+        });
+        if !well_formed {
+            return;
+        }
+        let Some(terminal_id) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_state(pane_id))
+            .map(|state| state.attached_terminal_id.clone())
+        else {
+            return;
+        };
+        self.state
+            .public_pane_id_aliases
+            .insert(stale.to_string(), pane_id);
+        self.state.remember_public_alias(&terminal_id, stale);
+        self.state.mark_session_dirty();
+    }
+
     /// The caller from `caller_pane`; `None` (absent) is the user.
     pub(crate) fn model_caller(
         &self,

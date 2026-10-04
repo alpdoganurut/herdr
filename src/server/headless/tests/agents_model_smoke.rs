@@ -369,3 +369,179 @@ async fn fork_smoke_agents_stale_caller_matching_several_panes_is_refused() {
     let kept = actor(&mut server, Some(me), &fixer);
     assert_eq!(kept["result"]["actor"]["pane_id"], fixer.as_str(), "{kept}");
 }
+
+const SESSION: &str = "5b21611c-f122-4167-be9a-d57b522a9979";
+
+/// A Claude `SessionStart` hook report for `pane_id`, sent by `peer`.
+fn report_session(
+    server: &mut HeadlessServer,
+    peer: Option<u32>,
+    pane_id: &str,
+) -> serde_json::Value {
+    api_from(
+        server,
+        peer,
+        Method::PaneReportAgentSession(crate::api::schema::PaneReportAgentSessionParams {
+            pane_id: pane_id.into(),
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            seq: Some(1),
+            agent_session_id: Some(SESSION.into()),
+            agent_session_path: None,
+            session_start_source: Some("resume".into()),
+        }),
+    )
+}
+
+fn reported_session(server: &mut HeadlessServer, pane: crate::layout::PaneId) -> Option<String> {
+    terminal(server, pane)
+        .persistable_agent_session()
+        .map(|session| session.session_ref.value)
+}
+
+#[tokio::test]
+async fn fork_smoke_agents_stale_hook_report_is_found_by_its_process() {
+    let (mut server, _input, panes) = crew_server();
+    let me = std::process::id();
+    set_pane_pid(&mut server, panes[0], UNRELATED_PID);
+    set_pane_pid(&mut server, panes[1], me);
+
+    // The hook's HERDR_PANE_ID names no pane any more (a tab moved by an
+    // older herdr): the pane running the hook takes the report.
+    let landed = report_session(&mut server, Some(me), "w9:p99");
+    assert_eq!(landed["result"]["type"], "ok", "{landed}");
+    assert_eq!(
+        reported_session(&mut server, panes[1]).as_deref(),
+        Some(SESSION)
+    );
+    assert_eq!(reported_session(&mut server, panes[0]), None);
+
+    // Self-heal: the stale id is now an alias of that pane, live and in its
+    // meta, so it resolves without a peer and survives a restart.
+    assert_eq!(
+        server.app.parse_pane_id("w9:p99"),
+        Some((1, panes[1])),
+        "the stale id resolves directly"
+    );
+    assert!(terminal(&mut server, panes[1])
+        .agent_meta()
+        .public_aliases
+        .iter()
+        .any(|alias| alias == "w9:p99"));
+    let metadata = api_from(
+        &mut server,
+        None,
+        Method::PaneReportMetadata(
+            serde_json::from_value(serde_json::json!({
+                "pane_id": "w9:p99",
+                "source": "herdr:claude",
+                "agent": "claude",
+                "title": "healed",
+            }))
+            .expect("metadata params"),
+        ),
+    );
+    assert_eq!(metadata["result"]["type"], "ok", "{metadata}");
+    let captured = crate::persist::capture(
+        &server.app.state.workspaces,
+        &server.app.state.terminals,
+        &server.app.terminal_runtimes,
+        Some(1),
+        0,
+    );
+    let json = serde_json::to_string(&captured).expect("session snapshot encodes");
+    let snapshot: crate::persist::SessionSnapshot =
+        serde_json::from_str(&json).expect("session snapshot decodes");
+    let aliases: Vec<String> = snapshot.workspaces[1]
+        .tabs
+        .iter()
+        .flat_map(|tab| tab.panes.values())
+        .filter_map(|pane| pane.agent_meta.as_ref())
+        .flat_map(|meta| meta.public_aliases.clone())
+        .collect();
+    assert_eq!(
+        aliases,
+        vec!["w9:p99".to_string()],
+        "persisted with the pane"
+    );
+}
+
+#[tokio::test]
+async fn fork_smoke_agents_stale_hook_report_without_its_process_is_refused() {
+    let (mut server, _input, panes) = crew_server();
+    let me = std::process::id();
+    set_pane_pid(&mut server, panes[0], UNRELATED_PID);
+    set_pane_pid(&mut server, panes[1], UNRELATED_PID + 1);
+
+    // No pane runs the reporter: refused as before, and no alias is made.
+    let refused = report_session(&mut server, Some(me), "w9:p99");
+    assert_eq!(refused["error"]["code"], "pane_not_found", "{refused}");
+    assert_eq!(server.app.parse_pane_id("w9:p99"), None);
+    // No socket peer (an in-process or client request): the id alone.
+    set_pane_pid(&mut server, panes[1], me);
+    let refused = report_session(&mut server, None, "w9:p99");
+    assert_eq!(refused["error"]["code"], "pane_not_found", "{refused}");
+    // In-process delegation never looks at the peer either.
+    server.app.agents_model.caller_process = Some(me);
+    server.app.agents_model.delegating = 1;
+    assert_eq!(server.app.resolve_reported_pane("w9:p99"), None);
+    server.app.agents_model.delegating = 0;
+    server.app.agents_model.caller_process = None;
+    assert_eq!(reported_session(&mut server, panes[1]), None);
+}
+
+#[tokio::test]
+async fn fork_smoke_agents_hook_report_with_a_good_id_is_not_redirected() {
+    let (mut server, _input, panes) = crew_server();
+    let me = std::process::id();
+    let lead = public(&server, panes[0]);
+    let fixer = public(&server, panes[1]);
+    set_pane_pid(&mut server, panes[1], me);
+
+    // The id names the reporter's own pane: kept.
+    let kept = report_session(&mut server, Some(me), &fixer);
+    assert_eq!(kept["result"]["type"], "ok", "{kept}");
+    assert_eq!(
+        reported_session(&mut server, panes[1]).as_deref(),
+        Some(SESSION)
+    );
+
+    // The id names a pane whose process is unknown: nothing proves it is
+    // not the reporter's, so it is kept.
+    server.app.terminal_runtimes.remove(
+        &server.app.state.workspaces[1]
+            .pane_state(panes[0])
+            .unwrap()
+            .attached_terminal_id
+            .clone(),
+    );
+    let kept = report_session(&mut server, Some(me), &lead);
+    assert_eq!(kept["result"]["type"], "ok", "{kept}");
+    assert_eq!(
+        reported_session(&mut server, panes[0]).as_deref(),
+        Some(SESSION)
+    );
+    // A live id never becomes an alias.
+    assert!(server.app.state.public_pane_id_aliases.is_empty());
+}
+
+#[tokio::test]
+async fn fork_smoke_agents_hook_report_naming_another_process_pane_is_redirected() {
+    let (mut server, _input, panes) = crew_server();
+    let me = std::process::id();
+    set_pane_pid(&mut server, panes[0], UNRELATED_PID);
+    set_pane_pid(&mut server, panes[1], me);
+    let lead = public(&server, panes[0]);
+
+    // A stale id that now names another pane (with another known process):
+    // the reporter's own pane takes it; the live id is not aliased.
+    let landed = report_session(&mut server, Some(me), &lead);
+    assert_eq!(landed["result"]["type"], "ok", "{landed}");
+    assert_eq!(
+        reported_session(&mut server, panes[1]).as_deref(),
+        Some(SESSION)
+    );
+    assert_eq!(reported_session(&mut server, panes[0]), None);
+    assert!(server.app.state.public_pane_id_aliases.is_empty());
+    assert_eq!(server.app.parse_pane_id(&lead), Some((1, panes[0])));
+}

@@ -26,7 +26,7 @@ impl App {
         id: String,
         params: PaneReportSubagentParams,
     ) -> String {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+        let Some((ws_idx, pane_id)) = self.resolve_reported_pane(&params.pane_id) else {
             return encode_error(
                 id,
                 "pane_not_found",
