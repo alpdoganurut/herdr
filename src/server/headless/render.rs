@@ -464,6 +464,8 @@ impl HeadlessServer {
         let mut teams_frame = super::teams::PassFrame::default();
         // Fork: panes in voice mode, likewise.
         let mut voice_frame = super::voice::PassFrame::default();
+        // Fork (sidebar v2): agent state times, likewise.
+        let mut agent_times_frame = super::agent_times::PassFrame::default();
         for (client_id, (cols, rows), cell_size, _is_foreground, mode) in render_targets {
             #[cfg(unix)]
             if matches!(mode, ClientConnectionMode::TerminalObserve { .. })
@@ -612,6 +614,16 @@ impl HeadlessServer {
                     &mut voice_frame,
                 ) {
                     warn!(client_id, err = %err, "failed to send voice modes");
+                    broken_clients.push(client_id);
+                    continue;
+                }
+                if let Err(err) = super::agent_times::sync_client(
+                    &self.app,
+                    &self.client_shell_boot_id,
+                    client,
+                    &mut agent_times_frame,
+                ) {
+                    warn!(client_id, err = %err, "failed to send agent times");
                     broken_clients.push(client_id);
                     continue;
                 }

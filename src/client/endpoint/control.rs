@@ -16,6 +16,8 @@ pub(crate) enum EndpointControlMessage {
     Teams(crate::server::headless::teams::TeamsPayload),
     /// Fork: the endpoint's panes in voice mode (`endpoint.voice.v1`).
     Voice(crate::server::headless::voice::VoicePayload),
+    /// Fork (sidebar v2): when each agent entered its state (`endpoint.agent-times.v1`).
+    AgentTimes(crate::server::headless::agent_times::AgentTimesPayload),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -52,6 +54,14 @@ pub(crate) fn decode_endpoint_control(
         return Ok(crate::server::headless::voice::VoicePayload::decode(data)
             .map(EndpointControlMessage::Voice)
             .unwrap_or(EndpointControlMessage::Ignored));
+    }
+    // Fork (sidebar v2): agent state times, optional like voice.
+    if kind == crate::server::headless::agent_times::AGENT_TIMES_KIND {
+        return Ok(
+            crate::server::headless::agent_times::AgentTimesPayload::decode(data)
+                .map(EndpointControlMessage::AgentTimes)
+                .unwrap_or(EndpointControlMessage::Ignored),
+        );
     }
     if kind == crate::protocol::endpoint::AGENT_VIEW_PROJECTION_KIND {
         let Ok(projection): Result<crate::protocol::endpoint::EndpointAgentViewProjection, _> =
@@ -290,5 +300,35 @@ mod tests {
             ClientEndpointId::Ssh(ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap());
         assert!(protocol_failure_is_fatal(&ClientEndpointId::Local));
         assert!(!protocol_failure_is_fatal(&remote));
+    }
+
+    #[test]
+    fn agent_times_round_trip_and_garbage_is_ignored() {
+        use crate::server::headless::agent_times::{AgentTimesPayload, AGENT_TIMES_KIND};
+        let payload = AgentTimesPayload {
+            boot_id: "boot".into(),
+            revision: 3,
+            server_now_unix_ms: 10_000,
+            panes: vec![crate::app::agent_times::AgentTimePane {
+                pane_id: "w1:p1".into(),
+                state_change_seq: 2,
+                since_unix_ms: 4_000,
+            }],
+        };
+        let crate::protocol::ServerMessage::EndpointControl { kind, data } =
+            payload.message().unwrap()
+        else {
+            panic!("expected a control message");
+        };
+        let EndpointControlMessage::AgentTimes(decoded) =
+            decode_endpoint_control(&kind, &data).unwrap()
+        else {
+            panic!("decoded agent times");
+        };
+        assert_eq!(decoded, payload);
+        assert!(matches!(
+            decode_endpoint_control(AGENT_TIMES_KIND, "{garbage").unwrap(),
+            EndpointControlMessage::Ignored
+        ));
     }
 }

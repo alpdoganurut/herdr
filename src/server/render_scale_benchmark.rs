@@ -241,6 +241,7 @@ fn print_profiles_with_config(label: &str, build: fn(usize) -> Vec<Workspace>, c
     let rows = CARDINALITIES.map(|count| {
         let mut pipeline = RenderPipeline::with_config(build(count), config);
         pipeline.app.state.ensure_test_terminals();
+        let now_ms = crate::codex_sessions::now_unix_ms();
         let terminal_ids: Vec<_> = pipeline
             .app
             .state
@@ -261,10 +262,15 @@ fn print_profiles_with_config(label: &str, build: fn(usize) -> Vec<Workspace>, c
             };
             terminal.set_detected_state(Some(crate::detect::Agent::Claude), state);
             terminal.last_agent_state_change_seq = Some(index as u64 + 1);
+            // Fork (sidebar v2): when the state began, minutes apart, so
+            // the Active agents block draws durations.
+            terminal.agent_state_since_unix_ms =
+                Some(now_ms.saturating_sub((index as u64 + 1) * 60_000));
             if state == crate::detect::AgentState::Idle {
                 terminal.last_agent_completion_seq = Some(index as u64 + 1);
             }
         }
+        pipeline.app.state.agent_times_view_rev = 1;
         let snapshot = super::client_shell::snapshot(&pipeline.app, "bench-boot", 1, None, None);
         let live_pane = snapshot.agents.first().map(|agent| agent.pane_id.clone());
         pipeline.client.set_snapshot(Box::new(snapshot));
@@ -280,6 +286,16 @@ fn print_profiles_with_config(label: &str, build: fn(usize) -> Vec<Workspace>, c
                 .client
                 .receive_voice(&crate::client::endpoint::ClientEndpointId::Local, voice);
         }
+        // Fork (sidebar v2): the agent times push, as the render pass sends it.
+        let times = super::headless::agent_times::AgentTimesPayload {
+            boot_id: "bench-boot".into(),
+            revision: pipeline.app.state.agent_times_view_rev,
+            server_now_unix_ms: now_ms,
+            panes: pipeline.app.agent_times(),
+        };
+        pipeline
+            .client
+            .receive_agent_times(&crate::client::endpoint::ClientEndpointId::Local, times);
         (count, profile_pipeline(pipeline))
     });
     print_profile_rows(label, &rows);

@@ -1970,6 +1970,19 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            // Fork (sidebar v2): agent state times (`shell/agent_times.rs`).
+                            Ok(endpoint::EndpointControlMessage::AgentTimes(payload)) => {
+                                if let Some(shell) = state.shell.as_mut() {
+                                    if shell.receive_agent_times(&endpoint_id, payload) {
+                                        if let Some(frame) = shell
+                                            .compose(state.reported_size.0, state.reported_size.1)
+                                        {
+                                            state.present_frame(frame);
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::Ignored) => {
                                 debug!(%kind, "ignoring unknown endpoint control message");
                                 continue;
@@ -2188,7 +2201,8 @@ async fn run_client_loop(
                             | shell.tick_copy_feedback(now)
                             | shell.tick_workspace_highlight(now)
                             | shell.tick_endpoint_error(now)
-                            | shell.tick_breathing(now);
+                            | shell.tick_breathing(now)
+                            | shell.tick_sidebar_clock(now);
                         let frame = outcome
                             .repaint
                             .then(|| shell.compose(state.reported_size.0, state.reported_size.1))

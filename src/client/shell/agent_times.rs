@@ -9,11 +9,6 @@
 //! lags the snapshot shows no time, never a wrong one. A state is used only
 //! while its `boot_id` is the active snapshot's.
 
-// Sidebar v2 S0b: the render pass (headless/render.rs), the control decoder
-// and the client dispatch wire this up in the data-push step; until then
-// the non-test build does not call it.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -100,6 +95,18 @@ impl ClientShellState {
         );
         self.sidebar_model.mark_dirty();
         true
+    }
+
+    /// When a shown time in state next changes its text (the tabs sidebar's
+    /// minute clock); `None` while no time shows.
+    pub(crate) fn next_sidebar_clock_deadline(&self) -> Option<Instant> {
+        self.hits.sidebar_clock_deadline
+    }
+
+    /// Whether the minute clock is due at `now` (the caller repaints).
+    pub(crate) fn tick_sidebar_clock(&self, now: Instant) -> bool {
+        self.next_sidebar_clock_deadline()
+            .is_some_and(|deadline| now >= deadline)
     }
 }
 

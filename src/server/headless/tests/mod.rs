@@ -25,12 +25,19 @@ fn client_shell_projection(
     protocol::endpoint::EndpointAgentCompletions,
 ) {
     let read_control = |expected| {
-        let ServerMessage::EndpointControl { kind, data } = read_server_message(
-            receiver
-                .recv_timeout(Duration::from_secs(1))
-                .expect("endpoint projection"),
-        ) else {
-            panic!("expected endpoint control {expected}");
+        let (kind, data) = loop {
+            let ServerMessage::EndpointControl { kind, data } = read_server_message(
+                receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("endpoint projection"),
+            ) else {
+                panic!("expected endpoint control {expected}");
+            };
+            // Fork (sidebar v2): the agent times push follows a state
+            // change's projection; it is not part of the pair.
+            if kind != crate::server::headless::agent_times::AGENT_TIMES_KIND {
+                break (kind, data);
+            }
         };
         assert_eq!(kind, expected);
         data

@@ -17,11 +17,6 @@
 //! A server that never saw a state change (revision 0) sends nothing; an
 //! older client ignores the unknown kind.
 
-// Sidebar v2 S0b: the render pass (headless/render.rs), the control decoder
-// and the client dispatch wire this up in the data-push step; until then
-// the non-test build does not call it.
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 use crate::app::agent_times::AgentTimePane;

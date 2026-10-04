@@ -1721,6 +1721,85 @@ async fn fork_smoke_voice_mode_reaches_every_client_keyed_like_the_agent_row() {
     assert!(off[0].panes.is_empty(), "voice mode off lists no pane");
 }
 
+fn agent_times_payloads(control: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<(String, String)> {
+    let mut payloads = Vec::new();
+    while let Ok(bytes) = control.try_recv() {
+        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+            if kind == crate::server::headless::agent_times::AGENT_TIMES_KIND {
+                payloads.push((kind, data));
+            }
+        }
+    }
+    payloads
+}
+
+fn report_state(server: &mut HeadlessServer, state: AgentState) {
+    let pane_id = root_pane(server);
+    server.app.handle_internal_event(AppEvent::StateChanged {
+        pane_id,
+        agent: Some(Agent::Claude),
+        state,
+        visible_blocker: false,
+        visible_working: state == AgentState::Working,
+        voice: crate::detect::AgentVoice::Off,
+        process_exited: false,
+        observed_at: std::time::Instant::now(),
+    });
+}
+
+/// Fork (sidebar v2): an agent state change reaches the client shell as
+/// `endpoint.agent-times.v1`, keyed by the pane id and `state_change_seq` the
+/// shell snapshot's agent row carries, and the client accepts it; an
+/// unchanged revision sends nothing.
+#[tokio::test]
+async fn agent_times_push_reaches_the_client_shell() {
+    let (mut server, _rx) = server_with_claude(None);
+    let (control, _render) = connect_test_shell(&mut server, 71, 80, 23);
+    server.render_and_stream();
+    assert!(
+        agent_times_payloads(&control).is_empty(),
+        "a server that never saw a state change sends nothing"
+    );
+
+    let before = crate::codex_sessions::now_unix_ms();
+    report_state(&mut server, AgentState::Working);
+    server.render_and_stream();
+    let snapshot = crate::server::client_shell::snapshot(&server.app, "fork-smoke", 1, None, None);
+    let row = &snapshot.agents[0];
+    assert_eq!(row.agent_status, AgentStatus::Working);
+    let payloads = agent_times_payloads(&control);
+    assert_eq!(payloads.len(), 1, "one payload per change");
+    let (kind, data) = &payloads[0];
+    let crate::client::endpoint::EndpointControlMessage::AgentTimes(payload) =
+        crate::client::endpoint::decode_endpoint_control(kind, data).expect("decodes")
+    else {
+        panic!("an agent times control message");
+    };
+    assert_eq!(payload.panes.len(), 1);
+    assert_eq!(
+        payload.panes[0].pane_id, row.pane_id,
+        "keyed like the agent row"
+    );
+    assert_eq!(payload.panes[0].state_change_seq, row.state_change_seq);
+    assert!(payload.panes[0].since_unix_ms >= before);
+    assert!(payload.server_now_unix_ms >= payload.panes[0].since_unix_ms);
+
+    // Nothing changed: no payload.
+    report_state(&mut server, AgentState::Working);
+    server.render_and_stream();
+    assert!(agent_times_payloads(&control).is_empty());
+
+    // The client shell takes it once (a repeat of the revision is ignored).
+    let mut shell = crate::client::ClientShellState::new(
+        crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),
+    );
+    assert!(shell.receive_agent_times(
+        &crate::client::endpoint::ClientEndpointId::Local,
+        payload.clone()
+    ));
+    assert!(!shell.receive_agent_times(&crate::client::endpoint::ClientEndpointId::Local, payload));
+}
+
 #[path = "fork_smoke/coordinator.rs"]
 mod coordinator;
 

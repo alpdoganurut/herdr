@@ -12,11 +12,6 @@
 //! bincode change). The time is runtime only: it restarts at the first state
 //! change after a server restart.
 
-// Sidebar v2 S0b: the render pass (headless/render.rs), the control decoder
-// and the client dispatch wire this up in the data-push step; until then
-// the non-test build does not call it.
-#![allow(dead_code)]
-
 use crate::api::schema::EventKind;
 
 use super::App;

@@ -860,6 +860,8 @@ impl App {
         }
         // Fork: panes in voice mode follow moves and closes (O(1)).
         self.note_voice_event(&event.event);
+        // Fork (sidebar v2): agent state times follow moves and closes (O(1)).
+        self.note_agent_times_event(&event.event);
         // Fork: agent cards follow their pane (O(cards), nothing without cards).
         if matches!(
             event.event,
