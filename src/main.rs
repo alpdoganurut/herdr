@@ -288,8 +288,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # A dragged width is remembered by the client.
 # info_pane_width = 44
 
-# Show the Active agents block (blocked, voice, working and finished agents)
-# above the tab list in the "tabs" sidebar layout; it hides while nothing is active.
+# Show the Active block (blocked, voice, working, running-subagent and finished
+# agents) above the tab list in the "tabs" sidebar layout; it hides while nothing is active.
 # sidebar_active_agents = true
 
 # Terminal width at or below which Herdr uses the mobile single-column layout.

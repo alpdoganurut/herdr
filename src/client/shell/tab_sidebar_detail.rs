@@ -21,13 +21,13 @@ use ratatui::{
 use super::render::{display_width, put_text, put_truncated, ShellRenderState};
 use super::sidebar_model::{
     format_age, next_age_tick, resolve_selected, PinnedKind, Row, Selected, SidebarModel, StackStr,
-    CLASS_BLOCKED, CLASS_DONE, CLASS_VOICE, CLASS_WORKING,
+    CLASS_BLOCKED, CLASS_DONE, CLASS_SUBAGENTS, CLASS_VOICE, CLASS_WORKING,
 };
 use super::*;
 use crate::api::schema::{AgentStatus, AgentVoiceMode, TabColor, TabRemindInterval};
 
 /// The active header subject's order hint.
-const ACTIVE_ORDER_HINT: &str = "blocked > voice > working > done";
+const ACTIVE_ORDER_HINT: &str = "blocked > voice > working > subagents > done";
 
 /// The strip's text rows at a sidebar content height (0: no strip).
 pub(super) fn detail_lines(content_height: u16) -> u16 {
@@ -223,7 +223,7 @@ fn tab_chips(
         (if parked { " (suspended)" } else { "" }, status_style),
     ]);
     let mut tick = None;
-    if super::tab_sidebar_active::shows_time(status) {
+    if super::tab_sidebar_active::shows_time(status, facts.subagents) {
         if let Some(since) = facts.since {
             let age = format_age(state.now.saturating_duration_since(since));
             chips.chip(&[(age.as_str(), fg(palette.overlay1))]);
@@ -444,7 +444,7 @@ fn group_chips(
     chips.chip(&[(if folded { "folded" } else { "open" }, dim)]);
 }
 
-/// The Active agents header (or its `+N more` row): counts per class and
+/// The Active header (or its `+N more` row): counts per class and
 /// the order.
 fn active_chips(chips: &mut Chips<'_>, model: &SidebarModel, config: &ClientShellConfig) {
     let palette = &config.palette;
@@ -457,6 +457,7 @@ fn active_chips(chips: &mut Chips<'_>, model: &SidebarModel, config: &ClientShel
         (CLASS_BLOCKED, "blocked"),
         (CLASS_VOICE, "voice"),
         (CLASS_WORKING, "working"),
+        (CLASS_SUBAGENTS, "subagents"),
         (CLASS_DONE, "done"),
     ] {
         let count = model

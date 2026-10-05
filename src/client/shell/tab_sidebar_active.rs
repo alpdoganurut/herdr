@@ -1,6 +1,6 @@
-//! The tabs sidebar's Active agents block (fork, sidebar v2): blocked,
-//! voice, working and finished agents above the list, with their time in
-//! state. Hidden entirely while nothing is active or when
+//! The tabs sidebar's Active block (fork, sidebar v2): blocked, voice,
+//! working, idle-with-subagents and finished agents above the list, with
+//! their time in state. Hidden entirely while nothing is active or when
 //! `ui.sidebar_active_agents = false`.
 //!
 //! The entries come sorted from `SidebarModel::active` (rebuilt on data
@@ -26,13 +26,13 @@ use ratatui::{
 use super::render::{display_width, put_text, put_truncated, ShellRenderState};
 use super::sidebar_model::{
     format_age, next_age_tick, ActiveEntry, ActiveView, PinnedKind, SidebarHover, SidebarModel,
-    StackStr, CLASS_BLOCKED, CLASS_DONE, CLASS_VOICE, CLASS_WORKING,
+    StackStr, CLASS_BLOCKED, CLASS_DONE, CLASS_SUBAGENTS, CLASS_VOICE, CLASS_WORKING,
 };
 use super::*;
 use crate::api::schema::{AgentStatus, AgentVoiceMode};
 
 /// The block title.
-pub(super) const ACTIVE_TITLE: &str = "Active agents";
+pub(super) const ACTIVE_TITLE: &str = "Active";
 /// The overflow row while expanded.
 pub(super) const SHOW_FEWER: &str = "show fewer";
 /// The most entry lines while expanded.
@@ -169,13 +169,15 @@ pub(super) fn render_active_block(
     }
 }
 
-/// Whether a status shows its time in state (an idle tab listed for its
-/// voice session does not).
-pub(super) fn shows_time(status: AgentStatus) -> bool {
-    matches!(
-        status,
-        AgentStatus::Working | AgentStatus::Blocked | AgentStatus::Done
-    )
+/// Whether a tab shows its time in state: working, blocked and finished
+/// tabs, and an idle one running subagents (its time since it went idle);
+/// an idle tab listed only for its voice session does not.
+pub(super) fn shows_time(status: AgentStatus, subagents: u32) -> bool {
+    match status {
+        AgentStatus::Working | AgentStatus::Blocked | AgentStatus::Done => true,
+        AgentStatus::Idle => subagents > 0,
+        _ => false,
+    }
 }
 
 /// The hairline rule: `─` from x = 1 to `width - 2`, in surface1.
@@ -237,7 +239,13 @@ fn render_header(
             .saturating_sub(2)
             .saturating_sub(present.saturating_sub(1) * 2);
         let mut x = first;
-        for class in [CLASS_BLOCKED, CLASS_VOICE, CLASS_WORKING, CLASS_DONE] {
+        for class in [
+            CLASS_BLOCKED,
+            CLASS_VOICE,
+            CLASS_WORKING,
+            CLASS_SUBAGENTS,
+            CLASS_DONE,
+        ] {
             if model.active_classes & (1 << class) == 0 {
                 continue;
             }
@@ -287,12 +295,19 @@ fn render_header(
 }
 
 /// The folded header's mark of a class: its status icon in its colour, the
-/// live mic for voice.
+/// live mic for voice, the subagent icon in the idle colour (as an idle
+/// tab row draws it) for idle tabs running subagents.
 pub(super) fn class_mark(class: u8, config: &ClientShellConfig) -> (&str, ratatui::style::Color) {
     let status = match class {
         CLASS_BLOCKED => AgentStatus::Blocked,
         CLASS_VOICE => return super::voice::voice_mark(AgentVoiceMode::Live, config),
         CLASS_WORKING => AgentStatus::Working,
+        CLASS_SUBAGENTS => {
+            return (
+                super::tab_sidebar::TAB_SUBAGENTS_ICON,
+                status_color(AgentStatus::Idle, &config.palette),
+            )
+        }
         _ => AgentStatus::Done,
     };
     (
@@ -324,8 +339,10 @@ impl EntryColumns {
             snapshot
                 .tabs
                 .get(entry.tab as usize)
-                .is_some_and(|tab| shows_time(tab.agent_status))
-                && facts(entry).is_some_and(|facts| facts.since.is_some())
+                .zip(facts(entry))
+                .is_some_and(|(tab, facts)| {
+                    shows_time(tab.agent_status, facts.subagents) && facts.since.is_some()
+                })
         });
         let has_subagents = visible
             .iter()
@@ -400,7 +417,7 @@ fn render_entry(
     let mut tick = None;
     if let (Some(x), Some(since)) = (
         line.columns.time,
-        facts.since.filter(|_| shows_time(status)),
+        facts.since.filter(|_| shows_time(status, facts.subagents)),
     ) {
         let age = format_age(line.now.saturating_duration_since(since));
         let width = display_width(age.as_str()).min(TIME_CELLS);
@@ -579,7 +596,7 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    /// The Active agents entry's tab id at `point`.
+    /// The Active entry's tab id at `point`.
     pub(super) fn sidebar_active_entry_at(&self, point: (u16, u16)) -> Option<String> {
         self.hits
             .sidebar_active_rows
@@ -588,7 +605,7 @@ impl ClientShellState {
             .map(|(_, tab_id)| tab_id.clone())
     }
 
-    /// A left press on the Active agents block: the header folds it, the
+    /// A left press on the Active block: the header folds it, the
     /// overflow row expands or shrinks it, an entry jumps to its tab. Never
     /// starts a drag. Returns whether the press was the block's.
     pub(super) fn sidebar_active_press(

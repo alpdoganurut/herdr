@@ -1,4 +1,4 @@
-//! The tabs sidebar's Active agents block, detail strip and derived model
+//! The tabs sidebar's Active block, detail strip and derived model
 //! (sidebar v2).
 //!
 //! The fixture has a blocked tab, a tab in live voice mode, two working tabs
@@ -320,7 +320,10 @@ fn active_block_orders_blocked_voice_working_done_by_seq() {
     let header = state.hits.sidebar_active_header;
     assert_eq!(header.y, 1, "right under the toolbar");
     let text = row_text(&frame, header);
-    assert!(text.contains("Active agents"), "{text:?}");
+    assert!(
+        text.contains("Active") && !text.contains("agents"),
+        "titled Active: {text:?}"
+    );
     assert_eq!(
         text.trim_end().chars().last(),
         Some('5'),
@@ -353,6 +356,109 @@ fn active_block_orders_blocked_voice_working_done_by_seq() {
         crate::protocol::color_to_u32(palette.surface1)
     );
     assert!(state.hits.agent_body.y > rule.y);
+}
+
+/// `t_home` idle with two subagents running (since eb0979d4 background
+/// work alone reads as idle).
+fn subagents_snapshot() -> ClientShellSnapshot {
+    let mut snapshot = active_snapshot();
+    for agent in &mut snapshot.agents {
+        if agent.pane_id == "p_home" {
+            agent.subagents = 2;
+        }
+    }
+    snapshot
+}
+
+#[test]
+fn active_block_lists_idle_tabs_running_subagents_after_working() {
+    let mut state = active_state();
+    state.set_snapshot(Box::new(subagents_snapshot()));
+    let received = Instant::now() + Duration::from_secs(86_400);
+    state.sidebar_clock = Some(received);
+    // Idle for 12m (the idle agent's own seq), working for 42m.
+    assert!(state.receive_agent_times_at(
+        &ClientEndpointId::Local,
+        times_payload(
+            1,
+            &[("p_home", 1, 12 * 60 * 1000), ("p_work", 3, 42 * 60 * 1000)]
+        ),
+        received,
+    ));
+    let frame = state.compose(COLS, ROWS).expect("composed frame");
+    assert_eq!(
+        active_ids(&state),
+        ["t_block", "t_voice", "t_work", "t_focus", "t_home", "t_done"],
+        "after working, before done"
+    );
+    let header = state.hits.sidebar_active_header;
+    assert_eq!(
+        row_text(&frame, header).trim_end().chars().last(),
+        Some('6'),
+        "counted in the header"
+    );
+    // The entry: the subagent icon in the idle colour, `⚭2`, its idle time.
+    let row = list_row(&state, &state.hits.sidebar_active_rows, "t_home");
+    let icon = cell(&frame, row.x + 3, row.y);
+    assert_eq!(icon.symbol, super::super::tab_sidebar::TAB_SUBAGENTS_ICON);
+    assert_eq!(
+        icon.fg,
+        crate::protocol::color_to_u32(status_color(AgentStatus::Idle, &state.config.palette))
+    );
+    let text = row_text(&frame, row);
+    assert!(text.contains("scratch"), "{text:?}");
+    assert!(text.contains("\u{26AD}2"), "{text:?}");
+    assert!(
+        text.trim_end().ends_with("12m"),
+        "time since idle: {text:?}"
+    );
+    // The voice entry (idle, no subagents) still shows no time.
+    let row = list_row(&state, &state.hits.sidebar_active_rows, "t_voice");
+    let text = row_text(&frame, row);
+    assert!(!text.trim_end().ends_with('m'), "{text:?}");
+
+    // Hovering the header counts the class.
+    mouse(&mut state, MouseEventKind::Moved, header.x + 4, header.y);
+    let frame = state.compose(COLS, ROWS).expect("composed frame");
+    let joined = detail_text(&state, &frame).join(" ");
+    assert!(joined.contains("1 subagents"), "{joined:?}");
+
+    // Folded: the subagent mark sits between working and done.
+    mouse(
+        &mut state,
+        MouseEventKind::Down(MouseButton::Left),
+        header.x + 4,
+        header.y,
+    );
+    let frame = state.compose(COLS, ROWS).expect("composed frame");
+    let header = state.hits.sidebar_active_header;
+    let last = header.right() - 2;
+    let done = status_icon(AgentStatus::Done, state.config.status_indicators);
+    let working = status_icon(AgentStatus::Working, state.config.status_indicators);
+    assert_eq!(cell(&frame, last, header.y).symbol, done);
+    assert_eq!(
+        cell(&frame, last - 2, header.y).symbol,
+        super::super::tab_sidebar::TAB_SUBAGENTS_ICON
+    );
+    assert_eq!(cell(&frame, last - 4, header.y).symbol, working);
+}
+
+#[test]
+fn idle_tab_running_subagents_without_times_lists_without_a_duration() {
+    let mut state = active_state();
+    state.set_snapshot(Box::new(subagents_snapshot()));
+    let frame = state.compose(COLS, ROWS).expect("composed frame");
+    assert!(active_ids(&state).contains(&"t_home"));
+    let row = list_row(&state, &state.hits.sidebar_active_rows, "t_home");
+    let text = row_text(&frame, row);
+    assert!(text.contains("\u{26AD}2"), "{text:?}");
+    assert!(!text.trim_end().ends_with('m'), "no time known: {text:?}");
+    assert_eq!(state.hits.sidebar_clock_deadline, None);
+
+    // Its subagents finish: it leaves the block.
+    state.set_snapshot(Box::new(active_snapshot()));
+    state.compose(COLS, ROWS).expect("composed frame");
+    assert!(!active_ids(&state).contains(&"t_home"));
 }
 
 #[test]
@@ -629,7 +735,10 @@ fn detail_strip_describes_hover_then_focused_tab() {
     mouse(&mut state, MouseEventKind::Moved, header.x + 4, header.y);
     let frame = state.compose(COLS, ROWS).expect("composed frame");
     let lines = detail_text(&state, &frame);
-    assert!(lines[0].contains("Active agents"), "{lines:?}");
+    assert!(
+        lines[0].contains("Active") && !lines[0].contains("agents"),
+        "{lines:?}"
+    );
     assert!(lines.join(" ").contains("1 blocked"), "{lines:?}");
 
     // A stale hover (the tab is gone) falls back to the focused tab.

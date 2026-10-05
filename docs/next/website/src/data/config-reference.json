@@ -1015,7 +1015,7 @@
           "key": "ui.sidebar_active_agents",
           "type": "boolean",
           "default": "true",
-          "description": "Show the Active agents block above the tab list in the \"tabs\" sidebar layout: blocked agents, agents in voice mode, working agents and finished agents you have not looked at, each with its time in that state. The block hides itself while nothing is active. Settings → indicators toggles it too."
+          "description": "Show the Active block above the tab list in the \"tabs\" sidebar layout: blocked agents, agents in voice mode, working agents, idle agents with subagents running and finished agents you have not looked at, each with its time in that state. The block hides itself while nothing is active. Settings → indicators toggles it too."
         },
         {
           "key": "ui.mobile_width_threshold",

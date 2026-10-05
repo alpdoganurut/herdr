@@ -1,5 +1,5 @@
 //! Derived state of the `tabs` sidebar (fork, sidebar v2): per-tab facts,
-//! the list rows and the Active agents list, computed on data change and
+//! the list rows and the Active list, computed on data change and
 //! read by the row painters in O(1).
 //!
 //! `SidebarModel::ensure` runs in `compose` for the expanded tabs layout. It
@@ -62,8 +62,8 @@ impl Default for TabFacts {
     }
 }
 
-/// One Active agents entry: an index into `snapshot.tabs` and its class
-/// (0 blocked, 1 voice, 2 working, 3 done).
+/// One Active block entry: an index into `snapshot.tabs` and its class
+/// (0 blocked, 1 voice, 2 working, 3 idle with subagents running, 4 done).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ActiveEntry {
     pub(crate) tab: u32,
@@ -84,7 +84,7 @@ pub(crate) enum Row {
     Tab { tab: u32 },
 }
 
-/// The Active agents block's view state for one frame.
+/// The Active block's view state for one frame.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ActiveView {
     /// `ui.sidebar_active_agents`.
@@ -146,7 +146,7 @@ pub(crate) struct SidebarModel {
     pub(crate) no_gaps: Vec<u16>,
     /// The focused tab's index, when it is a list tab.
     pub(crate) focused_tab: Option<u32>,
-    /// Active agents entries, sorted; empty when the block is disabled.
+    /// Active entries, sorted; empty when the block is disabled.
     pub(crate) active: Vec<ActiveEntry>,
     /// Bitset of the classes present in `active` (bit `class`).
     pub(crate) active_classes: u8,
@@ -360,8 +360,9 @@ impl SidebarModel {
             }
         }
 
-        // The Active agents list: blocked, then live voice, then working,
-        // then finished; within a class the longest in its state first.
+        // The Active list: blocked, then live voice, then working, then idle
+        // with subagents running, then finished; within a class the longest
+        // in its state first.
         self.active.clear();
         self.active_classes = 0;
         self.any_subagents_active = false;
@@ -370,7 +371,8 @@ impl SidebarModel {
                 if facts.pinned {
                     continue;
                 }
-                let Some(class) = active_class(tab.agent_status, facts.voice) else {
+                let Some(class) = active_class(tab.agent_status, facts.voice, facts.subagents)
+                else {
                     continue;
                 };
                 self.active.push(ActiveEntry {
@@ -396,16 +398,24 @@ impl SidebarModel {
     }
 }
 
-/// Active agents classes, in display order.
+/// Active classes, in display order.
 pub(crate) const CLASS_BLOCKED: u8 = 0;
 pub(crate) const CLASS_VOICE: u8 = 1;
 pub(crate) const CLASS_WORKING: u8 = 2;
-pub(crate) const CLASS_DONE: u8 = 3;
+/// An idle tab whose agents run subagents (background work reads as idle).
+pub(crate) const CLASS_SUBAGENTS: u8 = 3;
+pub(crate) const CLASS_DONE: u8 = 4;
 
-/// A tab's Active agents class: blocked, live voice (`Unknown` counts as
-/// live, as `voice::voice_mark` draws it), working, finished; `None` for an
-/// idle, unknown or suspended tab without live voice.
-pub(crate) fn active_class(status: AgentStatus, voice: Option<AgentVoiceMode>) -> Option<u8> {
+/// A tab's Active class: blocked, live voice (`Unknown` counts as live, as
+/// `voice::voice_mark` draws it), working, idle with subagents running
+/// (`subagents` as `TabFacts::subagents` counts them), finished; `None` for
+/// an idle tab without subagents or live voice, and for an unknown or
+/// suspended one.
+pub(crate) fn active_class(
+    status: AgentStatus,
+    voice: Option<AgentVoiceMode>,
+    subagents: u32,
+) -> Option<u8> {
     if status == AgentStatus::Blocked {
         return Some(CLASS_BLOCKED);
     }
@@ -414,6 +424,7 @@ pub(crate) fn active_class(status: AgentStatus, voice: Option<AgentVoiceMode>) -
     }
     match status {
         AgentStatus::Working => Some(CLASS_WORKING),
+        AgentStatus::Idle if subagents > 0 => Some(CLASS_SUBAGENTS),
         AgentStatus::Done => Some(CLASS_DONE),
         _ => None,
     }
@@ -587,30 +598,52 @@ mod tests {
     }
 
     #[test]
-    fn active_classes_put_blocked_then_live_voice_then_working_then_done() {
+    fn active_classes_put_blocked_then_live_voice_then_working_then_subagents_then_done() {
         assert_eq!(
-            active_class(AgentStatus::Blocked, Some(AgentVoiceMode::Live)),
+            active_class(AgentStatus::Blocked, Some(AgentVoiceMode::Live), 2),
             Some(CLASS_BLOCKED)
         );
         assert_eq!(
-            active_class(AgentStatus::Idle, Some(AgentVoiceMode::Live)),
+            active_class(AgentStatus::Idle, Some(AgentVoiceMode::Live), 2),
             Some(CLASS_VOICE)
         );
         assert_eq!(
-            active_class(AgentStatus::Idle, Some(AgentVoiceMode::Unknown)),
+            active_class(AgentStatus::Idle, Some(AgentVoiceMode::Unknown), 0),
             Some(CLASS_VOICE)
         );
         assert_eq!(
-            active_class(AgentStatus::Idle, Some(AgentVoiceMode::Muted)),
+            active_class(AgentStatus::Idle, Some(AgentVoiceMode::Muted), 0),
             None
         );
         assert_eq!(
-            active_class(AgentStatus::Working, Some(AgentVoiceMode::Muted)),
+            active_class(AgentStatus::Working, Some(AgentVoiceMode::Muted), 0),
             Some(CLASS_WORKING)
         );
-        assert_eq!(active_class(AgentStatus::Done, None), Some(CLASS_DONE));
-        assert_eq!(active_class(AgentStatus::Suspended, None), None);
-        assert_eq!(active_class(AgentStatus::Unknown, None), None);
+        assert_eq!(
+            active_class(AgentStatus::Working, None, 3),
+            Some(CLASS_WORKING)
+        );
+        assert_eq!(
+            active_class(AgentStatus::Idle, Some(AgentVoiceMode::Muted), 1),
+            Some(CLASS_SUBAGENTS)
+        );
+        assert_eq!(active_class(AgentStatus::Idle, None, 0), None);
+        assert_eq!(active_class(AgentStatus::Done, None, 0), Some(CLASS_DONE));
+        assert_eq!(
+            active_class(AgentStatus::Done, None, 2),
+            Some(CLASS_DONE),
+            "a finished turn stays done"
+        );
+        assert_eq!(active_class(AgentStatus::Suspended, None, 2), None);
+        assert_eq!(active_class(AgentStatus::Unknown, None, 2), None);
+        const {
+            assert!(
+                CLASS_BLOCKED < CLASS_VOICE
+                    && CLASS_VOICE < CLASS_WORKING
+                    && CLASS_WORKING < CLASS_SUBAGENTS
+                    && CLASS_SUBAGENTS < CLASS_DONE
+            );
+        }
     }
 
     #[test]

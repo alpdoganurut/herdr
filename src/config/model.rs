@@ -1121,8 +1121,8 @@ pub struct UiConfig {
     /// Default width (columns) of a tab's info pane until a width is dragged and remembered.
     /// 28 through 120. Default: 44.
     pub info_pane_width: u16,
-    /// Show the Active agents block (blocked, voice, working and finished agents) above the
-    /// tab list in the "tabs" sidebar layout. The block hides itself while nothing is active.
+    /// Show the Active block (blocked, voice, working, running-subagent and finished agents)
+    /// above the tab list in the "tabs" sidebar layout. The block hides itself while nothing is active.
     /// Default: true.
     pub sidebar_active_agents: bool,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
