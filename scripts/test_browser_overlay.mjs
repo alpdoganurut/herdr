@@ -1,15 +1,16 @@
-// Activity overlay checks that need no browser: the frame stays for the
-// directive's window (pulsing during an op, calmer after), a navigation
-// mid-window puts it back in the same state without stretching the window, a
-// gone pane dismisses it; the companion marks an active group's title and
-// unmarks it when the group collapses, and the worker's group code keeps its
-// ownership rules under the mark.
+// Activity overlay checks that need no browser: the frame stays FRAME_LINGER_MS
+// after the last act (pulsing during an op, calmer after) and the cursor
+// CURSOR_LINGER_MS after the last move, each capped by the directive's window;
+// a navigation mid-window puts the frame back in the same state without
+// stretching the window, a gone pane dismisses it; the companion marks an
+// active group's title and unmarks it when the group collapses, and the
+// worker's group code keeps its ownership rules under the mark.
 // Run: node scripts/test_browser_overlay.mjs   (also run by
 // integration::browser_assets::tests when node is on PATH)
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { Overlay, Companion, OVERLAY_JS, dismissPanes } from '../src/integration/assets/browser/activity.mjs';
+import { Overlay, Companion, OVERLAY_JS, dismissPanes, FRAME_LINGER_MS, CURSOR_LINGER_MS, LINGER_MS } from '../src/integration/assets/browser/activity.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function check(cond, msg) { if (!cond) { console.error(`FAIL: ${msg}`); process.exit(1); } }
@@ -29,9 +30,10 @@ await overlay.show('#00c8ff');
 check(evals.length === 1 && evals[0].startsWith(`(${OVERLAY_JS})(`) && evals[0].endsWith(', "#00c8ff", true)'), 'show installs the frame in the busy look');
 check(overlay.active && overlay.until === Infinity, 'an op in flight has no end');
 await overlay.moveTo(10, 20, false);
-check(overlay.cursor && overlay.cursor.x === 10 && overlay.cursor.y === 20, 'the cursor is remembered');
+check(overlay.cursor && overlay.cursor.x === 10 && overlay.cursor.y === 20 && overlay.cursorUntil === Infinity, 'the cursor is remembered and due until the op ends');
 overlay.linger(120);
-check(!overlay.active && overlay.until > Date.now() + 60 && overlay.until < Date.now() + 200, 'linger opens the window the directive names');
+check(!overlay.active && overlay.until > Date.now() + 60 && overlay.until < Date.now() + 200, 'a short window wins over the frame linger');
+check(overlay.cursorUntil > Date.now() + 60 && overlay.cursorUntil <= overlay.until, 'and over the cursor linger');
 await sleep(10);
 check(evals.some((e) => e.includes('busy(false)')), 'the frame settles to the calmer look when the op is done');
 // a navigation inside the window: the frame comes back idle, the cursor where it was, the window untouched
@@ -45,6 +47,7 @@ await overlay.suspend(true);
 check(evals.some((e) => e.includes('suspend(true)')), 'a screenshot hides the frame inside the window');
 await sleep(170);
 check(overlay.until === 0 && overlay.hideTimer === null && evals.some((e) => e.includes('hide(false)')), 'the frame fades at the end of the window');
+check(overlay.cursorUntil === 0 && overlay.cursorTimer === null && evals.some((e) => e.includes('hideCursor()')), 'and the cursor with it');
 evals.length = 0;
 await overlay.suspend(true);
 await overlay.reapply();
@@ -58,15 +61,62 @@ check(overlay.until === 0 && overlay.hideTimer === null && !overlay.active && ev
 evals.length = 0;
 await overlay.dismiss();
 check(evals.length === 0, 'a second dismiss has nothing to do');
-check(overlay.linger.length === 1 && (() => { const o = new Overlay({ session }); o.linger(undefined); const ok = o.until > Date.now() + 100000; o.dispose(); return ok; })(), 'no window in the directive: the default one');
-check((() => { const o = new Overlay({ session }); o.linger('x'); const ok = o.until > Date.now() + 100000; o.dispose(); return ok; })(), 'a window that is not a number: the default one');
+check(FRAME_LINGER_MS === 15000 && CURSOR_LINGER_MS === 5000 && LINGER_MS === 120000, 'the approved values');
+{
+  // the usual window (120 s): the frame fades 15 s after the act, the cursor 5 s after the move that showed it
+  const o = new Overlay({ session });
+  await o.show();
+  await o.moveTo(1, 2, false);
+  const t = Date.now();
+  o.linger(120000);
+  check(o.until >= t + FRAME_LINGER_MS - 5 && o.until <= Date.now() + FRAME_LINGER_MS, `the frame goes 15 s after the act: ${o.until - t}`);
+  check(o.cursorUntil >= t + CURSOR_LINGER_MS - 5 && o.cursorUntil <= Date.now() + CURSOR_LINGER_MS, `the cursor 5 s after the move: ${o.cursorUntil - t}`);
+  // a later act that does not move the cursor re-shows the frame and restarts its timer, the cursor's stays
+  await sleep(20);
+  const cursorDue = o.cursorUntil;
+  await o.show();
+  o.linger(120000);
+  check(o.until > t + FRAME_LINGER_MS + 10, 'every act restarts the frame timer');
+  check(o.cursorUntil === cursorDue, 'an act without a move leaves the cursor timer as it was');
+  // a move restarts the cursor timer
+  await o.show();
+  await sleep(20);
+  await o.moveTo(3, 4, false);
+  o.linger(120000);
+  check(o.cursorUntil > cursorDue + 10, 'a move restarts the cursor timer');
+  o.dispose();
+}
+{
+  // the cursor hides on its own; the frame stays (short lingers for the check)
+  const o = new Overlay({ session });
+  o.frameLingerMs = 80;
+  o.cursorLingerMs = 25;
+  await o.show();
+  await o.moveTo(5, 6, false);
+  evals.length = 0;
+  o.linger(120000);
+  await sleep(50);
+  check(evals.some((e) => e.includes('hideCursor()')) && !evals.some((e) => e.includes('hide(')), 'the cursor is hidden first, the frame is still up');
+  check(o.cursorUntil === 0 && o.until > Date.now(), 'the cursor is done, the frame window still open');
+  // a navigation now brings the frame back without the cursor
+  evals.length = 0;
+  o.navigated();
+  await o.reapply();
+  check(evals.length === 1 && evals[0].includes('(null, '), `the frame comes back, the cursor does not: ${evals[0] && evals[0].slice(-60)}`);
+  await sleep(60);
+  check(o.until === 0 && evals.some((e) => e.includes('hide(false)')), 'then the frame fades');
+  o.dispose();
+}
+check(overlay.linger.length === 1 && (() => { const o = new Overlay({ session }); o.linger(undefined); const ok = o.until > Date.now() + FRAME_LINGER_MS - 100 && o.until <= Date.now() + FRAME_LINGER_MS; o.dispose(); return ok; })(), 'no window in the directive: the default window, so the frame linger');
+check((() => { const o = new Overlay({ session }); o.linger('x'); const ok = o.until > Date.now() + FRAME_LINGER_MS - 100; o.dispose(); return ok; })(), 'a window that is not a number: the default one');
 {
   // a huge window is capped at the timer's limit and does not hide early (an overflowing setTimeout fires at once)
   const huge = new Overlay({ session });
   await huge.show();
   evals.length = 0;
   huge.linger(1e12);
-  check(huge.until <= Date.now() + 2 ** 31 - 1 && huge.until > Date.now() + 2 ** 31 - 10000, `a huge window is capped: ${huge.until - Date.now()}`);
+  check(huge.until <= Date.now() + FRAME_LINGER_MS && huge.until > Date.now() + FRAME_LINGER_MS - 100, `a huge window still means the frame linger: ${huge.until - Date.now()}`);
+  check(Overlay.window(1e12) === 2 ** 31 - 1 && Overlay.window(0) === 0 && Overlay.window('x') === LINGER_MS, 'the window itself is capped at the timer limit');
   await sleep(20);
   check(!evals.some((e) => e.includes('hide(')), 'and the frame did not hide early');
   huge.dispose();

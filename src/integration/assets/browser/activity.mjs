@@ -8,8 +8,12 @@ export const WORLD = 'herdr';
 export const HOST_ATTR = 'data-herdr-overlay';
 /** The companion worker code this sidecar expects (VERSION in companion/sw.js); an older running worker is reloaded. */
 export const COMPANION_VERSION = 11;
-/** The frame stays this long after the last operation when the directive names no window (`linger_ms`, [browser] active_glyph_secs). */
+/** The activity window when the directive names none (`linger_ms`, [browser] active_glyph_secs). */
 export const LINGER_MS = 120000;
+/** The frame fades this long after the agent's last act (or at the end of the window when that is shorter): steady through a burst of acts 5–20 s apart, gone soon after. */
+export const FRAME_LINGER_MS = 15000;
+/** The cursor hides this long after the last act that moved it (or at the end of the window when that is shorter); the frame stays. */
+export const CURSOR_LINGER_MS = 5000;
 /** The cursor's glide (matches the CSS transition). */
 export const GLIDE_MS = 350;
 /** The longest window a timer takes (Node's setTimeout limit; a longer delay would fire at once). */
@@ -55,7 +59,7 @@ export const OVERLAY_JS = `((cursor, color, busy) => {
       border-radius:6px;animation:pulse 2s ease-in-out infinite;transition:box-shadow .6s,border-color .6s}
     .frame.idle{animation:none;border-color:rgba(\${rgb},.7);box-shadow:inset 0 0 10px 2px rgba(\${rgb},.28)}
     @keyframes pulse{50%{box-shadow:inset 0 0 22px 6px rgba(\${rgb},.62)}}
-    .cur{position:fixed;left:-5px;top:-2.5px;width:24px;height:24px;transition:transform .35s cubic-bezier(.2,.8,.2,1);
+    .cur{position:fixed;left:-5px;top:-2.5px;width:24px;height:24px;transition:transform .35s cubic-bezier(.2,.8,.2,1),opacity .4s;
       filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}
     .ripple{position:fixed;width:28px;height:28px;margin:-14px 0 0 -14px;border-radius:50%;border:2px solid rgba(\${rgb},.9);
       animation:rip .5s ease-out forwards}
@@ -95,6 +99,8 @@ export const OVERLAY_JS = `((cursor, color, busy) => {
       cur.style.transform = 'translate(' + x + 'px,' + y + 'px)';
       if (!animate) { void cur.offsetWidth; cur.style.transition = ''; }
     },
+    hideCursor() { cur.style.opacity = '0'; },
+    probe() { return { frame: host.style.opacity, idle: frame.classList.contains('idle'), cursor: cur.style.opacity, hidden: host.style.visibility === 'hidden' }; },
     click(x, y) {
       const r = document.createElement('div');
       r.className = 'ripple'; r.style.left = x + 'px'; r.style.top = y + 'px';
@@ -106,12 +112,16 @@ export const OVERLAY_JS = `((cursor, color, busy) => {
 })`;
 
 /** The overlay of one page: an isolated-world context per document, the
- *  cursor's last position, the activity window. The frame pulses while an op
- *  runs (`show`), settles to the calmer look when it is done (`linger`) and
- *  fades at the end of the window — `[browser] active_glyph_secs`, the same
- *  window as the sidebar's ◎ — or at once when the pane is gone (`dismiss`).
- *  The cursor stays where the last op left it for the whole window; a new
- *  document in the window gets the frame back in the same state (`reapply`). */
+ *  cursor's last position, the two timers. The frame pulses while an op runs
+ *  (`show`), settles to the calmer look when it is done (`linger`) and fades
+ *  FRAME_LINGER_MS after the last act — every act re-shows it and restarts
+ *  that — or at the end of the activity window (`linger_ms`,
+ *  `[browser] active_glyph_secs`; the sidebar's ◎ and the group's ● keep the
+ *  whole window) when that is shorter, or at once when the pane is gone
+ *  (`dismiss`). The cursor hides on its own CURSOR_LINGER_MS after the last
+ *  act that moved it (the window again the cap); a new document inside the
+ *  window gets the frame back in the same state, the cursor only while it is
+ *  still due (`reapply`). */
 export class Overlay {
   constructor(state) {
     this.state = state;
@@ -121,6 +131,11 @@ export class Overlay {
     this.hideTimer = null;
     this.until = 0;
     this.active = false; // an op is running on the page
+    this.cursorTimer = null;
+    this.cursorUntil = 0; // Infinity between a move and the op's end
+    this.cursorAt = 0; // when the last act moved the cursor
+    this.frameLingerMs = FRAME_LINGER_MS; // (per instance so a check can shorten them)
+    this.cursorLingerMs = CURSOR_LINGER_MS;
     this.log = () => {};
   }
   async context() {
@@ -146,9 +161,15 @@ export class Overlay {
     }
     return undefined;
   }
-  /** Put the frame into the current document (idempotent; re-installed on a colour change), in the `busy` look or the idle one, the cursor where it was. */
+  /** Put the frame into the current document (idempotent; re-installed on a colour change), in the `busy` look or the idle one, the cursor where it was while it is still due. */
   install(busy) {
-    return this.eval(`(${OVERLAY_JS})(${JSON.stringify(this.cursor)}, ${JSON.stringify(this.color)}, ${busy ? 'true' : 'false'})`);
+    const cursor = this.cursorUntil > Date.now() ? this.cursor : null;
+    return this.eval(`(${OVERLAY_JS})(${JSON.stringify(cursor)}, ${JSON.stringify(this.color)}, ${busy ? 'true' : 'false'})`);
+  }
+  /** The activity window of a directive: as given, the default when missing or not a number, never past the timer's limit. */
+  static window(ms) {
+    const n = Number(ms);
+    return Math.min(Number.isFinite(n) && n >= 0 ? n : LINGER_MS, MAX_TIMER_MS);
   }
   /** An op began: the frame is up and pulsing until `linger`. */
   async show(color) {
@@ -158,33 +179,54 @@ export class Overlay {
     this.until = Infinity;
     return this.install(true);
   }
-  /** The op is done: the calmer look now, the fade at the end of the window (`ms`, the directive's `linger_ms`). */
+  /** The op is done: the calmer look now; the frame fades FRAME_LINGER_MS from
+   *  now and the cursor CURSOR_LINGER_MS from the act that moved it, each no
+   *  later than the end of the window (`ms`, the directive's `linger_ms`; an
+   *  explicit 0 means no linger at all). */
   linger(ms) {
-    const n = Number(ms);
-    ms = Math.min(Number.isFinite(n) && n >= 0 ? n : LINGER_MS, MAX_TIMER_MS); // an explicit 0 means no linger
+    const window = Overlay.window(ms);
+    const now = Date.now();
+    const frame = Math.min(window, this.frameLingerMs);
     this.active = false;
-    this.until = Date.now() + ms;
+    this.until = now + frame;
     this.eval('window.__herdrOverlay ? (__herdrOverlay.busy(false), "idle") : "absent"').catch(() => {});
     if (this.hideTimer) clearTimeout(this.hideTimer);
     this.hideTimer = setTimeout(() => {
       this.hideTimer = null;
       this.until = 0;
       this.eval('window.__herdrOverlay ? (__herdrOverlay.hide(false), "hidden") : "absent"').catch(() => {});
-    }, ms);
+    }, frame);
     if (this.hideTimer.unref) this.hideTimer.unref();
+    // the cursor: scheduled once per move, from the move; an op that did not move it leaves the timer be
+    if (this.cursorUntil === Infinity) {
+      const due = Math.max(0, this.cursorAt + Math.min(window, this.cursorLingerMs) - now);
+      this.cursorUntil = Math.min(now + due, this.until);
+      if (this.cursorTimer) clearTimeout(this.cursorTimer);
+      this.cursorTimer = setTimeout(() => {
+        this.cursorTimer = null;
+        this.cursorUntil = 0;
+        this.eval('window.__herdrOverlay ? (__herdrOverlay.hideCursor(), "cursor hidden") : "absent"').catch(() => {});
+      }, Math.min(due, frame));
+      if (this.cursorTimer.unref) this.cursorTimer.unref();
+    }
   }
-  /** The pane is gone: the frame goes now, whatever is left of the window. */
+  /** The pane is gone: the frame and the cursor go now, whatever is left of the window. */
   dismiss() {
     if (this.hideTimer) { clearTimeout(this.hideTimer); this.hideTimer = null; }
+    if (this.cursorTimer) { clearTimeout(this.cursorTimer); this.cursorTimer = null; }
     const up = this.until > Date.now();
     this.active = false;
     this.until = 0;
+    this.cursorUntil = 0;
     if (!up) return Promise.resolve();
     return this.eval('window.__herdrOverlay ? (__herdrOverlay.hide(true), "hidden") : "absent"').catch(() => {});
   }
-  /** Glide the cursor to a viewport point (and wait for the glide when animating). */
+  /** Glide the cursor to a viewport point (and wait for the glide when animating); it shows until CURSOR_LINGER_MS after the op ends. */
   async moveTo(x, y, animate) {
     this.cursor = { x, y };
+    this.cursorAt = Date.now();
+    this.cursorUntil = Infinity;
+    if (this.cursorTimer) { clearTimeout(this.cursorTimer); this.cursorTimer = null; }
     await this.eval(`__herdrOverlay.moveTo(${x},${y},${animate ? 'true' : 'false'})`);
     if (animate) await sleep(GLIDE_MS);
   }
@@ -204,8 +246,10 @@ export class Overlay {
   }
   dispose() {
     if (this.hideTimer) { clearTimeout(this.hideTimer); this.hideTimer = null; }
+    if (this.cursorTimer) { clearTimeout(this.cursorTimer); this.cursorTimer = null; }
     this.active = false;
     this.until = 0;
+    this.cursorUntil = 0;
   }
 }
 
@@ -456,8 +500,7 @@ export class Companion {
     // The directive's window as it is; missing or not a number: the default.
     // 0 is off: no group expanded or marked for the pane, no collapse later
     // (and, without a companion flag for "join quietly", no grouping either).
-    const n = Number(group.collapse_ms);
-    const ms = Math.min(Number.isFinite(n) && n >= 0 ? n : 120000, MAX_TIMER_MS);
+    const ms = Overlay.window(group.collapse_ms);
     if (ms === 0) return;
     const tabId = await this.tabIdFor(state);
     if (tabId == null || this.userUngrouped.has(tabId)) return;

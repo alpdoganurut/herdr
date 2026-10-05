@@ -69,10 +69,10 @@ pub struct BrowserConfig {
     /// logs in by hand).
     pub type_into_password_fields: bool,
     /// The activity window: a herdr tab whose pane used the browser within
-    /// this many seconds wears the `◎` glyph in the tabs sidebar, the page
-    /// frame and cursor stay on the tabs that pane worked on for as long, and
-    /// its tab group keeps the `●` mark in its title and stays expanded for
-    /// as long. Default: 120.
+    /// this many seconds wears the `◎` glyph in the tabs sidebar and its tab
+    /// group keeps the `●` mark in its title and stays expanded for as long.
+    /// The page frame and cursor fade sooner (15 s and 5 s after the last
+    /// act), or at the end of this window when it is shorter. Default: 120.
     pub active_glyph_secs: u64,
     /// How long a launch may take to answer `/json/version`. 3000..=120000 ms.
     pub launch_timeout_ms: u64,

@@ -497,8 +497,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Whether agents may type into password fields (the user logs in by hand otherwise).
 # type_into_password_fields = false
 # The activity window: a tab whose pane used the browser within this many seconds
-# wears the ◎ glyph, the page frame and cursor stay on its tabs for as long, and its
-# tab group keeps the ● mark in its title for as long.
+# wears the ◎ glyph and its tab group keeps the ● mark in its title for as long; the
+# page frame and cursor fade sooner (15 s and 5 s after the last act).
 # active_glyph_secs = 120
 # launch_timeout_ms = 15000
 # op_timeout_ms = 30000

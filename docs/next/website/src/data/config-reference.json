@@ -1720,7 +1720,7 @@
           "key": "browser.active_glyph_secs",
           "type": "integer",
           "default": "120",
-          "description": "The activity window: a herdr tab whose pane used the browser within this many seconds wears the `◎` glyph on its row in the `tabs` sidebar layout, the glow frame and cursor stay on the tabs that pane worked on for as long, and its tab group keeps the `●` activity mark in its title and stays expanded for as long (the pinned Browser row and its overlay show who is using which tab regardless)."
+          "description": "The activity window: a herdr tab whose pane used the browser within this many seconds wears the `◎` glyph on its row in the `tabs` sidebar layout, and its tab group keeps the `●` activity mark in its title and stays expanded for as long. The glow frame and cursor on the page fade sooner — the frame 15 s after the agent's last act, the cursor 5 s after the act that moved it — or at the end of this window when it is shorter (the pinned Browser row and its overlay show who is using which tab regardless)."
         },
         {
           "key": "browser.launch_timeout_ms",
@@ -1738,7 +1738,7 @@
           "key": "browser.show_activity",
           "type": "boolean",
           "default": "true",
-          "description": "Show agent activity in the Chromium window: the tabs an agent pane opens or acts on sit in a tab group named after the agent and its herdr tab (the companion extension, loaded with `--load-extension`; its title carries a `●` mark and the group stays expanded while the pane is active, both gone after `active_glyph_secs`), and a purple glow frame with a gliding cursor is injected into the page — pulsing while an operation runs, a calmer steady glow for the rest of the `active_glyph_secs` window with the cursor where the last operation left it, then a fade. `false` turns all three off; a running profile needs a restart to load or drop the extension."
+          "description": "Show agent activity in the Chromium window: the tabs an agent pane opens or acts on sit in a tab group named after the agent and its herdr tab (the companion extension, loaded with `--load-extension`; its title carries a `●` mark and the group stays expanded while the pane is active, both gone after `active_glyph_secs`), and a purple glow frame with a gliding cursor is injected into the page — pulsing while an operation runs, a calmer steady glow after it, fading 15 s after the agent's last act (the cursor hides 5 s after the act that moved it), or at the end of the `active_glyph_secs` window when it is shorter. `false` turns all three off; a running profile needs a restart to load or drop the extension."
         },
         {
           "key": "browser.group_symbols",
