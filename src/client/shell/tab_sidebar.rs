@@ -47,10 +47,9 @@
 //! its label at 7 (9 after a voice mark). Headers have no band (only while
 //! dragged). A tab row's marks (browser `◎`, `★`, the reminder) are packed
 //! flush right in that order with a one-cell margin, stride 2 (1 when the
-//! label would get fewer than `MIN_LABEL_CELLS`); the selected row (the
-//! hovered one, else the focused tab: `sidebar_model::resolve_selected`)
-//! adds the agent's harness glyph last, in its brand color, breathing while
-//! the tab works. From `SPACIOUS_HEIGHT` rows a blank spacer row sits before
+//! label would get fewer than `MIN_LABEL_CELLS`); the focused tab's row
+//! (`SidebarModel::focused_tab`, independent of hover) adds the agent's
+//! harness glyph last, in its brand color, breathing while the tab works. From `SPACIOUS_HEIGHT` rows a blank spacer row sits before
 //! every header with a row above it (`SidebarModel::gaps_after`, so scroll
 //! math counts it). The chrome rows (toolbar, Active agents block, detail
 //! strip, status footer, menu row) sit on `Palette::sidebar_chrome()`; the
@@ -367,12 +366,8 @@ pub(super) fn render_tab_sidebar_with(
     let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
     let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
 
-    // The selected tab (hovered, else focused) shows its harness glyph; a
-    // hovered row also gets the bar and the band.
-    let selected_tab = match selected {
-        Selected::Tab(index) | Selected::ActiveEntry(index) => Some(index),
-        _ => None,
-    };
+    // Only the focused tab shows its harness glyph, whatever is hovered; a
+    // hovered row gets the bar and the band.
     let hovered_group = match selected {
         Selected::Group(index) => Some(index),
         _ => None,
@@ -442,7 +437,7 @@ pub(super) fn render_tab_sidebar_with(
                 };
                 let mut marks = Marks::default();
                 push_reminder_marks(&mut marks, tab, state, palette);
-                if selected_tab == Some(tab_index) {
+                if model.focused_tab == Some(tab_index) {
                     if let Some(harness) =
                         harness_mark(snapshot, tab, facts, background, state, config)
                     {
@@ -1313,7 +1308,7 @@ fn push_reminder_marks(
     }
 }
 
-/// The selected row's harness glyph (`ui.tab_agent_glyphs` for the tab's
+/// The focused tab row's harness glyph (`ui.tab_agent_glyphs` for the tab's
 /// last agent, `shell` without one) in its brand color, breathing over
 /// `background` while the tab works. `None` for an empty glyph.
 struct HarnessMark<'c> {

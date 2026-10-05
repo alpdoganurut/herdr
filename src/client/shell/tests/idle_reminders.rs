@@ -999,7 +999,7 @@ fn rows_show_star_and_clock_before_the_glyph_and_light_them_once_fired() {
         .iter()
         .map(|(rect, _)| row_text(&frame, *rect))
         .collect::<Vec<_>>();
-    // Packed flush right; the harness glyph only on the selected row.
+    // Packed flush right; the harness glyph only on the focused row.
     assert!(
         rows[1].trim_end().ends_with("\u{2605} \u{25F7}"),
         "star, clock: {rows:?}"
@@ -1016,8 +1016,8 @@ fn rows_show_star_and_clock_before_the_glyph_and_light_them_once_fired() {
     assert!(
         row_text(&frame, rect)
             .trim_end()
-            .ends_with("\u{2605} \u{25F7} \u{29C6}"),
-        "star, clock, glyph when selected"
+            .ends_with("\u{2605} \u{25F7}"),
+        "hovering does not add the glyph"
     );
     state.sidebar_hover = None;
 
@@ -1044,9 +1044,17 @@ fn rows_show_star_and_clock_before_the_glyph_and_light_them_once_fired() {
         ("\u{25F7}".to_string(), color_to_u32(palette.accent))
     );
 
-    // Focusing the tab clears both.
+    // Focusing the tab clears both, and its row gets the glyph.
     state.set_snapshot(Box::new(with_tab_2_focused(snapshot)));
     state.tick_notifications(t0 + 31 * MINUTE);
+    let frame = state.compose(106, 20).expect("composed frame");
+    let (rect, _) = state.hits.sidebar_tabs[1];
+    assert!(
+        row_text(&frame, rect)
+            .trim_end()
+            .ends_with("\u{2605} \u{25F7} \u{29C6}"),
+        "star, clock, glyph when focused"
+    );
     assert_eq!(
         marker_cells(&mut state),
         [

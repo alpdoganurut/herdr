@@ -87,14 +87,23 @@ fn tabs_state(statuses: [AgentStatus; 3]) -> ClientShellState {
     state
 }
 
-/// Hover a tab row (`None`: nothing hovered, the focused tab is selected).
+/// Focus the tab at `index`: only the focused row shows the glyph.
+fn focus(state: &mut ClientShellState, statuses: [AgentStatus; 3], index: usize) {
+    let mut snapshot = working_snapshot(statuses);
+    for (tab_index, tab) in snapshot.tabs.iter_mut().enumerate() {
+        tab.focused = tab_index == index;
+    }
+    state.set_snapshot(Box::new(snapshot));
+}
+
+/// Hover a tab row (`None`: nothing hovered).
 fn hover(state: &mut ClientShellState, tab_id: Option<&str>) {
     state.sidebar_hover =
         tab_id.map(|tab_id| super::super::sidebar_model::SidebarHover::Tab(tab_id.into()));
 }
 
 /// The glyph cell's fg on each tab row, composed at `phase` of the breath.
-/// Only the selected row (hovered, else focused) shows the glyph.
+/// Only the focused row shows the glyph, whatever is hovered.
 fn glyph_fgs(state: &mut ClientShellState, phase: f32) -> Vec<u32> {
     state.breathe_clock =
         Some(state.breathe_epoch + Duration::from_secs_f32(PERIOD.as_secs_f32() * phase));
@@ -165,7 +174,8 @@ fn working_glyphs_breathe_through_a_cycle_and_others_stay() {
     );
     assert_eq!(half[0], color_to_u32(expected));
 
-    // A hovered working row breathes over the hover band.
+    // A focused, hovered working row breathes over the hover band.
+    focus(&mut state, WORKING, 1);
     hover(&mut state, Some("tab_2"));
     let rest = glyph_fgs(&mut state, 0.0);
     let half = glyph_fgs(&mut state, 0.5);
@@ -178,8 +188,9 @@ fn working_glyphs_breathe_through_a_cycle_and_others_stay() {
     );
     assert_eq!(half[1], color_to_u32(expected));
 
-    // A hovered idle row shows its glyph, steady.
-    hover(&mut state, Some("tab_3"));
+    // A focused idle row shows its glyph, steady.
+    focus(&mut state, WORKING, 2);
+    hover(&mut state, None);
     let rest = glyph_fgs(&mut state, 0.0);
     let half = glyph_fgs(&mut state, 0.5);
     assert_eq!(half[2], rest[2], "an idle tab does not breathe");
@@ -188,14 +199,22 @@ fn working_glyphs_breathe_through_a_cycle_and_others_stay() {
 
 #[test]
 fn an_unselected_working_tab_does_not_breathe() {
-    // tab_1 (focused) idle, tab_2 working: nothing selected works.
-    let mut state = tabs_state([AgentStatus::Idle, AgentStatus::Working, AgentStatus::Idle]);
+    // tab_1 (focused) idle, tab_2 working: the focused tab does not work.
+    let statuses = [AgentStatus::Idle, AgentStatus::Working, AgentStatus::Idle];
+    let mut state = tabs_state(statuses);
     state.compose(106, 20).expect("composed frame");
     assert!(!state.hits.breathing, "the working row shows no glyph");
     assert_eq!(state.next_breathe_deadline(), None);
 
-    // Hovering the working row selects it: its glyph breathes.
+    // Hovering the working row does not give it the glyph.
     hover(&mut state, Some("tab_2"));
+    state.compose(106, 20).expect("composed frame");
+    assert!(!state.hits.breathing, "hover does not move the glyph");
+    assert_eq!(state.next_breathe_deadline(), None);
+
+    // Focusing it does: its glyph breathes.
+    hover(&mut state, None);
+    focus(&mut state, statuses, 1);
     state.compose(106, 20).expect("composed frame");
     assert!(state.hits.breathing);
     assert!(state.next_breathe_deadline().is_some());
@@ -278,14 +297,14 @@ mod fork_smoke {
 
     #[test]
     fn a_working_tab_glyph_breathes_and_schedules_frames() {
-        // The focused (selected) tab works: its glyph breathes.
+        // The focused tab works: its glyph breathes.
         let mut state = tabs_state(WORKING);
         let rest = glyph_fgs(&mut state, 0.0);
         let half = glyph_fgs(&mut state, 0.5);
         assert_ne!(half[0], rest[0], "the working glyph dims half way");
         assert!(state.next_breathe_deadline().is_some());
-        // A selected idle tab's glyph does not.
-        hover(&mut state, Some("tab_3"));
+        // A focused idle tab's glyph does not.
+        focus(&mut state, WORKING, 2);
         let rest = glyph_fgs(&mut state, 0.0);
         let half = glyph_fgs(&mut state, 0.5);
         assert_eq!(half[2], rest[2], "the idle one does not");

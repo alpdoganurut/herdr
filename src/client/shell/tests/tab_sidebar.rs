@@ -827,7 +827,7 @@ fn hover_tab(state: &mut ClientShellState, tab_id: &str) -> FrameData {
 }
 
 #[test]
-fn harness_glyph_shows_only_on_the_selected_row() {
+fn harness_glyph_shows_only_on_the_focused_row() {
     let mut snapshot = two_space_snapshot();
     let mut codex = agent("pane_2", "tab_2", AgentStatus::Idle);
     codex.agent = Some("codex".into());
@@ -854,13 +854,42 @@ fn harness_glyph_shows_only_on_the_selected_row() {
         assert!(row.ends_with(|c: char| c.is_alphanumeric()), "{rows:?}");
     }
 
-    // The hovered row shows its own glyph instead, the rest none.
-    for (index, tab_id, glyph) in [
+    // Hovering another row (or its Active agents entry) leaves the glyph on
+    // the focused row; the hovered row shows none.
+    let glyphs = [
         (1, "tab_2", '\u{29C7}'), // codex
         (2, "tab_3", '\u{237E}'), // another agent
         (3, "tab_4", '\u{29C5}'), // a plain shell
-    ] {
-        let frame = hover_tab(&mut state, tab_id);
+    ];
+    for (_, tab_id, _) in glyphs {
+        for hover in [
+            super::super::sidebar_model::SidebarHover::Tab(tab_id.into()),
+            super::super::sidebar_model::SidebarHover::ActiveEntry(tab_id.into()),
+        ] {
+            state.sidebar_hover = Some(hover);
+            let frame = state.compose(106, 20).expect("composed frame");
+            let rows = tab_rows(&state, &frame);
+            assert!(
+                rows[0].ends_with('\u{29C6}'),
+                "the focused row keeps the glyph: {rows:?}"
+            );
+            for row in &rows[1..] {
+                assert!(row.ends_with(|c: char| c.is_alphanumeric()), "{rows:?}");
+            }
+        }
+    }
+    let frame = hover_tab(&mut state, "tab_gone");
+    assert!(tab_rows(&state, &frame)[0].ends_with('\u{29C6}'));
+
+    // Focusing another tab moves the glyph there, the rest none.
+    state.sidebar_hover = None;
+    for (index, tab_id, glyph) in glyphs {
+        let mut focused = snapshot.clone();
+        for tab in &mut focused.tabs {
+            tab.focused = tab.tab_id == tab_id;
+        }
+        state.set_snapshot(Box::new(focused));
+        let frame = state.compose(106, 20).expect("composed frame");
         let rows = tab_rows(&state, &frame);
         for (row_index, row) in rows.iter().enumerate() {
             assert_eq!(
@@ -869,15 +898,8 @@ fn harness_glyph_shows_only_on_the_selected_row() {
                 "{tab_id}: {rows:?}"
             );
         }
-        assert!(
-            !rows[0].ends_with('\u{29C6}'),
-            "the focused row gives the glyph up: {rows:?}"
-        );
+        assert!(!rows[0].ends_with('\u{29C6}'), "{rows:?}");
     }
-
-    // A stale hover (a tab that is gone) falls back to the focused tab.
-    let frame = hover_tab(&mut state, "tab_gone");
-    assert!(tab_rows(&state, &frame)[0].ends_with('\u{29C6}'));
 
     let mut config = tabs_config();
     config
@@ -944,12 +966,18 @@ fn focused_tab_glyph_wears_the_agent_brand_color() {
         "an unselected row shows no glyph: {cells:?}"
     );
 
-    // A hovered row's glyph wears the brand color on the hover band.
+    // Hovering another row leaves the glyph on the focused one.
     let frame = hover_tab(&mut state, "tab_2");
     let cells = glyph_cells(&state, &frame);
-    assert_eq!(cells[1].0, "\u{29C6}", "{cells:?}");
-    assert_eq!(cells[1].1, orange);
-    assert_eq!(cells[1].2, color_to_u32(palette.sidebar_hover_bg()));
+    assert_eq!(cells[0].0, "\u{29C6}", "{cells:?}");
+    assert_eq!(cells[1].0, " ", "the hovered row shows no glyph: {cells:?}");
+
+    // The hovered focused row's glyph wears the brand color on the band.
+    let frame = hover_tab(&mut state, "tab_1");
+    let cells = glyph_cells(&state, &frame);
+    assert_eq!(cells[0].0, "\u{29C6}", "{cells:?}");
+    assert_eq!(cells[0].1, orange);
+    assert_eq!(cells[0].2, color_to_u32(palette.sidebar_hover_bg()));
 
     // A focused shell tab keeps the monochrome glyph.
     let (state, frame) = glyph_color_state(&tabs_config(), "tab_3");
@@ -2868,13 +2896,18 @@ fn headers_have_no_band_and_bold_names() {
 
 /// `two_space_snapshot` with `tab_1` (focused, claude) important, on a
 /// 30-minute reminder and marked by the browser.
-fn marked_state(config: &Config) -> ClientShellState {
-    use crate::api::schema::browser::{BrowserGetInfo, BrowserPaneCursor, BrowserProfileInfo};
+fn marked_snapshot() -> ClientShellSnapshot {
     let mut snapshot = two_space_snapshot();
     snapshot.agents = vec![agent("pane_1", "tab_1", AgentStatus::Idle)];
     snapshot.tabs[0].agent_status = AgentStatus::Idle;
     snapshot.tabs[0].important = true;
     snapshot.tabs[0].remind_every = Some(crate::api::schema::TabRemindInterval::M30);
+    snapshot
+}
+
+fn marked_state(config: &Config) -> ClientShellState {
+    use crate::api::schema::browser::{BrowserGetInfo, BrowserPaneCursor, BrowserProfileInfo};
+    let snapshot = marked_snapshot();
     let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
     state.set_snapshot(Box::new(snapshot));
     state.set_pane_surface(surface());
@@ -2903,7 +2936,7 @@ fn marks_pack_flush_right_in_order() {
     let frame = state.compose(106, 20).expect("composed frame");
     let (rect, _) = state.hits.sidebar_tabs[0];
     let row = row_text(&frame, rect);
-    // ◎ ★ ◷ then the selected row's harness glyph, the last at width-2
+    // ◎ ★ ◷ then the focused row's harness glyph, the last at width-2
     // with a one-cell margin.
     assert!(row.ends_with("◎ ★ ◷ \u{29C6} "), "{row:?}");
     assert!(row.starts_with("     ○ reviewer "), "{row:?}");
@@ -2913,10 +2946,20 @@ fn marks_pack_flush_right_in_order() {
     assert_eq!(fg(6), rgb(palette.overlay0), "★ unlit");
     assert_eq!(fg(4), rgb(palette.overlay0), "◷ unlit");
 
-    // Not selected: the reminder marks move right into the glyph's place.
+    // Hovering another row keeps the glyph here.
     state.sidebar_hover = Some(super::super::sidebar_model::SidebarHover::Tab(
         "tab_3".into(),
     ));
+    let frame = state.compose(106, 20).expect("composed frame");
+    let (rect, _) = state.hits.sidebar_tabs[0];
+    assert!(row_text(&frame, rect).ends_with("◎ ★ ◷ \u{29C6} "));
+
+    // Not focused: the reminder marks move right into the glyph's place.
+    let mut snapshot = marked_snapshot();
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == "tab_3";
+    }
+    state.set_snapshot(Box::new(snapshot));
     let frame = state.compose(106, 20).expect("composed frame");
     let (rect, _) = state.hits.sidebar_tabs[0];
     assert!(row_text(&frame, rect).ends_with("◎ ★ ◷ "));
@@ -2959,9 +3002,9 @@ fn pinned_rows_align_with_the_headers_and_take_the_hover_band() {
         rgb(palette.sidebar_hover_bg()),
         "the band spans the row"
     );
-    // A hovered pinned row selects no tab: no harness glyph in the list.
+    // A hovered pinned row leaves the glyph on the focused tab.
     let (rect, _) = state.hits.sidebar_tabs[0];
-    assert!(row_text(&frame, rect).ends_with("◎ ★ ◷ "));
+    assert!(row_text(&frame, rect).ends_with("◎ ★ ◷ \u{29C6} "));
 }
 
 #[test]
