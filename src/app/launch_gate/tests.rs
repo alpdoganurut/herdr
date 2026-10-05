@@ -97,7 +97,7 @@ fn launches(ctx: &LaunchCtx) -> Vec<(&'static str, &'static str, Vec<String>)> {
 }
 
 #[tokio::test]
-async fn every_herdr_launch_types_a_short_line_that_runs_the_full_command() {
+async fn fork_smoke_every_herdr_launch_types_a_short_line_that_runs_the_full_command() {
     for (what, kind, args) in launches(&LaunchCtx::current(temp_dir("ctx"), 0).expect("ctx")) {
         let dir = temp_dir("typed");
         let (mut app, pane_id, mut rx) = launch_app(&dir);
@@ -248,7 +248,7 @@ fn model_launch_app(name: &str) -> (App, PathBuf) {
 }
 
 #[tokio::test]
-async fn open_tab_waits_for_the_new_shell_then_types_the_launch() {
+async fn fork_smoke_open_tab_waits_for_the_new_shell_then_types_the_launch() {
     let (mut app, dir) = model_launch_app("open-waits");
     let tabs_before = app.state.workspaces[1].tabs.len();
     app.coordinator.assume_shell_starting = true;

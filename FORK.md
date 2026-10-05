@@ -1769,8 +1769,8 @@ server::headless::tests::agents_model_smoke::fork_smoke_agents_hook_report_namin
 client::shell::tests::voice::fork_smoke_a_live_tab_gets_a_red_dot_a_muted_one_a_dim_ring_and_an_off_one_nothing
 app::voice::tests::fork_smoke_a_voice_report_reaches_the_agent_info_and_the_push_without_touching_the_status
 server::headless::tests::fork_smoke::fork_smoke_voice_mode_reaches_every_client_keyed_like_the_agent_row
-app::launch_gate::tests::open_tab_waits_for_the_new_shell_then_types_the_launch
-app::launch_gate::tests::every_herdr_launch_types_a_short_line_that_runs_the_full_command
+app::launch_gate::tests::fork_smoke_open_tab_waits_for_the_new_shell_then_types_the_launch
+app::launch_gate::tests::fork_smoke_every_herdr_launch_types_a_short_line_that_runs_the_full_command
 client::shell::tests::sidebar_active::fork_smoke::active_block_lists_attention_first_and_hides_when_quiet
 server::headless::tests::fork_smoke::agent_times_push_reaches_the_client_shell
 
