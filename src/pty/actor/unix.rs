@@ -85,6 +85,8 @@ enum PtyIoControlCommand {
     BeginHandoff(std_mpsc::Sender<std::io::Result<()>>),
     DuplicateForHandoff(std_mpsc::Sender<std::io::Result<RawFd>>),
     ForegroundProcessGroup(std_mpsc::Sender<Option<u32>>),
+    /// Fork: whether the slave takes input raw (a line editor is reading).
+    InputIsRaw(std_mpsc::Sender<Option<bool>>),
     RollbackHandoff(std_mpsc::Sender<std::io::Result<()>>),
     ReleaseAfterCommit(std_mpsc::Sender<std::io::Result<()>>),
     Shutdown,
@@ -303,6 +305,16 @@ impl PtyIoActorHandle {
         let (reply_tx, reply_rx) = std_mpsc::channel();
         self.control_tx
             .send(PtyIoControlCommand::ForegroundProcessGroup(reply_tx))
+            .ok()?;
+        self.wake_actor();
+        reply_rx.recv_timeout(Duration::from_secs(1)).ok()?
+    }
+
+    /// Fork: whether the PTY slave takes input raw (`tty_fd_input_is_raw`).
+    pub(crate) fn input_is_raw(&self) -> Option<bool> {
+        let (reply_tx, reply_rx) = std_mpsc::channel();
+        self.control_tx
+            .send(PtyIoControlCommand::InputIsRaw(reply_tx))
             .ok()?;
         self.wake_actor();
         reply_rx.recv_timeout(Duration::from_secs(1)).ok()?
@@ -690,6 +702,9 @@ impl PtyIoActorRunner {
                 let result =
                     crate::platform::foreground_process_group_id_for_tty_fd(self.file.as_raw_fd());
                 let _ = reply.send(result);
+            }
+            PtyIoControlCommand::InputIsRaw(reply) => {
+                let _ = reply.send(crate::platform::tty_fd_input_is_raw(self.file.as_raw_fd()));
             }
             PtyIoControlCommand::RollbackHandoff(reply) => {
                 self.pending_handoff.take();

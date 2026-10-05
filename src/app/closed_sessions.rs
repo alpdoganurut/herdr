@@ -14,8 +14,6 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use bytes::Bytes;
-
 use super::api::responses::{encode_error, encode_success};
 use super::App;
 use crate::agent_resume::PersistedAgentSession;
@@ -415,22 +413,16 @@ impl App {
             .resume_shell_command(plan)
             .ok_or_else(|| "the resume command is empty".to_string())?;
         input.push('\r');
-        let runtime = self
-            .terminal_runtimes
-            .get(terminal_id)
-            .ok_or_else(|| "the new tab has no shell".to_string())?;
+        if self.terminal_runtimes.get(terminal_id).is_none() {
+            return Err("the new tab has no shell".to_string());
+        }
         self.restore_agent_transcript_before_resume(&session);
-        runtime
-            .try_send_bytes(Bytes::from(input))
-            .map_err(|err| err.to_string())?;
+        // Fork: typed once the new shell reads (src/app/launch_gate.rs),
+        // which also records the scripted write for the turn origin.
+        self.type_launch_when_ready(terminal_id, input.into_bytes(), std::time::Instant::now())?;
         if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
             terminal.set_persisted_agent_session(session);
         }
-        // Fork (agents v2): a scripted write, for the turn origin.
-        self.note_input(
-            terminal_id,
-            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
-        );
         Ok(())
     }
 }

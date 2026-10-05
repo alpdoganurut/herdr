@@ -151,6 +151,17 @@ impl App {
         &mut self,
         params: AgentStartParams,
     ) -> Result<(crate::api::schema::AgentInfo, Vec<String>), AgentStartError> {
+        self.start_agent_gated(params, super::launch_gate::ShellGate::Foreground)
+    }
+
+    /// Fork: [`Self::start_agent`] with how ready the pane's shell must be
+    /// (`src/app/launch_gate.rs`); a long command line is typed as a short
+    /// `. '<script>'`.
+    pub(super) fn start_agent_gated(
+        &mut self,
+        params: AgentStartParams,
+        gate: super::launch_gate::ShellGate,
+    ) -> Result<(crate::api::schema::AgentInfo, Vec<String>), AgentStartError> {
         let name = params.name;
         if !valid_agent_name(&name) {
             return Err(AgentStartError::InvalidName);
@@ -205,6 +216,11 @@ impl App {
         });
         let shell_name =
             shell_name.ok_or_else(|| AgentStartError::TargetBusy(params.pane_id.clone()))?;
+        if gate == super::launch_gate::ShellGate::LineEditor
+            && !self.line_editor_reading(runtime, &shell_name)
+        {
+            return Err(AgentStartError::ShellNotReady(params.pane_id));
+        }
 
         let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
         argv.extend(params.args);
@@ -214,6 +230,7 @@ impl App {
         let typed = self.herdr_launch_argv(crate::detect::agent_label(kind), argv.clone());
         let command = crate::platform::interactive_shell_command(&typed, &shell_name)
             .ok_or(AgentStartError::InvalidArgument)?;
+        let command = self.short_launch_line(command, &shell_name);
         let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
         let timeout = Duration::from_millis(
             params
@@ -280,6 +297,10 @@ impl App {
             AgentStartError::TargetBusy(target) => crate::api::schema::ErrorBody {
                 code: "agent_pane_busy".into(),
                 message: format!("agent target pane {target} is not an available shell"),
+            },
+            AgentStartError::ShellNotReady(target) => crate::api::schema::ErrorBody {
+                code: "agent_pane_busy".into(),
+                message: format!("the shell in agent target pane {target} is still starting"),
             },
             AgentStartError::TargetUnavailable(target) => crate::api::schema::ErrorBody {
                 code: "agent_pane_unavailable".into(),
@@ -490,6 +511,9 @@ pub(super) enum AgentStartError {
     InvalidTimeout,
     TargetNotFound(String),
     TargetBusy(String),
+    /// Fork: the shell is the foreground job but its line editor does not
+    /// read yet (`ShellGate::LineEditor`).
+    ShellNotReady(String),
     TargetUnavailable(String),
     InputFailed(String),
     DuplicateName {

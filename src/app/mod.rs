@@ -18,10 +18,12 @@ mod agents_close;
 pub(crate) mod agents_migrate;
 pub(crate) mod agents_model;
 mod agents_reorder;
+// fork: typed launches wait for the shell and stay short.
 mod browser;
 mod closed_sessions;
 mod codex_sessions;
 pub(crate) mod coordinator;
+pub(crate) mod launch_gate;
 pub(crate) mod message_pointer;
 pub(crate) mod message_queue;
 pub(crate) mod news;

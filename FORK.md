@@ -207,6 +207,8 @@ src/app/voice.rs
 src/server/headless/voice.rs
 src/client/shell/voice.rs
 src/client/shell/tests/voice.rs
+src/app/launch_gate.rs
+src/app/launch_gate/tests.rs
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
 | struct | field | default |
@@ -631,6 +633,8 @@ ClientContextMenuAction::SetRole   [src/client/shell/state.rs, last after Toggle
 EndpointControlMessage::Voice   [src/client/endpoint/control.rs, directly after Teams; the decoded `endpoint.voice.v1` optional control (malformed data → Ignored); internal]
 AgentVoice::{Off, Live, Muted}   [src/detect/mod.rs, fork type directly after AgentDetection; the detector's voice mode; internal, never serialized]
 AgentVoiceMode::{Live, Muted, Unknown}   [src/api/schema/agents.rs, fork type directly before AgentInfo; snake_case, Unknown is the serde(other) fallback (last); JSON only (AgentInfo.voice, the endpoint.voice.v1 push); append-closed]
+AgentStartError::ShellNotReady   [src/app/agents.rs, after TargetBusy; internal, surfaces as error code agent_pane_busy ("the shell … is still starting")]
+PtyIoControlCommand::InputIsRaw   [src/pty/actor/unix.rs, after ForegroundProcessGroup; internal]
 
 ## 5. Owned API methods and digests
 agent.suspend, agent.activate, agent.restart, agent.transcripts: fork-defined (Method variants, api_method_name arms, request_changes_ui for suspend/activate/restart, CLI `herdr agent suspend|activate|restart|transcripts`).
@@ -812,6 +816,7 @@ src/platform/linux.rs  additive: Codex sessions: process_start_unix_ms and proce
 src/platform/windows.rs  additive: Codex sessions: process_start_unix_ms (None) directly before process_cwd
 src/platform/fallback.rs  additive: Codex sessions: process_start_unix_ms stub directly after process_cwd
 *  deny: anything that is not a structural additive conflict (zdiff3 base empty, both sides pure insertions)
+src/app/mod.rs  additive: launch gate: `pub(crate) mod launch_gate;` (with its fork comment) directly after `mod agents_reorder;`
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
 src/client/shell/notifications.rs  mid-logic: render_visible_notification and render_mobile_notification_banner swap the drawn `●` for notification_glyph (reminder marker, `✓` finished, `×` needs attention) via put_notification_glyph after the upstream render; render_notification_card and render_mobile_notice_banner are unchanged
@@ -1005,6 +1010,15 @@ src/client/mod.rs  mid-logic: voice: the endpoint control match handles Endpoint
 src/client/shell/composition.rs  mid-logic: voice: both ShellRenderState literals pass voice (voice::active_voice_of) directly after teams
 src/client/shell/render.rs  mid-logic: voice: ShellRenderState.voice (the active endpoint's ClientVoiceState, only while its boot_id matches the snapshot) directly after teams
 src/client/shell/tab_sidebar.rs  mid-logic: voice: render_tab_sidebar_with's one pass over snapshot.agents collects tab_voice (no lookup while the voice state lists no pane; live outranks muted, voice::louder) and a tab row with an agent in voice mode gets voice::voice_mark first in its markers (red `●` live, dim overlay0 `◌` muted)
+src/app/agents.rs  mid-logic: launch gate: start_agent delegates to start_agent_gated(params, ShellGate::Foreground); with ShellGate::LineEditor a foreground shell whose line editor does not read yet (App::line_editor_reading) is refused with AgentStartError::ShellNotReady before anything is typed; the typed command goes through App::short_launch_line (a long one becomes `. <launch script>`)
+src/app/closed_sessions.rs  mid-logic: launch gate: launch_closed_session_resume types its resume line through App::type_launch_when_ready (queued until the new shell reads, typed at the deadline otherwise; note_input happens at the send in launch_gate.rs), so it no longer writes to the runtime itself
+src/pane.rs  mid-logic: launch gate: PaneRuntimeIo::input_is_raw (cfg(unix), after foreground_process_group_id) and PaneRuntime::input_is_raw directly before child_pid
+src/terminal/runtime.rs  mid-logic: launch gate: input_is_raw directly after child_pid
+src/pty/actor/unix.rs  mid-logic: launch gate: PtyIoControlCommand::InputIsRaw, PtyIoActorHandle::input_is_raw before rollback_handoff, and its control arm (tty_fd_input_is_raw on the master fd) before RollbackHandoff
+src/platform/unix_common.rs  mid-logic: launch gate: tty_fd_input_is_raw (tcgetattr ICANON) before read_fd, re-exported in src/platform/mod.rs's `pub(crate) use unix_common::{classify_child_exit, …}` list
+src/platform/mod.rs  mid-logic: launch gate: pane_shell_has_line_editor directly before is_pane_shell_process_name
+src/server/headless.rs  mid-logic: launch gate: handle_api_request_dispatch routes Method::AgentsOpenTab to App::handle_deferred_agents_open_tab directly before the AgentPrompt arm; handle_scheduled_tasks_headless runs drive_pending_launches directly after drive_pending_agent_closes
+src/app/runtime.rs  mid-logic: launch gate: next_headless_loop_deadline_with_git_refresh chains next_pending_launch_deadline directly after next_message_queue_deadline
 
 ## 9. Identifier watch-list (any hit in the incoming upstream diff = deny "upstream collision")
 coordinator
@@ -1588,6 +1602,22 @@ SignalRules
 validate_signal_rule
 SIGNAL_RULE_ENGINE_VERSION
 voice_label
+launch_gate
+ShellGate
+ShellNotReady
+start_agent_gated
+line_editor_reading
+short_launch_line
+type_launch_when_ready
+drive_pending_launches
+next_pending_launch_deadline
+handle_deferred_agents_open_tab
+input_is_raw
+InputIsRaw
+tty_fd_input_is_raw
+pane_shell_has_line_editor
+TYPED_LAUNCH_DIRECT_MAX
+SHELL_READY_TIMEOUT
 
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot
@@ -1640,6 +1670,8 @@ server::headless::tests::agents_model_smoke::fork_smoke_agents_hook_report_namin
 client::shell::tests::voice::fork_smoke_a_live_tab_gets_a_red_dot_a_muted_one_a_dim_ring_and_an_off_one_nothing
 app::voice::tests::fork_smoke_a_voice_report_reaches_the_agent_info_and_the_push_without_touching_the_status
 server::headless::tests::fork_smoke::fork_smoke_voice_mode_reaches_every_client_keyed_like_the_agent_row
+app::launch_gate::tests::open_tab_waits_for_the_new_shell_then_types_the_launch
+app::launch_gate::tests::every_herdr_launch_types_a_short_line_that_runs_the_full_command
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 ### Added
@@ -1667,6 +1699,7 @@ server::headless::tests::fork_smoke::fork_smoke_voice_mode_reaches_every_client_
 - herdr browser: `[browser] activity_color = "#aa6eff"` (`#rrggbb`; invalid → default with a config diagnostic) colours the activity overlay — frame border and glow (alpha unchanged), cursor fill and ripple — and applies live after `herdr server reload-config` (the directive carries it; an overlay of another colour is re-injected); tab-group colours stay Chrome's per-pane palette.
 - herdr browser, activity overlay (`[browser] show_activity = true`): the tabs an agent pane opens or acts on sit in a Chrome tab group named `<agent> · <herdr tab>` in a stable colour per pane (a bundled MV3 companion extension loaded with `--load-extension`, driven over the DevTools port; expanded while the pane is active, collapsed after `active_glyph_secs`, dissolved when the pane is gone; tabs the user opened are never grouped and a tab the user pulls out stays out), and a purple glow frame with a macOS-style cursor is injected into the page (isolated world, closed shadow root, no pointer events) while an operation runs and for the `active_glyph_secs` window after (originally 3 s); the cursor glides to the element before click/type/fill/select/press/hover and ripples on click; batches take `animate: false` (`--no-animate`); screenshots hide the overlay; `browser status` / `doctor` report the companion (`ready`, `missing`, `off`).
 ### Fixed
+- Launches wait for the shell and type a short command line: `agents_open_tab` (and the coordinator start and a closed-session reopen) typed the launch into the new tab ~5 ms after its shell spawned, while zsh still ran its rc files (a fastfetch splash, starship); the input sat in the tty's canonical queue, which macOS caps at about 1 KiB, so a >1000-byte managed Claude launch (`--allowedTools` with every herdr_agents tool, the roster, the kickoff) lost its tail and Enter and was never run. herdr's own launches into fresh panes now wait until the shell's line editor reads (the terminal left canonical mode, read with tcgetattr on the PTY master; shells without a line editor — dash, ksh, csh, a plain `sh` — keep the old foreground-shell check), retrying for up to 20 s: `agents.open_tab` holds its reply until the agent is typed in and, if the shell never reads, fails with `failed` and closes the new tab (the team pre-join undone, the spawn given back); the coordinator start retries as before; a reopen's short resume line is queued and typed at the deadline at worst. And any launch line over 256 bytes is written to a one-shot script `<coordinator dir>/launch/<uuid>.sh` (it removes itself first) and typed as `. '<script>'` (`source` in fish; other shells type it as is), which the shell runs exactly as the typed line — same aliases, functions and wrap hook, the agent's argv unchanged (so managed-launch detection is untouched); the pane shows and the history keeps the `. <script>` line. Upstream `agent.start` keeps its foreground-shell check.
 - A missing agent session id is read from the agent's command line: when a Claude Code or Codex pane has no native session reference (its SessionStart hook report was lost, so `agent_session` was null and the agent could not be suspended, restarted or closed resumably), herdr reads it from the agent's foreground process argv — Claude `--session-id <uuid>`, else `--resume <uuid>` / `-r <uuid>` (also `--flag=<uuid>`; a `--fork-session` launch counts only its `--session-id`, a non-UUID picker search term never), Codex `resume <id>`. It is read when the agent is detected and lazily for agent.get / agent.list, suspend, restart and agents_close_tab (one foreground-job read per agent without a session; a process group whose argv named nothing is not read again; never in render paths), kept as the session readers' last fallback while that agent is the live one, persisted with the pane, and never seen by hook routing, so a later hook report always wins.
 - Agent messages arrive as a typed pointer line, not a paste: Claude Code marks a bracketed paste as content the user pasted (a collapsed one reaches the model inside `<pasted_content>` tags, to be followed only where the user's own message asks to; a long one was also cut to its tail), so teammates and even the coordinator's relayed user requests looked like an un-commented user paste and agents asked their user before acting. An agent whose herdr_agents server reads messages by id (it says so at start and on every tool call; herdr checks that server still runs under the pane) now gets one short line typed as plain keys — `herdr+ message <id> from <name> (teammate, <pane>): read it with agents_messages id=<id>`, `… from the coordinator acting for your user (<pane>) …`, or one line for a queued batch — and reads the full message with its sender and answer rule through `agents_messages id=…` (new `agents.read_messages`; marks it read). Only characters proven inert in Claude Code's and Codex's input box are typed (no `/ ! ? @ $ # \`). Agents without the tools and older herdr_agents servers keep the paste; the typing guard, queue, order, claims and coordinator turns are unchanged. The wrap paragraph, the herdr_agents instructions and etiquette and coordinator.md explain the line.
 - Agent hook reports from a pane whose id went stale are found by their process: the integration hooks report with the `HERDR_PANE_ID` their pane started with, so after a tab moved to another group by a herdr before agents v2 every `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.report_subagent`, `pane.clear_agent_authority` and `pane.release_agent` was dropped with `pane_not_found` (the agent never got `agent_session`, so it could not be suspended). When the id names no pane, the one pane whose process is the reporting process or an ancestor takes the report (logged at info); no match or several keep `pane_not_found`. An id that names a live pane is always used as given, never redirected: a hook (or a report sent by hand) may legitimately report for another pane, so a stale id that has come to name a different live pane still lands there (the trade-off; agent callers, which are identity, still re-resolve through their process). A stale id that named no pane becomes an alias of the found pane, kept in its meta like a move alias, so later reports and restarts resolve it directly.

@@ -3185,6 +3185,13 @@ impl HeadlessServer {
             return changed;
         }
         let alt_screen_read_spec = self.alt_screen_read_spec(&msg.request);
+        // Fork: an `agents.open_tab` start waits for the new tab's shell.
+        if matches!(&msg.request.method, api::schema::Method::AgentsOpenTab(_)) {
+            let deferred_changed = self
+                .app
+                .handle_deferred_agents_open_tab(msg.request, msg.respond_to);
+            return changed | deferred_changed;
+        }
         if matches!(&msg.request.method, api::schema::Method::AgentPrompt(_)) {
             let deferred_changed = self
                 .app
@@ -3527,6 +3534,7 @@ impl HeadlessServer {
         // Fork (agents v2): closes in flight, before the exit escalation,
         // and the `managed.json` migration's mtime check.
         changed |= self.app.drive_pending_agent_closes(now);
+        changed |= self.app.drive_pending_launches(now);
         changed |= self.app.maybe_run_agents_migration(now);
         changed |= self.app.escalate_suspended_agent_exits(now);
         changed |= self.app.start_pending_agent_restarts(now);

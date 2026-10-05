@@ -51,6 +51,8 @@ pub(crate) struct AgentsModelRuntime {
     /// Seeded from the message log on first use.
     pub(crate) reply_index: Option<ReplyIndex>,
     pub(crate) closes: super::agents_close::AgentCloses,
+    /// Launches waiting for a fresh pane's shell (src/app/launch_gate.rs).
+    pub(crate) launches: super::launch_gate::PendingLaunches,
     pub(crate) migration: super::agents_migrate::MigrationState,
     /// Who is closing tabs right now (an agents-model close); the closed
     /// session records take it as `closed_by`. `None` is the user.
@@ -2497,14 +2499,47 @@ impl App {
         id: String,
         params: AgentsOpenTabParams,
     ) -> String {
-        let result = self.agents_open_tab(&params);
+        // The server loop parks a start whose shell is not reading yet
+        // (`handle_deferred_agents_open_tab`); here it fails cleanly.
+        let result = match self.begin_agents_open_tab(&id, &params) {
+            Ok(Some(open)) => Ok(open),
+            Ok(None) => {
+                let pending = self.agents_model.launches.open_tabs.pop();
+                match pending {
+                    Some(pending) => {
+                        let err = self.undo_open_tab(
+                            &pending.opened,
+                            ModelError::new(
+                                error_code::FAILED,
+                                "the new tab's shell is not ready to read the launch",
+                            ),
+                        );
+                        self.settle_open_tab(
+                            &pending.caller,
+                            pending.line,
+                            pending.capped,
+                            Err(err),
+                        )
+                    }
+                    None => Err(ModelError::new(error_code::FAILED, "the open vanished")),
+                }
+            }
+            Err(err) => Err(err),
+        };
         Self::model_reply(
             id,
             result.map(|open| ResponseResult::AgentsOpenTab { open }),
         )
     }
 
-    fn agents_open_tab(&mut self, params: &AgentsOpenTabParams) -> ModelResult<AgentsOpenResult> {
+    /// `agents.open_tab` up to the agent start: `Ok(None)` when the start
+    /// waits for the new tab's shell (parked in
+    /// `agents_model.launches.open_tabs`, last).
+    pub(super) fn begin_agents_open_tab(
+        &mut self,
+        request_id: &str,
+        params: &AgentsOpenTabParams,
+    ) -> ModelResult<Option<AgentsOpenResult>> {
         let caller = self.required_caller(&params.caller_pane)?;
         let kind = params
             .agent
@@ -2553,7 +2588,7 @@ impl App {
             (None, Some(ws_idx)) => self.group_label(ws_idx),
             (None, None) => String::new(),
         };
-        let mut line = LogLine {
+        let line = LogLine {
             action: "open_tab",
             target_name: Some(target_name.clone()),
             detail: kind.as_ref().map(|kind| {
@@ -2604,10 +2639,43 @@ impl App {
         }
         let opened = self.open_model_tab(&caller, params, kind.as_deref(), dest_group);
         match opened {
+            Ok(OpenStep::Starting { opened, start }) => {
+                let now = Instant::now();
+                self.park_open_tab(super::launch_gate::PendingOpenTab {
+                    request_id: request_id.to_string(),
+                    respond_to: None,
+                    caller,
+                    line,
+                    capped,
+                    opened,
+                    start,
+                    deadline: now + super::launch_gate::SHELL_READY_TIMEOUT,
+                    next_try: now + super::launch_gate::SHELL_READY_RETRY,
+                });
+                Ok(None)
+            }
+            Ok(OpenStep::Opened(result)) => self
+                .settle_open_tab(&caller, line, capped, Ok(result))
+                .map(Some),
+            Err(err) => self
+                .settle_open_tab(&caller, line, capped, Err(err))
+                .map(Some),
+        }
+    }
+
+    /// Log an open's outcome (and give a failed one its spawn back).
+    pub(super) fn settle_open_tab(
+        &mut self,
+        caller: &ModelCaller,
+        mut line: LogLine,
+        capped: bool,
+        result: ModelResult<AgentsOpenResult>,
+    ) -> ModelResult<AgentsOpenResult> {
+        match result {
             Ok(result) => {
                 line.target_tab = Some(result.tab_id.clone());
                 line.target_pane = Some(result.pane_id.clone());
-                self.log_model_action(Some(&caller), AgentsActionOutcome::Ok, line);
+                self.log_model_action(Some(caller), AgentsActionOutcome::Ok, line);
                 Ok(result)
             }
             Err(err) => {
@@ -2616,7 +2684,7 @@ impl App {
                 }
                 line.code = Some(err.code.clone());
                 line.detail = Some(err.message.clone());
-                self.log_model_action(Some(&caller), AgentsActionOutcome::Failed, line);
+                self.log_model_action(Some(caller), AgentsActionOutcome::Failed, line);
                 Err(err)
             }
         }
@@ -2660,7 +2728,7 @@ impl App {
         params: &AgentsOpenTabParams,
         kind: Option<&str>,
         dest_group: Option<usize>,
-    ) -> ModelResult<AgentsOpenResult> {
+    ) -> ModelResult<OpenStep> {
         let team_group = dest_group.filter(|ws_idx| {
             kind.is_some()
                 && self
@@ -2768,63 +2836,82 @@ impl App {
             meta.opened_by = Some(opened_by);
         });
         let (Some(kind), Some(name), Some(ctx)) = (kind, name.clone(), launch) else {
-            return Ok(AgentsOpenResult {
+            return Ok(OpenStep::Opened(AgentsOpenResult {
                 tab_id: tab_public,
                 pane_id: pane_public,
                 workspace_id: workspace_public,
                 name,
                 member: false,
-            });
+            }));
         };
-        let started = self.start_model_agent(
+        let mut opened = AgentsOpenResult {
+            tab_id: tab_public,
+            pane_id: pane_public,
+            workspace_id: workspace_public,
+            name: Some(name.clone()),
+            member: false,
+        };
+        let prepared = self.prepare_model_agent(
             &ctx,
-            &pane_public,
+            &opened.pane_id,
             kind,
             &name,
             role.as_deref(),
             params.kickoff.as_deref(),
             team_group.is_some(),
         );
-        match started {
-            Ok(member) => Ok(AgentsOpenResult {
-                tab_id: tab_public,
-                pane_id: pane_public,
-                workspace_id: workspace_public,
-                name: Some(name),
-                member,
-            }),
-            Err(err) => {
-                // Atomic: no half-joined member, no orphan tab.
-                if let Some((ws_idx, pane)) = self.parse_pane_id(&pane_public) {
-                    if let Some(team) = self
-                        .state
-                        .workspaces
-                        .get_mut(ws_idx)
-                        .and_then(|ws| ws.team.as_mut())
-                    {
-                        team.remove(pane, false);
-                    }
-                    self.state.rebuild_team_index();
-                }
-                // The start's own error code, and what became of the tab.
-                let fate = match self.call_method(Method::TabClose(crate::api::schema::TabTarget {
-                    tab_id: tab_public.clone(),
-                })) {
-                    Ok(_) => format!("tab {tab_public} closed"),
-                    Err(close) => {
-                        tracing::warn!(code = %close.code, tab = %tab_public, "agents model: cannot close the tab of a failed start");
-                        format!(
-                            "tab {tab_public} pane {pane_public} stays open: {}",
-                            close.message
-                        )
-                    }
-                };
-                Err(ModelError::new(
-                    &err.code,
-                    format!("{} ({fate})", err.message),
-                ))
+        let start = match prepared {
+            Ok((member, start)) => {
+                opened.member = member;
+                start
+            }
+            Err(err) => return Err(self.undo_open_tab(&opened, err)),
+        };
+        // The fresh shell may still run its rc files: the start waits until
+        // its line editor reads (src/app/launch_gate.rs).
+        match self.try_model_start(&start) {
+            Ok(()) => Ok(OpenStep::Opened(opened)),
+            Err(super::launch_gate::StartAttempt::NotReady) => {
+                Ok(OpenStep::Starting { opened, start })
+            }
+            Err(super::launch_gate::StartAttempt::Failed(err)) => {
+                Err(self.undo_open_tab(&opened, err))
             }
         }
+    }
+
+    /// A failed start after the create: no half-joined member, no orphan
+    /// tab. The start's own error code, and what became of the tab.
+    pub(super) fn undo_open_tab(
+        &mut self,
+        opened: &AgentsOpenResult,
+        err: ModelError,
+    ) -> ModelError {
+        let (tab_public, pane_public) = (&opened.tab_id, &opened.pane_id);
+        if let Some((ws_idx, pane)) = self.parse_pane_id(pane_public) {
+            if let Some(team) = self
+                .state
+                .workspaces
+                .get_mut(ws_idx)
+                .and_then(|ws| ws.team.as_mut())
+            {
+                team.remove(pane, false);
+            }
+            self.state.rebuild_team_index();
+        }
+        let fate = match self.call_method(Method::TabClose(crate::api::schema::TabTarget {
+            tab_id: tab_public.clone(),
+        })) {
+            Ok(_) => format!("tab {tab_public} closed"),
+            Err(close) => {
+                tracing::warn!(code = %close.code, tab = %tab_public, "agents model: cannot close the tab of a failed start");
+                format!(
+                    "tab {tab_public} pane {pane_public} stays open: {}",
+                    close.message
+                )
+            }
+        };
+        ModelError::new(&err.code, format!("{} ({fate})", err.message))
     }
 
     fn launch_ctx(&self) -> ModelResult<crate::coordinator::launch::LaunchCtx> {
@@ -2838,10 +2925,10 @@ impl App {
             .map_err(|err| ModelError::new(error_code::FAILED, format!("launch failed: {err}")))
     }
 
-    /// Pre-join the team (with the role) and start the agent with the
-    /// herdr+ tools. Whether it joined a team.
+    /// Pre-join the team (with the role) and build the start of the agent
+    /// with the herdr+ tools. Whether it joined a team, and the start.
     #[allow(clippy::too_many_arguments)] // The launch's parts, each from a different source.
-    fn start_model_agent(
+    fn prepare_model_agent(
         &mut self,
         ctx: &crate::coordinator::launch::LaunchCtx,
         pane: &str,
@@ -2850,7 +2937,7 @@ impl App {
         role: Option<&str>,
         kickoff: Option<&str>,
         team: bool,
-    ) -> ModelResult<bool> {
+    ) -> ModelResult<(bool, crate::api::schema::AgentStartParams)> {
         use crate::coordinator::launch;
         let mut joined = false;
         let mut team_launch = None;
@@ -2894,15 +2981,26 @@ impl App {
         } else {
             launch::codex_args_with_team(ctx, Some(&text), team_launch.as_ref())
         };
-        self.call_method(Method::AgentStart(crate::api::schema::AgentStartParams {
+        let start = crate::api::schema::AgentStartParams {
             name: name.to_string(),
             kind: kind.to_string(),
             pane_id: pane.to_string(),
             args: argv,
             timeout_ms: None,
-        }))?;
-        Ok(joined || team_launch.is_some())
+        };
+        Ok((joined || team_launch.is_some(), start))
     }
+}
+
+/// How far `open_model_tab` got.
+enum OpenStep {
+    /// Done (a shell tab, or an agent typed in).
+    Opened(AgentsOpenResult),
+    /// The tab exists; the agent start waits for its shell.
+    Starting {
+        opened: AgentsOpenResult,
+        start: crate::api::schema::AgentStartParams,
+    },
 }
 
 /// What `agents.suspend`, `agents.activate` and `agents.restart` do.
@@ -4013,6 +4111,7 @@ pub(crate) mod tests {
                 "src/server/headless.rs",
                 include_str!("../server/headless.rs"),
             ),
+            ("src/app/launch_gate.rs", include_str!("launch_gate.rs")),
             (
                 "src/persist/snapshot.rs",
                 include_str!("../persist/snapshot.rs"),
@@ -4031,7 +4130,12 @@ pub(crate) mod tests {
                 "start_pending_agent_resume",
                 "internal",
             ),
-            ("src/app/agents.rs", "start_agent", "programmatic"),
+            ("src/app/agents.rs", "start_agent_gated", "programmatic"),
+            (
+                "src/app/launch_gate.rs",
+                "send_typed_launch",
+                "programmatic",
+            ),
             ("src/app/news.rs", "news_pane_bytes", "internal"),
             (
                 "src/app/agent_suspend.rs",

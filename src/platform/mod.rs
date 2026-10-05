@@ -82,7 +82,7 @@ impl ChildExitReason {
 
 #[cfg(unix)]
 pub(crate) use unix_common::{
-    classify_child_exit, poll_fd_readable, read_fd, shared_ssh_control_path,
+    classify_child_exit, poll_fd_readable, read_fd, shared_ssh_control_path, tty_fd_input_is_raw,
 };
 
 #[cfg(not(any(unix, windows)))]
@@ -475,6 +475,18 @@ pub(crate) fn quote_windows_command_line_arg(value: &str) -> String {
     quoted.push_str(&"\\".repeat(backslashes * 2));
     quoted.push('"');
     quoted
+}
+
+/// Fork: shells whose interactive prompt is a line editor that takes the
+/// terminal out of canonical mode while it reads (see
+/// `tty_fd_input_is_raw`). Others (dash, ksh, csh, a plain `sh`) read in
+/// canonical mode, so only their being the foreground job says they are at
+/// a prompt.
+pub(crate) fn pane_shell_has_line_editor(name: &str) -> bool {
+    matches!(
+        normalized_process_name(name).as_str(),
+        "bash" | "zsh" | "fish" | "tcsh" | "elvish" | "xonsh" | "nu" | "pwsh" | "powershell"
+    )
 }
 
 pub(crate) fn is_pane_shell_process_name(name: &str) -> bool {

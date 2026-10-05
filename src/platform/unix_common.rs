@@ -27,6 +27,19 @@ pub(crate) fn signal_process_group(process_group_id: u32, signal: super::Signal)
     }
 }
 
+/// Fork: whether the terminal behind `fd` (a PTY master: termios requests
+/// on it act on its slave) takes input raw rather than line by line. A line
+/// editor (zsh's ZLE, readline, fish) leaves canonical mode while it reads a
+/// command; a shell still running its rc files keeps it. `None` when the
+/// terminal cannot be queried.
+pub(crate) fn tty_fd_input_is_raw(fd: std::os::fd::RawFd) -> Option<bool> {
+    let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(fd, &mut termios) } != 0 {
+        return None;
+    }
+    Some(termios.c_lflag & libc::ICANON == 0)
+}
+
 pub(crate) fn read_fd(fd: std::os::fd::RawFd, data: &mut [u8]) -> std::io::Result<usize> {
     let result = unsafe { libc::read(fd, data.as_mut_ptr().cast(), data.len()) };
     if result < 0 {

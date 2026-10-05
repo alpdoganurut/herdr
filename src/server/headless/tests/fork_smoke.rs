@@ -567,6 +567,8 @@ async fn closed_agent_tab_reopens_from_the_list_with_the_same_session() {
     server.app.policy.persist_session = true;
     server.app.state.default_shell = "/bin/cat".into();
     server.app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
+    // `/bin/cat` is not a shell prompt: let the reopen type into it.
+    server.app.coordinator.assume_shell_ready = true;
     server.app.state.workspaces[0].tabs[0].custom_name = Some("review".into());
     server.app.state.workspaces[0].test_add_tab(Some("other"));
     server.app.state.ensure_test_terminals();

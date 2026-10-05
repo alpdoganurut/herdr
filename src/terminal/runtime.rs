@@ -578,6 +578,11 @@ impl TerminalRuntime {
         self.0.child_pid()
     }
 
+    /// Fork: whether a line editor reads the pane's input (`PaneRuntime::input_is_raw`).
+    pub fn input_is_raw(&self) -> Option<bool> {
+        self.0.input_is_raw()
+    }
+
     pub(crate) fn current_size(&self) -> (u16, u16) {
         self.0.current_size()
     }

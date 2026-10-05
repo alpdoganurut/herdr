@@ -244,20 +244,29 @@ async fn coordinator_enabled_starts_a_coordinator_in_a_pinned_tab() {
     for _ in 0..80 {
         if runtime
             .snapshot_history()
-            .is_some_and(|text| text.contains("herdr_agents"))
+            .is_some_and(|text| text.contains(".sh"))
         {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    // The long launch line is typed as `. <launch script>` (the script
+    // runs the full command; src/app/launch_gate.rs).
     let history = runtime.snapshot_history().unwrap_or_default();
+    let script = history
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(". "))
+        .map(|path| path.trim().trim_matches('\'').to_string())
+        .unwrap_or_else(|| panic!("start_agent typed a launch script: {history}"));
+    assert!(script.contains("/coordinator/launch/"), "{script}");
+    let launch = fs::read_to_string(&script).expect("the launch script");
     assert!(
-        history.contains("claude"),
-        "start_agent typed the launch: {history}"
+        launch.contains("claude"),
+        "start_agent typed the launch: {launch}"
     );
     assert!(
-        history.contains("herdr_agents"),
-        "the launch carries the agent MCP tools: {history}"
+        launch.contains("herdr_agents"),
+        "the launch carries the agent MCP tools: {launch}"
     );
 
     replay(&mut server, stub_report(&dir, &pane_id, "idle", 1));

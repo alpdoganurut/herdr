@@ -236,6 +236,10 @@ pub(crate) struct CoordinatorState {
     /// Tests: treat the coordinator pane as at a shell prompt.
     #[cfg(test)]
     pub(crate) assume_shell_ready: bool,
+    /// Tests: a pane's shell is still starting (its line editor does not
+    /// read yet; src/app/launch_gate.rs).
+    #[cfg(test)]
+    pub(crate) assume_shell_starting: bool,
     /// Tests: run without a worker thread; messages are recorded instead.
     #[cfg(test)]
     pub(crate) no_worker: bool,
@@ -316,6 +320,8 @@ impl CoordinatorState {
             local_override: None,
             #[cfg(test)]
             assume_shell_ready: false,
+            #[cfg(test)]
+            assume_shell_starting: false,
             #[cfg(test)]
             no_worker: false,
             #[cfg(test)]
@@ -1861,13 +1867,16 @@ impl App {
                 return;
             }
         };
-        let result = self.start_agent(AgentStartParams {
-            name: COORDINATOR_AGENT_NAME.into(),
-            kind: "claude".into(),
-            pane_id: pane_id.clone(),
-            args,
-            timeout_ms: Some(LAUNCH_TIMEOUT_MS),
-        });
+        let result = self.start_agent_gated(
+            AgentStartParams {
+                name: COORDINATOR_AGENT_NAME.into(),
+                kind: "claude".into(),
+                pane_id: pane_id.clone(),
+                args,
+                timeout_ms: Some(LAUNCH_TIMEOUT_MS),
+            },
+            super::launch_gate::ShellGate::LineEditor,
+        );
         match result {
             Ok(_) => {
                 tracing::info!(event = "coordinator.start", outcome = "launched", pane = %pane_id, resume = resume.is_some(), "coordinator launched");
@@ -1877,7 +1886,10 @@ impl App {
                 };
                 self.coordinator.persist();
             }
-            Err(super::agents::AgentStartError::TargetBusy(_)) => retry(self, resume),
+            Err(
+                super::agents::AgentStartError::TargetBusy(_)
+                | super::agents::AgentStartError::ShellNotReady(_),
+            ) => retry(self, resume),
             Err(super::agents::AgentStartError::DuplicateName { .. }) => {
                 self.coordinator.go_down(
                     down_reason::NAME_TAKEN,
@@ -2839,6 +2851,32 @@ mod tests {
         app.handle_coordinator_tasks(late + Duration::from_secs(2));
         assert_eq!(app.coordinator.phase, CoordPhase::Running);
         assert!(app.coordinator.notify_ledger.pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_launch_waits_until_the_new_shell_reads() {
+        let mut app = coordinator_app(true);
+        quiet_tab(&mut app);
+        app.coordinator.migrated = true;
+        app.coordinator.assume_shell_starting = true;
+        let now = Instant::now();
+        app.handle_coordinator_tasks(now);
+        ready(&mut app);
+        app.handle_coordinator_tasks(now);
+        app.handle_coordinator_tasks(now);
+        assert!(
+            matches!(app.coordinator.phase, CoordPhase::Starting { .. }),
+            "retrying while the shell starts: {:?}",
+            app.coordinator.phase
+        );
+        assert!(!coordinator_terminal_mut(&mut app).managed_agent_launch_pending());
+        app.coordinator.assume_shell_starting = false;
+        app.handle_coordinator_tasks(now + START_RETRY);
+        assert!(
+            matches!(app.coordinator.phase, CoordPhase::Launching { .. }),
+            "{:?}",
+            app.coordinator.phase
+        );
     }
 
     #[tokio::test]

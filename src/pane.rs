@@ -1357,6 +1357,16 @@ impl PaneRuntimeIo {
         }
     }
 
+    /// Fork: whether the PTY slave takes input raw (a line editor reads).
+    #[cfg(unix)]
+    fn input_is_raw(&self) -> Option<bool> {
+        match self {
+            PaneRuntimeIo::Actor(actor) => actor.input_is_raw(),
+            #[cfg(test)]
+            PaneRuntimeIo::TestChannel { .. } => None,
+        }
+    }
+
     #[cfg(unix)]
     fn begin_handoff(&self, timeout: std::time::Duration) -> std::io::Result<()> {
         match self {
@@ -3589,6 +3599,19 @@ impl PaneRuntime {
             .ok()
             .and_then(|cwd| cwd.clone())
             .or_else(|| self.reported_cwd.lock().ok().and_then(|cwd| cwd.clone()))
+    }
+
+    /// Fork: whether the pane's terminal takes input raw, i.e. a line
+    /// editor is reading a command (`None`: unknown, e.g. on Windows).
+    pub fn input_is_raw(&self) -> Option<bool> {
+        #[cfg(unix)]
+        {
+            self.io.input_is_raw()
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     pub fn child_pid(&self) -> Option<u32> {
