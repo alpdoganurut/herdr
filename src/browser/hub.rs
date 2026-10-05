@@ -129,6 +129,8 @@ const NTP_MIN_INTERVAL: Duration = Duration::from_secs(1);
 /// A failed release is retried this many times, each wait one step longer.
 const RELEASE_MAX_ATTEMPTS: u32 = 5;
 const RELEASE_BACKOFF: Duration = Duration::from_secs(30);
+/// The most a quiet tab selection (`select`) may take of a call's deadline.
+const SELECT_BUDGET: Duration = Duration::from_secs(5);
 
 thread_local! {
     /// The activity directive of the call running on this thread (set by
@@ -1301,7 +1303,8 @@ impl BrowserHub {
                                     target: target.to_string(),
                                     url: url.clone(),
                                     title: String::new(),
-                                    selected: *focus,
+                                    // not selected: the quiet select runs after a load that succeeded
+                                    selected: false,
                                     dialog_open: false,
                                 },
                                 actor,
@@ -1347,7 +1350,7 @@ impl BrowserHub {
                         Some(profile),
                         Some(&target),
                         Value::Null,
-                        Duration::from_secs(5),
+                        deadline.min(SELECT_BUDGET),
                     )
                     .err()
                 } else {
@@ -1363,9 +1366,16 @@ impl BrowserHub {
                 }
                 let record = self.record(&key)?;
                 let mut result = shape::open_result(&record, &page, &reply.result);
-                if not_selected.is_some() {
+                if let Some(err) = &not_selected {
                     // the page is open and current; only the quiet selection did not happen
-                    result.text.push_str("\n(the tab was not selected: the companion extension is not ready; the window was not raised)");
+                    let cause = if err.code == "tab_not_selected" {
+                        "the companion extension is not ready or does not know this tab".to_string()
+                    } else {
+                        format!("{}: {}", err.code, err.message)
+                    };
+                    result.text.push_str(&format!(
+                        "\n(the tab was not selected — {cause}; the window was not raised)"
+                    ));
                 }
                 let detail = super::state::display_url(&page.url);
                 Ok((result, Some(key), detail))
@@ -1703,7 +1713,7 @@ impl BrowserHub {
                                 Some(profile),
                                 Some(target),
                                 Value::Null,
-                                Duration::from_secs(5),
+                                deadline.min(SELECT_BUDGET),
                             )?;
                         }
                         let reply = self.request(

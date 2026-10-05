@@ -2208,3 +2208,97 @@ fn tabs_are_selected_quietly_and_only_focus_raises_the_window() {
     assert!(focus > shot, "{names:?}");
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn without_a_companion_open_focus_still_opens_and_screenshot_front_fails_quietly() {
+    let (hub, shared, _stream, home) = hub("no-quiet-select");
+    shared.lock().unwrap().errors.push((
+        "select".into(),
+        "tab_not_selected".into(),
+        "the tab could not be selected quietly: the companion extension is not ready or does not know this tab; the window was not raised — `browser focus` brings it up for the user".into(),
+    ));
+    let actor = pane("w2:pA");
+    let opened = hub
+        .run(
+            &actor,
+            params(BrowserOp::Open {
+                url: "https://a.test/".into(),
+                focus: true,
+                wait: None,
+            }),
+        )
+        .unwrap();
+    assert!(
+        opened.text.contains("(the tab was not selected — the companion extension is not ready or does not know this tab; the window was not raised)"),
+        "{}",
+        opened.text
+    );
+    let record = hub.with_state(|state| {
+        state
+            .open_tabs("main")
+            .find(|r| r.target_id.starts_with('T'))
+            .unwrap()
+            .clone()
+    });
+    assert!(
+        !record.selected,
+        "not selected, and the open still succeeded"
+    );
+    let err = hub
+        .run(
+            &actor,
+            params(BrowserOp::Screenshot {
+                full: false,
+                ref_: None,
+                selector: None,
+                format: None,
+                out: None,
+                front: true,
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "tab_not_selected", "{}", err.message);
+    assert!(
+        err.message.contains("the window was not raised"),
+        "{}",
+        err.message
+    );
+    let names: Vec<String> = shared
+        .lock()
+        .unwrap()
+        .ops
+        .iter()
+        .map(|(op, _, _)| op.clone())
+        .collect();
+    assert!(
+        !names.iter().any(|n| n == "focus"),
+        "nothing raised the window: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "screenshot"),
+        "no shot after a refused select: {names:?}"
+    );
+    // other causes are named on the card
+    shared.lock().unwrap().errors.clear();
+    shared.lock().unwrap().errors.push((
+        "select".into(),
+        "browser_timeout".into(),
+        "select exceeded 5000 ms".into(),
+    ));
+    let opened = hub
+        .run(
+            &actor,
+            params(BrowserOp::Open {
+                url: "https://b.test/".into(),
+                focus: true,
+                wait: None,
+            }),
+        )
+        .unwrap();
+    assert!(
+        opened.text.contains("(the tab was not selected — browser_timeout: select exceeded 5000 ms; the window was not raised)"),
+        "{}",
+        opened.text
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}

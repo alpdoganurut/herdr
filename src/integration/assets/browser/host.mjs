@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, SELECT_BUDGET_MS } from './activity.mjs';
 
 const require = createRequire(import.meta.url);
 // Real functions for page.evaluate: a string would be evaluated as an expression (yielding the function,
@@ -278,7 +278,7 @@ async function dialogStillOpen(state) {
 async function quietSelect(state) {
   const companion = state.profile.companion;
   if (!companion || companion.state !== 'ready') return false;
-  return withTimeout(companion.select(state), 3000, 'x', 'x').catch((err) => { log('debug', `quiet select: ${err.message}`); return false; });
+  return withTimeout(companion.select(state), SELECT_BUDGET_MS, 'x', 'x').catch((err) => { log('debug', `quiet select: ${err.message}`); return false; });
 }
 async function pageInfo(state) {
   const dialogOpen = await dialogStillOpen(state);
@@ -461,7 +461,7 @@ const ops = {
   async select({ profile: name, target }) {
     const state = needPage(needProfile(name), target);
     const selected = await quietSelect(state);
-    if (!selected) fail('tab_not_selected', 'the tab could not be selected quietly (the companion extension is not ready); the window was not raised — `browser focus` brings it up for the user');
+    if (!selected) fail('tab_not_selected', 'the tab could not be selected quietly: the companion extension is not ready or does not know this tab; the window was not raised — `browser focus` brings it up for the user');
     return { result: {}, page: await pageInfo(state) };
   },
 
@@ -518,13 +518,14 @@ const ops = {
     return { result: r.value, page: await pageInfo(state) };
   },
 
-  async screenshot({ profile: name, target, args }) {
+  async screenshot({ profile: name, target, args, deadline_ms }) {
     const state = needPage(needProfile(name), target);
     await guardDialog(state);
     const type = args.format === 'png' ? 'png' : 'jpeg';
-    const options = { path: args.path, type, fullPage: Boolean(args.full), timeout: SCREENSHOT_STALL_MS };
+    const options = { path: args.path, type, fullPage: Boolean(args.full) };
     if (type === 'jpeg') options.quality = args.quality || 70;
     const scope = scopeLocator(state, args);
+    const deadlineAt = Date.now() + Number(deadline_ms || 30000);
     let buffer;
     // The agent's picture is the page: the activity overlay steps aside for
     // both captures (the file and the inline copy).
@@ -532,15 +533,20 @@ const ops = {
     let size; let inlinePath = null;
     try {
     try {
-      // A background tab whose renderer stalled: select it quietly and try once more.
+      // A background tab whose renderer stalled: select it quietly and try
+      // once more, inside the op's deadline; an element capture is not retried.
       buffer = await captureWithQuietRetry({
-        capture: () => (scope ? scope.screenshot(options) : state.page.screenshot(options)),
+        capture: (timeout) => (scope ? scope.screenshot({ ...options, timeout }) : state.page.screenshot({ ...options, timeout })),
         select: () => quietSelect(state),
         log: (text) => log('debug', text),
+        deadlineAt,
+        stallMs: SCREENSHOT_STALL_MS,
+        scoped: Boolean(scope),
       });
     } catch (err) {
       if (err.code === 'tab_not_rendered') fail('tab_not_rendered', err.message);
       if (args.ref && /aria-ref|resolve/i.test(err.message)) fail('stale_ref', `ref ${args.ref} no longer resolves; take a new snapshot`);
+      if (scope && /Timeout/i.test(err.message)) fail('element_not_visible', `${args.ref ? `ref ${args.ref}` : `selector ${args.selector}`} did not become visible in time; scroll it into view or take a new snapshot`);
       throw err;
     }
     size = imageSize(buffer, type);

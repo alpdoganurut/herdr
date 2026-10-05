@@ -47,7 +47,7 @@ export const OVERLAY_JS = `((cursor, color, busy) => {
   const rgb = [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16)).join(',');
   const live = window.__herdrOverlay;
   if (live && live.alive && live.color === color) { live.show(); live.busy(busy); return 'present'; }
-  if (live && live.alive) { cursor = live.cursor || cursor; live.alive = false; }
+  if (live && live.alive) live.alive = false; // (the cursor comes from the caller: a hidden one stays hidden across a re-install)
   document.querySelectorAll('div[${HOST_ATTR}]').forEach((n) => n.remove());
   const host = document.createElement('div');
   host.setAttribute('${HOST_ATTR}', '');
@@ -99,7 +99,7 @@ export const OVERLAY_JS = `((cursor, color, busy) => {
       cur.style.transform = 'translate(' + x + 'px,' + y + 'px)';
       if (!animate) { void cur.offsetWidth; cur.style.transition = ''; }
     },
-    hideCursor() { cur.style.opacity = '0'; },
+    hideCursor() { api.cursor = null; cur.style.opacity = '0'; },
     probe() { return { frame: host.style.opacity, idle: frame.classList.contains('idle'), cursor: cur.style.opacity, hidden: host.style.visibility === 'hidden' }; },
     click(x, y) {
       const r = document.createElement('div');
@@ -253,24 +253,40 @@ export class Overlay {
   }
 }
 
+/** The quiet select's share of a screenshot's deadline (the companion call is capped at 3 s). */
+export const SELECT_BUDGET_MS = 3000;
+/** The least a capture is given; below that the op fails rather than waits. */
+const CAPTURE_MIN_MS = 250;
+
 /** A screenshot capture that retries once after a quiet select when the tab
- *  did not paint (a background tab whose renderer stalled): `capture()` runs,
- *  a timeout asks `select()` (the companion's quiet tab selection, true when
- *  it happened) and runs `capture()` once more; what fails after that — or
- *  could not be selected — is `tab_not_rendered` without any advice to bring
- *  the window forward. Other errors pass through. */
-export async function captureWithQuietRetry({ capture, select, log = () => {} }) {
+ *  did not paint (a background tab whose renderer stalled): `capture(ms)`
+ *  runs with its paint timeout, a timeout asks `select()` (the companion's
+ *  quiet tab selection, true when it happened) and runs `capture(ms)` once
+ *  more; what fails after that — or could not be selected — is
+ *  `tab_not_rendered` without any advice to bring the window forward. The
+ *  whole thing stays inside `deadlineAt` (the op's deadline): each capture
+ *  gets at most `stallMs` or what is left, and the select plus the second
+ *  capture are skipped when what is left cannot cover them. A `scoped`
+ *  capture (an element by ref or selector) is never retried: its timeout is
+ *  the element's, not the tab's, and the original error goes back. Other
+ *  errors pass through. */
+export async function captureWithQuietRetry({ capture, select, log = () => {}, deadlineAt = Infinity, stallMs = 5000, scoped = false }) {
   const timedOut = (err) => /Timeout/i.test(String(err && err.message));
   const notRendered = () => Object.assign(new Error('the tab could not be drawn; try again'), { code: 'tab_not_rendered' });
+  const budget = () => Math.min(stallMs, Math.max(CAPTURE_MIN_MS, deadlineAt - Date.now()));
   try {
-    return await capture();
+    return await capture(budget());
   } catch (err) {
-    if (!timedOut(err)) throw err;
+    if (!timedOut(err) || scoped) throw err;
+    if (deadlineAt - Date.now() < SELECT_BUDGET_MS + CAPTURE_MIN_MS) {
+      log('screenshot: the tab did not paint and the deadline leaves no room for a quiet select');
+      throw notRendered();
+    }
     const selected = await Promise.resolve().then(select).catch((e) => { log(`quiet select: ${e.message}`); return false; });
     if (!selected) throw notRendered();
     log('screenshot: the tab did not paint; selected it quietly, one more try');
     try {
-      return await capture();
+      return await capture(budget());
     } catch (again) {
       if (timedOut(again)) throw notRendered();
       throw again;

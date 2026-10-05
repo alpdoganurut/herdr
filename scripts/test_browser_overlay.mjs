@@ -105,6 +105,11 @@ check(FRAME_LINGER_MS === 15000 && CURSOR_LINGER_MS === 5000 && LINGER_MS === 12
   check(evals.length === 1 && evals[0].includes('(null, '), `the frame comes back, the cursor does not: ${evals[0] && evals[0].slice(-60)}`);
   await sleep(60);
   check(o.until === 0 && evals.some((e) => e.includes('hide(false)')), 'then the frame fades');
+  // a colour change re-installs the frame in place: still without the cursor (the page keeps nothing of it)
+  evals.length = 0;
+  await o.show('#123456');
+  check(evals.length === 1 && evals[0].includes('(null, "#123456"'), `a re-install on a colour change keeps the cursor hidden: ${evals[0] && evals[0].slice(-60)}`);
+  check(!OVERLAY_JS.includes('live.cursor || cursor') && /hideCursor\(\) \{ api\.cursor = null;/.test(OVERLAY_JS), 'the page never resurrects a hidden cursor');
   o.dispose();
 }
 check(overlay.linger.length === 1 && (() => { const o = new Overlay({ session }); o.linger(undefined); const ok = o.until > Date.now() + FRAME_LINGER_MS - 100 && o.until <= Date.now() + FRAME_LINGER_MS; o.dispose(); return ok; })(), 'no window in the directive: the default window, so the frame linger');
@@ -170,6 +175,19 @@ check((() => { const o = new Overlay({ session }); o.linger('x'); const ok = o.u
   calls.length = 0; failed = null;
   try { await captureWithQuietRetry({ capture: () => Promise.reject(new Error('aria-ref e9 could not resolve')), select: async () => { calls.push('select'); return true; } }); } catch (err) { failed = err; }
   check(failed && !failed.code && /aria-ref/.test(failed.message) && calls.length === 0, 'a non-timeout error is not retried');
+  // the op's deadline: each capture gets the stall or what is left; a short deadline means no select and no second capture
+  const budgets = [];
+  const grab = (ms) => { budgets.push(ms); return timeout(); };
+  calls.length = 0; failed = null;
+  try { await captureWithQuietRetry({ capture: (ms) => { calls.push('capture'); return grab(ms); }, select: async () => { calls.push('select'); return true; }, deadlineAt: Date.now() + 2000, stallMs: 5000 }); } catch (err) { failed = err; }
+  check(failed && failed.code === 'tab_not_rendered' && calls.join(',') === 'capture' && budgets[0] <= 2000 && budgets[0] >= 1500, `a 2 s deadline: one capture within it, no select: ${calls} ${budgets}`);
+  budgets.length = 0; calls.length = 0;
+  const ok = await captureWithQuietRetry({ capture: (ms) => { calls.push('capture'); budgets.push(ms); return calls.length === 1 ? timeout() : Promise.resolve('png'); }, select: async () => { calls.push('select'); return true; }, deadlineAt: Date.now() + 60000, stallMs: 5000 });
+  check(ok === 'png' && calls.join(',') === 'capture,select,capture' && budgets.every((b) => b === 5000), `a long deadline: the stall per capture, select, retry: ${budgets}`);
+  // an element capture (ref / selector) is never retried: its timeout is the element's
+  calls.length = 0; failed = null;
+  try { await captureWithQuietRetry({ capture: () => { calls.push('capture'); return timeout(); }, select: async () => { calls.push('select'); return true; }, scoped: true }); } catch (err) { failed = err; }
+  check(failed && !failed.code && /Timeout/.test(failed.message) && calls.join(',') === 'capture', `scoped: the original timeout, no select: ${calls}`);
 }
 
 // ------------------------------------------------------------- the companion
