@@ -626,7 +626,7 @@ pub fn act_result(
     let mut lines = vec![match (kind, typed_len) {
         ("click", _) => format!("clicked {element}"),
         ("hover", _) if host["dispatched"].as_bool().unwrap_or(false) => format!(
-            "hover events dispatched to {element} (background tab: no pointer, CSS :hover unchanged; use --front or browser focus for a real hover)"
+            "hover events dispatched to {element} (background tab: no pointer, CSS :hover unchanged; a selected tab gets a real hover — screenshot --front selects it quietly, browser focus brings the window up for the user)"
         ),
         ("hover", _) => format!("hovered {element}"),
         ("select", _) => format!("selected an option of {element}"),

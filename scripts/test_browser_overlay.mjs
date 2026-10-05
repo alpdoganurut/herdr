@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { Overlay, Companion, OVERLAY_JS, dismissPanes, FRAME_LINGER_MS, CURSOR_LINGER_MS, LINGER_MS } from '../src/integration/assets/browser/activity.mjs';
+import { Overlay, Companion, OVERLAY_JS, dismissPanes, captureWithQuietRetry, FRAME_LINGER_MS, CURSOR_LINGER_MS, LINGER_MS } from '../src/integration/assets/browser/activity.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function check(cond, msg) { if (!cond) { console.error(`FAIL: ${msg}`); process.exit(1); } }
@@ -143,6 +143,33 @@ check((() => { const o = new Overlay({ session }); o.linger('x'); const ok = o.u
   ];
   const n = dismissPanes(profiles, ['w1:p1']);
   check(n === 2 && gone.length === 2 && gone.every((k) => k === 'w1:p1'), `release dismisses the pane's pages in every profile, grouped or not, companion or not: ${n} ${JSON.stringify(gone)}`);
+}
+
+// ------------------------------------------------ the screenshot retry
+{
+  const timeout = () => Promise.reject(new Error('page.screenshot: Timeout 5000ms exceeded.'));
+  const calls = [];
+  // a stalled tab: one timeout, a quiet select, the second capture succeeds
+  let n = 0;
+  const buffer = await captureWithQuietRetry({ capture: () => { calls.push('capture'); return ++n === 1 ? timeout() : Promise.resolve('png'); }, select: async () => { calls.push('select'); return true; } });
+  check(buffer === 'png' && calls.join(',') === 'capture,select,capture', `timeout → quiet select → one retry: ${calls}`);
+  // no companion: no retry, tab_not_rendered without any advice about the window
+  calls.length = 0;
+  let failed = null;
+  try { await captureWithQuietRetry({ capture: () => { calls.push('capture'); return timeout(); }, select: async () => false }); } catch (err) { failed = err; }
+  check(failed && failed.code === 'tab_not_rendered' && failed.message === 'the tab could not be drawn; try again' && calls.length === 1, `not selected: ${failed && failed.message} ${calls}`);
+  // still stalled after the select: the same error, exactly one retry
+  calls.length = 0; failed = null;
+  try { await captureWithQuietRetry({ capture: () => { calls.push('capture'); return timeout(); }, select: async () => true }); } catch (err) { failed = err; }
+  check(failed && failed.code === 'tab_not_rendered' && !/front|focus|window/.test(failed.message) && calls.length === 2, `two timeouts: ${failed && failed.message} ${calls}`);
+  // a select that throws counts as not selected
+  failed = null;
+  try { await captureWithQuietRetry({ capture: timeout, select: async () => { throw new Error('companion gone'); } }); } catch (err) { failed = err; }
+  check(failed && failed.code === 'tab_not_rendered', 'a failing select: not rendered');
+  // other errors pass through untouched, no select
+  calls.length = 0; failed = null;
+  try { await captureWithQuietRetry({ capture: () => Promise.reject(new Error('aria-ref e9 could not resolve')), select: async () => { calls.push('select'); return true; } }); } catch (err) { failed = err; }
+  check(failed && !failed.code && /aria-ref/.test(failed.message) && calls.length === 0, 'a non-timeout error is not retried');
 }
 
 // ------------------------------------------------------------- the companion

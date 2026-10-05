@@ -253,6 +253,31 @@ export class Overlay {
   }
 }
 
+/** A screenshot capture that retries once after a quiet select when the tab
+ *  did not paint (a background tab whose renderer stalled): `capture()` runs,
+ *  a timeout asks `select()` (the companion's quiet tab selection, true when
+ *  it happened) and runs `capture()` once more; what fails after that — or
+ *  could not be selected — is `tab_not_rendered` without any advice to bring
+ *  the window forward. Other errors pass through. */
+export async function captureWithQuietRetry({ capture, select, log = () => {} }) {
+  const timedOut = (err) => /Timeout/i.test(String(err && err.message));
+  const notRendered = () => Object.assign(new Error('the tab could not be drawn; try again'), { code: 'tab_not_rendered' });
+  try {
+    return await capture();
+  } catch (err) {
+    if (!timedOut(err)) throw err;
+    const selected = await Promise.resolve().then(select).catch((e) => { log(`quiet select: ${e.message}`); return false; });
+    if (!selected) throw notRendered();
+    log('screenshot: the tab did not paint; selected it quietly, one more try');
+    try {
+      return await capture();
+    } catch (again) {
+      if (timedOut(again)) throw notRendered();
+      throw again;
+    }
+  }
+}
+
 /** Panes that are gone: the overlay of every page a pane's directive touched
  *  (`state.paneKey`, recorded by the host when the directive arrived) goes
  *  now — whatever the companion's state, grouped or not. Answers how many. */
@@ -446,13 +471,16 @@ export class Companion {
     return ws;
   }
   async call(fn, arg) {
+    return this.evaluate(`${fn}(${JSON.stringify(arg === undefined ? null : arg)})`, fn);
+  }
+  /** One expression in the worker (`chrome.*` is at hand there); `what` names it in errors. */
+  async evaluate(expression, what) {
     const ws = await this.connect();
     const id = ++this.id;
-    const expression = `${fn}(${JSON.stringify(arg === undefined ? null : arg)})`;
     const reply = await withTimeout(new Promise((resolve) => {
       this.pending.set(id, resolve);
       ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
-    }), COMPANION_CALL_MS, `companion ${fn}`).finally(() => this.pending.delete(id));
+    }), COMPANION_CALL_MS, `companion ${what}`).finally(() => this.pending.delete(id));
     if (reply.error) throw new Error(reply.error.message || 'companion call failed');
     const details = reply.result && reply.result.exceptionDetails;
     if (details) throw new Error(details.exception && details.exception.description || details.text || 'companion call failed');
@@ -481,6 +509,19 @@ export class Companion {
     if (candidates.length !== 1) { if (!quiet) this.log(`companion: ${candidates.length} tabs match ${url}; not grouped`); return null; }
     this.tabIds.set(state.target, candidates[0].id);
     return candidates[0].id;
+  }
+  /** Make the page's tab the active tab of its window, quietly: the worker's
+   *  `chrome.tabs.update(id, { active: true })` selects the tab without
+   *  raising the app (no `windows.update({ focused })`, no bringToFront —
+   *  measured: no frontmost-app change, and a stalled background tab paints
+   *  again). False when the companion or the tab id is not at hand; the
+   *  window is never raised from here. */
+  async select(state) {
+    if (this.state !== 'ready') return false;
+    const tabId = await this.tabIdFor(state, true);
+    if (tabId == null) return false;
+    await this.evaluate(`chrome.tabs.update(${Number(tabId)}, { active: true })`, 'select');
+    return true;
   }
   forget(targetId) {
     const tabId = this.tabIds.get(targetId);

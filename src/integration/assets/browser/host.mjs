@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry } from './activity.mjs';
 
 const require = createRequire(import.meta.url);
 // Real functions for page.evaluate: a string would be evaluated as an expression (yielding the function,
@@ -274,6 +274,12 @@ async function dialogStillOpen(state) {
   }
   return Boolean(state.dialog);
 }
+/** The companion's quiet tab selection for a page: true when it happened (never raises the window). */
+async function quietSelect(state) {
+  const companion = state.profile.companion;
+  if (!companion || companion.state !== 'ready') return false;
+  return withTimeout(companion.select(state), 3000, 'x', 'x').catch((err) => { log('debug', `quiet select: ${err.message}`); return false; });
+}
 async function pageInfo(state) {
   const dialogOpen = await dialogStillOpen(state);
   let title = '';
@@ -440,9 +446,22 @@ const ops = {
     return {};
   },
 
+  // The one op that raises the window: the login handoff to the user
+  // (`browser focus`). Everything else selects tabs quietly (`select`).
   async focus({ profile: name, target }) {
     const state = needPage(needProfile(name), target);
     await state.page.bringToFront();
+    return { result: {}, page: await pageInfo(state) };
+  },
+
+  // The tab becomes the active tab of its window without the app coming
+  // forward (the companion's chrome.tabs.update); `--front` / `open --focus`
+  // and the screenshot retry use it. No companion: no raise either, a clear
+  // error.
+  async select({ profile: name, target }) {
+    const state = needPage(needProfile(name), target);
+    const selected = await quietSelect(state);
+    if (!selected) fail('tab_not_selected', 'the tab could not be selected quietly (the companion extension is not ready); the window was not raised — `browser focus` brings it up for the user');
     return { result: {}, page: await pageInfo(state) };
   },
 
@@ -513,9 +532,14 @@ const ops = {
     let size; let inlinePath = null;
     try {
     try {
-      buffer = scope ? await scope.screenshot(options) : await state.page.screenshot(options);
+      // A background tab whose renderer stalled: select it quietly and try once more.
+      buffer = await captureWithQuietRetry({
+        capture: () => (scope ? scope.screenshot(options) : state.page.screenshot(options)),
+        select: () => quietSelect(state),
+        log: (text) => log('debug', text),
+      });
     } catch (err) {
-      if (/Timeout/i.test(err.message)) fail('tab_not_rendered', 'the tab did not paint within 5 s (background tab); rerun with --front to select it first');
+      if (err.code === 'tab_not_rendered') fail('tab_not_rendered', err.message);
       if (args.ref && /aria-ref|resolve/i.test(err.message)) fail('stale_ref', `ref ${args.ref} no longer resolves; take a new snapshot`);
       throw err;
     }
@@ -897,7 +921,7 @@ function imageSize(buffer, type) {
 // Main loop
 
 // Ops that work on a page: the activity frame pulses while they run and stays, calmer, for the directive's window after.
-const PAGE_OPS = new Set(['navigate', 'history', 'read', 'links', 'screenshot', 'console', 'network', 'wait', 'scroll', 'eval', 'act', 'dialog', 'focus']);
+const PAGE_OPS = new Set(['navigate', 'history', 'read', 'links', 'screenshot', 'console', 'network', 'wait', 'scroll', 'eval', 'act', 'dialog', 'focus', 'select']);
 function activityPage(name, target) {
   const profile = profiles.get(name);
   const state = profile && target ? profile.pages.get(target) : null;

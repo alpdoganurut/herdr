@@ -1278,11 +1278,14 @@ impl BrowserHub {
         match &params.op {
             BrowserOp::Open { url, focus, wait } => {
                 let url = shape::normalize_url(url)?;
+                // always a background target: `focus` selects the tab quietly
+                // afterwards (the companion's chrome.tabs.update), never raising
+                // the window
                 let reply = match self.request(
                     "open",
                     Some(profile),
                     None,
-                    json!({ "url": url, "background": !focus, "wait": wait }),
+                    json!({ "url": url, "background": true, "wait": wait }),
                     deadline,
                 ) {
                     Ok(reply) => reply,
@@ -1338,17 +1341,32 @@ impl BrowserHub {
                         state.set_cursor(pane, &key, actor.tab_id(), now);
                     }
                 }
-                if *focus {
-                    let _ = self.request(
-                        "focus",
+                let not_selected = if *focus {
+                    self.request(
+                        "select",
                         Some(profile),
                         Some(&target),
                         Value::Null,
-                        Duration::from_secs(3),
-                    );
+                        Duration::from_secs(5),
+                    )
+                    .err()
+                } else {
+                    None
+                };
+                if let Some(err) = &not_selected {
+                    let mut state = self.inner.state.lock().unwrap();
+                    if let Some(record) = state.tabs.get_mut(&key) {
+                        record.selected = false;
+                        state.dirty = true;
+                    }
+                    tracing::debug!(event = "browser.select", outcome = "skipped", code = %err.code, "open --focus: the tab was not selected");
                 }
                 let record = self.record(&key)?;
-                let result = shape::open_result(&record, &page, &reply.result);
+                let mut result = shape::open_result(&record, &page, &reply.result);
+                if not_selected.is_some() {
+                    // the page is open and current; only the quiet selection did not happen
+                    result.text.push_str("\n(the tab was not selected: the companion extension is not ready; the window was not raised)");
+                }
                 let detail = super::state::display_url(&page.url);
                 Ok((result, Some(key), detail))
             }
@@ -1678,12 +1696,14 @@ impl BrowserHub {
                             now,
                         )?;
                         if *front {
+                            // the tab is selected in its window, quietly; the
+                            // window never comes forward for a screenshot
                             self.request(
-                                "focus",
+                                "select",
                                 Some(profile),
                                 Some(target),
                                 Value::Null,
-                                Duration::from_secs(3),
+                                Duration::from_secs(5),
                             )?;
                         }
                         let reply = self.request(

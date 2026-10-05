@@ -193,7 +193,7 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                                 json!({ "id": id, "ok": true, "result": { "kind": kind, "role": if kind == "click" { "button" } else { "textbox" }, "name": if kind == "click" { "Press me" } else { "Name" }, "navigated": kind == "click", "url_before": "https://site.test/T1" }, "page": { "url": "https://site.test/after", "title": "After", "dialog_open": false } })
                             }
                         }
-                        "navigate" | "history" | "focus" => {
+                        "navigate" | "history" | "focus" | "select" => {
                             json!({ "id": id, "ok": true, "result": {}, "page": { "url": args["url"].as_str().unwrap_or("https://site.test/after"), "title": "After", "status": 200 } })
                         }
                         "close" | "close_browser" => json!({ "id": id, "ok": true, "result": {} }),
@@ -2151,5 +2151,60 @@ fn the_dashboard_pin_travels_with_attach_and_follows_the_config() {
         1,
         "unchanged effective value, no push: {pushes:?}"
     );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn tabs_are_selected_quietly_and_only_focus_raises_the_window() {
+    let (hub, shared, _stream, home) = hub("quiet-select");
+    let actor = pane("w2:pA");
+    hub.run(
+        &actor,
+        params(BrowserOp::Open {
+            url: "https://a.test/".into(),
+            focus: true,
+            wait: None,
+        }),
+    )
+    .unwrap();
+    hub.run(
+        &actor,
+        params(BrowserOp::Screenshot {
+            full: false,
+            ref_: None,
+            selector: None,
+            format: None,
+            out: None,
+            front: true,
+        }),
+    )
+    .unwrap();
+    hub.run(&actor, params(BrowserOp::Focus)).unwrap();
+    let ops = shared.lock().unwrap().ops.clone();
+    let open = ops.iter().find(|(op, _, _)| op == "open").unwrap();
+    assert_eq!(
+        open.2["background"], true,
+        "open --focus never asks for a foreground target"
+    );
+    let names: Vec<&str> = ops.iter().map(|(op, _, _)| op.as_str()).collect();
+    // open --focus and screenshot --front select the tab quietly; browser focus raises
+    assert_eq!(
+        names.iter().filter(|n| **n == "select").count(),
+        2,
+        "{names:?}"
+    );
+    let shot = names.iter().position(|n| *n == "screenshot").unwrap();
+    assert_eq!(
+        names[shot - 1],
+        "select",
+        "selected before the shot: {names:?}"
+    );
+    let focus = names.iter().position(|n| *n == "focus").unwrap();
+    assert_eq!(
+        names.iter().filter(|n| **n == "focus").count(),
+        1,
+        "only browser focus: {names:?}"
+    );
+    assert!(focus > shot, "{names:?}");
     let _ = std::fs::remove_dir_all(&home);
 }
