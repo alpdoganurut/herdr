@@ -285,13 +285,18 @@ impl App {
         self.state.terminals.get(&pane.attached_terminal_id)
     }
 
-    /// A live agent runs in the pane: detected, not parked, not starting.
+    /// A live agent runs in the pane: detected, not parked, and not a
+    /// launch still starting. A launch whose agent herdr already detects as
+    /// the one launched counts (the launch record settles at its first idle,
+    /// after the kickoff turn the agent may already message others in).
     pub(crate) fn pane_hosts_live_agent(&self, ws_idx: usize, pane_id: PaneId) -> bool {
         self.model_terminal(ws_idx, pane_id)
             .is_some_and(|terminal| {
                 terminal.effective_agent_label().is_some()
                     && terminal.suspended_agent.is_none()
-                    && !terminal.managed_agent_launch_pending()
+                    && (!terminal.managed_agent_launch_pending()
+                        || terminal.managed_agent_kind().is_some()
+                            && terminal.effective_known_agent() == terminal.managed_agent_kind())
             })
     }
 
@@ -402,6 +407,11 @@ impl App {
     /// caller: the id's own pane when it is one of them, else the single
     /// such pane. No such pane, or several, keep the id's own resolution
     /// (and its refusals).
+    ///
+    /// A valid id is replaced only on positive proof: its pane's process is
+    /// known and is not in the caller's chain, and exactly one other pane's
+    /// is. No peer (clients, in-process delegation, deferred work), an
+    /// empty chain or an id whose pane's process is not known keep the id.
     pub(crate) fn resolve_caller_pane(&self, caller: &str) -> Option<(usize, PaneId)> {
         let parsed = self.parse_pane_id(caller);
         let Some(peer) = self.agents_model.caller_process else {
@@ -424,9 +434,19 @@ impl App {
                 .get(&state.attached_terminal_id)?
                 .child_pid()
         };
+        // The chain from the caller up, without launchd/init (every
+        // re-parented shell's parent): it proves nothing about a pane.
+        let ancestry: Vec<u32> = ancestry.iter().copied().filter(|&pid| pid > 1).collect();
+        if ancestry.is_empty() {
+            return parsed;
+        }
         if let Some((ws_idx, pane_id)) = parsed {
-            if pane_pid(ws_idx, pane_id).is_some_and(|pid| ancestry.contains(&pid)) {
-                return parsed;
+            match pane_pid(ws_idx, pane_id) {
+                Some(pid) if ancestry.contains(&pid) => return parsed,
+                Some(_) => {}
+                // A pane whose process is not known (yet): nothing proves
+                // it is not the caller's.
+                None => return parsed,
             }
         }
         let mut found = None;
@@ -1033,12 +1053,21 @@ impl App {
     // ----- delegation -------------------------------------------------------
 
     /// Run an existing method in-process and take its result.
+    ///
+    /// The delegated method runs without the outer request's socket peer:
+    /// the server names its pane ids itself, and the requester's process
+    /// proves nothing about them (`agents.open_tab` reads `team.context` for
+    /// the pane it opened, which the opener's process would otherwise turn
+    /// into the opener's own pane). The peer is back for the outer request
+    /// afterwards.
     pub(crate) fn call_method(&mut self, method: Method) -> ModelResult<ResponseResult> {
         self.agents_model.delegating += 1;
+        let peer = self.agents_model.caller_process.take();
         let raw = self.handle_api_request_after_internal_events_drained(Request {
             id: "agents-model".into(),
             method,
         });
+        self.agents_model.caller_process = peer;
         self.agents_model.delegating = self.agents_model.delegating.saturating_sub(1);
         let value: serde_json::Value = serde_json::from_str(&raw)
             .map_err(|err| ModelError::new(error_code::FAILED, err.to_string()))?;

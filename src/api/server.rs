@@ -197,11 +197,37 @@ fn handle_connection(
 
 thread_local! {
     /// The process behind the connection this thread serves (one thread per
-    /// connection); every request it dispatches carries it.
+    /// connection); every request it dispatches carries it. Set from the
+    /// connection's own socket when it starts and cleared when it ends, so a
+    /// reused thread never carries an earlier connection's process.
     static CONNECTION_PEER_PID: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
 fn handle_connection_with_stop(
+    stream: LocalStream,
+    api_tx: &ApiRequestSender,
+    event_hub: &EventHub,
+    running: &Arc<AtomicBool>,
+    capabilities: Option<ServerCapabilities>,
+    server_stop: Option<&Arc<AtomicBool>>,
+    #[cfg(unix)] ssh_agents: Option<&crate::platform::ssh_agent::SshAgentRegistry>,
+) -> std::io::Result<()> {
+    CONNECTION_PEER_PID.with(|peer| peer.set(crate::platform::local_stream_peer_pid(&stream)));
+    let result = serve_connection(
+        stream,
+        api_tx,
+        event_hub,
+        running,
+        capabilities,
+        server_stop,
+        #[cfg(unix)]
+        ssh_agents,
+    );
+    CONNECTION_PEER_PID.with(|peer| peer.set(None));
+    result
+}
+
+fn serve_connection(
     mut stream: LocalStream,
     api_tx: &ApiRequestSender,
     event_hub: &EventHub,
@@ -213,7 +239,6 @@ fn handle_connection_with_stop(
     if let Err(err) = stream.set_send_timeout(Some(STREAM_WRITE_TIMEOUT)) {
         debug!(err = %err, "api connection write timeout unavailable");
     }
-    CONNECTION_PEER_PID.with(|peer| peer.set(crate::platform::local_stream_peer_pid(&stream)));
 
     let Some(line) = read_initial_request_line(&mut stream)? else {
         return Ok(());
@@ -1248,6 +1273,62 @@ mod tests {
         drop(client);
         worker.join().unwrap();
         let _ = fs::remove_file(path);
+    }
+
+    /// A thread that served one connection serves the next with that
+    /// connection's own process, and keeps none after it.
+    #[test]
+    fn a_reused_connection_thread_never_carries_an_earlier_process() {
+        let worker = std::thread::spawn(|| {
+            for round in 0..2 {
+                // What an earlier connection could have left behind.
+                CONNECTION_PEER_PID.with(|peer| peer.set(Some(0x7fff_fff0 + round)));
+                let (mut client, server, path) = local_stream_pair("peer-pid-reuse");
+                let (tx, mut rx) = mpsc::unbounded_channel::<crate::api::ApiRequestMessage>();
+                let responder = std::thread::spawn(move || {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    loop {
+                        match rx.try_recv() {
+                            Ok(msg) => {
+                                let peer = msg.peer_pid;
+                                msg.respond_to.send("{}".into()).unwrap();
+                                break peer;
+                            }
+                            Err(_) if std::time::Instant::now() < deadline => {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(err) => panic!("no request dispatched: {err}"),
+                        }
+                    }
+                });
+                write_json_line(
+                    &mut client,
+                    &Request {
+                        id: "peer-pid-reuse".into(),
+                        method: Method::PaneList(crate::api::schema::PaneListParams {
+                            workspace_id: None,
+                        }),
+                    },
+                )
+                .unwrap();
+                let client_thread = std::thread::spawn(move || {
+                    let _ = read_line(&mut client);
+                    drop(client);
+                });
+                let _ = handle_connection(
+                    server,
+                    &tx,
+                    &EventHub::default(),
+                    &Arc::new(AtomicBool::new(true)),
+                    None,
+                );
+                client_thread.join().unwrap();
+                assert_eq!(responder.join().unwrap(), Some(std::process::id()));
+                assert_eq!(CONNECTION_PEER_PID.with(std::cell::Cell::get), None);
+                let _ = fs::remove_file(path);
+            }
+        });
+        worker.join().unwrap();
     }
 
     #[test]

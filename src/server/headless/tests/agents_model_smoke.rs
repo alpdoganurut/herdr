@@ -545,3 +545,129 @@ async fn fork_smoke_agents_hook_report_naming_another_process_pane_is_kept() {
     assert!(server.app.state.public_pane_id_aliases.is_empty());
     assert_eq!(server.app.parse_pane_id(&lead), Some((1, panes[0])));
 }
+
+/// The lead's request delegates a method in-process for another pane (as
+/// `agents.open_tab` reads `team.context` for the pane it opened): the
+/// lead's process proves nothing about that pane, so it stays that pane.
+#[tokio::test]
+async fn fork_smoke_agents_delegated_caller_is_not_redirected_to_the_requester() {
+    let (mut server, _input, panes) = crew_server();
+    let me = std::process::id();
+    let lead = public(&server, panes[0]);
+    let fixer = public(&server, panes[1]);
+    // The lead's pane runs the requesting process; the new pane runs its
+    // own shell.
+    set_pane_pid(&mut server, panes[0], me);
+    set_pane_pid(&mut server, panes[1], UNRELATED_PID);
+
+    // Mid-request (the lead's peer is recorded): a delegated call for the
+    // new pane.
+    server.app.agents_model.caller_process = Some(me);
+    let delegated = server.app.call_method(Method::AgentsActor(
+        crate::api::schema::agents_model::AgentsActorParams {
+            caller_pane: fixer.clone(),
+            ..Default::default()
+        },
+    ));
+    let Ok(crate::api::schema::ResponseResult::AgentsActor { actor }) = delegated else {
+        panic!("delegated actor: {delegated:?}");
+    };
+    assert_eq!(actor.pane_id, fixer, "the delegated caller keeps its pane");
+    // The outer request still has its own peer after the delegation.
+    assert_eq!(server.app.agents_model.caller_process, Some(me));
+    let resolved = server.app.resolve_caller_pane(&lead);
+    assert_eq!(resolved, Some((1, panes[0])));
+    server.app.agents_model.caller_process = None;
+}
+
+/// Interleaved requests: the lead's and the new agent's, each from its own
+/// process, each resolve to their own pane; a request without a peer after
+/// them finds no leftover process.
+#[tokio::test]
+async fn fork_smoke_agents_interleaved_callers_keep_their_own_panes() {
+    let (mut server, _input, panes) = crew_server();
+    let me = std::process::id();
+    let lead = public(&server, panes[0]);
+    let fixer = public(&server, panes[1]);
+    set_pane_pid(&mut server, panes[0], me);
+    set_pane_pid(&mut server, panes[1], UNRELATED_PID);
+
+    for _ in 0..3 {
+        let found = actor(&mut server, Some(me), &lead);
+        assert_eq!(
+            found["result"]["actor"]["pane_id"],
+            lead.as_str(),
+            "{found}"
+        );
+        // The new agent's process is not one this test can be (gone, or
+        // not yet known): no proof against its own valid id.
+        let found = actor(&mut server, Some(UNRELATED_PID + 7), &fixer);
+        assert_eq!(
+            found["result"]["actor"]["pane_id"],
+            fixer.as_str(),
+            "{found}"
+        );
+        let found = actor(&mut server, None, &fixer);
+        assert_eq!(
+            found["result"]["actor"]["pane_id"],
+            fixer.as_str(),
+            "{found}"
+        );
+    }
+    // Deferred work after the lead's request (a launch settling, a queued
+    // message) runs with no peer left over: the new pane stays itself.
+    let _ = actor(&mut server, Some(me), &lead);
+    assert_eq!(server.app.agents_model.caller_process, None);
+    assert_eq!(server.app.resolve_caller_pane(&fixer), Some((1, panes[1])));
+}
+
+/// A valid id whose pane's process is not known yet (a fresh pane) is kept
+/// even when the peer runs under another pane: nothing proves it is not the
+/// caller's.
+#[tokio::test]
+async fn fork_smoke_agents_valid_caller_with_an_unknown_pane_process_is_kept() {
+    let (mut server, _input, panes) = crew_server();
+    let me = std::process::id();
+    let fixer = public(&server, panes[1]);
+    set_pane_pid(&mut server, panes[0], me);
+    server.app.terminal_runtimes.remove(
+        &server.app.state.workspaces[1]
+            .pane_state(panes[1])
+            .unwrap()
+            .attached_terminal_id
+            .clone(),
+    );
+    let kept = actor(&mut server, Some(me), &fixer);
+    assert_eq!(kept["result"]["actor"]["pane_id"], fixer.as_str(), "{kept}");
+}
+
+/// A freshly opened agent (the server's launch record still pending) whose
+/// agent herdr already detects is an agent caller: it may message others
+/// during its first turn.
+#[tokio::test]
+async fn fork_smoke_agents_a_freshly_launched_detected_agent_is_an_agent_caller() {
+    let (mut server, _input, panes) = crew_server();
+    let fixer = public(&server, panes[1]);
+    let now = std::time::Instant::now();
+    terminal(&mut server, panes[1]).set_detected_state(None, AgentState::Unknown);
+    terminal(&mut server, panes[1]).begin_managed_agent(
+        "fixer".into(),
+        Agent::Claude,
+        now,
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(600),
+    );
+    // Not detected yet: the launch alone does not make it an agent.
+    let shell = actor(&mut server, None, &fixer);
+    assert_eq!(shell["result"]["actor"]["live"], false, "{shell}");
+    // Detected while its kickoff turn runs: an agent.
+    terminal(&mut server, panes[1]).set_detected_state(Some(Agent::Claude), AgentState::Working);
+    assert!(terminal(&mut server, panes[1]).managed_agent_launch_pending());
+    let agent = actor(&mut server, None, &fixer);
+    assert_eq!(agent["result"]["actor"]["live"], true, "{agent}");
+    assert_eq!(agent["result"]["actor"]["kind"], "agent", "{agent}");
+    // Another agent detected than the one launched: not this launch's.
+    terminal(&mut server, panes[1]).set_detected_state(Some(Agent::Codex), AgentState::Working);
+    let other = actor(&mut server, None, &fixer);
+    assert_eq!(other["result"]["actor"]["live"], false, "{other}");
+}
