@@ -12,14 +12,14 @@
    26-26 overlay0/sidebar_chrome_bg
    27-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
-29|   ◑ notes Pla…    1h in 1h00 │|
+29|   ◑ notes Planni… 1h in 1h00 │|
    00-02 -/sidebar_chrome_bg
    03-03 overlay0/sidebar_chrome_bg
    04-04 -/sidebar_chrome_bg
    05-09 #02b06cf5/sidebar_chrome_bg
    10-10 -/sidebar_chrome_bg
-   11-14 overlay0/sidebar_chrome_bg
-   15-18 -/sidebar_chrome_bg
+   11-17 overlay0/sidebar_chrome_bg
+   18-18 -/sidebar_chrome_bg
    19-20 overlay0/sidebar_chrome_bg
    21-21 -/sidebar_chrome_bg
    22-28 subtext0/sidebar_chrome_bg

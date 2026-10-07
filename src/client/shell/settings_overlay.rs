@@ -215,38 +215,42 @@ pub(super) fn render_settings_overlay(
                 INDICATORS_ACTIVE_AGENTS_ROW, INDICATORS_PINNED_AGENTS_ROW,
                 INDICATORS_SCHEDULED_AGENTS_ROW,
             };
-            for (row, offset, enabled, label, about) in [
+            // On a popup too short for the dim lines the toggles stack one
+            // per row, so no selectable row is left undrawn.
+            let spaced = content.height >= 12;
+            for (index, (row, enabled, label, about)) in [
                 (
                     INDICATORS_ACTIVE_AGENTS_ROW,
-                    6,
                     config.sidebar_active_agents,
                     "active agents block",
                     "blocked, voice, working and finished agents under the list",
                 ),
                 (
                     INDICATORS_PINNED_AGENTS_ROW,
-                    8,
                     config.sidebar_pinned_agents,
                     "pinned agents block",
                     "tabs you pinned (tab menu \u{2192} Pin), under the list",
                 ),
                 (
                     INDICATORS_SCHEDULED_AGENTS_ROW,
-                    10,
                     config.sidebar_scheduled_agents,
                     "scheduled agents block",
                     "tabs with a scheduled reminder and the time to the next",
                 ),
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let index = index as u16;
                 render_sidebar_section_toggle(
                     buffer,
                     content,
                     SectionToggle {
                         row,
-                        offset,
+                        offset: if spaced { 6 + 2 * index } else { 6 + index },
                         enabled,
                         label,
-                        about,
+                        about: spaced.then_some(about),
                     },
                     settings.selected,
                     palette,
@@ -458,8 +462,8 @@ struct SectionToggle {
     offset: u16,
     enabled: bool,
     label: &'static str,
-    /// The dim line under it.
-    about: &'static str,
+    /// The dim line under it (none on a short popup).
+    about: Option<&'static str>,
 }
 
 /// Fork (sidebar v2/v3): an Indicators row under the two styles: `<label>:
@@ -495,13 +499,13 @@ fn render_sidebar_section_toggle(
         palette,
     );
     hits.push((rect, toggle.row));
-    if y + 1 < area.bottom() {
+    if let Some(about) = toggle.about.filter(|_| y + 1 < area.bottom()) {
         put_text(
             buffer,
             area.x + 3,
             y + 1,
             area.width.saturating_sub(3),
-            toggle.about,
+            about,
             Style::default().fg(palette.overlay1).bg(palette.panel_bg),
         );
     }

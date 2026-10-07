@@ -20,7 +20,8 @@
 //! until a snapshot confirms the jump, so repeated presses walk further, a
 //! jump that never lands costs nothing, and the landing snapshot is not a
 //! visit. A tab moved to another group gets a new public id; its old id is
-//! dead and skipped like a closed tab.
+//! dead and skipped like a closed tab. Dead ids are pruned on a press and
+//! when a visit overflows the cap, so they never crowd out live tabs.
 //!
 //! [`observe`]: TabHistory::observe
 //! [`back`]: TabHistory::back
@@ -42,17 +43,15 @@ pub(super) struct TabHistory {
 }
 
 impl TabHistory {
-    /// The focused tab as a snapshot reports it.
-    pub(super) fn observe(&mut self, tab_id: &str) {
+    /// The focused tab as a snapshot reports it. `is_live` (the snapshot's
+    /// tab set) is consulted only when a visit overflows the cap: closed
+    /// tabs go first, the oldest live entry only after them.
+    pub(super) fn observe(&mut self, tab_id: &str, is_live: impl Fn(&str) -> bool) {
         if let Some(pending) = self.pending {
-            if self.entries[pending] == tab_id {
-                // The jump landed: move the cursor without recording a visit.
-                self.cursor = pending;
-                self.pending = None;
-                return;
-            }
-            // Several presses in flight: an earlier one's target landed first
-            // (or the focus has not moved yet). Follow it, keep waiting.
+            // Several presses may be in flight: follow the nearest step from
+            // the cursor toward the target. Only landing on the target
+            // itself confirms the jump; an id that repeats between the two
+            // is an earlier press's landing (or the focus has not moved yet).
             let (low, high) = (pending.min(self.cursor), pending.max(self.cursor));
             let mut between = (low..=high).filter(|&index| self.entries[index] == tab_id);
             let step = if pending < self.cursor {
@@ -62,6 +61,9 @@ impl TabHistory {
             };
             if let Some(index) = step {
                 self.cursor = index;
+                if index == pending {
+                    self.pending = None;
+                }
                 return;
             }
         }
@@ -71,6 +73,10 @@ impl TabHistory {
         self.pending = None;
         self.entries.truncate(self.cursor + 1);
         self.entries.push_back(tab_id.to_owned());
+        self.cursor = self.entries.len() - 1;
+        if self.entries.len() > CAP {
+            self.prune(&is_live);
+        }
         if self.entries.len() > CAP {
             self.entries.pop_front();
         }
@@ -79,6 +85,7 @@ impl TabHistory {
 
     /// The previous live tab, or `None` when there is none.
     pub(super) fn back(&mut self, is_live: impl Fn(&str) -> bool) -> Option<String> {
+        self.prune(&is_live);
         let from = self.pending.unwrap_or(self.cursor);
         let current = self.current()?;
         let target = (0..from)
@@ -90,12 +97,42 @@ impl TabHistory {
 
     /// The next live tab after going back, or `None` when there is none.
     pub(super) fn forward(&mut self, is_live: impl Fn(&str) -> bool) -> Option<String> {
+        self.prune(&is_live);
         let from = self.pending.unwrap_or(self.cursor);
         let current = self.current()?;
         let target = (from + 1..self.entries.len())
             .find(|&index| self.entries[index] != current && is_live(&self.entries[index]))?;
         self.pending = Some(target);
         Some(self.entries[target].clone())
+    }
+
+    /// Drops the closed tabs' entries (except the cursor's and the pending
+    /// target's) and collapses the duplicates that leaves next to each
+    /// other, so dead ids never crowd live ones out of the capped history.
+    fn prune(&mut self, is_live: &impl Fn(&str) -> bool) {
+        let (cursor, pending) = (self.cursor, self.pending);
+        let mut kept: VecDeque<String> = VecDeque::with_capacity(self.entries.len());
+        let (mut new_cursor, mut new_pending) = (0, None);
+        for (index, id) in std::mem::take(&mut self.entries).into_iter().enumerate() {
+            let pinned = index == cursor || Some(index) == pending;
+            if !pinned && !is_live(&id) {
+                continue;
+            }
+            if kept.back() != Some(&id) {
+                kept.push_back(id);
+            }
+            let at = kept.len() - 1;
+            if index == cursor {
+                new_cursor = at;
+            }
+            if Some(index) == pending {
+                new_pending = Some(at);
+            }
+        }
+        self.entries = kept;
+        self.cursor = new_cursor;
+        // A target merged into the focused entry has nothing left to confirm.
+        self.pending = new_pending.filter(|&at| at != new_cursor);
     }
 
     /// Forget everything (a new server boot or another endpoint).

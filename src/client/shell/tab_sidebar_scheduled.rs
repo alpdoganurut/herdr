@@ -39,9 +39,11 @@ pub(super) const SCHEDULED_TITLE: &str = "Scheduled";
 pub(super) const FIRED: &str = "fired";
 /// The most entry lines while expanded (also the live-clock array's size).
 const EXPANDED_CAP: u16 = 12;
-/// The interval column's width (`daily`).
+/// The interval column's widest text (`daily`); the column takes the
+/// widest shown entry's width.
 const INTERVAL_CELLS: u16 = 5;
-/// The when column's width (`in 5h59`).
+/// The when column's widest text (`in 5h59`); the column takes the widest
+/// shown entry's width.
 const WHEN_CELLS: u16 = 7;
 
 /// The most entry lines the block shows (folded past it into `+N more`) at
@@ -77,6 +79,17 @@ enum When {
     Daily(StackStr<8>),
 }
 
+impl When {
+    fn text(&self) -> &str {
+        match self {
+            When::Nothing => "",
+            When::Fired => FIRED,
+            When::Countdown(text) => text.as_str(),
+            When::Daily(text) => text.as_str(),
+        }
+    }
+}
+
 /// Draws the block into `rect` (already painted with the chrome background)
 /// and registers its hits.
 #[allow(clippy::too_many_arguments)] // the block's inputs; a struct would only rename them
@@ -103,8 +116,16 @@ pub(super) fn render_scheduled_block(
         // One marker per present interval kind, lit while a reminder of
         // that kind waits (one pass over the reminder map).
         let mut lit_kinds = 0u8;
-        for ((endpoint_id, _), reminder) in state.scheduled_reminders.iter() {
-            if reminder.lit && endpoint_id == state.active_endpoint_id {
+        for ((endpoint_id, tab_id), reminder) in state.scheduled_reminders.iter() {
+            // The focused tab's reminder is not shown as fired (as in the
+            // open rows).
+            if reminder.lit
+                && endpoint_id == state.active_endpoint_id
+                && !snapshot
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.focused && tab.tab_id == *tab_id)
+            {
                 if let Some((kind, _)) = interval_rank(reminder.every()) {
                     lit_kinds |= 1 << kind;
                 }
@@ -204,20 +225,33 @@ pub(super) fn render_scheduled_block(
         };
     }
     hits.sidebar_clock_deadline = deadline;
-    let has_when = whens[..visible.len()]
+    // Both columns are as wide as their widest shown text, so the label
+    // keeps its cells at the default sidebar width.
+    let when_cells = whens[..visible.len()]
         .iter()
-        .any(|when| !matches!(when, When::Nothing));
+        .map(|when| display_width(when.text()).min(WHEN_CELLS))
+        .max()
+        .unwrap_or(0);
+    let interval_cells = visible
+        .iter()
+        .filter_map(|index| snapshot.tabs.get(*index as usize))
+        .map(|tab| {
+            let every = tab.remind_every.unwrap_or(TabRemindInterval::Unknown);
+            display_width(every.name()).min(INTERVAL_CELLS)
+        })
+        .max()
+        .unwrap_or(0);
 
     // Columns from the right: margin, when, gap, interval, gap.
     let width = rect.width;
     let mut right_edge = width.saturating_sub(1);
-    let when_x = has_when.then(|| {
-        right_edge = right_edge.saturating_sub(WHEN_CELLS);
+    let when_x = (when_cells > 0).then(|| {
+        right_edge = right_edge.saturating_sub(when_cells);
         let x = right_edge;
         right_edge = right_edge.saturating_sub(1);
         x
     });
-    right_edge = right_edge.saturating_sub(INTERVAL_CELLS);
+    right_edge = right_edge.saturating_sub(interval_cells);
     let interval_x = right_edge;
     let name_end = right_edge.saturating_sub(1);
 
@@ -264,10 +298,10 @@ pub(super) fn render_scheduled_block(
             palette,
         );
         let name = every.name();
-        let name_cells = display_width(name).min(INTERVAL_CELLS);
+        let name_cells = display_width(name).min(interval_cells);
         put_text(
             buffer,
-            row.x + interval_x + (INTERVAL_CELLS - name_cells),
+            row.x + interval_x + (interval_cells - name_cells),
             row.y,
             name_cells,
             name,
@@ -283,10 +317,10 @@ pub(super) fn render_scheduled_block(
                 When::Countdown(text) => (text.as_str(), Style::default().fg(palette.subtext0)),
                 When::Daily(text) => (text.as_str(), Style::default().fg(palette.subtext0)),
             };
-            let cells = display_width(text).min(WHEN_CELLS);
+            let cells = display_width(text).min(when_cells);
             put_text(
                 buffer,
-                row.x + x + (WHEN_CELLS - cells),
+                row.x + x + (when_cells - cells),
                 row.y,
                 cells,
                 text,

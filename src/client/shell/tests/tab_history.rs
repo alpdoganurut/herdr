@@ -16,7 +16,7 @@ fn live(_: &str) -> bool {
 fn visited(tabs: &[&str]) -> TabHistory {
     let mut history = TabHistory::default();
     for tab in tabs {
-        history.observe(tab);
+        history.observe(tab, live);
     }
     history
 }
@@ -25,14 +25,14 @@ fn visited(tabs: &[&str]) -> TabHistory {
 fn history_goes_back_and_forward_like_a_browser() {
     let mut history = visited(&["a", "b", "c"]);
     assert_eq!(history.back(live).as_deref(), Some("b"));
-    history.observe("b");
+    history.observe("b", live);
     assert_eq!(history.back(live).as_deref(), Some("a"));
-    history.observe("a");
+    history.observe("a", live);
     assert_eq!(history.back(live), None, "nothing before the first tab");
     assert_eq!(history.forward(live).as_deref(), Some("b"));
-    history.observe("b");
+    history.observe("b", live);
     assert_eq!(history.forward(live).as_deref(), Some("c"));
-    history.observe("c");
+    history.observe("c", live);
     assert_eq!(history.forward(live), None, "nothing after the last tab");
     assert_eq!(history.entries(), ["a", "b", "c"]);
 }
@@ -41,7 +41,7 @@ fn history_goes_back_and_forward_like_a_browser() {
 fn a_jump_does_not_push_history() {
     let mut history = visited(&["a", "b", "c"]);
     assert_eq!(history.back(live).as_deref(), Some("b"));
-    history.observe("b");
+    history.observe("b", live);
     assert_eq!(
         history.entries(),
         ["a", "b", "c"],
@@ -54,8 +54,8 @@ fn a_jump_does_not_push_history() {
 fn a_new_visit_after_back_clears_forward() {
     let mut history = visited(&["a", "b", "c"]);
     history.back(live);
-    history.observe("b");
-    history.observe("d");
+    history.observe("b", live);
+    history.observe("d", live);
     assert_eq!(history.entries(), ["a", "b", "d"]);
     assert_eq!(history.forward(live), None);
     assert_eq!(history.back(live).as_deref(), Some("b"));
@@ -65,7 +65,7 @@ fn a_new_visit_after_back_clears_forward() {
 fn closed_tabs_are_skipped() {
     let mut history = visited(&["a", "b", "c"]);
     assert_eq!(history.back(|tab| tab != "b").as_deref(), Some("a"));
-    history.observe("a");
+    history.observe("a", live);
     assert_eq!(history.forward(|tab| tab != "b").as_deref(), Some("c"));
     // No live tab at all: nothing to focus.
     let mut history = visited(&["a", "b", "c"]);
@@ -78,8 +78,43 @@ fn the_focused_tab_is_never_a_target() {
     // `tab.focus` whose landing snapshot could never confirm the jump.
     let mut history = visited(&["a", "b", "a"]);
     assert_eq!(history.back(|tab| tab != "b"), None);
-    history.observe("c");
-    assert_eq!(history.entries(), ["a", "b", "a", "c"]);
+    history.observe("c", live);
+    // The press pruned the closed b and collapsed the two a's.
+    assert_eq!(history.entries(), ["a", "c"]);
+}
+
+#[test]
+fn repeated_ids_do_not_confirm_a_jump_early() {
+    let mut history = visited(&["a", "b", "a", "c"]);
+    assert_eq!(history.back(live).as_deref(), Some("a"));
+    assert_eq!(history.back(live).as_deref(), Some("b"));
+    assert_eq!(history.back(live).as_deref(), Some("a"));
+    // The three landings arrive in order; the first a is index 2, not 0.
+    history.observe("a", live);
+    history.observe("b", live);
+    history.observe("a", live);
+    assert_eq!(
+        history.entries(),
+        ["a", "b", "a", "c"],
+        "no landing is a visit"
+    );
+    assert_eq!(history.forward(live).as_deref(), Some("b"));
+}
+
+#[test]
+fn closed_tabs_are_pruned_so_older_live_tabs_stay_reachable() {
+    // A full history of tabs opened and closed after "home": the visit that
+    // overflows the cap drops the dead ids, not "home".
+    let is_live = |tab: &str| tab == "home" || tab == "now";
+    let mut history = visited(&["home"]);
+    let dead: Vec<String> = (1..CAP).map(|index| format!("gone{index}")).collect();
+    for id in &dead {
+        history.observe(id, live);
+    }
+    assert_eq!(history.entries().len(), CAP);
+    history.observe("now", is_live);
+    assert_eq!(history.entries(), ["home", "now"]);
+    assert_eq!(history.back(is_live).as_deref(), Some("home"));
 }
 
 #[test]
@@ -89,7 +124,7 @@ fn consecutive_duplicates_collapse_and_stacks_cap_at_50() {
 
     let ids: Vec<String> = (0..CAP + 10).map(|index| format!("t{index}")).collect();
     for id in &ids {
-        history.observe(id);
+        history.observe(id, live);
     }
     assert_eq!(history.entries().len(), CAP);
     assert_eq!(history.entries()[0], ids[10]);
@@ -102,8 +137,8 @@ fn a_snapshot_of_the_same_tab_does_not_cancel_a_jump() {
     let mut history = visited(&["a", "b", "c"]);
     assert_eq!(history.back(live).as_deref(), Some("b"));
     // An agent status flip arrives before the focus lands.
-    history.observe("c");
-    history.observe("b");
+    history.observe("c", live);
+    history.observe("b", live);
     assert_eq!(history.entries(), ["a", "b", "c"]);
     assert_eq!(history.forward(live).as_deref(), Some("c"));
 }
@@ -114,8 +149,8 @@ fn two_backs_before_the_snapshot_lands_walk_two_steps() {
     assert_eq!(history.back(live).as_deref(), Some("b"));
     assert_eq!(history.back(live).as_deref(), Some("a"));
     // Both requests land in order; neither is a visit.
-    history.observe("b");
-    history.observe("a");
+    history.observe("b", live);
+    history.observe("a", live);
     assert_eq!(history.entries(), ["a", "b", "c"]);
     assert_eq!(history.focused(), Some("a"));
     assert_eq!(history.forward(live).as_deref(), Some("b"));
@@ -126,7 +161,7 @@ fn a_jump_that_never_lands_leaves_history_intact() {
     let mut history = visited(&["a", "b", "c"]);
     assert_eq!(history.back(live).as_deref(), Some("b"));
     // The focus request fails; the user clicks another tab.
-    history.observe("d");
+    history.observe("d", live);
     assert_eq!(history.entries(), ["a", "b", "c", "d"]);
     assert_eq!(history.back(live).as_deref(), Some("c"));
 }

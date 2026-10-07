@@ -132,6 +132,28 @@ fn pins_section_lists_pinned_tabs_in_list_order_and_they_stay_in_their_group() {
 }
 
 #[test]
+fn pinned_idle_entry_shows_its_time_in_state() {
+    let mut state = pinned_state();
+    let received = Instant::now() + Duration::from_secs(86_400);
+    state.sidebar_clock = Some(received);
+    // `t_home` idle for 42m (no subagents, no voice).
+    assert!(state.receive_agent_times_at(
+        &ClientEndpointId::Local,
+        super::sidebar_active::times_payload(1, &[("p_home", 1, 42 * 60 * 1000)]),
+        received,
+    ));
+    let frame = state.compose(COLS, ROWS).expect("composed frame");
+    let home = row_text(&frame, row_of(&state.hits.sidebar_pins_rows, "t_home"));
+    assert!(home.contains("42m"), "{home:?}");
+    // The Active block still lists an idle tab only for voice or subagents.
+    assert!(!state
+        .hits
+        .sidebar_active_rows
+        .iter()
+        .any(|(_, id)| id == "t_home"));
+}
+
+#[test]
 fn a_team_group_entry_names_the_team() {
     let mut state = pinned_state();
     let teams = crate::server::headless::teams::TeamsPayload::decode(
@@ -228,6 +250,51 @@ fn fired_is_not_shown_for_the_focused_tab() {
         !home.contains(super::super::tab_sidebar_scheduled::FIRED),
         "{home:?}"
     );
+}
+
+#[test]
+fn the_folded_header_does_not_light_the_focused_tabs_reminder() {
+    let t0 = Instant::now();
+    let lit_mark = |focus: &str| {
+        let mut state = scheduled_state(t0);
+        state.scheduled_agents_folded = Some(true);
+        state.tick_notifications(t0 + 5 * MINUTE);
+        let mut focused = scheduled_snapshot();
+        for tab in &mut focused.tabs {
+            tab.focused = tab.tab_id == focus;
+        }
+        focused.focused_tab_id = Some(focus.into());
+        state.set_snapshot(Box::new(focused));
+        state.sidebar_clock = Some(t0 + 5 * MINUTE + Duration::from_secs(1));
+        let frame = state.compose(COLS, ROWS).expect("composed frame");
+        let header = state.hits.sidebar_scheduled_header;
+        let x = (header.x..header.right())
+            .find(|x| {
+                cell(&frame, *x, header.y).symbol == super::super::tab_sidebar::TAB_REMIND_MARKER
+            })
+            .expect("the minutes mark");
+        let lit =
+            super::super::idle_reminders::ClientReminderLit::Scheduled.color(&state.config.palette);
+        cell(&frame, x, header.y).fg == crate::protocol::color_to_u32(lit)
+    };
+    // The 5m reminder of t_home fired.
+    assert!(lit_mark("t_focus"), "lit while another tab is focused");
+    assert!(!lit_mark("t_home"), "not for the focused tab");
+}
+
+#[test]
+fn scheduled_labels_keep_their_cells_at_the_default_width() {
+    let mut config = tabs_config();
+    config.ui.sidebar_width = crate::config::Config::default().ui.sidebar_width;
+    let t0 = Instant::now();
+    let mut state = scheduled_state_with(ClientShellConfig::from_config(&config), t0);
+    state.sidebar_clock = Some(t0 + Duration::from_secs(90));
+    let frame = state.compose(COLS, ROWS).expect("composed frame");
+    // The columns take only their widest shown text (`daily`, `in 9m`), so
+    // the label keeps 7 cells at content width 25 (it had 5).
+    let work = row_text(&frame, row_of(&state.hits.sidebar_scheduled_rows, "t_work"));
+    assert!(work.contains("old wo\u{2026}"), "{work:?}");
+    assert!(work.contains("10m") && work.contains("in 9m"), "{work:?}");
 }
 
 #[test]

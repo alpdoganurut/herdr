@@ -100,7 +100,8 @@ pub(super) fn render_pins_block(
     }
     let (shown, overflow) = line_plan(model.pins.len(), view.expanded, lines);
     let visible = &model.pins[..shown.min(model.pins.len())];
-    let columns = EntryColumns::for_tabs(visible.iter().copied(), snapshot, model, rect.width);
+    let columns =
+        EntryColumns::for_tabs(visible.iter().copied(), snapshot, model, rect.width, true);
     let mut deadline = hits.sidebar_clock_deadline;
     let first_y = header.bottom();
     for (offset, &tab_index) in visible.iter().enumerate() {

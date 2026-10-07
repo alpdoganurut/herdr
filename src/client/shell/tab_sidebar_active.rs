@@ -213,6 +213,7 @@ pub(super) fn render_active_block(
         snapshot,
         model,
         rect.width,
+        false,
     );
     let mut deadline = hits.sidebar_clock_deadline;
     let first_y = header.bottom();
@@ -287,6 +288,11 @@ pub(super) fn shows_time(status: AgentStatus, subagents: u32) -> bool {
         AgentStatus::Idle => subagents > 0,
         _ => false,
     }
+}
+
+/// [`shows_time`], plus every idle tab when `idle_time` (pinned entries).
+fn entry_shows_time(status: AgentStatus, subagents: u32, idle_time: bool) -> bool {
+    shows_time(status, subagents) || (idle_time && status == AgentStatus::Idle)
 }
 
 /// The hairline rule: `─` from x = 1 to `width - 2`, in surface1.
@@ -433,16 +439,20 @@ pub(super) struct EntryColumns {
     subagents: Option<u16>,
     /// The name ends before this x.
     name_end: u16,
+    /// An idle entry shows its time since it went idle too (the Pinned
+    /// block; the Active block lists an idle tab only for its voice).
+    idle_time: bool,
 }
 
 impl EntryColumns {
     /// The columns of the entry lines of `visible` (indices into
-    /// `snapshot.tabs`).
+    /// `snapshot.tabs`). `idle_time` also times idle entries.
     pub(super) fn for_tabs(
         mut visible: impl Iterator<Item = u32> + Clone,
         snapshot: &ClientShellSnapshot,
         model: &SidebarModel,
         width: u16,
+        idle_time: bool,
     ) -> Self {
         let has_time = visible.clone().any(|index| {
             snapshot
@@ -450,7 +460,8 @@ impl EntryColumns {
                 .get(index as usize)
                 .zip(model.tab(index))
                 .is_some_and(|(tab, facts)| {
-                    shows_time(tab.agent_status, facts.subagents) && facts.since.is_some()
+                    entry_shows_time(tab.agent_status, facts.subagents, idle_time)
+                        && facts.since.is_some()
                 })
         });
         let has_subagents =
@@ -469,6 +480,7 @@ impl EntryColumns {
             time,
             subagents,
             name_end: right.saturating_sub(1),
+            idle_time,
         }
     }
 }
@@ -527,7 +539,9 @@ pub(super) fn render_entry(
     let mut tick = None;
     if let (Some(x), Some(since)) = (
         line.columns.time,
-        facts.since.filter(|_| shows_time(status, facts.subagents)),
+        facts
+            .since
+            .filter(|_| entry_shows_time(status, facts.subagents, line.columns.idle_time)),
     ) {
         let age = format_age(line.now.saturating_duration_since(since));
         let width = display_width(age.as_str()).min(TIME_CELLS);

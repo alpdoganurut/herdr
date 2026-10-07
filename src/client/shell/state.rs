@@ -1888,7 +1888,9 @@ impl ClientShellState {
         // Fork (sidebar v3): every accepted snapshot reports its focused tab,
         // the first one too; a new boot reset the history above.
         if let Some(tab_id) = snapshot.focused_tab_id.as_deref() {
-            self.tab_history.observe(tab_id);
+            let tabs = &snapshot.tabs;
+            self.tab_history
+                .observe(tab_id, |id| tabs.iter().any(|tab| tab.tab_id == id));
         }
         if snapshot_keybindings_changed {
             if let Err(err) = self.config.apply_snapshot_keybindings(

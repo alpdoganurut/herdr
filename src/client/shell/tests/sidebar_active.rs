@@ -934,6 +934,34 @@ fn settings_indicators_toggle_writes_sidebar_active_agents() {
     ));
 }
 
+#[test]
+fn a_short_settings_popup_still_draws_every_indicators_row() {
+    let mut state = active_state();
+    state.open_settings_overlay();
+    let index = ClientSettingsSection::ALL
+        .iter()
+        .position(|section| *section == ClientSettingsSection::Indicators)
+        .expect("indicators section");
+    for _ in 0..index {
+        state.handle_input_bytes(b"\t");
+    }
+    // 20..=22 rows: too short for the dim lines, the toggles stack; 23:
+    // spaced again. (Under 20 rows the upstream radio rows clip as well.)
+    for rows in 20..=23 {
+        let frame = state.compose(108, rows).expect("settings frame");
+        let choices = state.hits.settings_choices.clone();
+        assert_eq!(
+            choices.iter().map(|(_, index)| *index).collect::<Vec<_>>(),
+            [0, 1, 2, 3, 4],
+            "every selectable row is drawn at {rows} rows"
+        );
+        assert!(
+            row_text(&frame, choices[4].0).contains("scheduled agents block"),
+            "at {rows} rows"
+        );
+    }
+}
+
 pub(super) mod fork_smoke {
     use super::*;
 
