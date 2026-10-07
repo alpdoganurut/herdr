@@ -165,7 +165,11 @@ fn the_news_row_is_pulled_on_attach_and_pins_the_tab_out_of_the_list() {
         super::sidebar_sections::blocks_bottom(&state.hits),
         "right under the list and its blocks (sidebar v3)"
     );
-    assert_eq!(state.hits.agent_body.height, list_height - 1);
+    assert_eq!(
+        state.hits.agent_body.height,
+        list_height - 2,
+        "the row and the rule above it"
+    );
     let text = row_text(&frame, row);
     assert!(text.contains("News"), "{text:?}");
     assert!(
@@ -359,13 +363,10 @@ fn the_row_sits_above_the_status_footer_and_goes_with_the_tab() {
     deliver(&mut state, info(Some("tab_2")));
     let frame = state.compose(106, 20).expect("composed frame");
     let row = state.hits.news_row;
-    // Under the row: the detail strip (`hits.sidebar_detail`), then the
-    // footer.
-    let detail = state.hits.sidebar_detail;
-    assert!(detail.is_empty() || detail.y == row.y + 1, "{detail:?}");
+    // Under the row: the footer (the detail strip heads the sidebar).
     let footer = row_text(
         &frame,
-        ratatui::layout::Rect::new(row.x, row.y + 1 + detail.height, row.width, 1),
+        ratatui::layout::Rect::new(row.x, row.y + 1, row.width, 1),
     );
     assert!(
         footer.contains("cpu 12%"),
@@ -404,7 +405,11 @@ fn the_row_sits_above_the_status_footer_and_goes_with_the_tab() {
     );
     state.compose(106, 20).expect("composed frame");
     assert_eq!(state.hits.news_row, ratatui::layout::Rect::default());
-    assert_eq!(state.hits.agent_body.bottom(), list_bottom + 1);
+    assert_eq!(
+        state.hits.agent_body.bottom(),
+        list_bottom + 2,
+        "the row and its rule give their rows back"
+    );
     assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_3"]);
 }
 
@@ -426,7 +431,11 @@ fn with_news_enabled_the_row_shows_without_a_tab() {
     let frame = state.compose(106, 20).expect("composed frame");
     let row = state.hits.news_row;
     assert_ne!(row, ratatui::layout::Rect::default(), "the row shows");
-    assert_eq!(state.hits.agent_body.height, list_height - 1);
+    assert_eq!(
+        state.hits.agent_body.height,
+        list_height - 2,
+        "the row and the rule above it"
+    );
     assert_eq!(row.y, super::sidebar_sections::blocks_bottom(&state.hits));
     assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_3"]);
     let text = row_text(&frame, row);

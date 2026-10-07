@@ -1,5 +1,5 @@
-//! Fork (sidebar v3): the tabs sidebar's current row and the Pinned and
-//! Scheduled blocks under the list.
+//! Fork (sidebar v3): the tabs sidebar's detail strip on top and the
+//! Pinned and Scheduled blocks under the list.
 //!
 //! The fixture is sidebar_active.rs's (a blocked, a live voice, two
 //! working, a finished, a parked and an idle tab over the ungrouped bucket
@@ -8,7 +8,6 @@
 
 use std::time::{Duration, Instant};
 
-use super::super::sidebar_model::{ModelInputs, SidebarHover, SidebarModel};
 use super::sidebar_active::{
     active_snapshot, active_state, active_state_with, cell, detail_text, endpoint_methods, mouse,
     row_text, tabs_config, COLS, ROWS,
@@ -20,8 +19,8 @@ use crossterm::event::{MouseButton, MouseEventKind};
 
 const MINUTE: Duration = Duration::from_secs(60);
 
-/// Where the fixed rows (Browser, News, coordinator) start: under the list
-/// and the Active, Pinned and Scheduled blocks.
+/// Where the fixed rows (Browser, News, coordinator) start: under the list,
+/// the Active, Pinned and Scheduled blocks and the rule above the fixed rows.
 pub(super) fn blocks_bottom(hits: &ShellHitMap) -> u16 {
     let last = |rows: &[(Rect, String)]| rows.last().map_or(0, |(rect, _)| rect.bottom());
     [
@@ -39,6 +38,7 @@ pub(super) fn blocks_bottom(hits: &ShellHitMap) -> u16 {
     .into_iter()
     .max()
     .unwrap_or(0)
+        + 1
 }
 
 fn pins_payload(revision: u64, tab_ids: &[&str]) -> TabPinsPayload {
@@ -172,9 +172,6 @@ fn a_team_group_entry_names_the_team() {
         cell(&frame, mark_x, row.y).fg,
         crate::protocol::color_to_u32(state.config.palette.accent)
     );
-    // The current row names the focused tab's plain group.
-    let current = row_text(&frame, state.hits.sidebar_current);
-    assert!(current.contains("Alpha"), "{current:?}");
 }
 
 #[test]
@@ -592,81 +589,25 @@ fn sections_rebuild_the_model_on_data_change_only() {
 }
 
 #[test]
-fn current_row_follows_focus_and_the_group_row_stays_put() {
+fn detail_strip_sits_under_the_toolbar_with_its_rule_above_the_list() {
     let mut state = active_state();
     let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let current = state.hits.sidebar_current;
-    assert_eq!(current.y, 1, "right under the toolbar");
-    assert_eq!(state.hits.agent_body.y, 2, "the list starts under it");
-    let text = row_text(&frame, current);
-    assert!(
-        text.contains("\u{203A}") && text.contains("focus work") && text.contains("Alpha"),
-        "{text:?}"
-    );
-    let rows_before = state.hits.sidebar_tabs.clone();
-    assert!(
-        rows_before.iter().any(|(_, id)| id == "t_focus"),
-        "the focused tab keeps its group row"
-    );
-
-    let mut moved = active_snapshot();
-    for tab in &mut moved.tabs {
-        tab.focused = tab.tab_id == "t_work";
-    }
-    moved.focused_tab_id = Some("t_work".into());
-    moved.focused_workspace_id = Some("ws_b".into());
-    state.set_snapshot(Box::new(moved));
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let text = row_text(&frame, state.hits.sidebar_current);
-    assert!(
-        text.contains("old work") && text.contains("Beta"),
-        "{text:?}"
+    let detail = state.hits.sidebar_detail;
+    assert_eq!(detail.y, 1, "right under the toolbar");
+    assert_eq!(
+        cell(&frame, detail.x + 2, detail.bottom() - 1).symbol,
+        "\u{2500}",
+        "its rule is its last row"
     );
     assert_eq!(
-        state.hits.sidebar_tabs, rows_before,
-        "no list row moved: only the current row follows focus"
+        state.hits.agent_body.y,
+        detail.bottom(),
+        "the list starts under it"
     );
-
-    // A click reveals the focused tab, without a focus request.
-    let current = state.hits.sidebar_current;
-    let outcome = mouse(
-        &mut state,
-        MouseEventKind::Down(MouseButton::Left),
-        current.x + 6,
-        current.y,
-    );
-    assert!(endpoint_methods(&outcome).is_empty(), "already focused");
-    assert_eq!(state.sidebar_reveal_tab.as_deref(), Some("t_work"));
-    // Hovering it selects the focused tab for the detail strip.
-    mouse(&mut state, MouseEventKind::Moved, current.x + 6, current.y);
-    assert_eq!(state.sidebar_hover, Some(SidebarHover::Current));
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    assert!(detail_text(&state, &frame)[0].contains("old work"));
-}
-
-#[test]
-fn current_row_hides_without_a_focused_list_tab() {
-    let snapshot = active_snapshot();
-    let groups = HashSet::new();
-    // The focused tab is a fixed row's (News or coordinator): no current row.
-    let model = SidebarModel::built(ModelInputs {
-        fixed_ids: (Some("t_focus"), None),
-        ..ModelInputs::new(&snapshot, &groups)
-    });
-    assert_eq!(model.focused_tab, None);
-    let mut state = active_state();
-    let mut unfocused = active_snapshot();
-    for tab in &mut unfocused.tabs {
-        tab.focused = false;
-    }
-    unfocused.focused_tab_id = None;
-    state.set_snapshot(Box::new(unfocused));
-    state.compose(COLS, ROWS).expect("composed frame");
-    assert!(state.hits.sidebar_current.is_empty());
-    assert_eq!(
-        state.hits.agent_body.y, 1,
-        "the list starts under the toolbar"
-    );
+    assert!(detail_text(&state, &frame)[0].contains("focus work"));
+    // No row sits between the strip and the list's first tab.
+    let (row, _) = &state.hits.sidebar_tabs[0];
+    assert_eq!(row.y, state.hits.agent_body.y);
 }
 
 #[test]
@@ -714,21 +655,23 @@ fn section_headers_describe_themselves_in_the_detail_strip() {
 mod fork_smoke {
     use super::*;
 
-    /// The current row, the Active block under the list and the Pinned and
-    /// Scheduled blocks under it all reach the composed frame.
+    /// The detail strip under the toolbar, the Active block under the list
+    /// and the Pinned and Scheduled blocks under it all reach the composed
+    /// frame.
     #[test]
-    fn current_row_and_bottom_blocks_reach_the_renderer() {
+    fn detail_on_top_and_bottom_blocks_reach_the_renderer() {
         let t0 = Instant::now();
         let mut state = scheduled_state(t0);
         assert!(state.receive_tab_pins(&ClientEndpointId::Local, pins_payload(1, &["t_done"])));
         let frame = state.compose(COLS, ROWS).expect("composed frame");
         let hits = &state.hits;
-        assert_eq!(hits.sidebar_current.y, 1);
+        assert_eq!(hits.sidebar_detail.y, 1);
         let list = hits.agent_body;
+        assert_eq!(list.y, hits.sidebar_detail.bottom());
         assert!(hits.sidebar_active_header.y > list.bottom());
         assert!(hits.sidebar_pins_header.y > hits.sidebar_active_header.y);
         assert!(hits.sidebar_scheduled_header.y > hits.sidebar_pins_header.y);
-        assert!(row_text(&frame, hits.sidebar_current).contains("focus work"));
+        assert!(detail_text(&state, &frame)[0].contains("focus work"));
     }
 
     #[test]

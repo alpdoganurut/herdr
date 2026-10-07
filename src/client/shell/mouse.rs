@@ -1938,8 +1938,7 @@ impl ClientShellState {
                     return;
                 }
                 // Fork (sidebar v2): an Active agents entry gets its tab's
-                // menu; sidebar v3: a Pinned or Scheduled entry and the
-                // current row likewise.
+                // menu; sidebar v3: a Pinned or Scheduled entry likewise.
                 if let Some(tab_id) = self.sidebar_active_entry_at(point) {
                     self.open_tab_context_menu(tab_id, mouse.column, mouse.row);
                     self.request_context_menu_session(outcome);
@@ -2293,12 +2292,10 @@ impl ClientShellState {
                     return;
                 }
                 // Fork (sidebar v2): the Active agents block (no drag);
-                // sidebar v3: the Pinned and Scheduled blocks and the
-                // current row likewise.
+                // sidebar v3: the Pinned and Scheduled blocks likewise.
                 if self.sidebar_active_press(point, outcome)
                     || self.sidebar_pins_press(point, outcome)
                     || self.sidebar_scheduled_press(point, outcome)
-                    || self.sidebar_current_press(point, outcome)
                 {
                     return;
                 }

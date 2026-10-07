@@ -5,20 +5,7 @@
    28-28 overlay0/sidebar_chrome_bg
    29-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
-01| › ⚭ sidebar redesign Plan… ⧆ │|
-   00-00 -/active_row_bg
-   01-01 accent/active_row_bg/b
-   02-02 -/active_row_bg
-   03-03 yellow/active_row_bg
-   04-04 -/active_row_bg
-   05-20 text/active_row_bg/b
-   21-21 -/active_row_bg
-   22-26 overlay0/active_row_bg
-   27-27 -/active_row_bg
-   28-28 #02d97757/active_row_bg
-   29-29 -/active_row_bg
-   30-30 surface1/sidebar_bg
-02|     ○ scratch             ◎ ▕│|
+01|     ○ scratch             ◎ ▕│|
    00-04 -/sidebar_bg
    05-05 green/sidebar_bg
    06-06 -/sidebar_bg
@@ -28,7 +15,7 @@
    28-28 -/sidebar_bg
    29-29 overlay0/sidebar_bg
    30-30 surface1/sidebar_bg
-03| ▾   Planning            3 ● ▕│|
+02| ▾   Planning            3 ● ▕│|
    00-00 -/sidebar_bg
    01-01 subtext0/sidebar_bg
    02-04 -/sidebar_bg
@@ -40,7 +27,7 @@
    28-28 -/sidebar_bg
    29-29 overlay0/sidebar_bg
    30-30 surface1/sidebar_bg
-04|     ⚭ sidebar redesign    ⧆ ▕│|
+03|     ⚭ sidebar redesign    ⧆ ▕│|
    00-04 -/active_row_bg
    05-05 yellow/active_row_bg
    06-06 -/active_row_bg
@@ -50,7 +37,7 @@
    28-28 -/active_row_bg
    29-29 surface_dim/sidebar_bg
    30-30 surface1/sidebar_bg
-05|     ● review api          ★ ▕│|
+04|     ● review api          ★ ▕│|
    00-04 -/sidebar_bg
    05-05 red/sidebar_bg
    06-06 -/sidebar_bg
@@ -60,12 +47,12 @@
    28-28 -/sidebar_bg
    29-29 surface_dim/sidebar_bg
    30-30 surface1/sidebar_bg
-06| ──────────────────────────── │|
+05| ──────────────────────────── │|
    00-00 -/sidebar_chrome_bg
    01-28 surface1/sidebar_chrome_bg
    29-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
-07| ▾ Scheduled              1   │|
+06| ▾ Scheduled              1   │|
    00-00 -/sidebar_chrome_bg
    01-01 overlay1/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
@@ -74,7 +61,7 @@
    26-26 overlay0/sidebar_chrome_bg
    27-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
-08|   ◑ notes Planni… 1h in 1h00 │|
+07|   ◑ notes Planni… 1h in 1h00 │|
    00-02 -/sidebar_chrome_bg
    03-03 overlay0/sidebar_chrome_bg
    04-04 -/sidebar_chrome_bg
@@ -85,6 +72,11 @@
    19-20 overlay0/sidebar_chrome_bg
    21-21 -/sidebar_chrome_bg
    22-28 subtext0/sidebar_chrome_bg
+   29-29 -/sidebar_chrome_bg
+   30-30 surface1/sidebar_bg
+08| ──────────────────────────── │|
+   00-00 -/sidebar_chrome_bg
+   01-28 surface1/sidebar_chrome_bg
    29-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
 09|   ◌ Browser          stopped │|

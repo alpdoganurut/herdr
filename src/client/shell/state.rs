@@ -215,8 +215,6 @@ pub(super) struct ShellHitMap {
     /// Fork (sidebar v2): when a displayed duration next changes its text
     /// (the minute clock's repaint).
     pub(super) sidebar_clock_deadline: Option<std::time::Instant>,
-    /// Fork (sidebar v3): the current row (the focused tab, above the list).
-    pub(super) sidebar_current: Rect,
     /// Fork (sidebar v3): the Pinned block's header row.
     pub(super) sidebar_pins_header: Rect,
     /// Fork (sidebar v3): the Pinned entry rows (rect, tab id).

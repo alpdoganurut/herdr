@@ -1,9 +1,9 @@
-27| ──────────────────────────── │|
+31| ──────────────────────────── │|
    00-00 -/sidebar_chrome_bg
    01-28 surface1/sidebar_chrome_bg
    29-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
-28| ▾ Scheduled              1   │|
+32| ▾ Scheduled              1   │|
    00-00 -/sidebar_chrome_bg
    01-01 overlay1/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
@@ -12,7 +12,7 @@
    26-26 overlay0/sidebar_chrome_bg
    27-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
-29|   ◑ notes Planni… 1h in 1h00 │|
+33|   ◑ notes Planni… 1h in 1h00 │|
    00-02 -/sidebar_chrome_bg
    03-03 overlay0/sidebar_chrome_bg
    04-04 -/sidebar_chrome_bg
@@ -25,7 +25,12 @@
    22-28 subtext0/sidebar_chrome_bg
    29-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
-30|   ◌ Browser          stopped │|
+34| ──────────────────────────── │|
+   00-00 -/sidebar_chrome_bg
+   01-28 surface1/sidebar_chrome_bg
+   29-29 -/sidebar_chrome_bg
+   30-30 surface1/sidebar_bg
+35|   ◌ Browser          stopped │|
    00-02 -/sidebar_bg
    03-03 overlay0/sidebar_bg
    04-04 -/sidebar_bg
@@ -33,37 +38,6 @@
    12-21 -/sidebar_bg
    22-28 overlay1/sidebar_bg
    29-29 -/sidebar_bg
-   30-30 surface1/sidebar_bg
-31| ──────────────────────────── │|
-   00-00 -/sidebar_chrome_bg
-   01-28 surface1/sidebar_chrome_bg
-   29-29 -/sidebar_chrome_bg
-   30-30 surface1/sidebar_bg
-32|  sidebar redesign  Planning  │|
-   00-01 -/sidebar_chrome_bg
-   02-17 text/sidebar_chrome_bg/b
-   18-19 -/sidebar_chrome_bg
-   20-27 overlay0/sidebar_chrome_bg
-   28-29 -/sidebar_chrome_bg
-   30-30 surface1/sidebar_bg
-33|  ⚭ working  ⚭2  ⧆ claude     │|
-   00-01 -/sidebar_chrome_bg
-   02-10 yellow/sidebar_chrome_bg
-   11-12 -/sidebar_chrome_bg
-   13-14 yellow/sidebar_chrome_bg
-   15-16 -/sidebar_chrome_bg
-   17-24 #02d97757/sidebar_chrome_bg
-   25-29 -/sidebar_chrome_bg
-   30-30 surface1/sidebar_bg
-34|  t_plan                      │|
-   00-01 -/sidebar_chrome_bg
-   02-07 overlay0/sidebar_chrome_bg
-   08-29 -/sidebar_chrome_bg
-   30-30 surface1/sidebar_bg
-35| ──────────────────────────── │|
-   00-00 -/sidebar_chrome_bg
-   01-28 surface1/sidebar_chrome_bg
-   29-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
 36| cpu 12%                      │|
    00-00 -/sidebar_chrome_bg

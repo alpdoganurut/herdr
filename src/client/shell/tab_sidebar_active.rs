@@ -672,7 +672,6 @@ enum HoverAt<'a> {
     ActiveEntry(&'a str),
     ActiveMore,
     Fixed(FixedKind),
-    Current,
     PinsHeader,
     PinsEntry(&'a str),
     PinsMore,
@@ -691,7 +690,6 @@ impl HoverAt<'_> {
             | (Self::ScheduledEntry(id), SidebarHover::ScheduledEntry(current)) => id == current,
             (Self::ActiveHeader, SidebarHover::ActiveHeader)
             | (Self::ActiveMore, SidebarHover::ActiveMore)
-            | (Self::Current, SidebarHover::Current)
             | (Self::PinsHeader, SidebarHover::PinsHeader)
             | (Self::PinsMore, SidebarHover::PinsMore)
             | (Self::ScheduledHeader, SidebarHover::ScheduledHeader)
@@ -709,7 +707,6 @@ impl HoverAt<'_> {
             Self::ActiveEntry(id) => SidebarHover::ActiveEntry(id.to_owned()),
             Self::ActiveMore => SidebarHover::ActiveMore,
             Self::Fixed(kind) => SidebarHover::Fixed(kind),
-            Self::Current => SidebarHover::Current,
             Self::PinsHeader => SidebarHover::PinsHeader,
             Self::PinsEntry(id) => SidebarHover::PinsEntry(id.to_owned()),
             Self::PinsMore => SidebarHover::PinsMore,
@@ -743,9 +740,6 @@ impl ClientShellState {
             rows.iter()
                 .find(|(rect, _)| super::contains(*rect, point))
                 .map(|(_, id)| id.as_str())
-        }
-        if super::contains(hits.sidebar_current, point) {
-            return Some(HoverAt::Current);
         }
         if super::contains(hits.sidebar_active_header, point) {
             return Some(HoverAt::ActiveHeader);
@@ -812,16 +806,9 @@ impl ClientShellState {
     }
 
     /// The tab id of the sidebar entry at `point` that opens its tab's menu
-    /// on a right click: an Active, Pinned or Scheduled entry, or the
-    /// current row (the focused tab).
+    /// on a right click: an Active, Pinned or Scheduled entry.
     pub(super) fn sidebar_active_entry_at(&self, point: (u16, u16)) -> Option<String> {
         let hits = &self.hits;
-        if super::contains(hits.sidebar_current, point) {
-            return self
-                .snapshot
-                .as_deref()
-                .and_then(|snapshot| snapshot.focused_tab_id.clone());
-        }
         [
             &hits.sidebar_active_rows,
             &hits.sidebar_pins_rows,
@@ -862,32 +849,6 @@ impl ClientShellState {
             return false;
         };
         self.jump_to_sidebar_tab(tab_id, outcome);
-        true
-    }
-
-    /// Fork (sidebar v3): a left press on the current row: reveal the
-    /// focused tab in the list (its group opens); no focus change. Returns
-    /// whether the press was the row's.
-    pub(super) fn sidebar_current_press(
-        &mut self,
-        point: (u16, u16),
-        outcome: &mut ClientShellInput,
-    ) -> bool {
-        if !super::contains(self.hits.sidebar_current, point) {
-            return false;
-        }
-        let focused = self.snapshot.as_deref().and_then(|snapshot| {
-            snapshot
-                .tabs
-                .iter()
-                .find(|tab| tab.focused)
-                .map(|tab| (tab.tab_id.clone(), tab.workspace_id.clone()))
-        });
-        if let Some((tab_id, workspace_id)) = focused {
-            self.open_sidebar_group(&workspace_id, outcome);
-            self.sidebar_reveal_tab = Some(tab_id);
-        }
-        outcome.repaint = true;
         true
     }
 

@@ -198,8 +198,6 @@ pub(crate) enum SidebarHover {
     ActiveEntry(String),
     ActiveMore,
     Fixed(FixedKind),
-    /// Fork (sidebar v3): the current row (the focused tab, above the list).
-    Current,
     PinsHeader,
     PinsEntry(String),
     PinsMore,
@@ -617,7 +615,6 @@ pub(crate) fn resolve_selected(
             .map(|index| Selected::Group(index as u32)),
         Some(SidebarHover::ActiveHeader | SidebarHover::ActiveMore) => Some(Selected::ActiveHeader),
         Some(SidebarHover::Fixed(kind)) => Some(Selected::Fixed(*kind)),
-        Some(SidebarHover::Current) => model.focused_tab.map(Selected::Tab),
         Some(SidebarHover::PinsEntry(tab_id)) => list_tab(tab_id).map(Selected::PinsEntry),
         Some(SidebarHover::PinsHeader | SidebarHover::PinsMore) => Some(Selected::PinsHeader),
         Some(SidebarHover::ScheduledEntry(tab_id)) => {

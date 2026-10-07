@@ -262,7 +262,7 @@ pub(super) fn endpoint_methods(outcome: &ClientShellInput) -> Vec<&crate::api::s
 pub(super) fn detail_text(state: &ClientShellState, frame: &FrameData) -> Vec<String> {
     let strip = state.hits.sidebar_detail;
     assert!(strip.height >= 2, "a detail strip: {strip:?}");
-    (strip.y + 1..strip.bottom())
+    (strip.y..strip.bottom())
         .map(|y| row_text(frame, Rect::new(strip.x, y, strip.width, 1)))
         .filter(|text| !text.contains("\u{2500}\u{2500}"))
         .collect()
@@ -503,8 +503,9 @@ fn active_block_is_hidden_when_nothing_is_active() {
     assert_eq!(state.hits.sidebar_active_header, Rect::default());
     assert!(state.hits.sidebar_active_rows.is_empty());
     assert_eq!(
-        state.hits.sidebar_tabs[0].0.y, 2,
-        "the list starts right under the toolbar and the current row"
+        state.hits.sidebar_tabs[0].0.y,
+        state.hits.sidebar_detail.bottom(),
+        "the list starts right under the toolbar and the detail strip"
     );
 }
 
@@ -518,8 +519,9 @@ fn active_block_respects_the_opt_out() {
     assert!(state.hits.sidebar_active_rows.is_empty());
     assert!(state.sidebar_model.active.is_empty());
     assert_eq!(
-        state.hits.agent_body.y, 2,
-        "under the toolbar and the current row"
+        state.hits.agent_body.y,
+        state.hits.sidebar_detail.bottom(),
+        "under the toolbar and the detail strip"
     );
 }
 

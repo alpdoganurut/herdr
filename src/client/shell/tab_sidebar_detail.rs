@@ -43,8 +43,9 @@ pub(super) fn detail_lines(content_height: u16) -> u16 {
 }
 
 /// Draws the strip into `rect` (already painted with the chrome background)
-/// and registers its hit. The rect is the upper rule, the text rows and,
-/// while the status footer shows under it, the lower rule.
+/// and registers its hit. Fork (sidebar v3): the strip sits under the
+/// toolbar; the rect is the text rows, then the rule that separates them
+/// from the list.
 pub(super) fn render_detail_strip(
     buffer: &mut Buffer,
     rect: Rect,
@@ -59,22 +60,15 @@ pub(super) fn render_detail_strip(
     }
     let palette = &config.palette;
     hits.sidebar_detail = rect;
-    super::tab_sidebar_active::put_rule(buffer, rect.x, rect.y, rect.width, palette);
-    // The menu row is the sidebar's last row: anything between the strip
-    // and it is the status footer.
-    let menu_y = hits.sidebar_divider.bottom().saturating_sub(1);
-    let lower_rule = rect.height >= 3 && rect.bottom() < menu_y;
-    if lower_rule {
-        super::tab_sidebar_active::put_rule(buffer, rect.x, rect.bottom() - 1, rect.width, palette);
-    }
-    let rows = rect.height - 1 - u16::from(lower_rule);
+    super::tab_sidebar_active::put_rule(buffer, rect.x, rect.bottom() - 1, rect.width, palette);
+    let rows = rect.height - 1;
     if rows == 0 {
         return;
     }
     let mut chips = Chips {
         buffer,
         x0: rect.x + 2,
-        y0: rect.y + 1,
+        y0: rect.y,
         width: rect.width.saturating_sub(3),
         rows,
         line: 0,

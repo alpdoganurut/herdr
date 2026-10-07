@@ -220,10 +220,10 @@ fn the_browser_row_is_pulled_on_attach_and_shows_the_running_state() {
     assert_ne!(row, ratatui::layout::Rect::default());
     assert_eq!(
         row.y,
-        state.hits.agent_body.bottom(),
-        "right under the list"
+        state.hits.agent_body.bottom() + 1,
+        "under the list and the rule"
     );
-    assert_eq!(state.hits.agent_body.height, list_height - 1);
+    assert_eq!(state.hits.agent_body.height, list_height - 2);
     let text = row_text(&frame, row);
     assert!(text.contains("Browser"), "{text:?}");
     assert!(text.contains("2 tabs"), "{text:?}");
@@ -345,7 +345,11 @@ fn the_browser_row_sits_above_the_news_row_and_news_keeps_its_row() {
     let news = state.hits.news_row;
     assert_ne!(browser, ratatui::layout::Rect::default());
     assert_ne!(news, ratatui::layout::Rect::default());
-    assert_eq!(browser.y, state.hits.agent_body.bottom());
+    assert_eq!(
+        browser.y,
+        state.hits.agent_body.bottom() + 1,
+        "under the rule"
+    );
     assert_eq!(news.y, browser.y + 1, "News directly under Browser");
     assert!(row_text(&frame, browser).contains("Browser"));
     assert!(row_text(&frame, news).contains("News"));
@@ -724,7 +728,7 @@ pub(crate) mod fork_smoke {
         deliver(&mut state, running_info(1, now()));
         let frame = state.compose(106, 20).expect("composed frame");
         let row = state.hits.browser_row;
-        assert_eq!(row.y, state.hits.agent_body.bottom());
+        assert_eq!(row.y, state.hits.agent_body.bottom() + 1, "under the rule");
         let text = row_text(&frame, row);
         assert!(text.trim_start().starts_with("◎ Browser"), "{text:?}");
         assert!(text.contains("2 tabs"), "{text:?}");
