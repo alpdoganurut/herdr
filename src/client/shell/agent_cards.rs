@@ -19,8 +19,14 @@
 //! The first payload after attach or reconnect (`initial`) only seeds the
 //! seen set.
 //!
-//! The look is fixed (the Dusk palette, independent of the theme), drawn by
-//! the pure `render_agent_cards`; an empty card set adds no work.
+//! The look follows the theme (cards v3): the kind accent is done green,
+//! info blue, question and warning red (the glyph tells those two apart);
+//! the chrome is the panel's (bg `panel_bg`, border `surface1`, name and
+//! title `text`, tab `subtext0`, age `overlay0`, body `overlay1`), so the
+//! accents keep their contrast on light themes too. A sender in a team shows
+//! `◆ team · role` inset in the card's top border and before the banner's
+//! title. Drawn by the pure `render_agent_cards`; an empty card set adds no
+//! work.
 
 use std::collections::{HashMap, HashSet};
 
@@ -31,14 +37,6 @@ use crate::server::headless::agent_notices::AgentNoticesPayload;
 use crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::style::Color;
 
-/// Dusk: card background, border, name, tab, age / ×, body.
-pub(super) const CARD_BG: Color = Color::Rgb(0x1d, 0x1f, 0x27);
-pub(super) const CARD_BORDER: Color = Color::Rgb(0x2c, 0x2f, 0x3b);
-pub(super) const CARD_TEXT: Color = Color::Rgb(0xcf, 0xd2, 0xde);
-pub(super) const CARD_TAB: Color = Color::Rgb(0x8b, 0x8f, 0xa3);
-pub(super) const CARD_DIM: Color = Color::Rgb(0x5d, 0x61, 0x74);
-pub(super) const CARD_BODY: Color = Color::Rgb(0xa6, 0xaa, 0xbb);
-
 /// The widest card.
 pub(super) const CARD_WIDTH: u16 = 52;
 /// Cards drawn before the rest fold into one line.
@@ -46,14 +44,27 @@ pub(super) const MAX_DRAWN: usize = 4;
 /// Body lines a card shows.
 const BODY_LINES: usize = 2;
 
-/// A kind's glyph and accent.
-pub(super) fn kind_accent(kind: AgentNoticeKind) -> (&'static str, Color) {
+/// A kind's glyph and accent from the theme: done green, info blue,
+/// question and warning red (the glyph tells those two apart).
+pub(super) fn kind_accent(kind: AgentNoticeKind, palette: &Palette) -> (&'static str, Color) {
     match kind {
-        AgentNoticeKind::Question => ("?", Color::Rgb(0xe8, 0xb8, 0x6b)),
-        AgentNoticeKind::Done => ("✓", Color::Rgb(0x5f, 0xd4, 0xc4)),
-        AgentNoticeKind::Warning => ("!", Color::Rgb(0xff, 0x6b, 0x7f)),
-        AgentNoticeKind::Info | AgentNoticeKind::Unknown => ("●", Color::Rgb(0x6e, 0xa8, 0xfe)),
+        AgentNoticeKind::Done => ("✓", palette.green),
+        AgentNoticeKind::Question => ("?", palette.red),
+        AgentNoticeKind::Warning => ("!", palette.red),
+        AgentNoticeKind::Info | AgentNoticeKind::Unknown => ("●", palette.blue),
     }
+}
+
+/// The sender's team as cards show it: `team`, then ` · role` when set;
+/// `None` without a team.
+pub(super) fn team_label(notice: &AgentNoticeInfo) -> Option<String> {
+    let team = notice.team.as_deref().filter(|team| !team.is_empty())?;
+    Some(
+        match notice.role.as_deref().filter(|role| !role.is_empty()) {
+            Some(role) => format!("{team} · {role}"),
+            None => team.to_owned(),
+        },
+    )
 }
 
 /// One endpoint's cards as its last accepted payload listed them.
@@ -202,10 +213,16 @@ fn fill(buffer: &mut Buffer, rect: Rect, style: Style) {
 }
 
 /// One card at `rect`. Returns its `×` cell.
-fn render_card(buffer: &mut Buffer, rect: Rect, notice: &AgentNoticeInfo, now_unix: u64) -> Rect {
-    let bg = Style::default().bg(CARD_BG);
+fn render_card(
+    buffer: &mut Buffer,
+    rect: Rect,
+    notice: &AgentNoticeInfo,
+    now_unix: u64,
+    palette: &Palette,
+) -> Rect {
+    let bg = Style::default().bg(palette.panel_bg);
     fill(buffer, rect, bg);
-    let border = bg.fg(CARD_BORDER);
+    let border = bg.fg(palette.surface1);
     let right = rect.right().saturating_sub(1);
     let bottom = rect.bottom().saturating_sub(1);
     let inner_width = rect.width.saturating_sub(2);
@@ -220,7 +237,22 @@ fn render_card(buffer: &mut Buffer, rect: Rect, notice: &AgentNoticeInfo, now_un
         put_text(buffer, rect.x, y, 1, "│", border);
         put_text(buffer, right, y, 1, "│", border);
     }
-    let (glyph, accent) = kind_accent(notice.kind);
+    // the sender's team, inset in the top border: ` ◆ team · role `
+    let label_room = usize::from(inner_width).saturating_sub(4);
+    if let Some(team) = team_label(notice).filter(|_| label_room > 4) {
+        let label_x = rect.x + 2;
+        put_text(buffer, label_x, rect.y, 3, " ◆ ", bg.fg(palette.accent));
+        let text = format!("{} ", fit(&team, label_room.saturating_sub(4)));
+        put_text(
+            buffer,
+            label_x + 3,
+            rect.y,
+            width_of(&text) as u16,
+            &text,
+            bg.fg(palette.text).add_modifier(Modifier::BOLD),
+        );
+    }
+    let (glyph, accent) = kind_accent(notice.kind, palette);
     let accent_style = bg.fg(accent);
     let x0 = rect.x + 1;
     for y in rect.y + 1..bottom {
@@ -251,7 +283,7 @@ fn render_card(buffer: &mut Buffer, rect: Rect, notice: &AgentNoticeInfo, now_un
         header_y,
         name_room as u16,
         &name,
-        bg.fg(CARD_TEXT).add_modifier(Modifier::BOLD),
+        bg.fg(palette.text).add_modifier(Modifier::BOLD),
     );
     if let Some(tab) = notice.tab_label.as_deref().filter(|tab| !tab.is_empty()) {
         let used = width_of(&name);
@@ -264,11 +296,18 @@ fn render_card(buffer: &mut Buffer, rect: Rect, notice: &AgentNoticeInfo, now_un
                 header_y,
                 room as u16,
                 &tab,
-                bg.fg(CARD_TAB),
+                bg.fg(palette.subtext0),
             );
         }
     }
-    put_text(buffer, tail_x, header_y, tail_width, &tail, bg.fg(CARD_DIM));
+    put_text(
+        buffer,
+        tail_x,
+        header_y,
+        tail_width,
+        &tail,
+        bg.fg(palette.overlay0),
+    );
     let close = Rect::new(right.saturating_sub(3), header_y, 3, 1);
     // title
     let room = usize::from(right.saturating_sub(text_x).saturating_sub(1));
@@ -278,7 +317,7 @@ fn render_card(buffer: &mut Buffer, rect: Rect, notice: &AgentNoticeInfo, now_un
         header_y + 1,
         room as u16,
         &fit(&notice.title, room),
-        bg.fg(CARD_TEXT).add_modifier(Modifier::BOLD),
+        bg.fg(palette.text).add_modifier(Modifier::BOLD),
     );
     if let Some(body) = notice.body.as_deref() {
         for (offset, line) in body_lines(body, room).iter().enumerate() {
@@ -286,7 +325,14 @@ fn render_card(buffer: &mut Buffer, rect: Rect, notice: &AgentNoticeInfo, now_un
             if y >= bottom {
                 break;
             }
-            put_text(buffer, text_x, y, room as u16, line, bg.fg(CARD_BODY));
+            put_text(
+                buffer,
+                text_x,
+                y,
+                room as u16,
+                line,
+                bg.fg(palette.overlay1),
+            );
         }
     }
     close
@@ -302,6 +348,7 @@ pub(super) fn render_agent_cards(
     top_offset: u16,
     cards: &[AgentCardView<'_>],
     now_unix: u64,
+    palette: &Palette,
 ) -> Vec<(Rect, AgentCardHit)> {
     let mut hits = Vec::new();
     let width = CARD_WIDTH.min(area.width);
@@ -320,7 +367,7 @@ pub(super) fn render_agent_cards(
             break;
         }
         let rect = Rect::new(x, y, width, height);
-        let close = render_card(buffer, rect, card.notice, now_unix);
+        let close = render_card(buffer, rect, card.notice, now_unix, palette);
         hits.push((
             close,
             AgentCardHit::Close {
@@ -345,14 +392,14 @@ pub(super) fn render_agent_cards(
         let text = format!(" +{folded} more from agents ");
         let fold_width = (width_of(&text) as u16).min(area.width);
         let rect = Rect::new(area.right().saturating_sub(fold_width), y, fold_width, 1);
-        fill(buffer, rect, Style::default().bg(CARD_BG));
+        fill(buffer, rect, Style::default().bg(palette.panel_bg));
         put_text(
             buffer,
             rect.x,
             rect.y,
             rect.width,
             &text,
-            Style::default().fg(CARD_TAB).bg(CARD_BG),
+            Style::default().fg(palette.subtext0).bg(palette.panel_bg),
         );
         hits.push((rect, AgentCardHit::Fold));
     }
@@ -360,7 +407,8 @@ pub(super) fn render_agent_cards(
 }
 
 /// The mobile layout: one banner line for the newest card (its glyph in its
-/// accent), `+N more` in the body when there are others.
+/// accent, `◆ team · ` before the sender when it is in a team), `+N more` in
+/// the body when there are others.
 pub(super) fn render_agent_card_banner(
     buffer: &mut Buffer,
     area: Rect,
@@ -372,8 +420,12 @@ pub(super) fn render_agent_card_banner(
         return Vec::new();
     };
     let notice = newest.notice;
-    let (glyph, accent) = kind_accent(notice.kind);
-    let title = format!("{}: {}", notice.name, notice.title);
+    let (glyph, accent) = kind_accent(notice.kind, palette);
+    let team = team_label(notice);
+    let title = match &team {
+        Some(team) => format!("◆ {team} · {}: {}", notice.name, notice.title),
+        None => format!("{}: {}", notice.name, notice.title),
+    };
     let body = if cards.len() > 1 {
         Some(format!("+{} more", cards.len() - 1))
     } else {
@@ -391,6 +443,11 @@ pub(super) fn render_agent_card_banner(
     let dot = (rect.x.saturating_add(1), rect.y);
     if !rect.is_empty() && buffer.area.contains(dot.into()) {
         buffer[dot].set_symbol(glyph);
+    }
+    // the title starts after ` ● `: its `◆` takes the accent
+    let diamond = (rect.x.saturating_add(3), rect.y);
+    if team.is_some() && !rect.is_empty() && buffer.area.contains(diamond.into()) {
+        buffer[diamond].set_fg(palette.accent);
     }
     if rect.is_empty() {
         return Vec::new();

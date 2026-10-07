@@ -321,6 +321,10 @@ impl App {
     /// A change clients render: bump the view revision and ask for a pass.
     fn bump_teams_view(&mut self) {
         self.state.teams_view_rev = self.state.teams_view_rev.wrapping_add(1).max(1);
+        // Fork (cards v3): cards name their sender's team and role.
+        if !self.agent_notices.is_empty() {
+            self.agent_notices.touch();
+        }
         self.render_dirty.request_generic();
         self.render_notify.notify_one();
     }
@@ -2354,5 +2358,100 @@ mod tests {
         assert!(caught.is_err());
         assert!(state.rebuild_team_index());
         state.assert_invariants_for_test();
+    }
+
+    // ----- fork (cards v3): agent cards name their sender's team ----------
+
+    fn notify_from(app: &mut App, pane: PaneId, title: &str) -> serde_json::Value {
+        let caller_pane = public(app, pane);
+        call(
+            app,
+            Method::AgentNotify(crate::api::schema::AgentNotifyParams {
+                caller_pane,
+                kind: crate::api::schema::AgentNoticeKind::Done,
+                title: title.into(),
+                body: None,
+            }),
+        )
+    }
+
+    fn set_purpose(app: &mut App, purpose: Option<&str>) {
+        let workspace_id = group_id(app);
+        let set = call(
+            app,
+            Method::TeamSetPurpose(TeamSetPurposeParams {
+                workspace_id,
+                purpose: purpose.map(str::to_string),
+                caller_pane: None,
+            }),
+        );
+        assert!(set.get("error").is_none(), "{set}");
+    }
+
+    #[test]
+    fn notice_infos_name_the_senders_team_and_role() {
+        let mut app = team_app();
+        let (a, b) = (pane(&app, 1, 0), pane(&app, 1, 1));
+        let outside = pane(&app, 0, 0);
+        for pane in [a, b, outside] {
+            terminal_mut(&mut app, pane).set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        }
+        make(&mut app, Some("fix sync"));
+        set_role(&mut app, a, Some("fixer"));
+        for (pane, title) in [(a, "a"), (b, "b"), (outside, "outside")] {
+            let shown = notify_from(&mut app, pane, title);
+            assert_eq!(shown["result"]["outcome"], "shown", "{shown}");
+        }
+        let by_title = |app: &App, title: &str| {
+            app.agent_notice_infos()
+                .into_iter()
+                .find(|info| info.title == title)
+                .expect("card")
+        };
+        let card = by_title(&app, "a");
+        assert_eq!(card.team.as_deref(), Some("fix sync"));
+        assert_eq!(card.role.as_deref(), Some("fixer"));
+        // a member without a role: the team alone
+        let card = by_title(&app, "b");
+        assert_eq!((card.team.as_deref(), card.role), (Some("fix sync"), None));
+        // a sender outside any team
+        let card = by_title(&app, "outside");
+        assert_eq!((card.team, card.role), (None, None));
+        // without a purpose the team is named by its group label
+        set_purpose(&mut app, None);
+        let card = by_title(&app, "a");
+        assert_eq!(card.team.as_deref(), card.workspace_label.as_deref());
+        assert_eq!(card.team.as_deref(), Some("demo"));
+        assert_eq!(card.role.as_deref(), Some("fixer"));
+    }
+
+    #[test]
+    fn a_team_change_bumps_the_notice_revision_only_with_cards() {
+        let mut app = team_app();
+        let a = pane(&app, 1, 0);
+        terminal_mut(&mut app, a).set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        make(&mut app, Some("first"));
+        set_purpose(&mut app, Some("second"));
+        set_role(&mut app, a, Some("fixer"));
+        assert_eq!(app.agent_notices.revision(), 0, "no card, no notice push");
+
+        notify_from(&mut app, a, "done");
+        let revision = app.agent_notices.revision();
+        set_purpose(&mut app, Some("third"));
+        assert!(
+            app.agent_notices.revision() > revision,
+            "the card's team changed"
+        );
+        let revision = app.agent_notices.revision();
+        set_role(&mut app, a, Some("lead"));
+        assert!(
+            app.agent_notices.revision() > revision,
+            "the card's role changed"
+        );
+        let card = &app.agent_notice_infos()[0];
+        assert_eq!(
+            (card.team.as_deref(), card.role.as_deref()),
+            (Some("third"), Some("lead"))
+        );
     }
 }

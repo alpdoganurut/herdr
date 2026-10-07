@@ -11971,6 +11971,13 @@
               "description": "The sender's pane now.",
               "type": "string"
             },
+            "role": {
+              "description": "Fork (cards v3): the sender's role in that team, when set.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "tab_id": {
               "type": [
                 "string",
@@ -11978,6 +11985,13 @@
               ]
             },
             "tab_label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "team": {
+              "description": "Fork (cards v3): the sender's team when its group is a team: the\npurpose, else the group label.",
               "type": [
                 "string",
                 "null"

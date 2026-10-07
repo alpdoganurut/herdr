@@ -491,3 +491,78 @@ async fn fork_smoke_agent_notice_goes_when_its_pane_process_exits() {
     assert!(server.app.agent_notices.is_empty(), "its card went with it");
     shutdown_test_runtimes(&mut server);
 }
+
+#[tokio::test]
+async fn fork_smoke_agent_notice_carries_the_senders_team() {
+    use crate::api::schema::{TeamMakeParams, TeamSetPurposeParams, TeamSetRoleParams};
+    // The ungrouped bucket comes first (it cannot be a team); `first` is a group.
+    let (mut server, _) = notices_server();
+    server
+        .app
+        .state
+        .workspaces
+        .insert(0, crate::workspace::Workspace::test_new("bucket"));
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(1);
+    server.app.state.selected = 1;
+    let agent_pane = server.app.state.workspaces[1].tabs[1].root_pane;
+    let pane = server
+        .app
+        .public_pane_id(1, agent_pane)
+        .expect("agent pane");
+    let workspace_id = server.app.public_workspace_id(1);
+    let (control, _render) = connect_test_shell(&mut server, 71, 80, 23);
+
+    // A team change with no card sends no card list.
+    let made = public_api(
+        &mut server,
+        Method::TeamMake(TeamMakeParams {
+            workspace_id: workspace_id.clone(),
+            purpose: Some("fix sync".into()),
+            caller_pane: None,
+        }),
+    );
+    assert!(made.get("error").is_none(), "{made}");
+    let role = public_api(
+        &mut server,
+        Method::TeamSetRole(TeamSetRoleParams {
+            pane_id: pane.clone(),
+            role: Some("fixer".into()),
+            caller_pane: None,
+        }),
+    );
+    assert!(role.get("error").is_none(), "{role}");
+    server.render_and_stream();
+    assert!(notice_payloads(&control).is_empty(), "no card, no list");
+
+    // The card names the sender's team and role, in the API and the push.
+    let shown = notify(&mut server, &pane, "Build is green");
+    assert_eq!(shown["result"]["outcome"], "shown", "{shown}");
+    let notices = listed(&mut server);
+    assert_eq!(notices[0]["team"], "fix sync", "{notices}");
+    assert_eq!(notices[0]["role"], "fixer", "{notices}");
+    server.render_and_stream();
+    let payloads = notice_payloads(&control);
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0].notices[0].team.as_deref(), Some("fix sync"));
+    assert_eq!(payloads[0].notices[0].role.as_deref(), Some("fixer"));
+
+    // A new purpose re-sends the list once, with the new team.
+    let purpose = public_api(
+        &mut server,
+        Method::TeamSetPurpose(TeamSetPurposeParams {
+            workspace_id,
+            purpose: Some("ship it".into()),
+            caller_pane: None,
+        }),
+    );
+    assert!(purpose.get("error").is_none(), "{purpose}");
+    server.render_and_stream();
+    let payloads = notice_payloads(&control);
+    assert_eq!(payloads.len(), 1, "one push for the team change");
+    assert!(!payloads[0].initial);
+    assert_eq!(payloads[0].notices[0].team.as_deref(), Some("ship it"));
+    server.render_and_stream();
+    assert!(notice_payloads(&control).is_empty());
+    shutdown_test_runtimes(&mut server);
+}

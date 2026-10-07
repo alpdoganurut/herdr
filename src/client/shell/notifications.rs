@@ -88,7 +88,7 @@ pub(super) fn render_mobile_notification_banner(
     };
     let dot_color = match event.kind {
         SemanticNotificationKind::NeedsAttention => palette.red,
-        SemanticNotificationKind::Finished => palette.blue,
+        SemanticNotificationKind::Finished => palette.green,
         SemanticNotificationKind::UpdateInstalled | SemanticNotificationKind::Custom => {
             palette.accent
         }
@@ -223,7 +223,7 @@ pub(super) fn render_visible_notification(
     let event = &notification.event;
     let dot_color = match event.kind {
         SemanticNotificationKind::NeedsAttention => palette.red,
-        SemanticNotificationKind::Finished => palette.blue,
+        SemanticNotificationKind::Finished => palette.green,
         SemanticNotificationKind::UpdateInstalled | SemanticNotificationKind::Custom => {
             palette.accent
         }
@@ -425,7 +425,7 @@ mod tests {
                 SemanticNotificationKind::Finished,
                 None,
                 "\u{2713}",
-                palette.blue,
+                palette.green,
             ),
             (
                 SemanticNotificationKind::NeedsAttention,
@@ -437,7 +437,7 @@ mod tests {
                 SemanticNotificationKind::Finished,
                 Some(ClientReminderKind::Important),
                 "\u{2605}",
-                palette.blue,
+                palette.green,
             ),
             (
                 SemanticNotificationKind::NeedsAttention,

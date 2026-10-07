@@ -520,6 +520,24 @@ impl App {
                 let tab_idx = ws.find_tab_index_for_pane(raw);
                 let workspace_label =
                     ws.display_name_from(&self.state.terminals, &self.terminal_runtimes);
+                // Fork (cards v3): the team as its group header names it
+                // (the purpose, else the group label) and the sender's role.
+                let team = ws.team.as_ref().map(|team| {
+                    team.purpose
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|purpose| !purpose.is_empty())
+                        .unwrap_or(&workspace_label)
+                        .to_owned()
+                });
+                let role = ws
+                    .team
+                    .as_ref()
+                    .and_then(|team| team.member(raw))
+                    .and_then(|member| member.role.as_deref())
+                    .map(str::trim)
+                    .filter(|role| !role.is_empty())
+                    .map(str::to_owned);
                 Some(AgentNoticeInfo {
                     id: card.id.clone(),
                     kind: card.kind,
@@ -535,6 +553,8 @@ impl App {
                     workspace_id: Some(self.public_workspace_id(ws_idx)),
                     workspace_label: Some(workspace_label).filter(|label| !label.is_empty()),
                     unix: card.unix,
+                    team: team.filter(|team| !team.is_empty()),
+                    role,
                 })
             })
             .collect()

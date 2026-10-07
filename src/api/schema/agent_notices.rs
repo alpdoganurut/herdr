@@ -137,6 +137,13 @@ pub struct AgentNoticeInfo {
     /// When the card was made (or last refreshed by a duplicate), seconds
     /// since the Unix epoch.
     pub unix: u64,
+    /// Fork (cards v3): the sender's team when its group is a team: the
+    /// purpose, else the group label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+    /// Fork (cards v3): the sender's role in that team, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 #[cfg(test)]
@@ -181,5 +188,25 @@ mod tests {
         .unwrap();
         assert_eq!(info.kind, AgentNoticeKind::Info);
         assert_eq!(info.tab_id, None);
+        assert_eq!((info.team.as_deref(), info.role.as_deref()), (None, None));
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(
+            json.get("team").is_none() && json.get("role").is_none(),
+            "{json}"
+        );
+        let teamed = AgentNoticeInfo {
+            team: Some("fix sync".into()),
+            role: Some("fixer".into()),
+            ..info
+        };
+        let json = serde_json::to_value(&teamed).unwrap();
+        assert_eq!(
+            (&json["team"], &json["role"]),
+            (&"fix sync".into(), &"fixer".into())
+        );
+        assert_eq!(
+            serde_json::from_value::<AgentNoticeInfo>(json).unwrap(),
+            teamed
+        );
     }
 }

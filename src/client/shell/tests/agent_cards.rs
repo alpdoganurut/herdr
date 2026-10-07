@@ -5,8 +5,8 @@ use super::*;
 use crate::api::schema::{AgentNoticeInfo, AgentNoticeKind, Method};
 use crate::client::endpoint::{ClientEndpointStatus, ProfileId, SavedSshEndpoint};
 use crate::client::shell::agent_cards::{
-    agent_cards_block_patch, body_lines, kind_accent, render_agent_cards, AgentCardHit,
-    AgentCardView, CARD_BG, CARD_WIDTH,
+    agent_cards_block_patch, body_lines, kind_accent, render_agent_card_banner, render_agent_cards,
+    AgentCardHit, AgentCardView, CARD_WIDTH,
 };
 use crate::server::headless::agent_notices::AgentNoticesPayload;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
@@ -27,7 +27,13 @@ fn notice(id: &str, kind: AgentNoticeKind, pane_id: &str, tab_id: &str) -> Agent
         workspace_id: Some("ws_1".into()),
         workspace_label: Some("client-shell".into()),
         unix: NOW - 120,
+        team: None,
+        role: None,
     }
+}
+
+fn default_palette() -> crate::app::state::Palette {
+    crate::app::client_palette_from_config(&Config::default())
 }
 
 fn payload(revision: u64, initial: bool, notices: Vec<AgentNoticeInfo>) -> AgentNoticesPayload {
@@ -118,7 +124,8 @@ fn buffer_text(buffer: &Buffer) -> String {
 }
 
 #[test]
-fn each_kind_draws_its_glyph_in_its_accent_on_the_dusk_card() {
+fn each_kind_draws_its_glyph_in_its_accent_on_the_panel_card() {
+    let palette = default_palette();
     for kind in [
         AgentNoticeKind::Info,
         AgentNoticeKind::Question,
@@ -139,6 +146,7 @@ fn each_kind_draws_its_glyph_in_its_accent_on_the_dusk_card() {
                 notice: &notice,
             }],
             NOW,
+            &palette,
         );
         let card = hits
             .iter()
@@ -150,7 +158,7 @@ fn each_kind_draws_its_glyph_in_its_accent_on_the_dusk_card() {
             Rect::new(80 - CARD_WIDTH, 0, CARD_WIDTH, 5),
             "{kind:?}"
         );
-        let (glyph, accent) = kind_accent(kind);
+        let (glyph, accent) = kind_accent(kind, &palette);
         let bar = &buffer[(card.x + 1, card.y + 1)];
         assert_eq!((bar.symbol(), bar.fg), ("▌", accent), "{kind:?}");
         let glyph_cell = &buffer[(card.x + 3, card.y + 1)];
@@ -159,7 +167,7 @@ fn each_kind_draws_its_glyph_in_its_accent_on_the_dusk_card() {
             (glyph, accent),
             "{kind:?}"
         );
-        assert_eq!(glyph_cell.bg, CARD_BG);
+        assert_eq!(glyph_cell.bg, palette.panel_bg);
         let text = buffer_text(&buffer);
         for expected in [
             "agent-n1 · tab tab_2",
@@ -179,13 +187,176 @@ fn each_kind_draws_its_glyph_in_its_accent_on_the_dusk_card() {
         assert!(card.contains(hits[0].0.as_position()));
     }
     assert_ne!(
-        kind_accent(AgentNoticeKind::Question).1,
-        kind_accent(AgentNoticeKind::Done).1
+        kind_accent(AgentNoticeKind::Question, &palette).1,
+        kind_accent(AgentNoticeKind::Done, &palette).1
     );
     assert_eq!(
-        kind_accent(AgentNoticeKind::Unknown),
-        kind_accent(AgentNoticeKind::Info)
+        kind_accent(AgentNoticeKind::Unknown, &palette),
+        kind_accent(AgentNoticeKind::Info, &palette)
     );
+}
+
+#[test]
+fn kinds_take_theme_colors() {
+    let mut light = Config::default();
+    light.theme.name = Some("catppuccin-latte".into());
+    for palette in [
+        default_palette(),
+        crate::app::client_palette_from_config(&light),
+    ] {
+        let accent = |kind| kind_accent(kind, &palette).1;
+        assert_eq!(accent(AgentNoticeKind::Done), palette.green);
+        assert_eq!(accent(AgentNoticeKind::Info), palette.blue);
+        assert_eq!(accent(AgentNoticeKind::Unknown), palette.blue);
+        assert_eq!(accent(AgentNoticeKind::Question), palette.red);
+        assert_eq!(accent(AgentNoticeKind::Warning), palette.red);
+        // question and warning share red; the glyph tells them apart
+        assert_ne!(
+            kind_accent(AgentNoticeKind::Question, &palette).0,
+            kind_accent(AgentNoticeKind::Warning, &palette).0
+        );
+    }
+    assert_ne!(
+        default_palette(),
+        crate::app::client_palette_from_config(&light),
+        "the light theme is a different palette"
+    );
+}
+
+#[test]
+fn the_card_chrome_follows_the_theme() {
+    let mut light = Config::default();
+    light.theme.name = Some("catppuccin-latte".into());
+    let palette = crate::app::client_palette_from_config(&light);
+    let area = Rect::new(0, 0, 80, 20);
+    let mut buffer = Buffer::empty(area);
+    let notice = notice("n1", AgentNoticeKind::Done, "pane_2", "tab_2");
+    let endpoint = ClientEndpointId::Local;
+    let hits = render_agent_cards(
+        &mut buffer,
+        area,
+        0,
+        &[AgentCardView {
+            endpoint_id: &endpoint,
+            notice: &notice,
+        }],
+        NOW,
+        &palette,
+    );
+    let card = hits[1].0;
+    let corner = &buffer[(card.x, card.y)];
+    assert_eq!(
+        (corner.symbol(), corner.fg, corner.bg),
+        ("╭", palette.surface1, palette.panel_bg)
+    );
+    let name = &buffer[(card.x + 5, card.y + 1)];
+    assert_eq!((name.symbol(), name.fg), ("a", palette.text));
+    let body = &buffer[(card.x + 3, card.y + 3)];
+    assert_eq!((body.symbol(), body.fg), ("b", palette.overlay1));
+}
+
+fn teamed(mut notice: AgentNoticeInfo, team: &str, role: Option<&str>) -> AgentNoticeInfo {
+    notice.team = Some(team.into());
+    notice.role = role.map(str::to_string);
+    notice
+}
+
+#[test]
+fn team_label_sits_in_the_top_border_and_in_the_banner() {
+    let palette = default_palette();
+    let endpoint = ClientEndpointId::Local;
+    let notice = teamed(
+        notice("n1", AgentNoticeKind::Done, "pane_2", "tab_2"),
+        "fix sync",
+        Some("fixer"),
+    );
+    let views = [AgentCardView {
+        endpoint_id: &endpoint,
+        notice: &notice,
+    }];
+    let area = Rect::new(0, 0, 80, 20);
+    let mut buffer = Buffer::empty(area);
+    let hits = render_agent_cards(&mut buffer, area, 0, &views, NOW, &palette);
+    let card = hits[1].0;
+    assert_eq!(card.height, 5, "the team adds no row");
+    let top: String = (card.x..card.right())
+        .map(|x| buffer[(x, card.y)].symbol().to_string())
+        .collect();
+    assert!(top.starts_with("╭─ ◆ fix sync · fixer ─"), "{top}");
+    assert!(top.ends_with("─╮"), "{top}");
+    let diamond = &buffer[(card.x + 3, card.y)];
+    assert_eq!((diamond.symbol(), diamond.fg), ("◆", palette.accent));
+    let team = &buffer[(card.x + 5, card.y)];
+    assert_eq!((team.symbol(), team.fg), ("f", palette.text));
+    assert!(team.modifier.contains(Modifier::BOLD));
+
+    // a long team is cut inside the border
+    let long = teamed(notice.clone(), &"x".repeat(80), None);
+    let mut buffer = Buffer::empty(area);
+    render_agent_cards(
+        &mut buffer,
+        area,
+        0,
+        &[AgentCardView {
+            endpoint_id: &endpoint,
+            notice: &long,
+        }],
+        NOW,
+        &palette,
+    );
+    let top: String = (card.x..card.right())
+        .map(|x| buffer[(x, card.y)].symbol().to_string())
+        .collect();
+    assert!(top.ends_with("x… ───╮"), "{top}");
+
+    // the narrow banner: ◆ team · role before the sender
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 3));
+    let hits =
+        render_agent_card_banner(&mut buffer, Rect::new(0, 0, 60, 3), &views, false, &palette);
+    let rect = hits[0].0;
+    let line: String = (rect.x..rect.right())
+        .map(|x| buffer[(x, rect.y)].symbol().to_string())
+        .collect();
+    assert!(
+        line.starts_with(" ✓ ◆ fix sync · fixer · agent-n1: title n1"),
+        "{line}"
+    );
+    assert_eq!(buffer[(rect.x + 1, rect.y)].fg, palette.green);
+    let diamond = &buffer[(rect.x + 3, rect.y)];
+    assert_eq!((diamond.symbol(), diamond.fg), ("◆", palette.accent));
+}
+
+#[test]
+fn no_team_keeps_the_plain_border() {
+    let palette = default_palette();
+    let endpoint = ClientEndpointId::Local;
+    let notice = notice("n1", AgentNoticeKind::Info, "pane_2", "tab_2");
+    let views = [AgentCardView {
+        endpoint_id: &endpoint,
+        notice: &notice,
+    }];
+    let area = Rect::new(0, 0, 80, 20);
+    let mut buffer = Buffer::empty(area);
+    let hits = render_agent_cards(&mut buffer, area, 0, &views, NOW, &palette);
+    let card = hits[1].0;
+    let top: String = (card.x..card.right())
+        .map(|x| buffer[(x, card.y)].symbol().to_string())
+        .collect();
+    assert_eq!(
+        top,
+        format!("╭{}╮", "─".repeat(usize::from(card.width) - 2))
+    );
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 3));
+    let hits =
+        render_agent_card_banner(&mut buffer, Rect::new(0, 0, 60, 3), &views, false, &palette);
+    let rect = hits[0].0;
+    let line: String = (rect.x..rect.right())
+        .map(|x| buffer[(x, rect.y)].symbol().to_string())
+        .collect();
+    assert!(line.starts_with(" ● agent-n1: title n1"), "{line}");
+    // a team with an empty name is no team
+    let empty = teamed(notice.clone(), "", Some("fixer"));
+    assert_eq!(super::super::agent_cards::team_label(&empty), None);
 }
 
 #[test]
@@ -208,7 +379,7 @@ fn bodies_wrap_to_two_lines_and_cards_beyond_four_fold() {
         .collect();
     let area = Rect::new(0, 1, 100, 40);
     let mut buffer = Buffer::empty(Rect::new(0, 0, 100, 41));
-    let hits = render_agent_cards(&mut buffer, area, 0, &views, NOW);
+    let hits = render_agent_cards(&mut buffer, area, 0, &views, NOW, &default_palette());
     let cards = hits
         .iter()
         .filter(|(_, hit)| matches!(hit, AgentCardHit::Card { .. }))
@@ -224,7 +395,7 @@ fn bodies_wrap_to_two_lines_and_cards_beyond_four_fold() {
     // a short area: fewer cards (five rows each) and still the fold line
     let short = Rect::new(0, 0, 100, 10);
     let mut buffer = Buffer::empty(short);
-    let hits = render_agent_cards(&mut buffer, short, 0, &views, NOW);
+    let hits = render_agent_cards(&mut buffer, short, 0, &views, NOW, &default_palette());
     assert_eq!(
         hits.iter()
             .filter(|(_, hit)| matches!(hit, AgentCardHit::Card { .. }))

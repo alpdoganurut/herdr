@@ -752,7 +752,14 @@ impl ClientShellState {
                 } else {
                     0
                 };
-                agent_cards::render_agent_cards(&mut composed, area, top_offset, &cards, now_unix)
+                agent_cards::render_agent_cards(
+                    &mut composed,
+                    area,
+                    top_offset,
+                    &cards,
+                    now_unix,
+                    &self.config.palette,
+                )
             } else {
                 // one banner line, above a toast banner when one is up
                 let full = Rect::new(0, 0, cols, rows);
