@@ -209,15 +209,50 @@ pub(super) fn render_settings_overlay(
                 palette,
                 &mut choice_hits,
             );
-            // Fork (sidebar v2): the tabs sidebar's Active agents block.
-            render_active_agents_toggle(
-                buffer,
-                content,
-                config.sidebar_active_agents,
-                settings.selected,
-                palette,
-                &mut choice_hits,
-            );
+            // Fork (sidebar v2): the tabs sidebar's Active agents block;
+            // sidebar v3: the Pinned and Scheduled blocks under it.
+            use super::super::settings::{
+                INDICATORS_ACTIVE_AGENTS_ROW, INDICATORS_PINNED_AGENTS_ROW,
+                INDICATORS_SCHEDULED_AGENTS_ROW,
+            };
+            for (row, offset, enabled, label, about) in [
+                (
+                    INDICATORS_ACTIVE_AGENTS_ROW,
+                    6,
+                    config.sidebar_active_agents,
+                    "active agents block",
+                    "blocked, voice, working and finished agents under the list",
+                ),
+                (
+                    INDICATORS_PINNED_AGENTS_ROW,
+                    8,
+                    config.sidebar_pinned_agents,
+                    "pinned agents block",
+                    "tabs you pinned (tab menu \u{2192} Pin), under the list",
+                ),
+                (
+                    INDICATORS_SCHEDULED_AGENTS_ROW,
+                    10,
+                    config.sidebar_scheduled_agents,
+                    "scheduled agents block",
+                    "tabs with a scheduled reminder and the time to the next",
+                ),
+            ] {
+                render_sidebar_section_toggle(
+                    buffer,
+                    content,
+                    SectionToggle {
+                        row,
+                        offset,
+                        enabled,
+                        label,
+                        about,
+                    },
+                    settings.selected,
+                    palette,
+                    &mut choice_hits,
+                );
+            }
         }
         ClientSettingsSection::Sound => {
             render_sound_section(buffer, content, settings, config, palette, &mut choice_hits);
@@ -415,36 +450,58 @@ fn render_choice_section(
     }
 }
 
-/// Fork (sidebar v2): the Indicators section's third row, under the two
-/// styles: `active agents block: on|off` and a dim line saying what it is.
-fn render_active_agents_toggle(
+/// One sidebar block toggle row of the Indicators section.
+struct SectionToggle {
+    /// The settings row it selects.
+    row: usize,
+    /// Its y offset in the section.
+    offset: u16,
+    enabled: bool,
+    label: &'static str,
+    /// The dim line under it.
+    about: &'static str,
+}
+
+/// Fork (sidebar v2/v3): an Indicators row under the two styles: `<label>:
+/// on|off` and a dim line saying what it is (Active, Pinned, Scheduled).
+fn render_sidebar_section_toggle(
     buffer: &mut Buffer,
     area: Rect,
-    enabled: bool,
+    toggle: SectionToggle,
     selected: usize,
     palette: &Palette,
     hits: &mut Vec<(Rect, usize)>,
 ) {
-    let row = super::super::settings::INDICATORS_ACTIVE_AGENTS_ROW;
-    let y = area.y + 6;
+    let y = area.y + toggle.offset;
     if y >= area.bottom() {
         return;
     }
     let rect = Rect::new(area.x, y, area.width, 1);
-    let label = if enabled {
-        "active agents block: on"
-    } else {
-        "active agents block: off"
-    };
-    draw_choice(buffer, rect, label, selected == row, false, palette);
-    hits.push((rect, row));
+    let mut label = super::super::sidebar_model::StackStr::<40>::new();
+    let _ = std::fmt::Write::write_fmt(
+        &mut label,
+        format_args!(
+            "{}: {}",
+            toggle.label,
+            if toggle.enabled { "on" } else { "off" }
+        ),
+    );
+    draw_choice(
+        buffer,
+        rect,
+        label.as_str(),
+        selected == toggle.row,
+        false,
+        palette,
+    );
+    hits.push((rect, toggle.row));
     if y + 1 < area.bottom() {
         put_text(
             buffer,
             area.x + 3,
             y + 1,
             area.width.saturating_sub(3),
-            "blocked, voice, working and finished agents above the list",
+            toggle.about,
             Style::default().fg(palette.overlay1).bg(palette.panel_bg),
         );
     }

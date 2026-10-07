@@ -111,8 +111,8 @@ fn tabs_layout_lists_every_tab_in_order_and_hides_space_rows() {
     );
     assert!(state.hits.agent_body.height >= 3);
     assert_eq!(
-        state.hits.sidebar_tabs[0].0.y, 1,
-        "the list starts right under the one-row toolbar"
+        state.hits.sidebar_tabs[0].0.y, 2,
+        "the list starts right under the one-row toolbar and the current row"
     );
 }
 
@@ -2023,9 +2023,11 @@ fn tab_menu_ends_with_a_swatch_row_marking_the_current_color() {
     // Fork: the tab's "Info pane" follows Close (no agent: no role item).
     assert_eq!(plain[3].action, ClientContextMenuAction::ToggleInfoPane);
     assert_eq!(plain[4].action, ClientContextMenuAction::Important);
-    assert_eq!(plain[5].action, ClientContextMenuAction::RemindTop);
-    assert_eq!(plain[6].action, ClientContextMenuAction::RemindBottom);
-    assert_eq!(plain.len(), 8);
+    // Fork (sidebar v3): Pin follows Important.
+    assert_eq!(plain[5].action, ClientContextMenuAction::Pin);
+    assert_eq!(plain[6].action, ClientContextMenuAction::RemindTop);
+    assert_eq!(plain[7].action, ClientContextMenuAction::RemindBottom);
+    assert_eq!(plain.len(), 9);
 
     // tab_2 is red, one of the offered colors.
     let row = open_menu_with_swatches(&mut state, 1);
@@ -2422,7 +2424,10 @@ fn menu_y(state: &ClientShellState) -> u16 {
 /// the pinned rows / status footer (the strip's lower rule shows only above
 /// a footer).
 fn list_and_detail(state: &ClientShellState) -> u16 {
-    state.hits.agent_body.height + state.hits.sidebar_detail.height
+    // Fork (sidebar v3): the current row heads the list.
+    state.hits.sidebar_current.height
+        + state.hits.agent_body.height
+        + state.hits.sidebar_detail.height
 }
 
 /// The status footer's last row, right above the menu row.
@@ -3220,22 +3225,29 @@ fn divider_uses_surface1() {
 }
 
 mod plan_layout {
-    use super::super::super::tab_sidebar::{plan_layout, LayoutWants, SidebarPlan};
+    use super::super::super::tab_sidebar::{plan_layout, LayoutWants, SectionRows, SidebarPlan};
     use ratatui::layout::Rect;
 
-    /// An Active agents block of `cap` lines plus its header, `+N more` and
-    /// rule.
+    /// An Active agents block of `cap` lines plus its rule, header and
+    /// `+N more`.
     fn active(cap: u16) -> u16 {
         cap + 3
     }
 
-    fn plan(height: u16, wants: LayoutWants) -> SidebarPlan {
-        let plan = plan_layout(Rect::new(0, 0, 30, height), wants, active);
-        // The rows stack top to bottom and fill the content.
+    /// No block.
+    fn nothing(_cap: u16) -> u16 {
+        0
+    }
+
+    /// The rows stack top to bottom and fill the content.
+    fn assert_tiles(plan: &SidebarPlan, height: u16) {
         let stack = [
             plan.toolbar,
-            plan.active,
+            plan.current,
             plan.list,
+            plan.active,
+            plan.pins,
+            plan.scheduled,
             plan.fixed,
             plan.detail,
             plan.footer,
@@ -3244,7 +3256,17 @@ mod plan_layout {
         for pair in stack.windows(2) {
             assert_eq!(pair[0].bottom(), pair[1].y, "{plan:?}");
         }
+        assert_eq!(plan.toolbar.y, 0, "{plan:?}");
         assert_eq!(plan.menu.bottom(), height, "{plan:?}");
+    }
+
+    fn plan(height: u16, wants: LayoutWants) -> SidebarPlan {
+        let plan = plan_layout(
+            Rect::new(0, 0, 30, height),
+            wants,
+            SectionRows::active_only(&active),
+        );
+        assert_tiles(&plan, height);
         plan
     }
 
@@ -3254,6 +3276,7 @@ mod plan_layout {
             status_lines: 3,
             active_cap,
             detail_lines,
+            ..LayoutWants::default()
         }
     }
 
@@ -3265,6 +3288,11 @@ mod plan_layout {
         assert_eq!(plan.detail.height, 5, "two rules around three lines");
         assert_eq!(plan.footer.height, 3, "one row per line");
         assert_eq!(plan.list.height, 18);
+        assert_eq!(
+            plan.active.y,
+            plan.list.bottom(),
+            "Active sits under the list"
+        );
     }
 
     #[test]
@@ -3278,7 +3306,7 @@ mod plan_layout {
                 status_lines: 0,
                 ..wants(1, 4)
             },
-            active,
+            SectionRows::active_only(&active),
         );
         assert_eq!(no_footer.footer.height, 0);
         assert_eq!(no_footer.detail.height, 2, "the upper rule and the line");
@@ -3286,49 +3314,187 @@ mod plan_layout {
 
     #[test]
     fn the_optional_rows_give_way_in_order_for_three_list_rows() {
+        let rows = SectionRows::active_only(&active);
         // The detail strip goes first.
         let plan = plan(14, wants(1, 4));
         assert_eq!(plan.detail.height, 0);
         assert_eq!(plan.active.height, 7);
         assert_eq!(plan.list.height, 3);
         // Then the Active block's lines step down.
-        let plan = plan_layout(Rect::new(0, 0, 30, 12), wants(1, 4), active);
+        let plan = plan_layout(Rect::new(0, 0, 30, 12), wants(1, 4), rows);
         assert_eq!((plan.detail.height, plan.active.height), (0, 5));
         assert_eq!(plan.list.height, 3);
         // Then the whole block.
-        let plan = plan_layout(Rect::new(0, 0, 30, 10), wants(1, 4), active);
+        let plan = plan_layout(Rect::new(0, 0, 30, 10), wants(1, 4), rows);
         assert_eq!(plan.active.height, 0);
         assert_eq!(plan.footer.height, 1);
         assert_eq!(plan.list.height, 6);
-        // Then the footer; the pinned row keeps the list one row.
-        let plan = plan_layout(Rect::new(0, 0, 30, 5), wants(1, 4), active);
+        // Then the footer; the fixed row keeps the list one row.
+        let plan = plan_layout(Rect::new(0, 0, 30, 5), wants(1, 4), rows);
         assert_eq!(plan.footer.height, 0);
         assert_eq!(plan.fixed.height, 1);
         assert_eq!(plan.list.height, 2);
-        let plan = plan_layout(Rect::new(0, 0, 30, 4), wants(1, 4), active);
+        let plan = plan_layout(Rect::new(0, 0, 30, 4), wants(1, 4), rows);
         assert_eq!((plan.fixed.height, plan.list.height), (1, 1));
     }
 
     #[test]
     fn a_tall_footer_steps_down_to_one_row_before_none() {
-        // 30 rows (one footer row per line), many pinned rows, no block.
-        let tight = |pinned| LayoutWants {
-            fixed: pinned,
+        // 30 rows (one footer row per line), many fixed rows, no block.
+        let tight = |fixed| LayoutWants {
+            fixed,
             status_lines: 4,
             active_cap: 8,
             detail_lines: 0,
+            ..LayoutWants::default()
         };
-        let plan = plan_layout(Rect::new(0, 0, 30, 30), tight(20), |_| 0);
+        let none = SectionRows::active_only(&nothing);
+        let plan = plan_layout(Rect::new(0, 0, 30, 30), tight(20), none);
         assert_eq!((plan.footer.height, plan.list.height), (4, 4));
-        let plan = plan_layout(Rect::new(0, 0, 30, 30), tight(24), |_| 0);
+        let plan = plan_layout(Rect::new(0, 0, 30, 30), tight(24), none);
         assert_eq!(plan.footer.height, 1, "four rows would leave none");
         assert_eq!(plan.list.height, 3);
-        let plan = plan_layout(Rect::new(0, 0, 30, 30), tight(26), |_| 0);
+        let plan = plan_layout(Rect::new(0, 0, 30, 30), tight(26), none);
         assert_eq!((plan.footer.height, plan.list.height), (0, 2));
         // The Active block goes before the footer shrinks.
-        let plan = plan_layout(Rect::new(0, 0, 30, 30), tight(20), |cap| cap + 3);
+        let plan = plan_layout(
+            Rect::new(0, 0, 30, 30),
+            tight(20),
+            SectionRows::active_only(&active),
+        );
         assert_eq!(plan.active.height, 0);
         assert_eq!(plan.footer.height, 4);
+    }
+
+    /// Fork (sidebar v3): a block with more entries than any cap: the rule,
+    /// the header and `cap` lines (`cap - 1` entries and `+N more`).
+    fn block(cap: u16) -> u16 {
+        cap + 2
+    }
+
+    /// A folded block: its rule and header at any cap.
+    fn folded(_cap: u16) -> u16 {
+        2
+    }
+
+    fn every_section(height: u16) -> LayoutWants {
+        LayoutWants {
+            current: true,
+            fixed: 3,
+            status_lines: 3,
+            active_cap: super::super::super::tab_sidebar_active::active_cap(height),
+            pins_cap: super::super::super::tab_sidebar_pins::pins_cap(height),
+            scheduled_cap: super::super::super::tab_sidebar_scheduled::scheduled_cap(height),
+            detail_lines: super::super::super::tab_sidebar_detail::detail_lines(height),
+        }
+    }
+
+    #[test]
+    fn plan_layout_shrinks_in_the_documented_order() {
+        for (rows, name) in [
+            (
+                SectionRows {
+                    active: &block,
+                    pins: &block,
+                    scheduled: &block,
+                },
+                "open",
+            ),
+            (
+                SectionRows {
+                    active: &folded,
+                    pins: &folded,
+                    scheduled: &folded,
+                },
+                "folded",
+            ),
+        ] {
+            for height in 12..=45 {
+                let wants = every_section(height);
+                let plan = plan_layout(Rect::new(0, 0, 30, height), wants, rows);
+                assert_tiles(&plan, height);
+                let footer_want = if height < super::super::super::tab_sidebar::SPACIOUS_HEIGHT {
+                    1
+                } else {
+                    3
+                };
+                // Each step: (it ran, it ran fully).
+                let steps = [
+                    (
+                        wants.detail_lines > 0 && plan.detail.height == 0,
+                        plan.detail.height == 0,
+                    ),
+                    (
+                        plan.scheduled.height < (rows.scheduled)(wants.scheduled_cap),
+                        plan.scheduled.height <= (rows.scheduled)(1),
+                    ),
+                    (
+                        plan.pins.height < (rows.pins)(wants.pins_cap),
+                        plan.pins.height <= (rows.pins)(1),
+                    ),
+                    (
+                        plan.active.height < (rows.active)(wants.active_cap),
+                        plan.active.height <= (rows.active)(2),
+                    ),
+                    (plan.scheduled.height == 0, plan.scheduled.height == 0),
+                    (plan.pins.height == 0, plan.pins.height == 0),
+                    (plan.active.height == 0, plan.active.height == 0),
+                    (plan.current.height == 0, plan.current.height == 0),
+                    (plan.footer.height < footer_want, plan.footer.height == 0),
+                ];
+                for (k, (ran, _)) in steps.iter().enumerate() {
+                    if !ran {
+                        continue;
+                    }
+                    for (j, (_, done)) in steps[..k].iter().enumerate() {
+                        assert!(
+                            done,
+                            "{name} h={height}: step {} ran before step {} finished: {plan:?}",
+                            k + 1,
+                            j + 1
+                        );
+                    }
+                }
+                let optional_shown = plan.current.height
+                    + plan.active.height
+                    + plan.pins.height
+                    + plan.scheduled.height
+                    + plan.detail.height
+                    + plan.footer.height
+                    > 0;
+                if optional_shown {
+                    assert!(
+                        plan.list.height >= super::super::super::tab_sidebar::MIN_LIST_ROWS,
+                        "{name} h={height}: {plan:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_current_row_goes_only_after_every_block() {
+        // 15 rows: three folded blocks (6) + current (1) + fixed (3) +
+        // list (3) leave no room; the blocks go, the current row stays.
+        let plan = plan_layout(
+            Rect::new(0, 0, 30, 15),
+            every_section(15),
+            SectionRows {
+                active: &folded,
+                pins: &folded,
+                scheduled: &folded,
+            },
+        );
+        assert_eq!(plan.current.height, 1, "{plan:?}");
+        assert_eq!(plan.scheduled.height, 0, "{plan:?}");
+        // Tiny: the current row gives way before the footer.
+        let plan = plan_layout(
+            Rect::new(0, 0, 30, 9),
+            every_section(9),
+            SectionRows::active_only(&nothing),
+        );
+        assert_eq!(plan.current.height, 0, "{plan:?}");
+        assert_eq!(plan.footer.height, 1, "{plan:?}");
     }
 }
 

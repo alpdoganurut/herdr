@@ -102,6 +102,19 @@ pub(super) struct ClientScheduledReminder {
     pub(super) lit: bool,
 }
 
+impl ClientScheduledReminder {
+    /// Fork (sidebar v3): when an interval reminder next fires (the
+    /// Scheduled block's countdown); `None` for daily ones.
+    pub(super) fn next_fire(&self) -> Option<std::time::Instant> {
+        self.every.period().map(|period| self.anchor + period)
+    }
+
+    /// Fork (sidebar v3): the reminder's interval.
+    pub(super) fn every(&self) -> TabRemindInterval {
+        self.every
+    }
+}
+
 /// An important, waiting, unfocused tab seen in this pass.
 struct WaitingTab {
     key: (ClientEndpointId, String),

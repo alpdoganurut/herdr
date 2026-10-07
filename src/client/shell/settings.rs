@@ -16,6 +16,10 @@ fn theme_index(name: &str) -> usize {
 /// Fork (sidebar v2): the Indicators section's row that toggles
 /// `ui.sidebar_active_agents` (rows 0 and 1 are the indicator styles).
 pub(super) const INDICATORS_ACTIVE_AGENTS_ROW: usize = 2;
+/// Fork (sidebar v3): the rows toggling `ui.sidebar_pinned_agents` and
+/// `ui.sidebar_scheduled_agents`, under the Active toggle.
+pub(super) const INDICATORS_PINNED_AGENTS_ROW: usize = 3;
+pub(super) const INDICATORS_SCHEDULED_AGENTS_ROW: usize = 4;
 
 fn indicator_index(style: crate::config::StatusIndicatorStyle) -> usize {
     usize::from(style == crate::config::StatusIndicatorStyle::Symbols)
@@ -163,8 +167,9 @@ impl ClientShellState {
         match self.overlay.as_ref() {
             Some(ClientShellOverlay::Settings(settings)) => match settings.section {
                 ClientSettingsSection::Theme => crate::config::THEME_NAMES.len(),
-                // Fork (sidebar v2): the two styles, then the Active agents toggle.
-                ClientSettingsSection::Indicators => 3,
+                // Fork (sidebar v2): the two styles, then the Active agents
+                // toggle; sidebar v3: the Pinned and Scheduled toggles.
+                ClientSettingsSection::Indicators => 5,
                 ClientSettingsSection::Sound => sound_rows,
                 ClientSettingsSection::Toast => 4,
                 ClientSettingsSection::ClosedSessions => {
@@ -284,6 +289,28 @@ impl ClientShellState {
                 );
                 if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
                     settings.selected = INDICATORS_ACTIVE_AGENTS_ROW;
+                }
+            }
+            // Fork (sidebar v3): rows 3 and 4 toggle the Pinned and
+            // Scheduled blocks; the overlay stays open on them.
+            ClientSettingsSection::Indicators if selected == INDICATORS_PINNED_AGENTS_ROW => {
+                let enabled = !self.config.sidebar_pinned_agents;
+                self.save_settings_edit(
+                    crate::config::ConfigEdit::SidebarPinnedAgents(enabled),
+                    outcome,
+                );
+                if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                    settings.selected = INDICATORS_PINNED_AGENTS_ROW;
+                }
+            }
+            ClientSettingsSection::Indicators if selected == INDICATORS_SCHEDULED_AGENTS_ROW => {
+                let enabled = !self.config.sidebar_scheduled_agents;
+                self.save_settings_edit(
+                    crate::config::ConfigEdit::SidebarScheduledAgents(enabled),
+                    outcome,
+                );
+                if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                    settings.selected = INDICATORS_SCHEDULED_AGENTS_ROW;
                 }
             }
             ClientSettingsSection::Indicators => {

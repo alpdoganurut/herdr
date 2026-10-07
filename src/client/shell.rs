@@ -59,12 +59,18 @@ mod state;
 mod surface_patch;
 mod suspended_pane;
 mod tab_color;
+/// Fork (sidebar v3): pinned tabs (`endpoint.tab-pins.v1`).
+mod tab_pins;
 mod tab_remind_menu;
 mod tab_sidebar;
 /// Fork (sidebar v2): the tabs sidebar's Active agents block.
 mod tab_sidebar_active;
 /// Fork (sidebar v2): the tabs sidebar's detail strip.
 mod tab_sidebar_detail;
+/// Fork (sidebar v3): the tabs sidebar's Pinned block.
+mod tab_sidebar_pins;
+/// Fork (sidebar v3): the tabs sidebar's Scheduled block.
+mod tab_sidebar_scheduled;
 mod team_overlay;
 mod teams;
 mod text_editor;

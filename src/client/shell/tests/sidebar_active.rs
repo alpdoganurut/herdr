@@ -16,10 +16,10 @@ use crate::config::{Config, SidebarLayoutConfig};
 use crate::protocol::ClientShellWorkspace;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 
-const COLS: u16 = 106;
-const ROWS: u16 = 45;
+pub(super) const COLS: u16 = 106;
+pub(super) const ROWS: u16 = 45;
 
-fn tabs_config() -> Config {
+pub(super) fn tabs_config() -> Config {
     let mut config = Config::default();
     config.ui.sidebar_layout = SidebarLayoutConfig::Tabs;
     config.ui.sidebar_width = 31;
@@ -33,7 +33,7 @@ fn tabs_state() -> ClientShellState {
     state
 }
 
-fn workspace(id: &str, label: &str, status: AgentStatus) -> ClientShellWorkspace {
+pub(super) fn workspace(id: &str, label: &str, status: AgentStatus) -> ClientShellWorkspace {
     ClientShellWorkspace {
         workspace_id: id.into(),
         active_tab_id: String::new(),
@@ -50,7 +50,12 @@ fn workspace(id: &str, label: &str, status: AgentStatus) -> ClientShellWorkspace
     }
 }
 
-fn tab(id: &str, workspace_id: &str, label: &str, status: AgentStatus) -> ClientShellTab {
+pub(super) fn tab(
+    id: &str,
+    workspace_id: &str,
+    label: &str,
+    status: AgentStatus,
+) -> ClientShellTab {
     ClientShellTab {
         tab_id: id.into(),
         workspace_id: workspace_id.into(),
@@ -66,7 +71,7 @@ fn tab(id: &str, workspace_id: &str, label: &str, status: AgentStatus) -> Client
     }
 }
 
-fn pane(pane_id: &str, workspace_id: &str, tab_id: &str) -> ClientShellPane {
+pub(super) fn pane(pane_id: &str, workspace_id: &str, tab_id: &str) -> ClientShellPane {
     ClientShellPane {
         pane_id: pane_id.into(),
         workspace_id: workspace_id.into(),
@@ -79,7 +84,7 @@ fn pane(pane_id: &str, workspace_id: &str, tab_id: &str) -> ClientShellPane {
     }
 }
 
-fn agent(
+pub(super) fn agent(
     pane_id: &str,
     workspace_id: &str,
     tab_id: &str,
@@ -120,7 +125,7 @@ fn pane_of(tab_id: &str) -> String {
     tab_id.replacen("t_", "p_", 1)
 }
 
-fn active_snapshot() -> ClientShellSnapshot {
+pub(super) fn active_snapshot() -> ClientShellSnapshot {
     let mut snapshot = snapshot();
     snapshot.focused_workspace_id = Some("ws_a".into());
     snapshot.focused_tab_id = Some("t_focus".into());
@@ -147,7 +152,10 @@ fn active_snapshot() -> ClientShellSnapshot {
     snapshot
 }
 
-fn voice_payload(revision: u64, live: bool) -> crate::server::headless::voice::VoicePayload {
+pub(super) fn voice_payload(
+    revision: u64,
+    live: bool,
+) -> crate::server::headless::voice::VoicePayload {
     let panes = if live {
         serde_json::json!([{ "pane_id": "p_voice", "voice": "live" }])
     } else {
@@ -163,7 +171,7 @@ fn voice_payload(revision: u64, live: bool) -> crate::server::headless::voice::V
 
 /// The fixture installed so the client projects `t_done` as Done (it saw
 /// the turn working), with `p_voice` in live voice mode.
-fn active_state_with(config: ClientShellConfig) -> ClientShellState {
+pub(super) fn active_state_with(config: ClientShellConfig) -> ClientShellState {
     let mut state = ClientShellState::new(config);
     let mut working = active_snapshot();
     for agent in &mut working.agents {
@@ -179,13 +187,13 @@ fn active_state_with(config: ClientShellConfig) -> ClientShellState {
     state
 }
 
-fn active_state() -> ClientShellState {
+pub(super) fn active_state() -> ClientShellState {
     active_state_with(ClientShellConfig::from_config(&tabs_config()))
 }
 
 /// An agent times push measured at a server clock of 10^10 ms: (pane, seq,
 /// age in ms).
-fn times_payload(
+pub(super) fn times_payload(
     revision: u64,
     panes: &[(&str, u64, u64)],
 ) -> crate::server::headless::agent_times::AgentTimesPayload {
@@ -206,7 +214,7 @@ fn times_payload(
     }
 }
 
-fn active_ids(state: &ClientShellState) -> Vec<&str> {
+pub(super) fn active_ids(state: &ClientShellState) -> Vec<&str> {
     state
         .hits
         .sidebar_active_rows
@@ -215,17 +223,22 @@ fn active_ids(state: &ClientShellState) -> Vec<&str> {
         .collect()
 }
 
-fn row_text(frame: &FrameData, rect: Rect) -> String {
+pub(super) fn row_text(frame: &FrameData, rect: Rect) -> String {
     (rect.x..rect.right())
         .map(|x| cell(frame, x, rect.y).symbol.as_str())
         .collect()
 }
 
-fn cell(frame: &FrameData, x: u16, y: u16) -> &crate::protocol::CellData {
+pub(super) fn cell(frame: &FrameData, x: u16, y: u16) -> &crate::protocol::CellData {
     &frame.cells[usize::from(y) * usize::from(frame.width) + usize::from(x)]
 }
 
-fn mouse(state: &mut ClientShellState, kind: MouseEventKind, x: u16, y: u16) -> ClientShellInput {
+pub(super) fn mouse(
+    state: &mut ClientShellState,
+    kind: MouseEventKind,
+    x: u16,
+    y: u16,
+) -> ClientShellInput {
     state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
         kind,
         column: x,
@@ -234,7 +247,7 @@ fn mouse(state: &mut ClientShellState, kind: MouseEventKind, x: u16, y: u16) -> 
     })])
 }
 
-fn endpoint_methods(outcome: &ClientShellInput) -> Vec<&crate::api::schema::Method> {
+pub(super) fn endpoint_methods(outcome: &ClientShellInput) -> Vec<&crate::api::schema::Method> {
     outcome
         .actions
         .iter()
@@ -246,7 +259,7 @@ fn endpoint_methods(outcome: &ClientShellInput) -> Vec<&crate::api::schema::Meth
 }
 
 /// The detail strip's text rows (its rule rows left out).
-fn detail_text(state: &ClientShellState, frame: &FrameData) -> Vec<String> {
+pub(super) fn detail_text(state: &ClientShellState, frame: &FrameData) -> Vec<String> {
     let strip = state.hits.sidebar_detail;
     assert!(strip.height >= 2, "a detail strip: {strip:?}");
     (strip.y + 1..strip.bottom())
@@ -318,7 +331,11 @@ fn active_block_orders_blocked_voice_working_done_by_seq() {
         "blocked, live voice, working (older change first), done; idle and parked tabs are not listed"
     );
     let header = state.hits.sidebar_active_header;
-    assert_eq!(header.y, 1, "right under the toolbar");
+    assert_eq!(
+        header.y,
+        state.hits.agent_body.bottom() + 1,
+        "under the list, its rule between them (sidebar v3)"
+    );
     let text = row_text(&frame, header);
     assert!(
         text.contains("Active") && !text.contains("agents"),
@@ -348,14 +365,14 @@ fn active_block_orders_blocked_voice_working_done_by_seq() {
     assert_eq!(mic.symbol, mark);
     assert_eq!(mic.fg, crate::protocol::color_to_u32(color));
     assert_eq!(cell(&frame, row.x + 7, row.y).symbol, "t");
-    // The hairline rule closes the block; the list starts under it.
-    let rule = Rect::new(header.x, header.y + 6, header.width, 1);
+    // The hairline rule opens the block, right under the list (sidebar v3).
+    let rule = Rect::new(header.x, header.y - 1, header.width, 1);
     assert!(row_text(&frame, rule).contains("\u{2500}\u{2500}\u{2500}"));
     assert_eq!(
         cell(&frame, rule.x + 1, rule.y).fg,
         crate::protocol::color_to_u32(palette.surface1)
     );
-    assert!(state.hits.agent_body.y > rule.y);
+    assert_eq!(state.hits.agent_body.bottom(), rule.y);
 }
 
 /// `t_home` idle with two subagents running (since eb0979d4 background
@@ -466,13 +483,11 @@ fn pinned_tabs_never_listed() {
     let mut state = active_state();
     state.compose(COLS, ROWS).expect("composed frame");
     let snapshot = state.snapshot.as_deref().expect("snapshot");
-    let model = SidebarModel::built(
-        snapshot,
-        &HashSet::new(),
-        None,
-        (Some("t_block"), Some("t_work")),
-        true,
-    );
+    let groups = HashSet::new();
+    let model = SidebarModel::built(super::super::sidebar_model::ModelInputs {
+        fixed_ids: (Some("t_block"), Some("t_work")),
+        ..super::super::sidebar_model::ModelInputs::new(snapshot, &groups)
+    });
     let listed: Vec<&str> = model
         .active
         .iter()
@@ -488,8 +503,8 @@ fn active_block_is_hidden_when_nothing_is_active() {
     assert_eq!(state.hits.sidebar_active_header, Rect::default());
     assert!(state.hits.sidebar_active_rows.is_empty());
     assert_eq!(
-        state.hits.sidebar_tabs[0].0.y, 1,
-        "the list starts right under the toolbar"
+        state.hits.sidebar_tabs[0].0.y, 2,
+        "the list starts right under the toolbar and the current row"
     );
 }
 
@@ -502,7 +517,10 @@ fn active_block_respects_the_opt_out() {
     assert_eq!(state.hits.sidebar_active_header, Rect::default());
     assert!(state.hits.sidebar_active_rows.is_empty());
     assert!(state.sidebar_model.active.is_empty());
-    assert_eq!(state.hits.agent_body.y, 1);
+    assert_eq!(
+        state.hits.agent_body.y, 2,
+        "under the toolbar and the current row"
+    );
 }
 
 #[test]
@@ -579,9 +597,9 @@ fn active_header_click_folds_and_persists() {
     assert_eq!(cell(&frame, last - 4, header.y).symbol, mic);
     assert_eq!(cell(&frame, last - 6, header.y).symbol, blocked);
     assert_eq!(
-        state.hits.agent_body.y,
-        header.y + 2,
-        "header and rule, then the list"
+        header.y,
+        state.hits.agent_body.bottom() + 1,
+        "the list, then the rule and the header"
     );
     let saved = preferences::load(&path).expect("saved");
     assert_eq!(saved.active_agents_folded, Some(true));
@@ -875,7 +893,7 @@ fn settings_indicators_toggle_writes_sidebar_active_agents() {
     let choices = state.hits.settings_choices.clone();
     assert_eq!(
         choices.iter().map(|(_, index)| *index).collect::<Vec<_>>(),
-        [0, 1, 2]
+        [0, 1, 2, 3, 4]
     );
     assert_eq!(
         choices[1].0.y,
@@ -884,6 +902,11 @@ fn settings_indicators_toggle_writes_sidebar_active_agents() {
     );
     assert_eq!(choices[2].0.y, choices[0].0.y + 3);
     assert!(row_text(&frame, choices[2].0).contains("active agents block: on"));
+    // Fork (sidebar v3): the Pinned and Scheduled toggles under it.
+    assert_eq!(choices[3].0.y, choices[0].0.y + 5);
+    assert!(row_text(&frame, choices[3].0).contains("pinned agents block: on"));
+    assert_eq!(choices[4].0.y, choices[0].0.y + 7);
+    assert!(row_text(&frame, choices[4].0).contains("scheduled agents block: on"));
     let (rect, _) = choices[2];
     mouse(
         &mut state,
@@ -922,7 +945,11 @@ pub(super) mod fork_smoke {
             active_ids(&state),
             ["t_block", "t_voice", "t_work", "t_focus", "t_done"]
         );
-        assert!(state.hits.agent_body.y > 1);
+        assert!(
+            state.hits.sidebar_active_header.y > state.hits.agent_body.bottom(),
+            "under the list (sidebar v3)"
+        );
+        let list_height = state.hits.agent_body.height;
         // Every agent exits: the block and its rule leave.
         let mut quiet = active_snapshot();
         quiet.agents.clear();
@@ -934,9 +961,9 @@ pub(super) mod fork_smoke {
         state.compose(COLS, ROWS).expect("composed frame");
         assert!(state.hits.sidebar_active_rows.is_empty());
         assert_eq!(state.hits.sidebar_active_header, Rect::default());
-        assert_eq!(
-            state.hits.agent_body.y, 1,
-            "the list starts under the toolbar"
+        assert!(
+            state.hits.agent_body.height > list_height,
+            "the list takes the block's rows"
         );
     }
 }

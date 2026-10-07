@@ -1122,9 +1122,16 @@ pub struct UiConfig {
     /// 28 through 120. Default: 44.
     pub info_pane_width: u16,
     /// Show the Active block (blocked, voice, working, running-subagent and finished agents)
-    /// above the tab list in the "tabs" sidebar layout. The block hides itself while nothing is active.
+    /// under the tab list in the "tabs" sidebar layout. The block hides itself while nothing is active.
     /// Default: true.
     pub sidebar_active_agents: bool,
+    /// Fork (sidebar v3): show the Pinned block (tabs pinned from the tab menu) under the
+    /// tab list in the "tabs" sidebar layout. It hides while nothing is pinned. Default: true.
+    pub sidebar_pinned_agents: bool,
+    /// Fork (sidebar v3): show the Scheduled block (tabs with a scheduled reminder and the
+    /// time to its next one) under the tab list in the "tabs" sidebar layout. It hides while
+    /// none is set. Default: true.
+    pub sidebar_scheduled_agents: bool,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
@@ -1396,6 +1403,8 @@ impl Default for UiConfig {
             daily_reminder_time: DEFAULT_DAILY_REMINDER_TIME.into(),
             info_pane_width: DEFAULT_INFO_PANE_WIDTH,
             sidebar_active_agents: true,
+            sidebar_pinned_agents: true,
+            sidebar_scheduled_agents: true,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,

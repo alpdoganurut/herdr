@@ -25,6 +25,10 @@ pub(crate) struct ClientShellConfig {
     /// Fork (sidebar v2): `ui.sidebar_active_agents`, the tabs sidebar's
     /// Active agents block.
     pub(super) sidebar_active_agents: bool,
+    /// Fork (sidebar v3): `ui.sidebar_pinned_agents`, the Pinned block.
+    pub(super) sidebar_pinned_agents: bool,
+    /// Fork (sidebar v3): `ui.sidebar_scheduled_agents`, the Scheduled block.
+    pub(super) sidebar_scheduled_agents: bool,
     pub(super) tab_agent_glyphs: std::collections::BTreeMap<String, String>,
     pub(super) tab_agent_glyph_colors:
         std::collections::BTreeMap<String, Option<ratatui::style::Color>>,
@@ -211,6 +215,20 @@ pub(super) struct ShellHitMap {
     /// Fork (sidebar v2): when a displayed duration next changes its text
     /// (the minute clock's repaint).
     pub(super) sidebar_clock_deadline: Option<std::time::Instant>,
+    /// Fork (sidebar v3): the current row (the focused tab, above the list).
+    pub(super) sidebar_current: Rect,
+    /// Fork (sidebar v3): the Pinned block's header row.
+    pub(super) sidebar_pins_header: Rect,
+    /// Fork (sidebar v3): the Pinned entry rows (rect, tab id).
+    pub(super) sidebar_pins_rows: Vec<(Rect, String)>,
+    /// Fork (sidebar v3): the Pinned `+N more` / `show fewer` row.
+    pub(super) sidebar_pins_more: Rect,
+    /// Fork (sidebar v3): the Scheduled block's header row.
+    pub(super) sidebar_scheduled_header: Rect,
+    /// Fork (sidebar v3): the Scheduled entry rows (rect, tab id).
+    pub(super) sidebar_scheduled_rows: Vec<(Rect, String)>,
+    /// Fork (sidebar v3): the Scheduled `+N more` / `show fewer` row.
+    pub(super) sidebar_scheduled_more: Rect,
 }
 
 #[derive(Clone)]
@@ -768,6 +786,8 @@ pub(super) enum ClientContextMenuAction {
     CopySessionId,
     /// Fork, tab menu of any agent tab: "Set role…" (`agents.set_meta`).
     SetRole,
+    /// Fork (sidebar v3), tab menu: toggle the tab's pin (`tab.set_pinned`).
+    Pin,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -826,6 +846,11 @@ pub(super) enum ClientContextMenuTarget {
         /// Fork: the native session id (Claude session, Codex thread) of the
         /// tab's agent, filled by the `pane.get` reply after the menu opened.
         session_id: Option<String>,
+        /// Fork (sidebar v3): whether the tab was pinned when the menu opened.
+        pinned: bool,
+        /// Fork (sidebar v3): the server advertises `tab.set_pinned` (the
+        /// Pin item shows only then).
+        pin_supported: bool,
     },
     /// A space shown as a tab group in the `tabs` layout. Fork: `team` is
     /// the team items' state, `None` without `team.get` on the server.
@@ -1371,6 +1396,17 @@ pub(crate) struct ClientShellState {
     pub(super) sidebar_reveal_tab: Option<String>,
     /// Fork (sidebar v2): test override of the sidebar's duration clock.
     pub(super) sidebar_clock: Option<std::time::Instant>,
+    /// Fork (sidebar v3): each endpoint's pinned tabs as its last
+    /// `endpoint.tab-pins.v1` push listed them (`tab_pins.rs`).
+    pub(super) tab_pins: HashMap<ClientEndpointId, super::tab_pins::ClientTabPinsState>,
+    /// Fork (sidebar v3): the Pinned block folded (`None` until toggled; persisted).
+    pub(super) pinned_agents_folded: Option<bool>,
+    /// Fork (sidebar v3): the Scheduled block folded (`None` until toggled; persisted).
+    pub(super) scheduled_agents_folded: Option<bool>,
+    /// Fork (sidebar v3): the Pinned block shows past its cap (client-only).
+    pub(super) pins_expanded: bool,
+    /// Fork (sidebar v3): the Scheduled block shows past its cap (client-only).
+    pub(super) scheduled_expanded: bool,
 }
 
 pub(super) fn product_announcement_state(
@@ -1435,6 +1471,8 @@ impl ClientShellState {
             .max(super::info_dock::DOCK_MIN);
         let info_dock_width_manual = preferences.info_dock_width.is_some();
         let active_agents_folded = preferences.active_agents_folded;
+        let pinned_agents_folded = preferences.pinned_agents_folded;
+        let scheduled_agents_folded = preferences.scheduled_agents_folded;
         if let Some(sort) = preferences.agent_panel_sort {
             config.agent_panel_sort = sort;
         }
@@ -1568,6 +1606,11 @@ impl ClientShellState {
             active_agents_expanded: false,
             sidebar_reveal_tab: None,
             sidebar_clock: None,
+            tab_pins: HashMap::new(),
+            pinned_agents_folded,
+            scheduled_agents_folded,
+            pins_expanded: false,
+            scheduled_expanded: false,
         }
     }
 

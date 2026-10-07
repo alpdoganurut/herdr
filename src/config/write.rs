@@ -65,6 +65,10 @@ pub(crate) enum ConfigEdit<'a> {
     AgentsInstructionsFile(Option<&'a str>),
     /// Fork: `ui.sidebar_active_agents` (the tabs sidebar's Active agents block).
     SidebarActiveAgents(bool),
+    /// Fork (sidebar v3): `ui.sidebar_pinned_agents` (the Pinned block).
+    SidebarPinnedAgents(bool),
+    /// Fork (sidebar v3): `ui.sidebar_scheduled_agents` (the Scheduled block).
+    SidebarScheduledAgents(bool),
 }
 
 /// Fork: minutes past midnight as a 24-hour "HH:MM".
@@ -87,7 +91,10 @@ impl ConfigEdit<'_> {
             | Self::CoordinatorWakeCaps { .. }
             | Self::CoordinatorModel(_)
             | Self::CoordinatorNotify(_) => "coordinator setting",
-            Self::SidebarLayoutTabs | Self::SidebarActiveAgents(_) => "sidebar setting",
+            Self::SidebarLayoutTabs
+            | Self::SidebarActiveAgents(_)
+            | Self::SidebarPinnedAgents(_)
+            | Self::SidebarScheduledAgents(_) => "sidebar setting",
             Self::BrowserBool { .. } | Self::BrowserString { .. } | Self::BrowserList { .. } => {
                 "browser setting"
             }
@@ -240,6 +247,12 @@ impl ConfigEdit<'_> {
             }),
             Self::SidebarActiveAgents(enabled) => {
                 super::upsert_section_bool(content, "ui", "sidebar_active_agents", enabled)
+            }
+            Self::SidebarPinnedAgents(enabled) => {
+                super::upsert_section_bool(content, "ui", "sidebar_pinned_agents", enabled)
+            }
+            Self::SidebarScheduledAgents(enabled) => {
+                super::upsert_section_bool(content, "ui", "sidebar_scheduled_agents", enabled)
             }
         }
     }
@@ -532,6 +545,31 @@ mod tests {
             ConfigEdit::SidebarActiveAgents(true).description(),
             "sidebar setting"
         );
+    }
+
+    #[test]
+    fn sidebar_pinned_and_scheduled_edits_write_their_ui_keys_and_parse_back() {
+        let content = "[ui]\nsidebar_width = 30\n";
+        let defaults = crate::config::Config::default();
+        assert!(defaults.ui.sidebar_pinned_agents && defaults.ui.sidebar_scheduled_agents);
+        let edited = ConfigEdit::SidebarPinnedAgents(false).apply(content);
+        let edited = ConfigEdit::SidebarScheduledAgents(false).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(!config.ui.sidebar_pinned_agents);
+        assert!(!config.ui.sidebar_scheduled_agents);
+        assert!(config.ui.sidebar_active_agents, "untouched");
+        assert_eq!(config.ui.sidebar_width, 30);
+        let edited = ConfigEdit::SidebarPinnedAgents(true).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(config.ui.sidebar_pinned_agents);
+        assert_eq!(edited.matches("sidebar_pinned_agents").count(), 1);
+        assert_eq!(edited.matches("sidebar_scheduled_agents").count(), 1);
+        for edit in [
+            ConfigEdit::SidebarPinnedAgents(true),
+            ConfigEdit::SidebarScheduledAgents(true),
+        ] {
+            assert_eq!(edit.description(), "sidebar setting");
+        }
     }
 
     #[test]

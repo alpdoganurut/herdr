@@ -4,7 +4,9 @@
 //! every agent status represented) and prints the median and p95 of
 //! `compose` in two cases: a static snapshot (nothing changed since the last
 //! frame) and right after a snapshot replacement (derived sidebar state is
-//! rebuilt). Manual:
+//! rebuilt). Fork (sidebar v3): each case also runs with every fifth tab
+//! pinned and every fourth on a 10m reminder (the Pinned and Scheduled
+//! blocks shown). Manual:
 //!
 //! `cargo test --release --bin herdr tab_sidebar_compose_profile -- --ignored --nocapture`
 
@@ -22,7 +24,7 @@ const TABS_PER_GROUP: usize = 5;
 
 /// `tabs` tabs in groups of five; the first tab is focused. Statuses cycle
 /// working, blocked, idle, done, suspended; every third tab has subagents.
-fn perf_snapshot(tabs: usize) -> ClientShellSnapshot {
+fn perf_snapshot(tabs: usize, sections: bool) -> ClientShellSnapshot {
     let mut snapshot = snapshot();
     let template = snapshot.workspaces[0].clone();
     let groups = tabs.div_ceil(TABS_PER_GROUP).max(1);
@@ -63,7 +65,8 @@ fn perf_snapshot(tabs: usize) -> ClientShellSnapshot {
             agent_status: status,
             color: None,
             important: index % 7 == 1,
-            remind_every: None,
+            remind_every: (sections && index % 4 == 1)
+                .then_some(crate::api::schema::TabRemindInterval::M10),
         });
         snapshot.panes.push(ClientShellPane {
             pane_id: pane_id.clone(),
@@ -103,11 +106,11 @@ fn perf_snapshot(tabs: usize) -> ClientShellSnapshot {
     snapshot
 }
 
-fn perf_state(tabs: usize) -> ClientShellState {
+fn perf_state(tabs: usize, sections: bool) -> ClientShellState {
     let mut config = Config::default();
     config.ui.sidebar_layout = SidebarLayoutConfig::Tabs;
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    state.set_snapshot(Box::new(perf_snapshot(tabs)));
+    state.set_snapshot(Box::new(perf_snapshot(tabs, sections)));
     state.set_pane_surface(surface());
     let voice: crate::server::headless::voice::VoicePayload =
         serde_json::from_value(serde_json::json!({
@@ -117,6 +120,20 @@ fn perf_state(tabs: usize) -> ClientShellState {
         }))
         .expect("voice payload");
     state.receive_voice(&ClientEndpointId::Local, voice);
+    if sections {
+        state.receive_tab_pins(
+            &ClientEndpointId::Local,
+            crate::server::headless::tab_pins::TabPinsPayload {
+                boot_id: "boot-1".into(),
+                revision: 1,
+                tab_ids: (0..tabs)
+                    .filter(|index| index % 5 == 2)
+                    .map(|index| format!("t_{index}"))
+                    .collect(),
+            },
+        );
+        state.tick_notifications(Instant::now());
+    }
     state
 }
 
@@ -130,9 +147,9 @@ fn stats(mut samples: Vec<Duration>) -> (u128, u128) {
 
 /// `compose` timings; `replace` sets a fresh snapshot before each frame
 /// (outside the timed region).
-fn profile(tabs: usize, replace: bool) -> (u128, u128) {
-    let mut state = perf_state(tabs);
-    let snapshot = perf_snapshot(tabs);
+fn profile(tabs: usize, replace: bool, sections: bool) -> (u128, u128) {
+    let mut state = perf_state(tabs, sections);
+    let snapshot = perf_snapshot(tabs, sections);
     let mut samples = Vec::with_capacity(SAMPLES);
     for index in 0..WARMUP + SAMPLES {
         if replace {
@@ -151,11 +168,14 @@ fn profile(tabs: usize, replace: bool) -> (u128, u128) {
 #[ignore = "manual tabs sidebar compose profile"]
 fn tab_sidebar_compose_profile() {
     println!("tabs sidebar compose at {COLS}x{ROWS}, {SAMPLES} samples");
-    println!("        tabs  case             median_us  p95_us");
+    println!("        tabs  case             sections  median_us  p95_us");
     for tabs in [1, 15, 75] {
         for (case, replace) in [("static", false), ("snapshot change", true)] {
-            let (median, p95) = profile(tabs, replace);
-            println!("  {tabs:>10}  {case:<15}  {median:>9}  {p95:>6}");
+            for sections in [false, true] {
+                let (median, p95) = profile(tabs, replace, sections);
+                let shown = if sections { "on" } else { "off" };
+                println!("  {tabs:>10}  {case:<15}  {shown:<8}  {median:>9}  {p95:>6}");
+            }
         }
     }
 }

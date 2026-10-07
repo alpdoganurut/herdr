@@ -4,10 +4,16 @@
 //!
 //! `SidebarModel::ensure` runs in `compose` for the expanded tabs layout. It
 //! rebuilds only after `mark_dirty` (snapshot replaced, voice / agent-times /
-//! teams push, config reload, fold state changed) or when the fixed-row tab ids
-//! (News, coordinator) differ from the last build; every other frame costs
-//! one bool check and two `Option<&str>` compares. The rebuild is one pass
-//! over the snapshot's agents and panes and one over its tabs.
+//! teams / tab-pins push, config reload, fold state changed) or when the
+//! fixed-row tab ids (News, coordinator) differ from the last build; every
+//! other frame costs one bool check and two `Option<&str>` compares. The
+//! rebuild is one pass over the snapshot's agents and panes and one over its
+//! tabs (plus one set lookup per tab while some tab is pinned).
+//!
+//! Fork (sidebar v3): the rebuild also lists the Pinned entries (pinned
+//! tabs, snapshot order) and the Scheduled entries (tabs with a scheduled
+//! reminder, by interval then snapshot order). A countdown tick never
+//! rebuilds: the reminder clocks are read live by the Scheduled block.
 //!
 //! Also here, shared by the row painters (`tab_sidebar.rs`) and the Active
 //! block / detail strip (`tab_sidebar_active.rs`, `tab_sidebar_detail.rs`):
@@ -43,6 +49,9 @@ pub(crate) struct TabFacts {
     pub(crate) workspace: Option<u32>,
     /// Some agent of the tab is parked (`Suspended`).
     pub(crate) parked: bool,
+    /// Fork (sidebar v3): pinned (`tab.set_pinned`, the `endpoint.tab-pins.v1`
+    /// push).
+    pub(crate) pin: bool,
 }
 
 impl Default for TabFacts {
@@ -58,6 +67,7 @@ impl Default for TabFacts {
             fixed: false,
             workspace: None,
             parked: false,
+            pin: false,
         }
     }
 }
@@ -95,6 +105,81 @@ pub(crate) struct ActiveView {
     pub(crate) expanded: bool,
 }
 
+/// The Pinned and Scheduled blocks' view state (sidebar v3), like Active's.
+pub(crate) type PinsView = ActiveView;
+pub(crate) type ScheduledView = ActiveView;
+
+/// Which optional blocks the model lists (`ui.sidebar_*_agents`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Sections {
+    pub(crate) active: bool,
+    pub(crate) pins: bool,
+    pub(crate) scheduled: bool,
+}
+
+impl Default for Sections {
+    fn default() -> Self {
+        Self {
+            active: true,
+            pins: true,
+            scheduled: true,
+        }
+    }
+}
+
+/// The model's inputs.
+#[derive(Clone, Copy)]
+pub(crate) struct ModelInputs<'a> {
+    pub(crate) snapshot: &'a ClientShellSnapshot,
+    pub(crate) collapsed_groups: &'a HashSet<String>,
+    pub(crate) voice: Option<&'a super::voice::ClientVoiceState>,
+    pub(crate) times: Option<&'a super::agent_times::ClientAgentTimesState>,
+    pub(crate) pins: Option<&'a super::tab_pins::ClientTabPinsState>,
+    /// The News and coordinator tab ids (fixed rows, never list rows).
+    pub(crate) fixed_ids: (Option<&'a str>, Option<&'a str>),
+    pub(crate) sections: Sections,
+}
+
+impl<'a> ModelInputs<'a> {
+    /// Inputs with nothing but the snapshot and fold state (tests and
+    /// callers without pushes); every block enabled.
+    pub(crate) fn new(
+        snapshot: &'a ClientShellSnapshot,
+        collapsed_groups: &'a HashSet<String>,
+    ) -> Self {
+        Self {
+            snapshot,
+            collapsed_groups,
+            voice: None,
+            times: None,
+            pins: None,
+            fixed_ids: (None, None),
+            sections: Sections::default(),
+        }
+    }
+}
+
+/// The Scheduled interval kinds (`scheduled_kinds` bits): minutes (`◷`),
+/// hours (`◑`), daily (`☼`).
+pub(crate) const KIND_MINUTES: u8 = 0;
+pub(crate) const KIND_HOURS: u8 = 1;
+pub(crate) const KIND_DAILY: u8 = 2;
+
+/// An interval's kind bit and its display rank (5m, 10m, 30m, 1h, 6h,
+/// daily); `None` for an unknown interval.
+pub(crate) fn interval_rank(every: crate::api::schema::TabRemindInterval) -> Option<(u8, u8)> {
+    use crate::api::schema::TabRemindInterval;
+    Some(match every {
+        TabRemindInterval::M5 => (KIND_MINUTES, 0),
+        TabRemindInterval::M10 => (KIND_MINUTES, 1),
+        TabRemindInterval::M30 => (KIND_MINUTES, 2),
+        TabRemindInterval::H1 => (KIND_HOURS, 3),
+        TabRemindInterval::H6 => (KIND_HOURS, 4),
+        TabRemindInterval::Daily => (KIND_DAILY, 5),
+        TabRemindInterval::Unknown => return None,
+    })
+}
+
 /// A fixed row under the list (Browser, News, coordinator; "pinned" in the docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum FixedKind {
@@ -113,6 +198,14 @@ pub(crate) enum SidebarHover {
     ActiveEntry(String),
     ActiveMore,
     Fixed(FixedKind),
+    /// Fork (sidebar v3): the current row (the focused tab, above the list).
+    Current,
+    PinsHeader,
+    PinsEntry(String),
+    PinsMore,
+    ScheduledHeader,
+    ScheduledEntry(String),
+    ScheduledMore,
 }
 
 /// The selected row of a frame: the hovered row, else the focused tab.
@@ -124,6 +217,12 @@ pub(crate) enum Selected {
     ActiveHeader,
     ActiveEntry(u32),
     Fixed(FixedKind),
+    /// Fork (sidebar v3): the Pinned / Scheduled header (or its overflow
+    /// row) and entries.
+    PinsHeader,
+    PinsEntry(u32),
+    ScheduledHeader,
+    ScheduledEntry(u32),
     None,
 }
 
@@ -152,6 +251,17 @@ pub(crate) struct SidebarModel {
     pub(crate) active_classes: u8,
     /// Some active entry has running subagents.
     pub(crate) any_subagents_active: bool,
+    /// Fork (sidebar v3): Pinned entries (indices into `snapshot.tabs`):
+    /// pinned list tabs in snapshot order; empty when the block is disabled.
+    pub(crate) pins: Vec<u32>,
+    /// Bitset of the Active classes present over `pins` (folded header).
+    pub(crate) pins_classes: u8,
+    /// Fork (sidebar v3): Scheduled entries: list tabs with a known
+    /// scheduled reminder, by interval (5m … daily) then snapshot order;
+    /// empty when the block is disabled.
+    pub(crate) scheduled: Vec<u32>,
+    /// Bitset of the interval kinds present over `scheduled` (`KIND_*`).
+    pub(crate) scheduled_kinds: u8,
     /// Rebuild count (architecture tests).
     #[cfg(test)]
     pub(crate) builds: u32,
@@ -178,21 +288,19 @@ impl SidebarModel {
             active: Vec::new(),
             active_classes: 0,
             any_subagents_active: false,
+            pins: Vec::new(),
+            pins_classes: 0,
+            scheduled: Vec::new(),
+            scheduled_kinds: 0,
             #[cfg(test)]
             builds: 0,
         }
     }
 
     /// A model built once, for a caller without the compose-ensured one.
-    pub(crate) fn built(
-        snapshot: &ClientShellSnapshot,
-        collapsed_groups: &HashSet<String>,
-        voice: Option<&super::voice::ClientVoiceState>,
-        fixed_ids: (Option<&str>, Option<&str>),
-        enabled: bool,
-    ) -> Self {
+    pub(crate) fn built(inputs: ModelInputs<'_>) -> Self {
         let mut model = Self::new();
-        model.ensure(snapshot, collapsed_groups, voice, None, fixed_ids, enabled);
+        model.ensure(inputs);
         model
     }
 
@@ -201,36 +309,28 @@ impl SidebarModel {
         self.dirty = true;
     }
 
-    /// Rebuild when data changed since the last build or the pinned tab ids
-    /// differ; otherwise nothing.
-    #[allow(clippy::too_many_arguments)] // the model's inputs; a struct would only rename them
-    pub(crate) fn ensure(
-        &mut self,
-        snapshot: &ClientShellSnapshot,
-        collapsed_groups: &HashSet<String>,
-        voice: Option<&super::voice::ClientVoiceState>,
-        times: Option<&super::agent_times::ClientAgentTimesState>,
-        fixed_ids: (Option<&str>, Option<&str>),
-        enabled: bool,
-    ) {
+    /// Rebuild when data changed since the last build or the fixed-row tab
+    /// ids differ; otherwise nothing.
+    pub(crate) fn ensure(&mut self, inputs: ModelInputs<'_>) {
         if !self.dirty
-            && self.fixed_ids.0.as_deref() == fixed_ids.0
-            && self.fixed_ids.1.as_deref() == fixed_ids.1
+            && self.fixed_ids.0.as_deref() == inputs.fixed_ids.0
+            && self.fixed_ids.1.as_deref() == inputs.fixed_ids.1
         {
             return;
         }
-        self.rebuild(snapshot, collapsed_groups, voice, times, fixed_ids, enabled);
+        self.rebuild(inputs);
     }
 
-    fn rebuild(
-        &mut self,
-        snapshot: &ClientShellSnapshot,
-        collapsed_groups: &HashSet<String>,
-        voice: Option<&super::voice::ClientVoiceState>,
-        times: Option<&super::agent_times::ClientAgentTimesState>,
-        fixed_ids: (Option<&str>, Option<&str>),
-        enabled: bool,
-    ) {
+    fn rebuild(&mut self, inputs: ModelInputs<'_>) {
+        let ModelInputs {
+            snapshot,
+            collapsed_groups,
+            voice,
+            times,
+            pins,
+            fixed_ids,
+            sections,
+        } = inputs;
         self.dirty = false;
         if self.fixed_ids.0.as_deref() != fixed_ids.0 {
             self.fixed_ids.0 = fixed_ids.0.map(str::to_owned);
@@ -246,8 +346,11 @@ impl SidebarModel {
 
         // Per-tab facts: one pass over the agents and one over the panes.
         self.tabs.clear();
+        // No pin lookups while nothing is pinned.
+        let pins = pins.filter(|pins| !pins.tab_ids.is_empty());
         self.tabs.extend(snapshot.tabs.iter().map(|tab| TabFacts {
             fixed: is_fixed(&tab.tab_id),
+            pin: pins.is_some_and(|pins| pins.is_pinned(&tab.tab_id)),
             ..TabFacts::default()
         }));
         let index: HashMap<&str, u32> = snapshot
@@ -359,7 +462,7 @@ impl SidebarModel {
         self.active.clear();
         self.active_classes = 0;
         self.any_subagents_active = false;
-        if enabled {
+        if sections.active {
             for (index, (tab, facts)) in snapshot.tabs.iter().zip(&self.tabs).enumerate() {
                 if facts.fixed {
                     continue;
@@ -381,6 +484,46 @@ impl SidebarModel {
                     .get(entry.tab as usize)
                     .map_or(u64::MAX, |facts| facts.status_seq);
                 (entry.class, seq, entry.tab)
+            });
+        }
+
+        // Fork (sidebar v3): the Pinned entries, in snapshot order (pinned
+        // tabs also stay in their group).
+        self.pins.clear();
+        self.pins_classes = 0;
+        if sections.pins && pins.is_some() {
+            for (index, (tab, facts)) in snapshot.tabs.iter().zip(&self.tabs).enumerate() {
+                if facts.fixed || !facts.pin {
+                    continue;
+                }
+                self.pins.push(index as u32);
+                if let Some(class) = active_class(tab.agent_status, facts.voice, facts.subagents) {
+                    self.pins_classes |= 1 << class;
+                }
+            }
+        }
+        // The Scheduled entries: by interval, then snapshot order.
+        self.scheduled.clear();
+        self.scheduled_kinds = 0;
+        if sections.scheduled {
+            for (index, (tab, facts)) in snapshot.tabs.iter().zip(&self.tabs).enumerate() {
+                if facts.fixed {
+                    continue;
+                }
+                let Some((kind, _)) = tab.remind_every.and_then(interval_rank) else {
+                    continue;
+                };
+                self.scheduled.push(index as u32);
+                self.scheduled_kinds |= 1 << kind;
+            }
+            let tabs = &snapshot.tabs;
+            self.scheduled.sort_by_key(|index| {
+                let rank = tabs
+                    .get(*index as usize)
+                    .and_then(|tab| tab.remind_every)
+                    .and_then(interval_rank)
+                    .map_or(u8::MAX, |(_, rank)| rank);
+                (rank, *index)
             });
         }
     }
@@ -474,6 +617,15 @@ pub(crate) fn resolve_selected(
             .map(|index| Selected::Group(index as u32)),
         Some(SidebarHover::ActiveHeader | SidebarHover::ActiveMore) => Some(Selected::ActiveHeader),
         Some(SidebarHover::Fixed(kind)) => Some(Selected::Fixed(*kind)),
+        Some(SidebarHover::Current) => model.focused_tab.map(Selected::Tab),
+        Some(SidebarHover::PinsEntry(tab_id)) => list_tab(tab_id).map(Selected::PinsEntry),
+        Some(SidebarHover::PinsHeader | SidebarHover::PinsMore) => Some(Selected::PinsHeader),
+        Some(SidebarHover::ScheduledEntry(tab_id)) => {
+            list_tab(tab_id).map(Selected::ScheduledEntry)
+        }
+        Some(SidebarHover::ScheduledHeader | SidebarHover::ScheduledMore) => {
+            Some(Selected::ScheduledHeader)
+        }
         None => None,
     };
     hovered.unwrap_or_else(|| model.focused_tab.map_or(Selected::None, Selected::Tab))
@@ -499,6 +651,42 @@ pub(crate) fn format_age(age: std::time::Duration) -> StackStr<8> {
         write!(text, "{}d", days.min(999_999))
     };
     text
+}
+
+/// A countdown at minute granularity, rounded up ("in 4m" until 3m00s are
+/// left, never "in <1m"): `in {m}m`, `in {h}h{mm}`, `in {d}d{h}h`. At most
+/// 9 cells.
+pub(crate) fn format_countdown(remaining: std::time::Duration) -> StackStr<12> {
+    use std::fmt::Write as _;
+    let minutes = countdown_minutes(remaining);
+    let age = format_age(std::time::Duration::from_secs(minutes.saturating_mul(60)));
+    let mut text = StackStr::new();
+    let _ = write!(text, "in {}", age.as_str());
+    text
+}
+
+/// Whole minutes left, rounded up (at least 1).
+fn countdown_minutes(remaining: std::time::Duration) -> u64 {
+    u64::try_from(remaining.as_millis().div_ceil(60_000))
+        .unwrap_or(u64::MAX)
+        .max(1)
+}
+
+/// When a countdown to `next_fire` next changes its text at `now`: the
+/// instant its rounded-up minutes drop by one (`next_fire` itself in the
+/// last minute). `None` once `next_fire` is reached (the reminder's own
+/// tick repaints then).
+pub(crate) fn next_countdown_tick(next_fire: Instant, now: Instant) -> Option<Instant> {
+    let remaining = next_fire.checked_duration_since(now)?;
+    if remaining.is_zero() {
+        return None;
+    }
+    let minutes = countdown_minutes(remaining);
+    Some(
+        next_fire
+            .checked_sub(std::time::Duration::from_secs((minutes - 1) * 60))
+            .unwrap_or(next_fire),
+    )
 }
 
 /// When a time in state since `since` next changes its text at `now`: the

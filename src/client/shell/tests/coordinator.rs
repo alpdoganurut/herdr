@@ -911,6 +911,9 @@ fn render_sidebar(
         now: std::time::Instant::now(),
         sidebar_reveal_tab: &mut shell.sidebar_reveal_tab,
         active_view: super::super::sidebar_model::ActiveView::default(),
+        pins_view: super::super::sidebar_model::PinsView::default(),
+        scheduled_view: super::super::sidebar_model::ScheduledView::default(),
+        tab_pins: None,
     };
     let rect = render_tab_sidebar_with(
         &mut buffer,

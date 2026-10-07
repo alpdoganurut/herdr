@@ -764,6 +764,8 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
             ClientContextMenuAction::SetRole,
             ClientContextMenuAction::ToggleInfoPane,
             ClientContextMenuAction::Important,
+            // Fork (sidebar v3): Pin / Unpin right after Important.
+            ClientContextMenuAction::Pin,
             ClientContextMenuAction::RemindTop,
             ClientContextMenuAction::RemindBottom,
             ClientContextMenuAction::Color
@@ -779,8 +781,9 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
         }
     );
     let frame = state.compose(106, 20).expect("menu frame");
-    let top = row_text(&frame, state.hits.context_menu_rows[important + 1].0);
-    let bottom = row_text(&frame, state.hits.context_menu_rows[important + 2].0);
+    // Fork (sidebar v3): Pin sits between Important and the selector.
+    let top = row_text(&frame, state.hits.context_menu_rows[important + 2].0);
+    let bottom = row_text(&frame, state.hits.context_menu_rows[important + 3].0);
     assert!(top.starts_with("remind  5m  10m  30m"), "{top:?}");
     assert!(bottom.starts_with("        1h [6h]  daily"), "{bottom:?}");
     let options = state.hits.context_menu_remind_options.clone();
@@ -924,11 +927,11 @@ fn selector_keys_move_across_both_rows_and_pick() {
     state.handle_raw_events(vec![key(KeyCode::Up)]);
     assert_eq!(menu_remind(&state).0, top + 1);
     assert_eq!(menu_remind(&state).1.cursor, 5);
-    state.handle_raw_events(vec![key(KeyCode::Up), key(KeyCode::Up)]);
+    state.handle_raw_events(vec![key(KeyCode::Up), key(KeyCode::Up), key(KeyCode::Up)]);
     assert_eq!(
         menu_remind(&state).0,
-        top - 1,
-        "past the first row: important"
+        top - 2,
+        "past the first row and Pin: important"
     );
     let outcome = state.handle_raw_events(vec![key(KeyCode::Enter)]);
     assert_eq!(

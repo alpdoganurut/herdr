@@ -289,8 +289,16 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # info_pane_width = 44
 
 # Show the Active block (blocked, voice, working, running-subagent and finished
-# agents) above the tab list in the "tabs" sidebar layout; it hides while nothing is active.
+# agents) under the tab list in the "tabs" sidebar layout; it hides while nothing is active.
 # sidebar_active_agents = true
+
+# Show the Pinned block (tabs you pinned from the tab menu) under the tab list in the
+# "tabs" sidebar layout; it hides while nothing is pinned.
+# sidebar_pinned_agents = true
+
+# Show the Scheduled block (tabs with a scheduled reminder, with the time to the next
+# one) under the tab list in the "tabs" sidebar layout; it hides while none is set.
+# sidebar_scheduled_agents = true
 
 # Terminal width at or below which Herdr uses the mobile single-column layout.
 # Increase this for foldables, tablets, or wide phone terminals.

@@ -283,6 +283,13 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) sidebar_reveal_tab: &'a mut Option<String>,
     /// Fork (sidebar v2): the Active agents block's view state.
     pub(super) active_view: super::sidebar_model::ActiveView,
+    /// Fork (sidebar v3): the Pinned block's view state.
+    pub(super) pins_view: super::sidebar_model::PinsView,
+    /// Fork (sidebar v3): the Scheduled block's view state.
+    pub(super) scheduled_view: super::sidebar_model::ScheduledView,
+    /// Fork (sidebar v3): the active endpoint's pinned tabs (the one-off
+    /// model's input).
+    pub(super) tab_pins: Option<&'a super::tab_pins::ClientTabPinsState>,
 }
 
 pub(super) fn render_shell(

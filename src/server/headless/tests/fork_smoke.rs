@@ -1800,6 +1800,112 @@ async fn agent_times_push_reaches_the_client_shell() {
     assert!(!shell.receive_agent_times(&crate::client::endpoint::ClientEndpointId::Local, payload));
 }
 
+/// Every `endpoint.tab-pins.v1` payload in a client's control stream so far.
+fn tab_pins_payloads(
+    control: &std::sync::mpsc::Receiver<Vec<u8>>,
+) -> Vec<crate::server::headless::tab_pins::TabPinsPayload> {
+    let mut payloads = Vec::new();
+    while let Ok(bytes) = control.try_recv() {
+        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+            if kind == crate::server::headless::tab_pins::TAB_PINS_KIND {
+                payloads.push(
+                    crate::server::headless::tab_pins::TabPinsPayload::decode(&data)
+                        .expect("tab pins payload decodes"),
+                );
+            }
+        }
+    }
+    payloads
+}
+
+/// Fork (sidebar v3): `tab.set_pinned` reaches every client shell once as
+/// `endpoint.tab-pins.v1`, keyed like the shell snapshot's tab row; a
+/// whole-tab move carries the pin and re-sends the list under the tab's new
+/// public id; the client shell takes it.
+#[tokio::test]
+async fn tab_pin_reaches_every_client_and_survives_a_move() {
+    let (mut server, _rx) = server_with_claude(None);
+    server
+        .app
+        .state
+        .workspaces
+        .push(crate::workspace::Workspace::test_new("other"));
+    server.app.state.ensure_test_terminals();
+    let (first, _first_render) = connect_test_shell(&mut server, 81, 80, 23);
+    let (second, _second_render) = connect_test_shell(&mut server, 82, 80, 23);
+    server.render_and_stream();
+    assert!(
+        tab_pins_payloads(&first).is_empty() && tab_pins_payloads(&second).is_empty(),
+        "a server that never had a pin sends nothing"
+    );
+
+    let tab_id = server.app.public_tab_id(0, 0).expect("tab id");
+    let reply = api(
+        &mut server,
+        Method::TabSetPinned(crate::api::schema::TabSetPinnedParams {
+            tab_id: tab_id.clone(),
+            pinned: true,
+        }),
+    );
+    assert_eq!(reply["result"]["tab"]["pinned"], true, "{reply}");
+    server.render_and_stream();
+    let snapshot = crate::server::client_shell::snapshot(&server.app, "fork-smoke", 1, None, None);
+    assert!(snapshot.tabs.iter().any(|tab| tab.tab_id == tab_id));
+    for control in [&first, &second] {
+        let payloads = tab_pins_payloads(control);
+        assert_eq!(payloads.len(), 1, "one payload per client");
+        assert_eq!(
+            payloads[0].tab_ids,
+            std::slice::from_ref(&tab_id),
+            "keyed like the tab row"
+        );
+    }
+    server.render_and_stream();
+    assert!(
+        tab_pins_payloads(&first).is_empty(),
+        "an unchanged revision sends nothing"
+    );
+
+    // The whole tab moves to the other group: the pin goes with it.
+    let pane_id = server
+        .app
+        .public_pane_id(0, root_pane(&server))
+        .expect("pane id");
+    let target = server.app.public_workspace_id(1);
+    let moved = api(
+        &mut server,
+        Method::PaneMove(crate::api::schema::PaneMoveParams {
+            pane_id,
+            destination: crate::api::schema::PaneMoveDestination::NewTab {
+                workspace_id: Some(target),
+                label: Some("moved".into()),
+            },
+            focus: false,
+        }),
+    );
+    assert!(moved.get("error").is_none(), "{moved}");
+    server.render_and_stream();
+    let payloads = tab_pins_payloads(&first);
+    let last = payloads.last().expect("the move re-sends the list");
+    assert_eq!(last.tab_ids.len(), 1);
+    assert_ne!(last.tab_ids[0], tab_id, "the moved tab has a new public id");
+    let snapshot = crate::server::client_shell::snapshot(&server.app, "fork-smoke", 1, None, None);
+    let moved_row = snapshot
+        .tabs
+        .iter()
+        .find(|tab| tab.tab_id == last.tab_ids[0])
+        .expect("the pinned id is a tab row");
+    assert_eq!(moved_row.label, "moved");
+
+    // The client shell takes it once.
+    let mut shell = crate::client::ClientShellState::new(
+        crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),
+    );
+    let local = crate::client::endpoint::ClientEndpointId::Local;
+    assert!(shell.receive_tab_pins(&local, last.clone()));
+    assert!(!shell.receive_tab_pins(&local, last.clone()));
+}
+
 #[path = "fork_smoke/coordinator.rs"]
 mod coordinator;
 

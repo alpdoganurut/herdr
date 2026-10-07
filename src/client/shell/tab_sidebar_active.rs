@@ -1,13 +1,19 @@
 //! The tabs sidebar's Active block (fork, sidebar v2): blocked, voice,
-//! working, idle-with-subagents and finished agents above the list, with
-//! their time in state. Hidden entirely while nothing is active or when
-//! `ui.sidebar_active_agents = false`.
+//! working, idle-with-subagents and finished agents under the list (sidebar
+//! v3; above it before), with their time in state. Hidden entirely while
+//! nothing is active or when `ui.sidebar_active_agents = false`.
 //!
 //! The entries come sorted from `SidebarModel::active` (rebuilt on data
-//! change only). A frame draws the header, at most `rect.height - 2` entry
-//! lines (`+N more` / `show fewer` takes the last one when needed) and the
-//! hairline rule, with `put_text` / `put_truncated` and stack strings: no
-//! allocation beyond one tab id clone per entry for the hit map.
+//! change only). A frame draws the hairline rule on the block's first row,
+//! the header under it, then at most `rect.height - 2` entry lines (`+N
+//! more` / `show fewer` takes the last one when needed), with `put_text` /
+//! `put_truncated` and stack strings: no allocation beyond one tab id clone
+//! per entry for the hit map.
+//!
+//! Fork (sidebar v3): the rule-header-entries frame, the header, the entry
+//! line and the hover tracking here are shared with the Pinned
+//! (`tab_sidebar_pins.rs`) and Scheduled (`tab_sidebar_scheduled.rs`)
+//! blocks. An entry in a team group names the team (`◆` and its purpose).
 //!
 //! Durations come from the `endpoint.agent-times.v1` push
 //! (`agent_times.rs`); without it the time column is left out and the order
@@ -20,13 +26,13 @@ use std::fmt::Write as _;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
 };
 
 use super::render::{display_width, put_text, put_truncated, ShellRenderState};
 use super::sidebar_model::{
-    format_age, next_age_tick, ActiveEntry, ActiveView, FixedKind, SidebarHover, SidebarModel,
-    StackStr, CLASS_BLOCKED, CLASS_DONE, CLASS_SUBAGENTS, CLASS_VOICE, CLASS_WORKING,
+    format_age, next_age_tick, ActiveView, FixedKind, SidebarHover, SidebarModel, StackStr,
+    CLASS_BLOCKED, CLASS_DONE, CLASS_SUBAGENTS, CLASS_VOICE, CLASS_WORKING,
 };
 use super::*;
 use crate::api::schema::{AgentStatus, AgentVoiceMode};
@@ -56,22 +62,29 @@ pub(super) fn active_cap(content_height: u16) -> u16 {
     }
 }
 
-/// The rows the block takes (header, entry lines, `+N more`, its rule);
+/// The rows the block takes (its rule, header, entry lines, `+N more`);
 /// 0 while disabled or empty.
 pub(super) fn active_block_rows(model: &SidebarModel, view: ActiveView, cap: u16) -> u16 {
-    if !view.enabled || model.active.is_empty() {
+    section_rows(model.active.len(), view, cap, EXPANDED_CAP)
+}
+
+/// The rows a section block takes for `entries` entries at line cap `cap`
+/// (rule, header, entry lines, `+N more`); 0 while disabled or empty, 2
+/// folded. Shared by Active, Pinned and Scheduled.
+pub(super) fn section_rows(entries: usize, view: ActiveView, cap: u16, expanded_cap: u16) -> u16 {
+    if !view.enabled || entries == 0 {
         return 0;
     }
     if view.folded {
         return 2;
     }
-    let entries = u16::try_from(model.active.len()).unwrap_or(u16::MAX);
+    let entries = u16::try_from(entries).unwrap_or(u16::MAX);
     let cap = cap.max(1);
     let lines = if entries <= cap {
         entries
     } else if view.expanded {
         // Every entry up to the expanded cap, then `show fewer`.
-        entries.min(EXPANDED_CAP.max(cap) - 1) + 1
+        entries.min(expanded_cap.max(cap) - 1) + 1
     } else {
         // `cap - 1` entries and `+N more`.
         cap
@@ -79,10 +92,55 @@ pub(super) fn active_block_rows(model: &SidebarModel, view: ActiveView, cap: u16
     lines + 2
 }
 
+/// A section block's frame in `rect`: the rule on the first row, the
+/// header row under it, and the entry lines after it (0 while folded).
+pub(super) fn section_frame(
+    buffer: &mut Buffer,
+    rect: Rect,
+    folded: bool,
+    palette: &Palette,
+) -> Option<(Rect, u16)> {
+    if rect.height < 2 {
+        return None;
+    }
+    put_rule(buffer, rect.x, rect.y, rect.width, palette);
+    let header = Rect::new(rect.x, rect.y + 1, rect.width, 1);
+    let lines = if folded { 0 } else { rect.height - 2 };
+    Some((header, lines))
+}
+
+/// A section's overflow row: `+N more` (or `show fewer` for `hidden == 0`)
+/// dim at x = 5, with the hover band.
+pub(super) fn render_overflow_row(
+    buffer: &mut Buffer,
+    row: Rect,
+    hidden: usize,
+    hovered: bool,
+    palette: &Palette,
+) {
+    let mut text = StackStr::<24>::new();
+    if hidden == 0 {
+        let _ = text.write_str(SHOW_FEWER);
+    } else {
+        let _ = write!(text, "+{hidden} more");
+    }
+    if hovered {
+        hover_band(buffer, row, palette);
+    }
+    put_truncated(
+        buffer,
+        row.x + 5,
+        row.y,
+        row.width.saturating_sub(6),
+        text.as_str(),
+        Style::default().fg(palette.overlay1),
+    );
+}
+
 /// What `lines` entry lines show of `entries` entries: how many entries,
 /// then the overflow row (`Some(hidden)` for `+N more`, `Some(0)` for
 /// `show fewer`).
-fn line_plan(entries: usize, expanded: bool, lines: u16) -> (usize, Option<usize>) {
+pub(super) fn line_plan(entries: usize, expanded: bool, lines: u16) -> (usize, Option<usize>) {
     let lines = usize::from(lines);
     if lines == 0 {
         return (0, None);
@@ -114,30 +172,61 @@ pub(super) fn render_active_block(
     }
     let palette = &config.palette;
     let hover = state.sidebar_hover;
-    let header = Rect::new(rect.x, rect.y, rect.width, 1);
-    render_header(buffer, header, model, view, config, hover);
+    let Some((header, lines)) = section_frame(buffer, rect, view.folded, palette) else {
+        return;
+    };
+    let right = if view.folded {
+        let mut marks = HeaderMarks::default();
+        for class in [
+            CLASS_BLOCKED,
+            CLASS_VOICE,
+            CLASS_WORKING,
+            CLASS_SUBAGENTS,
+            CLASS_DONE,
+        ] {
+            if model.active_classes & (1 << class) != 0 {
+                let (glyph, color) = class_mark(class, config);
+                marks.push(glyph, color);
+            }
+        }
+        HeaderRight::Marks(marks)
+    } else {
+        HeaderRight::Count(model.active.len())
+    };
+    render_section_header(
+        buffer,
+        header,
+        ACTIVE_TITLE,
+        view.folded,
+        right,
+        matches!(hover, Some(SidebarHover::ActiveHeader)),
+        palette,
+    );
     hits.sidebar_active_header = header;
-    if rect.height >= 2 {
-        put_rule(buffer, rect.x, rect.bottom() - 1, rect.width, palette);
-    }
-    if view.folded {
+    if lines == 0 {
         return;
     }
-    let lines = rect.height.saturating_sub(2);
     let (shown, overflow) = line_plan(model.active.len(), view.expanded, lines);
     let visible = &model.active[..shown.min(model.active.len())];
-    let columns = EntryColumns::for_entries(visible, snapshot, model, rect.width);
+    let columns = EntryColumns::for_tabs(
+        visible.iter().map(|entry| entry.tab),
+        snapshot,
+        model,
+        rect.width,
+    );
     let mut deadline = hits.sidebar_clock_deadline;
+    let first_y = header.bottom();
     for (offset, entry) in visible.iter().enumerate() {
         let Some(tab) = snapshot.tabs.get(entry.tab as usize) else {
             continue;
         };
-        let row = Rect::new(rect.x, rect.y + 1 + offset as u16, rect.width, 1);
+        let row = Rect::new(rect.x, first_y + offset as u16, rect.width, 1);
         let hovered = matches!(hover, Some(SidebarHover::ActiveEntry(id)) if *id == tab.tab_id);
         let line = EntryLine {
             columns,
             hovered,
             now: state.now,
+            teams: state.teams,
         };
         if let Some(tick) = render_entry(buffer, row, snapshot, model, entry.tab, line, config) {
             deadline = Some(deadline.map_or(tick, |current| current.min(tick)));
@@ -146,26 +235,46 @@ pub(super) fn render_active_block(
     }
     hits.sidebar_clock_deadline = deadline;
     if let Some(hidden) = overflow {
-        let row = Rect::new(rect.x, rect.y + 1 + visible.len() as u16, rect.width, 1);
+        let row = Rect::new(rect.x, first_y + visible.len() as u16, rect.width, 1);
         let hovered = matches!(hover, Some(SidebarHover::ActiveMore));
-        let mut text = StackStr::<24>::new();
-        if hidden == 0 {
-            let _ = text.write_str(SHOW_FEWER);
-        } else {
-            let _ = write!(text, "+{hidden} more");
-        }
-        if hovered {
-            hover_band(buffer, row, palette);
-        }
-        put_truncated(
-            buffer,
-            row.x + 5,
-            row.y,
-            row.width.saturating_sub(6),
-            text.as_str(),
-            Style::default().fg(palette.overlay1),
-        );
+        render_overflow_row(buffer, row, hidden, hovered, palette);
         hits.sidebar_active_more = row;
+    }
+}
+
+/// A section header's right side: the entry count (open) or up to six
+/// marks (folded), at stride 2 ending one cell before the margin.
+pub(super) enum HeaderRight<'m> {
+    Count(usize),
+    Marks(HeaderMarks<'m>),
+}
+
+/// A folded header's marks, on the stack.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct HeaderMarks<'m> {
+    items: [(&'m str, Color); 6],
+    len: usize,
+}
+
+impl Default for HeaderMarks<'_> {
+    fn default() -> Self {
+        Self {
+            items: [("", Color::Reset); 6],
+            len: 0,
+        }
+    }
+}
+
+impl<'m> HeaderMarks<'m> {
+    pub(super) fn push(&mut self, glyph: &'m str, color: Color) {
+        if let Some(slot) = self.items.get_mut(self.len) {
+            *slot = (glyph, color);
+            self.len += 1;
+        }
+    }
+
+    fn as_slice(&self) -> &[(&'m str, Color)] {
+        &self.items[..self.len]
     }
 }
 
@@ -201,16 +310,17 @@ pub(super) fn hover_band(buffer: &mut Buffer, row: Rect, palette: &Palette) {
     );
 }
 
-fn render_header(
+/// A section header: ` ▾ <title> … <count> ` (open) or ` ▸ <title> … <marks> `
+/// (folded); the hovered header has the bar and a brighter title.
+pub(super) fn render_section_header(
     buffer: &mut Buffer,
     row: Rect,
-    model: &SidebarModel,
-    view: ActiveView,
-    config: &ClientShellConfig,
-    hover: Option<&SidebarHover>,
+    title: &str,
+    folded: bool,
+    right: HeaderRight<'_>,
+    hovered: bool,
+    palette: &Palette,
 ) {
-    let palette = &config.palette;
-    let hovered = matches!(hover, Some(SidebarHover::ActiveHeader));
     let cw = row.width;
     if hovered {
         put_text(
@@ -222,7 +332,7 @@ fn render_header(
             Style::default().fg(palette.accent),
         );
     }
-    let fold = if view.folded { "\u{25B8}" } else { "\u{25BE}" }; // ▸ ▾
+    let fold = if folded { "\u{25B8}" } else { "\u{25BE}" }; // ▸ ▾
     put_text(
         buffer,
         row.x + 1,
@@ -231,51 +341,49 @@ fn render_header(
         fold,
         Style::default().fg(palette.overlay1),
     );
-    // The right side: the entry count (open) or one mark per present class
-    // (folded); the title keeps what is left.
-    let right_x = if view.folded {
-        let present = model.active_classes.count_ones() as u16;
-        let first = cw
-            .saturating_sub(2)
-            .saturating_sub(present.saturating_sub(1) * 2);
-        let mut x = first;
-        for class in [
-            CLASS_BLOCKED,
-            CLASS_VOICE,
-            CLASS_WORKING,
-            CLASS_SUBAGENTS,
-            CLASS_DONE,
-        ] {
-            if model.active_classes & (1 << class) == 0 {
-                continue;
+    // The right side: the entry count (open) or the marks (folded); the
+    // title keeps what is left.
+    let right_x = match right {
+        HeaderRight::Marks(marks) => {
+            let marks = marks.as_slice();
+            if marks.is_empty() {
+                cw.saturating_sub(1)
+            } else {
+                let present = marks.len() as u16;
+                let first = cw
+                    .saturating_sub(2)
+                    .saturating_sub(present.saturating_sub(1) * 2);
+                let mut x = first;
+                for (glyph, color) in marks {
+                    put_text(
+                        buffer,
+                        row.x + x,
+                        row.y,
+                        1,
+                        glyph,
+                        Style::default().fg(*color),
+                    );
+                    x += 2;
+                }
+                first
             }
-            let (glyph, color) = class_mark(class, config);
+        }
+        HeaderRight::Count(entries) => {
+            let mut count = StackStr::<8>::new();
+            let _ = write!(count, "{}", entries.min(9_999_999));
+            let width = display_width(count.as_str());
+            // The count's last cell is cw - 4.
+            let x = cw.saturating_sub(3).saturating_sub(width);
             put_text(
                 buffer,
                 row.x + x,
                 row.y,
-                1,
-                glyph,
-                Style::default().fg(color),
+                width,
+                count.as_str(),
+                Style::default().fg(palette.overlay0),
             );
-            x += 2;
+            x
         }
-        first
-    } else {
-        let mut count = StackStr::<8>::new();
-        let _ = write!(count, "{}", model.active.len().min(9_999_999));
-        let width = display_width(count.as_str());
-        // The count's last cell is cw - 4.
-        let x = cw.saturating_sub(3).saturating_sub(width);
-        put_text(
-            buffer,
-            row.x + x,
-            row.y,
-            width,
-            count.as_str(),
-            Style::default().fg(palette.overlay0),
-        );
-        x
     };
     let title_style = Style::default()
         .fg(if hovered {
@@ -289,7 +397,7 @@ fn render_header(
         row.x + 3,
         row.y,
         right_x.saturating_sub(4),
-        ACTIVE_TITLE,
+        title,
         title_style,
     );
 }
@@ -318,7 +426,7 @@ pub(super) fn class_mark(class: u8, config: &ClientShellConfig) -> (&str, ratatu
 
 /// The right-hand columns of the drawn entries (shared by every line).
 #[derive(Debug, Clone, Copy)]
-struct EntryColumns {
+pub(super) struct EntryColumns {
     /// The time column's x (`TIME_CELLS` wide), when some drawn entry has a time.
     time: Option<u16>,
     /// The subagent column's x, when some drawn entry has subagents.
@@ -328,25 +436,25 @@ struct EntryColumns {
 }
 
 impl EntryColumns {
-    fn for_entries(
-        visible: &[ActiveEntry],
+    /// The columns of the entry lines of `visible` (indices into
+    /// `snapshot.tabs`).
+    pub(super) fn for_tabs(
+        mut visible: impl Iterator<Item = u32> + Clone,
         snapshot: &ClientShellSnapshot,
         model: &SidebarModel,
         width: u16,
     ) -> Self {
-        let facts = |entry: &ActiveEntry| model.tab(entry.tab);
-        let has_time = visible.iter().any(|entry| {
+        let has_time = visible.clone().any(|index| {
             snapshot
                 .tabs
-                .get(entry.tab as usize)
-                .zip(facts(entry))
+                .get(index as usize)
+                .zip(model.tab(index))
                 .is_some_and(|(tab, facts)| {
                     shows_time(tab.agent_status, facts.subagents) && facts.since.is_some()
                 })
         });
-        let has_subagents = visible
-            .iter()
-            .any(|entry| facts(entry).is_some_and(|facts| facts.subagents > 0));
+        let has_subagents =
+            visible.any(|index| model.tab(index).is_some_and(|facts| facts.subagents > 0));
         // The last cell is the margin.
         let mut right = width.saturating_sub(1);
         let time = has_time.then(|| {
@@ -366,21 +474,23 @@ impl EntryColumns {
 }
 
 /// One entry line's shared inputs.
-#[derive(Debug, Clone, Copy)]
-struct EntryLine {
-    columns: EntryColumns,
-    hovered: bool,
-    now: std::time::Instant,
+#[derive(Clone, Copy)]
+pub(super) struct EntryLine<'t> {
+    pub(super) columns: EntryColumns,
+    pub(super) hovered: bool,
+    pub(super) now: std::time::Instant,
+    /// The active endpoint's teams (a team group's entry names the team).
+    pub(super) teams: Option<&'t super::teams::ClientTeamsState>,
 }
 
 /// Draws one entry line; returns when its duration next changes its text.
-fn render_entry(
+pub(super) fn render_entry(
     buffer: &mut Buffer,
     row: Rect,
     snapshot: &ClientShellSnapshot,
     model: &SidebarModel,
     tab_index: u32,
-    line: EntryLine,
+    line: EntryLine<'_>,
     config: &ClientShellConfig,
 ) -> Option<std::time::Instant> {
     let palette = &config.palette;
@@ -467,26 +577,75 @@ fn render_entry(
         &tab.label,
         name_style,
     );
-    // The group's label after the name, while at least 3 cells remain.
+    // The group after the name, while at least 3 cells remain.
     let used = display_width(&tab.label).min(name_width);
     let room = name_width.saturating_sub(used + 1);
-    if room >= 3 {
-        if let Some(workspace) = facts
-            .workspace
-            .filter(|index| super::tab_sidebar::is_group_index(*index as usize))
-            .and_then(|index| snapshot.workspaces.get(index as usize))
-        {
+    put_group_text(
+        buffer,
+        row.x + name_x + used + 1,
+        row.y,
+        room,
+        snapshot,
+        facts,
+        line.teams,
+        palette,
+    );
+    tick
+}
+
+/// A tab's group after its name in `room` cells (nothing under 3): a team
+/// group as `◆` (accent) and its purpose (overlay1; the label before it has
+/// one), a plain group as its label (overlay0), nothing when ungrouped.
+#[allow(clippy::too_many_arguments)] // a cell run's inputs; a struct would only rename them
+pub(super) fn put_group_text(
+    buffer: &mut Buffer,
+    x: u16,
+    y: u16,
+    room: u16,
+    snapshot: &ClientShellSnapshot,
+    facts: &super::sidebar_model::TabFacts,
+    teams: Option<&super::teams::ClientTeamsState>,
+    palette: &Palette,
+) {
+    if room < 3 {
+        return;
+    }
+    let Some(workspace) = facts
+        .workspace
+        .filter(|index| super::tab_sidebar::is_group_index(*index as usize))
+        .and_then(|index| snapshot.workspaces.get(index as usize))
+    else {
+        return;
+    };
+    match teams.and_then(|teams| teams.team(&workspace.workspace_id)) {
+        Some(team) => {
+            let (name, _) = super::teams::header_label(team, &workspace.label);
+            put_text(
+                buffer,
+                x,
+                y,
+                1,
+                super::teams::TEAM_MARK,
+                Style::default().fg(palette.accent),
+            );
             put_truncated(
                 buffer,
-                row.x + name_x + used + 1,
-                row.y,
-                room,
-                &workspace.label,
-                Style::default().fg(palette.overlay0),
+                x + 2,
+                y,
+                room - 2,
+                name,
+                Style::default().fg(palette.overlay1),
             );
         }
+        None => put_truncated(
+            buffer,
+            x,
+            y,
+            room,
+            &workspace.label,
+            Style::default().fg(palette.overlay0),
+        ),
     }
-    tick
 }
 
 /// The hover target under the pointer, borrowed from the hit map so an
@@ -499,6 +658,13 @@ enum HoverAt<'a> {
     ActiveEntry(&'a str),
     ActiveMore,
     Fixed(FixedKind),
+    Current,
+    PinsHeader,
+    PinsEntry(&'a str),
+    PinsMore,
+    ScheduledHeader,
+    ScheduledEntry(&'a str),
+    ScheduledMore,
 }
 
 impl HoverAt<'_> {
@@ -506,9 +672,16 @@ impl HoverAt<'_> {
         match (self, hover) {
             (Self::Tab(id), SidebarHover::Tab(current))
             | (Self::Group(id), SidebarHover::Group(current))
-            | (Self::ActiveEntry(id), SidebarHover::ActiveEntry(current)) => id == current,
+            | (Self::ActiveEntry(id), SidebarHover::ActiveEntry(current))
+            | (Self::PinsEntry(id), SidebarHover::PinsEntry(current))
+            | (Self::ScheduledEntry(id), SidebarHover::ScheduledEntry(current)) => id == current,
             (Self::ActiveHeader, SidebarHover::ActiveHeader)
-            | (Self::ActiveMore, SidebarHover::ActiveMore) => true,
+            | (Self::ActiveMore, SidebarHover::ActiveMore)
+            | (Self::Current, SidebarHover::Current)
+            | (Self::PinsHeader, SidebarHover::PinsHeader)
+            | (Self::PinsMore, SidebarHover::PinsMore)
+            | (Self::ScheduledHeader, SidebarHover::ScheduledHeader)
+            | (Self::ScheduledMore, SidebarHover::ScheduledMore) => true,
             (Self::Fixed(kind), SidebarHover::Fixed(current)) => kind == *current,
             _ => false,
         }
@@ -522,6 +695,13 @@ impl HoverAt<'_> {
             Self::ActiveEntry(id) => SidebarHover::ActiveEntry(id.to_owned()),
             Self::ActiveMore => SidebarHover::ActiveMore,
             Self::Fixed(kind) => SidebarHover::Fixed(kind),
+            Self::Current => SidebarHover::Current,
+            Self::PinsHeader => SidebarHover::PinsHeader,
+            Self::PinsEntry(id) => SidebarHover::PinsEntry(id.to_owned()),
+            Self::PinsMore => SidebarHover::PinsMore,
+            Self::ScheduledHeader => SidebarHover::ScheduledHeader,
+            Self::ScheduledEntry(id) => SidebarHover::ScheduledEntry(id.to_owned()),
+            Self::ScheduledMore => SidebarHover::ScheduledMore,
         }
     }
 }
@@ -550,6 +730,9 @@ impl ClientShellState {
                 .find(|(rect, _)| super::contains(*rect, point))
                 .map(|(_, id)| id.as_str())
         }
+        if super::contains(hits.sidebar_current, point) {
+            return Some(HoverAt::Current);
+        }
         if super::contains(hits.sidebar_active_header, point) {
             return Some(HoverAt::ActiveHeader);
         }
@@ -558,6 +741,24 @@ impl ClientShellState {
         }
         if super::contains(hits.sidebar_active_more, point) {
             return Some(HoverAt::ActiveMore);
+        }
+        if super::contains(hits.sidebar_pins_header, point) {
+            return Some(HoverAt::PinsHeader);
+        }
+        if let Some(id) = id_at(&hits.sidebar_pins_rows, point) {
+            return Some(HoverAt::PinsEntry(id));
+        }
+        if super::contains(hits.sidebar_pins_more, point) {
+            return Some(HoverAt::PinsMore);
+        }
+        if super::contains(hits.sidebar_scheduled_header, point) {
+            return Some(HoverAt::ScheduledHeader);
+        }
+        if let Some(id) = id_at(&hits.sidebar_scheduled_rows, point) {
+            return Some(HoverAt::ScheduledEntry(id));
+        }
+        if super::contains(hits.sidebar_scheduled_more, point) {
+            return Some(HoverAt::ScheduledMore);
         }
         if let Some(id) = id_at(&hits.sidebar_tabs, point) {
             return Some(HoverAt::Tab(id));
@@ -596,13 +797,26 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    /// The Active entry's tab id at `point`.
+    /// The tab id of the sidebar entry at `point` that opens its tab's menu
+    /// on a right click: an Active, Pinned or Scheduled entry, or the
+    /// current row (the focused tab).
     pub(super) fn sidebar_active_entry_at(&self, point: (u16, u16)) -> Option<String> {
-        self.hits
-            .sidebar_active_rows
-            .iter()
-            .find(|(rect, _)| super::contains(*rect, point))
-            .map(|(_, tab_id)| tab_id.clone())
+        let hits = &self.hits;
+        if super::contains(hits.sidebar_current, point) {
+            return self
+                .snapshot
+                .as_deref()
+                .and_then(|snapshot| snapshot.focused_tab_id.clone());
+        }
+        [
+            &hits.sidebar_active_rows,
+            &hits.sidebar_pins_rows,
+            &hits.sidebar_scheduled_rows,
+        ]
+        .into_iter()
+        .flatten()
+        .find(|(rect, _)| super::contains(*rect, point))
+        .map(|(_, tab_id)| tab_id.clone())
     }
 
     /// A left press on the Active block: the header folds it, the
@@ -624,16 +838,58 @@ impl ClientShellState {
             outcome.repaint = true;
             return true;
         }
-        let Some(tab_id) = self.sidebar_active_entry_at(point) else {
+        let Some(tab_id) = self
+            .hits
+            .sidebar_active_rows
+            .iter()
+            .find(|(rect, _)| super::contains(*rect, point))
+            .map(|(_, tab_id)| tab_id.clone())
+        else {
             return false;
         };
-        self.jump_to_active_tab(tab_id, outcome);
+        self.jump_to_sidebar_tab(tab_id, outcome);
         true
     }
 
+    /// Fork (sidebar v3): a left press on the current row: reveal the
+    /// focused tab in the list (its group opens); no focus change. Returns
+    /// whether the press was the row's.
+    pub(super) fn sidebar_current_press(
+        &mut self,
+        point: (u16, u16),
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        if !super::contains(self.hits.sidebar_current, point) {
+            return false;
+        }
+        let focused = self.snapshot.as_deref().and_then(|snapshot| {
+            snapshot
+                .tabs
+                .iter()
+                .find(|tab| tab.focused)
+                .map(|tab| (tab.tab_id.clone(), tab.workspace_id.clone()))
+        });
+        if let Some((tab_id, workspace_id)) = focused {
+            self.open_sidebar_group(&workspace_id, outcome);
+            self.sidebar_reveal_tab = Some(tab_id);
+        }
+        outcome.repaint = true;
+        true
+    }
+
+    /// Unfold `workspace_id`'s group (persisted when it was folded).
+    fn open_sidebar_group(&mut self, workspace_id: &str, outcome: &mut ClientShellInput) {
+        if self.collapsed_groups.remove(&group_key(workspace_id)) {
+            self.persist_chrome_preferences(outcome);
+        }
+        // The list rows follow fold state.
+        self.sidebar_model.mark_dirty();
+    }
+
     /// Focus `tab_id`, open its group and scroll the list to it (before the
-    /// server's focus change lands).
-    fn jump_to_active_tab(&mut self, tab_id: String, outcome: &mut ClientShellInput) {
+    /// server's focus change lands). Shared by the Active, Pinned and
+    /// Scheduled entries.
+    pub(super) fn jump_to_sidebar_tab(&mut self, tab_id: String, outcome: &mut ClientShellInput) {
         let workspace_id = self.snapshot.as_deref().and_then(|snapshot| {
             snapshot
                 .tabs
@@ -642,11 +898,7 @@ impl ClientShellState {
                 .map(|tab| tab.workspace_id.clone())
         });
         if let Some(workspace_id) = workspace_id {
-            if self.collapsed_groups.remove(&group_key(&workspace_id)) {
-                self.persist_chrome_preferences(outcome);
-            }
-            // The list rows follow fold state.
-            self.sidebar_model.mark_dirty();
+            self.open_sidebar_group(&workspace_id, outcome);
         }
         self.push_endpoint_method(
             crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {

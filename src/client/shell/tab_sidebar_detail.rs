@@ -82,14 +82,24 @@ pub(super) fn render_detail_strip(
         overflow: false,
     };
     let selected = match resolve_selected(snapshot, model, state.sidebar_hover) {
-        // The block is gone (nothing active): describe the focused tab.
+        // The block is gone (nothing active, pinned or scheduled): describe
+        // the focused tab.
         Selected::ActiveHeader if model.active.is_empty() => {
+            model.focused_tab.map_or(Selected::None, Selected::Tab)
+        }
+        Selected::PinsHeader if model.pins.is_empty() => {
+            model.focused_tab.map_or(Selected::None, Selected::Tab)
+        }
+        Selected::ScheduledHeader if model.scheduled.is_empty() => {
             model.focused_tab.map_or(Selected::None, Selected::Tab)
         }
         selected => selected,
     };
     match selected {
-        Selected::Tab(index) | Selected::ActiveEntry(index) => {
+        Selected::Tab(index)
+        | Selected::ActiveEntry(index)
+        | Selected::PinsEntry(index)
+        | Selected::ScheduledEntry(index) => {
             if let Some(tick) = tab_chips(&mut chips, snapshot, model, index, config, state) {
                 hits.sidebar_clock_deadline = Some(
                     hits.sidebar_clock_deadline
@@ -99,6 +109,15 @@ pub(super) fn render_detail_strip(
         }
         Selected::Group(index) => group_chips(&mut chips, snapshot, model, index, config, state),
         Selected::ActiveHeader => active_chips(&mut chips, model, config),
+        Selected::PinsHeader => pins_chips(&mut chips, model, config),
+        Selected::ScheduledHeader => {
+            if let Some(tick) = scheduled_chips(&mut chips, snapshot, model, config, state) {
+                hits.sidebar_clock_deadline = Some(
+                    hits.sidebar_clock_deadline
+                        .map_or(tick, |current| current.min(tick)),
+                );
+            }
+        }
         Selected::Fixed(kind) => fixed_chips(&mut chips, kind, config, state),
         Selected::None => {}
     }
@@ -322,6 +341,10 @@ fn tab_chips(
     if state.browser_marked_tabs.contains(&tab.tab_id) {
         chips.chip(&[(super::browser::TAB_BROWSER_MARKER, fg(palette.accent))]);
     }
+    // Fork (sidebar v3): pinned from the tab menu.
+    if facts.pin {
+        chips.chip(&[("pinned", fg(palette.overlay1))]);
+    }
     if let Some(voice) = facts.voice {
         let (mark, color) = super::voice::voice_mark(voice, config);
         let word = if voice == AgentVoiceMode::Muted {
@@ -472,6 +495,60 @@ fn active_chips(chips: &mut Chips<'_>, model: &SidebarModel, config: &ClientShel
     }
     chips.newline();
     chips.chip(&[(ACTIVE_ORDER_HINT, fg(palette.overlay0))]);
+}
+
+/// Fork (sidebar v3): the Pinned header (or its overflow row): the count
+/// and how to pin.
+fn pins_chips(chips: &mut Chips<'_>, model: &SidebarModel, config: &ClientShellConfig) {
+    let palette = &config.palette;
+    chips.chip(&[(
+        super::tab_sidebar_pins::PINS_TITLE,
+        fg(palette.text).add_modifier(Modifier::BOLD),
+    )]);
+    chips.newline();
+    let mut count = StackStr::<16>::new();
+    let _ = write!(count, "{} pinned", model.pins.len());
+    chips.chip(&[(count.as_str(), fg(palette.overlay1))]);
+    chips.newline();
+    chips.chip(&[("right-click a tab \u{2192} Pin", fg(palette.overlay0))]);
+}
+
+/// Fork (sidebar v3): the Scheduled header (or its overflow row): the
+/// count and the soonest countdown; returns when that countdown next
+/// changes its text.
+fn scheduled_chips(
+    chips: &mut Chips<'_>,
+    snapshot: &ClientShellSnapshot,
+    model: &SidebarModel,
+    config: &ClientShellConfig,
+    state: &ShellRenderState<'_>,
+) -> Option<std::time::Instant> {
+    let palette = &config.palette;
+    chips.chip(&[(
+        super::tab_sidebar_scheduled::SCHEDULED_TITLE,
+        fg(palette.text).add_modifier(Modifier::BOLD),
+    )]);
+    chips.newline();
+    let mut count = StackStr::<16>::new();
+    let _ = write!(count, "{} scheduled", model.scheduled.len());
+    chips.chip(&[(count.as_str(), fg(palette.overlay1))]);
+    if let Some((index, next_fire)) =
+        super::tab_sidebar_scheduled::soonest_countdown(snapshot, model, state)
+    {
+        if let Some(tab) = snapshot.tabs.get(index as usize) {
+            let countdown = super::sidebar_model::format_countdown(
+                next_fire.saturating_duration_since(state.now),
+            );
+            chips.chip(&[
+                ("next ", fg(palette.overlay1)),
+                (&tab.label, fg(palette.text)),
+                (" ", fg(palette.overlay1)),
+                (countdown.as_str(), fg(palette.subtext0)),
+            ]);
+            return super::sidebar_model::next_countdown_tick(next_fire, state.now);
+        }
+    }
+    None
 }
 
 /// A pinned row: its label, glyph and status, and its tab.

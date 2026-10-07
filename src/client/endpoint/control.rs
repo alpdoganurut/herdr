@@ -18,6 +18,8 @@ pub(crate) enum EndpointControlMessage {
     Voice(crate::server::headless::voice::VoicePayload),
     /// Fork (sidebar v2): when each agent entered its state (`endpoint.agent-times.v1`).
     AgentTimes(crate::server::headless::agent_times::AgentTimesPayload),
+    /// Fork (sidebar v3): the endpoint's pinned tabs (`endpoint.tab-pins.v1`).
+    TabPins(crate::server::headless::tab_pins::TabPinsPayload),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -60,6 +62,14 @@ pub(crate) fn decode_endpoint_control(
         return Ok(
             crate::server::headless::agent_times::AgentTimesPayload::decode(data)
                 .map(EndpointControlMessage::AgentTimes)
+                .unwrap_or(EndpointControlMessage::Ignored),
+        );
+    }
+    // Fork (sidebar v3): pinned tabs, optional like agent times.
+    if kind == crate::server::headless::tab_pins::TAB_PINS_KIND {
+        return Ok(
+            crate::server::headless::tab_pins::TabPinsPayload::decode(data)
+                .map(EndpointControlMessage::TabPins)
                 .unwrap_or(EndpointControlMessage::Ignored),
         );
     }
@@ -328,6 +338,31 @@ mod tests {
         assert_eq!(decoded, payload);
         assert!(matches!(
             decode_endpoint_control(AGENT_TIMES_KIND, "{garbage").unwrap(),
+            EndpointControlMessage::Ignored
+        ));
+    }
+
+    #[test]
+    fn tab_pins_round_trip_and_garbage_is_ignored() {
+        use crate::server::headless::tab_pins::{TabPinsPayload, TAB_PINS_KIND};
+        let payload = TabPinsPayload {
+            boot_id: "boot".into(),
+            revision: 2,
+            tab_ids: vec!["w1:t1".into()],
+        };
+        let crate::protocol::ServerMessage::EndpointControl { kind, data } =
+            payload.message().unwrap()
+        else {
+            panic!("expected a control message");
+        };
+        let EndpointControlMessage::TabPins(decoded) =
+            decode_endpoint_control(&kind, &data).unwrap()
+        else {
+            panic!("decoded tab pins");
+        };
+        assert_eq!(decoded, payload);
+        assert!(matches!(
+            decode_endpoint_control(TAB_PINS_KIND, "{garbage").unwrap(),
             EndpointControlMessage::Ignored
         ));
     }

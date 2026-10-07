@@ -34,6 +34,12 @@ pub(super) struct ClientChromePreferences {
     /// Fork: the tabs sidebar's Active agents block, folded or open, once toggled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) active_agents_folded: Option<bool>,
+    /// Fork (sidebar v3): the Pinned block, folded or open, once toggled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) pinned_agents_folded: Option<bool>,
+    /// Fork (sidebar v3): the Scheduled block, folded or open, once toggled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) scheduled_agents_folded: Option<bool>,
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {

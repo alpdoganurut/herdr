@@ -29,6 +29,24 @@ impl ClientShellState {
         }
     }
 
+    /// Fork (sidebar v3): the Pinned block's view state.
+    fn pins_view(&self) -> super::sidebar_model::PinsView {
+        super::sidebar_model::PinsView {
+            enabled: self.config.sidebar_pinned_agents,
+            folded: self.pinned_agents_folded.unwrap_or(false),
+            expanded: self.pins_expanded,
+        }
+    }
+
+    /// Fork (sidebar v3): the Scheduled block's view state.
+    fn scheduled_view(&self) -> super::sidebar_model::ScheduledView {
+        super::sidebar_model::ScheduledView {
+            enabled: self.config.sidebar_scheduled_agents,
+            folded: self.scheduled_agents_folded.unwrap_or(false),
+            expanded: self.scheduled_expanded,
+        }
+    }
+
     fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
         let layout = self.layout(cols, rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
@@ -70,6 +88,8 @@ impl ClientShellState {
         let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
         let active_view = self.active_view();
+        let pins_view = self.pins_view();
+        let scheduled_view = self.scheduled_view();
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
@@ -117,6 +137,13 @@ impl ClientShellState {
             now: self.sidebar_clock.unwrap_or_else(std::time::Instant::now),
             sidebar_reveal_tab: &mut self.sidebar_reveal_tab,
             active_view,
+            pins_view,
+            scheduled_view,
+            tab_pins: super::tab_pins::active_tab_pins_of(
+                &self.tab_pins,
+                &self.active_endpoint_id,
+                self.snapshot.as_deref(),
+            ),
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -252,29 +279,37 @@ impl ClientShellState {
             && !self.sidebar_collapsed
             && self.endpoints.len() == 1;
         if tabs_sidebar {
-            self.sidebar_model.ensure(
-                snapshot,
-                &self.collapsed_groups,
-                super::voice::active_voice_of(
-                    &self.voice,
-                    &self.active_endpoint_id,
-                    Some(snapshot),
-                ),
-                super::agent_times::active_agent_times_of(
-                    &self.agent_times,
-                    &self.active_endpoint_id,
-                    Some(snapshot),
-                ),
-                (
-                    news_row.as_ref().and_then(|row| row.tab_id.as_deref()),
-                    coordinator_row
-                        .as_ref()
-                        .and_then(|row| row.tab_id.as_deref()),
-                ),
-                self.config.sidebar_active_agents,
-            );
+            self.sidebar_model
+                .ensure(super::sidebar_model::ModelInputs {
+                    snapshot,
+                    collapsed_groups: &self.collapsed_groups,
+                    voice: super::voice::active_voice_of(
+                        &self.voice,
+                        &self.active_endpoint_id,
+                        Some(snapshot),
+                    ),
+                    times: super::agent_times::active_agent_times_of(
+                        &self.agent_times,
+                        &self.active_endpoint_id,
+                        Some(snapshot),
+                    ),
+                    pins: super::tab_pins::active_tab_pins_of(
+                        &self.tab_pins,
+                        &self.active_endpoint_id,
+                        Some(snapshot),
+                    ),
+                    fixed_ids: (
+                        news_row.as_ref().and_then(|row| row.tab_id.as_deref()),
+                        coordinator_row
+                            .as_ref()
+                            .and_then(|row| row.tab_id.as_deref()),
+                    ),
+                    sections: super::tab_sidebar::sidebar_sections(&self.config),
+                });
         }
         let active_view = self.active_view();
+        let pins_view = self.pins_view();
+        let scheduled_view = self.scheduled_view();
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
         self.hits = render::render_shell(
             &mut buffer,
@@ -334,6 +369,13 @@ impl ClientShellState {
                 now: self.sidebar_clock.unwrap_or_else(std::time::Instant::now),
                 sidebar_reveal_tab: &mut self.sidebar_reveal_tab,
                 active_view,
+                pins_view,
+                scheduled_view,
+                tab_pins: super::tab_pins::active_tab_pins_of(
+                    &self.tab_pins,
+                    &self.active_endpoint_id,
+                    Some(snapshot),
+                ),
             },
         );
         // Fork: the info dock, into the chrome buffer; the pane surface blit

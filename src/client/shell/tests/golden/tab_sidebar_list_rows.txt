@@ -1,4 +1,4 @@
-01|     ○ scratch              ◎ │|
+02|     ○ scratch              ◎ │|
    00-04 -/sidebar_bg
    05-05 green/sidebar_bg
    06-06 -/sidebar_bg
@@ -7,10 +7,10 @@
    28-28 accent/sidebar_bg
    29-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
-02|                              │|
+03|                              │|
    00-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
-03| ▾   Planning             3 ● │|
+04| ▾   Planning             3 ● │|
    00-00 -/sidebar_bg
    01-01 subtext0/sidebar_bg
    02-04 -/sidebar_bg
@@ -21,7 +21,7 @@
    28-28 red/sidebar_bg
    29-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
-04|     ⚭ sidebar redesign     ⧆ │|
+05|     ⚭ sidebar redesign     ⧆ │|
    00-04 -/active_row_bg
    05-05 yellow/active_row_bg
    06-06 -/active_row_bg
@@ -30,7 +30,7 @@
    28-28 #02d97757/active_row_bg
    29-29 -/active_row_bg
    30-30 surface1/sidebar_bg
-05|     ● review api           ★ │|
+06|     ● review api           ★ │|
    00-04 -/sidebar_bg
    05-05 red/sidebar_bg
    06-06 -/sidebar_bg
@@ -39,7 +39,7 @@
    28-28 red/sidebar_bg
    29-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
-06|     ○ notes                ◑ │|
+07|     ○ notes                ◑ │|
    00-04 -/sidebar_bg
    05-05 green/sidebar_bg
    06-06 -/sidebar_bg
@@ -48,10 +48,10 @@
    28-28 overlay0/sidebar_bg
    29-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
-07|                              │|
+08|                              │|
    00-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
-08| ▾ ◆ Search It            3 ● │|
+09| ▾ ◆ Search It            3 ● │|
    00-00 -/sidebar_bg
    01-01 subtext0/sidebar_bg
    02-02 -/sidebar_bg
@@ -64,14 +64,14 @@
    28-28 teal/sidebar_bg
    29-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
-09|     ● fixer                  │|
+10|     ● fixer                  │|
    00-04 -/sidebar_bg
    05-05 teal/sidebar_bg
    06-06 -/sidebar_bg
    07-11 text/sidebar_bg
    12-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
-10|     ○  talker               │|
+11|     ○  talker               │|
    00-04 -/sidebar_bg
    05-05 green/sidebar_bg
    06-06 -/sidebar_bg
@@ -80,17 +80,17 @@
    09-14 subtext0/sidebar_bg
    15-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
-11|     ◌ parked                 │|
+12|     ◌ parked                 │|
    00-04 -/sidebar_bg
    05-05 overlay0/sidebar_bg
    06-06 -/sidebar_bg
    07-12 overlay0/sidebar_bg
    13-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
-12|                              │|
+13|                              │|
    00-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
-13| ▸   Bird sort            2 ● │|
+14| ▸   Bird sort            2 ● │|
    00-00 -/sidebar_bg
    01-01 overlay1/sidebar_bg
    02-04 -/sidebar_bg

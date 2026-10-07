@@ -46,6 +46,8 @@ impl ClientContextMenuOverlay {
                 important,
                 team,
                 session_id,
+                pinned,
+                pin_supported,
                 ..
             } => {
                 let mut items = vec![
@@ -101,6 +103,11 @@ impl ClientContextMenuOverlay {
                     },
                     Action::Important,
                 ));
+                // Fork (sidebar v3): pin or unpin, when the server has
+                // `tab.set_pinned`.
+                if *pin_supported {
+                    items.push(item(if *pinned { "Unpin" } else { "Pin" }, Action::Pin));
+                }
                 items.push(item("remind", Action::RemindTop));
                 items.push(item("", Action::RemindBottom));
                 // The swatch row, last so upstream's item positions (Close at
@@ -274,6 +281,14 @@ impl ClientShellState {
         });
         let color = super::tab_color::tab_menu_color(tab.color);
         let team = self.tab_team_menu(&tab.workspace_id, agent.as_ref());
+        // Fork (sidebar v3): the Pin item's state and whether it shows.
+        let pinned = self.active_tab_pinned(&tab_id);
+        let pin_supported = self.supports_endpoint_method(
+            &crate::api::schema::Method::TabSetPinned(crate::api::schema::TabSetPinnedParams {
+                tab_id: String::new(),
+                pinned: true,
+            }),
+        );
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
@@ -284,6 +299,8 @@ impl ClientShellState {
                 remind: super::tab_remind_menu::tab_menu_remind(tab.remind_every),
                 team,
                 session_id: None,
+                pinned,
+                pin_supported,
             },
             x,
             y,
@@ -366,6 +383,21 @@ impl ClientShellState {
                             tab_id: tab_id.clone(),
                             important: Some(!*important),
                             every: None,
+                        },
+                    ),
+                    outcome,
+                );
+                outcome.repaint = true;
+                return;
+            }
+            // Fork (sidebar v3): Pin / Unpin, without focusing the tab. The
+            // block follows when the `endpoint.tab-pins.v1` push arrives.
+            (ClientContextMenuAction::Pin, ClientContextMenuTarget::Tab { tab_id, pinned, .. }) => {
+                self.push_endpoint_method(
+                    crate::api::schema::Method::TabSetPinned(
+                        crate::api::schema::TabSetPinnedParams {
+                            tab_id: tab_id.clone(),
+                            pinned: !*pinned,
                         },
                     ),
                     outcome,

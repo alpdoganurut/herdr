@@ -278,6 +278,8 @@ mod settings_browser;
 mod settings_closed;
 mod sidebar_active;
 mod sidebar_perf;
+/// Fork (sidebar v3): the Pinned and Scheduled blocks, the current row.
+mod sidebar_sections;
 mod startup_overlays;
 mod sticky_notifications;
 mod tab_sidebar;

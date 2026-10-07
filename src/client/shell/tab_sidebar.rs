@@ -51,9 +51,21 @@
 //! (`SidebarModel::focused_tab`, independent of hover) adds the agent's
 //! harness glyph last, in its brand color, breathing while the tab works. From `SPACIOUS_HEIGHT` rows a blank spacer row sits before
 //! every header with a row above it (`SidebarModel::gaps_after`, so scroll
-//! math counts it). The chrome rows (toolbar, Active agents block, detail
-//! strip, status footer, menu row) sit on `Palette::sidebar_chrome()`; the
-//! list and pinned rows keep `sidebar_bg`, the divider is `surface1`.
+//! math counts it). The chrome rows (toolbar, Active / Pinned / Scheduled
+//! blocks, detail strip, status footer, menu row) sit on
+//! `Palette::sidebar_chrome()`; the list, the current row and the fixed
+//! (Browser, News, coordinator) rows keep `sidebar_bg`, the divider is
+//! `surface1`.
+//!
+//! Fork, sidebar v3 (the layout, `plan_layout`), top to bottom: toolbar,
+//! the current row, the list, the Active block, the Pinned block
+//! (`tab_sidebar_pins.rs`), the Scheduled block (`tab_sidebar_scheduled.rs`),
+//! the fixed rows, the detail strip, the status footer, the menu row. The
+//! current row repeats the focused tab (`›`, status, label, team or group,
+//! harness glyph) at the head of the list without moving the list: the tab
+//! keeps its row in its group too, so a click never shifts rows under the
+//! pointer; only the current row follows focus. Clicking it reveals the
+//! focused tab in the list.
 
 use std::fmt::Write as _;
 
@@ -201,31 +213,44 @@ pub(super) fn render_tab_sidebar_with(
         coordinator.row.and_then(|row| row.tab_id.as_deref()),
     );
     // Fork (sidebar v2): rows and per-tab facts come from the model compose
-    // ensured; a caller without one (tests) gets a one-off build.
+    // ensured; a caller without one (several endpoints, tests) gets a
+    // one-off build with the real voice and pins (only the times are left
+    // out), one set lookup per tab more while some tab is pinned.
     let one_off;
     let model = match state.sidebar_model {
         Some(model) => model,
         None => {
-            one_off = SidebarModel::built(
-                snapshot,
-                state.collapsed_groups,
-                state.voice,
-                fixed_tab_ids,
-                config.sidebar_active_agents,
-            );
+            one_off = SidebarModel::built(super::sidebar_model::ModelInputs {
+                voice: state.voice,
+                pins: state.tab_pins,
+                fixed_ids: fixed_tab_ids,
+                sections: sidebar_sections(config),
+                ..super::sidebar_model::ModelInputs::new(snapshot, state.collapsed_groups)
+            });
             &one_off
         }
     };
     let active_view = state.active_view;
+    let pins_view = state.pins_view;
+    let scheduled_view = state.scheduled_view;
     let plan = plan_layout(
         content,
         LayoutWants {
+            current: model.focused_tab.is_some(),
             fixed: u16::try_from(pinned.len()).unwrap_or(u16::MAX),
             status_lines: status_lines.len(),
             active_cap: super::tab_sidebar_active::active_cap(content.height),
+            pins_cap: super::tab_sidebar_pins::pins_cap(content.height),
+            scheduled_cap: super::tab_sidebar_scheduled::scheduled_cap(content.height),
             detail_lines: super::tab_sidebar_detail::detail_lines(content.height),
         },
-        |cap| super::tab_sidebar_active::active_block_rows(model, active_view, cap),
+        SectionRows {
+            active: &|cap| super::tab_sidebar_active::active_block_rows(model, active_view, cap),
+            pins: &|cap| super::tab_sidebar_pins::pins_block_rows(model, pins_view, cap),
+            scheduled: &|cap| {
+                super::tab_sidebar_scheduled::scheduled_block_rows(model, scheduled_view, cap)
+            },
+        },
     );
 
     // The chrome rows first; the blocks draw on top of their background.
@@ -233,6 +258,8 @@ pub(super) fn render_tab_sidebar_with(
     for rect in [
         plan.toolbar,
         plan.active,
+        plan.pins,
+        plan.scheduled,
         plan.detail,
         plan.footer,
         plan.menu,
@@ -267,6 +294,9 @@ pub(super) fn render_tab_sidebar_with(
             FixedRow::Coordinator(_) => coordinator_rect = rect,
         }
     }
+    if !plan.current.is_empty() {
+        render_current_row(buffer, plan.current, snapshot, model, config, state, hits);
+    }
     if !plan.active.is_empty() {
         super::tab_sidebar_active::render_active_block(
             buffer,
@@ -274,6 +304,23 @@ pub(super) fn render_tab_sidebar_with(
             snapshot,
             model,
             active_view,
+            config,
+            state,
+            hits,
+        );
+    }
+    if !plan.pins.is_empty() {
+        super::tab_sidebar_pins::render_pins_block(
+            buffer, plan.pins, snapshot, model, pins_view, config, state, hits,
+        );
+    }
+    if !plan.scheduled.is_empty() {
+        super::tab_sidebar_scheduled::render_scheduled_block(
+            buffer,
+            plan.scheduled,
+            snapshot,
+            model,
+            scheduled_view,
             config,
             state,
             hits,
@@ -541,19 +588,167 @@ pub(super) fn render_tab_sidebar_with(
     coordinator_rect
 }
 
+/// The `ui.sidebar_*_agents` toggles as the model's sections.
+pub(super) fn sidebar_sections(config: &ClientShellConfig) -> super::sidebar_model::Sections {
+    super::sidebar_model::Sections {
+        active: config.sidebar_active_agents,
+        pins: config.sidebar_pinned_agents,
+        scheduled: config.sidebar_scheduled_agents,
+    }
+}
+
+/// Fork (sidebar v3): the current row: the focused tab repeated at the head
+/// of the list, ` ▎›<status> <label> … ◆ <team> <glyph> `. It sits on the
+/// list's background with the focused row's band (the hover band while
+/// hovered): `›` accent at x=1, the status icon at x=3, the label bold at
+/// x=5, the harness glyph flush right with a one-cell margin, and the team
+/// (or plain group) between them while at least 3 cells remain. The label
+/// is the only part that truncates.
+fn render_current_row(
+    buffer: &mut Buffer,
+    rect: Rect,
+    snapshot: &ClientShellSnapshot,
+    model: &SidebarModel,
+    config: &ClientShellConfig,
+    state: &ShellRenderState<'_>,
+    hits: &mut ShellHitMap,
+) {
+    let palette = &config.palette;
+    let Some(index) = model.focused_tab else {
+        return;
+    };
+    let (Some(tab), Some(facts)) = (snapshot.tabs.get(index as usize), model.tab(index)) else {
+        return;
+    };
+    hits.sidebar_current = rect;
+    let hovered = matches!(state.sidebar_hover, Some(SidebarHover::Current));
+    let background = if hovered {
+        super::tab_sidebar_active::hover_band(buffer, rect, palette);
+        palette.sidebar_hover_bg()
+    } else {
+        buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+        palette.active_row_bg
+    };
+    let (x, y, width) = (rect.x, rect.y, rect.width);
+    put_text(
+        buffer,
+        x.saturating_add(1),
+        y,
+        width.saturating_sub(1).min(1),
+        CURRENT_MARK,
+        Style::default()
+            .fg(palette.accent)
+            .add_modifier(Modifier::BOLD),
+    );
+    let icon = super::sidebar_model::tab_row_icon(
+        tab.agent_status,
+        facts.subagents,
+        config.status_indicators,
+    );
+    put_text(
+        buffer,
+        x.saturating_add(3),
+        y,
+        width.saturating_sub(3).min(display_width(icon)),
+        icon,
+        Style::default().fg(status_color(tab.agent_status, palette)),
+    );
+    // The harness glyph first (it always keeps its cell), then the label,
+    // then the team or group in what is left.
+    let mut right = width.saturating_sub(1);
+    if let Some(harness) = harness_mark(snapshot, tab, facts, background, state, config) {
+        hits.breathing |= harness.breathing;
+        let glyph_width = display_width(harness.glyph);
+        right = right.saturating_sub(glyph_width);
+        put_text(
+            buffer,
+            x.saturating_add(right),
+            y,
+            glyph_width.min(width.saturating_sub(right)),
+            harness.glyph,
+            Style::default().fg(harness.color),
+        );
+        right = right.saturating_sub(1);
+    }
+    const LABEL_X: u16 = 5;
+    let label_cells = right.saturating_sub(LABEL_X);
+    let tag_fg = super::tab_color::tab_label_fg(tab.color, palette);
+    put_truncated(
+        buffer,
+        x.saturating_add(LABEL_X),
+        y,
+        label_cells,
+        &tab.label,
+        Style::default()
+            .fg(tag_fg.unwrap_or(palette.text))
+            .add_modifier(Modifier::BOLD),
+    );
+    let used = display_width(&tab.label).min(label_cells);
+    let room = label_cells.saturating_sub(used + 1);
+    // The group text right-aligned before the glyph: measured first.
+    let group = facts
+        .workspace
+        .filter(|index| is_group_index(*index as usize))
+        .and_then(|index| snapshot.workspaces.get(index as usize));
+    if let Some(workspace) = group.filter(|_| room >= 3) {
+        let team = state
+            .teams
+            .and_then(|teams| teams.team(&workspace.workspace_id));
+        let (name, mark) = match team {
+            Some(team) => (super::teams::header_label(team, &workspace.label).0, true),
+            None => (workspace.label.as_str(), false),
+        };
+        let mark_cells = if mark { 2 } else { 0 };
+        let cells = (display_width(name) + mark_cells).min(room);
+        let start = x.saturating_add(right.saturating_sub(cells));
+        if mark {
+            put_text(
+                buffer,
+                start,
+                y,
+                1,
+                super::teams::TEAM_MARK,
+                Style::default().fg(palette.accent),
+            );
+        }
+        put_truncated(
+            buffer,
+            start.saturating_add(mark_cells),
+            y,
+            cells.saturating_sub(mark_cells),
+            name,
+            Style::default().fg(if mark {
+                palette.overlay1
+            } else {
+                palette.overlay0
+            }),
+        );
+    }
+}
+
+/// The current row's marker.
+pub(super) const CURRENT_MARK: &str = "\u{203A}"; // ›
+
 /// Fork (sidebar v2): the tabs sidebar's rows, top to bottom (`plan_layout`).
-/// Every rect spans the content width. `toolbar`, `active`, `detail`,
-/// `footer` and `menu` are chrome rows (painted with
+/// Every rect spans the content width. `toolbar`, `active`, `pins`,
+/// `scheduled`, `detail`, `footer` and `menu` are chrome rows (painted with
 /// `Palette::sidebar_chrome()` before anything draws on them).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct SidebarPlan {
     pub(super) toolbar: Rect,
-    /// The Active agents block (`tab_sidebar_active.rs`): exactly the rows
-    /// `active_block_rows` asked for at the cap the layout settled on
-    /// (header, lines, `+N more`, rule), or empty.
-    pub(super) active: Rect,
+    /// Fork (sidebar v3): the current row (the focused tab), or empty.
+    pub(super) current: Rect,
     /// The scrolling list.
     pub(super) list: Rect,
+    /// The Active agents block (`tab_sidebar_active.rs`): exactly the rows
+    /// `active_block_rows` asked for at the cap the layout settled on
+    /// (rule, header, lines, `+N more`), or empty.
+    pub(super) active: Rect,
+    /// Fork (sidebar v3): the Pinned block (`tab_sidebar_pins.rs`), likewise.
+    pub(super) pins: Rect,
+    /// Fork (sidebar v3): the Scheduled block (`tab_sidebar_scheduled.rs`),
+    /// likewise.
+    pub(super) scheduled: Rect,
     /// The fixed rows (Browser, News, coordinator).
     pub(super) fixed: Rect,
     /// The detail strip (`tab_sidebar_detail.rs`): its upper rule on the
@@ -568,6 +763,13 @@ pub(super) struct SidebarPlan {
 /// What the optional rows of `plan_layout` ask for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct LayoutWants {
+    /// Fork (sidebar v3): the current row wants to show (a list tab is
+    /// focused).
+    pub(super) current: bool,
+    /// The Pinned block's line cap (`pins_cap`).
+    pub(super) pins_cap: u16,
+    /// The Scheduled block's line cap (`scheduled_cap`).
+    pub(super) scheduled_cap: u16,
     /// Fixed rows (Browser, News, coordinator) that want to show.
     pub(super) fixed: u16,
     /// Status footer lines (`status_footer_lines`).
@@ -588,89 +790,172 @@ fn detail_rows(lines: u16, footer: u16) -> u16 {
     }
 }
 
+/// The rows each block under the list asks for at a line cap (`*_block_rows`;
+/// 0 while the block is empty or disabled).
+#[derive(Clone, Copy)]
+pub(super) struct SectionRows<'f> {
+    pub(super) active: &'f dyn Fn(u16) -> u16,
+    pub(super) pins: &'f dyn Fn(u16) -> u16,
+    pub(super) scheduled: &'f dyn Fn(u16) -> u16,
+}
+
+#[cfg(test)]
+fn no_rows(_cap: u16) -> u16 {
+    0
+}
+
+#[cfg(test)]
+impl<'f> SectionRows<'f> {
+    /// Only the Active block (the Pinned and Scheduled blocks are empty).
+    pub(super) fn active_only(active: &'f dyn Fn(u16) -> u16) -> Self {
+        Self {
+            active,
+            pins: &no_rows,
+            scheduled: &no_rows,
+        }
+    }
+}
+
+/// The Pinned and Scheduled blocks' line caps tried in turn while the list
+/// is short (before the Active block's).
+const SECTION_CAP_STEPS: [u16; 2] = [2, 1];
+
 /// The height budget of `content` (pure). The toolbar and the menu row take
-/// one row each; the status footer one row per line from `SPACIOUS_HEIGHT`
-/// rows, else one row for all of them; the Active agents block the rows
-/// `active_rows(cap)` asks for; the detail strip its text rows and rules;
-/// the pinned rows one each while the list keeps a row
-/// (`fixed_rows_that_fit` picks which stay in `plan.fixed.height`). The
-/// list takes the rest. While it has fewer than `MIN_LIST_ROWS` rows the
-/// optional rows give way in turn: the detail strip, then the Active block's
-/// lines (cap 6, 4, 2), then the whole block, then the footer (one row, then
-/// none).
-pub(super) fn plan_layout(
-    content: Rect,
-    wants: LayoutWants,
-    active_rows: impl Fn(u16) -> u16,
-) -> SidebarPlan {
+/// one row each; the current row one; the status footer one row per line
+/// from `SPACIOUS_HEIGHT` rows, else one row for all of them; the Active,
+/// Pinned and Scheduled blocks the rows `rows` asks for at their caps; the
+/// detail strip its text rows and rules; the fixed rows one each while the
+/// list keeps a row (`fixed_rows_that_fit` picks which stay in
+/// `plan.fixed.height`). The list takes the rest. While it has fewer than
+/// `MIN_LIST_ROWS` rows the optional rows give way in turn: the detail
+/// strip, then the Scheduled block's lines (cap 2, 1), the Pinned block's
+/// (cap 2, 1), the Active block's (cap 6, 4, 2), then the whole Scheduled,
+/// Pinned and Active blocks, then the current row, then the footer (one
+/// row, then none).
+pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'_>) -> SidebarPlan {
     let height = content.height;
     let room = height.saturating_sub(TOOLBAR_ROWS + FOOTER_ROWS);
     let status_lines = wants.status_lines.min(MAX_STATUS_ROWS);
-    let mut footer = if height < SPACIOUS_HEIGHT {
+    let footer = if height < SPACIOUS_HEIGHT {
         status_lines.min(1)
     } else {
         status_lines
     } as u16;
-    let mut detail = wants.detail_lines;
-    let mut active = active_rows(wants.active_cap);
-    // The pinned rows keep one list row (the floor that never hides the
+    // The fixed rows keep one list row (the floor that never hides the
     // last tab); `fixed_rows_that_fit` ranks them.
-    let pinned = wants.fixed.min(room.saturating_sub(1));
-    let list = |footer: u16, detail: u16, active: u16, pinned: u16| {
-        room.saturating_sub(
-            footer
-                .saturating_add(detail_rows(detail, footer))
-                .saturating_add(active)
-                .saturating_add(pinned),
-        )
+    let fixed = wants.fixed.min(room.saturating_sub(1));
+    let mut budget = Budget {
+        current: u16::from(wants.current),
+        active: (rows.active)(wants.active_cap),
+        pins: (rows.pins)(wants.pins_cap),
+        scheduled: (rows.scheduled)(wants.scheduled_cap),
+        fixed,
+        footer,
+        detail: wants.detail_lines,
     };
-    let short =
-        |footer, detail, active, pinned| list(footer, detail, active, pinned) < MIN_LIST_ROWS;
-    if short(footer, detail, active, pinned) {
-        detail = 0;
+    let short = |budget: &Budget| budget.list(room) < MIN_LIST_ROWS;
+    // 1. The detail strip.
+    if short(&budget) {
+        budget.detail = 0;
     }
+    // 2, 3. The Scheduled, then the Pinned block's lines.
+    for cap in SECTION_CAP_STEPS {
+        if !short(&budget) {
+            break;
+        }
+        if cap < wants.scheduled_cap {
+            budget.scheduled = budget.scheduled.min((rows.scheduled)(cap));
+        }
+    }
+    for cap in SECTION_CAP_STEPS {
+        if !short(&budget) {
+            break;
+        }
+        if cap < wants.pins_cap {
+            budget.pins = budget.pins.min((rows.pins)(cap));
+        }
+    }
+    // 4. The Active block's lines.
     for cap in ACTIVE_CAP_STEPS {
-        if !short(footer, detail, active, pinned) {
+        if !short(&budget) {
             break;
         }
         if cap < wants.active_cap {
-            active = active.min(active_rows(cap));
+            budget.active = budget.active.min((rows.active)(cap));
         }
     }
-    if short(footer, detail, active, pinned) {
-        active = 0;
+    // 5 to 8. The whole blocks, then the current row.
+    if short(&budget) {
+        budget.scheduled = 0;
     }
-    while footer > 0 && short(footer, detail, active, pinned) {
-        footer = if footer > 1 { 1 } else { 0 };
+    if short(&budget) {
+        budget.pins = 0;
     }
-    let list_height = list(footer, detail, active, pinned);
-    let detail_height = detail_rows(detail, footer);
+    if short(&budget) {
+        budget.active = 0;
+    }
+    if short(&budget) {
+        budget.current = 0;
+    }
+    // 9. The footer.
+    while budget.footer > 0 && short(&budget) {
+        budget.footer = if budget.footer > 1 { 1 } else { 0 };
+    }
+    let list_height = budget.list(room);
+    let detail_height = detail_rows(budget.detail, budget.footer);
 
-    let toolbar = Rect::new(
-        content.x,
-        content.y,
-        content.width,
-        TOOLBAR_ROWS.min(height),
-    );
-    let active = Rect::new(content.x, toolbar.bottom(), content.width, active);
-    let list = Rect::new(content.x, active.bottom(), content.width, list_height);
-    let pinned = Rect::new(content.x, list.bottom(), content.width, pinned);
-    let detail = Rect::new(content.x, pinned.bottom(), content.width, detail_height);
-    let footer = Rect::new(content.x, detail.bottom(), content.width, footer);
-    let menu = Rect::new(
-        content.x,
+    let row = |y: u16, height: u16| Rect::new(content.x, y, content.width, height);
+    let toolbar = row(content.y, TOOLBAR_ROWS.min(height));
+    let current = row(toolbar.bottom(), budget.current);
+    let list = row(current.bottom(), list_height);
+    let active = row(list.bottom(), budget.active);
+    let pins = row(active.bottom(), budget.pins);
+    let scheduled = row(pins.bottom(), budget.scheduled);
+    let fixed = row(scheduled.bottom(), budget.fixed);
+    let detail = row(fixed.bottom(), detail_height);
+    let footer = row(detail.bottom(), budget.footer);
+    let menu = row(
         content.bottom().saturating_sub(FOOTER_ROWS),
-        content.width,
         FOOTER_ROWS.min(height),
     );
     SidebarPlan {
         toolbar,
-        active,
+        current,
         list,
-        fixed: pinned,
+        active,
+        pins,
+        scheduled,
+        fixed,
         detail,
         footer,
         menu,
+    }
+}
+
+/// The optional rows `plan_layout` is settling.
+struct Budget {
+    current: u16,
+    active: u16,
+    pins: u16,
+    scheduled: u16,
+    fixed: u16,
+    footer: u16,
+    /// Detail strip text rows (its rules come with `detail_rows`).
+    detail: u16,
+}
+
+impl Budget {
+    /// The list rows left of `room`.
+    fn list(&self, room: u16) -> u16 {
+        room.saturating_sub(
+            self.current
+                .saturating_add(self.active)
+                .saturating_add(self.pins)
+                .saturating_add(self.scheduled)
+                .saturating_add(self.fixed)
+                .saturating_add(self.footer)
+                .saturating_add(detail_rows(self.detail, self.footer)),
+        )
     }
 }
 

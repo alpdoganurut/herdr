@@ -162,8 +162,8 @@ fn the_news_row_is_pulled_on_attach_and_pins_the_tab_out_of_the_list() {
     assert_ne!(row, ratatui::layout::Rect::default());
     assert_eq!(
         row.y,
-        state.hits.agent_body.bottom(),
-        "right under the list"
+        super::sidebar_sections::blocks_bottom(&state.hits),
+        "right under the list and its blocks (sidebar v3)"
     );
     assert_eq!(state.hits.agent_body.height, list_height - 1);
     let text = row_text(&frame, row);
@@ -371,7 +371,7 @@ fn the_row_sits_above_the_status_footer_and_goes_with_the_tab() {
         footer.contains("cpu 12%"),
         "the footer is under the row: {footer:?}"
     );
-    assert_eq!(row.y, state.hits.agent_body.bottom());
+    assert_eq!(row.y, super::sidebar_sections::blocks_bottom(&state.hits));
 
     // The tab is closed with news enabled: the row stays, without a tab.
     let mut snapshot = news_snapshot();
@@ -391,6 +391,7 @@ fn the_row_sits_above_the_status_footer_and_goes_with_the_tab() {
     assert_eq!(state.hits.news_row, row, "the row stays while enabled");
     assert_eq!(state.news_row().unwrap().tab_id, None);
     assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_3"]);
+    let list_bottom = state.hits.agent_body.bottom();
 
     // With news disabled and no tab the row disappears and the list grows
     // back.
@@ -403,7 +404,7 @@ fn the_row_sits_above_the_status_footer_and_goes_with_the_tab() {
     );
     state.compose(106, 20).expect("composed frame");
     assert_eq!(state.hits.news_row, ratatui::layout::Rect::default());
-    assert_eq!(state.hits.agent_body.bottom(), row.y + 1);
+    assert_eq!(state.hits.agent_body.bottom(), list_bottom + 1);
     assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_3"]);
 }
 
@@ -426,7 +427,7 @@ fn with_news_enabled_the_row_shows_without_a_tab() {
     let row = state.hits.news_row;
     assert_ne!(row, ratatui::layout::Rect::default(), "the row shows");
     assert_eq!(state.hits.agent_body.height, list_height - 1);
-    assert_eq!(row.y, state.hits.agent_body.bottom());
+    assert_eq!(row.y, super::sidebar_sections::blocks_bottom(&state.hits));
     assert_eq!(listed_tab_ids(&state), ["tab_1", "tab_3"]);
     let text = row_text(&frame, row);
     assert!(text.contains("News"), "{text:?}");
