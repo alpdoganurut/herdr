@@ -59,6 +59,8 @@ mod state;
 mod surface_patch;
 mod suspended_pane;
 mod tab_color;
+/// Fork (sidebar v3): browser-style tab history (`keys.tab_history_back` / `_forward`).
+mod tab_history;
 /// Fork (sidebar v3): pinned tabs (`endpoint.tab-pins.v1`).
 mod tab_pins;
 mod tab_remind_menu;

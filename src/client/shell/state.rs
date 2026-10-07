@@ -1407,6 +1407,9 @@ pub(crate) struct ClientShellState {
     pub(super) pins_expanded: bool,
     /// Fork (sidebar v3): the Scheduled block shows past its cap (client-only).
     pub(super) scheduled_expanded: bool,
+    /// Fork (sidebar v3): the tabs this client focused, for back/forward
+    /// (`tab_history.rs`; client-only, active endpoint only).
+    pub(super) tab_history: super::tab_history::TabHistory,
 }
 
 pub(super) fn product_announcement_state(
@@ -1611,6 +1614,7 @@ impl ClientShellState {
             scheduled_agents_folded,
             pins_expanded: false,
             scheduled_expanded: false,
+            tab_history: super::tab_history::TabHistory::default(),
         }
     }
 
@@ -1762,6 +1766,7 @@ impl ClientShellState {
             .startup_onboarding
             .then_some(ClientShellOverlay::Onboarding);
         self.previous_pane_id = None;
+        self.tab_history.reset();
         self.pane_mouse_gesture = None;
         self.link_hover = None;
         self.url_click_consumes_until_up = false;
@@ -1879,6 +1884,11 @@ impl ClientShellState {
             .filter(|previous| Some(previous.as_str()) != snapshot.focused_pane_id.as_deref())
         {
             self.previous_pane_id = Some(previous.clone());
+        }
+        // Fork (sidebar v3): every accepted snapshot reports its focused tab,
+        // the first one too; a new boot reset the history above.
+        if let Some(tab_id) = snapshot.focused_tab_id.as_deref() {
+            self.tab_history.observe(tab_id);
         }
         if snapshot_keybindings_changed {
             if let Err(err) = self.config.apply_snapshot_keybindings(

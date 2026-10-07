@@ -1210,6 +1210,17 @@ impl ClientShellState {
             KeybindAction::OpenCoordinator => Some(Method::CoordinatorOpen(
                 crate::api::schema::EmptyParams::default(),
             )),
+            // Fork (sidebar v3): back/forward through the focused tabs; a
+            // history without a live tab sends nothing.
+            KeybindAction::TabHistoryBack | KeybindAction::TabHistoryForward => {
+                let is_live = |tab_id: &str| snapshot.tabs.iter().any(|tab| tab.tab_id == tab_id);
+                let tab_id = if action == KeybindAction::TabHistoryBack {
+                    self.tab_history.back(is_live)?
+                } else {
+                    self.tab_history.forward(is_live)?
+                };
+                Some(Method::TabFocus(TabTarget { tab_id }))
+            }
             KeybindAction::EditScrollback => Some(Method::PaneEditScrollback(PaneTarget {
                 pane_id: focused_pane?,
             })),

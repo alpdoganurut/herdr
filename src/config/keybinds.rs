@@ -358,6 +358,8 @@ pub struct Keybinds {
     pub open_browser: ActionKeybinds,
     pub open_coordinator: ActionKeybinds,
     pub toggle_info_pane: ActionKeybinds,
+    pub tab_history_back: ActionKeybinds,
+    pub tab_history_forward: ActionKeybinds,
     pub copy_mode: ActionKeybinds,
     pub focus_pane_left: ActionKeybinds,
     pub focus_pane_down: ActionKeybinds,
@@ -537,6 +539,8 @@ impl Config {
             open_browser: empty_action!(),
             open_coordinator: empty_action!(),
             toggle_info_pane: empty_action!(),
+            tab_history_back: empty_action!(),
+            tab_history_forward: empty_action!(),
             copy_mode: empty_action!(),
             focus_pane_left: empty_action!(),
             focus_pane_down: empty_action!(),
@@ -695,6 +699,8 @@ impl Config {
             apply_action!(keybinds.open_browser, open_browser, source);
             apply_action!(keybinds.open_coordinator, open_coordinator, source);
             apply_action!(keybinds.toggle_info_pane, toggle_info_pane, source);
+            apply_action!(keybinds.tab_history_back, tab_history_back, source);
+            apply_action!(keybinds.tab_history_forward, tab_history_forward, source);
             apply_action!(keybinds.copy_mode, copy_mode, source);
             apply_action!(keybinds.focus_pane_left, focus_pane_left, source);
             apply_action!(keybinds.focus_pane_down, focus_pane_down, source);
@@ -2339,5 +2345,48 @@ width = "80%"
             .collect_diagnostics()
             .iter()
             .any(|diag| diag.contains("popup size on non-popup custom command")));
+    }
+
+    #[test]
+    fn default_tab_history_keys_are_cmd_brackets() {
+        let kb = Config::default().keybinds();
+        assert_eq!(
+            binding_triggers(&kb.tab_history_back),
+            vec![BindingTrigger::Direct((
+                KeyCode::Char('['),
+                KeyModifiers::SUPER
+            ))]
+        );
+        assert_eq!(
+            binding_triggers(&kb.tab_history_forward),
+            vec![BindingTrigger::Direct((
+                KeyCode::Char(']'),
+                KeyModifiers::SUPER
+            ))]
+        );
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+tab_history_back = "alt+,"
+tab_history_forward = "alt+."
+"#,
+        )
+        .unwrap();
+        assert!(config.collect_diagnostics().is_empty());
+        let kb = config.keybinds();
+        assert_eq!(
+            binding_triggers(&kb.tab_history_back),
+            vec![BindingTrigger::Direct((
+                KeyCode::Char(','),
+                KeyModifiers::ALT
+            ))]
+        );
+        assert_eq!(
+            binding_triggers(&kb.tab_history_forward),
+            vec![BindingTrigger::Direct((
+                KeyCode::Char('.'),
+                KeyModifiers::ALT
+            ))]
+        );
     }
 }

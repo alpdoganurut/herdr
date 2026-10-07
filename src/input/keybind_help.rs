@@ -186,6 +186,14 @@ pub(crate) fn keybind_help_groups(
                     "open coordinator",
                 ),
                 entry(binding_label(&keybinds.toggle_info_pane), "info pane"),
+                entry(
+                    binding_label(&keybinds.tab_history_back),
+                    "back (tab history)",
+                ),
+                entry(
+                    binding_label(&keybinds.tab_history_forward),
+                    "forward (tab history)",
+                ),
                 entry(binding_label(&keybinds.copy_mode), "copy mode"),
                 entry(binding_label(&keybinds.zoom), "zoom pane"),
                 entry(binding_label(&keybinds.resize_mode), "resize mode"),

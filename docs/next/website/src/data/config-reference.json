@@ -782,6 +782,18 @@
           "description": "Show or hide the focused tab's info pane: a dock on the right with the tab's agent-session notes (click to edit, tick task markers) and its history of checkpoints (decisions, milestones, failures, notes and bookmarks, each expandable to the prompt and reply around it). Open state is per tab; drag the divider or press < and > in the pane to resize. Unset by default; for example, toggle_info_pane = \"alt+n\"."
         },
         {
+          "key": "keys.tab_history_back",
+          "type": "keybinding",
+          "default": "\"cmd+[\"",
+          "description": "Focus the tab you focused before, browser-style: back through every tab focus change (clicks, keys, agents' tab.focus, notification jumps), skipping closed tabs. A back or forward jump does not add a new entry; focusing another tab after going back drops the forward entries. The history is per client and forgets a restarted server. cmd is the super modifier; the terminal must pass it through (in Ghostty: keybind = super+[=csi:91;9u, or keybind = super+[=unbind). Inside a multiplexer that drops Cmd, bind another key, for example tab_history_back = \"alt+,\" and tab_history_forward = \"alt+.\"."
+        },
+        {
+          "key": "keys.tab_history_forward",
+          "type": "keybinding",
+          "default": "\"cmd+]\"",
+          "description": "Focus the next tab again after keys.tab_history_back, skipping closed tabs. In Ghostty: keybind = super+]=csi:93;9u, or keybind = super+]=unbind."
+        },
+        {
           "key": "keys.copy_mode",
           "type": "keybinding",
           "default": "\"prefix+[\"",

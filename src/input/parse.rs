@@ -1158,4 +1158,39 @@ mod tests {
         let corpus = include_str!("../../tests/fixtures/linux_terminal_variants.tsv");
         assert_fixture_corpus_parses(corpus);
     }
+
+    #[test]
+    fn csi_u_super_bracket_resolves_tab_history_back() {
+        // Fork (sidebar v3): Ghostty sends Cmd+[ / Cmd+] as kitty CSI-u with
+        // the super bit (modifier 9) once its goto_split binding is freed.
+        let keybinds = crate::config::Config::default().keybinds();
+        for (sequence, code, action) in [
+            (
+                "\x1b[91;9u",
+                '[',
+                crate::input::KeybindAction::TabHistoryBack,
+            ),
+            (
+                "\x1b[93;9u",
+                ']',
+                crate::input::KeybindAction::TabHistoryForward,
+            ),
+        ] {
+            let key = parse_terminal_key_sequence(sequence).expect("kitty key");
+            assert_eq!(key.code, KeyCode::Char(code));
+            assert_eq!(key.modifiers, KeyModifiers::SUPER);
+            assert_eq!(
+                crate::input::resolve_non_indexed_action(
+                    &keybinds,
+                    &key,
+                    crate::input::KeybindDispatch::Direct,
+                ),
+                Some(action)
+            );
+            assert!(matches!(
+                crate::input::resolve_direct_binding(&keybinds, &key),
+                Some(crate::input::KeybindMatch::Action(found)) if found == action
+            ));
+        }
+    }
 }

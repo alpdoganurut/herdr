@@ -229,6 +229,8 @@ src/client/shell/tab_pins.rs
 src/client/shell/tests/sidebar_sections.rs
 src/app/tab_pin.rs
 src/server/headless/tab_pins.rs
+src/client/shell/tab_history.rs
+src/client/shell/tests/tab_history.rs
 
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
@@ -498,6 +500,13 @@ src/server/headless/tab_pins.rs
 | ClientShellState | scheduled_expanded | false |
 | ClientContextMenuTarget::Tab | pinned | false |
 | ClientContextMenuTarget::Tab | pin_supported | false |
+| KeysConfig | tab_history_back | crate::config::BindingConfig::one("cmd+[") |
+| KeysConfig | tab_history_forward | crate::config::BindingConfig::one("cmd+]") |
+| KeysConfigOverlay | tab_history_back | None |
+| KeysConfigOverlay | tab_history_forward | None |
+| Keybinds | tab_history_back | crate::config::ActionKeybinds::default() |
+| Keybinds | tab_history_forward | crate::config::ActionKeybinds::default() |
+| ClientShellState | tab_history | super::tab_history::TabHistory::default() |
 
 
 ## 3. Removed or re-signatured upstream symbols (E0425/E0061 at a new upstream call site = deny)
@@ -723,6 +732,8 @@ ConfigEdit::SidebarScheduledAgents(bool)   [src/config/write.rs, last after Side
 ClientContextMenuAction::Pin   [src/client/shell/state.rs, last after SetRole; tab menu Pin/Unpin (`tab.set_pinned`); internal]
 SidebarHover::Current / PinsHeader / PinsEntry / PinsMore / ScheduledHeader / ScheduledEntry / ScheduledMore   [src/client/shell/sidebar_model.rs, fork-owned enum, in that order after Fixed; internal]
 Selected::PinsHeader / PinsEntry / ScheduledHeader / ScheduledEntry   [src/client/shell/sidebar_model.rs, fork-owned enum, in that order after Fixed; internal]
+KeybindAction::TabHistoryBack   [src/input/keybindings.rs, after ToggleInfoPane; keys.tab_history_back; internal, handled by the client only]
+KeybindAction::TabHistoryForward   [src/input/keybindings.rs, after TabHistoryBack; keys.tab_history_forward; internal, handled by the client only]
 
 
 ## 5. Owned API methods and digests
@@ -831,9 +842,10 @@ The news.* keys form their own group (id `news`, title News) directly after the 
 The browser.* keys form their own group (id `browser`, title Browser) directly after the news group in config-reference.json and a `[browser]` block directly after the `[news]` block in DEFAULT_CONFIG; not in configuration.mdx either.
 The coordinator.* keys form their own group (id `coordinator`, title Coordinator) directly after the browser group in config-reference.json and a `[coordinator]` block directly after the `[browser]` block in DEFAULT_CONFIG; not in configuration.mdx either. `dashboard_port` binds 127.0.0.1 only, 0 disables serving, and a value that is not a port is a diagnostic that keeps the rest of the section. coordinator.wake_scope (`opened` | `teams` | `all`, default `opened`; anything else is a diagnostic that keeps `opened`) is the last key of the group in config-reference.json and the last commented line of the `[coordinator]` block in DEFAULT_CONFIG. The agents model v2 has no config keys of its own: its limits are constants in src/agents_model/limits.rs.
 The agents.* keys form their own group (id `agents`, title Agents) directly after the coordinator group in config-reference.json and an `[agents]` block directly after the `[coordinator]` block in DEFAULT_CONFIG; `"agents"` sits in KNOWN_TOP_LEVEL_CONFIG_KEYS after `"advanced"` and loads as a live section after browser (src/config/io.rs); not in configuration.mdx. Defaults: everything off except notices = true and team_roster = true (team_roster works without wrap: a claude / codex launched in a team group gets the team bits only; launches elsewhere are unchanged).
-The notes.* keys form their own group (id `notes`, title Notes) directly after the agents group in config-reference.json and a `[notes]` block directly after the `[agents]` block in DEFAULT_CONFIG (its last comment lines are the `auto_checkpoints` paragraph and `# auto_checkpoints = true`); `"notes"` sits in KNOWN_TOP_LEVEL_CONFIG_KEYS after `"news"` and loads as the last live section, after agents (src/config/io.rs); not in configuration.mdx. keys.toggle_info_pane sits directly after keys.open_coordinator and ui.info_pane_width directly after ui.daily_reminder_time, in config-reference.json and as DEFAULT_CONFIG comments (not in configuration.mdx).
+The notes.* keys form their own group (id `notes`, title Notes) directly after the agents group in config-reference.json and a `[notes]` block directly after the `[agents]` block in DEFAULT_CONFIG (its last comment lines are the `auto_checkpoints` paragraph and `# auto_checkpoints = true`); `"notes"` sits in KNOWN_TOP_LEVEL_CONFIG_KEYS after `"news"` and loads as the last live section, after agents (src/config/io.rs); not in configuration.mdx. keys.toggle_info_pane sits directly after keys.open_coordinator (keys.tab_history_back and keys.tab_history_forward directly after keys.toggle_info_pane) and ui.info_pane_width directly after ui.daily_reminder_time, in config-reference.json and as DEFAULT_CONFIG comments (not in configuration.mdx).
 After any merge touching config-reference.json: python3 -m json.tool on the file, then python3 scripts/config_reference_check.py.
 ui.sidebar_active_agents (config-reference.json directly after ui.info_pane_width; DEFAULT_CONFIG directly after `# info_pane_width = 44`), ui.sidebar_pinned_agents, ui.sidebar_scheduled_agents (sidebar v3: config-reference.json directly after ui.sidebar_active_agents; DEFAULT_CONFIG directly after `# sidebar_active_agents = true`), theme.custom.sidebar_chrome_bg, theme.custom.light.sidebar_chrome_bg, theme.custom.dark.sidebar_chrome_bg (each directly after its surface_dim sibling in config-reference.json; DEFAULT_CONFIG `# sidebar_chrome_bg = "#11111b"` at the end of the `[theme.custom]` comment block). The ui.tab_agent_glyphs description names the `voice_live` / `voice_muted` keys (no new key path).
+keys.tab_history_back, keys.tab_history_forward (sidebar v3: config-reference.json and DEFAULT_CONFIG comments directly after keys.toggle_info_pane; defaults "cmd+[" / "cmd+]", direct bindings, not prefix; not in configuration.mdx).
 
 
 ## 7. Per-file merge rules
@@ -944,6 +956,15 @@ src/client/shell/tab_sidebar.rs  fork-owned: sidebar v3 layout order toolbar, cu
 src/client/shell/tests/coordinator.rs  additive: Sidebar v2: the render_sidebar ShellRenderState literal gains sidebar_model, sidebar_hover, now, sidebar_reveal_tab, active_view, then (sidebar v3) pins_view, scheduled_view, tab_pins last
 src/main.rs  additive: Sidebar v2: DEFAULT_CONFIG `# sidebar_active_agents = true` (with its comment, "under the tab list" since sidebar v3) directly after `# info_pane_width = 44`, then (sidebar v3) `# sidebar_pinned_agents = true` and `# sidebar_scheduled_agents = true` (each with its comment), `# sidebar_chrome_bg = "#11111b"` (with its comment) last in the `[theme.custom]` comment block
 docs/next/website/src/data/config-reference.json  additive: Sidebar v2: entries placed per section 6
+src/config/model.rs  additive: Sidebar v3: KeysConfig/KeysConfigOverlay tab_history_back, tab_history_forward directly after toggle_info_pane in every list (struct, overlay, apply_field!, copy_effective_action_field!, Default)
+src/config/keybinds.rs  additive: Sidebar v3: tab_history_back, tab_history_forward directly after toggle_info_pane in Keybinds, its default and apply_action; the default_tab_history_keys_are_cmd_brackets test last in mod tests
+src/input/keybindings.rs  additive: Sidebar v3: KeybindAction::TabHistoryBack, TabHistoryForward and their binding pairs directly after ToggleInfoPane
+src/input/keybind_help.rs  additive: Sidebar v3: the "back (tab history)" and "forward (tab history)" entries directly after "info pane"
+src/input/parse.rs  additive: Sidebar v3: the csi_u_super_bracket_resolves_tab_history_back test last in mod tests
+src/main.rs  additive: Sidebar v3: the tab_history_back / tab_history_forward comment lines directly after `# toggle_info_pane = ""`
+src/client/shell.rs  additive: Sidebar v3: `mod tab_history;` (with its doc line) directly after `mod tab_color;` (rustfmt order)
+src/client/shell/state.rs  additive: Sidebar v3: ClientShellState.tab_history the last field (and last in new())
+src/client/shell/tests/mod.rs  additive: Sidebar v3: `mod tab_history;` directly after `mod tab_sidebar_golden;`
 *  deny: anything that is not a structural additive conflict (zdiff3 base empty, both sides pure insertions)
 src/app/mod.rs  additive: launch gate: `pub(crate) mod launch_gate;` (with its fork comment) directly after `mod agents_reorder;`
 
@@ -1171,6 +1192,8 @@ src/client/shell/mouse.rs  mid-logic: sidebar v2: MouseEventKind::Moved first ca
 src/client/shell/settings.rs  mid-logic: sidebar v2: settings_choice_count(Indicators) is 5 (sidebar v3); apply_settings_choice's Indicators arm for INDICATORS_ACTIVE_AGENTS_ROW (2) comes first and saves ConfigEdit::SidebarActiveAgents(!current), keeping the overlay open on row 2, then the INDICATORS_PINNED_AGENTS_ROW (3) and INDICATORS_SCHEDULED_AGENTS_ROW (4) arms likewise (rows 0/1 keep the style radio)
 src/client/shell/settings_overlay.rs  mid-logic: sidebar v3: the Indicators section draws the Active, Pinned and Scheduled toggles through render_sidebar_section_toggle at y offsets 6, 8 and 10
 src/client/shell/settings_overlay.rs  mid-logic: sidebar v2: the Indicators arm draws render_active_agents_toggle (`active agents block: on|off` at content.y + 6, a dim line under it, choice hit 2) after the two-choice radio
+src/client/shell/state.rs  mid-logic: sidebar v3: apply_active_snapshot calls tab_history.observe(focused_tab_id) for every accepted snapshot (the first too) directly after the boot_changed / previous_pane_id statement; reset_endpoint_projection calls tab_history.reset() directly after previous_pane_id = None (covers a new boot and an endpoint switch)
+src/client/shell/actions.rs  mid-logic: sidebar v3: endpoint_method_for_action's TabHistoryBack / TabHistoryForward arm (directly after OpenCoordinator) sends tab.focus for the history's next live target, nothing when there is none
 
 
 ## 9. Identifier watch-list (any hit in the incoming upstream diff = deny "upstream collision")
@@ -1817,6 +1840,11 @@ pinned_agents_folded
 scheduled_agents_folded
 FixedRow
 FixedKind
+tab_history_back
+tab_history_forward
+TabHistory
+TabHistoryBack
+TabHistoryForward
 
 
 ## 10. Fork smoke tests (run by name in the gate)
@@ -1881,10 +1909,12 @@ server::headless::tests::fork_smoke::agent_times_push_reaches_the_client_shell
 server::headless::tests::fork_smoke::tab_pin_reaches_every_client_and_survives_a_move
 client::shell::tests::sidebar_sections::fork_smoke::current_row_and_bottom_blocks_reach_the_renderer
 client::shell::tests::sidebar_sections::fork_smoke::pinned_and_scheduled_sections_reach_the_renderer
+client::shell::tests::tab_history::fork_smoke::cmd_bracket_focuses_the_previous_tab_and_back_again
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 ### Added
 - Sidebar v3 (tabs layout): the focused tab heads the list in a current row (`›`, status, label, its team `◆ purpose` or group, the agent glyph); the tab also keeps its row in its group, so clicking never moves rows under the pointer, and a click on the current row scrolls the list to it. The Active block moves under the list, followed by two new blocks: Pinned (tabs pinned from the tab menu's new Pin / Unpin item, or `tab.set_pinned` over the API; the pin is server-side, saved with the session, kept across a whole-tab move, a live handoff and close / reopen, and pushed to clients as `endpoint.tab-pins.v1`; each entry shows status, name, team or group, subagents and time in state; a pinned tab stays in its group too) and Scheduled (tabs with a scheduled reminder: the `◷ ◑ ☼` marker, the interval and the time to the next reminder, the daily time, or `fired` while one waits). Both fold from their header (remembered), hide while empty, expand with `+N more`, jump to the tab on a click and open its menu on a right click; `[ui] sidebar_pinned_agents` / `sidebar_scheduled_agents` (or Settings → indicators) turn them off. As space runs short the detail strip goes first, then the Scheduled, Pinned and Active lines, then the blocks, then the current row.
+- Tab history: cmd+[ / cmd+] (`[keys] tab_history_back` / `tab_history_forward`) go back and forward through the tabs you focused, browser-style: every focus change counts (clicks, keys, agents, notification jumps, the News / coordinator / Browser rows), a back or forward jump adds no entry, focusing another tab after going back drops the forward entries, closed tabs are skipped, 50 entries are kept, and the history is per client and starts over when the server restarts or another machine is selected. Cmd arrives as the kitty super modifier, so the terminal must pass it through: in Ghostty add `keybind = super+[=csi:91;9u` and `keybind = super+]=csi:93;9u` (or `keybind = super+[=unbind` / `keybind = super+]=unbind`, which relies on kitty keyboard reporting reaching herdr). Inside a multiplexer that swallows Cmd (zellij), bind other keys, e.g. `tab_history_back = "alt+,"`, `tab_history_forward = "alt+."`.
 - Sidebar v2 (tabs layout): group headers lose their band (bold name, fold marker, the team's `◆` on the header only, member count and rolled-up status; a blank spacer row before each group from 30 rows up), tab rows pack their marks flush right (`◎ ★ ◷`) with the agent glyph only on the focused tab's row (hovering other rows does not move or hide it), and a tab in voice mode shows a mic left of its label (U+F130 live in red, U+F131 muted; `ui.tab_agent_glyphs` keys `voice_live` / `voice_muted` replace it). The toolbar, the blocks above and below the list, the status footer and the menu row sit on a chrome background (`[theme.custom] sidebar_chrome_bg`, also under `light` / `dark`; default the theme's `surface_dim`). Hovering a row highlights it. An Active block (header `Active`) above the list shows the tabs that need you or are busy — blocked first, then live voice, then working, then idle tabs whose agents still run subagents (background work alone reads as idle; shown with `⚭`), then finished, the longest in its state first — each with its status icon, the mic for a voice session, its name and group, running subagents (`⚭n`) and its time in state (`<1m`, `42m`, `3h05`, `2d4h`; red while blocked; for an idle tab running subagents, the time since it went idle). The times come from a new optional `endpoint.agent-times.v1` push (an old server sends none: the order still holds, the times are left out). The block hides itself while nothing is active and can be turned off with `[ui] sidebar_active_agents = false` or Settings → indicators; its header folds it (remembered across restarts), `+N more` expands it, a click on an entry focuses its tab, unfolds its group and scrolls the list to it, and a right click opens the tab menu. A compact detail strip between hairline rules under the list describes the hovered row (tab, active entry, group header, pinned row), else the focused tab: status and time, subagents, agent kind and name, panes, team role, reminders, browser use, voice, colour tag and id.
 - Codex voice mode shows on its tab: while a Codex (codex-cli 0.160, `in_app_dictation` / `realtime_conversation`) has a voice session open, the `tabs` sidebar puts a red `●` first in the tab's markers while the microphone is live and a dim `◌` while it is muted (nothing when voice mode is off). The fact is read from the screen by the new generic manifest signal rules (`signal = "voice"`, `value = "live" | "muted"`, engine 4; they never change the agent's status, so a listening Codex stays idle): the codex manifest matches Codex's `voice <glyph> …` status line and `mic … codex …` meter directly above the prompt, the glyph deciding (◌ muted, anything else live). Agent records carry an optional `voice` (`live` / `muted`), `herdr agent explain` shows `voice` and each signal rule, and client shells get the panes in voice mode as the optional control `endpoint.voice.v1` (no protocol change). While an agent is in voice mode (live or muted) automatic typing waits: agent messages queue with the reason `voice mode`, coordinator wake-ups are held ("coordinator is in voice mode") and a guarded `agent.prompt` answers `user_typing`.
 - Agents reorder groups and tabs: the herdr_agents tools `agents_reorder_tab` (a tab's place among its group's tabs; free in the caller's own team, refused elsewhere, never the coordinator's tab) and `agents_reorder_group` (a group's place in the sidebar, by position or before / after another group; the user's whole sidebar, so only the coordinator in its user's turn — any other agent gets `coordinator_only`), through the new `agents.reorder_tab` / `agents.reorder_group` methods and the same server permission check as every agents_* write; the first space stays first. The coordinator's cheat sheet, the team block and the herdr_agents texts name them.

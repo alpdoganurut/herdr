@@ -65,6 +65,10 @@ pub(crate) enum KeybindAction {
     OpenCoordinator,
     /// Fork: show or hide the focused tab's info pane (client-only).
     ToggleInfoPane,
+    /// Fork (sidebar v3): focus the previously focused tab (client-side history).
+    TabHistoryBack,
+    /// Fork (sidebar v3): focus the next tab again after going back.
+    TabHistoryForward,
     CopyMode,
     Zoom,
     EnterResizeMode,
@@ -153,6 +157,11 @@ pub(crate) fn resolve_non_indexed_action(
         (&keybinds.open_browser, KeybindAction::OpenBrowser),
         (&keybinds.open_coordinator, KeybindAction::OpenCoordinator),
         (&keybinds.toggle_info_pane, KeybindAction::ToggleInfoPane),
+        (&keybinds.tab_history_back, KeybindAction::TabHistoryBack),
+        (
+            &keybinds.tab_history_forward,
+            KeybindAction::TabHistoryForward,
+        ),
         (&keybinds.copy_mode, KeybindAction::CopyMode),
         (&keybinds.focus_pane_left, KeybindAction::FocusPaneLeft),
         (&keybinds.focus_pane_down, KeybindAction::FocusPaneDown),

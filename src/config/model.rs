@@ -553,6 +553,10 @@ pub struct KeysConfig {
     pub open_coordinator: BindingConfig,
     /// Show or hide the focused tab's info pane (notes and history). Unset by default.
     pub toggle_info_pane: BindingConfig,
+    /// Focus the previously focused tab (browser-style back). Default: "cmd+[".
+    pub tab_history_back: BindingConfig,
+    /// Focus the next tab again after going back. Default: "cmd+]".
+    pub tab_history_forward: BindingConfig,
     /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
     pub copy_mode: BindingConfig,
     /// Focus the pane to the left. Default: "prefix+h".
@@ -706,6 +710,10 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_info_pane: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    tab_history_back: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tab_history_forward: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     copy_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus_pane_left: Option<BindingConfig>,
@@ -826,6 +834,8 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(open_browser);
         apply_field!(open_coordinator);
         apply_field!(toggle_info_pane);
+        apply_field!(tab_history_back);
+        apply_field!(tab_history_forward);
         apply_field!(copy_mode);
         apply_field!(focus_pane_left);
         apply_field!(focus_pane_down);
@@ -941,6 +951,8 @@ impl KeysConfig {
         copy_effective_action_field!(open_browser, keybinds.open_browser);
         copy_effective_action_field!(open_coordinator, keybinds.open_coordinator);
         copy_effective_action_field!(toggle_info_pane, keybinds.toggle_info_pane);
+        copy_effective_action_field!(tab_history_back, keybinds.tab_history_back);
+        copy_effective_action_field!(tab_history_forward, keybinds.tab_history_forward);
         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
         copy_effective_action_field!(focus_pane_left, keybinds.focus_pane_left);
         copy_effective_action_field!(focus_pane_down, keybinds.focus_pane_down);
@@ -1351,6 +1363,8 @@ impl Default for KeysConfig {
             open_browser: BindingConfig::default(),
             open_coordinator: BindingConfig::default(),
             toggle_info_pane: BindingConfig::default(),
+            tab_history_back: BindingConfig::one("cmd+["),
+            tab_history_forward: BindingConfig::one("cmd+]"),
             copy_mode: BindingConfig::one("prefix+["),
             focus_pane_left: BindingConfig::one("prefix+h"),
             focus_pane_down: BindingConfig::one("prefix+j"),

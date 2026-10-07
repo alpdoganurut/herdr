@@ -192,6 +192,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # open_browser = ""                 # unbound; opens the Browser overlay (the herdr browser's tabs and who uses them)
 # open_coordinator = ""             # unbound; focuses the coordinator tab, creating it when gone
 # toggle_info_pane = ""             # unbound; shows or hides the focused tab's info pane (notes, history)
+# tab_history_back = "cmd+["        # previously focused tab, browser-style (Ghostty: keybind = super+[=csi:91;9u)
+# tab_history_forward = "cmd+]"     # forward again (Ghostty: keybind = super+]=csi:93;9u); no Cmd? e.g. "alt+," / "alt+."
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"

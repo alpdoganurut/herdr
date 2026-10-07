@@ -282,6 +282,7 @@ mod sidebar_perf;
 mod sidebar_sections;
 mod startup_overlays;
 mod sticky_notifications;
+mod tab_history;
 mod tab_sidebar;
 mod tab_sidebar_golden;
 mod team_overlay;
