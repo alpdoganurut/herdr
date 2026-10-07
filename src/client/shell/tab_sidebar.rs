@@ -68,7 +68,7 @@ use super::render::{
     put_right_text, put_text, put_truncated, render_sidebar_background, ShellRenderState,
 };
 use super::sidebar_model::{
-    resolve_selected, PinnedKind, Row, Selected, SidebarHover, SidebarModel, StackStr, TabFacts,
+    resolve_selected, FixedKind, Row, Selected, SidebarHover, SidebarModel, StackStr, TabFacts,
 };
 use super::*;
 
@@ -184,16 +184,16 @@ pub(super) fn render_tab_sidebar_with(
     }
 
     let status_lines = status_footer_lines(snapshot);
-    let pinned: Vec<PinnedRow<'_>> = state
+    let pinned: Vec<FixedRow<'_>> = state
         .browser_row
         .as_ref()
-        .map(PinnedRow::Browser)
+        .map(FixedRow::Browser)
         .into_iter()
-        .chain(state.news_row.as_ref().map(PinnedRow::News))
-        .chain(coordinator.row.map(PinnedRow::Coordinator))
+        .chain(state.news_row.as_ref().map(FixedRow::News))
+        .chain(coordinator.row.map(FixedRow::Coordinator))
         .collect();
     // The pinned tabs (News, coordinator) leave the list.
-    let pinned_tab_ids = (
+    let fixed_tab_ids = (
         state
             .news_row
             .as_ref()
@@ -210,7 +210,7 @@ pub(super) fn render_tab_sidebar_with(
                 snapshot,
                 state.collapsed_groups,
                 state.voice,
-                pinned_tab_ids,
+                fixed_tab_ids,
                 config.sidebar_active_agents,
             );
             &one_off
@@ -220,7 +220,7 @@ pub(super) fn render_tab_sidebar_with(
     let plan = plan_layout(
         content,
         LayoutWants {
-            pinned: u16::try_from(pinned.len()).unwrap_or(u16::MAX),
+            fixed: u16::try_from(pinned.len()).unwrap_or(u16::MAX),
             status_lines: status_lines.len(),
             active_cap: super::tab_sidebar_active::active_cap(content.height),
             detail_lines: super::tab_sidebar_detail::detail_lines(content.height),
@@ -249,22 +249,22 @@ pub(super) fn render_tab_sidebar_with(
 
     let hover = state.sidebar_hover;
     let selected = resolve_selected(snapshot, model, hover);
-    let pinned = pinned_rows_that_fit(pinned, plan.pinned.height);
+    let pinned = fixed_rows_that_fit(pinned, plan.fixed.height);
     // Top-down from the list's bottom edge: Browser, News, coordinator.
     for (offset, row) in pinned.iter().enumerate() {
         let rect = Rect::new(
             content.x,
-            plan.pinned.y.saturating_add(offset as u16),
+            plan.fixed.y.saturating_add(offset as u16),
             content.width,
             1,
         );
         let kind = row.kind();
-        let hovered = matches!(hover, Some(SidebarHover::Pinned(hovered)) if *hovered == kind);
-        render_pinned_row(buffer, rect, row, hovered, config);
+        let hovered = matches!(hover, Some(SidebarHover::Fixed(hovered)) if *hovered == kind);
+        render_fixed_row(buffer, rect, row, hovered, config);
         match row {
-            PinnedRow::Browser(_) => hits.browser_row = rect,
-            PinnedRow::News(_) => hits.news_row = rect,
-            PinnedRow::Coordinator(_) => coordinator_rect = rect,
+            FixedRow::Browser(_) => hits.browser_row = rect,
+            FixedRow::News(_) => hits.news_row = rect,
+            FixedRow::Coordinator(_) => coordinator_rect = rect,
         }
     }
     if !plan.active.is_empty() {
@@ -554,8 +554,8 @@ pub(super) struct SidebarPlan {
     pub(super) active: Rect,
     /// The scrolling list.
     pub(super) list: Rect,
-    /// The pinned rows (Browser, News, coordinator).
-    pub(super) pinned: Rect,
+    /// The fixed rows (Browser, News, coordinator).
+    pub(super) fixed: Rect,
     /// The detail strip (`tab_sidebar_detail.rs`): its upper rule on the
     /// first row, then the text rows, then its lower rule on the last row
     /// when `footer` has rows. Empty when the strip does not fit.
@@ -568,8 +568,8 @@ pub(super) struct SidebarPlan {
 /// What the optional rows of `plan_layout` ask for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct LayoutWants {
-    /// Pinned rows (Browser, News, coordinator) that want to show.
-    pub(super) pinned: u16,
+    /// Fixed rows (Browser, News, coordinator) that want to show.
+    pub(super) fixed: u16,
     /// Status footer lines (`status_footer_lines`).
     pub(super) status_lines: usize,
     /// The Active agents block's line cap (`active_cap`).
@@ -593,7 +593,7 @@ fn detail_rows(lines: u16, footer: u16) -> u16 {
 /// rows, else one row for all of them; the Active agents block the rows
 /// `active_rows(cap)` asks for; the detail strip its text rows and rules;
 /// the pinned rows one each while the list keeps a row
-/// (`pinned_rows_that_fit` picks which stay in `plan.pinned.height`). The
+/// (`fixed_rows_that_fit` picks which stay in `plan.fixed.height`). The
 /// list takes the rest. While it has fewer than `MIN_LIST_ROWS` rows the
 /// optional rows give way in turn: the detail strip, then the Active block's
 /// lines (cap 6, 4, 2), then the whole block, then the footer (one row, then
@@ -614,8 +614,8 @@ pub(super) fn plan_layout(
     let mut detail = wants.detail_lines;
     let mut active = active_rows(wants.active_cap);
     // The pinned rows keep one list row (the floor that never hides the
-    // last tab); `pinned_rows_that_fit` ranks them.
-    let pinned = wants.pinned.min(room.saturating_sub(1));
+    // last tab); `fixed_rows_that_fit` ranks them.
+    let pinned = wants.fixed.min(room.saturating_sub(1));
     let list = |footer: u16, detail: u16, active: u16, pinned: u16| {
         room.saturating_sub(
             footer
@@ -667,22 +667,22 @@ pub(super) fn plan_layout(
         toolbar,
         active,
         list,
-        pinned,
+        fixed: pinned,
         detail,
         footer,
         menu,
     }
 }
 
-/// The pinned rows under the list, in drawing order.
+/// The fixed rows under the list (Browser, News, coordinator), in drawing order.
 #[derive(Debug, Clone, Copy)]
-pub(super) enum PinnedRow<'a> {
+pub(super) enum FixedRow<'a> {
     Browser(&'a super::browser::BrowserRow),
     News(&'a super::news::NewsRow),
     Coordinator(&'a super::coordinator::CoordinatorRow),
 }
 
-impl PinnedRow<'_> {
+impl FixedRow<'_> {
     /// Which row keeps its place when not all fit: lower goes first.
     fn keep_rank(&self) -> u8 {
         match self {
@@ -692,11 +692,11 @@ impl PinnedRow<'_> {
         }
     }
 
-    fn kind(&self) -> PinnedKind {
+    fn kind(&self) -> FixedKind {
         match self {
-            Self::Browser(_) => PinnedKind::Browser,
-            Self::News(_) => PinnedKind::News,
-            Self::Coordinator(_) => PinnedKind::Coordinator,
+            Self::Browser(_) => FixedKind::Browser,
+            Self::News(_) => FixedKind::News,
+            Self::Coordinator(_) => FixedKind::Coordinator,
         }
     }
 }
@@ -704,12 +704,12 @@ impl PinnedRow<'_> {
 /// The pinned rows to draw in `room` rows, still in drawing order (Browser,
 /// News, coordinator). When not every row fits, the coordinator keeps its
 /// row first, then News, then Browser.
-pub(super) fn pinned_rows_that_fit(rows: Vec<PinnedRow<'_>>, room: u16) -> Vec<PinnedRow<'_>> {
+pub(super) fn fixed_rows_that_fit(rows: Vec<FixedRow<'_>>, room: u16) -> Vec<FixedRow<'_>> {
     let room = usize::from(room);
     if rows.len() <= room {
         return rows;
     }
-    let mut ranks: Vec<u8> = rows.iter().map(PinnedRow::keep_rank).collect();
+    let mut ranks: Vec<u8> = rows.iter().map(FixedRow::keep_rank).collect();
     ranks.sort_unstable();
     let cutoff = ranks.get(room).copied().unwrap_or(u8::MAX);
     rows.into_iter()
@@ -724,16 +724,16 @@ pub(super) fn pinned_rows_that_fit(rows: Vec<PinnedRow<'_>>, room: u16) -> Vec<P
 /// band. On the Browser and coordinator rows the label wins over the status
 /// in a narrow sidebar (the status is truncated first); on the News row the
 /// status wins.
-fn render_pinned_row(
+fn render_fixed_row(
     buffer: &mut Buffer,
     rect: Rect,
-    row: &PinnedRow<'_>,
+    row: &FixedRow<'_>,
     hovered: bool,
     config: &ClientShellConfig,
 ) {
     let palette = &config.palette;
     let (glyph, glyph_color, label, status, focused, label_first) = match row {
-        PinnedRow::Browser(row) => (
+        FixedRow::Browser(row) => (
             row.state.glyph(),
             row.state.color(palette, row.active),
             super::browser::BROWSER_ROW_LABEL,
@@ -741,7 +741,7 @@ fn render_pinned_row(
             false,
             true,
         ),
-        PinnedRow::News(row) => (
+        FixedRow::News(row) => (
             row.state.glyph(),
             row.state.color(palette),
             super::news::NEWS_ROW_LABEL,
@@ -749,7 +749,7 @@ fn render_pinned_row(
             row.focused,
             false,
         ),
-        PinnedRow::Coordinator(row) => (
+        FixedRow::Coordinator(row) => (
             row.state.glyph(),
             row.state.color(palette),
             super::coordinator::COORDINATOR_ROW_LABEL,

@@ -4,7 +4,7 @@
 //!
 //! `SidebarModel::ensure` runs in `compose` for the expanded tabs layout. It
 //! rebuilds only after `mark_dirty` (snapshot replaced, voice / agent-times /
-//! teams push, config reload, fold state changed) or when the pinned tab ids
+//! teams push, config reload, fold state changed) or when the fixed-row tab ids
 //! (News, coordinator) differ from the last build; every other frame costs
 //! one bool check and two `Option<&str>` compares. The rebuild is one pass
 //! over the snapshot's agents and panes and one over its tabs.
@@ -37,8 +37,8 @@ pub(crate) struct TabFacts {
     pub(crate) agents: u16,
     /// `snapshot.panes` of this tab.
     pub(crate) panes: u16,
-    /// The News or coordinator tab (never a list row).
-    pub(crate) pinned: bool,
+    /// The News or coordinator tab (a fixed row, never a list row).
+    pub(crate) fixed: bool,
     /// Index into `snapshot.workspaces` of the tab's space.
     pub(crate) workspace: Option<u32>,
     /// Some agent of the tab is parked (`Suspended`).
@@ -55,7 +55,7 @@ impl Default for TabFacts {
             since: None,
             agents: 0,
             panes: 0,
-            pinned: false,
+            fixed: false,
             workspace: None,
             parked: false,
         }
@@ -95,9 +95,9 @@ pub(crate) struct ActiveView {
     pub(crate) expanded: bool,
 }
 
-/// A pinned row under the list.
+/// A fixed row under the list (Browser, News, coordinator; "pinned" in the docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum PinnedKind {
+pub(crate) enum FixedKind {
     Browser,
     News,
     Coordinator,
@@ -112,7 +112,7 @@ pub(crate) enum SidebarHover {
     ActiveHeader,
     ActiveEntry(String),
     ActiveMore,
-    Pinned(PinnedKind),
+    Fixed(FixedKind),
 }
 
 /// The selected row of a frame: the hovered row, else the focused tab.
@@ -123,7 +123,7 @@ pub(crate) enum Selected {
     Group(u32),
     ActiveHeader,
     ActiveEntry(u32),
-    Pinned(PinnedKind),
+    Fixed(FixedKind),
     None,
 }
 
@@ -133,7 +133,7 @@ pub(crate) struct SidebarModel {
     /// Data changed since the last build (starts dirty: never built).
     dirty: bool,
     /// The News and coordinator tab ids of the last build.
-    pinned_ids: (Option<String>, Option<String>),
+    fixed_ids: (Option<String>, Option<String>),
     /// Per-tab facts, aligned with `snapshot.tabs`.
     pub(crate) tabs: Vec<TabFacts>,
     /// The list rows, fold state applied; the focused tab's group is open.
@@ -168,7 +168,7 @@ impl SidebarModel {
     pub(crate) fn new() -> Self {
         Self {
             dirty: true,
-            pinned_ids: (None, None),
+            fixed_ids: (None, None),
             tabs: Vec::new(),
             rows: Vec::new(),
             row_heights: Vec::new(),
@@ -188,11 +188,11 @@ impl SidebarModel {
         snapshot: &ClientShellSnapshot,
         collapsed_groups: &HashSet<String>,
         voice: Option<&super::voice::ClientVoiceState>,
-        pinned_ids: (Option<&str>, Option<&str>),
+        fixed_ids: (Option<&str>, Option<&str>),
         enabled: bool,
     ) -> Self {
         let mut model = Self::new();
-        model.ensure(snapshot, collapsed_groups, voice, None, pinned_ids, enabled);
+        model.ensure(snapshot, collapsed_groups, voice, None, fixed_ids, enabled);
         model
     }
 
@@ -210,23 +210,16 @@ impl SidebarModel {
         collapsed_groups: &HashSet<String>,
         voice: Option<&super::voice::ClientVoiceState>,
         times: Option<&super::agent_times::ClientAgentTimesState>,
-        pinned_ids: (Option<&str>, Option<&str>),
+        fixed_ids: (Option<&str>, Option<&str>),
         enabled: bool,
     ) {
         if !self.dirty
-            && self.pinned_ids.0.as_deref() == pinned_ids.0
-            && self.pinned_ids.1.as_deref() == pinned_ids.1
+            && self.fixed_ids.0.as_deref() == fixed_ids.0
+            && self.fixed_ids.1.as_deref() == fixed_ids.1
         {
             return;
         }
-        self.rebuild(
-            snapshot,
-            collapsed_groups,
-            voice,
-            times,
-            pinned_ids,
-            enabled,
-        );
+        self.rebuild(snapshot, collapsed_groups, voice, times, fixed_ids, enabled);
     }
 
     fn rebuild(
@@ -235,26 +228,26 @@ impl SidebarModel {
         collapsed_groups: &HashSet<String>,
         voice: Option<&super::voice::ClientVoiceState>,
         times: Option<&super::agent_times::ClientAgentTimesState>,
-        pinned_ids: (Option<&str>, Option<&str>),
+        fixed_ids: (Option<&str>, Option<&str>),
         enabled: bool,
     ) {
         self.dirty = false;
-        if self.pinned_ids.0.as_deref() != pinned_ids.0 {
-            self.pinned_ids.0 = pinned_ids.0.map(str::to_owned);
+        if self.fixed_ids.0.as_deref() != fixed_ids.0 {
+            self.fixed_ids.0 = fixed_ids.0.map(str::to_owned);
         }
-        if self.pinned_ids.1.as_deref() != pinned_ids.1 {
-            self.pinned_ids.1 = pinned_ids.1.map(str::to_owned);
+        if self.fixed_ids.1.as_deref() != fixed_ids.1 {
+            self.fixed_ids.1 = fixed_ids.1.map(str::to_owned);
         }
         #[cfg(test)]
         {
             self.builds = self.builds.saturating_add(1);
         }
-        let is_pinned = |tab_id: &str| pinned_ids.0 == Some(tab_id) || pinned_ids.1 == Some(tab_id);
+        let is_fixed = |tab_id: &str| fixed_ids.0 == Some(tab_id) || fixed_ids.1 == Some(tab_id);
 
         // Per-tab facts: one pass over the agents and one over the panes.
         self.tabs.clear();
         self.tabs.extend(snapshot.tabs.iter().map(|tab| TabFacts {
-            pinned: is_pinned(&tab.tab_id),
+            fixed: is_fixed(&tab.tab_id),
             ..TabFacts::default()
         }));
         let index: HashMap<&str, u32> = snapshot
@@ -303,7 +296,7 @@ impl SidebarModel {
         self.focused_tab = snapshot
             .tabs
             .iter()
-            .position(|tab| tab.focused && !is_pinned(&tab.tab_id))
+            .position(|tab| tab.focused && !is_fixed(&tab.tab_id))
             .map(|index| index as u32);
 
         // The list rows: every group's header, then its tabs unless folded;
@@ -323,7 +316,7 @@ impl SidebarModel {
         for (tab_index, tab) in snapshot.tabs.iter().enumerate() {
             let workspace = position.get(tab.workspace_id.as_str()).copied();
             self.tabs[tab_index].workspace = workspace.map(|index| index as u32);
-            if is_pinned(&tab.tab_id) {
+            if is_fixed(&tab.tab_id) {
                 continue;
             }
             if let Some(index) = workspace {
@@ -368,7 +361,7 @@ impl SidebarModel {
         self.any_subagents_active = false;
         if enabled {
             for (index, (tab, facts)) in snapshot.tabs.iter().zip(&self.tabs).enumerate() {
-                if facts.pinned {
+                if facts.fixed {
                     continue;
                 }
                 let Some(class) = active_class(tab.agent_status, facts.voice, facts.subagents)
@@ -468,7 +461,7 @@ pub(crate) fn resolve_selected(
             .tabs
             .iter()
             .position(|tab| tab.tab_id == tab_id)
-            .filter(|index| model.tab(*index as u32).is_some_and(|facts| !facts.pinned))
+            .filter(|index| model.tab(*index as u32).is_some_and(|facts| !facts.fixed))
             .map(|index| index as u32)
     };
     let hovered = match hover {
@@ -480,7 +473,7 @@ pub(crate) fn resolve_selected(
             .position(|workspace| workspace.workspace_id == *workspace_id)
             .map(|index| Selected::Group(index as u32)),
         Some(SidebarHover::ActiveHeader | SidebarHover::ActiveMore) => Some(Selected::ActiveHeader),
-        Some(SidebarHover::Pinned(kind)) => Some(Selected::Pinned(*kind)),
+        Some(SidebarHover::Fixed(kind)) => Some(Selected::Fixed(*kind)),
         None => None,
     };
     hovered.unwrap_or_else(|| model.focused_tab.map_or(Selected::None, Selected::Tab))

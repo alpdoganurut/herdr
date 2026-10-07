@@ -631,7 +631,7 @@ ConfigEdit::CoordinatorModel   [src/config/write.rs, after CoordinatorWakeCaps; 
 ConfigEdit::CoordinatorNotify   [src/config/write.rs, after CoordinatorModel; `coordinator.notify`; internal]
 ConfigEdit::SidebarLayoutTabs   [src/config/write.rs, after CoordinatorNotify, directly before BrowserBool; `ui.sidebar_layout = "tabs"`, the coordinator settings hint row (client-local write); internal]
 AppEvent::CoordinatorPassFinished   [src/events.rs, last after WorktreeReadFinished; the coordinator worker's pass output; internal]
-PinnedRow::Coordinator   [src/client/shell/tab_sidebar.rs, fork-owned enum, last after News; internal]
+FixedRow::Coordinator   [src/client/shell/tab_sidebar.rs, fork-owned enum (was PinnedRow), last after News; internal]
 ConfigEdit::SoundFile   [src/config/write.rs, after IdleReminderMinutes; the settings sound pickers ([ui.sound] done_path / request_path / reminder_path); internal]
 ClientContextMenuTarget::Group   [src/client/shell/state.rs, between Tab and Pane; internal]
 ClientContextMenuTarget::News   [src/client/shell/state.rs, last after Pane; the tabs layout's pinned News row, `{ enabled }`; internal]

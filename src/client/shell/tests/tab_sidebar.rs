@@ -2988,8 +2988,8 @@ fn pinned_rows_align_with_the_headers_and_take_the_hover_band() {
     assert!(row_text(&frame, row).starts_with("   ◌ Browser"));
     assert_eq!(cell_of(&frame, row.x, row.y).2, rgb(palette.sidebar_bg));
 
-    state.sidebar_hover = Some(super::super::sidebar_model::SidebarHover::Pinned(
-        super::super::sidebar_model::PinnedKind::Browser,
+    state.sidebar_hover = Some(super::super::sidebar_model::SidebarHover::Fixed(
+        super::super::sidebar_model::FixedKind::Browser,
     ));
     let frame = state.compose(106, 20).expect("composed frame");
     let row = state.hits.browser_row;
@@ -3236,7 +3236,7 @@ mod plan_layout {
             plan.toolbar,
             plan.active,
             plan.list,
-            plan.pinned,
+            plan.fixed,
             plan.detail,
             plan.footer,
             plan.menu,
@@ -3250,7 +3250,7 @@ mod plan_layout {
 
     fn wants(detail_lines: u16, active_cap: u16) -> LayoutWants {
         LayoutWants {
-            pinned: 1,
+            fixed: 1,
             status_lines: 3,
             active_cap,
             detail_lines,
@@ -3261,7 +3261,7 @@ mod plan_layout {
     fn everything_fits_when_tall() {
         let plan = plan(40, wants(3, 8));
         assert_eq!(plan.active.height, 11);
-        assert_eq!(plan.pinned.height, 1);
+        assert_eq!(plan.fixed.height, 1);
         assert_eq!(plan.detail.height, 5, "two rules around three lines");
         assert_eq!(plan.footer.height, 3, "one row per line");
         assert_eq!(plan.list.height, 18);
@@ -3303,17 +3303,17 @@ mod plan_layout {
         // Then the footer; the pinned row keeps the list one row.
         let plan = plan_layout(Rect::new(0, 0, 30, 5), wants(1, 4), active);
         assert_eq!(plan.footer.height, 0);
-        assert_eq!(plan.pinned.height, 1);
+        assert_eq!(plan.fixed.height, 1);
         assert_eq!(plan.list.height, 2);
         let plan = plan_layout(Rect::new(0, 0, 30, 4), wants(1, 4), active);
-        assert_eq!((plan.pinned.height, plan.list.height), (1, 1));
+        assert_eq!((plan.fixed.height, plan.list.height), (1, 1));
     }
 
     #[test]
     fn a_tall_footer_steps_down_to_one_row_before_none() {
         // 30 rows (one footer row per line), many pinned rows, no block.
         let tight = |pinned| LayoutWants {
-            pinned,
+            fixed: pinned,
             status_lines: 4,
             active_cap: 8,
             detail_lines: 0,

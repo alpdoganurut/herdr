@@ -20,7 +20,7 @@ use ratatui::{
 
 use super::render::{display_width, put_text, put_truncated, ShellRenderState};
 use super::sidebar_model::{
-    format_age, next_age_tick, resolve_selected, PinnedKind, Row, Selected, SidebarModel, StackStr,
+    format_age, next_age_tick, resolve_selected, FixedKind, Row, Selected, SidebarModel, StackStr,
     CLASS_BLOCKED, CLASS_DONE, CLASS_SUBAGENTS, CLASS_VOICE, CLASS_WORKING,
 };
 use super::*;
@@ -99,7 +99,7 @@ pub(super) fn render_detail_strip(
         }
         Selected::Group(index) => group_chips(&mut chips, snapshot, model, index, config, state),
         Selected::ActiveHeader => active_chips(&mut chips, model, config),
-        Selected::Pinned(kind) => pinned_chips(&mut chips, kind, config, state),
+        Selected::Fixed(kind) => fixed_chips(&mut chips, kind, config, state),
         Selected::None => {}
     }
     chips.finish(palette);
@@ -402,7 +402,7 @@ fn group_chips(
     // Per-status counts over the group's listed tabs: one pass, no allocation.
     let mut counts = [0usize; COUNTED.len()];
     for (tab, facts) in snapshot.tabs.iter().zip(&model.tabs) {
-        if facts.pinned || facts.workspace != Some(index) {
+        if facts.fixed || facts.workspace != Some(index) {
             continue;
         }
         if let Some(slot) = COUNTED
@@ -475,15 +475,15 @@ fn active_chips(chips: &mut Chips<'_>, model: &SidebarModel, config: &ClientShel
 }
 
 /// A pinned row: its label, glyph and status, and its tab.
-fn pinned_chips(
+fn fixed_chips(
     chips: &mut Chips<'_>,
-    kind: PinnedKind,
+    kind: FixedKind,
     config: &ClientShellConfig,
     state: &ShellRenderState<'_>,
 ) {
     let palette = &config.palette;
     let (label, glyph, color, status, tab_id) = match kind {
-        PinnedKind::Browser => {
+        FixedKind::Browser => {
             let Some(row) = state.browser_row.as_ref() else {
                 return;
             };
@@ -495,7 +495,7 @@ fn pinned_chips(
                 None,
             )
         }
-        PinnedKind::News => {
+        FixedKind::News => {
             let Some(row) = state.news_row.as_ref() else {
                 return;
             };
@@ -507,7 +507,7 @@ fn pinned_chips(
                 row.tab_id.as_deref(),
             )
         }
-        PinnedKind::Coordinator => {
+        FixedKind::Coordinator => {
             let Some(row) = state.coordinator_row.as_ref() else {
                 return;
             };

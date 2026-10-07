@@ -25,7 +25,7 @@ use ratatui::{
 
 use super::render::{display_width, put_text, put_truncated, ShellRenderState};
 use super::sidebar_model::{
-    format_age, next_age_tick, ActiveEntry, ActiveView, PinnedKind, SidebarHover, SidebarModel,
+    format_age, next_age_tick, ActiveEntry, ActiveView, FixedKind, SidebarHover, SidebarModel,
     StackStr, CLASS_BLOCKED, CLASS_DONE, CLASS_SUBAGENTS, CLASS_VOICE, CLASS_WORKING,
 };
 use super::*;
@@ -498,7 +498,7 @@ enum HoverAt<'a> {
     ActiveHeader,
     ActiveEntry(&'a str),
     ActiveMore,
-    Pinned(PinnedKind),
+    Fixed(FixedKind),
 }
 
 impl HoverAt<'_> {
@@ -509,7 +509,7 @@ impl HoverAt<'_> {
             | (Self::ActiveEntry(id), SidebarHover::ActiveEntry(current)) => id == current,
             (Self::ActiveHeader, SidebarHover::ActiveHeader)
             | (Self::ActiveMore, SidebarHover::ActiveMore) => true,
-            (Self::Pinned(kind), SidebarHover::Pinned(current)) => kind == *current,
+            (Self::Fixed(kind), SidebarHover::Fixed(current)) => kind == *current,
             _ => false,
         }
     }
@@ -521,7 +521,7 @@ impl HoverAt<'_> {
             Self::ActiveHeader => SidebarHover::ActiveHeader,
             Self::ActiveEntry(id) => SidebarHover::ActiveEntry(id.to_owned()),
             Self::ActiveMore => SidebarHover::ActiveMore,
-            Self::Pinned(kind) => SidebarHover::Pinned(kind),
+            Self::Fixed(kind) => SidebarHover::Fixed(kind),
         }
     }
 }
@@ -566,13 +566,13 @@ impl ClientShellState {
             return Some(HoverAt::Group(id));
         }
         [
-            (hits.browser_row, PinnedKind::Browser),
-            (hits.news_row, PinnedKind::News),
-            (hits.coordinator_row, PinnedKind::Coordinator),
+            (hits.browser_row, FixedKind::Browser),
+            (hits.news_row, FixedKind::News),
+            (hits.coordinator_row, FixedKind::Coordinator),
         ]
         .into_iter()
         .find(|(rect, _)| super::contains(*rect, point))
-        .map(|(_, kind)| HoverAt::Pinned(kind))
+        .map(|(_, kind)| HoverAt::Fixed(kind))
     }
 
     /// Mouse motion: track the hovered tabs sidebar row; repaint only when

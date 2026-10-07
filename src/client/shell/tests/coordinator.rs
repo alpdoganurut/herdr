@@ -11,7 +11,7 @@ use super::super::settings_coordinator::{
     section_rows, ClientCoordinatorSettings, CoordinatorPicker, CoordinatorSettingsRow,
 };
 use super::super::tab_sidebar::{
-    pinned_rows_that_fit, render_tab_sidebar_with, PinnedRow, TabSidebarCoordinator,
+    fixed_rows_that_fit, render_tab_sidebar_with, FixedRow, TabSidebarCoordinator,
 };
 use super::*;
 use crate::api::schema::coordinator::{
@@ -811,34 +811,34 @@ fn the_coordinator_keeps_its_pinned_row_first_when_space_runs_short() {
     };
     let rows = || {
         vec![
-            PinnedRow::Browser(&browser),
-            PinnedRow::News(&news),
-            PinnedRow::Coordinator(&coordinator),
+            FixedRow::Browser(&browser),
+            FixedRow::News(&news),
+            FixedRow::Coordinator(&coordinator),
         ]
     };
-    let kinds = |rows: Vec<PinnedRow<'_>>| {
+    let kinds = |rows: Vec<FixedRow<'_>>| {
         rows.iter()
             .map(|row| match row {
-                PinnedRow::Browser(_) => "browser",
-                PinnedRow::News(_) => "news",
-                PinnedRow::Coordinator(_) => "coordinator",
+                FixedRow::Browser(_) => "browser",
+                FixedRow::News(_) => "news",
+                FixedRow::Coordinator(_) => "coordinator",
             })
             .collect::<Vec<_>>()
     };
     assert_eq!(
-        kinds(pinned_rows_that_fit(rows(), 3)),
+        kinds(fixed_rows_that_fit(rows(), 3)),
         ["browser", "news", "coordinator"]
     );
     assert_eq!(
-        kinds(pinned_rows_that_fit(rows(), 2)),
+        kinds(fixed_rows_that_fit(rows(), 2)),
         ["news", "coordinator"]
     );
-    assert_eq!(kinds(pinned_rows_that_fit(rows(), 1)), ["coordinator"]);
-    assert!(pinned_rows_that_fit(rows(), 0).is_empty());
+    assert_eq!(kinds(fixed_rows_that_fit(rows(), 1)), ["coordinator"]);
+    assert!(fixed_rows_that_fit(rows(), 0).is_empty());
     // Without the coordinator, News still beats Browser.
     assert_eq!(
-        kinds(pinned_rows_that_fit(
-            vec![PinnedRow::Browser(&browser), PinnedRow::News(&news)],
+        kinds(fixed_rows_that_fit(
+            vec![FixedRow::Browser(&browser), FixedRow::News(&news)],
             1
         )),
         ["news"]
