@@ -25,6 +25,7 @@ fn entry(id: &str, label: Option<&str>, group: &str, cwd: &str, age: u64) -> Clo
         color: None,
         important: false,
         remind_every: None,
+        pinned: false,
         space_id: format!("w_{group}"),
         space_name: group.into(),
         cwd: cwd.into(),

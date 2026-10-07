@@ -214,6 +214,9 @@ pub enum Method {
     TabSetRemind(TabSetRemindParams),
     #[serde(rename = "tab.set_reminder")]
     TabSetReminder(TabSetReminderParams),
+    /// Fork (sidebar v3): pin or unpin a tab.
+    #[serde(rename = "tab.set_pinned")]
+    TabSetPinned(TabSetPinnedParams),
     #[serde(rename = "pane.report_subagent")]
     PaneReportSubagent(PaneReportSubagentParams),
     #[serde(rename = "session.closed_list")]

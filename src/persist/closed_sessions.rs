@@ -318,6 +318,7 @@ mod tests {
             color: Some(TabColor::Green),
             important: true,
             remind_every: Some(TabRemindInterval::H1),
+            pinned: false,
             space_id: "w_abc".into(),
             space_name: "leap".into(),
             cwd: "/tmp/project".into(),

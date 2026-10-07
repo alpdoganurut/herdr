@@ -86,6 +86,8 @@ mod pane_graphics;
 mod render;
 mod retained_surface;
 mod surface_interest;
+/// Fork (sidebar v3): the `endpoint.tab-pins.v1` push.
+pub mod tab_pins;
 /// Fork: the `endpoint.teams.v1` push.
 pub mod teams;
 /// Fork: the `endpoint.voice.v1` push.

@@ -55,6 +55,10 @@ pub struct TabInfo {
     /// The tab's scheduled reminder (`tab.set_reminder`); absent when off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remind_every: Option<TabRemindInterval>,
+    /// Fork: pinned (`tab.set_pinned`): listed in clients' Pinned section.
+    /// Absent when not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 /// A named color tag on a tab. Clients map each name to a theme color.
@@ -273,4 +277,12 @@ pub struct TabSetReminderParams {
     pub important: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every: Option<TabRemindEvery>,
+}
+
+/// Fork: pin or unpin a tab (`tab.set_pinned`). A pinned tab is listed in
+/// clients' Pinned section and stays in its group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabSetPinnedParams {
+    pub tab_id: String,
+    pub pinned: bool,
 }

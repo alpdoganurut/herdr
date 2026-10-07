@@ -31,6 +31,10 @@ pub struct ClosedSessionInfo {
     pub important: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remind_every: Option<TabRemindInterval>,
+    /// Fork (sidebar v3): the tab was pinned (`tab.set_pinned`); absent when
+    /// not. Reopening restores the pin.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
     /// The space (workspace) the tab was in.
     pub space_id: String,
     pub space_name: String,
@@ -89,6 +93,7 @@ mod tests {
             color: Some(TabColor::Blue),
             important: true,
             remind_every: Some(TabRemindInterval::M10),
+            pinned: false,
             space_id: "w_1".into(),
             space_name: "leap".into(),
             cwd: "/tmp/p".into(),
@@ -163,6 +168,7 @@ mod tests {
             color: None,
             important: false,
             remind_every: None,
+            pinned: false,
             ..info()
         };
         let json = serde_json::to_value(&bare).unwrap();

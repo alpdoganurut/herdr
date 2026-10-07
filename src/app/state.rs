@@ -950,6 +950,10 @@ pub struct AppState {
     /// Fork voice: bumped whenever a pane's reported voice mode may have
     /// changed (`endpoint.voice.v1`); `0` until the first voice mode.
     pub(crate) voice_view_rev: u64,
+    /// Fork (sidebar v3): bumped by every pin change and, once a pin
+    /// existed, by moves and closes (`endpoint.tab-pins.v1`); `0` until the
+    /// first pin.
+    pub(crate) tab_pins_view_rev: u64,
     /// Fork (sidebar v2): bumped by every agent state change and, once one
     /// was seen, by moves and closes (`endpoint.agent-times.v1`); `0` until
     /// the first state change.
@@ -1253,6 +1257,7 @@ impl AppState {
             team_count: 0,
             teams_view_rev: 0,
             voice_view_rev: 0,
+            tab_pins_view_rev: 0,
             agent_times_view_rev: 0,
             agents_close_deadline: None,
         }

@@ -1094,6 +1094,10 @@
               "minimum": 0,
               "type": "integer"
             },
+            "pinned": {
+              "description": "Fork: pinned (`tab.set_pinned`): listed in clients' Pinned section.\nAbsent when not.",
+              "type": "boolean"
+            },
             "remind_every": {
               "anyOf": [
                 {
@@ -7678,6 +7682,22 @@
           ],
           "type": "object"
         },
+        "TabSetPinnedParams": {
+          "description": "Fork: pin or unpin a tab (`tab.set_pinned`). A pinned tab is listed in\nclients' Pinned section and stays in its group.",
+          "properties": {
+            "pinned": {
+              "type": "boolean"
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "pinned"
+          ],
+          "type": "object"
+        },
         "TabSetRemindParams": {
           "description": "Mark (`remind: true`) or unmark a tab as important: clients remind about\nan important tab whose agent waits unseen. The boolean form of\n`tab.set_reminder`'s `important`.",
           "properties": {
@@ -9327,6 +9347,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabSetReminderParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork (sidebar v3): pin or unpin a tab.",
+          "properties": {
+            "method": {
+              "const": "tab.set_pinned",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabSetPinnedParams"
             }
           },
           "required": [
@@ -14546,6 +14583,10 @@
                 "string",
                 "null"
               ]
+            },
+            "pinned": {
+              "description": "Fork (sidebar v3): the tab was pinned (`tab.set_pinned`); absent when\nnot. Reopening restores the pin.",
+              "type": "boolean"
             },
             "remind_every": {
               "anyOf": [
@@ -20339,6 +20380,10 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "pinned": {
+              "description": "Fork: pinned (`tab.set_pinned`): listed in clients' Pinned section.\nAbsent when not.",
+              "type": "boolean"
             },
             "remind_every": {
               "anyOf": [

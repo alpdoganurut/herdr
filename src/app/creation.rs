@@ -228,6 +228,7 @@ impl App {
             color: tab.color,
             important: tab.important,
             remind_every: tab.remind_every,
+            pinned: tab.pinned,
         })
     }
 

@@ -108,6 +108,7 @@ impl App {
             color: tab.color,
             important: tab.important,
             remind_every: tab.remind_every,
+            pinned: tab.pinned,
             space_id: workspace.id.clone(),
             space_name: workspace.display_name_from(&self.state.terminals, &self.terminal_runtimes),
             cwd: cwd.display().to_string(),
@@ -388,10 +389,15 @@ impl App {
         tab.remind_every = entry
             .remind_every
             .filter(|every| *every != TabRemindInterval::Unknown);
+        tab.pinned = entry.pinned;
         let terminal_id = tab
             .terminal_id(tab.root_pane)
             .cloned()
             .ok_or_else(|| std::io::Error::other("the new tab has no terminal"))?;
+        // Fork (sidebar v3): a reopened pin reaches clients.
+        if entry.pinned {
+            self.bump_tab_pins_view();
+        }
         Ok(ReopenedTab {
             ws_idx,
             tab_idx,
@@ -573,6 +579,7 @@ mod tests {
             tab.color = Some(TabColor::Purple);
             tab.important = true;
             tab.remind_every = Some(TabRemindInterval::M30);
+            tab.pinned = true;
         }
         let space_id = app.state.workspaces[1].id.clone();
 
@@ -591,6 +598,7 @@ mod tests {
         assert_eq!(live.color, Some(TabColor::Purple));
         assert!(live.important);
         assert_eq!(live.remind_every, Some(TabRemindInterval::M30));
+        assert!(live.pinned, "the pin is recorded with the session");
         assert_eq!(live.space_id, space_id);
         assert_eq!(live.space_name, "group");
         assert_eq!(live.cwd, sandbox.project().display().to_string());
@@ -747,6 +755,7 @@ mod tests {
             tab.color = Some(TabColor::Red);
             tab.important = true;
             tab.remind_every = Some(TabRemindInterval::Daily);
+            tab.pinned = true;
         }
         let entry = record_entry(&mut app, 1, "reopen-session");
         record_entry(&mut app, 0, "other-session");
@@ -762,6 +771,11 @@ mod tests {
         assert_eq!(response["result"]["tab"]["color"], "red");
         assert_eq!(response["result"]["tab"]["important"], true);
         assert_eq!(response["result"]["tab"]["remind_every"], "daily");
+        assert_eq!(response["result"]["tab"]["pinned"], true);
+        assert!(
+            app.state.tab_pins_view_rev > 0,
+            "the reopened pin reaches clients"
+        );
         assert_eq!(
             response["result"]["tab"]["workspace_id"],
             app.public_workspace_id(1)

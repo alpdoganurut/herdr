@@ -156,6 +156,9 @@ pub struct TabSnapshot {
     pub important: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remind_every: Option<crate::api::schema::TabRemindInterval>,
+    /// Fork: `Tab.pinned`; absent (unpinned) in older files.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
@@ -254,6 +257,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             remind: false,
             important: false,
             remind_every: None,
+            pinned: false,
             layout: snap.layout,
             panes: snap.panes,
             zoomed: snap.zoomed,
@@ -492,6 +496,7 @@ fn capture_tab(
         remind: tab.important,
         important: tab.important,
         remind_every: tab.remind_every,
+        pinned: tab.pinned,
         layout: capture_node(tab.layout.root()),
         panes,
         zoomed: tab.zoomed,
@@ -937,6 +942,7 @@ mod tests {
                     remind: false,
                     important: false,
                     remind_every: None,
+                    pinned: false,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
                         ratio: 0.5,
@@ -1613,6 +1619,7 @@ mod tests {
                     remind: false,
                     important: false,
                     remind_every: None,
+                    pinned: false,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
                         ratio: 0.5,

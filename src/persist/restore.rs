@@ -903,6 +903,7 @@ fn restore_tab(
                 remind_every: snap
                     .remind_every
                     .filter(|every| *every != crate::api::schema::TabRemindInterval::Unknown),
+                pinned: snap.pinned,
                 number,
                 root_pane,
                 layout,
@@ -1715,6 +1716,7 @@ mod tests {
                     tab(serde_json::json!({"important": true, "remind_every": "daily"})),
                     tab(serde_json::json!({"remind_every": "30m"})),
                     tab(serde_json::json!({"remind_every": "2h"})),
+                    tab(serde_json::json!({"pinned": true})),
                 ],
             }],
             "active": 0,
@@ -1748,6 +1750,7 @@ mod tests {
             (true, Some(TabRemindInterval::Daily)),
             (false, Some(TabRemindInterval::M30)),
             (false, None),
+            (false, None),
         ];
         let restored: Vec<_> = workspaces[0]
             .tabs
@@ -1762,6 +1765,22 @@ mod tests {
             .map(|tab| (tab.important, tab.remind_every))
             .collect();
         assert_eq!(captured_fields, expected);
+        // Fork (sidebar v3): the pin restores and is captured again; files
+        // without it load unpinned.
+        let pins =
+            |tabs: &[crate::workspace::Tab]| tabs.iter().map(|tab| tab.pinned).collect::<Vec<_>>();
+        assert_eq!(
+            pins(&workspaces[0].tabs),
+            [false, false, false, false, false, true]
+        );
+        assert_eq!(
+            captured.workspaces[0]
+                .tabs
+                .iter()
+                .map(|tab| tab.pinned)
+                .collect::<Vec<_>>(),
+            [false, false, false, false, false, true]
+        );
         // Written with `remind` too when important (an older build reads it),
         // nothing when both are off.
         let written = serde_json::to_value(&captured).unwrap();
@@ -1771,7 +1790,8 @@ mod tests {
         assert_eq!(tabs[2]["remind_every"], "daily");
         assert_eq!(tabs[3]["remind_every"], "30m");
         assert!(tabs[3].get("remind").is_none());
-        for key in ["remind", "important", "remind_every"] {
+        assert_eq!(tabs[5]["pinned"], true);
+        for key in ["remind", "important", "remind_every", "pinned"] {
             assert!(tabs[1].get(key).is_none(), "{key}");
         }
     }
@@ -1804,6 +1824,7 @@ mod tests {
                     remind: false,
                     important: false,
                     remind_every: None,
+                    pinned: false,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -1994,6 +2015,7 @@ mod tests {
                     remind: false,
                     important: false,
                     remind_every: None,
+                    pinned: false,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -2112,6 +2134,7 @@ mod tests {
                     remind: false,
                     important: false,
                     remind_every: None,
+                    pinned: false,
                     layout: LayoutSnapshot::Pane(5),
                     panes: HashMap::from([(5, pane)]),
                     zoomed: false,
@@ -2189,6 +2212,7 @@ mod tests {
                     remind: false,
                     important: false,
                     remind_every: None,
+                    pinned: false,
                     layout: LayoutSnapshot::Split {
                         direction: super::super::snapshot::DirectionSnapshot::Horizontal,
                         ratio: 0.5,
@@ -2313,6 +2337,7 @@ mod tests {
                         remind: false,
                         important: false,
                         remind_every: None,
+                        pinned: false,
                         layout: LayoutSnapshot::Pane(10),
                         panes: HashMap::from([pane_snap("10")]),
                         zoomed: false,
@@ -2325,6 +2350,7 @@ mod tests {
                         remind: false,
                         important: false,
                         remind_every: None,
+                        pinned: false,
                         layout: LayoutSnapshot::Pane(11),
                         panes: HashMap::from([pane_snap("11")]),
                         zoomed: false,
@@ -2337,6 +2363,7 @@ mod tests {
                         remind: false,
                         important: false,
                         remind_every: None,
+                        pinned: false,
                         layout: LayoutSnapshot::Pane(12),
                         panes: HashMap::from([pane_snap("12")]),
                         zoomed: false,
@@ -2349,6 +2376,7 @@ mod tests {
                         remind: false,
                         important: false,
                         remind_every: None,
+                        pinned: false,
                         layout: LayoutSnapshot::Pane(13),
                         panes: HashMap::from([(13, final_pane)]),
                         zoomed: false,
@@ -2412,6 +2440,7 @@ mod tests {
                 remind: false,
                 important: false,
                 remind_every: None,
+                pinned: false,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
                     ratio: 0.5,
@@ -2456,6 +2485,7 @@ mod tests {
                     remind: false,
                     important: false,
                     remind_every: None,
+                    pinned: false,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -2918,6 +2948,7 @@ mod tests {
                     remind: false,
                     important: false,
                     remind_every: None,
+                    pinned: false,
                     layout: LayoutSnapshot::Pane(0),
                     panes,
                     zoomed: false,

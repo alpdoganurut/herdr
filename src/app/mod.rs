@@ -49,6 +49,8 @@ pub mod state;
 mod subagents;
 mod tab_bar_status;
 mod tab_color;
+/// Fork (sidebar v3): `tab.set_pinned` (the tabs sidebar's Pinned section).
+mod tab_pin;
 mod tab_remind;
 /// Fork: teams (`team.*`, following panes and agents).
 pub(crate) mod team;
@@ -608,6 +610,7 @@ impl App {
             team_count: 0,
             teams_view_rev: 0,
             voice_view_rev: 0,
+            tab_pins_view_rev: 0,
             agent_times_view_rev: 0,
             agents_close_deadline: None,
         };
@@ -615,6 +618,8 @@ impl App {
         state.terminals = restored_terminals;
         // Fork teams: restored teams rebuild their index.
         state.rebuild_team_index();
+        // Fork (sidebar v3): restored pins reach clients on the first pass.
+        state.note_restored_pins();
         // Fork (agents v2): public id aliases ride the pane meta.
         state.restore_public_aliases_from_meta();
         state.adopt_member_roles_into_meta();
@@ -789,6 +794,8 @@ impl App {
         app.state.workspaces = workspaces;
         // Fork teams: a live handoff keeps teams; rebuild their index.
         app.state.rebuild_team_index();
+        // Fork (sidebar v3): handed-off pins reach clients on the first pass.
+        app.state.note_restored_pins();
         app.state.terminals = terminals;
         // Fork (agents v2): public id aliases ride the pane meta.
         app.state.restore_public_aliases_from_meta();

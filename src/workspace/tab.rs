@@ -45,6 +45,9 @@ pub struct Tab {
     /// Scheduled reminder (`tab.set_reminder`), None = off; never `Unknown`.
     /// Persisted, carried by whole-tab moves.
     pub remind_every: Option<crate::api::schema::TabRemindInterval>,
+    /// Fork: pinned (`tab.set_pinned`): listed in clients' Pinned section.
+    /// Persisted, carried by whole-tab moves and close/reopen.
+    pub pinned: bool,
     pub number: usize,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
@@ -192,6 +195,7 @@ impl Tab {
                 color: None,
                 important: false,
                 remind_every: None,
+                pinned: false,
                 number,
                 root_pane: root_id,
                 layout,
@@ -458,6 +462,7 @@ impl Tab {
             color: None,
             important: false,
             remind_every: None,
+            pinned: false,
             number,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),

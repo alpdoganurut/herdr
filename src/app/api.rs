@@ -860,6 +860,8 @@ impl App {
         }
         // Fork: panes in voice mode follow moves and closes (O(1)).
         self.note_voice_event(&event.event);
+        // Fork (sidebar v3): pinned tabs follow moves and closes (O(1)).
+        self.note_tab_pins_event(&event.event);
         // Fork (sidebar v2): agent state times follow moves and closes (O(1)).
         self.note_agent_times_event(&event.event);
         // Fork: agent cards follow their pane (O(cards), nothing without cards).
@@ -1284,6 +1286,7 @@ impl App {
             Method::TabSetReminder(params) => {
                 return self.handle_tab_set_reminder(request.id, params)
             }
+            Method::TabSetPinned(params) => return self.handle_tab_set_pinned(request.id, params),
             Method::PaneReportSubagent(params) => {
                 return self.handle_pane_report_subagent(request.id, params)
             }
