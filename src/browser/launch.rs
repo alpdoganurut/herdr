@@ -153,7 +153,9 @@ pub fn argv(
     let mut argv = vec![
         format!("--user-data-dir={}", profile_dir.display()),
         format!("--remote-debugging-port={port}"),
-        "--disable-blink-features=AutomationControlled".to_string(),
+        // (no --disable-blink-features=AutomationControlled: on a fixed port this
+        // build reports navigator.webdriver = false without it, and the flag only
+        // drew the "unsupported command-line flag" infobar)
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         "--disable-background-timer-throttling".to_string(),
@@ -421,7 +423,8 @@ pub struct LaunchOptions {
     pub first_launch: bool,
     pub timeout: Duration,
     pub server_pid: u32,
-    /// The companion extension to load (`[browser] show_activity`).
+    /// The companion extension to load (always, when installed; the attach
+    /// reloads restored tabs through it).
     pub extension_dir: Option<PathBuf>,
 }
 
@@ -613,7 +616,10 @@ mod tests {
         );
         assert_eq!(args[0], "--user-data-dir=/tmp/p");
         assert_eq!(args[1], "--remote-debugging-port=4321");
-        assert!(args.contains(&"--disable-blink-features=AutomationControlled".to_string()));
+        assert!(
+            !args.iter().any(|a| a.contains("AutomationControlled")),
+            "the infobar flag is not passed: {args:?}"
+        );
         assert!(args.contains(&"--restore-last-session".to_string()));
         assert!(args.contains(&"--lang=tr".to_string()));
         assert_eq!(args.last().unwrap(), "about:blank");

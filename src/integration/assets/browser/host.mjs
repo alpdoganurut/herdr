@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, SELECT_BUDGET_MS } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, SELECT_BUDGET_MS, describe, probePages } from './activity.mjs';
 
 const require = createRequire(import.meta.url);
 // Real functions for page.evaluate: a string would be evaluated as an expression (yielding the function,
@@ -190,15 +190,29 @@ async function attach(profile, port, deadlineMs, pinDashboard) {
   profile.port = port;
   const t0 = Date.now();
   const stamp = () => `attach ${profile.name}:${port}`;
-  log('debug', `${stamp()} connectOverCDP…`);
+  // Restored tabs Chrome never loaded hang the connect (Playwright awaits
+  // every page's init): the companion reloads them and they settle first,
+  // inside the first half of the deadline. A failed sweep is a result, not
+  // an error: the connect runs as before and the text names the state.
+  const swept = await profile.companion.sweep(Math.min(8000, Math.floor(deadlineMs / 2)));
+  log('debug', `${stamp()} sweep ${JSON.stringify(swept)}`);
+  const connectMs = Math.max(3000, deadlineMs - (Date.now() - t0) - 2500); // 2.5 s kept for the diagnosis
+  log('debug', `${stamp()} connectOverCDP… (${connectMs} ms)`);
   let browser;
   try {
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { noDefaults: true, timeout: Math.max(1000, deadlineMs - 500) });
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { noDefaults: true, timeout: connectMs });
   } catch (err) {
     const message = String(err && err.message || err).split('\n')[0];
     log('debug', `${stamp()} connectOverCDP failed after ${Date.now() - t0} ms: ${message}`);
-    // A distinct code for the connect timeout: herdr retries that once.
-    if (/Timeout/i.test(message)) fail('attach_timeout', `the browser did not accept the CDP connection within ${deadlineMs} ms (${message})`);
+    // A distinct code for the connect timeout: herdr retries that once. The
+    // text says what blocks: the page targets that do not answer DevTools (a
+    // dialog, a frozen page), the tabs that could not be loaded, what is
+    // still loading — never a stop (a restart restores the same tabs).
+    if (/Timeout/i.test(message)) {
+      const probe = await probePages(port, 1000).catch(() => ({ pages: 0, blocked: [] }));
+      log('debug', `${stamp()} probe ${JSON.stringify(probe)}`);
+      fail('attach_timeout', `the browser did not accept the CDP connection within ${deadlineMs} ms: ${describe(swept, probe.blocked)}`);
+    }
     throw err;
   }
   log('debug', `${stamp()} connected in ${Date.now() - t0} ms, pages ${browser.contexts()[0] ? browser.contexts()[0].pages().length : 'none'}`);
@@ -239,17 +253,17 @@ async function attach(profile, port, deadlineMs, pinDashboard) {
 }
 
 async function tabs(profile) {
-  const out = [];
-  for (const state of profile.pages.values()) {
-    if (state.closed) continue;
+  // every tab asked at once: the per-tab caps no longer add up over many tabs
+  const states = [...profile.pages.values()].filter((state) => !state.closed);
+  const out = await Promise.all(states.map(async (state) => {
     let selected = false;
     let title = '';
     if (!state.dialog) {
       selected = await withTimeout(state.page.evaluate(() => document.visibilityState === 'visible'), 500, 'x', 'x').catch(() => false);
       title = await withTimeout(state.page.title(), 500, 'x', 'x').catch(() => '');
     }
-    out.push({ target: state.target, url: state.page.url(), title, selected, dialog_open: Boolean(state.dialog) });
-  }
+    return { target: state.target, url: state.page.url(), title, selected, dialog_open: Boolean(state.dialog) };
+  }));
   return { tabs: out };
 }
 

@@ -1289,7 +1289,7 @@ fn browser_launch_argv_carries_no_automation_switches() {
     );
     assert!(argv.contains(&"--remote-debugging-port=43210".to_string()));
     assert!(argv.contains(&"--load-extension=/tmp/host/companion".to_string()));
-    assert!(argv.contains(&"--disable-blink-features=AutomationControlled".to_string()));
+    assert!(!argv.iter().any(|a| a.contains("AutomationControlled")));
     assert!(argv.contains(&"--restore-last-session".to_string()));
     assert!(argv.contains(&"--lang=tr".to_string()));
     let own: Vec<&String> = argv

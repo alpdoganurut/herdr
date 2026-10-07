@@ -2302,3 +2302,60 @@ fn without_a_companion_open_focus_still_opens_and_screenshot_front_fails_quietly
     );
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn a_blocked_attach_names_what_the_sidecar_saw_and_never_advises_a_stop() {
+    let (hub, shared, _stream, home) = hub("attach-blocked");
+    shared.lock().unwrap().errors.push((
+        "attach".into(),
+        "attach_timeout".into(),
+        "the browser did not accept the CDP connection within 15000 ms: these tabs are not responding (a dialog may be open in one): \"Checkout — shop.test\"; answer or close it in the herdr+ Browser window, then retry".into(),
+    ));
+    let actor = pane("w2:pA");
+    let err = hub
+        .run(
+            &actor,
+            params(BrowserOp::Open {
+                url: "https://a.test/".into(),
+                focus: false,
+                wait: None,
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "attach_blocked", "{}", err.message);
+    assert!(
+        err.message.starts_with("the browser did not accept the attach within 15 s (twice): these tabs are not responding (a dialog may be open in one): \"Checkout — shop.test\"; answer or close it in the herdr+ Browser window, then retry. Your tabs are safe"),
+        "{}",
+        err.message
+    );
+    assert!(
+        err.message.contains("do not stop it for this")
+            && !err.message.contains("`herdr browser stop`"),
+        "never a stop: {}",
+        err.message
+    );
+    let names: Vec<String> = shared
+        .lock()
+        .unwrap()
+        .ops
+        .iter()
+        .map(|(op, _, _)| op.clone())
+        .collect();
+    assert_eq!(
+        names.iter().filter(|n| *n == "attach").count(),
+        2,
+        "one retry, then the verdict: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "close_browser"),
+        "no stop, no relaunch: {names:?}"
+    );
+    assert!(
+        hub.with_state(|state| matches!(
+            state.profile("main"),
+            crate::browser::state::ProfileStatus::Running { .. }
+        )),
+        "the profile stays running"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}

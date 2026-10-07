@@ -32,9 +32,11 @@ use crate::integration::browser_assets;
 
 /// Grace the hub adds to the sidecar's own deadline before giving up on a reply.
 pub const REPLY_GRACE: Duration = Duration::from_secs(5);
-/// Deadline of the attach handshake: a page dialog can block it, and the
-/// first attach to a freshly launched browser restoring its session has
-/// been seen to take seconds while the restored tabs come up.
+/// Deadline of the attach handshake. Restored tabs Chrome never loaded are
+/// reloaded by the sidecar (through the companion) before it connects —
+/// they never answer DevTools and hung the connect for good; what can still
+/// block is a page dialog or a frozen page, so one retry, then
+/// `attach_blocked` naming what the sidecar saw. Never a restart.
 pub const ATTACH_TIMEOUT: Duration = Duration::from_secs(15);
 /// Deadline of `hello` and pings.
 pub const PING_TIMEOUT: Duration = Duration::from_secs(2);
@@ -2414,18 +2416,17 @@ impl BrowserHub {
                     .unwrap()
                     .set_profile(name, ProfileStatus::Starting { since: unix_now() });
                 // The companion extension is installed with the sidecar assets;
-                // a fresh server may launch before its first host start.
+                // a fresh server may launch before its first host start. It is
+                // always loaded: the attach needs it (restored tabs are reloaded
+                // through it); `[browser] show_activity` only gates the visuals
+                // (groups, the glow and cursor, the mark, the pinned dashboard).
                 let host_dir = self.host_dir();
-                let extension_dir = if config.show_activity {
-                    match browser_assets::install(&host_dir) {
-                        Ok(_) => Some(host_dir.join(browser_assets::COMPANION_DIR)),
-                        Err(err) => {
-                            tracing::warn!(event = "browser.companion.install", error = %err, "companion extension not installed; tab groups off");
-                            None
-                        }
+                let extension_dir = match browser_assets::install(&host_dir) {
+                    Ok(_) => Some(host_dir.join(browser_assets::COMPANION_DIR)),
+                    Err(err) => {
+                        tracing::warn!(event = "browser.companion.install", error = %err, "companion extension not installed; restored tabs cannot be reloaded before an attach, tab groups off");
+                        None
                     }
-                } else {
-                    None
                 };
                 let options = LaunchOptions {
                     restore: config.restore_tabs && self.inner.profiles.has_launched(name),
@@ -2480,9 +2481,12 @@ impl BrowserHub {
             },
         );
         self.ensure_host()?;
-        // The attach can stall on a page dialog or on a tab that is still
-        // restoring; one retry after a pause covers the transient case, the
-        // rest is reported as attach_blocked with the remedy.
+        // The sidecar reloads restored-but-unloaded tabs before it connects;
+        // what can still stall the attach is a page dialog, a frozen page or
+        // a tab mid-load. One retry after a pause covers the transient case,
+        // the rest is reported as attach_blocked with the sidecar's own
+        // account of what blocks — and never a stop: a restart would restore
+        // the same tabs.
         let attach_timed_out =
             |err: &BrowserError| err.code == "browser_timeout" || err.code == "attach_timeout";
         let mut attempt = 0;
@@ -2501,10 +2505,15 @@ impl BrowserHub {
                     std::thread::sleep(Duration::from_millis(1500));
                 }
                 Err(err) if attach_timed_out(&err) => {
+                    // the sidecar's clause follows " ms: " in its message
+                    let clause = err
+                        .message
+                        .split_once(" ms: ")
+                        .map_or(err.message.as_str(), |(_, clause)| clause);
                     return Err(BrowserError::new(
                         "attach_blocked",
                         format!(
-                            "the browser did not accept the attach within {} s (twice): a page dialog may be waiting in the Chromium window (answer it), or a restored tab is still loading; retry, or `herdr browser stop` and open again",
+                            "the browser did not accept the attach within {} s (twice): {clause}. Your tabs are safe and herdr did not restart the browser; a restart would restore the same tabs, so do not stop it for this",
                             ATTACH_TIMEOUT.as_secs()
                         ),
                     ));
@@ -2521,10 +2530,9 @@ impl BrowserHub {
         if let Some(link) = self.inner.host.lock().unwrap().as_mut() {
             link.attached.insert(name.to_string());
         }
-        // The companion extension (tab groups): what the sidecar found.
-        let companion = if !config.show_activity {
-            "off".to_string()
-        } else {
+        // The companion extension: what the sidecar found (always loaded;
+        // `show_activity = false` only keeps its visuals off).
+        let companion = {
             let state = reply.result["companion"]["state"]
                 .as_str()
                 .unwrap_or("unknown");

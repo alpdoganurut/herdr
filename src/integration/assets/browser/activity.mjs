@@ -312,6 +312,61 @@ export function dismissPanes(profiles, keys) {
   return dismissed;
 }
 
+/** Evaluated in the companion worker before a connect: every tab Chrome
+ *  restored but never loaded (`status: 'unloaded'`) is reloaded. Such a tab
+ *  never answers DevTools and hangs `connectOverCDP` (measured; a discard
+ *  does not help — a discarded never-loaded tab still blocks). Only
+ *  `chrome.tabs`, so an older worker runs it too. */
+export const SWEEP_EXPR = `(async () => {
+  const unloaded = await chrome.tabs.query({ status: 'unloaded' });
+  const done = await Promise.allSettled(unloaded.map((t) => chrome.tabs.reload(t.id)));
+  const left = unloaded.filter((t, i) => done[i].status !== 'fulfilled');
+  return { unloaded: unloaded.length, reloaded: unloaded.length - left.length,
+           left: left.slice(0, 3).map((t) => t.title || t.url), left_count: left.length };
+})()`;
+/** Tabs still loading (the reloaded ones settle before the connect; a tab mid-load stalls it briefly). */
+export const LOADING_EXPR = `chrome.tabs.query({ status: 'loading' }).then((ts) => ({ loading: ts.length, loading_titles: ts.slice(0, 3).map((t) => t.title || t.url) }))`;
+/** The longest the sweep waits for the companion worker to be listed after a launch (measured ~1.2 s). */
+export const SWEEP_WORKER_WAIT_MS = 3000;
+/** The longest the sweep waits for reloaded tabs to finish loading. */
+export const SWEEP_SETTLE_MS = 5000;
+
+const titles = (list) => list.map((t) => `"${String(t).slice(0, 60)}"`).join(', ');
+
+/** One clause for the attach error, from the sweep result and the page probe
+ *  (`blockers`: tabs that did not answer DevTools). Never advises a stop: a
+ *  restart restores the same tabs. */
+export function describe(sweep, blockers = []) {
+  const r = sweep || { state: 'failed', detail: 'no sweep' };
+  if (r.left_count > 0) return `${r.left_count} restored tab(s) could not be loaded (${titles(r.left)}); ask the user to click them once in the herdr+ Browser window, then retry`;
+  if (blockers.length) return `these tabs are not responding (a dialog may be open in one): ${titles(blockers.map((b) => b.title ? `${b.title} — ${b.host}` : b.host))}; answer or close it in the herdr+ Browser window, then retry`;
+  if (r.loading > 0) return `${r.loading} tab(s) are still loading (${titles(r.loading_titles || [])}); retry in a few seconds`;
+  if (r.state !== 'ready') return `the companion extension is not reachable (${r.state}${r.detail ? ': ' + r.detail : ''}), so restored tabs could not be loaded; ask the user to click the restored tabs once in the herdr+ Browser window, then retry`;
+  return `${r.reloaded || 0} restored tab(s) were loaded, so a page that is not answering is blocking — a dialog (alert, 'Leave site?') or a frozen page; ask the user to look at the herdr+ Browser window, then retry`;
+}
+
+/** Which page targets answer DevTools (raw CDP, one `Runtime.evaluate` per
+ *  page, `capMs` each, all in parallel): the ones that do not are what blocks
+ *  a connect — a dialog, a frozen renderer. Read-only. `list` is
+ *  `/json/list` (fetched when not given); `open` makes a WebSocket (for
+ *  tests). */
+export async function probePages(port, capMs = 1000, list = null, open = (url) => new WebSocket(url)) {
+  const targets = list || await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(2000) }).then((r) => r.json()).catch(() => []);
+  const pages = targets.filter((t) => t.type === 'page' && t.webSocketDebuggerUrl);
+  const host = (url) => { try { return new URL(url).host || url.slice(0, 40); } catch { return String(url).slice(0, 40); } };
+  const probe = (t) => new Promise((resolve) => {
+    let ws; const done = (ok) => { try { ws && ws.close(); } catch {} resolve(ok); };
+    const timer = setTimeout(() => done(false), capMs);
+    try { ws = open(t.webSocketDebuggerUrl); } catch { clearTimeout(timer); return resolve(false); }
+    ws.onopen = () => ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: '1', returnByValue: true } }));
+    ws.onmessage = (m) => { let msg; try { msg = JSON.parse(m.data); } catch { return; } if (msg.id === 1) { clearTimeout(timer); done(true); } };
+    ws.onerror = () => { clearTimeout(timer); done(false); };
+  });
+  const answers = await Promise.all(pages.map(probe));
+  const blocked = pages.filter((_, i) => !answers[i]).map((t) => ({ title: String(t.title || '').slice(0, 60), host: host(t.url || '') }));
+  return { pages: pages.length, blocked };
+}
+
 /** The companion extension of one profile: the worker connection, target → tab ids, the pane groups. */
 export class Companion {
   constructor(profile) {
@@ -399,6 +454,35 @@ export class Companion {
     return res.json();
   }
   findIn(list) { return list.find((t) => t.type === 'service_worker' && /\/sw\.js$/.test(t.url)) || null; }
+  /** Before a connect: reload every tab Chrome restored but never loaded
+   *  (they never answer DevTools and hang connectOverCDP), then wait for the
+   *  reloaded ones to settle (tabs mid-load stall the connect briefly). Waits
+   *  up to SWEEP_WORKER_WAIT_MS for the worker right after a launch. Never
+   *  throws; the result goes into the attach's log and error text. */
+  async sweep(budgetMs = 8000) {
+    const t0 = Date.now();
+    const left = () => budgetMs - (Date.now() - t0);
+    if (typeof WebSocket !== 'function') return { state: 'unsupported', detail: 'node has no WebSocket' };
+    let sw = null;
+    while (!(sw = this.findIn(await this.targets().catch(() => []))) && Date.now() - t0 < Math.min(SWEEP_WORKER_WAIT_MS, budgetMs)) await sleep(200);
+    if (!sw) return { state: 'missing', detail: 'no companion service worker on the DevTools port', ms: Date.now() - t0 };
+    let result;
+    try {
+      result = Object.assign({ state: 'ready' }, await withTimeout(this.evaluate(SWEEP_EXPR, 'sweep'), Math.max(500, left()), 'companion sweep'));
+    } catch (err) {
+      return { state: 'failed', detail: String(err.message).slice(0, 120), ms: Date.now() - t0 };
+    }
+    // the reloaded tabs settle: poll until none is loading, within the budget
+    let loading = { loading: 0, loading_titles: [] };
+    if (result.reloaded > 0) {
+      const settleUntil = Date.now() + Math.min(SWEEP_SETTLE_MS, Math.max(0, left()));
+      do {
+        await sleep(250);
+        loading = await withTimeout(this.evaluate(LOADING_EXPR, 'sweep settle'), Math.max(300, left()), 'companion settle').catch(() => ({ loading: 0, loading_titles: [] }));
+      } while (loading.loading > 0 && Date.now() < settleUntil);
+    }
+    return Object.assign(result, loading, { ms: Date.now() - t0 });
+  }
   /** Is the extension loaded, and current? (at attach) A worker still running
    *  older code (the files were refreshed under it) keeps serving this
    *  session and is reported as pending; see `stopStaleWorker`. */
