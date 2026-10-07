@@ -92,7 +92,9 @@ fn notify(server: &mut HeadlessServer, pane: &str, title: &str) -> serde_json::V
 /// Every card payload in the control stream so far, in order.
 fn notice_payloads(control: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<AgentNoticesPayload> {
     let mut payloads = Vec::new();
-    while let Ok(bytes) = control.try_recv() {
+    // The test writer forwards from its own drain thread: wait out a short
+    // quiet period instead of reading only what already arrived.
+    while let Ok(bytes) = control.recv_timeout(std::time::Duration::from_millis(100)) {
         if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
             if kind == AGENT_NOTICES_KIND {
                 payloads.push(AgentNoticesPayload::decode(&data).expect("payload decodes"));
