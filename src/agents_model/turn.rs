@@ -19,6 +19,11 @@ pub const BRIDGE: Duration = Duration::from_secs(5);
 /// message delivery trusts the hooks over a screen that reads idle
 /// ([`TurnState::hook_turn_live_until`]).
 pub const HOOK_LIVE_HOLD: Duration = Duration::from_secs(15);
+/// A hook report older on the hook clock than the mark of its kind is
+/// dropped as late only while that mark arrived this recently (a report
+/// is at most a socket timeout late; a wall clock stepped back must not
+/// freeze the marks).
+pub const LATE_HOOK_REPORT: Duration = Duration::from_secs(30);
 /// A user submit counts for the next turn only this long.
 pub const USER_SUBMIT_WINDOW: Duration = Duration::from_secs(10 * 60);
 
@@ -373,8 +378,31 @@ impl TurnState {
     }
 
     /// A turn start (`start`) or end the agent's own hooks reported.
-    /// `seq` is the hook's clock; 0 (not sent) orders by arrival.
+    /// `seq` is the hook's clock; 0 (not sent) orders by arrival. A report
+    /// older by that clock than the mark of its kind it would replace
+    /// (which arrived within [`LATE_HOOK_REPORT`]) arrived late: the hooks
+    /// report over separate connections. It is dropped: a delayed start
+    /// must not hide a newer one, and a delayed end must not end a newer
+    /// turn.
     pub fn note_hook_turn(&mut self, start: bool, prompt: Option<String>, seq: u64, now: Instant) {
+        let current = if start {
+            &self.hook_start
+        } else {
+            &self.hook_end
+        };
+        if seq != 0 {
+            if let Some(newer) = current.as_ref().filter(|mark| {
+                mark.seq > seq && now.saturating_duration_since(mark.at) < LATE_HOOK_REPORT
+            }) {
+                tracing::debug!(
+                    start,
+                    seq,
+                    newer = newer.seq,
+                    "turn: a late hook report is older than the mark it would replace; dropped"
+                );
+                return;
+            }
+        }
         let seq = if seq == 0 {
             // Past every reported mark: the report arrived last.
             [&self.hook_start, &self.hook_end]
@@ -832,6 +860,41 @@ mod tests {
         assert_eq!(bare.hook_turn_ended(), Some(secs(t0, 2)));
         bare.note_hook_turn(true, None, 0, secs(t0, 3));
         assert_eq!(bare.hook_turn_ended(), None);
+    }
+
+    #[test]
+    fn a_delayed_start_arriving_last_never_frees_a_newer_turn() {
+        let t0 = Instant::now();
+        let mut turn = idle(t0);
+        // p2 started (30) after p1 ended (20); p1's own start (10) is
+        // reported last.
+        turn.note_hook_turn(true, prompt("p2"), 30, secs(t0, 3));
+        turn.note_hook_turn(false, prompt("p1"), 20, secs(t0, 3));
+        assert_eq!(turn.hook_turn_ended(), None, "p2 is live");
+        turn.note_hook_turn(true, prompt("p1"), 10, secs(t0, 4));
+        assert_eq!(turn.hook_turn_ended(), None, "the late start is dropped");
+        assert!(turn.hook_turn_live_until(secs(t0, 5)).is_some());
+        // A report without a clock still orders by arrival.
+        turn.note_hook_turn(false, None, 0, secs(t0, 6));
+        assert_eq!(turn.hook_turn_ended(), Some(secs(t0, 6)));
+    }
+
+    #[test]
+    fn a_delayed_end_arriving_last_never_reopens_a_newer_turn() {
+        let t0 = Instant::now();
+        let mut turn = idle(t0);
+        turn.note_hook_turn(true, prompt("p1"), 10, secs(t0, 1));
+        turn.note_hook_turn(true, prompt("p2"), 30, secs(t0, 3));
+        turn.note_hook_turn(false, prompt("p2"), 40, secs(t0, 5));
+        assert_eq!(turn.hook_turn_ended(), Some(secs(t0, 5)));
+        // p1's end (20) is reported after p2's.
+        turn.note_hook_turn(false, prompt("p1"), 20, secs(t0, 6));
+        assert_eq!(turn.hook_turn_ended(), Some(secs(t0, 5)), "p2 ended");
+        assert_eq!(turn.hook_turn_live_until(secs(t0, 6)), None);
+        // Long after the newer mark (a wall clock stepped back), an older
+        // clock is taken again rather than freezing the marks.
+        turn.note_hook_turn(false, prompt("p1"), 20, secs(t0, 5 + 31));
+        assert_eq!(turn.hook_end.as_ref().map(|mark| mark.seq), Some(20));
     }
 
     #[test]
