@@ -350,6 +350,9 @@ pub enum Method {
     /// Fork: a turn of the pane's agent started or ended (its hooks).
     #[serde(rename = "pane.report_turn")]
     PaneReportTurn(PaneReportTurnParams),
+    /// Fork: the caller's own messages still queued.
+    #[serde(rename = "agents.queued")]
+    AgentsQueued(agents_model::AgentsQueuedParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

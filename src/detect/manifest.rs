@@ -1630,6 +1630,14 @@ fn prompt_box_body(content: &str) -> Option<&str> {
     Some(&content[start.min(content.len())..end.min(content.len())])
 }
 
+/// Fork (message delivery): the detection text above an agent's prompt box
+/// (the whole text without one), the `above_prompt_box` region. The stuck
+/// queue check compares it between samples: a live turn's spinner and
+/// streamed text change it, a panel ticking under the prompt box does not.
+pub(crate) fn above_prompt_box_text(content: &str) -> &str {
+    above_prompt_box(content)
+}
+
 fn above_prompt_box(content: &str) -> &str {
     let lines: Vec<&str> = content.lines().collect();
     let Some(top) = prompt_box_top_border_index(&lines) else {

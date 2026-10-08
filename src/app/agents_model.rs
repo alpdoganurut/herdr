@@ -2429,6 +2429,15 @@ impl App {
             now,
             now,
         );
+        // How long the oldest message for the same target has waited.
+        let queue_age_s = reason.as_ref().and_then(|_| {
+            self.message_queue
+                .entries
+                .iter()
+                .filter(|entry| entry.terminal_id == queue_target.terminal_id)
+                .map(|entry| now.saturating_sub(entry.message.unix))
+                .max()
+        });
         Ok(AgentsMessageResult {
             id,
             outcome: if reason.is_some() {
@@ -2442,6 +2451,7 @@ impl App {
             team: target_team,
             cross_team: !teammate,
             reason,
+            queue_age_s,
         })
     }
 

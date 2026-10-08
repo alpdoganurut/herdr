@@ -39,6 +39,7 @@ pub mod method {
     pub const READ_MESSAGES: &str = "agents.read_messages";
     pub const REORDER_GROUP: &str = "agents.reorder_group";
     pub const REORDER_TAB: &str = "agents.reorder_tab";
+    pub const QUEUED: &str = "agents.queued";
 
     /// The one method advertised to client shells (the TUI's "Set role…").
     #[cfg(test)]
@@ -46,7 +47,7 @@ pub mod method {
 
     /// Every method.
     #[cfg(test)]
-    pub const ALL: [&str; 20] = [
+    pub const ALL: [&str; 21] = [
         ACTOR,
         DIRECTORY,
         READ,
@@ -67,6 +68,7 @@ pub mod method {
         READ_MESSAGES,
         REORDER_GROUP,
         REORDER_TAB,
+        QUEUED,
     ];
 }
 
@@ -865,6 +867,34 @@ pub struct AgentsMessageResult {
     /// user typing, earlier messages waiting, ...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// A queued message: how long the oldest message queued for the same
+    /// target has waited (seconds; 0 when this one is the first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_age_s: Option<u64>,
+}
+
+/// `agents.queued`: the caller's own messages that still wait in herdr's
+/// queue, oldest first, with how long each waited and why.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsQueuedParams {
+    pub caller_pane: String,
+}
+
+/// One message of `agents.queued`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsQueuedMessage {
+    pub id: String,
+    pub to_pane: String,
+    #[serde(default)]
+    pub to_name: String,
+    /// When it was sent (unix seconds).
+    pub queued_unix: u64,
+    pub age_s: u64,
+    /// Why it waits now (working, blocked, its user typing, ...).
+    pub reason: String,
+    /// Herdr already told the sender it seems stuck.
+    #[serde(default)]
+    pub notified: bool,
 }
 
 /// One message of `agents.read_messages`.
@@ -1013,7 +1043,7 @@ pub struct AgentActionEntry {
 
 /// The type names the params structs may reference (digest hygiene).
 #[cfg(test)]
-pub const PARAM_TYPES: [&str; 21] = [
+pub const PARAM_TYPES: [&str; 22] = [
     "AgentsActorParams",
     "AgentsDirectoryParams",
     "AgentsReadParams",
@@ -1035,6 +1065,7 @@ pub const PARAM_TYPES: [&str; 21] = [
     "AgentsReadMessagesParams",
     "AgentsReorderGroupParams",
     "AgentsReorderTabParams",
+    "AgentsQueuedParams",
 ];
 
 #[cfg(test)]

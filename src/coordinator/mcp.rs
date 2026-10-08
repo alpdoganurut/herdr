@@ -41,11 +41,12 @@ use crate::api::schema::agents_model::{
     AgentsDeliveredMessage, AgentsDirectory, AgentsDirectoryParams, AgentsLifecycleParams,
     AgentsMessageOutcome, AgentsMessageResult, AgentsMoveResult, AgentsMoveTabParams,
     AgentsNotesAppendParams, AgentsOpenResult, AgentsOpenTabParams, AgentsOriginDetail,
-    AgentsPaneInfo, AgentsReadMessagesParams, AgentsReadParams, AgentsReadResult, AgentsReadSource,
-    AgentsRenameResult, AgentsRenameTabParams, AgentsReopenResult, AgentsReopenTabParams,
-    AgentsReorderGroupParams, AgentsReorderResult, AgentsReorderTabParams, AgentsScreenAccess,
-    AgentsSendMessageParams, AgentsSetMetaParams, AgentsSetMetaResult, AgentsTabInfo,
-    AgentsTeamRef, AgentsTurnInfo, AgentsTurnOrigin,
+    AgentsPaneInfo, AgentsQueuedMessage, AgentsQueuedParams, AgentsReadMessagesParams,
+    AgentsReadParams, AgentsReadResult, AgentsReadSource, AgentsRenameResult,
+    AgentsRenameTabParams, AgentsReopenResult, AgentsReopenTabParams, AgentsReorderGroupParams,
+    AgentsReorderResult, AgentsReorderTabParams, AgentsScreenAccess, AgentsSendMessageParams,
+    AgentsSetMetaParams, AgentsSetMetaResult, AgentsTabInfo, AgentsTeamRef, AgentsTurnInfo,
+    AgentsTurnOrigin,
 };
 use crate::api::schema::notes::{
     CheckpointKind, CheckpointWriteInfo, CheckpointsAddParams, CheckpointsListInfo,
@@ -1156,14 +1157,50 @@ impl<A: Api> Session<A> {
             .iter()
             .filter(|m| m.outcome == messages::OUTCOME_QUEUED)
             .count();
-        let footer = (pending > 0).then(|| {
-            format!(
-                "{pending} queued: not typed in yet; herdr types them in when their target is free"
-            )
-        });
+        // The caller's own queued messages as the server sees them: how
+        // long each waited and why (an older server has no agents.queued).
+        let queued: Vec<AgentsQueuedMessage> = self
+            .api
+            .call(Method::AgentsQueued(AgentsQueuedParams {
+                caller_pane: caller.pane_id.clone(),
+            }))
+            .ok()
+            .and_then(|result| typed(result, "messages").ok())
+            .unwrap_or_default();
+        let footer = if !queued.is_empty() {
+            let each: Vec<String> = queued
+                .iter()
+                .map(|message| {
+                    format!(
+                        "{} -> {} ({}) waited {}: {}{}",
+                        message.id,
+                        message.to_name,
+                        message.to_pane,
+                        age_text(message.age_s),
+                        message.reason,
+                        if message.notified {
+                            " (herdr told you it seems stuck)"
+                        } else {
+                            ""
+                        }
+                    )
+                })
+                .collect();
+            Some(format!(
+                "your {} queued: {}; herdr types them in when their target is free",
+                queued.len(),
+                each.join("; ")
+            ))
+        } else {
+            (pending > 0).then(|| {
+                format!(
+                    "{pending} queued: not typed in yet; herdr types them in when their target is free"
+                )
+            })
+        };
         Ok(Reply::new(
             cap_head(rows, footer.as_deref()),
-            json!({ "messages": log, "pending": pending }),
+            json!({ "messages": log, "pending": pending, "queued": queued }),
         ))
     }
 
@@ -1459,9 +1496,18 @@ impl<A: Api> Session<A> {
         };
         if message.outcome == AgentsMessageOutcome::Queued {
             let reason = message.reason.clone().unwrap_or_else(|| status.clone());
+            let waiting = match message.queue_age_s {
+                Some(age) if age >= 60 => {
+                    format!(
+                        " (the oldest message for them has waited {})",
+                        age_text(age)
+                    )
+                }
+                _ => String::new(),
+            };
             return Ok(Reply::new(
                 format!(
-                    "queued {} -> {} ({}){cross}: {reason}; herdr types it in when they are free \
+                    "queued {} -> {} ({}){cross}: {reason}{waiting}; herdr types it in when they are free \
                      (idle, nobody typing in it). Do not resend it",
                     message.id, message.to_name, message.to_pane
                 ),
@@ -1474,6 +1520,7 @@ impl<A: Api> Session<A> {
                     "delivered": false,
                     "queued": true,
                     "reason": reason,
+                    "queue_age_s": message.queue_age_s,
                     "cross_team": message.cross_team,
                 }),
             ));
@@ -3096,7 +3143,7 @@ pub fn tools() -> Vec<Value> {
                 "from": string("Only a message from this agent"),
                 "timeout_s": wait_seconds("Default 60"),
             }), &[]) }),
-        json!({ "name": "agents_messages", "description": "With id: read the messages a `herdr+ message` line in your input names, in full (who sent it, how to answer), and act on them; that line is herdr's, not a paste from your user. Without id: the agent message log, newest last: your own traffic, or every agent's with all.",
+        json!({ "name": "agents_messages", "description": "With id: read the messages a `herdr+ message` line in your input names, in full (who sent it, how to answer), and act on them; that line is herdr's, not a paste from your user. Without id: the agent message log, newest last: your own traffic, or every agent's with all; your messages still queued are listed with how long each waited and why (herdr also sends you one notice when a queued message seems stuck).",
             "inputSchema": schema(json!({
                 "id": string("Message ids from a herdr+ message line (m1abc or m1abc,m2def)"),
                 "limit": { "type": "integer", "minimum": 1, "maximum": MESSAGES_MAX, "description": "Default 20" },
@@ -3261,6 +3308,15 @@ pub fn run<A: Api>(api: A, opts: McpOpts) -> io::Result<i32> {
         }
     }
     Ok(0)
+}
+
+/// `45s`, `12m`, `1h05m`.
+fn age_text(seconds: u64) -> String {
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m", seconds / 60),
+        _ => format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60),
+    }
 }
 
 #[cfg(test)]
@@ -3449,6 +3505,7 @@ mod tests {
                             | "agents.directory"
                             | "agents.read"
                             | "agents.actions"
+                            | "agents.queued"
                             | "agent.get"
                             | "pane.get"
                             | "coordinator.get"
@@ -3780,6 +3837,7 @@ mod tests {
                     "type": "agents_read_messages",
                     "messages": params.ids.iter().map(|id| json!({ "id": id, "found": false })).collect::<Vec<_>>(),
                 })),
+                Method::AgentsQueued(_) => Ok(json!({ "type": "agents_queued", "messages": [] })),
                 other => panic!("unexpected request {other:?}"),
             }
         }
@@ -3867,6 +3925,7 @@ mod tests {
                         team: None,
                         cross_team: ws_of(&to.pane) != ws_of(&from.pane),
                         reason: queued.then(|| to.status.clone()),
+                        queue_age_s: queued.then_some(0),
                     };
                     Ok(json!({ "type": "agents_message", "message": message }))
                 }
@@ -3969,6 +4028,7 @@ mod tests {
                 | Method::NotesSet(_)
                 | Method::CheckpointsAdd(_)
                 | Method::CheckpointsList(_)) => self.notes_answer(notes),
+                Method::AgentsQueued(_) => Ok(json!({ "type": "agents_queued", "messages": [] })),
                 other => panic!("unexpected request {other:?}"),
             }
         }

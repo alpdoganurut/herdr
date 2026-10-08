@@ -109,6 +109,8 @@ pub enum PointerRelation {
     CoordinatorForUser,
     /// A member of the target's team.
     Teammate,
+    /// Herdr itself (a delivery notice about the target's own message).
+    Herdr,
     /// Any other agent.
     #[default]
     #[serde(other)]
@@ -194,6 +196,9 @@ impl PointerFrom {
                     true => format!("{reply} from the coordinator acting for your user"),
                     false => format!("{reply} from the coordinator acting for your user ({pane})"),
                 };
+            }
+            PointerRelation::Herdr => {
+                return format!("{reply} from herdr (a delivery notice)");
             }
             PointerRelation::Teammate => "teammate",
             PointerRelation::Agent => "another agent",

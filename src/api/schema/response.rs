@@ -308,6 +308,11 @@ pub enum ResponseResult {
     AgentsReorder {
         reorder: super::agents_model::AgentsReorderResult,
     },
+    /// Fork: `agents.queued`, oldest first.
+    AgentsQueued {
+        #[serde(default)]
+        messages: Vec<super::agents_model::AgentsQueuedMessage>,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

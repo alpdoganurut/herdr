@@ -472,6 +472,7 @@ fn only_agent_events_mark_a_non_empty_queue_due() {
         legacy: false,
         from_terminal: None,
         pointer: None,
+        stuck_notified: false,
     });
     app.note_message_queue_event(&EventKind::TabRenamed);
     assert!(!app.message_queue.due);
@@ -586,4 +587,50 @@ async fn a_hook_ended_turn_never_frees_a_blocked_or_suspended_target() {
     app.message_queue_pass(t0 + SETTLE * 3, now);
     assert!(!app.message_queue_pass(t0 + SETTLE * 5, now));
     assert!(typed(&mut rx).is_empty(), "a suspended agent keeps it");
+}
+
+/// Queue one message to a working `rev`, 11 minutes old, then sample every
+/// minute for 11 minutes; `tick` writes into the screen at each sample.
+fn run_stuck_check(tick: impl Fn(&crate::terminal::TerminalRuntime, usize)) -> bool {
+    let mut app = app();
+    let _rx = rev(&mut app, AgentState::Working);
+    let reply = send(&mut app, "ms1", "status?");
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    app.message_queue.entries[0].message.unix -= 11 * 60;
+    let now = now_unix();
+    let t0 = Instant::now();
+    app.message_queue.mark_due();
+    app.message_queue_pass(t0, now);
+    for minute in 1..=11u32 {
+        let pane_id = pane(&app);
+        if let Some(runtime) = app.lookup_runtime_sender(0, pane_id) {
+            tick(runtime, minute as usize);
+        }
+        app.message_queue_pass(t0 + STUCK_SAMPLE * minute, now);
+    }
+    app.message_queue.entries[0].stuck_notified
+}
+
+#[tokio::test]
+async fn a_screen_frozen_above_its_prompt_box_is_stuck_but_a_live_turn_is_not() {
+    // Nothing changes: stuck.
+    assert!(run_stuck_check(|_, _| {}));
+    // Only a panel under the prompt box ticks (Claude's subagent rows):
+    // still stuck.
+    assert!(run_stuck_check(|runtime, minute| {
+        runtime.test_process_pty_bytes(format!("\x1b[5;1Hpanel {minute}m").as_bytes());
+    }));
+    // A live turn's spinner above the prompt box changes: never stuck.
+    assert!(!run_stuck_check(|runtime, minute| {
+        runtime.test_process_pty_bytes(
+            format!("\x1b[1;1H\u{273b} Hashing\u{2026} ({minute}m)").as_bytes(),
+        );
+    }));
+}
+
+#[test]
+fn stuck_notice_durations_read_in_minutes() {
+    assert_eq!(super::minutes(Duration::from_secs(5)), "1m");
+    assert_eq!(super::minutes(Duration::from_secs(12 * 60)), "12m");
+    assert_eq!(super::minutes(Duration::from_secs(65 * 60)), "1h05m");
 }

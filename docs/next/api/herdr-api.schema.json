@@ -2385,6 +2385,18 @@
           ],
           "type": "object"
         },
+        "AgentsQueuedParams": {
+          "description": "`agents.queued`: the caller's own messages that still wait in herdr's\nqueue, oldest first, with how long each waited and why.",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane"
+          ],
+          "type": "object"
+        },
         "AgentsReadFormat": {
           "description": "How `agents.read` returns the screen.",
           "oneOf": [
@@ -10476,6 +10488,23 @@
           "type": "object"
         },
         {
+          "description": "Fork: the caller's own messages still queued.",
+          "properties": {
+            "method": {
+              "const": "agents.queued",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsQueuedParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "agent.prompt",
@@ -12846,6 +12875,15 @@
             "outcome": {
               "$ref": "#/schemas/success_response/$defs/AgentsMessageOutcome"
             },
+            "queue_age_s": {
+              "description": "A queued message: how long the oldest message queued for the same\ntarget has waited (seconds; 0 when this one is the first).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "reason": {
               "description": "Why a queued message was not typed in now (working, blocked, its\nuser typing, earlier messages waiting, ...).",
               "type": [
@@ -13053,6 +13091,49 @@
             "pane_id",
             "kind",
             "screen"
+          ],
+          "type": "object"
+        },
+        "AgentsQueuedMessage": {
+          "description": "One message of `agents.queued`.",
+          "properties": {
+            "age_s": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "notified": {
+              "default": false,
+              "description": "Herdr already told the sender it seems stuck.",
+              "type": "boolean"
+            },
+            "queued_unix": {
+              "description": "When it was sent (unix seconds).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reason": {
+              "description": "Why it waits now (working, blocked, its user typing, ...).",
+              "type": "string"
+            },
+            "to_name": {
+              "default": "",
+              "type": "string"
+            },
+            "to_pane": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "to_pane",
+            "queued_unix",
+            "age_s",
+            "reason"
           ],
           "type": "object"
         },
@@ -19322,6 +19403,26 @@
               "required": [
                 "type",
                 "reorder"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork: `agents.queued`, oldest first.",
+              "properties": {
+                "messages": {
+                  "default": [],
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/AgentsQueuedMessage"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "agents_queued",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
               ],
               "type": "object"
             },

@@ -71,6 +71,16 @@ pub(crate) const SETTLE: Duration = Duration::from_secs(3);
 pub(crate) const RETRY: Duration = Duration::from_secs(3);
 /// How long a target may be missing before its messages are dropped.
 pub(crate) const GONE_GRACE: Duration = Duration::from_secs(60);
+/// A queued message has waited this long on a target that reads working
+/// while its screen above the prompt box has not changed for
+/// [`STUCK_SCREEN`]: its sender gets one herdr notice.
+pub(crate) const STUCK_WAIT: Duration = Duration::from_secs(10 * 60);
+/// How long the screen above the prompt box must stay the same.
+pub(crate) const STUCK_SCREEN: Duration = Duration::from_secs(10 * 60);
+/// At most one stuck notice per target this often.
+pub(crate) const STUCK_NOTICE_EVERY: Duration = Duration::from_secs(10 * 60);
+/// How often a target that waits on `working` is sampled.
+pub(crate) const STUCK_SAMPLE: Duration = Duration::from_secs(60);
 /// At most this many queued messages go into one paste.
 const MAX_COMBINED: usize = 8;
 const MAX_COMBINED_CHARS: usize = 16_000;
@@ -107,6 +117,9 @@ pub(crate) struct QueuedMessage {
     /// file or sender (read from the envelope's header).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) pointer: Option<PointerFrom>,
+    /// Its sender was told it seems stuck (at most once per message).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) stuck_notified: bool,
 }
 
 impl QueuedMessage {
@@ -138,6 +151,16 @@ struct QueueFile {
     delivered: Vec<DeliveredMessage>,
 }
 
+/// One target's screen samples for the stuck check.
+#[derive(Debug, Clone, Copy)]
+struct ScreenWatch {
+    /// A hash of the detection text above the prompt box.
+    hash: u64,
+    /// Since when that text has not changed.
+    since: Instant,
+    sampled: Instant,
+}
+
 enum IoJob {
     Append(PathBuf, Box<AgentMessage>),
     Save(PathBuf, Vec<u8>),
@@ -158,6 +181,11 @@ pub(crate) struct MessageQueue {
     ready_since: HashMap<String, Instant>,
     /// When each target terminal was first seen missing (grace).
     missing_since: HashMap<String, Instant>,
+    /// Targets waiting on `working`: the screen above their prompt box as
+    /// last sampled (runtime only).
+    screens: HashMap<String, ScreenWatch>,
+    /// When each target's last stuck notice went out.
+    stuck_notice_at: HashMap<String, Instant>,
     /// `message_queue.json`; `None` = not persisted (tests, unpersisted sessions).
     pub(super) store: Option<PathBuf>,
     /// The coordinator directory (the message log); `None` = no log lines.
@@ -337,6 +365,24 @@ impl MessageQueue {
             .map(|entry| now + Duration::from_secs(entry.expires_unix.saturating_sub(now_unix)))
             .min();
         [self.retry_at, expiry].into_iter().flatten().min()
+    }
+}
+
+/// A short, stable hash of the detection text above the prompt box.
+fn screen_hash(detection_text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    crate::detect::manifest::above_prompt_box_text(detection_text).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// `12m`, `1h05m`; under a minute rounds up to `1m`.
+fn minutes(duration: Duration) -> String {
+    let total = duration.as_secs().div_ceil(60).max(1);
+    if total < 60 {
+        format!("{total}m")
+    } else {
+        format!("{}h{:02}m", total / 60, total % 60)
     }
 }
 
@@ -601,6 +647,7 @@ impl App {
             legacy,
             from_terminal,
             pointer,
+            stuck_notified: false,
         }
     }
 
@@ -794,6 +841,65 @@ impl App {
         );
         self.message_queue.push(entry);
         Ok(MessageDelivery::Queued { reason })
+    }
+
+    /// `agents.queued`: the caller's own messages still queued, oldest
+    /// first, with their age and why each waits now.
+    pub(crate) fn handle_agents_queued(
+        &mut self,
+        id: String,
+        params: crate::api::schema::agents_model::AgentsQueuedParams,
+    ) -> String {
+        let caller = match self.required_caller(&params.caller_pane) {
+            Ok(caller) => caller,
+            Err(error) => return Self::model_reply(id, Err(error)),
+        };
+        let now_unix = crate::coordinator::now_unix();
+        let mine: Vec<QueuedMessage> = self
+            .message_queue
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.from_terminal.as_ref() == Some(&caller.terminal_id)
+                    || (entry.from_terminal.is_none()
+                        && entry.message.from_pane.as_deref() == Some(caller.public.as_str()))
+            })
+            .cloned()
+            .collect();
+        let messages = mine
+            .into_iter()
+            .map(|entry| {
+                let reason = match self.message_target(&entry.terminal_id, entry.session.as_deref())
+                {
+                    _ if self
+                        .message_queue
+                        .entries
+                        .iter()
+                        .find(|other| other.terminal_id == entry.terminal_id)
+                        .is_some_and(|first| first.id() != entry.id()) =>
+                    {
+                        "earlier messages are waiting for it".to_string()
+                    }
+                    Some(target) => match self.message_check(&target) {
+                        Check::Ready {
+                            hook_ended: true, ..
+                        } => "its turn just ended".to_string(),
+                        check => MessageCheck(check).status(),
+                    },
+                    None => "offline".to_string(),
+                };
+                crate::api::schema::agents_model::AgentsQueuedMessage {
+                    id: entry.id().to_string(),
+                    to_pane: entry.message.to_pane.clone(),
+                    to_name: entry.message.to_name.clone().unwrap_or_default(),
+                    queued_unix: entry.message.unix,
+                    age_s: now_unix.saturating_sub(entry.message.unix),
+                    reason,
+                    notified: entry.stuck_notified,
+                }
+            })
+            .collect();
+        encode_success(id, ResponseResult::AgentsQueued { messages })
     }
 
     /// `agent.message_claim`.
@@ -1026,6 +1132,9 @@ impl App {
         self.message_queue
             .missing_since
             .retain(|terminal, _| live.contains(terminal));
+        self.message_queue
+            .screens
+            .retain(|terminal, _| live.contains(terminal));
         self.message_queue.retry_at = next.into_iter().min();
         changed
     }
@@ -1053,9 +1162,13 @@ impl App {
         let terminal_id = target.terminal_id.clone();
         let (pane, coordinator) = match self.message_check(&target) {
             Check::Missing => return self.target_missing(&terminal_id, now, now_unix, next),
-            Check::Wait(_) => {
+            Check::Wait(reason) => {
                 self.message_queue.missing_since.remove(&terminal_id);
                 self.message_queue.ready_since.remove(&terminal_id);
+                if reason == "working" {
+                    return self.watch_stuck_target(&target, &reason, now, now_unix, next);
+                }
+                self.message_queue.screens.remove(&terminal_id);
                 return false;
             }
             Check::Ready {
@@ -1129,6 +1242,210 @@ impl App {
                 next.push(now + RETRY);
                 false
             }
+        }
+    }
+
+    /// A target waits on `working`: sample the screen above its prompt box
+    /// every [`STUCK_SAMPLE`], and once it has not changed for
+    /// [`STUCK_SCREEN`] while a message waited [`STUCK_WAIT`], tell that
+    /// message's sender (once per message, once per target per
+    /// [`STUCK_NOTICE_EVERY`]). A live turn's spinner and streamed text
+    /// change the region; a panel ticking under the prompt box does not.
+    /// Returns whether a notice went out.
+    fn watch_stuck_target(
+        &mut self,
+        target: &super::terminal_targets::TerminalTarget,
+        reason: &str,
+        now: Instant,
+        now_unix: u64,
+        next: &mut Vec<Instant>,
+    ) -> bool {
+        let terminal_id = target.terminal_id.clone();
+        let sample_due = self
+            .message_queue
+            .screens
+            .get(&terminal_id)
+            .is_none_or(|watch| now >= watch.sampled + STUCK_SAMPLE);
+        if sample_due {
+            let Some(hash) = self
+                .lookup_runtime_sender(target.ws_idx, target.pane_id)
+                .map(|runtime| screen_hash(&runtime.detection_text()))
+            else {
+                return false;
+            };
+            let watch = self
+                .message_queue
+                .screens
+                .entry(terminal_id.clone())
+                .or_insert(ScreenWatch {
+                    hash,
+                    since: now,
+                    sampled: now,
+                });
+            if watch.hash != hash {
+                watch.hash = hash;
+                watch.since = now;
+            }
+            watch.sampled = now;
+        }
+        let Some(watch) = self.message_queue.screens.get(&terminal_id).copied() else {
+            return false;
+        };
+        next.push(watch.sampled + STUCK_SAMPLE);
+        let unchanged = now.saturating_duration_since(watch.since);
+        let cooled = self
+            .message_queue
+            .stuck_notice_at
+            .get(&terminal_id)
+            .is_none_or(|at| now >= *at + STUCK_NOTICE_EVERY);
+        if unchanged < STUCK_SCREEN || !cooled {
+            return false;
+        }
+        let Some(entry) = self
+            .message_queue
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.terminal_id == terminal_id
+                    && !entry.stuck_notified
+                    && !entry.legacy
+                    && now_unix.saturating_sub(entry.message.unix) >= STUCK_WAIT.as_secs()
+            })
+            .cloned()
+        else {
+            return false;
+        };
+        let status = self
+            .message_status_name(target)
+            .unwrap_or_else(|| reason.to_string());
+        self.send_stuck_notice(&entry, reason, &status, unchanged, now_unix);
+        if let Some(queued) = self
+            .message_queue
+            .entries
+            .iter_mut()
+            .find(|queued| queued.id() == entry.id())
+        {
+            queued.stuck_notified = true;
+        }
+        self.message_queue.stuck_notice_at.insert(terminal_id, now);
+        self.message_queue.save();
+        true
+    }
+
+    /// The target's displayed status word (`working`, `blocked`, ...).
+    fn message_status_name(
+        &self,
+        target: &super::terminal_targets::TerminalTarget,
+    ) -> Option<String> {
+        let pane = self
+            .state
+            .workspaces
+            .get(target.ws_idx)?
+            .pane_state(target.pane_id)?;
+        let terminal = self.state.terminals.get(&pane.attached_terminal_id)?;
+        let status = crate::workspace::agent_status(
+            terminal.state,
+            pane.seen,
+            terminal.suspended_agent.is_some(),
+        );
+        serde_json::to_value(status)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+    }
+
+    /// Tell `entry`'s sender, through the same delivery path, that its
+    /// message seems stuck. Logged (message log and tracing); a sender that
+    /// is gone gets nothing.
+    fn send_stuck_notice(
+        &mut self,
+        entry: &QueuedMessage,
+        reason: &str,
+        status: &str,
+        unchanged: Duration,
+        now_unix: u64,
+    ) {
+        let message_id = entry.id().to_string();
+        let target_name = entry
+            .message
+            .to_name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| entry.message.to_pane.clone());
+        let target = format!("{target_name} ({})", entry.message.to_pane);
+        let waited = Duration::from_secs(now_unix.saturating_sub(entry.message.unix));
+        let text = format!(
+            "herdr: your message {message_id} to {target} has waited {}; {target_name} reads {status} but its screen has not changed for {} (queued: {reason}). It stays queued; check it with agents_messages.",
+            minutes(waited),
+            minutes(unchanged),
+        );
+        tracing::info!(
+            message = %message_id,
+            target = %entry.message.to_pane,
+            waited_s = waited.as_secs(),
+            unchanged_s = unchanged.as_secs(),
+            "message queue: a queued message seems stuck; telling its sender"
+        );
+        let sender = entry
+            .from_terminal
+            .as_ref()
+            .and_then(|terminal| self.public_pane_of_terminal(terminal))
+            .or_else(|| entry.message.from_pane.clone());
+        let Some(sender_target) = sender
+            .as_deref()
+            .and_then(|pane| self.resolve_agent_target(pane).ok())
+        else {
+            return;
+        };
+        let sender_pane = self
+            .public_pane_id(sender_target.ws_idx, sender_target.pane_id)
+            .unwrap_or_default();
+        let id = messages::new_id();
+        let envelope = format!(
+            "[herdr+ notice {id} from herdr {} \u{2014} about your message {message_id}, not your user]\n{text}\n[no reply needed]",
+            crate::agents_model::envelope::clock(now_unix),
+        );
+        let pointer = PointerFrom {
+            id: id.clone(),
+            reply_to: None,
+            name: "herdr".into(),
+            pane: String::new(),
+            relation: crate::agents_model::envelope::PointerRelation::Herdr,
+        };
+        let line = AgentMessage {
+            unix: now_unix,
+            from_pane: None,
+            from_name: Some("herdr".into()),
+            to_pane: sender_pane,
+            to_name: entry.message.from_name.clone(),
+            text,
+            outcome: OUTCOME_QUEUED.into(),
+            id: Some(id.clone()),
+            reply_to: None,
+            from_role: None,
+            kind: None,
+            team: None,
+        };
+        let check = self.agent_message_check(&sender_target);
+        match self.deliver_agent_message(
+            &format!("stuck-notice:{id}"),
+            &sender_target,
+            check,
+            line.clone(),
+            envelope,
+            pointer,
+            None,
+            now_unix,
+        ) {
+            Ok(MessageDelivery::Sent) => {
+                let mut sent = line;
+                sent.outcome = messages::OUTCOME_SENT.into();
+                self.message_queue.log(sent);
+            }
+            Ok(MessageDelivery::Queued { .. }) => {}
+            Err(refused) => tracing::warn!(
+                code = %refused.code,
+                "message queue: the stuck notice could not reach its sender"
+            ),
         }
     }
 

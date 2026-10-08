@@ -317,6 +317,104 @@ async fn fork_smoke_turn_hooks_free_a_working_claude_for_messages() {
     shutdown_test_runtimes(&mut server);
 }
 
+/// A message queued 11 minutes to a teammate that reads working while the
+/// screen above its prompt box stays the same gets its sender one herdr
+/// notice through the same delivery path (once per message, once per
+/// target per 10 minutes); `agents.queued` shows its age and reason. A
+/// screen that keeps changing above the prompt box (a live turn) never
+/// does.
+#[tokio::test]
+async fn fork_smoke_a_stuck_queued_message_notifies_its_sender_once() {
+    use crate::app::message_queue::{STUCK_SAMPLE, STUCK_SCREEN};
+    let (mut server, _fixer_input, panes) = crew_server();
+    server.app.coordinator.assume_shell_ready = true;
+    let screen = "\r\n✻ Waiting\r\n─────\r\n❯ \r\n─────\r\n  footer".as_bytes();
+    let (fixer_runtime, _fixer_rx) =
+        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+            80, 24, 0, screen, 4,
+        );
+    let fixer_terminal = server.app.state.workspaces[1]
+        .pane_state(panes[1])
+        .unwrap()
+        .attached_terminal_id
+        .clone();
+    server
+        .app
+        .terminal_runtimes
+        .insert(fixer_terminal, fixer_runtime);
+    let (lead_runtime, mut lead_input) =
+        crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+    let lead_terminal = server.app.state.workspaces[1]
+        .pane_state(panes[0])
+        .unwrap()
+        .attached_terminal_id
+        .clone();
+    server
+        .app
+        .terminal_runtimes
+        .insert(lead_terminal, lead_runtime);
+    terminal(&mut server, panes[1]).set_detected_state(Some(Agent::Claude), AgentState::Working);
+    let lead = public(&server, panes[0]);
+    let fixer = public(&server, panes[1]);
+    let sent = public_api(
+        &mut server,
+        Method::AgentsSendMessage(AgentsSendMessageParams {
+            caller_pane: lead.clone(),
+            to: fixer,
+            text: "status?".into(),
+            reply_to: None,
+        }),
+    );
+    let id = sent["result"]["message"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(sent["result"]["message"]["queue_age_s"], 0, "{sent}");
+    // It has waited 11 minutes.
+    server.app.message_queue.entries[0].message.unix -= 11 * 60;
+    let now = crate::coordinator::now_unix();
+    let t0 = std::time::Instant::now();
+    server.app.message_queue.mark_due();
+    server.app.message_queue_pass(t0, now);
+    assert!(
+        lead_input.try_recv().is_err(),
+        "nothing before the screen held"
+    );
+    // Sampled every minute; the screen above the box never changed.
+    let mut at = t0;
+    while at < t0 + STUCK_SCREEN {
+        at += STUCK_SAMPLE;
+        server.app.message_queue_pass(at, now);
+    }
+    let notice = tokio::time::timeout(std::time::Duration::from_secs(2), lead_input.recv())
+        .await
+        .expect("a notice typed into the sender")
+        .expect("bytes");
+    let notice = String::from_utf8_lossy(&notice).to_string();
+    assert!(notice.contains("herdr"), "{notice}");
+    assert!(server.app.message_queue.entries[0].stuck_notified);
+    let queued = public_api(
+        &mut server,
+        Method::AgentsQueued(crate::api::schema::agents_model::AgentsQueuedParams {
+            caller_pane: lead.clone(),
+        }),
+    );
+    let mine = &queued["result"]["messages"][0];
+    assert_eq!(mine["id"], id.as_str(), "{queued}");
+    assert_eq!(mine["reason"], "working", "{queued}");
+    assert!(mine["age_s"].as_u64().unwrap() >= 11 * 60, "{queued}");
+    assert_eq!(mine["notified"], true, "{queued}");
+
+    // Once per message and per target: another 15 minutes bring nothing.
+    while lead_input.try_recv().is_ok() {}
+    while at < t0 + STUCK_SCREEN * 3 {
+        at += STUCK_SAMPLE;
+        server.app.message_queue_pass(at, now);
+    }
+    assert!(lead_input.try_recv().is_err(), "one notice per message");
+    shutdown_test_runtimes(&mut server);
+}
+
 /// Give a pane a runtime whose process (its shell or agent) is `pid`.
 fn set_pane_pid(server: &mut HeadlessServer, pane: crate::layout::PaneId, pid: u32) {
     let id = server.app.state.workspaces[1]
