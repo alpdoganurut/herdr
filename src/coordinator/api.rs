@@ -214,8 +214,10 @@ pub fn message_claim(api: &impl Api, id: &str, pane: &str) -> Result<bool, ApiEr
     Ok(result["claimed"].as_bool().unwrap_or(false))
 }
 
-/// Upper bound for every coordinator wait (a socket is never held for minutes).
-pub const MAX_WAIT_S: u64 = 120;
+/// Upper bound for every coordinator wait (a socket is never held for
+/// minutes). Fork: under Claude Code's 120 s mark, after which it moves a
+/// still-running MCP call to the background and reports its end as a task.
+pub const MAX_WAIT_S: u64 = 100;
 
 /// Poll `agent.get` every second until the status is one of `until`; the
 /// final status, or `Err` code `timeout` (message: the last status seen).
@@ -227,6 +229,9 @@ pub fn wait_status(
     sleep: &dyn Fn(Duration),
 ) -> Result<String, ApiError> {
     let timeout_s = timeout_s.min(MAX_WAIT_S);
+    // The wall clock bounds the wait too: each poll takes time on top of
+    // its one-second sleep.
+    let started = std::time::Instant::now();
     let mut waited = 0;
     loop {
         let agent = agent_get(api, target)?;
@@ -237,10 +242,11 @@ pub fn wait_status(
         if until.contains(&status.as_str()) {
             return Ok(status);
         }
-        if waited >= timeout_s {
+        let waited_s = waited.max(started.elapsed().as_secs());
+        if waited_s >= timeout_s {
             return Err(ApiError::new(
                 "timeout",
-                format!("{target} still {status} after {waited}s"),
+                format!("{target} still {status} after {waited_s}s"),
             ));
         }
         sleep(Duration::from_secs(1));

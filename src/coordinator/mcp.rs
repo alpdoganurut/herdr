@@ -1387,6 +1387,9 @@ impl<A: Api> Session<A> {
                     json!({ "message": data, "delivered": true }),
                 ));
             }
+            // Fork: the wall clock bounds the wait too (each poll reads the
+            // log on top of its one-second sleep).
+            waited = waited.max((self.now)().saturating_sub(start));
             if waited >= timeout_s {
                 break;
             }
@@ -1400,9 +1403,16 @@ impl<A: Api> Session<A> {
                 Err(_) => format!("; {pane} is not running"),
             })
             .unwrap_or_default();
-        Err(err(
-            "timeout",
-            format!("no reply after {waited}s{peer_status}"),
+        // Fork: no message yet is an answer, not a failure (an error would
+        // show as a failed tool call).
+        Ok(Reply::new(
+            format!("no message yet after {waited}s{peer_status}; call again to keep waiting"),
+            json!({
+                "delivered": false,
+                "timed_out": true,
+                "waited_s": waited,
+                "peer": peer,
+            }),
         ))
     }
 
@@ -1444,11 +1454,20 @@ impl<A: Api> Session<A> {
                 format!("{target} ({pane}) is {status} after {}s", waited.get()),
                 json!({ "pane_id": pane, "status": status, "waited_s": waited.get() }),
             )),
+            // Fork: still waiting is an answer, not a failure.
             Err(error) if error.code == "timeout" => {
                 let status = self.status_of(&pane).unwrap_or_else(|_| "gone".into());
-                Err(err(
-                    "timeout",
-                    format!("{target} ({pane}) still {status} after {}s", waited.get()),
+                Ok(Reply::new(
+                    format!(
+                        "{target} ({pane}) still {status} after {}s; call again to keep waiting",
+                        waited.get()
+                    ),
+                    json!({
+                        "pane_id": pane,
+                        "status": status,
+                        "waited_s": waited.get(),
+                        "timed_out": true,
+                    }),
                 ))
             }
             Err(error) => Err(error),
@@ -5298,7 +5317,11 @@ mod tests {
             "agents_wait_for_message",
             json!({ "from": "rev", "timeout_s": 1 }),
         );
-        assert!(out.text.contains("error timeout"), "{}", out.text);
+        // No message yet is an answer, not an error.
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("no message yet"), "{}", out.text);
+        assert_eq!(out.data["timed_out"], true);
+        assert_eq!(out.data["delivered"], false);
         messages::append(
             &dir,
             &AgentMessage {
@@ -5323,12 +5346,14 @@ mod tests {
             "agents_wait",
             json!({ "target": "rev", "until": ["working"], "timeout_s": 3 }),
         );
+        // Still waiting is an answer, not an error.
+        assert!(!out.is_error, "{}", out.text);
         assert!(
-            out.text
-                .contains("error timeout: rev (w2:p4) still idle after 3s"),
+            out.text.contains("rev (w2:p4) still idle after 3s"),
             "{}",
             out.text
         );
+        assert_eq!(out.data["timed_out"], true);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
