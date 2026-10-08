@@ -561,6 +561,68 @@ async fn a_working_target_whose_hooks_ended_its_turn_gets_it_after_settle() {
 }
 
 #[tokio::test]
+async fn a_hook_ended_target_whose_screen_moves_waits_until_it_stood_still_for_settle() {
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let mut rx = rev(&mut app, AgentState::Working);
+    hook_turn(&mut app, true, "p1", 10);
+    hook_turn(&mut app, false, "p1", 20);
+    let reply = send(&mut app, "mh3", "after your turn");
+    assert_eq!(reply["result"]["reason"], "its turn just ended", "{reply}");
+    let t0 = Instant::now();
+    let now = now_unix();
+    let write = |app: &App, bytes: &str| {
+        app.lookup_runtime_sender(0, pane(app))
+            .unwrap()
+            .test_process_pty_bytes(bytes.as_bytes());
+    };
+    assert!(!app.message_queue_pass(t0, now));
+    // The turn goes on (a blocking Stop hook): its spinner above the
+    // prompt box ticks.
+    write(&app, "\x1b[1;1H\u{273b} Hashing\u{2026} (1s)");
+    app.message_queue.mark_due();
+    let t1 = t0 + Duration::from_secs(1);
+    assert!(!app.message_queue_pass(t1, now));
+    assert!(
+        !app.message_queue_pass(t0 + SETTLE, now),
+        "the settle restarted"
+    );
+    assert!(
+        typed(&mut rx).is_empty(),
+        "never typed into the moving turn"
+    );
+    assert_eq!(
+        app.next_message_queue_deadline(t0 + SETTLE),
+        Some(t1 + SETTLE)
+    );
+    // Still since t1: in at t1 + SETTLE.
+    assert!(app.message_queue_pass(t1 + SETTLE, now));
+    assert!(typed(&mut rx).contains("after your turn"));
+    assert!(app.message_queue.settle_screens.is_empty());
+}
+
+#[tokio::test]
+async fn a_hook_ended_target_whose_panel_ticks_under_the_prompt_box_gets_it_after_settle() {
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let mut rx = rev(&mut app, AgentState::Working);
+    hook_turn(&mut app, true, "p1", 10);
+    hook_turn(&mut app, false, "p1", 20);
+    send(&mut app, "mh4", "after your turn");
+    let t0 = Instant::now();
+    let now = now_unix();
+    assert!(!app.message_queue_pass(t0, now));
+    // Claude's background-agent panel (its timer) sits under the box.
+    app.lookup_runtime_sender(0, pane(&app))
+        .unwrap()
+        .test_process_pty_bytes("\x1b[5;1H  general-purpose 48s".as_bytes());
+    app.message_queue.mark_due();
+    assert!(!app.message_queue_pass(t0 + Duration::from_secs(1), now));
+    assert!(app.message_queue_pass(t0 + SETTLE, now));
+    assert!(typed(&mut rx).contains("after your turn"));
+}
+
+#[tokio::test]
 async fn a_hook_ended_turn_never_frees_a_blocked_or_suspended_target() {
     let mut app = app();
     app.coordinator.assume_shell_ready = true;

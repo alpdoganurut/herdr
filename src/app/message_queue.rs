@@ -11,7 +11,8 @@
 //! once the target is free: idle for [`SETTLE`], typing guard clear. A
 //! target whose screen reads working but whose own hooks reported its turn's
 //! end (src/app/hook_turn.rs: Claude's title spinner while background agents
-//! run) counts as free too, always through the queue so SETTLE applies. Per
+//! run) counts as free too, always through the queue so SETTLE applies, and
+//! only once the screen above its prompt box stood still for SETTLE. Per
 //! target FIFO; when several wait for one target they go in together, each
 //! with its own envelope and id. A target whose herdr_agents server reads
 //! messages by id gets one typed pointer line for them instead of the paste
@@ -195,6 +196,10 @@ pub(crate) struct MessageQueue {
     /// Targets waiting on `working`: the screen above their prompt box as
     /// last sampled (runtime only).
     screens: HashMap<String, ScreenWatch>,
+    /// Targets settling on their Stop hook alone (`Check::Ready.hook_ended`):
+    /// the hash of the screen above their prompt box at the last pass
+    /// (runtime only; [`App::settle_on_a_still_screen`]).
+    settle_screens: HashMap<String, u64>,
     /// When each target's last stuck notice went out.
     stuck_notice_at: HashMap<String, Instant>,
     /// Targets an urgent message interrupted (Esc), and when.
@@ -218,7 +223,8 @@ enum Check {
     /// Deliverable: its public pane id, and whether it is the coordinator.
     /// `hook_ended`: its screen reads working but its own hooks reported
     /// its turn's end (src/app/hook_turn.rs); typed in only after
-    /// [`SETTLE`], through the queue.
+    /// [`SETTLE`] with the screen above its prompt box still, through the
+    /// queue.
     Ready {
         pane: String,
         coordinator: bool,
@@ -1504,6 +1510,9 @@ impl App {
             .screens
             .retain(|terminal, _| live.contains(terminal));
         self.message_queue
+            .settle_screens
+            .retain(|terminal, _| live.contains(terminal));
+        self.message_queue
             .interrupted_at
             .retain(|terminal, at| live.contains(terminal) && now < *at + INTERRUPT_WAIT);
         self.message_queue.retry_at = next.into_iter().min();
@@ -1536,6 +1545,7 @@ impl App {
             Check::Wait(reason) => {
                 self.message_queue.missing_since.remove(&terminal_id);
                 self.message_queue.ready_since.remove(&terminal_id);
+                self.message_queue.settle_screens.remove(&terminal_id);
                 if let Some(at) = self.message_queue.interrupted_at.get(&terminal_id).copied() {
                     if now >= at + INTERRUPT_WAIT {
                         tracing::info!(
@@ -1568,6 +1578,11 @@ impl App {
         };
         self.message_queue.screens.remove(&terminal_id);
         self.message_queue.missing_since.remove(&terminal_id);
+        if hook_ended {
+            self.settle_on_a_still_screen(&target, now);
+        } else {
+            self.message_queue.settle_screens.remove(&terminal_id);
+        }
         let since = *self
             .message_queue
             .ready_since
@@ -1620,8 +1635,10 @@ impl App {
             Ok(()) => {
                 if hook_ended {
                     // Typed into a screen that read working, on the Stop
-                    // hook's word alone (a lost UserPromptSubmit report or a
-                    // blocking Stop hook would make this mid-turn).
+                    // hook's word and a screen that stood still for SETTLE
+                    // (a lost UserPromptSubmit report or a blocking Stop
+                    // hook would make this mid-turn; its turn moves the
+                    // screen).
                     tracing::info!(
                         target = %terminal_id,
                         messages = ids.len(),
@@ -1629,6 +1646,7 @@ impl App {
                     );
                 }
                 self.message_queue.ready_since.remove(&terminal_id);
+                self.message_queue.settle_screens.remove(&terminal_id);
                 self.message_queue.interrupted_at.remove(&terminal_id);
                 self.message_queue.finish(&ids, OUTCOME_DELIVERED, now_unix);
                 if self.message_queue.queued_for(&terminal_id) {
@@ -1645,6 +1663,44 @@ impl App {
                 next.push(now + RETRY);
                 false
             }
+        }
+    }
+
+    /// A target freed by its Stop hook alone (its screen reads working): the
+    /// screen above its prompt box must stay still for the whole [`SETTLE`].
+    /// A user's blocking Stop hook continues the turn without a new
+    /// UserPromptSubmit, and a start report can be lost; that live turn's
+    /// spinner timer or streamed text changes the region, while Claude's
+    /// "Waiting for N background agents" line does not (the ticking agent
+    /// panel sits under the prompt box). Sampled once per queue pass while
+    /// such a target is pending (its first Ready pass, events, the SETTLE
+    /// deadline), never per frame. The first sample, or a change, restarts
+    /// the settle from `now`. Without a runtime nothing is sampled.
+    fn settle_on_a_still_screen(
+        &mut self,
+        target: &super::terminal_targets::TerminalTarget,
+        now: Instant,
+    ) {
+        let Some(hash) = self
+            .lookup_runtime_sender(target.ws_idx, target.pane_id)
+            .map(|runtime| screen_hash(&runtime.detection_text()))
+        else {
+            return;
+        };
+        let previous = self
+            .message_queue
+            .settle_screens
+            .insert(target.terminal_id.clone(), hash);
+        if previous != Some(hash) {
+            if previous.is_some() {
+                tracing::debug!(
+                    target = %target.terminal_id,
+                    "message queue: a hook-ended target's screen changed while settling; settle restarted"
+                );
+            }
+            self.message_queue
+                .ready_since
+                .insert(target.terminal_id.clone(), now);
         }
     }
 
@@ -1882,6 +1938,7 @@ impl App {
         next: &mut Vec<Instant>,
     ) -> bool {
         self.message_queue.ready_since.remove(terminal_id);
+        self.message_queue.settle_screens.remove(terminal_id);
         let since = *self
             .message_queue
             .missing_since
