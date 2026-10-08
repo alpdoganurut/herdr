@@ -309,10 +309,24 @@ pub fn find_reply(
         .cloned()
 }
 
+/// The message line (not an update) with id `id`, from the log or, when it
+/// rotated away, the rotated log: a queued message's text for the waiter
+/// that takes it off the queue.
+pub fn find_by_id(dir: &Path, id: &str) -> Option<AgentMessage> {
+    [messages_path(dir), rotated_path(dir)]
+        .iter()
+        .find_map(|path| {
+            let text = std::fs::read_to_string(path).ok()?;
+            text.lines()
+                .filter_map(|line| serde_json::from_str::<AgentMessage>(line).ok())
+                .find(|message| !message.is_update() && message.id.as_deref() == Some(id))
+        })
+}
+
 /// Whether a log line reached (or will reach) its target: everything but a
 /// refusal, except the older senders' reply to a busy asker (`busy`,
 /// `logged`), which was delivered through the log.
-fn delivered_to_waiter(message: &AgentMessage) -> bool {
+pub fn delivered_to_waiter(message: &AgentMessage) -> bool {
     message.kind.as_deref() != Some(KIND_REFUSAL)
         || matches!(message.outcome.as_str(), "busy" | OUTCOME_LOGGED)
 }

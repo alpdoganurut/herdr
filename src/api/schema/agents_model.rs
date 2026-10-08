@@ -40,6 +40,7 @@ pub mod method {
     pub const REORDER_GROUP: &str = "agents.reorder_group";
     pub const REORDER_TAB: &str = "agents.reorder_tab";
     pub const QUEUED: &str = "agents.queued";
+    pub const INBOX: &str = "agents.inbox";
 
     /// The one method advertised to client shells (the TUI's "Set role…").
     #[cfg(test)]
@@ -47,7 +48,7 @@ pub mod method {
 
     /// Every method.
     #[cfg(test)]
-    pub const ALL: [&str; 21] = [
+    pub const ALL: [&str; 22] = [
         ACTOR,
         DIRECTORY,
         READ,
@@ -69,6 +70,7 @@ pub mod method {
         REORDER_GROUP,
         REORDER_TAB,
         QUEUED,
+        INBOX,
     ];
 }
 
@@ -906,6 +908,39 @@ pub struct AgentsQueuedMessage {
     pub notified: bool,
 }
 
+/// `agents.inbox`: the messages to the caller still waiting in herdr's
+/// queue (queued while it was busy), oldest first. Read-only: nothing is
+/// claimed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsInboxParams {
+    pub caller_pane: String,
+}
+
+/// One message of `agents.inbox`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsInboxMessage {
+    pub id: String,
+    /// The sender's pane; `None` for an outside caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_pane: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_name: Option<String>,
+    /// The id of the message this one answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    /// When it was sent (unix seconds).
+    #[serde(default)]
+    pub queued_unix: u64,
+    #[serde(default)]
+    pub age_s: u64,
+    /// The message text's length (bytes, as the queue's paste limit counts).
+    #[serde(default)]
+    pub chars: u64,
+    /// From an older sender that logs the message itself.
+    #[serde(default)]
+    pub legacy: bool,
+}
+
 /// One message of `agents.read_messages`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentsDeliveredMessage {
@@ -1052,7 +1087,7 @@ pub struct AgentActionEntry {
 
 /// The type names the params structs may reference (digest hygiene).
 #[cfg(test)]
-pub const PARAM_TYPES: [&str; 22] = [
+pub const PARAM_TYPES: [&str; 23] = [
     "AgentsActorParams",
     "AgentsDirectoryParams",
     "AgentsReadParams",
@@ -1075,6 +1110,7 @@ pub const PARAM_TYPES: [&str; 22] = [
     "AgentsReorderGroupParams",
     "AgentsReorderTabParams",
     "AgentsQueuedParams",
+    "AgentsInboxParams",
 ];
 
 #[cfg(test)]

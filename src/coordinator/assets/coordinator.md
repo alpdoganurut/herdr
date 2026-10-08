@@ -200,6 +200,8 @@ browser_screenshot.
 - Address an agent by the exact name or pane agents_list shows, never a guessed word like "lead". When you
   finish work an agent asked of you, reply once (reply_to=<its id>): what is done, where the details are, next.
 - Replies come typed into you when you are idle, or sit in the log: check agents_messages before assuming silence.
+  Replies queued for you while you were busy: agents_messages inbox=true lists them; agents_wait_for_message with
+  no arguments returns them first, oldest first (call it until `pending` is 0, or pass all=true).
 - Message outcomes: `sent` = typed in; `queued` = waiting in herdr until the target is free (pending, NOT
   undelivered); `delivered` = a queued message was typed in (or picked up by the target's
   agents_wait_for_message); `expired` (2 h in the queue) and `dropped` (the target is gone) were not

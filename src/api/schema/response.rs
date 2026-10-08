@@ -313,6 +313,11 @@ pub enum ResponseResult {
         #[serde(default)]
         messages: Vec<super::agents_model::AgentsQueuedMessage>,
     },
+    /// Fork: `agents.inbox`, oldest first.
+    AgentsInbox {
+        #[serde(default)]
+        messages: Vec<super::agents_model::AgentsInboxMessage>,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

@@ -927,3 +927,43 @@ async fn an_urgent_interrupt_after_a_hook_reported_start_goes_in_once_the_screen
     assert!(app.message_queue_pass(t0 + SETTLE, now_unix()));
     assert!(typed(&mut rx).contains("stop the deploy"));
 }
+
+#[tokio::test]
+async fn the_inbox_lists_messages_queued_for_the_caller_and_claims_nothing() {
+    let mut app = app();
+    let _rx = rev(&mut app, AgentState::Working);
+    send(&mut app, "mi1", "first");
+    let mut reply = params("mi2", "second, longer");
+    reply.reply_to = Some("mq0".into());
+    let response = app.handle_agent_message_send("req".into(), reply);
+    let response: Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["result"]["outcome"], "queued", "{response}");
+    let target = app.public_pane_id(0, pane(&app)).unwrap();
+    let inbox = |app: &mut App, caller: &str| -> Value {
+        let response = app.handle_agents_inbox(
+            "i".into(),
+            crate::api::schema::agents_model::AgentsInboxParams {
+                caller_pane: caller.into(),
+            },
+        );
+        serde_json::from_str(&response).unwrap()
+    };
+    let out = inbox(&mut app, &target);
+    let messages = out["result"]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2, "{out}");
+    assert_eq!(messages[0]["id"], "mi1");
+    assert_eq!(messages[0]["from_pane"], "w9:p1");
+    assert_eq!(messages[0]["from_name"], "lead");
+    assert_eq!(messages[0]["chars"], 5);
+    assert_eq!(messages[1]["id"], "mi2");
+    assert_eq!(messages[1]["reply_to"], "mq0");
+    assert_eq!(messages[1]["legacy"], false);
+    // Read-only: both stay queued, nothing is logged.
+    assert_eq!(app.message_queue.entries.len(), 2);
+    let written = app.message_queue.written.len();
+    inbox(&mut app, &target);
+    assert_eq!(app.message_queue.written.len(), written);
+    // Another pane's inbox does not list them; an unknown caller is refused.
+    let out = inbox(&mut app, "w9:p9");
+    assert!(out["error"].is_object(), "{out}");
+}

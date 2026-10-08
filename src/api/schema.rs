@@ -353,6 +353,9 @@ pub enum Method {
     /// Fork: the caller's own messages still queued.
     #[serde(rename = "agents.queued")]
     AgentsQueued(agents_model::AgentsQueuedParams),
+    /// Fork: the messages to the caller still queued.
+    #[serde(rename = "agents.inbox")]
+    AgentsInbox(agents_model::AgentsInboxParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

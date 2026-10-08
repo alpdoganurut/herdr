@@ -92,9 +92,9 @@ pub(crate) const INTERRUPT_AFTER_TYPING: Duration = Duration::from_secs(30);
 /// The wait reason while a target's hooks say its turn is live but its
 /// screen reads idle.
 const HOOK_LIVE_REASON: &str = "its turn is live by its hooks";
-/// At most this many queued messages go into one paste.
-const MAX_COMBINED: usize = 8;
-const MAX_COMBINED_CHARS: usize = 16_000;
+// At most this many queued messages go into one paste (shared with
+// agents_wait_for_message all=true).
+use crate::api::schema::agent_messages::{MAX_COMBINED, MAX_COMBINED_CHARS};
 /// The whole queue's cap; past it `agent.message_send` answers `queue_full`.
 const MAX_QUEUED: usize = 256;
 const FILE_NAME: &str = "message_queue.json";
@@ -966,6 +966,43 @@ impl App {
             })
             .collect();
         encode_success(id, ResponseResult::AgentsQueued { messages })
+    }
+
+    /// `agents.inbox`: the messages to the caller still queued (by the
+    /// caller's terminal, as `agent.message_claim` matches them), oldest
+    /// first. Read-only: nothing is claimed or typed in.
+    pub(crate) fn handle_agents_inbox(
+        &mut self,
+        id: String,
+        params: crate::api::schema::agents_model::AgentsInboxParams,
+    ) -> String {
+        let caller = match self.required_caller(&params.caller_pane) {
+            Ok(caller) => caller,
+            Err(error) => return Self::model_reply(id, Err(error)),
+        };
+        let now_unix = crate::coordinator::now_unix();
+        let mut messages: Vec<crate::api::schema::agents_model::AgentsInboxMessage> = self
+            .message_queue
+            .entries
+            .iter()
+            .filter(|entry| entry.terminal_id == caller.terminal_id.as_str())
+            .map(
+                |entry| crate::api::schema::agents_model::AgentsInboxMessage {
+                    id: entry.id().to_string(),
+                    from_pane: entry.message.from_pane.clone(),
+                    from_name: entry.message.from_name.clone(),
+                    reply_to: entry.message.reply_to.clone(),
+                    queued_unix: entry.message.unix,
+                    age_s: now_unix.saturating_sub(entry.message.unix),
+                    chars: entry.message.text.len() as u64,
+                    legacy: entry.legacy,
+                },
+            )
+            .collect();
+        // An urgent message sits at the front of its target's queue; the
+        // inbox reads in sending order (stable for equal times).
+        messages.sort_by_key(|message| message.queued_unix);
+        encode_success(id, ResponseResult::AgentsInbox { messages })
     }
 
     /// An urgent message (`agents.send_message urgent`, the policy and the

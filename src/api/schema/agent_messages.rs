@@ -16,6 +16,12 @@ pub mod method {
     pub const MESSAGE_CLAIM: &str = "agent.message_claim";
 }
 
+/// At most this many queued messages go into one paste, and into one
+/// `agents_wait_for_message all=true` result (shared so the two cannot drift).
+pub(crate) const MAX_COMBINED: usize = 8;
+/// The text limit for the same (bytes).
+pub(crate) const MAX_COMBINED_CHARS: usize = 16_000;
+
 /// `agent.message_send`: deliver one agent message to `target`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct AgentMessageSendParams {

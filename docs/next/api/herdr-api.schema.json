@@ -2229,6 +2229,18 @@
           },
           "type": "object"
         },
+        "AgentsInboxParams": {
+          "description": "`agents.inbox`: the messages to the caller still waiting in herdr's\nqueue (queued while it was busy), oldest first. Read-only: nothing is\nclaimed.",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane"
+          ],
+          "type": "object"
+        },
         "AgentsLifecycleParams": {
           "description": "`agents.suspend`, `agents.activate` and `agents.restart`: an agent's\nlifecycle in a tab, checked like a soft edit (activating an entry the user\nsuspended needs the caller's user turn, D4) and recorded with who did it.\nThey answer the `agent.*` results (`agent_suspended`, `agent_activated`,\n`agent_restarted`).",
           "properties": {
@@ -10509,6 +10521,23 @@
           "type": "object"
         },
         {
+          "description": "Fork: the messages to the caller still queued.",
+          "properties": {
+            "method": {
+              "const": "agents.inbox",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsInboxParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "agent.prompt",
@@ -12843,6 +12872,63 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "AgentsInboxMessage": {
+          "description": "One message of `agents.inbox`.",
+          "properties": {
+            "age_s": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "chars": {
+              "default": 0,
+              "description": "The message text's length (bytes, as the queue's paste limit counts).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "from_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "from_pane": {
+              "description": "The sender's pane; `None` for an outside caller.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "legacy": {
+              "default": false,
+              "description": "From an older sender that logs the message itself.",
+              "type": "boolean"
+            },
+            "queued_unix": {
+              "default": 0,
+              "description": "When it was sent (unix seconds).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reply_to": {
+              "description": "The id of the message this one answers.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id"
+          ],
           "type": "object"
         },
         "AgentsMessageOutcome": {
@@ -19422,6 +19508,26 @@
                 },
                 "type": {
                   "const": "agents_queued",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork: `agents.inbox`, oldest first.",
+              "properties": {
+                "messages": {
+                  "default": [],
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/AgentsInboxMessage"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "agents_inbox",
                   "type": "string"
                 }
               },
