@@ -2009,6 +2009,19 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            // Fork: agents' context use (`shell/agent_context.rs`).
+                            Ok(endpoint::EndpointControlMessage::AgentContext(payload)) => {
+                                if let Some(shell) = state.shell.as_mut() {
+                                    if shell.receive_agent_context(&endpoint_id, payload) {
+                                        if let Some(frame) = shell
+                                            .compose(state.reported_size.0, state.reported_size.1)
+                                        {
+                                            state.present_frame(frame);
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::Ignored) => {
                                 debug!(%kind, "ignoring unknown endpoint control message");
                                 continue;

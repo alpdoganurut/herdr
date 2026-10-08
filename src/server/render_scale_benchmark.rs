@@ -269,8 +269,15 @@ fn print_profiles_with_config(label: &str, build: fn(usize) -> Vec<Workspace>, c
             if state == crate::detect::AgentState::Idle {
                 terminal.last_agent_completion_seq = Some(index as u64 + 1);
             }
+            // Fork: context use at 60 %, 82 % and 93 % in turn, so rows draw
+            // nothing, the yellow and the red percent.
+            terminal.agent_context = Some(crate::agent_context::ContextUsage {
+                used: [120_000, 164_000, 186_000][index % 3],
+                window: 200_000,
+            });
         }
         pipeline.app.state.agent_times_view_rev = 1;
+        pipeline.app.state.agent_context_view_rev = 1;
         let snapshot = super::client_shell::snapshot(&pipeline.app, "bench-boot", 1, None, None);
         let live_pane = snapshot.agents.first().map(|agent| agent.pane_id.clone());
         pipeline.client.set_snapshot(Box::new(snapshot));
@@ -296,6 +303,15 @@ fn print_profiles_with_config(label: &str, build: fn(usize) -> Vec<Workspace>, c
         pipeline
             .client
             .receive_agent_times(&crate::client::endpoint::ClientEndpointId::Local, times);
+        // Fork: the agent context push, likewise.
+        let context = super::headless::agent_context::AgentContextPayload {
+            boot_id: "bench-boot".into(),
+            revision: pipeline.app.state.agent_context_view_rev,
+            panes: pipeline.app.agent_context_panes(),
+        };
+        pipeline
+            .client
+            .receive_agent_context(&crate::client::endpoint::ClientEndpointId::Local, context);
         (count, profile_pipeline(pipeline))
     });
     print_profile_rows(label, &rows);

@@ -317,6 +317,11 @@ impl ClientShellState {
                             .and_then(|row| row.tab_id.as_deref()),
                     ),
                     sections: super::tab_sidebar::sidebar_sections(&self.config),
+                    context: super::agent_context::active_agent_context_of(
+                        &self.agent_context,
+                        &self.active_endpoint_id,
+                        Some(snapshot),
+                    ),
                 });
         }
         let active_view = self.active_view();

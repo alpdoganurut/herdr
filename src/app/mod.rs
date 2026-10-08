@@ -35,6 +35,8 @@ mod api;
 pub(crate) use api::test_support::exiting_test_command;
 mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
+/// Fork: how full each agent's context window is (`endpoint.agent-context.v1`).
+pub(crate) mod agent_context;
 /// Fork (sidebar v2): when each agent entered its state (`endpoint.agent-times.v1`).
 pub(crate) mod agent_times;
 mod creation;
@@ -187,6 +189,8 @@ pub struct App {
     pub(crate) agent_transcript_backup_deadline: Option<Instant>,
     /// Fork: Codex thread ids learned from rollout files.
     pub(crate) codex_sessions: codex_sessions::CodexSessionProbe,
+    /// Fork: agents' context use read from their session files.
+    pub(crate) agent_context: agent_context::AgentContextProbe,
     /// The AI news desk: schedule, tab and run in flight (`news.*`).
     pub(crate) news: news::NewsState,
     /// The coordinator (fork): lifecycle, tab, worker and read model.
@@ -615,6 +619,7 @@ impl App {
             tab_pins_view_rev: 0,
             tab_mutes_view_rev: 0,
             agent_times_view_rev: 0,
+            agent_context_view_rev: 0,
             agents_close_deadline: None,
         };
 
@@ -737,6 +742,7 @@ impl App {
             agent_transcript_backup_last: None,
             agent_transcript_backup_pending: std::collections::BTreeMap::new(),
             codex_sessions: codex_sessions::CodexSessionProbe::default(),
+            agent_context: agent_context::AgentContextProbe::default(),
             detached_process_children: Vec::new(),
             tab_bar_status_generation: 0,
             tab_bar_datetimes: Vec::new(),

@@ -11,6 +11,7 @@ const NESTED_HERDR_MESSAGES: [&str; 6] = [
     "recursion detected. base case not found. aborting.",
 ];
 
+mod agent_context;
 mod agent_resume;
 mod agent_view_eval;
 mod agent_wrap;
@@ -307,6 +308,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # scheduled tabs keep their own rows.
 # sidebar_collapse_suspended = true
 
+# Show a tab's agent context use (Claude Code, Codex) in the "tabs" sidebar layout:
+# NN% on its row from 75% (yellow, red from 90%), the tokens in the detail strip.
+# sidebar_context_usage = true
+
 # Terminal width at or below which Herdr uses the mobile single-column layout.
 # Increase this for foldables, tablets, or wide phone terminals.
 # mobile_width_threshold = 64
@@ -581,6 +586,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # (herdr_agents for messaging teammates) and, for Claude, a per-turn hook with roster changes.
 # Works without `wrap`; launches outside team groups are unchanged. Needs the shell hook.
 # team_roster = true
+# The context window in tokens per agent for the sidebar's context use; unset uses the
+# window the session states (Codex) or 200k / 1M by model and use (Claude).
+# context_window = { claude = 1000000 }
 
 [notes]
 # Per-session notes and checkpoints behind the info pane, `herdr notes`,

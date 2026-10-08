@@ -264,6 +264,9 @@ pub struct TerminalState {
     /// change, stamped with `last_agent_state_change_seq` and cleared with it;
     /// pushed to client shells as `endpoint.agent-times.v1`.
     pub agent_state_since_unix_ms: Option<u64>,
+    /// Fork: the agent's context use, read from its session file
+    /// (`App::handle_agent_context_probe`); pushed as `endpoint.agent-context.v1`.
+    pub agent_context: Option<crate::agent_context::ContextUsage>,
     pub last_agent_completion_seq: Option<u64>,
     pub revision: u64,
     pub launch_argv: Option<Vec<String>>,
@@ -353,6 +356,7 @@ impl TerminalState {
             state: AgentState::Unknown,
             last_agent_state_change_seq: None,
             agent_state_since_unix_ms: None,
+            agent_context: None,
             last_agent_completion_seq: None,
             revision: 0,
             launch_argv: None,

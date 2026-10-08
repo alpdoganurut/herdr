@@ -2088,6 +2088,94 @@ async fn fork_smoke_tab_mute_reaches_every_client_silences_the_tab_and_survives_
     assert!(!shell.receive_tab_mutes(&local, last.clone()));
 }
 
+/// Every `endpoint.agent-context.v1` payload in a client's control stream so far.
+fn agent_context_payloads(
+    control: &std::sync::mpsc::Receiver<Vec<u8>>,
+) -> Vec<crate::server::headless::agent_context::AgentContextPayload> {
+    let mut payloads = Vec::new();
+    while let Ok(bytes) = control.try_recv() {
+        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+            if kind == crate::server::headless::agent_context::AGENT_CONTEXT_KIND {
+                let crate::client::endpoint::EndpointControlMessage::AgentContext(payload) =
+                    crate::client::endpoint::decode_endpoint_control(&kind, &data)
+                        .expect("decodes")
+                else {
+                    panic!("an agent context control message");
+                };
+                payloads.push(payload);
+            }
+        }
+    }
+    payloads
+}
+
+/// Fork: an agent's context use read from its session file reaches the
+/// client shell once as `endpoint.agent-context.v1`, keyed like the shell
+/// snapshot's agent row, and `agent.list` carries it as `AgentInfo.context`;
+/// an unchanged value sends nothing; the client shell takes it.
+#[tokio::test]
+async fn fork_smoke_agent_context_push_reaches_the_client_shell() {
+    let (mut server, _rx) = server_with_claude(Some(SESSION_ID));
+    let (control, _render) = connect_test_shell(&mut server, 72, 80, 23);
+    server.render_and_stream();
+    assert!(
+        agent_context_payloads(&control).is_empty(),
+        "a server that never read a context use sends nothing"
+    );
+    // The tick finds the Claude pane due (its session file read off-thread).
+    let (requests, _) = server.app.agent_context_requests(std::time::Instant::now());
+    assert_eq!(requests.len(), 1, "the live Claude pane is due");
+
+    let terminal_id = root_terminal_id(&server);
+    let usage = crate::agent_context::TranscriptUsage {
+        used: 164_000,
+        model: Some("claude-opus-5-5".into()),
+        window: None,
+    };
+    assert!(server.app.apply_agent_context_results(vec![(
+        terminal_id.clone(),
+        crate::agent_context::ContextAgent::Claude,
+        Some(usage.clone()),
+    )]));
+    server.render_and_stream();
+    let snapshot = crate::server::client_shell::snapshot(&server.app, "fork-smoke", 1, None, None);
+    let payloads = agent_context_payloads(&control);
+    assert_eq!(payloads.len(), 1, "one payload per change");
+    let payload = payloads[0].clone();
+    assert_eq!(payload.panes.len(), 1);
+    assert_eq!(payload.panes[0].pane_id, snapshot.agents[0].pane_id);
+    assert_eq!(
+        (payload.panes[0].used, payload.panes[0].window),
+        (164_000, 200_000)
+    );
+
+    let list = api(
+        &mut server,
+        Method::AgentList(crate::api::schema::EmptyParams::default()),
+    );
+    let context = &list["result"]["agents"][0]["context"];
+    assert_eq!(context["used_tokens"], 164_000, "{list}");
+    assert_eq!(context["window_tokens"], 200_000, "{list}");
+    assert_eq!(context["percent"], 82, "{list}");
+
+    // The same value again: no payload.
+    server.app.apply_agent_context_results(vec![(
+        terminal_id,
+        crate::agent_context::ContextAgent::Claude,
+        Some(usage),
+    )]);
+    server.render_and_stream();
+    assert!(agent_context_payloads(&control).is_empty());
+
+    // The client shell takes it once.
+    let mut shell = crate::client::ClientShellState::new(
+        crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),
+    );
+    let local = crate::client::endpoint::ClientEndpointId::Local;
+    assert!(shell.receive_agent_context(&local, payload.clone()));
+    assert!(!shell.receive_agent_context(&local, payload));
+}
+
 #[path = "fork_smoke/coordinator.rs"]
 mod coordinator;
 

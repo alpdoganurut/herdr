@@ -72,6 +72,8 @@ use crate::server::socket_paths::{
 };
 use crate::server::terminal_attach::paste_payload_for_runtime;
 
+/// Fork: agents' context use (the `endpoint.agent-context.v1` push).
+pub mod agent_context;
 pub mod agent_notices;
 /// Fork (sidebar v2): the `endpoint.agent-times.v1` push.
 pub mod agent_times;
@@ -3526,6 +3528,8 @@ impl HeadlessServer {
         }
         // Fork: Codex thread ids from rollout files (off-thread file reads).
         changed |= self.app.handle_codex_session_probe(now);
+        // Fork: agents' context use from their session files (off-thread reads).
+        changed |= self.app.handle_agent_context_probe(now);
 
         if let Some(deadline) = self
             .app

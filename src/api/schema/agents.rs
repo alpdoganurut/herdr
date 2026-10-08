@@ -297,6 +297,10 @@ pub struct AgentInfo {
     /// coordinator wake-ups) waits while it is present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<AgentVoiceMode>,
+    /// Fork: how full the agent's context window is, read from its session
+    /// file (Claude Code, Codex); absent while unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<AgentContextInfo>,
     /// The current idle transition completed work, independently of who has viewed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_seq: Option<u64>,
@@ -305,6 +309,18 @@ pub struct AgentInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_cwd: Option<String>,
     pub revision: u64,
+}
+
+/// Fork: an agent's context use (`AgentInfo.context`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentContextInfo {
+    /// Tokens in the context after the agent's last request.
+    pub used_tokens: u64,
+    /// The context window in tokens (stated by the session file, else
+    /// `[agents] context_window`, else inferred from the model and usage).
+    pub window_tokens: u64,
+    /// Whole percent of the window in use, at most 100.
+    pub percent: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

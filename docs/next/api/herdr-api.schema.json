@@ -11742,6 +11742,36 @@
             }
           ]
         },
+        "AgentContextInfo": {
+          "description": "Fork: an agent's context use (`AgentInfo.context`).",
+          "properties": {
+            "percent": {
+              "description": "Whole percent of the window in use, at most 100.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "used_tokens": {
+              "description": "Tokens in the context after the agent's last request.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "window_tokens": {
+              "description": "The context window in tokens (stated by the session file, else\n`[agents] context_window`, else inferred from the model and usage).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "used_tokens",
+            "window_tokens",
+            "percent"
+          ],
+          "type": "object"
+        },
         "AgentInfo": {
           "properties": {
             "agent": {
@@ -11771,6 +11801,17 @@
                 "integer",
                 "null"
               ]
+            },
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentContextInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fork: how full the agent's context window is, read from its session\nfile (Claude Code, Codex); absent while unknown."
             },
             "cwd": {
               "type": [

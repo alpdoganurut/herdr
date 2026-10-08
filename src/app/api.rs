@@ -866,6 +866,8 @@ impl App {
         self.note_tab_mutes_event(&event.event);
         // Fork (sidebar v2): agent state times follow moves and closes (O(1)).
         self.note_agent_times_event(&event.event);
+        // Fork: agents' context use follows moves and closes (O(1)).
+        self.note_agent_context_event(&event.event);
         // Fork: agent cards follow their pane (O(cards), nothing without cards).
         if matches!(
             event.event,

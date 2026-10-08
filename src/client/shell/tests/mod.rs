@@ -249,6 +249,8 @@ fn surface_with_popup() -> PaneSurfaceFrame {
 }
 
 mod agent_cards;
+/// Fork: agents' context use in the tabs sidebar.
+mod agent_context;
 mod agents_model;
 mod agents_worktrees_notifications;
 mod breathe;

@@ -32,6 +32,12 @@ pub struct AgentsConfig {
     /// purpose and the team tools (the team-only launch wrap; independent
     /// of `wrap`). Default: true.
     pub team_roster: bool,
+    /// The context window in tokens per agent (`claude`, `codex`) for the
+    /// tabs sidebar's context use; a missing or zero entry uses the
+    /// window the session file states (Codex) or the model id and usage
+    /// imply (Claude: 200k, 1M for `[1m]` models or usage past 200k).
+    /// Applies at the next read. Default: empty.
+    pub context_window: std::collections::BTreeMap<String, u64>,
 }
 
 impl Default for AgentsConfig {
@@ -43,6 +49,7 @@ impl Default for AgentsConfig {
             instructions_file: String::new(),
             notices: true,
             team_roster: true,
+            context_window: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -127,6 +134,10 @@ mod tests {
         assert_eq!(config.agents.wrap, Some(true));
         assert!(config.agents.tools && config.agents.instructions && !config.agents.notices);
         assert_eq!(config.agents.instructions_file(), Some("~/a.md"));
+        assert!(config.agents.context_window.is_empty());
+        let config: Config =
+            toml::from_str("[agents]\ncontext_window = { claude = 1000000 }\n").unwrap();
+        assert_eq!(config.agents.context_window.get("claude"), Some(&1_000_000));
     }
 
     #[test]

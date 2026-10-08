@@ -443,6 +443,7 @@ impl App {
             state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
             subagents: terminal.active_subagent_count(),
             voice: crate::api::schema::AgentVoiceMode::from_detected(terminal.agent_voice()),
+            context: super::agent_context::agent_context_info(terminal.agent_context),
             completion_seq: terminal.last_agent_completion_seq,
             cwd: pane.cwd,
             foreground_cwd: pane.foreground_cwd,

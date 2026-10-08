@@ -35,7 +35,9 @@ fn client_shell_projection(
             };
             // Fork (sidebar v2): the agent times push follows a state
             // change's projection; it is not part of the pair.
-            if kind != crate::server::headless::agent_times::AGENT_TIMES_KIND {
+            if kind != crate::server::headless::agent_times::AGENT_TIMES_KIND
+                && kind != crate::server::headless::agent_context::AGENT_CONTEXT_KIND
+            {
                 break (kind, data);
             }
         };

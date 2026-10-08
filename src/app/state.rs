@@ -961,6 +961,10 @@ pub struct AppState {
     /// was seen, by moves and closes (`endpoint.agent-times.v1`); `0` until
     /// the first state change.
     pub(crate) agent_times_view_rev: u64,
+    /// Fork: bumped when a pane agent's context use changed and, once one
+    /// was known, by moves and closes (`endpoint.agent-context.v1`); `0`
+    /// until the first value.
+    pub(crate) agent_context_view_rev: u64,
     /// Fork (agents v2): the next look at agents-model closes in flight.
     pub(crate) agents_close_deadline: Option<std::time::Instant>,
 }
@@ -1263,6 +1267,7 @@ impl AppState {
             tab_pins_view_rev: 0,
             tab_mutes_view_rev: 0,
             agent_times_view_rev: 0,
+            agent_context_view_rev: 0,
             agents_close_deadline: None,
         }
     }

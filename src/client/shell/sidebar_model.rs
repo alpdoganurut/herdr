@@ -55,6 +55,10 @@ pub(crate) struct TabFacts {
     /// Fork: notifications muted (`tab.set_muted`, the
     /// `endpoint.tab-mutes.v1` push).
     pub(crate) muted: bool,
+    /// Fork: the fullest context use over the tab's agents (the
+    /// `endpoint.agent-context.v1` push); `None` while none is known or
+    /// `ui.sidebar_context_usage` is off.
+    pub(crate) context: Option<crate::agent_context::ContextUsage>,
 }
 
 impl Default for TabFacts {
@@ -72,6 +76,7 @@ impl Default for TabFacts {
             parked: false,
             pin: false,
             muted: false,
+            context: None,
         }
     }
 }
@@ -132,6 +137,8 @@ pub(crate) struct Sections {
     pub(crate) scheduled: bool,
     /// Fork: `ui.sidebar_collapse_suspended`, runs of suspended tabs fold.
     pub(crate) suspended_runs: bool,
+    /// Fork: `ui.sidebar_context_usage`, tabs carry their agents' context use.
+    pub(crate) context_usage: bool,
 }
 
 impl Default for Sections {
@@ -141,6 +148,7 @@ impl Default for Sections {
             pins: true,
             scheduled: true,
             suspended_runs: true,
+            context_usage: true,
         }
     }
 }
@@ -160,6 +168,8 @@ pub(crate) struct ModelInputs<'a> {
     pub(crate) sections: Sections,
     /// Fork: the expanded suspended runs, by their first tab's id.
     pub(crate) expanded_runs: Option<&'a HashSet<String>>,
+    /// Fork: the agents' context use (`agent_context.rs`).
+    pub(crate) context: Option<&'a super::agent_context::ClientAgentContextState>,
 }
 
 impl<'a> ModelInputs<'a> {
@@ -179,6 +189,7 @@ impl<'a> ModelInputs<'a> {
             fixed_ids: (None, None),
             sections: Sections::default(),
             expanded_runs: None,
+            context: None,
         }
     }
 }
@@ -364,6 +375,7 @@ impl SidebarModel {
             fixed_ids,
             sections,
             expanded_runs,
+            context,
         } = inputs;
         self.dirty = false;
         if self.fixed_ids.0.as_deref() != fixed_ids.0 {
@@ -398,6 +410,8 @@ impl SidebarModel {
             .collect();
         // No voice lookups while no pane is in voice mode.
         let voice = voice.filter(|voice| !voice.panes.is_empty());
+        // Fork: no context lookups while none is known or the toggle is off.
+        let context = context.filter(|context| sections.context_usage && !context.panes.is_empty());
         for (agent_index, agent) in snapshot.agents.iter().enumerate() {
             let Some(&tab_index) = index.get(agent.tab_id.as_str()) else {
                 continue;
@@ -412,6 +426,9 @@ impl SidebarModel {
             }
             if let Some(mode) = voice.and_then(|voice| voice.voice_of(&agent.pane_id)) {
                 facts.voice = super::voice::louder(facts.voice, mode);
+            }
+            if let Some(usage) = context.and_then(|context| context.usage_of(&agent.pane_id)) {
+                facts.context = Some(super::agent_context::fuller(facts.context, usage));
             }
             if agent.agent_status == tab_status {
                 let seq = if agent.state_change_seq == 0 {

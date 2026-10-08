@@ -27,6 +27,8 @@ mod info_dock;
 mod info_dock_model;
 mod info_dock_render;
 pub(super) use endpoints::*;
+/// Fork: agents' context use (`endpoint.agent-context.v1`).
+mod agent_context;
 mod browser;
 mod browser_overlay;
 mod global_menu;

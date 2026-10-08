@@ -258,7 +258,7 @@ fn is_rollout_file_name(path: &Path) -> bool {
 /// `sessions/YYYY/MM/DD` for every UTC day from a day before `floor_ms` to a
 /// day after `now_ms`: the directories are named in local time, which is at
 /// most a day away from UTC.
-fn day_dirs(sessions_root: &Path, floor_ms: u64, now_ms: u64) -> Vec<PathBuf> {
+pub(crate) fn day_dirs(sessions_root: &Path, floor_ms: u64, now_ms: u64) -> Vec<PathBuf> {
     let first = (floor_ms / DAY_MS).saturating_sub(1);
     let last = now_ms.max(floor_ms) / DAY_MS + 1;
     let first = first.max(last.saturating_sub(MAX_DAY_DIRS - 1));
@@ -284,7 +284,7 @@ pub fn now_unix_ms() -> u64 {
 }
 
 /// The millisecond timestamp in a version 7 UUID.
-fn uuid_v7_ms(id: &str) -> Option<u64> {
+pub(crate) fn uuid_v7_ms(id: &str) -> Option<u64> {
     let hex: String = id.chars().filter(|c| *c != '-').collect();
     if hex.len() != 32 || hex.as_bytes().get(12) != Some(&b'7') {
         return None;

@@ -235,6 +235,11 @@ src/client/shell/tab_mutes.rs
 src/client/shell/tests/tab_mutes.rs
 src/client/shell/tab_history.rs
 src/client/shell/tests/tab_history.rs
+src/agent_context.rs
+src/app/agent_context.rs
+src/server/headless/agent_context.rs
+src/client/shell/agent_context.rs
+src/client/shell/tests/agent_context.rs
 
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
@@ -529,6 +534,14 @@ src/client/shell/tests/tab_history.rs
 | ClientShellState | tab_history | super::tab_history::TabHistory::default() |
 | AgentNoticeInfo | team | None |
 | AgentNoticeInfo | role | None |
+| AppState | agent_context_view_rev | 0 |
+| App | agent_context | agent_context::AgentContextProbe::default() |
+| TerminalState | agent_context | None |
+| ClientConnection | shell_agent_context_sent | None |
+| AgentInfo | context | None |
+| UiConfig | sidebar_context_usage | true |
+| ClientShellConfig | sidebar_context_usage | true |
+| ClientShellState | agent_context | HashMap::new() |
 
 
 ## 3. Removed or re-signatured upstream symbols (E0425/E0061 at a new upstream call site = deny)
@@ -749,6 +762,7 @@ ConfigEdit::SidebarActiveAgents(bool)   [src/config/write.rs, last after AgentsI
 EndpointControlMessage::AgentTimes   [src/client/endpoint/control.rs, directly after Voice; the decoded `endpoint.agent-times.v1` optional control (malformed data → Ignored); internal]
 Method::TabSetPinned   [src/api/schema.rs, directly after TabSetReminder; wire "tab.set_pinned"]
 EndpointControlMessage::TabPins   [src/client/endpoint/control.rs, directly after AgentTimes; the decoded `endpoint.tab-pins.v1` optional control (malformed data → Ignored); internal]
+EndpointControlMessage::AgentContext   [src/client/endpoint/control.rs, directly after TabPins; the decoded `endpoint.agent-context.v1` optional control (malformed data → Ignored); internal]
 ConfigEdit::SidebarPinnedAgents(bool)   [src/config/write.rs, last after SidebarActiveAgents; `ui.sidebar_pinned_agents`, client-local write; internal]
 ConfigEdit::SidebarScheduledAgents(bool)   [src/config/write.rs, last after SidebarPinnedAgents; `ui.sidebar_scheduled_agents`, client-local write; internal]
 ClientContextMenuAction::Pin   [src/client/shell/state.rs, last after SetRole; tab menu Pin/Unpin (`tab.set_pinned`); internal]
@@ -854,6 +868,7 @@ Any digest value change = deny (contract change, never a fixture fix). pane.move
 tests/fixtures/endpoint-*-v1.json and src/protocol/** frozen tests: never edited (the fork has no diff under tests/).
 Upstream adding "pane.move" or "pane.get" to CLIENT_SHELL_METHODS, or adding any section 9 identifier = deny (collision).
 endpoint.agent-times.v1 (sidebar v2): an optional JSON control, not a client-shell method shape (src/server/headless/agent_times.rs: AgentTimesPayload { boot_id, revision, server_now_unix_ms, panes: Vec<AgentTimePane { pane_id, state_change_seq, since_unix_ms }> }, the whole list of panes with a stamped state change, sent from the render pass when ClientConnection.shell_agent_times_sent != AppState.agent_times_view_rev; nothing while the revision is 0). The client measures each age on the server's clock (server_now_unix_ms - since_unix_ms) and uses a time only while its state_change_seq equals the snapshot agent's. Old clients ignore the kind; no bincode type and no PROTOCOL_VERSION change.
+agent.get, agent.list (upstream methods), agent context: fork optional AgentInfo.context (AgentContextInfo { used_tokens: u64, window_tokens: u64, percent: u8 }, fork type directly after AgentInfo in src/api/schema/agents.rs; `#[serde(default, skip_serializing_if = "Option::is_none")]`, absent while unknown, so an agent without it serializes as upstream's; docs/next/api/herdr-api.schema.json regenerated). Not a client-shell method shape: the client shell learns it from the optional control `endpoint.agent-context.v1` (src/server/headless/agent_context.rs: AgentContextPayload { boot_id, revision, panes: Vec<AgentContextPane { pane_id, used, window }> }, the whole list of panes with a known context use, sent from the render pass when ClientConnection.shell_agent_context_sent != AppState.agent_context_view_rev; nothing while the revision is 0; bumped only when a read changes a value or clears one, and, once any value was known, by pane/tab/workspace moves and closes). Old clients ignore the kind; no bincode type and no PROTOCOL_VERSION change (stays 25), endpoint generation 1, no frozen fixture touched.
 
 
 ## 6. Config keys (cross-checked by scripts/config_reference_check.py)
@@ -875,6 +890,7 @@ The notes.* keys form their own group (id `notes`, title Notes) directly after t
 After any merge touching config-reference.json: python3 -m json.tool on the file, then python3 scripts/config_reference_check.py.
 ui.sidebar_collapse_suspended (config-reference.json directly after ui.sidebar_scheduled_agents; DEFAULT_CONFIG directly after `# sidebar_scheduled_agents = true`), ui.sidebar_active_agents (config-reference.json directly after ui.info_pane_width; DEFAULT_CONFIG directly after `# info_pane_width = 44`), ui.sidebar_pinned_agents, ui.sidebar_scheduled_agents (sidebar v3: config-reference.json directly after ui.sidebar_active_agents; DEFAULT_CONFIG directly after `# sidebar_active_agents = true`), theme.custom.sidebar_chrome_bg, theme.custom.light.sidebar_chrome_bg, theme.custom.dark.sidebar_chrome_bg (each directly after its surface_dim sibling in config-reference.json; DEFAULT_CONFIG `# sidebar_chrome_bg = "#11111b"` at the end of the `[theme.custom]` comment block). The ui.tab_agent_glyphs description names the `voice_live` / `voice_muted` keys and the `muted` key (no new key path).
 keys.tab_history_back, keys.tab_history_forward (sidebar v3: config-reference.json and DEFAULT_CONFIG comments directly after keys.toggle_info_pane; defaults "cmd+[" / "cmd+]", direct bindings, not prefix; not in configuration.mdx).
+ui.sidebar_context_usage (agent context: bool, default true; config-reference.json directly after ui.sidebar_collapse_suspended; DEFAULT_CONFIG directly after `# sidebar_collapse_suspended = true`), agents.context_window (agent context: table of agent key → window tokens, default empty; config-reference.json directly after agents.team_roster, the last agents.* entry; DEFAULT_CONFIG comment lines directly after `# team_roster = true`, the last lines of the `[agents]` block; read live by the server through App.agents_config at the next read; not in configuration.mdx).
 
 
 ## 7. Per-file merge rules
@@ -1028,6 +1044,25 @@ docs/next/website/src/content/docs/socket-api.mdx  additive: mute: `tab.set_mute
 *  deny: anything that is not a structural additive conflict (zdiff3 base empty, both sides pure insertions)
 src/app/mod.rs  additive: launch gate: `pub(crate) mod launch_gate;` (with its fork comment) directly after `mod agents_reorder;`
 src/api/schema/agent_notices.rs  additive: AgentNoticeInfo.team, .role stay the last fields after unix
+src/main.rs  additive: agent context: `mod agent_context;` directly before `mod agent_resume;` (rustfmt order); DEFAULT_CONFIG `# sidebar_context_usage = true` (with its comment) directly after `# sidebar_collapse_suspended = true`; the `context_window` comment lines last in the `[agents]` block, after `# team_roster = true`
+src/app/mod.rs  additive: agent context: `pub(crate) mod agent_context;` (with its doc line) directly before `pub(crate) mod agent_times;` (rustfmt order); App.agent_context directly after codex_sessions (struct and App::new); AppState.agent_context_view_rev in App::new directly after agent_times_view_rev
+src/app/state.rs  additive: agent context: AppState.agent_context_view_rev directly after agent_times_view_rev (struct and test_new)
+src/terminal/state.rs  additive: agent context: TerminalState.agent_context directly after agent_state_since_unix_ms (struct and new())
+src/server/clients.rs  additive: agent context: ClientConnection.shell_agent_context_sent directly after shell_tab_pins_sent (struct and new())
+src/server/headless.rs  additive: agent context: `pub mod agent_context;` (with its doc line) directly before `pub mod agent_notices;` (rustfmt order)
+src/server/headless/render.rs  additive: agent context: agent_context_frame directly after tab_pins_frame; the agent_context::sync_client call directly after the tab_pins one
+src/api/schema/agents.rs  additive: agent context: AgentInfo.context directly after voice; AgentContextInfo directly after AgentInfo
+src/app/agents.rs  additive: agent context: agent_info sets AgentInfo.context (agent_context::agent_context_info(terminal.agent_context)) directly after voice
+src/client/endpoint/control.rs  additive: agent context: EndpointControlMessage::AgentContext directly after TabPins, its decode branch directly after the tab-pins one, agent_context_round_trip_and_garbage_is_ignored last in the tests
+src/client/mod.rs  additive: agent context: the EndpointControlMessage::AgentContext arm directly after the TabPins arm
+src/client/shell.rs  additive: agent context: `mod agent_context;` (with its doc line) directly after `pub(super) use endpoints::*;` (rustfmt order)
+src/client/shell/state.rs  additive: agent context: ClientShellConfig.sidebar_context_usage directly after sidebar_collapse_suspended; ClientShellState.agent_context the last field (and last in new())
+src/client/shell/config.rs  additive: agent context: from_config and apply_live_config copy ui.sidebar_context_usage directly after sidebar_collapse_suspended
+src/client/shell/composition.rs  additive: agent context: the sidebar_model.ensure ModelInputs literal's `context:` (active_agent_context_of) last, after sections
+src/client/shell/tests/mod.rs  additive: agent context: `mod agent_context;` (with its doc line) directly after `mod agent_cards;`
+src/config/model.rs  additive: agent context: UiConfig.sidebar_context_usage directly after sidebar_collapse_suspended (struct and Default)
+src/server/headless/tests/fork_smoke.rs  additive: agent context: agent_context_payloads and fork_smoke_agent_context_push_reaches_the_client_shell directly after tab_pin_reaches_every_client_and_survives_a_move, still directly before the coordinator mod lines
+docs/next/website/src/data/config-reference.json  additive: agent context: entries placed per section 6
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
 src/client/shell/notifications.rs  mid-logic: render_visible_notification and render_mobile_notification_banner swap the drawn `●` for notification_glyph (reminder marker, `✓` finished, `×` needs attention) via put_notification_glyph after the upstream render; render_notification_card and render_mobile_notice_banner are unchanged; Finished uses palette.green (was blue)
@@ -1255,6 +1290,16 @@ src/client/shell/settings_overlay.rs  mid-logic: sidebar v3: the Indicators sect
 src/client/shell/settings_overlay.rs  mid-logic: sidebar v2: the Indicators arm draws render_active_agents_toggle (`active agents block: on|off` at content.y + 6, a dim line under it, choice hit 2) after the two-choice radio
 src/client/shell/state.rs  mid-logic: sidebar v3: apply_active_snapshot calls tab_history.observe(focused_tab_id, is_live over the snapshot's tabs) for every accepted snapshot (the first too) directly after the boot_changed / previous_pane_id statement; reset_endpoint_projection calls tab_history.reset() directly after previous_pane_id = None (covers a new boot and an endpoint switch)
 src/client/shell/actions.rs  mid-logic: sidebar v3: endpoint_method_for_action's TabHistoryBack / TabHistoryForward arm (directly after OpenCoordinator) sends tab.focus for the history's next live target, nothing when there is none
+src/server/headless.rs  mid-logic: agent context: the slow tick calls app.handle_agent_context_probe(now) directly after handle_codex_session_probe (every 5 s; O(terminals) due check, the session files are stat'ed and tail-read on a `herdr-agent-context` thread; never per frame or per render)
+src/app/runtime.rs  mid-logic: agent context: next_deadline lists next_agent_context_probe_deadline() directly after next_codex_session_probe_deadline()
+src/app/api.rs  mid-logic: agent context: emit_event calls note_agent_context_event (O(1); bumps agent_context_view_rev on moves and closes once a value was known) directly after note_agent_times_event
+src/server/headless/render.rs  mid-logic: agent context: the per-client render pass calls agent_context::sync_client (one PassFrame per pass, built only when a client is behind; O(1) per client when the revision was sent; nothing at revision 0) directly after tab_pins::sync_client, with the same error handling
+src/server/headless/tests/mod.rs  mid-logic: agent context: client_shell_projection's read_control also skips `endpoint.agent-context.v1` frames
+src/codex_sessions.rs  mid-logic: agent context: day_dirs and uuid_v7_ms are pub(crate) (src/agent_context.rs finds a thread's rollout file by its id's day)
+src/client/shell/sidebar_model.rs  mid-logic: agent context: TabFacts.context (the fullest use over the tab's agents, agent_context::fuller), Sections.context_usage (ui.sidebar_context_usage), ModelInputs.context; the rebuild's agent pass folds the push in (no lookup while the state lists no pane or the toggle is off)
+src/client/shell/tab_sidebar.rs  mid-logic: agent context: sidebar_sections copies context_usage; a tab row's TabRowLook.context (agent_context::row_percent_text / row_percent_color from TabFacts.context, a static `75%`..`100%` table) is drawn by render_tab_row just left of the marks and packed with them (the label truncates first; a row with no room for it drops it, never the marks)
+src/server/render_scale_benchmark.rs  mid-logic: agent context: the "tabs sidebar, background workspaces" profile gives every root pane a context use (60 %, 82 %, 93 % in turn) and feeds the client the agent-context push built by App::agent_context_panes, directly after the agent-times push
+src/client/shell/tab_sidebar_detail.rs  mid-logic: agent context: tab_chips adds the `ctx NN% · used/window` chip (context_chip_text, a StackStr) directly after the agent kind / name chips, overlay1 under 75 %, the row colors from it
 
 
 src/server/headless/notifications.rs  mid-logic: mute: forward_semantic_agent_transition returns false for a muted tab right after resolving tab_idx; forward_pane_state_update_notifications_to_clients returns early when pane_notifications_muted; the StateChanged and HookStateReported arms widen suppress_completion with pane_notifications_muted after next_state (sound and flat toast); the TerminalBell arm drops a muted tab's bell first
@@ -1935,6 +1980,12 @@ tab_history_forward
 TabHistory
 TabHistoryBack
 TabHistoryForward
+agent_context_view_rev
+shell_agent_context_sent
+endpoint.agent-context.v1
+AgentContextPayload
+AgentContextInfo
+sidebar_context_usage
 
 
 ## 10. Fork smoke tests (run by name in the gate)
@@ -2002,10 +2053,12 @@ client::shell::tests::sidebar_sections::fork_smoke::pinned_and_scheduled_section
 client::shell::tests::tab_history::fork_smoke::cmd_bracket_focuses_the_previous_tab_and_back_again
 server::headless::tests::fork_smoke::fork_smoke_tab_mute_reaches_every_client_silences_the_tab_and_survives_a_move
 server::headless::tests::agent_notices_smoke::fork_smoke_agent_notice_carries_the_senders_team
+server::headless::tests::fork_smoke::fork_smoke_agent_context_push_reaches_the_client_shell
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 ### Added
 - Mute a tab's notifications: the tab menu's new "Mute notifications" / "Unmute notifications" item (after Pin / Unpin), or `tab.set_muted` over the API. A muted tab raises none of herdr's own automatic notifications: no finished or needs-attention toast, no done / request sound, no system or terminal notification, no terminal bell, and no important or scheduled reminder alert (the reminder clock does not run while muted). Notices its agent sends with `agents_notify` still show and ring, and its status, the Active block and the sidebar status are unchanged. The mute is server-side, saved with the session, kept across a whole-tab move, a live handoff and close / reopen, and pushed to clients as `endpoint.tab-mutes.v1`. In the `tabs` sidebar a muted tab shows a dim bell-off mark (Nerd Font U+F009B; `ui.tab_agent_glyphs.muted` replaces it) in its row's left gutter and a `muted` chip in the detail strip.
+- Tabs sidebar: a tab whose agent (Claude Code or Codex) has used 75% or more of its context window shows `NN%` on its row, just left of the marks (yellow, red from 90%); the detail strip shows `ctx NN% · 164k/200k` at any level. Herdr reads the usage from the tail of the agent's own session file after state changes (at most every 30 s while it works), never per frame. Claude Code transcripts do not record the window: it is 1M for `[1m]` models or once the use passes 200k, else 200k; `[agents] context_window = { claude = 1000000 }` sets it. `agent.list` / `agent.get` carry it as `context`. `[ui] sidebar_context_usage = false` hides it.
 - Tabs sidebar: three or more suspended tabs in a row fold into one `◌ N suspended ▸` row; a click expands it (the row stays as its header, `▾`) or folds it again, remembered across restarts by the run's first tab. The focused, pinned, important and scheduled tabs keep their own rows and split a run. Hovering the row lists its tabs in the detail strip. `[ui] sidebar_collapse_suspended = false` turns it off.
 - Sidebar v3 (tabs layout): the detail strip (about the hovered row, else the focused tab) moves to the top, under the toolbar, with one rule between it and the list; a rule also separates the blocks from the fixed Browser / News / coordinator rows. The Active block moves under the list, followed by two new blocks: Pinned (tabs pinned from the tab menu's new Pin / Unpin item, or `tab.set_pinned` over the API; the pin is server-side, saved with the session, kept across a whole-tab move, a live handoff and close / reopen, and pushed to clients as `endpoint.tab-pins.v1`; each entry shows status, name, team or group, subagents and time in state (idle agents too: how long they have waited); a pinned tab stays in its group too) and Scheduled (tabs with a scheduled reminder: the `◷ ◑ ☼` marker, the interval and the time to the next reminder, the daily time, or `fired` while one waits; both columns take only the width of their widest shown text so the name keeps its cells at the default sidebar width; the folded header does not light the focused tab's reminder). Both fold from their header (remembered), hide while empty, expand with `+N more`, jump to the tab on a click and open its menu on a right click; `[ui] sidebar_pinned_agents` / `sidebar_scheduled_agents` (or Settings → indicators) turn them off. As space runs short the detail strip goes first, then the Scheduled, Pinned and Active lines, then the blocks, then the rule above the fixed rows, then the footer.
 - Tab history: cmd+[ / cmd+] (`[keys] tab_history_back` / `tab_history_forward`) go back and forward through the tabs you focused, browser-style: every focus change counts (clicks, keys, agents, notification jumps, the News / coordinator / Browser rows), a back or forward jump adds no entry, focusing another tab after going back drops the forward entries, closed tabs are skipped and pruned (a press drops them, and a visit that fills the 50 entries drops closed tabs before the oldest live one), a tab visited twice is followed correctly through quick repeated presses, and the history is per client and starts over when the server restarts or another machine is selected. Cmd arrives as the kitty super modifier, so the terminal must pass it through: in Ghostty add `keybind = super+[=csi:91;9u` and `keybind = super+]=csi:93;9u` (or `keybind = super+[=unbind` / `keybind = super+]=unbind`, which relies on kitty keyboard reporting reaching herdr). Inside a multiplexer that swallows Cmd (zellij), bind other keys, e.g. `tab_history_back = "alt+,"`, `tab_history_forward = "alt+."`.

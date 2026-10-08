@@ -31,6 +31,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) sidebar_scheduled_agents: bool,
     /// Fork: `ui.sidebar_collapse_suspended`, runs of suspended tabs fold.
     pub(super) sidebar_collapse_suspended: bool,
+    /// Fork: `ui.sidebar_context_usage`, tabs show their agents' context use.
+    pub(super) sidebar_context_usage: bool,
     pub(super) tab_agent_glyphs: std::collections::BTreeMap<String, String>,
     pub(super) tab_agent_glyph_colors:
         std::collections::BTreeMap<String, Option<ratatui::style::Color>>,
@@ -1427,6 +1429,10 @@ pub(crate) struct ClientShellState {
     /// Fork (sidebar v3): the tabs this client focused, for back/forward
     /// (`tab_history.rs`; client-only, active endpoint only).
     pub(super) tab_history: super::tab_history::TabHistory,
+    /// Fork: each endpoint's agent context use as its last
+    /// `endpoint.agent-context.v1` push listed it (`agent_context.rs`).
+    pub(super) agent_context:
+        HashMap<ClientEndpointId, super::agent_context::ClientAgentContextState>,
 }
 
 pub(super) fn product_announcement_state(
@@ -1635,6 +1641,7 @@ impl ClientShellState {
             pins_expanded: false,
             scheduled_expanded: false,
             tab_history: super::tab_history::TabHistory::default(),
+            agent_context: HashMap::new(),
         }
     }
 

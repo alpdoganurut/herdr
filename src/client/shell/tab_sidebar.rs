@@ -503,6 +503,14 @@ pub(super) fn render_tab_sidebar_with(
                 let voice = facts
                     .voice
                     .map(|voice| super::voice::voice_mark(voice, config));
+                let context = facts.context.and_then(|usage| {
+                    super::agent_context::row_percent_text(usage).map(|text| {
+                        (
+                            text,
+                            super::agent_context::row_percent_color(usage, palette),
+                        )
+                    })
+                });
                 render_tab_row(
                     buffer,
                     rect,
@@ -514,6 +522,7 @@ pub(super) fn render_tab_sidebar_with(
                         voice,
                         muted: facts.muted.then(|| super::tab_mutes::mute_mark(config)),
                         marks: marks.as_slice(),
+                        context,
                     },
                     config,
                 );
@@ -620,6 +629,7 @@ pub(super) fn sidebar_sections(config: &ClientShellConfig) -> super::sidebar_mod
         pins: config.sidebar_pinned_agents,
         scheduled: config.sidebar_scheduled_agents,
         suspended_runs: config.sidebar_collapse_suspended,
+        context_usage: config.sidebar_context_usage,
     }
 }
 
@@ -1574,6 +1584,9 @@ struct TabRowLook<'a, 'c> {
     muted: Option<(&'c str, Color)>,
     /// The right-hand marks, left to right.
     marks: &'a [(&'c str, Color)],
+    /// Fork: the agents' context use (`NN%`, from 75 %), just left of the
+    /// marks; dropped when the row has no room for it.
+    context: Option<(&'static str, Color)>,
 }
 
 /// The cells the marks take at the right edge, the one-cell margin
@@ -1732,20 +1745,51 @@ fn render_tab_row(
         }))
     };
     let label_cells = |marks_width: u16| width.saturating_sub(label_x + marks_width + 1);
-    let mut gap = 1;
-    let mut marks_width = marks_cells(look.marks, gap);
-    if !look.marks.is_empty() && label_cells(marks_width) < MIN_LABEL_CELLS {
-        gap = 0;
-        marks_width = marks_cells(look.marks, gap);
+    // Fork: the context use sits left of the marks (one blank between, the
+    // margin when there are no marks); it counts as a mark for the packing.
+    let context_cells = |gap: u16| {
+        look.context.map_or(0, |(text, _)| {
+            display_width(text) + if look.marks.is_empty() { 1 } else { gap }
+        })
+    };
+    // (gap, marks cells, marks and use cells) with or without the use.
+    let pack = |with_context: bool| {
+        let right = |gap: u16| {
+            marks_cells(look.marks, gap) + if with_context { context_cells(gap) } else { 0 }
+        };
+        let gap = if right(1) > 0 && label_cells(right(1)) < MIN_LABEL_CELLS {
+            0
+        } else {
+            1
+        };
+        (gap, marks_cells(look.marks, gap), right(gap))
+    };
+    // The label gives way first; a row too narrow for the use drops it
+    // rather than push the marks off.
+    let (mut gap, mut marks_width, mut right_width) = pack(look.context.is_some());
+    let context = look.context.filter(|_| label_x + right_width < width);
+    if look.context.is_some() && context.is_none() {
+        (gap, marks_width, right_width) = pack(false);
     }
     put_truncated(
         buffer,
         x.saturating_add(label_x),
         y,
-        label_cells(marks_width),
+        label_cells(right_width),
         &tab.label,
         label_style,
     );
+    if let Some((text, color)) = context {
+        let context_x = x.saturating_add(width.saturating_sub(right_width));
+        put_text(
+            buffer,
+            context_x,
+            y,
+            display_width(text).min(rect.right().saturating_sub(context_x)),
+            text,
+            Style::default().fg(color),
+        );
+    }
     let mut mark_x = x.saturating_add(width.saturating_sub(marks_width));
     for (glyph, color) in look.marks {
         let glyph_width = display_width(glyph);

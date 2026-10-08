@@ -199,6 +199,9 @@ pub(crate) struct ClientConnection {
     /// `None` until the first payload (none while the server never had a
     /// mute).
     pub(crate) shell_tab_mutes_sent: Option<u64>,
+    /// Fork: the agent-context view revision last sent
+    /// (`endpoint.agent-context.v1`); `None` until the first payload.
+    pub(crate) shell_agent_context_sent: Option<u64>,
     /// View policy paired with the last coherent shell replacement.
     pub(crate) shell_agent_view: Option<crate::api::schema::AgentViewSetParams>,
     /// Monotonic shell replacement revision for this connection.
@@ -275,6 +278,7 @@ impl ClientConnection {
             shell_agent_times_sent: None,
             shell_tab_pins_sent: None,
             shell_tab_mutes_sent: None,
+            shell_agent_context_sent: None,
             shell_agent_view: None,
             shell_projection_revision: 0,
             shell_endpoint_command_in_flight: false,

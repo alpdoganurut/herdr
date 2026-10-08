@@ -22,6 +22,8 @@ pub(crate) enum EndpointControlMessage {
     TabPins(crate::server::headless::tab_pins::TabPinsPayload),
     /// Fork: the endpoint's muted tabs (`endpoint.tab-mutes.v1`).
     TabMutes(crate::server::headless::tab_mutes::TabMutesPayload),
+    /// Fork: the endpoint's agents' context use (`endpoint.agent-context.v1`).
+    AgentContext(crate::server::headless::agent_context::AgentContextPayload),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -80,6 +82,14 @@ pub(crate) fn decode_endpoint_control(
         return Ok(
             crate::server::headless::tab_mutes::TabMutesPayload::decode(data)
                 .map(EndpointControlMessage::TabMutes)
+                .unwrap_or(EndpointControlMessage::Ignored),
+        );
+    }
+    // Fork: agents' context use, optional like pinned tabs.
+    if kind == crate::server::headless::agent_context::AGENT_CONTEXT_KIND {
+        return Ok(
+            crate::server::headless::agent_context::AgentContextPayload::decode(data)
+                .map(EndpointControlMessage::AgentContext)
                 .unwrap_or(EndpointControlMessage::Ignored),
         );
     }
@@ -398,6 +408,35 @@ mod tests {
         assert_eq!(decoded, payload);
         assert!(matches!(
             decode_endpoint_control(TAB_MUTES_KIND, "{garbage").unwrap(),
+            EndpointControlMessage::Ignored
+        ));
+    }
+
+    #[test]
+    fn agent_context_round_trip_and_garbage_is_ignored() {
+        use crate::server::headless::agent_context::{AgentContextPayload, AGENT_CONTEXT_KIND};
+        let payload = AgentContextPayload {
+            boot_id: "boot".into(),
+            revision: 2,
+            panes: vec![crate::app::agent_context::AgentContextPane {
+                pane_id: "w1:p1".into(),
+                used: 164_000,
+                window: 200_000,
+            }],
+        };
+        let crate::protocol::ServerMessage::EndpointControl { kind, data } =
+            payload.message().unwrap()
+        else {
+            panic!("expected a control message");
+        };
+        let EndpointControlMessage::AgentContext(decoded) =
+            decode_endpoint_control(&kind, &data).unwrap()
+        else {
+            panic!("decoded agent context");
+        };
+        assert_eq!(decoded, payload);
+        assert!(matches!(
+            decode_endpoint_control(AGENT_CONTEXT_KIND, "{garbage").unwrap(),
             EndpointControlMessage::Ignored
         ));
     }

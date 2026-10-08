@@ -278,6 +278,16 @@ fn tab_chips(
             chips.chip(&[(name, fg(palette.overlay1))]);
         }
     }
+    // Fork: the agents' context use, at any level.
+    if let Some(usage) = facts.context {
+        let text = context_chip_text(usage);
+        let color = if usage.percent() >= super::agent_context::ROW_WARN_PERCENT {
+            super::agent_context::row_percent_color(usage, palette)
+        } else {
+            palette.overlay1
+        };
+        chips.chip(&[(text.as_str(), fg(color))]);
+    }
     if facts.panes > 1 {
         let mut count = StackStr::<12>::new();
         let _ = write!(count, "{}", facts.panes);
@@ -359,6 +369,32 @@ fn tab_chips(
     }
     chips.chip(&[(&tab.tab_id, fg(palette.overlay0))]);
     tick
+}
+
+/// Fork: `ctx 82% · 164k/200k`.
+pub(super) fn context_chip_text(usage: crate::agent_context::ContextUsage) -> StackStr<40> {
+    let mut text = StackStr::new();
+    let _ = write!(text, "ctx {}% \u{b7} ", usage.percent());
+    write_tokens(&mut text, usage.used);
+    let _ = text.write_char('/');
+    write_tokens(&mut text, usage.window);
+    text
+}
+
+/// Tokens as `950`, `164k`, `1M`, `1.2M`.
+fn write_tokens(text: &mut StackStr<40>, tokens: u64) {
+    let _ = if tokens >= 1_000_000 {
+        let tenths = tokens / 100_000;
+        if tenths.is_multiple_of(10) {
+            write!(text, "{}M", tenths / 10)
+        } else {
+            write!(text, "{}.{}M", tenths / 10, tenths % 10)
+        }
+    } else if tokens >= 1_000 {
+        write!(text, "{}k", tokens / 1_000)
+    } else {
+        write!(text, "{tokens}")
+    };
 }
 
 /// The status order of the per-status counts.
