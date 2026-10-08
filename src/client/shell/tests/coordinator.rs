@@ -915,6 +915,7 @@ fn render_sidebar(
         pins_view: super::super::sidebar_model::PinsView::default(),
         scheduled_view: super::super::sidebar_model::ScheduledView::default(),
         tab_pins: None,
+        tab_mutes: None,
     };
     let rect = render_tab_sidebar_with(
         &mut buffer,

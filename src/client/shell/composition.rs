@@ -145,6 +145,11 @@ impl ClientShellState {
                 &self.active_endpoint_id,
                 self.snapshot.as_deref(),
             ),
+            tab_mutes: super::tab_mutes::active_tab_mutes_of(
+                &self.tab_mutes,
+                &self.active_endpoint_id,
+                self.snapshot.as_deref(),
+            ),
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -300,6 +305,11 @@ impl ClientShellState {
                         &self.active_endpoint_id,
                         Some(snapshot),
                     ),
+                    mutes: super::tab_mutes::active_tab_mutes_of(
+                        &self.tab_mutes,
+                        &self.active_endpoint_id,
+                        Some(snapshot),
+                    ),
                     fixed_ids: (
                         news_row.as_ref().and_then(|row| row.tab_id.as_deref()),
                         coordinator_row
@@ -376,6 +386,11 @@ impl ClientShellState {
                 scheduled_view,
                 tab_pins: super::tab_pins::active_tab_pins_of(
                     &self.tab_pins,
+                    &self.active_endpoint_id,
+                    Some(snapshot),
+                ),
+                tab_mutes: super::tab_mutes::active_tab_mutes_of(
+                    &self.tab_mutes,
                     &self.active_endpoint_id,
                     Some(snapshot),
                 ),

@@ -1963,6 +1963,11 @@ impl AppState {
         kind: ToastKind,
         expected_state: AgentState,
     ) -> Option<AgentNotificationDelivery> {
+        // Fork: a muted tab gets no toast, sound or client notification
+        // (its status and `seen` are unaffected).
+        if self.pane_notifications_muted(pane_id) {
+            return None;
+        }
         let terminal_state = self
             .workspaces
             .get(ws_idx)?

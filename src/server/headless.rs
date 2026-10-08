@@ -86,6 +86,8 @@ mod pane_graphics;
 mod render;
 mod retained_surface;
 mod surface_interest;
+/// Fork: the `endpoint.tab-mutes.v1` push.
+pub mod tab_mutes;
 /// Fork (sidebar v3): the `endpoint.tab-pins.v1` push.
 pub mod tab_pins;
 /// Fork: the `endpoint.teams.v1` push.
@@ -3343,6 +3345,11 @@ impl HeadlessServer {
                 || (new_state == crate::detect::AgentState::Idle
                     && terminal_after.last_agent_completion_seq.is_none())
             {
+                continue;
+            }
+
+            // Fork: a muted tab raises no notification.
+            if self.app.state.pane_notifications_muted(*pane_id) {
                 continue;
             }
 

@@ -49,6 +49,8 @@ pub mod state;
 mod subagents;
 mod tab_bar_status;
 mod tab_color;
+/// Fork: `tab.set_muted` (a tab's notification mute).
+mod tab_mute;
 /// Fork (sidebar v3): `tab.set_pinned` (the tabs sidebar's Pinned section).
 mod tab_pin;
 mod tab_remind;
@@ -611,6 +613,7 @@ impl App {
             teams_view_rev: 0,
             voice_view_rev: 0,
             tab_pins_view_rev: 0,
+            tab_mutes_view_rev: 0,
             agent_times_view_rev: 0,
             agents_close_deadline: None,
         };
@@ -620,6 +623,8 @@ impl App {
         state.rebuild_team_index();
         // Fork (sidebar v3): restored pins reach clients on the first pass.
         state.note_restored_pins();
+        // Fork: restored mutes reach clients on the first pass.
+        state.note_restored_mutes();
         // Fork (agents v2): public id aliases ride the pane meta.
         state.restore_public_aliases_from_meta();
         state.adopt_member_roles_into_meta();
@@ -796,6 +801,8 @@ impl App {
         app.state.rebuild_team_index();
         // Fork (sidebar v3): handed-off pins reach clients on the first pass.
         app.state.note_restored_pins();
+        // Fork: handed-off mutes reach clients on the first pass.
+        app.state.note_restored_mutes();
         app.state.terminals = terminals;
         // Fork (agents v2): public id aliases ride the pane meta.
         app.state.restore_public_aliases_from_meta();

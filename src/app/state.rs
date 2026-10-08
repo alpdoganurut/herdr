@@ -954,6 +954,9 @@ pub struct AppState {
     /// existed, by moves and closes (`endpoint.tab-pins.v1`); `0` until the
     /// first pin.
     pub(crate) tab_pins_view_rev: u64,
+    /// Fork: bumped by every mute change and, once a mute existed, by moves
+    /// and closes (`endpoint.tab-mutes.v1`); `0` until the first mute.
+    pub(crate) tab_mutes_view_rev: u64,
     /// Fork (sidebar v2): bumped by every agent state change and, once one
     /// was seen, by moves and closes (`endpoint.agent-times.v1`); `0` until
     /// the first state change.
@@ -1258,6 +1261,7 @@ impl AppState {
             teams_view_rev: 0,
             voice_view_rev: 0,
             tab_pins_view_rev: 0,
+            tab_mutes_view_rev: 0,
             agent_times_view_rev: 0,
             agents_close_deadline: None,
         }

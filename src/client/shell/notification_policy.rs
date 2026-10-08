@@ -216,6 +216,11 @@ impl ClientShellState {
         event: SemanticNotification,
         now: std::time::Instant,
     ) -> (Vec<ClientShellNotificationEffect>, bool) {
+        // Fork: a muted tab's notifications are dropped on arrival
+        // (`tab_mutes.rs`); its earlier cards stay.
+        if self.notification_muted(endpoint_id, &event) {
+            return self.tick_notifications(now);
+        }
         let delay = if event.kind == SemanticNotificationKind::Custom {
             0
         } else {
@@ -320,6 +325,11 @@ impl ClientShellState {
                         continue;
                     }
                 }
+            }
+            // Fork: muted after it was queued (a toast delay, a reminder
+            // raised this pass): no card, sound or external notification.
+            if self.notification_muted(&pending.endpoint_id, &pending.event) {
+                continue;
             }
             // Fork: final text for every delivery path (notification_format.rs).
             let mut pending = pending;

@@ -48,6 +48,10 @@ pub struct Tab {
     /// Fork: pinned (`tab.set_pinned`): listed in clients' Pinned section.
     /// Persisted, carried by whole-tab moves and close/reopen.
     pub pinned: bool,
+    /// Fork: notifications muted (`tab.set_muted`): herdr's own automatic
+    /// notifications for the tab are silenced. Persisted, carried by
+    /// whole-tab moves and close/reopen.
+    pub muted: bool,
     pub number: usize,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
@@ -196,6 +200,7 @@ impl Tab {
                 important: false,
                 remind_every: None,
                 pinned: false,
+                muted: false,
                 number,
                 root_pane: root_id,
                 layout,
@@ -463,6 +468,7 @@ impl Tab {
             important: false,
             remind_every: None,
             pinned: false,
+            muted: false,
             number,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),

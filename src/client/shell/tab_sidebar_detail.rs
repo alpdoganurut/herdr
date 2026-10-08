@@ -340,6 +340,10 @@ fn tab_chips(
     if facts.pin {
         chips.chip(&[("pinned", fg(palette.overlay1))]);
     }
+    // Fork: notifications muted from the tab menu.
+    if facts.muted {
+        chips.chip(&[("muted", fg(palette.overlay1))]);
+    }
     if let Some(voice) = facts.voice {
         let (mark, color) = super::voice::voice_mark(voice, config);
         let word = if voice == AgentVoiceMode::Muted {

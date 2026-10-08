@@ -997,7 +997,7 @@
           "key": "ui.tab_agent_glyphs",
           "type": "table",
           "default": "{ claude = \"⧆\", codex = \"⧇\", other = \"⍾\", shell = \"⧅\" }",
-          "description": "Glyph at the right edge of a tab row in the \"tabs\" sidebar layout, keyed by canonical agent id, plus \"other\" (any other agent) and \"shell\" (no agent). Keys you omit keep their defaults. The keys \"voice_live\" and \"voice_muted\" replace the voice-mode mark (a live or muted microphone) of a tab whose agent is in voice mode."
+          "description": "Glyph at the right edge of a tab row in the \"tabs\" sidebar layout, keyed by canonical agent id, plus \"other\" (any other agent) and \"shell\" (no agent). Keys you omit keep their defaults. The keys \"voice_live\" and \"voice_muted\" replace the voice-mode mark (a live or muted microphone) of a tab whose agent is in voice mode, and the key \"muted\" replaces the bell-off mark of a tab whose notifications are muted."
         },
         {
           "key": "ui.tab_agent_glyph_colors",

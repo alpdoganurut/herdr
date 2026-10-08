@@ -1906,6 +1906,188 @@ async fn tab_pin_reaches_every_client_and_survives_a_move() {
     assert!(!shell.receive_tab_pins(&local, last.clone()));
 }
 
+/// Every message a client's control stream delivers until it has been quiet
+/// for a while. The test writer forwards through a drain thread that blocks
+/// on the one-slot render channel, so the render frames are drained too.
+fn control_messages(
+    control: &std::sync::mpsc::Receiver<Vec<u8>>,
+    render: &std::sync::mpsc::Receiver<Vec<u8>>,
+) -> Vec<ServerMessage> {
+    let mut messages = Vec::new();
+    let mut quiet = 0;
+    while quiet < 3 {
+        while render.try_recv().is_ok() {}
+        match control.recv_timeout(Duration::from_millis(50)) {
+            Ok(bytes) => {
+                messages.push(read_server_message(bytes));
+                quiet = 0;
+            }
+            Err(_) => quiet += 1,
+        }
+    }
+    messages
+}
+
+/// The `endpoint.tab-mutes.v1` payloads among `messages`.
+fn tab_mutes_payloads(
+    messages: &[ServerMessage],
+) -> Vec<crate::server::headless::tab_mutes::TabMutesPayload> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::EndpointControl { kind, data }
+                if kind == crate::server::headless::tab_mutes::TAB_MUTES_KIND =>
+            {
+                Some(
+                    crate::server::headless::tab_mutes::TabMutesPayload::decode(data)
+                        .expect("tab mutes payload decodes"),
+                )
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `messages` hold a notification or a bell (what a mute silences).
+fn rings(messages: &[ServerMessage]) -> bool {
+    messages.iter().any(|message| {
+        matches!(
+            message,
+            ServerMessage::SemanticNotification(_)
+                | ServerMessage::TerminalBell { .. }
+                | ServerMessage::Notify { .. }
+        )
+    })
+}
+
+/// Fork: `tab.set_muted` reaches every client shell once as
+/// `endpoint.tab-mutes.v1`, keyed like the shell snapshot's tab row; the
+/// server raises no Finished / NeedsAttention notification and forwards no
+/// bell for the muted tab; a whole-tab move carries the mute and re-sends
+/// the list under the tab's new public id; the client shell takes it.
+#[tokio::test]
+async fn fork_smoke_tab_mute_reaches_every_client_silences_the_tab_and_survives_a_move() {
+    let (mut server, _rx) = server_with_claude(None);
+    server
+        .app
+        .state
+        .workspaces
+        .push(crate::workspace::Workspace::test_new("other"));
+    server.app.state.ensure_test_terminals();
+    let (first, first_render) = connect_test_shell(&mut server, 81, 80, 23);
+    let (second, second_render) = connect_test_shell(&mut server, 82, 80, 23);
+    server.render_and_stream();
+    assert!(
+        tab_mutes_payloads(&control_messages(&first, &first_render)).is_empty()
+            && tab_mutes_payloads(&control_messages(&second, &second_render)).is_empty(),
+        "a server that never had a mute sends nothing"
+    );
+
+    // Unmuted, the agent's NeedsAttention and a bell reach the clients.
+    let pane = root_pane(&server);
+    assert!(server.forward_semantic_agent_transition(
+        0,
+        pane,
+        AgentState::Working,
+        AgentState::Blocked,
+        Some("claude"),
+        Some("claude"),
+        Some(Agent::Claude),
+    ));
+    server.handle_internal_event_with_forwarding(AppEvent::TerminalBell {
+        pane_id: pane,
+        count: 1,
+    });
+    let mut heard = control_messages(&first, &first_render);
+    heard.extend(control_messages(&second, &second_render));
+    assert!(rings(&heard), "an unmuted tab rings");
+
+    let tab_id = server.app.public_tab_id(0, 0).expect("tab id");
+    let reply = api(
+        &mut server,
+        Method::TabSetMuted(crate::api::schema::TabSetMutedParams {
+            tab_id: tab_id.clone(),
+            muted: true,
+        }),
+    );
+    assert_eq!(reply["result"]["tab"]["muted"], true, "{reply}");
+    server.render_and_stream();
+    for (control, render) in [(&first, &first_render), (&second, &second_render)] {
+        let payloads = tab_mutes_payloads(&control_messages(control, render));
+        assert_eq!(payloads.len(), 1, "one payload per client");
+        assert_eq!(
+            payloads[0].tab_ids,
+            std::slice::from_ref(&tab_id),
+            "keyed like the tab row"
+        );
+    }
+    let snapshot = crate::server::client_shell::snapshot(&server.app, "fork-smoke", 1, None, None);
+    assert!(snapshot.tabs.iter().any(|tab| tab.tab_id == tab_id));
+
+    // Muted: the same transition and bell raise nothing.
+    assert!(!server.forward_semantic_agent_transition(
+        0,
+        pane,
+        AgentState::Working,
+        AgentState::Blocked,
+        Some("claude"),
+        Some("claude"),
+        Some(Agent::Claude),
+    ));
+    server.handle_internal_event_with_forwarding(AppEvent::TerminalBell {
+        pane_id: pane,
+        count: 1,
+    });
+    server.render_and_stream();
+    let mut heard = control_messages(&first, &first_render);
+    heard.extend(control_messages(&second, &second_render));
+    assert!(!rings(&heard), "a muted tab stays silent: {heard:?}");
+    assert!(
+        tab_mutes_payloads(&heard).is_empty(),
+        "an unchanged revision sends nothing"
+    );
+
+    // The whole tab moves to the other group: the mute goes with it.
+    let pane_id = server.app.public_pane_id(0, pane).expect("pane id");
+    let target = server.app.public_workspace_id(1);
+    let moved = api(
+        &mut server,
+        Method::PaneMove(crate::api::schema::PaneMoveParams {
+            pane_id,
+            destination: crate::api::schema::PaneMoveDestination::NewTab {
+                workspace_id: Some(target),
+                label: Some("moved".into()),
+            },
+            focus: false,
+        }),
+    );
+    assert!(moved.get("error").is_none(), "{moved}");
+    server.render_and_stream();
+    let payloads = tab_mutes_payloads(&control_messages(&first, &first_render));
+    let last = payloads.last().expect("the move re-sends the list");
+    assert_eq!(last.tab_ids.len(), 1);
+    assert_ne!(last.tab_ids[0], tab_id, "the moved tab has a new public id");
+    let snapshot = crate::server::client_shell::snapshot(&server.app, "fork-smoke", 1, None, None);
+    let moved_row = snapshot
+        .tabs
+        .iter()
+        .find(|tab| tab.tab_id == last.tab_ids[0])
+        .expect("the muted id is a tab row");
+    assert_eq!(moved_row.label, "moved");
+    assert!(
+        server.app.state.pane_notifications_muted(pane),
+        "the moved pane is still muted"
+    );
+
+    // The client shell takes it once.
+    let mut shell = crate::client::ClientShellState::new(
+        crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),
+    );
+    let local = crate::client::endpoint::ClientEndpointId::Local;
+    assert!(shell.receive_tab_mutes(&local, last.clone()));
+    assert!(!shell.receive_tab_mutes(&local, last.clone()));
+}
+
 #[path = "fork_smoke/coordinator.rs"]
 mod coordinator;
 

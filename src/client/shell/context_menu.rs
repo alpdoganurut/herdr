@@ -48,6 +48,8 @@ impl ClientContextMenuOverlay {
                 session_id,
                 pinned,
                 pin_supported,
+                muted,
+                mute_supported,
                 ..
             } => {
                 let mut items = vec![
@@ -107,6 +109,17 @@ impl ClientContextMenuOverlay {
                 // `tab.set_pinned`.
                 if *pin_supported {
                     items.push(item(if *pinned { "Unpin" } else { "Pin" }, Action::Pin));
+                }
+                // Fork: mute or unmute, when the server has `tab.set_muted`.
+                if *mute_supported {
+                    items.push(item(
+                        if *muted {
+                            "Unmute notifications"
+                        } else {
+                            "Mute notifications"
+                        },
+                        Action::Mute,
+                    ));
                 }
                 items.push(item("remind", Action::RemindTop));
                 items.push(item("", Action::RemindBottom));
@@ -289,6 +302,14 @@ impl ClientShellState {
                 pinned: true,
             }),
         );
+        // Fork: the Mute item's state and whether it shows.
+        let muted = self.active_tab_muted(&tab_id);
+        let mute_supported = self.supports_endpoint_method(
+            &crate::api::schema::Method::TabSetMuted(crate::api::schema::TabSetMutedParams {
+                tab_id: String::new(),
+                muted: true,
+            }),
+        );
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
@@ -301,6 +322,8 @@ impl ClientShellState {
                 session_id: None,
                 pinned,
                 pin_supported,
+                muted,
+                mute_supported,
             },
             x,
             y,
@@ -398,6 +421,21 @@ impl ClientShellState {
                         crate::api::schema::TabSetPinnedParams {
                             tab_id: tab_id.clone(),
                             pinned: !*pinned,
+                        },
+                    ),
+                    outcome,
+                );
+                outcome.repaint = true;
+                return;
+            }
+            // Fork: Mute / Unmute notifications, without focusing the tab.
+            // The mark follows when the `endpoint.tab-mutes.v1` push arrives.
+            (ClientContextMenuAction::Mute, ClientContextMenuTarget::Tab { tab_id, muted, .. }) => {
+                self.push_endpoint_method(
+                    crate::api::schema::Method::TabSetMuted(
+                        crate::api::schema::TabSetMutedParams {
+                            tab_id: tab_id.clone(),
+                            muted: !*muted,
                         },
                     ),
                     outcome,

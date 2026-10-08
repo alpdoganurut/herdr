@@ -217,6 +217,9 @@ pub enum Method {
     /// Fork (sidebar v3): pin or unpin a tab.
     #[serde(rename = "tab.set_pinned")]
     TabSetPinned(TabSetPinnedParams),
+    /// Fork: mute or unmute a tab's notifications.
+    #[serde(rename = "tab.set_muted")]
+    TabSetMuted(TabSetMutedParams),
     #[serde(rename = "pane.report_subagent")]
     PaneReportSubagent(PaneReportSubagentParams),
     #[serde(rename = "session.closed_list")]

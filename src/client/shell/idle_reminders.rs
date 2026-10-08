@@ -194,7 +194,11 @@ impl ClientShellState {
                 continue;
             };
             for tab in snapshot.tabs.iter().filter(|tab| tab.important) {
-                if self.is_news_tab(&endpoint.endpoint_id, &tab.tab_id) {
+                // Fork: a muted tab is never reminded (its clock does not
+                // run; unmuting starts it fresh).
+                if self.is_news_tab(&endpoint.endpoint_id, &tab.tab_id)
+                    || self.tab_muted_on(&endpoint.endpoint_id, &tab.tab_id)
+                {
                     continue;
                 }
                 let (kind, sound) = match tab.agent_status {
@@ -300,7 +304,10 @@ impl ClientShellState {
                     pane_id: Some(pane_id),
                     position: None,
                 };
-                let focused = self.notification_target_is_active(&endpoint.endpoint_id, &event);
+                // Fork: a muted tab's firings are skipped like a focused
+                // tab's (the schedule restarts, nothing lights).
+                let focused = self.notification_target_is_active(&endpoint.endpoint_id, &event)
+                    || self.tab_muted_on(&endpoint.endpoint_id, &tab.tab_id);
                 scheduled.push(ScheduledTab {
                     key: (endpoint.endpoint_id.clone(), tab.tab_id.clone()),
                     every,

@@ -219,6 +219,28 @@ fn tab_set_pinned_request_round_trips_and_needs_both_params() {
 }
 
 #[test]
+fn tab_set_muted_request_round_trips_and_needs_both_params() {
+    let set = Request {
+        id: "mute".into(),
+        method: Method::TabSetMuted(TabSetMutedParams {
+            tab_id: "w1:t2".into(),
+            muted: true,
+        }),
+    };
+    let json = serde_json::to_value(&set).unwrap();
+    assert_eq!(json["method"], "tab.set_muted");
+    assert_eq!(json["params"]["muted"], true);
+    assert_eq!(serde_json::from_value::<Request>(json).unwrap(), set);
+    for params in [r#"{"tab_id":"t"}"#, r#"{"muted":true}"#] {
+        let request = format!(r#"{{"id":"r","method":"tab.set_muted","params":{params}}}"#);
+        assert!(
+            serde_json::from_str::<Request>(&request).is_err(),
+            "{request}"
+        );
+    }
+}
+
+#[test]
 fn tab_set_reminder_request_and_tab_reminder_fields_round_trip() {
     let set = Request {
         id: "reminder".into(),
@@ -1214,6 +1236,7 @@ fn worktree_request_and_response_round_trip() {
                 important: false,
                 remind_every: None,
                 pinned: false,
+                muted: false,
             },
             root_pane: PaneInfo {
                 pane_id: "w_1-1".into(),
@@ -1647,6 +1670,7 @@ fn create_response_round_trips_with_root_pane() {
                 important: false,
                 remind_every: None,
                 pinned: false,
+                muted: false,
             },
             root_pane: PaneInfo {
                 pane_id: "w_1-3".into(),

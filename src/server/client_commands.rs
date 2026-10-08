@@ -88,6 +88,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "tab.move",
     "tab.rename",
     "tab.set_color",
+    "tab.set_muted",
     "tab.set_pinned",
     "tab.set_remind",
     "tab.set_reminder",
@@ -389,6 +390,10 @@ mod tests {
             Some("db5470785d1e3c7802950930c9cff72cec5f13d7534a77e7ee1278e1fb9f71f3")
         );
         assert_eq!(
+            actual.remove("tab.set_muted").as_deref(),
+            Some("560a2b945b17390a3f773b3d090425aab4e64717492841117bd350edded661c1")
+        );
+        assert_eq!(
             actual.remove("session.closed_list").as_deref(),
             Some("36061ddc74238ec4cbe0e9b01e685d417718a12f09ebac9334b7c1fc754c22cd")
         );
@@ -607,7 +612,7 @@ mod tests {
         assert!(!supports_client_shell_method_name(
             crate::api::schema::team::method::CONTEXT
         ));
-        assert_eq!(CLIENT_SHELL_METHODS.len(), 95);
+        assert_eq!(CLIENT_SHELL_METHODS.len(), 96);
     }
 
     #[test]

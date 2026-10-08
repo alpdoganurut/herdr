@@ -20,6 +20,8 @@ pub(crate) enum EndpointControlMessage {
     AgentTimes(crate::server::headless::agent_times::AgentTimesPayload),
     /// Fork (sidebar v3): the endpoint's pinned tabs (`endpoint.tab-pins.v1`).
     TabPins(crate::server::headless::tab_pins::TabPinsPayload),
+    /// Fork: the endpoint's muted tabs (`endpoint.tab-mutes.v1`).
+    TabMutes(crate::server::headless::tab_mutes::TabMutesPayload),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -70,6 +72,14 @@ pub(crate) fn decode_endpoint_control(
         return Ok(
             crate::server::headless::tab_pins::TabPinsPayload::decode(data)
                 .map(EndpointControlMessage::TabPins)
+                .unwrap_or(EndpointControlMessage::Ignored),
+        );
+    }
+    // Fork: muted tabs, optional like pinned tabs.
+    if kind == crate::server::headless::tab_mutes::TAB_MUTES_KIND {
+        return Ok(
+            crate::server::headless::tab_mutes::TabMutesPayload::decode(data)
+                .map(EndpointControlMessage::TabMutes)
                 .unwrap_or(EndpointControlMessage::Ignored),
         );
     }
@@ -363,6 +373,31 @@ mod tests {
         assert_eq!(decoded, payload);
         assert!(matches!(
             decode_endpoint_control(TAB_PINS_KIND, "{garbage").unwrap(),
+            EndpointControlMessage::Ignored
+        ));
+    }
+
+    #[test]
+    fn tab_mutes_round_trip_and_garbage_is_ignored() {
+        use crate::server::headless::tab_mutes::{TabMutesPayload, TAB_MUTES_KIND};
+        let payload = TabMutesPayload {
+            boot_id: "boot".into(),
+            revision: 2,
+            tab_ids: vec!["w1:t1".into()],
+        };
+        let crate::protocol::ServerMessage::EndpointControl { kind, data } =
+            payload.message().unwrap()
+        else {
+            panic!("expected a control message");
+        };
+        let EndpointControlMessage::TabMutes(decoded) =
+            decode_endpoint_control(&kind, &data).unwrap()
+        else {
+            panic!("decoded tab mutes");
+        };
+        assert_eq!(decoded, payload);
+        assert!(matches!(
+            decode_endpoint_control(TAB_MUTES_KIND, "{garbage").unwrap(),
             EndpointControlMessage::Ignored
         ));
     }

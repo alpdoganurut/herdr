@@ -1084,6 +1084,10 @@
             "label": {
               "type": "string"
             },
+            "muted": {
+              "description": "Fork: notifications muted (`tab.set_muted`). Absent when not.",
+              "type": "boolean"
+            },
             "number": {
               "format": "uint",
               "minimum": 0,
@@ -7682,6 +7686,22 @@
           ],
           "type": "object"
         },
+        "TabSetMutedParams": {
+          "description": "Fork: mute or unmute a tab's notifications (`tab.set_muted`). A muted\ntab raises none of herdr's own automatic notifications (toasts, sounds,\nsystem or terminal notifications, bells, reminder alerts); agent cards\n(`agent.notify`) still show.",
+          "properties": {
+            "muted": {
+              "type": "boolean"
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "muted"
+          ],
+          "type": "object"
+        },
         "TabSetPinnedParams": {
           "description": "Fork: pin or unpin a tab (`tab.set_pinned`). A pinned tab is listed in\nclients' Pinned section and stays in its group.",
           "properties": {
@@ -9364,6 +9384,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabSetPinnedParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork: mute or unmute a tab's notifications.",
+          "properties": {
+            "method": {
+              "const": "tab.set_muted",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabSetMutedParams"
             }
           },
           "required": [
@@ -14597,6 +14634,10 @@
                 "string",
                 "null"
               ]
+            },
+            "muted": {
+              "description": "Fork: the tab's notifications were muted (`tab.set_muted`); absent\nwhen not. Reopening restores the mute.",
+              "type": "boolean"
             },
             "pinned": {
               "description": "Fork (sidebar v3): the tab was pinned (`tab.set_pinned`); absent when\nnot. Reopening restores the pin.",
@@ -20384,6 +20425,10 @@
             },
             "label": {
               "type": "string"
+            },
+            "muted": {
+              "description": "Fork: notifications muted (`tab.set_muted`). Absent when not.",
+              "type": "boolean"
             },
             "number": {
               "format": "uint",

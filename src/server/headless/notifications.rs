@@ -58,6 +58,10 @@ impl HeadlessServer {
         let Some(tab_idx) = workspace.find_tab_index_for_pane(pane_id) else {
             return false;
         };
+        // Fork: a muted tab raises no Finished / NeedsAttention notification.
+        if workspace.tabs.get(tab_idx).is_some_and(|tab| tab.muted) {
+            return false;
+        }
         let Some(tab_number) = workspace.public_tab_number(tab_idx) else {
             return false;
         };
@@ -113,6 +117,10 @@ impl HeadlessServer {
         update: &crate::app::actions::PaneStateUpdate,
     ) {
         if self.app.state.toast_config.delay_seconds != 0 {
+            return;
+        }
+        // Fork: a muted tab rings and toasts nothing.
+        if self.app.state.pane_notifications_muted(update.pane_id) {
             return;
         }
 
@@ -323,6 +331,14 @@ impl HeadlessServer {
         });
         match &ev {
             AppEvent::TerminalBell { pane_id, count } => {
+                // Fork: a muted tab's bells stay silent.
+                if self.app.state.pane_notifications_muted(*pane_id) {
+                    debug!(
+                        pane = pane_id.raw(),
+                        count, "dropped terminal bell of a muted tab"
+                    );
+                    return false;
+                }
                 if !self.send_to_foreground_client(ServerMessage::TerminalBell { count: *count }) {
                     debug!(
                         pane = pane_id.raw(),
@@ -377,6 +393,9 @@ impl HeadlessServer {
                     self.active_tab_suppresses_notifications(is_active_tab);
 
                 let next_state = self.pane_effective_state(pane_id_val);
+                // Fork: a muted tab rings and toasts nothing.
+                let suppress_completion =
+                    suppress_completion || self.app.state.pane_notifications_muted(pane_id_val);
 
                 if !suppress_completion
                     && self.app.state.toast_config.delay_seconds == 0
@@ -471,6 +490,9 @@ impl HeadlessServer {
                     self.active_tab_suppresses_notifications(is_active_tab);
 
                 let next_state = self.pane_effective_state(pane_id_val);
+                // Fork: a muted tab rings and toasts nothing.
+                let suppress_completion =
+                    suppress_completion || self.app.state.pane_notifications_muted(pane_id_val);
 
                 if !suppress_completion
                     && self.app.state.toast_config.delay_seconds == 0

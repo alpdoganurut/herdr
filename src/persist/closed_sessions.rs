@@ -319,6 +319,7 @@ mod tests {
             important: true,
             remind_every: Some(TabRemindInterval::H1),
             pinned: false,
+            muted: false,
             space_id: "w_abc".into(),
             space_name: "leap".into(),
             cwd: "/tmp/project".into(),

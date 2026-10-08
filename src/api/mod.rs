@@ -79,6 +79,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::TabSetRemind(_)
             | Method::TabSetReminder(_)
             | Method::TabSetPinned(_)
+            | Method::TabSetMuted(_)
             | Method::PaneReportSubagent(_)
             | Method::SessionClosedReopen(_)
             | Method::NewsRun(_)

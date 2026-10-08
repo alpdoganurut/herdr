@@ -52,6 +52,9 @@ pub(crate) struct TabFacts {
     /// Fork (sidebar v3): pinned (`tab.set_pinned`, the `endpoint.tab-pins.v1`
     /// push).
     pub(crate) pin: bool,
+    /// Fork: notifications muted (`tab.set_muted`, the
+    /// `endpoint.tab-mutes.v1` push).
+    pub(crate) muted: bool,
 }
 
 impl Default for TabFacts {
@@ -68,6 +71,7 @@ impl Default for TabFacts {
             workspace: None,
             parked: false,
             pin: false,
+            muted: false,
         }
     }
 }
@@ -149,6 +153,8 @@ pub(crate) struct ModelInputs<'a> {
     pub(crate) voice: Option<&'a super::voice::ClientVoiceState>,
     pub(crate) times: Option<&'a super::agent_times::ClientAgentTimesState>,
     pub(crate) pins: Option<&'a super::tab_pins::ClientTabPinsState>,
+    /// Fork: the muted tabs (the row's gutter mark).
+    pub(crate) mutes: Option<&'a super::tab_mutes::ClientTabMutesState>,
     /// The News and coordinator tab ids (fixed rows, never list rows).
     pub(crate) fixed_ids: (Option<&'a str>, Option<&'a str>),
     pub(crate) sections: Sections,
@@ -169,6 +175,7 @@ impl<'a> ModelInputs<'a> {
             voice: None,
             times: None,
             pins: None,
+            mutes: None,
             fixed_ids: (None, None),
             sections: Sections::default(),
             expanded_runs: None,
@@ -353,6 +360,7 @@ impl SidebarModel {
             voice,
             times,
             pins,
+            mutes,
             fixed_ids,
             sections,
             expanded_runs,
@@ -374,9 +382,12 @@ impl SidebarModel {
         self.tabs.clear();
         // No pin lookups while nothing is pinned.
         let pins = pins.filter(|pins| !pins.tab_ids.is_empty());
+        // Fork: likewise no mute lookups while nothing is muted.
+        let mutes = mutes.filter(|mutes| !mutes.tab_ids.is_empty());
         self.tabs.extend(snapshot.tabs.iter().map(|tab| TabFacts {
             fixed: is_fixed(&tab.tab_id),
             pin: pins.is_some_and(|pins| pins.is_pinned(&tab.tab_id)),
+            muted: mutes.is_some_and(|mutes| mutes.is_muted(&tab.tab_id)),
             ..TabFacts::default()
         }));
         let index: HashMap<&str, u32> = snapshot

@@ -2026,9 +2026,11 @@ fn tab_menu_ends_with_a_swatch_row_marking_the_current_color() {
     assert_eq!(plain[4].action, ClientContextMenuAction::Important);
     // Fork (sidebar v3): Pin follows Important.
     assert_eq!(plain[5].action, ClientContextMenuAction::Pin);
-    assert_eq!(plain[6].action, ClientContextMenuAction::RemindTop);
-    assert_eq!(plain[7].action, ClientContextMenuAction::RemindBottom);
-    assert_eq!(plain.len(), 9);
+    // Fork: Mute follows Pin.
+    assert_eq!(plain[6].action, ClientContextMenuAction::Mute);
+    assert_eq!(plain[7].action, ClientContextMenuAction::RemindTop);
+    assert_eq!(plain[8].action, ClientContextMenuAction::RemindBottom);
+    assert_eq!(plain.len(), 10);
 
     // tab_2 is red, one of the offered colors.
     let row = open_menu_with_swatches(&mut state, 1);

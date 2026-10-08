@@ -59,6 +59,9 @@ pub struct TabInfo {
     /// Absent when not.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// Fork: notifications muted (`tab.set_muted`). Absent when not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
 }
 
 /// A named color tag on a tab. Clients map each name to a theme color.
@@ -285,4 +288,14 @@ pub struct TabSetReminderParams {
 pub struct TabSetPinnedParams {
     pub tab_id: String,
     pub pinned: bool,
+}
+
+/// Fork: mute or unmute a tab's notifications (`tab.set_muted`). A muted
+/// tab raises none of herdr's own automatic notifications (toasts, sounds,
+/// system or terminal notifications, bells, reminder alerts); agent cards
+/// (`agent.notify`) still show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabSetMutedParams {
+    pub tab_id: String,
+    pub muted: bool,
 }

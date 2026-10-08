@@ -216,6 +216,7 @@ mod tests {
             important: false,
             remind_every: None,
             pinned: false,
+            muted: false,
             space_id: "w_1".into(),
             space_name: "leap".into(),
             cwd: "/home/me/src/herdr".into(),

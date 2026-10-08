@@ -219,6 +219,7 @@ pub(super) fn render_tab_sidebar_with(
             one_off = SidebarModel::built(super::sidebar_model::ModelInputs {
                 voice: state.voice,
                 pins: state.tab_pins,
+                mutes: state.tab_mutes,
                 fixed_ids: fixed_tab_ids,
                 sections: sidebar_sections(config),
                 expanded_runs: Some(state.expanded_runs),
@@ -511,6 +512,7 @@ pub(super) fn render_tab_sidebar_with(
                         hovered,
                         background: (hovered || tab.focused).then_some(background),
                         voice,
+                        muted: facts.muted.then(|| super::tab_mutes::mute_mark(config)),
                         marks: marks.as_slice(),
                     },
                     config,
@@ -1568,6 +1570,8 @@ struct TabRowLook<'a, 'c> {
     background: Option<Color>,
     /// The voice mark (`voice::voice_mark`), left of the label.
     voice: Option<(&'c str, Color)>,
+    /// Fork: the muted mark (`tab_mutes::mute_mark`), in the left gutter.
+    muted: Option<(&'c str, Color)>,
     /// The right-hand marks, left to right.
     marks: &'a [(&'c str, Color)],
 }
@@ -1583,8 +1587,9 @@ fn marks_cells(marks: &[(&str, Color)], gap: u16) -> u16 {
     glyphs + gap * (marks.len() as u16 - 1) + 1
 }
 
-/// A tab row: ` ▎   <status> <voice> <label> … <marks> `. The status icon
-/// sits at x=5 (`sidebar_model::tab_row_icon`: the subagent icon while
+/// A tab row: ` ▎ <muted> <status> <voice> <label> … <marks> `. The muted
+/// mark (fork) sits at x=3 in the otherwise empty gutter, the status icon
+/// at x=5 (`sidebar_model::tab_row_icon`: the subagent icon while
 /// subagents run), the voice mark at x=7 with the label after it, else the
 /// label at x=7. The marks are packed flush right with a one-cell margin,
 /// one blank between them (none when that leaves the label fewer than
@@ -1659,6 +1664,7 @@ fn render_tab_row(
     config: &ClientShellConfig,
 ) {
     use crate::api::schema::AgentStatus;
+    const MUTED_X: u16 = 3;
     const ICON_X: u16 = 5;
     const LABEL_X: u16 = 7;
     let palette = &config.palette;
@@ -1674,6 +1680,18 @@ fn render_tab_row(
             1,
             HOVER_BAR,
             Style::default().fg(palette.accent),
+        );
+    }
+    // Fork: a muted tab's mark, one cell in the gutter between the hover
+    // bar and the status icon.
+    if let Some((glyph, color)) = look.muted {
+        put_text(
+            buffer,
+            x.saturating_add(MUTED_X),
+            y,
+            width.saturating_sub(MUTED_X).min(1),
+            glyph,
+            Style::default().fg(color),
         );
     }
     let icon =

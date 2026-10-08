@@ -790,6 +790,9 @@ pub(super) enum ClientContextMenuAction {
     SetRole,
     /// Fork (sidebar v3), tab menu: toggle the tab's pin (`tab.set_pinned`).
     Pin,
+    /// Fork, tab menu: mute or unmute the tab's notifications
+    /// (`tab.set_muted`).
+    Mute,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -853,6 +856,12 @@ pub(super) enum ClientContextMenuTarget {
         /// Fork (sidebar v3): the server advertises `tab.set_pinned` (the
         /// Pin item shows only then).
         pin_supported: bool,
+        /// Fork: whether the tab's notifications were muted when the menu
+        /// opened.
+        muted: bool,
+        /// Fork: the server advertises `tab.set_muted` (the Mute item shows
+        /// only then).
+        mute_supported: bool,
     },
     /// A space shown as a tab group in the `tabs` layout. Fork: `team` is
     /// the team items' state, `None` without `team.get` on the server.
@@ -1401,6 +1410,9 @@ pub(crate) struct ClientShellState {
     /// Fork (sidebar v3): each endpoint's pinned tabs as its last
     /// `endpoint.tab-pins.v1` push listed them (`tab_pins.rs`).
     pub(super) tab_pins: HashMap<ClientEndpointId, super::tab_pins::ClientTabPinsState>,
+    /// Fork: each endpoint's muted tabs as its last `endpoint.tab-mutes.v1`
+    /// push listed them (`tab_mutes.rs`).
+    pub(super) tab_mutes: HashMap<ClientEndpointId, super::tab_mutes::ClientTabMutesState>,
     /// Fork (sidebar v3): the Pinned block folded (`None` until toggled; persisted).
     pub(super) pinned_agents_folded: Option<bool>,
     /// Fork (sidebar v3): the Scheduled block folded (`None` until toggled; persisted).
@@ -1616,6 +1628,7 @@ impl ClientShellState {
             sidebar_reveal_tab: None,
             sidebar_clock: None,
             tab_pins: HashMap::new(),
+            tab_mutes: HashMap::new(),
             pinned_agents_folded,
             scheduled_agents_folded,
             expanded_runs,

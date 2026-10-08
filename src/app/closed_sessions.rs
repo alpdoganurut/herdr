@@ -109,6 +109,7 @@ impl App {
             important: tab.important,
             remind_every: tab.remind_every,
             pinned: tab.pinned,
+            muted: tab.muted,
             space_id: workspace.id.clone(),
             space_name: workspace.display_name_from(&self.state.terminals, &self.terminal_runtimes),
             cwd: cwd.display().to_string(),
@@ -390,6 +391,7 @@ impl App {
             .remind_every
             .filter(|every| *every != TabRemindInterval::Unknown);
         tab.pinned = entry.pinned;
+        tab.muted = entry.muted;
         let terminal_id = tab
             .terminal_id(tab.root_pane)
             .cloned()
@@ -397,6 +399,10 @@ impl App {
         // Fork (sidebar v3): a reopened pin reaches clients.
         if entry.pinned {
             self.bump_tab_pins_view();
+        }
+        // Fork: so does a reopened mute.
+        if entry.muted {
+            self.bump_tab_mutes_view();
         }
         Ok(ReopenedTab {
             ws_idx,
@@ -580,6 +586,7 @@ mod tests {
             tab.important = true;
             tab.remind_every = Some(TabRemindInterval::M30);
             tab.pinned = true;
+            tab.muted = true;
         }
         let space_id = app.state.workspaces[1].id.clone();
 
@@ -599,6 +606,7 @@ mod tests {
         assert!(live.important);
         assert_eq!(live.remind_every, Some(TabRemindInterval::M30));
         assert!(live.pinned, "the pin is recorded with the session");
+        assert!(live.muted, "the mute is recorded with the session");
         assert_eq!(live.space_id, space_id);
         assert_eq!(live.space_name, "group");
         assert_eq!(live.cwd, sandbox.project().display().to_string());
@@ -756,6 +764,7 @@ mod tests {
             tab.important = true;
             tab.remind_every = Some(TabRemindInterval::Daily);
             tab.pinned = true;
+            tab.muted = true;
         }
         let entry = record_entry(&mut app, 1, "reopen-session");
         record_entry(&mut app, 0, "other-session");
@@ -775,6 +784,11 @@ mod tests {
         assert!(
             app.state.tab_pins_view_rev > 0,
             "the reopened pin reaches clients"
+        );
+        assert_eq!(response["result"]["tab"]["muted"], true);
+        assert!(
+            app.state.tab_mutes_view_rev > 0,
+            "the reopened mute reaches clients"
         );
         assert_eq!(
             response["result"]["tab"]["workspace_id"],

@@ -982,6 +982,7 @@ impl App {
             previous_tab_remind_every: self.state.workspaces[source_ws_idx].tabs[source_tab_idx]
                 .remind_every,
             previous_tab_pinned: self.state.workspaces[source_ws_idx].tabs[source_tab_idx].pinned,
+            previous_tab_muted: self.state.workspaces[source_ws_idx].tabs[source_tab_idx].muted,
             previous_worktree_space: self.state.workspaces[source_ws_idx].worktree_space.clone(),
             identity_cwd: self.state.workspaces[source_ws_idx].identity_cwd.clone(),
         };
@@ -1157,6 +1158,9 @@ impl App {
         // Fork: so does the pin.
         let carried_tab_pinned =
             recovery_context.previous_tab_pinned && source_removed_tab_id.is_some();
+        // Fork: and the mute.
+        let carried_tab_muted =
+            recovery_context.previous_tab_muted && source_removed_tab_id.is_some();
         let source_workspace_empty = taken.workspace_empty;
         let moved = taken.moved;
         let cross_workspace = match &resolved {
@@ -1267,6 +1271,7 @@ impl App {
                     tab.important = carried_tab_important;
                     tab.remind_every = carried_tab_remind_every;
                     tab.pinned = carried_tab_pinned;
+                    tab.muted = carried_tab_muted;
                 }
                 created_tab = true;
                 (target_ws_idx, target_tab_idx, moved_pane_id)
@@ -1293,6 +1298,7 @@ impl App {
                     tab.important = carried_tab_important;
                     tab.remind_every = carried_tab_remind_every;
                     tab.pinned = carried_tab_pinned;
+                    tab.muted = carried_tab_muted;
                 }
                 self.state.workspaces.push(workspace);
                 let target_ws_idx = self.state.workspaces.len() - 1;
@@ -1418,6 +1424,7 @@ impl App {
                 tab.important = context.previous_tab_important;
                 tab.remind_every = context.previous_tab_remind_every;
                 tab.pinned = context.previous_tab_pinned;
+                tab.muted = context.previous_tab_muted;
             }
         } else {
             let mut workspace = crate::workspace::Workspace::from_existing_pane(
@@ -1436,6 +1443,7 @@ impl App {
                 tab.important = context.previous_tab_important;
                 tab.remind_every = context.previous_tab_remind_every;
                 tab.pinned = context.previous_tab_pinned;
+                tab.muted = context.previous_tab_muted;
             }
             let insert_idx = context.source_ws_idx.min(self.state.workspaces.len());
             if let Some(active) = self.state.active {
@@ -2239,6 +2247,8 @@ struct PaneMoveRecoveryContext {
     previous_tab_remind_every: Option<crate::api::schema::TabRemindInterval>,
     /// Fork: `Tab.pinned`.
     previous_tab_pinned: bool,
+    /// Fork: `Tab.muted`.
+    previous_tab_muted: bool,
     previous_worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
     identity_cwd: std::path::PathBuf,
 }
@@ -3800,6 +3810,7 @@ mod tests {
             previous_tab_important: false,
             previous_tab_remind_every: None,
             previous_tab_pinned: false,
+            previous_tab_muted: false,
             previous_worktree_space: app.state.workspaces[0].worktree_space.clone(),
             identity_cwd: app.state.workspaces[0].identity_cwd.clone(),
         };

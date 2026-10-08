@@ -468,6 +468,8 @@ impl HeadlessServer {
         let mut agent_times_frame = super::agent_times::PassFrame::default();
         // Fork (sidebar v3): pinned tabs, likewise.
         let mut tab_pins_frame = super::tab_pins::PassFrame::default();
+        // Fork: muted tabs, likewise.
+        let mut tab_mutes_frame = super::tab_mutes::PassFrame::default();
         for (client_id, (cols, rows), cell_size, _is_foreground, mode) in render_targets {
             #[cfg(unix)]
             if matches!(mode, ClientConnectionMode::TerminalObserve { .. })
@@ -636,6 +638,16 @@ impl HeadlessServer {
                     &mut tab_pins_frame,
                 ) {
                     warn!(client_id, err = %err, "failed to send tab pins");
+                    broken_clients.push(client_id);
+                    continue;
+                }
+                if let Err(err) = super::tab_mutes::sync_client(
+                    &self.app,
+                    &self.client_shell_boot_id,
+                    client,
+                    &mut tab_mutes_frame,
+                ) {
+                    warn!(client_id, err = %err, "failed to send tab mutes");
                     broken_clients.push(client_id);
                     continue;
                 }

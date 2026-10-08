@@ -589,6 +589,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::TabSetRemind(_) => "tab.set_remind",
         Method::TabSetReminder(_) => "tab.set_reminder",
         Method::TabSetPinned(_) => "tab.set_pinned",
+        Method::TabSetMuted(_) => "tab.set_muted",
         Method::PaneReportSubagent(_) => "pane.report_subagent",
         Method::SessionClosedList(_) => "session.closed_list",
         Method::SessionClosedReopen(_) => "session.closed_reopen",

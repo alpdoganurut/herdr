@@ -292,6 +292,8 @@ pub(super) struct ShellRenderState<'a> {
     /// Fork (sidebar v3): the active endpoint's pinned tabs (the one-off
     /// model's input).
     pub(super) tab_pins: Option<&'a super::tab_pins::ClientTabPinsState>,
+    /// Fork: the active endpoint's muted tabs (the one-off model's input).
+    pub(super) tab_mutes: Option<&'a super::tab_mutes::ClientTabMutesState>,
 }
 
 pub(super) fn render_shell(
