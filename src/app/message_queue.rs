@@ -336,8 +336,9 @@ impl MessageQueue {
         self.push_at(entry, false);
     }
 
-    /// Queue `entry`; `front`: ahead of every message queued for the same
-    /// target (an urgent message).
+    /// Queue `entry`; `front`: ahead of every plain message queued for the
+    /// same target, behind the urgent ones queued before it (an urgent
+    /// message; urgent ones keep their sending order).
     fn push_at(&mut self, entry: QueuedMessage, front: bool) {
         let mut line = entry.message.clone();
         line.outcome = OUTCOME_QUEUED.into();
@@ -346,11 +347,14 @@ impl MessageQueue {
         } else {
             self.log(line);
         }
+        let same_target = |queued: &QueuedMessage| queued.terminal_id == entry.terminal_id;
         let at = front
             .then(|| {
                 self.entries
                     .iter()
-                    .position(|queued| queued.terminal_id == entry.terminal_id)
+                    .rposition(|queued| same_target(queued) && is_urgent(queued))
+                    .map(|last_urgent| last_urgent + 1)
+                    .or_else(|| self.entries.iter().position(same_target))
             })
             .flatten()
             .unwrap_or(self.entries.len());
@@ -361,14 +365,29 @@ impl MessageQueue {
 
     fn finish(&mut self, ids: &[String], outcome: &str, now_unix: u64) {
         let mut done = Vec::new();
+        let mut targets: Vec<String> = Vec::new();
         self.entries.retain(|entry| {
             if ids.iter().any(|id| id == entry.id()) {
                 done.push(entry.message.clone());
+                if !targets.contains(&entry.terminal_id) {
+                    targets.push(entry.terminal_id.clone());
+                }
                 false
             } else {
                 true
             }
         });
+        // An interrupt is over once no urgent message waits on it (typed in,
+        // claimed, expired or dropped): the target's hook hold applies again.
+        for terminal_id in targets {
+            if !self
+                .entries
+                .iter()
+                .any(|entry| entry.terminal_id == terminal_id && is_urgent(entry))
+            {
+                self.interrupted_at.remove(&terminal_id);
+            }
+        }
         for message in done {
             self.log(AgentMessage::update(&message, outcome, now_unix));
         }
@@ -398,7 +417,11 @@ impl MessageQueue {
     }
 }
 
-/// A short, stable hash of the detection text above the prompt box.
+/// Whether a queued message is urgent (its pointer says so).
+fn is_urgent(entry: &QueuedMessage) -> bool {
+    entry.pointer.as_ref().is_some_and(|pointer| pointer.urgent)
+}
+
 /// Whether a fresh classification of a target's screen forbids an Esc: it
 /// shows a dialog or a question for its user. A transcript viewer
 /// (`skip_state_update`) says nothing about the prompt; its blocker flag
@@ -408,6 +431,7 @@ fn detection_blocks_interrupt(detection: &crate::detect::AgentDetection) -> bool
         || (!detection.skip_state_update && detection.state == crate::detect::AgentState::Blocked)
 }
 
+/// A short, stable hash of the detection text above the prompt box.
 fn screen_hash(detection_text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -610,10 +634,18 @@ impl App {
 
     /// Until when `terminal_id`'s hooks hold its idle screen as a live turn
     /// ([`crate::agents_model::turn::TurnState::hook_turn_live_until`]).
-    /// Not after an urgent Esc: that turn ends without a Stop, and the
-    /// urgent message goes in once the screen reads idle.
+    /// Not within [`INTERRUPT_WAIT`] of an urgent Esc whose message is still
+    /// queued: that turn ends without a Stop, and the urgent message goes in
+    /// once the screen reads idle. A stale or finished interrupt no longer
+    /// counts (a later turn's hooks hold its idle screen again).
     fn hook_live_until(&self, terminal_id: &str) -> Option<Instant> {
-        if self.message_queue.interrupted_at.contains_key(terminal_id) {
+        let now = Instant::now();
+        if self
+            .message_queue
+            .interrupted_at
+            .get(terminal_id)
+            .is_some_and(|at| now < *at + INTERRUPT_WAIT)
+        {
             return None;
         }
         self.state
@@ -621,7 +653,7 @@ impl App {
             .values()
             .find(|terminal| terminal.id.to_string() == terminal_id)?
             .turn()
-            .hook_turn_live_until(Instant::now())
+            .hook_turn_live_until(now)
     }
 
     /// Type `items` into `pane` now (guarded): one pointer line when the
@@ -1471,6 +1503,9 @@ impl App {
         self.message_queue
             .screens
             .retain(|terminal, _| live.contains(terminal));
+        self.message_queue
+            .interrupted_at
+            .retain(|terminal, at| live.contains(terminal) && now < *at + INTERRUPT_WAIT);
         self.message_queue.retry_at = next.into_iter().min();
         changed
     }

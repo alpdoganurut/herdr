@@ -726,6 +726,15 @@ fn stuck_notice_durations_read_in_minutes() {
 /// An urgent message to `rev`, as agents.send_message hands it over after
 /// its policy and rate-limit checks.
 fn urgent(app: &mut App, id: &str, body: &str) -> Result<(MessageDelivery, bool), MessageRefused> {
+    urgent_from(app, id, body, "lead (w9:p1)")
+}
+
+fn urgent_from(
+    app: &mut App,
+    id: &str,
+    body: &str,
+    sender: &str,
+) -> Result<(MessageDelivery, bool), MessageRefused> {
     let terminal_id = terminal(app).id.to_string();
     let target = app
         .resolve_agent_target("rev")
@@ -733,7 +742,7 @@ fn urgent(app: &mut App, id: &str, body: &str) -> Result<(MessageDelivery, bool)
         .unwrap();
     let check = app.agent_message_check(&target);
     let envelope =
-        format!("[herdr+ URGENT message {id} from lead (w9:p1) 10:00 — another agent]\n{body}");
+        format!("[herdr+ URGENT message {id} from {sender} 10:00 — another agent]\n{body}");
     let pointer = PointerFrom::from_envelope(id, &envelope);
     assert!(pointer.urgent);
     let message = AgentMessage {
@@ -966,4 +975,94 @@ async fn the_inbox_lists_messages_queued_for_the_caller_and_claims_nothing() {
     // Another pane's inbox does not list them; an unknown caller is refused.
     let out = inbox(&mut app, "w9:p9");
     assert!(out["error"].is_object(), "{out}");
+}
+
+#[tokio::test]
+async fn urgent_messages_keep_their_sending_order_ahead_of_plain_ones() {
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let mut rx = rev(&mut app, AgentState::Working);
+    send(&mut app, "ma1", "plain one");
+    let (_, interrupted) = urgent_from(&mut app, "mu1", "urgent one", "lead (w9:p1)").unwrap();
+    assert!(interrupted);
+    assert_eq!(typed(&mut rx), ESC);
+    let (_, again) = urgent_from(&mut app, "mu2", "urgent two", "ops (w9:p2)").unwrap();
+    assert!(!again, "no second Esc");
+    send(&mut app, "ma2", "plain two");
+    let order: Vec<&str> = app
+        .message_queue
+        .entries
+        .iter()
+        .map(|entry| entry.id())
+        .collect();
+    assert_eq!(order, ["mu1", "mu2", "ma1", "ma2"]);
+
+    set_state(&mut app, AgentState::Idle);
+    let t0 = Instant::now();
+    app.message_queue_pass(t0, now_unix());
+    assert!(app.message_queue_pass(t0 + SETTLE, now_unix()));
+    let text = typed(&mut rx);
+    let at = |needle: &str| {
+        text.find(needle)
+            .unwrap_or_else(|| panic!("{needle}: {text:?}"))
+    };
+    assert!(at("urgent one") < at("urgent two"), "{text}");
+    assert!(at("urgent two") < at("plain one"), "{text}");
+    assert!(at("plain one") < at("plain two"), "{text}");
+}
+
+#[tokio::test]
+async fn a_claimed_urgent_message_leaves_no_interrupt_behind_to_skip_the_hook_hold() {
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let mut rx = rev(&mut app, AgentState::Working);
+    let (_, interrupted) = urgent(&mut app, "mu1", "stop the deploy").unwrap();
+    assert!(interrupted);
+    assert_eq!(typed(&mut rx), ESC);
+    // The target reads the urgent message itself (agents_wait_for_message).
+    let target = app.public_pane_id(0, pane(&app)).unwrap();
+    let claimed = app.handle_agent_message_claim(
+        "c".into(),
+        AgentMessageClaimParams {
+            id: "mu1".into(),
+            pane: target,
+        },
+    );
+    let claimed: Value = serde_json::from_str(&claimed).unwrap();
+    assert_eq!(claimed["result"]["claimed"], true, "{claimed}");
+    assert!(app.message_queue.is_empty());
+    // It starts a new turn on its own (its hooks report it) and its screen
+    // reads idle mid-turn: a plain message waits for that turn's Stop.
+    hook_turn(&mut app, true, "p2", 30);
+    set_state(&mut app, AgentState::Idle);
+    let reply = send(&mut app, "ma1", "when you are done");
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    assert_eq!(reply["result"]["reason"], HOOK_LIVE_REASON);
+    let t0 = Instant::now();
+    app.message_queue_pass(t0, now_unix());
+    assert!(!app.message_queue_pass(t0 + SETTLE * 2, now_unix()));
+    assert!(typed(&mut rx).is_empty(), "the hooks say the turn is live");
+}
+
+#[tokio::test]
+async fn an_interrupt_is_forgotten_once_it_is_stale_or_its_message_is_gone() {
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let _rx = rev(&mut app, AgentState::Working);
+    urgent(&mut app, "mu1", "stop").unwrap();
+    let terminal_id = terminal(&mut app).id.to_string();
+    let at = app.message_queue.interrupted_at[&terminal_id];
+    // A pass past INTERRUPT_WAIT prunes it while its message still waits.
+    app.message_queue.mark_due();
+    app.message_queue_pass(at + INTERRUPT_WAIT, now_unix());
+    assert!(!app.message_queue.interrupted_at.contains_key(&terminal_id));
+    assert_eq!(app.message_queue.entries.len(), 1, "the message stays");
+    // The urgent message's expiry forgets a fresh interrupt too.
+    app.message_queue
+        .interrupted_at
+        .insert(terminal_id.clone(), Instant::now());
+    let later = app.message_queue.entries[0].expires_unix;
+    assert!(app.message_queue_pass(Instant::now(), later));
+    assert!(app.message_queue.is_empty());
+    assert!(!app.message_queue.interrupted_at.contains_key(&terminal_id));
 }
