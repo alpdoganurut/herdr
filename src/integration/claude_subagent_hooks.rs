@@ -1,11 +1,13 @@
 //! Claude Code `SubagentStart` / `SubagentStop` / `Stop` hooks for the fork's
-//! subagent count (`pane.report_subagent`).
+//! subagent count (`pane.report_subagent`), and `UserPromptSubmit` / `Stop`
+//! for its main turns (`pane.report_turn`, message delivery).
 //!
 //! Applied after the upstream settings edit (`claude_settings`), so that
 //! module stays as upstream wrote it: `install` adds one entry per event that
 //! runs the Claude hook asset with that event's action (`subagent` for the
-//! subagent events, `stop` for the main agent's Stop, whose
-//! `background_tasks` snapshot the running set), `uninstall` removes the
+//! subagent events, `stop` for the main agent's Stop, which reports the
+//! turn's end and whose `background_tasks` snapshot the running set, `turn`
+//! for UserPromptSubmit, a turn's start), `uninstall` removes the
 //! asset's commands for those actions again. User hooks and formatting outside
 //! the touched arrays are kept; the result is re-parsed and must equal the
 //! intended settings value, as the upstream edit does.
@@ -21,10 +23,13 @@ use super::command::hook_command;
 use super::config_edit::{hook_command_variants, is_matching_command_hook};
 
 /// The hook events that report subagents, each with the asset action it runs.
-pub(crate) const SUBAGENT_HOOKS: [(&str, &str); 3] = [
+pub(crate) const SUBAGENT_HOOKS: [(&str, &str); 4] = [
     ("SubagentStart", "subagent"),
     ("SubagentStop", "subagent"),
     ("Stop", "stop"),
+    // A main turn's start, for message delivery (`pane.report_turn`; Stop
+    // reports its end).
+    ("UserPromptSubmit", "turn"),
 ];
 const SUBAGENT_HOOK_TIMEOUT: u64 = 10;
 
@@ -310,6 +315,7 @@ mod tests {
         let (settings_path, hook_path) = paths();
         let subagent = hook_command(hook_path, Some("subagent"));
         let stop = hook_command(hook_path, Some("stop"));
+        let turn = hook_command(hook_path, Some("turn"));
         let input = concat!(
             "{\n",
             "  \"permissions\": {\"allow\": [\"Read\"]},\n",
@@ -338,6 +344,11 @@ mod tests {
             ],
             "beside the user's own Stop hook"
         );
+        assert_eq!(
+            subagent_commands(&settings, "UserPromptSubmit"),
+            std::slice::from_ref(&turn)
+        );
+        assert!(turn.ends_with(" turn"), "{turn}");
         assert!(subagent.ends_with(" subagent"), "{subagent}");
         assert!(stop.ends_with(" stop"), "{stop}");
         assert!(installed.contains("\"permissions\": {\"allow\": [\"Read\"]}"));
@@ -352,6 +363,7 @@ mod tests {
         let removed = uninstall(&installed, settings_path, hook_path).unwrap();
         let settings: Value = serde_json::from_str(&removed).unwrap();
         assert!(settings["hooks"].get("SubagentStart").is_none());
+        assert!(settings["hooks"].get("UserPromptSubmit").is_none());
         assert_eq!(subagent_commands(&settings, "SubagentStop"), ["echo keep"]);
         assert_eq!(
             subagent_commands(&settings, "Stop"),

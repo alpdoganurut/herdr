@@ -560,14 +560,29 @@ not = [
         let box_tail = "──────────\n> \n──────────\nfooter\n";
         for (above, state) in [
             ("* ended line\n\n", AgentState::Idle),
-            ("* ended line\n> reply\n+ notice \"a b\" finished · 3s\n", AgentState::Idle),
-            ("+ notice \"x\" finished · 1m 2s\n  wrapped\n", AgentState::Idle),
-            ("> prompt\n  ~\u{a0}Interrupted · what next?\n", AgentState::Idle),
-            ("+ notice \"x\" finished · 3s\n* Live… (3s)\n", AgentState::Working),
+            (
+                "* ended line\n> reply\n+ notice \"a b\" finished · 3s\n",
+                AgentState::Idle,
+            ),
+            (
+                "+ notice \"x\" finished · 1m 2s\n  wrapped\n",
+                AgentState::Idle,
+            ),
+            (
+                "> prompt\n  ~\u{a0}Interrupted · what next?\n",
+                AgentState::Idle,
+            ),
+            (
+                "+ notice \"x\" finished · 3s\n* Live… (3s)\n",
+                AgentState::Working,
+            ),
             ("+ notice \"x\" started\n", AgentState::Working),
             ("  ~ Interrupted\n> reply\n", AgentState::Working),
             ("* ended line\nesc to close\n", AgentState::Working),
-            ("* ended line\n  /btw note · esc to close\n", AgentState::Working),
+            (
+                "* ended line\n  /btw note · esc to close\n",
+                AgentState::Working,
+            ),
         ] {
             let screen = format!("{above}{box_tail}");
             let result = explain_with_input(

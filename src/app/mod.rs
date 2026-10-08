@@ -42,6 +42,7 @@ pub(crate) mod agent_times;
 mod creation;
 mod custom_commands;
 mod git_refresh;
+mod hook_turn;
 mod ids;
 pub(crate) mod pane_graphics;
 mod popup;

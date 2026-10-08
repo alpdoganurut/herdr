@@ -70,6 +70,21 @@ struct InputProvenance {
     last_idle_at: Option<Instant>,
     /// That edge came from a hook-authoritative status.
     last_idle_hook: bool,
+    /// The last programmatic write (a herdr message, a wake-up, a script),
+    /// whatever the status did since.
+    last_programmatic: Option<Instant>,
+}
+
+/// A turn start or end the agent's own hooks reported (`pane.report_turn`:
+/// Claude's UserPromptSubmit and Stop).
+#[derive(Debug, Clone)]
+struct HookMark {
+    /// The agent's prompt id (Claude's `prompt_id`), when it sent one.
+    prompt: Option<String>,
+    /// The hook's own clock (ns), to order a start and an end whose reports
+    /// crossed on the socket.
+    seq: u64,
+    at: Instant,
 }
 
 /// The current turn.
@@ -165,6 +180,11 @@ pub struct TurnState {
     restored: bool,
     /// Between a capturing edge and the next idle edge.
     in_turn: bool,
+    /// The last turn start and end the agent's hooks reported (message
+    /// delivery only; the displayed status never reads them). `None` until
+    /// a report arrives, so after a restart or a handoff.
+    hook_start: Option<HookMark>,
+    hook_end: Option<HookMark>,
 }
 
 impl TurnState {
@@ -192,6 +212,7 @@ impl TurnState {
                 }
             }
             InputSource::Programmatic(programmatic) => {
+                self.prov.last_programmatic = Some(now);
                 if self.prov.programmatic_since_idle.is_none() {
                     self.prov.programmatic_since_idle = Some(programmatic.clone());
                 }
@@ -345,6 +366,57 @@ impl TurnState {
                 started_unix: self.record.started_unix,
             },
         }
+    }
+
+    /// A turn start (`start`) or end the agent's own hooks reported.
+    /// `seq` is the hook's clock; 0 (not sent) orders by arrival.
+    pub fn note_hook_turn(&mut self, start: bool, prompt: Option<String>, seq: u64, now: Instant) {
+        let seq = if seq == 0 {
+            // Past every reported mark: the report arrived last.
+            [&self.hook_start, &self.hook_end]
+                .into_iter()
+                .flatten()
+                .map(|mark| mark.seq.saturating_add(1))
+                .max()
+                .unwrap_or(1)
+        } else {
+            seq
+        };
+        let mark = HookMark {
+            prompt: prompt.filter(|prompt| !prompt.is_empty()),
+            seq,
+            at: now,
+        };
+        if start {
+            self.hook_start = Some(mark);
+        } else {
+            self.hook_end = Some(mark);
+        }
+    }
+
+    /// When the agent's own hooks say its last turn ended: the reported end
+    /// belongs to the newest reported start (same prompt id, or a later hook
+    /// clock), and nothing was submitted or typed in by herdr since. Claude
+    /// keeps the title spinner after its turn while background agents run;
+    /// this tells message delivery the turn is over whatever the screen
+    /// shows. `None` when no end was reported, a newer start was, or input
+    /// landed after the end (the turn it starts reports itself).
+    pub fn hook_turn_ended(&self) -> Option<Instant> {
+        let end = self.hook_end.as_ref()?;
+        if let Some(start) = &self.hook_start {
+            let same_prompt = matches!(
+                (&start.prompt, &end.prompt),
+                (Some(started), Some(ended)) if started == ended
+            );
+            if !same_prompt && end.seq <= start.seq {
+                return None;
+            }
+        }
+        let input_since = |at: Option<Instant>| at.is_some_and(|at| at >= end.at);
+        if input_since(self.prov.last_client_submit) || input_since(self.prov.last_programmatic) {
+            return None;
+        }
+        Some(end.at)
     }
 
     /// The last client keystroke.
@@ -663,5 +735,76 @@ mod tests {
         turn.note_input(&api(), t0);
         turn.on_status_edge(Idle, Working, false, t0, 1);
         assert_eq!(origin(&turn, Working, t0), TurnOrigin::Programmatic);
+    }
+
+    fn prompt(id: &str) -> Option<String> {
+        Some(id.to_string())
+    }
+
+    #[test]
+    fn a_reported_end_frees_the_turn_until_the_next_start() {
+        let t0 = Instant::now();
+        let mut turn = idle(t0);
+        assert_eq!(turn.hook_turn_ended(), None, "nothing reported yet");
+        turn.note_hook_turn(true, prompt("p1"), 10, secs(t0, 1));
+        assert_eq!(turn.hook_turn_ended(), None, "a live turn");
+        turn.note_hook_turn(false, prompt("p1"), 20, secs(t0, 5));
+        assert_eq!(turn.hook_turn_ended(), Some(secs(t0, 5)));
+        // A task notification starts the next turn on its own.
+        turn.note_hook_turn(true, prompt("p2"), 30, secs(t0, 9));
+        assert_eq!(turn.hook_turn_ended(), None);
+        turn.note_hook_turn(false, prompt("p2"), 40, secs(t0, 12));
+        assert_eq!(turn.hook_turn_ended(), Some(secs(t0, 12)));
+    }
+
+    #[test]
+    fn crossed_reports_order_by_prompt_then_by_the_hook_clock() {
+        let t0 = Instant::now();
+        let mut turn = idle(t0);
+        turn.note_hook_turn(true, prompt("p1"), 10, secs(t0, 1));
+        // p1's Stop hook ran before p2's UserPromptSubmit, but its report
+        // arrived after it.
+        turn.note_hook_turn(true, prompt("p2"), 30, secs(t0, 3));
+        turn.note_hook_turn(false, prompt("p1"), 20, secs(t0, 3));
+        assert_eq!(turn.hook_turn_ended(), None, "p2 is live");
+        // A missed start: the end is newer on the hook clock.
+        turn.note_hook_turn(false, prompt("p3"), 50, secs(t0, 8));
+        assert_eq!(turn.hook_turn_ended(), Some(secs(t0, 8)));
+        // Without prompt ids, the hook clock decides; without that, arrival.
+        let mut bare = idle(t0);
+        bare.note_hook_turn(true, None, 0, secs(t0, 1));
+        bare.note_hook_turn(false, None, 0, secs(t0, 2));
+        assert_eq!(bare.hook_turn_ended(), Some(secs(t0, 2)));
+        bare.note_hook_turn(true, None, 0, secs(t0, 3));
+        assert_eq!(bare.hook_turn_ended(), None);
+    }
+
+    #[test]
+    fn input_after_a_reported_end_waits_for_the_turn_it_starts() {
+        let t0 = Instant::now();
+        let mut turn = idle(t0);
+        turn.note_hook_turn(true, prompt("p1"), 10, secs(t0, 1));
+        turn.note_hook_turn(false, prompt("p1"), 20, secs(t0, 4));
+        turn.note_input(&KEY, secs(t0, 5));
+        assert!(
+            turn.hook_turn_ended().is_some(),
+            "a keystroke is not a turn"
+        );
+        turn.note_input(&SUBMIT, secs(t0, 6));
+        assert_eq!(turn.hook_turn_ended(), None, "the user submitted");
+        let mut typed = idle(t0);
+        typed.note_hook_turn(false, prompt("p1"), 20, secs(t0, 4));
+        typed.note_input(&api(), secs(t0, 5));
+        assert_eq!(typed.hook_turn_ended(), None, "herdr typed into it");
+    }
+
+    #[test]
+    fn a_restored_pane_knows_no_hook_turn() {
+        let t0 = Instant::now();
+        let mut turn = TurnState::restored();
+        assert_eq!(turn.hook_turn_ended(), None);
+        // The first end after a restart is the last thing known.
+        turn.note_hook_turn(false, prompt("p9"), 90, secs(t0, 1));
+        assert_eq!(turn.hook_turn_ended(), Some(secs(t0, 1)));
     }
 }

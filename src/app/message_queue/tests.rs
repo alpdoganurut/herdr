@@ -531,3 +531,59 @@ async fn a_target_in_voice_mode_gets_its_messages_queued_until_voice_mode_ends()
     assert!(app.message_queue_pass(t0 + SETTLE * 2, now_unix()));
     assert!(typed(&mut rx).contains("hi"));
 }
+
+/// The target's own hooks report its turn's start and end.
+fn hook_turn(app: &mut App, start: bool, prompt: &str, seq: u64) {
+    terminal(app)
+        .turn_mut()
+        .note_hook_turn(start, Some(prompt.into()), seq, Instant::now());
+    app.message_queue.mark_due();
+}
+
+#[tokio::test]
+async fn a_working_target_whose_hooks_ended_its_turn_gets_it_after_settle() {
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let mut rx = rev(&mut app, AgentState::Working);
+    hook_turn(&mut app, true, "p1", 10);
+    hook_turn(&mut app, false, "p1", 20);
+    let reply = send(&mut app, "mh1", "after your turn");
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    assert_eq!(reply["result"]["reason"], "its turn just ended");
+    assert!(typed(&mut rx).is_empty(), "never typed at once");
+    let t0 = Instant::now();
+    let now = now_unix();
+    assert!(!app.message_queue_pass(t0, now));
+    assert!(app.message_queue_pass(t0 + SETTLE, now));
+    assert!(typed(&mut rx).contains("after your turn"));
+    assert!(app.message_queue.is_empty());
+}
+
+#[tokio::test]
+async fn a_hook_ended_turn_never_frees_a_blocked_or_suspended_target() {
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let mut rx = rev(&mut app, AgentState::Blocked);
+    hook_turn(&mut app, false, "p1", 20);
+    let reply = send(&mut app, "mh2", "approve?");
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    let t0 = Instant::now();
+    let now = now_unix();
+    app.message_queue_pass(t0, now);
+    assert!(!app.message_queue_pass(t0 + SETTLE * 2, now));
+    assert!(typed(&mut rx).is_empty(), "a permission dialog keeps it");
+
+    set_state(&mut app, AgentState::Working);
+    terminal(&mut app).begin_agent_suspend(
+        crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("s1").expect("a session id"),
+            transcript_path: None,
+        },
+        Instant::now() + Duration::from_secs(30),
+    );
+    app.message_queue_pass(t0 + SETTLE * 3, now);
+    assert!(!app.message_queue_pass(t0 + SETTLE * 5, now));
+    assert!(typed(&mut rx).is_empty(), "a suspended agent keeps it");
+}

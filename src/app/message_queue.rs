@@ -8,7 +8,10 @@
 //! take it (its agent is live, idle or done, not starting, its user is not
 //! typing in it or holding an unsent draft, and for the coordinator no turn
 //! is live). Otherwise the server queues it (never a refusal) and types it in
-//! once the target is free: idle for [`SETTLE`], typing guard clear. Per
+//! once the target is free: idle for [`SETTLE`], typing guard clear. A
+//! target whose screen reads working but whose own hooks reported its turn's
+//! end (src/app/hook_turn.rs: Claude's title spinner while background agents
+//! run) counts as free too, always through the queue so SETTLE applies. Per
 //! target FIFO; when several wait for one target they go in together, each
 //! with its own envelope and id. A target whose herdr_agents server reads
 //! messages by id gets one typed pointer line for them instead of the paste
@@ -169,7 +172,14 @@ pub(crate) struct MessageQueue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Check {
     /// Deliverable: its public pane id, and whether it is the coordinator.
-    Ready { pane: String, coordinator: bool },
+    /// `hook_ended`: its screen reads working but its own hooks reported
+    /// its turn's end (src/app/hook_turn.rs); typed in only after
+    /// [`SETTLE`], through the queue.
+    Ready {
+        pane: String,
+        coordinator: bool,
+        hook_ended: bool,
+    },
     /// Not now (the reason is shown to the sender).
     Wait(String),
     /// The pane or its agent is gone.
@@ -469,8 +479,13 @@ impl App {
         if terminal.effective_known_agent().is_none() {
             return Check::Missing;
         }
+        let hook_ended = terminal.state == crate::detect::AgentState::Working
+            && terminal.turn().hook_turn_ended().is_some();
         match terminal.state {
             crate::detect::AgentState::Idle => {}
+            // Its own hooks say its last turn ended (src/app/hook_turn.rs):
+            // the title spinner of background work is not a turn.
+            crate::detect::AgentState::Working if hook_ended => {}
             crate::detect::AgentState::Working => return Check::Wait("working".into()),
             crate::detect::AgentState::Blocked => {
                 return Check::Wait("blocked on its user (a question or an approval)".into())
@@ -494,7 +509,11 @@ impl App {
                 return Check::Wait(reason);
             }
         }
-        Check::Ready { pane, coordinator }
+        Check::Ready {
+            pane,
+            coordinator,
+            hook_ended,
+        }
     }
 
     /// Type `items` into `pane` now (guarded): one pointer line when the
@@ -722,7 +741,14 @@ impl App {
                 "earlier messages are waiting for it".to_string()
             }
             Check::Wait(reason) => reason,
-            Check::Ready { pane, coordinator } => {
+            // Its turn ended a moment ago by its hooks: the queue types it
+            // in once that held for SETTLE.
+            Check::Ready {
+                hook_ended: true, ..
+            } => "its turn just ended".to_string(),
+            Check::Ready {
+                pane, coordinator, ..
+            } => {
                 let items = [Outgoing {
                     id: message_id.clone(),
                     envelope: envelope.clone(),
@@ -810,7 +836,12 @@ impl App {
         if self.message_queue.queued_for(&target.terminal_id) {
             return LegacyPrompt::Answered(self.queue_legacy_message(request_id, params));
         }
-        let Check::Ready { pane, coordinator } = self.message_check(&target) else {
+        let Check::Ready {
+            pane,
+            coordinator,
+            hook_ended: false,
+        } = self.message_check(&target)
+        else {
             return LegacyPrompt::Answered(self.queue_legacy_message(request_id, params));
         };
         // A target that reads messages by id gets the pointer line; the
@@ -1027,7 +1058,9 @@ impl App {
                 self.message_queue.ready_since.remove(&terminal_id);
                 return false;
             }
-            Check::Ready { pane, coordinator } => (pane, coordinator),
+            Check::Ready {
+                pane, coordinator, ..
+            } => (pane, coordinator),
         };
         self.message_queue.missing_since.remove(&terminal_id);
         let since = *self

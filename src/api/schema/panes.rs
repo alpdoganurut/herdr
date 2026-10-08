@@ -797,3 +797,29 @@ pub enum SubagentEvent {
     /// The authoritative running set, sent at every main turn end.
     Snapshot,
 }
+
+/// A turn of the pane's agent starting or ending (`pane.report_turn`, sent by
+/// the Claude hook asset from UserPromptSubmit and Stop). A runtime fact for
+/// message delivery: an agent whose last turn ended is free for a message
+/// even while background work keeps its status at working.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneReportTurnParams {
+    pub pane_id: String,
+    pub agent: String,
+    pub event: TurnEvent,
+    /// The agent's id for the prompt the turn answers (Claude's `prompt_id`);
+    /// pairs an end with its start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    /// The hook's clock in nanoseconds, to order reports that cross on the
+    /// socket; 0 orders by arrival.
+    #[serde(default)]
+    pub seq: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnEvent {
+    Start,
+    End,
+}

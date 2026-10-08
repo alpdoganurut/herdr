@@ -6358,6 +6358,40 @@
           ],
           "type": "object"
         },
+        "PaneReportTurnParams": {
+          "description": "A turn of the pane's agent starting or ending (`pane.report_turn`, sent by\nthe Claude hook asset from UserPromptSubmit and Stop). A runtime fact for\nmessage delivery: an agent whose last turn ended is free for a message\neven while background work keeps its status at working.",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "event": {
+              "$ref": "#/schemas/request/$defs/TurnEvent"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "prompt_id": {
+              "description": "The agent's id for the prompt the turn answers (Claude's `prompt_id`);\npairs an end with its start.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "seq": {
+              "default": 0,
+              "description": "The hook's clock in nanoseconds, to order reports that cross on the\nsocket; 0 orders by arrival.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pane_id",
+            "agent",
+            "event"
+          ],
+          "type": "object"
+        },
         "PaneResizeParams": {
           "properties": {
             "amount": {
@@ -7953,6 +7987,13 @@
             "top-right",
             "bottom-left",
             "bottom-right"
+          ],
+          "type": "string"
+        },
+        "TurnEvent": {
+          "enum": [
+            "start",
+            "end"
           ],
           "type": "string"
         },
@@ -10409,6 +10450,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentsReorderTabParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork: a turn of the pane's agent started or ended (its hooks).",
+          "properties": {
+            "method": {
+              "const": "pane.report_turn",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneReportTurnParams"
             }
           },
           "required": [

@@ -243,6 +243,80 @@ async fn fork_smoke_client_typing_in_an_agent_holds_messages_back() {
     shutdown_test_runtimes(&mut server);
 }
 
+/// A Claude whose title spinner keeps it `working` while background agents
+/// run after its turn ended: its Stop hook (`pane.report_turn` end) frees it
+/// for a queued message after SETTLE, its next UserPromptSubmit holds the
+/// next one back, and the displayed status stays `working` throughout.
+#[tokio::test]
+async fn fork_smoke_turn_hooks_free_a_working_claude_for_messages() {
+    use crate::api::schema::{PaneReportTurnParams, TurnEvent};
+    let (mut server, mut input, panes) = crew_server();
+    server.app.coordinator.assume_shell_ready = true;
+    terminal(&mut server, panes[1]).set_detected_state(Some(Agent::Claude), AgentState::Working);
+    let fixer = public(&server, panes[1]);
+    let lead = public(&server, panes[0]);
+    let report = |server: &mut HeadlessServer, event: TurnEvent, prompt: &str, seq: u64| {
+        let fixer = public(server, panes[1]);
+        let reply = public_api(
+            server,
+            Method::PaneReportTurn(PaneReportTurnParams {
+                pane_id: fixer,
+                agent: "claude".into(),
+                event,
+                prompt_id: Some(prompt.into()),
+                seq,
+            }),
+        );
+        assert!(reply.get("error").is_none(), "{reply}");
+    };
+    report(&mut server, TurnEvent::Start, "p1", 10);
+    let send = |server: &mut HeadlessServer, text: &str| {
+        public_api(
+            server,
+            Method::AgentsSendMessage(AgentsSendMessageParams {
+                caller_pane: lead.clone(),
+                to: fixer.clone(),
+                text: text.into(),
+                reply_to: None,
+            }),
+        )
+    };
+    let held = send(&mut server, "status?");
+    assert_eq!(held["result"]["message"]["reason"], "working", "{held}");
+
+    // The turn ends; the title still spins for a background agent.
+    report(&mut server, TurnEvent::End, "p1", 20);
+    let t0 = std::time::Instant::now();
+    let now = crate::coordinator::now_unix();
+    assert!(!server.app.message_queue_pass(t0, now), "settling");
+    assert!(input.try_recv().is_err(), "nothing typed before SETTLE");
+    assert!(server
+        .app
+        .message_queue_pass(t0 + crate::app::message_queue::SETTLE, now));
+    let typed = tokio::time::timeout(std::time::Duration::from_secs(2), input.recv()).await;
+    assert!(
+        matches!(typed, Ok(Some(_))),
+        "typed in after its turn ended"
+    );
+    assert_eq!(terminal(&mut server, panes[1]).state, AgentState::Working);
+
+    // The message starts a turn (herdr's write, then its UserPromptSubmit):
+    // the next message waits for that turn's Stop (the per-pair rate
+    // limit is not what this test is about).
+    server.app.agents_model.limiter = Default::default();
+    let next = send(&mut server, "and now?");
+    assert_eq!(next["result"]["message"]["outcome"], "queued", "{next}");
+    report(&mut server, TurnEvent::Start, "p2", 30);
+    let t1 = t0 + crate::app::message_queue::SETTLE * 3;
+    server.app.message_queue.mark_due();
+    server.app.message_queue_pass(t1, now);
+    server
+        .app
+        .message_queue_pass(t1 + crate::app::message_queue::SETTLE, now);
+    assert_eq!(server.app.message_queue.entries.len(), 1, "held for p2");
+    shutdown_test_runtimes(&mut server);
+}
+
 /// Give a pane a runtime whose process (its shell or agent) is `pid`.
 fn set_pane_pid(server: &mut HeadlessServer, pane: crate::layout::PaneId, pid: u32) {
     let id = server.app.state.workspaces[1]

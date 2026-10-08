@@ -361,6 +361,20 @@ fn claude_hook_asset_request(
     action: &str,
     input: serde_json::Value,
 ) -> Option<Request> {
+    claude_hook_asset_requests(dir, pane_id, action, input)
+        .into_iter()
+        .next()
+}
+
+/// Every request the shipped Claude hook asset sent, in order (a Stop sends
+/// `pane.report_turn`, then the subagent snapshot).
+#[cfg(unix)]
+fn claude_hook_asset_requests(
+    dir: &std::path::Path,
+    pane_id: &str,
+    action: &str,
+    input: serde_json::Value,
+) -> Vec<Request> {
     use std::io::{Read as _, Write as _};
 
     let asset = dir.join("herdr-agent-state.sh");
@@ -390,11 +404,15 @@ fn claude_hook_asset_request(
         .unwrap();
     assert!(child.wait().unwrap().success());
     listener.set_nonblocking(true).unwrap();
-    let (mut stream, _) = listener.accept().ok()?;
-    stream.set_nonblocking(false).unwrap();
-    let mut sent = String::new();
-    stream.read_to_string(&mut sent).unwrap();
-    Some(serde_json::from_str(sent.lines().next().expect("one request line")).unwrap())
+    let mut requests = Vec::new();
+    while let Ok((mut stream, _)) = listener.accept() {
+        stream.set_nonblocking(false).unwrap();
+        let mut sent = String::new();
+        stream.read_to_string(&mut sent).unwrap();
+        requests
+            .push(serde_json::from_str(sent.lines().next().expect("one request line")).unwrap());
+    }
+    requests
 }
 
 #[cfg(unix)]
@@ -486,7 +504,7 @@ async fn claude_subagent_hooks_reach_the_client_shell_snapshot() {
             "background_tasks": tasks,
         })
     };
-    let request = run_claude_hook_asset(
+    let requests = claude_hook_asset_requests(
         &dir,
         &pane_id,
         "stop",
@@ -496,6 +514,9 @@ async fn claude_subagent_hooks_reach_the_client_shell_snapshot() {
             {"id": "s1", "type": "shell", "status": "running", "command": "sleep 60"},
         ])),
     );
+    assert_eq!(requests.len(), 2, "the turn's end, then the snapshot");
+    assert!(matches!(requests[0].method, Method::PaneReportTurn(_)));
+    let request = &requests[1];
     let Method::PaneReportSubagent(params) = &request.method else {
         panic!("unexpected hook request: {request:?}");
     };
@@ -517,22 +538,24 @@ async fn claude_subagent_hooks_reach_the_client_shell_snapshot() {
         "background agents do not keep the agent working: {status:?}"
     );
 
-    // A Stop without background_tasks (an older Claude Code) or from a
-    // subagent sends nothing.
-    assert!(claude_hook_asset_request(
+    // A Stop without background_tasks (an older Claude Code) reports only
+    // the turn's end; one from a subagent sends nothing.
+    let requests = claude_hook_asset_requests(
         &dir,
         &pane_id,
         "stop",
         serde_json::json!({"hook_event_name": "Stop", "session_id": SESSION_ID}),
-    )
-    .is_none());
+    );
+    assert_eq!(requests.len(), 1);
+    assert!(matches!(requests[0].method, Method::PaneReportTurn(_)));
     let mut from_subagent = stop(serde_json::json!([]));
     from_subagent["agent_id"] = "d4e5".into();
     assert!(claude_hook_asset_request(&dir, &pane_id, "stop", from_subagent).is_none());
 
     // The last agent reports back: the next Stop lists none.
-    let request = run_claude_hook_asset(&dir, &pane_id, "stop", stop(serde_json::json!([])));
-    api(&mut server, request.method);
+    for request in claude_hook_asset_requests(&dir, &pane_id, "stop", stop(serde_json::json!([]))) {
+        api(&mut server, request.method);
+    }
     let (subagents, status) = client_subagents(&server);
     assert_eq!(subagents, 0);
     assert!(

@@ -347,6 +347,9 @@ pub enum Method {
     AgentsReorderGroup(agents_model::AgentsReorderGroupParams),
     #[serde(rename = "agents.reorder_tab")]
     AgentsReorderTab(agents_model::AgentsReorderTabParams),
+    /// Fork: a turn of the pane's agent started or ended (its hooks).
+    #[serde(rename = "pane.report_turn")]
+    PaneReportTurn(PaneReportTurnParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

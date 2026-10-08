@@ -1448,6 +1448,9 @@ impl App {
             Method::AgentsReorderTab(params) => {
                 return self.handle_agents_reorder_tab(request.id, params)
             }
+            Method::PaneReportTurn(params) => {
+                return self.handle_pane_report_turn(request.id, params)
+            }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

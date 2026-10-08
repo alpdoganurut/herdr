@@ -3,7 +3,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=11
+# HERDR_INTEGRATION_VERSION=12
 
 set -eu
 
@@ -13,7 +13,7 @@ trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
 
 case "$action" in
-  session|subagent|stop) ;;
+  session|subagent|stop|turn) ;;
   *) exit 0 ;;
 esac
 
@@ -93,13 +93,38 @@ if action == "subagent":
     })
     raise SystemExit(0)
 
+# A turn of the main agent started (UserPromptSubmit: a typed prompt, a task
+# notification or a subagent's hand-back) or ended (Stop), for message
+# delivery (pane.report_turn). Claude's prompt_id pairs the two; the hook's
+# clock orders reports that cross on the socket.
+def report_turn(event):
+    params = {
+        "pane_id": pane_id,
+        "agent": "claude",
+        "event": event,
+        "seq": time.time_ns(),
+    }
+    prompt_id = hook_input.get("prompt_id")
+    if isinstance(prompt_id, str) and prompt_id:
+        params["prompt_id"] = prompt_id
+    send({"id": request_id, "method": "pane.report_turn", "params": params})
+
+
+if action == "turn":
+    if hook_event_name == "UserPromptSubmit" and not hook_input.get("agent_id"):
+        report_turn("start")
+    raise SystemExit(0)
+
 # The main agent's turn ended (Stop): report every subagent still running
 # from Claude's background_tasks, background ones included, which replaces
 # the pane's set. A Claude Code without the field reports nothing. Never
 # from SubagentStop, where the subagent's own entry is still running.
 if action == "stop":
+    if hook_event_name != "Stop" or hook_input.get("agent_id"):
+        raise SystemExit(0)
+    report_turn("end")
     background_tasks = hook_input.get("background_tasks")
-    if hook_event_name != "Stop" or hook_input.get("agent_id") or not isinstance(background_tasks, list):
+    if not isinstance(background_tasks, list):
         raise SystemExit(0)
     subagent_ids = []
     for task in background_tasks:
