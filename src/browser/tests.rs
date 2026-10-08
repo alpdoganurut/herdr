@@ -2359,3 +2359,36 @@ fn a_blocked_attach_names_what_the_sidecar_saw_and_never_advises_a_stop() {
     );
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn a_hub_side_attach_timeout_gets_the_fixed_clause() {
+    let (hub, shared, _stream, home) = hub("attach-hub-timeout");
+    shared.lock().unwrap().errors.push((
+        "attach".into(),
+        "browser_timeout".into(),
+        "attach exceeded 15000 ms".into(),
+    ));
+    let actor = pane("w2:pA");
+    let err = hub
+        .run(
+            &actor,
+            params(BrowserOp::Open {
+                url: "https://a.test/".into(),
+                focus: false,
+                wait: None,
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "attach_blocked", "{}", err.message);
+    assert!(
+        err.message.contains("the browser did not answer in time: a dialog, a frozen page, or many tabs still loading; look at the herdr+ Browser window, then retry. Your tabs are safe"),
+        "{}",
+        err.message
+    );
+    assert!(
+        !err.message.contains("exceeded"),
+        "the raw timeout text stays out: {}",
+        err.message
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}

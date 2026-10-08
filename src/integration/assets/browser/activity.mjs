@@ -339,8 +339,9 @@ const titles = (list) => list.map((t) => `"${String(t).slice(0, 60)}"`).join(', 
 export function describe(sweep, blockers = []) {
   const r = sweep || { state: 'failed', detail: 'no sweep' };
   if (r.left_count > 0) return `${r.left_count} restored tab(s) could not be loaded (${titles(r.left)}); ask the user to click them once in the herdr+ Browser window, then retry`;
-  if (blockers.length) return `these tabs are not responding (a dialog may be open in one): ${titles(blockers.map((b) => b.title ? `${b.title} — ${b.host}` : b.host))}; answer or close it in the herdr+ Browser window, then retry`;
+  // (tabs still loading come first: a tab mid-load does not answer the probe either, and that is no dialog)
   if (r.loading > 0) return `${r.loading} tab(s) are still loading (${titles(r.loading_titles || [])}); retry in a few seconds`;
+  if (blockers.length) return `these tabs are not responding (a dialog may be open in one): ${titles(blockers.map((b) => b.title ? `${b.title} — ${b.host}` : b.host))}; answer or close it in the herdr+ Browser window, then retry`;
   if (r.state !== 'ready') return `the companion extension is not reachable (${r.state}${r.detail ? ': ' + r.detail : ''}), so restored tabs could not be loaded; ask the user to click the restored tabs once in the herdr+ Browser window, then retry`;
   return `${r.reloaded || 0} restored tab(s) were loaded, so a page that is not answering is blocking — a dialog (alert, 'Leave site?') or a frozen page; ask the user to look at the herdr+ Browser window, then retry`;
 }
@@ -350,21 +351,57 @@ export function describe(sweep, blockers = []) {
  *  a connect — a dialog, a frozen renderer. Read-only. `list` is
  *  `/json/list` (fetched when not given); `open` makes a WebSocket (for
  *  tests). */
-export async function probePages(port, capMs = 1000, list = null, open = (url) => new WebSocket(url)) {
-  const targets = list || await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(2000) }).then((r) => r.json()).catch(() => []);
+export async function probePages(port, capMs = 1000, list = null, open = (url) => new WebSocket(url), deadlineAt = Infinity) {
+  // everything inside what is left of the attach deadline: the list fetch, then the probes
+  const remaining = () => Math.max(0, deadlineAt - Date.now());
+  if (remaining() === 0) return { pages: 0, blocked: [], skipped: 'no time left' };
+  const targets = list || await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(Math.max(1, Math.min(1000, remaining()))) }).then((r) => r.json()).catch(() => []);
   const pages = targets.filter((t) => t.type === 'page' && t.webSocketDebuggerUrl);
   const host = (url) => { try { return new URL(url).host || url.slice(0, 40); } catch { return String(url).slice(0, 40); } };
+  const probeMs = Math.min(capMs, remaining());
+  if (probeMs === 0) return { pages: pages.length, blocked: [], skipped: 'no time left' };
   const probe = (t) => new Promise((resolve) => {
-    let ws; const done = (ok) => { try { ws && ws.close(); } catch {} resolve(ok); };
-    const timer = setTimeout(() => done(false), capMs);
-    try { ws = open(t.webSocketDebuggerUrl); } catch { clearTimeout(timer); return resolve(false); }
+    let ws; let timer = null; let settled = false;
+    // once: the first verdict counts (a close caused by our own close() is not a second one)
+    const done = (ok) => { if (settled) return; settled = true; clearTimeout(timer); try { if (ws) { ws.onclose = null; ws.close(); } } catch {} resolve(ok); };
+    timer = setTimeout(() => done(false), probeMs);
+    try { ws = open(t.webSocketDebuggerUrl); } catch { return done(false); }
     ws.onopen = () => ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: '1', returnByValue: true } }));
-    ws.onmessage = (m) => { let msg; try { msg = JSON.parse(m.data); } catch { return; } if (msg.id === 1) { clearTimeout(timer); done(true); } };
-    ws.onerror = () => { clearTimeout(timer); done(false); };
+    ws.onmessage = (m) => { let msg; try { msg = JSON.parse(m.data); } catch { return; } if (msg.id === 1) done(true); };
+    ws.onerror = () => done(false);
+    ws.onclose = () => done(false);
   });
   const answers = await Promise.all(pages.map(probe));
   const blocked = pages.filter((_, i) => !answers[i]).map((t) => ({ title: String(t.title || '').slice(0, 60), host: host(t.url || '') }));
   return { pages: pages.length, blocked };
+}
+
+/** Wake an idled companion worker with a tab event before anything is
+ *  attached: raw CDP on the browser endpoint (`/json/version`), a blank
+ *  target created in the background and closed again. Bounded by `capMs`
+ *  in total; never raises the window (measured). `open` makes the
+ *  WebSocket (for tests). */
+export async function rawNudge(port, capMs = 1500, open = (url) => new WebSocket(url)) {
+  const t0 = Date.now();
+  const version = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(Math.max(1, capMs)) }).then((r) => r.json());
+  const ws = open(version.webSocketDebuggerUrl);
+  const pending = new Map();
+  let id = 0;
+  const send = (method, params) => new Promise((resolve, reject) => {
+    const n = ++id;
+    const timer = setTimeout(() => { pending.delete(n); reject(new Error(`${method} took too long`)); }, Math.max(1, capMs - (Date.now() - t0)));
+    pending.set(n, (msg) => { clearTimeout(timer); msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result || {}); });
+    ws.send(JSON.stringify({ id: n, method, params }));
+  });
+  try {
+    await withTimeout(new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error('browser endpoint websocket failed')); }), Math.max(1, capMs - (Date.now() - t0)), 'nudge connect');
+    ws.onmessage = (m) => { let msg; try { msg = JSON.parse(m.data); } catch { return; } const waiter = pending.get(msg.id); if (waiter) { pending.delete(msg.id); waiter(msg); } };
+    const { targetId } = await send('Target.createTarget', { url: NUDGE_URL, background: true });
+    await sleep(50);
+    await send('Target.closeTarget', { targetId });
+  } finally {
+    try { ws.close(); } catch {}
+  }
 }
 
 /** The companion extension of one profile: the worker connection, target → tab ids, the pane groups. */
@@ -463,8 +500,17 @@ export class Companion {
     const t0 = Date.now();
     const left = () => budgetMs - (Date.now() - t0);
     if (typeof WebSocket !== 'function') return { state: 'unsupported', detail: 'node has no WebSocket' };
+    const listed = async () => this.findIn(await this.targets().catch(() => []));
     let sw = null;
-    while (!(sw = this.findIn(await this.targets().catch(() => []))) && Date.now() - t0 < Math.min(SWEEP_WORKER_WAIT_MS, budgetMs)) await sleep(200);
+    while (!(sw = await listed()) && Date.now() - t0 < Math.min(SWEEP_WORKER_WAIT_MS, budgetMs)) await sleep(200);
+    if (!sw && left() > 500) {
+      // Chrome idled the worker out: a tab event wakes it (a blank target
+      // opened in the background and closed again, raw CDP on the browser
+      // endpoint — nothing Playwright, nothing that raises the window)
+      await rawNudge(this.profile.port, Math.min(1500, left())).catch((err) => this.log(`companion nudge: ${err.message}`));
+      const until = Date.now() + Math.min(1500, Math.max(0, left()));
+      while (!(sw = await listed()) && Date.now() < until) await sleep(200);
+    }
     if (!sw) return { state: 'missing', detail: 'no companion service worker on the DevTools port', ms: Date.now() - t0 };
     let result;
     try {
@@ -472,16 +518,36 @@ export class Companion {
     } catch (err) {
       return { state: 'failed', detail: String(err.message).slice(0, 120), ms: Date.now() - t0 };
     }
-    // the reloaded tabs settle: poll until none is loading, within the budget
+    // the worker is ours from here: what probe() establishes (state, scope, the version)
+    await this.adopt(sw, Math.max(300, Math.min(1000, left()))).catch(() => {});
+    // settle on what is loading (restored tabs mid-load stall the connect):
+    // one poll always, more while something loads and the budget lasts; a
+    // failed poll keeps the last known count
+    const settleUntil = Date.now() + Math.min(SWEEP_SETTLE_MS, Math.max(0, left()));
     let loading = { loading: 0, loading_titles: [] };
-    if (result.reloaded > 0) {
-      const settleUntil = Date.now() + Math.min(SWEEP_SETTLE_MS, Math.max(0, left()));
-      do {
-        await sleep(250);
-        loading = await withTimeout(this.evaluate(LOADING_EXPR, 'sweep settle'), Math.max(300, left()), 'companion settle').catch(() => ({ loading: 0, loading_titles: [] }));
-      } while (loading.loading > 0 && Date.now() < settleUntil);
+    for (;;) {
+      loading = await withTimeout(this.evaluate(LOADING_EXPR, 'sweep settle'), Math.max(300, left()), 'companion settle').catch(() => loading);
+      if (!(loading.loading > 0) || Date.now() + 250 >= settleUntil) break;
+      await sleep(250);
     }
     return Object.assign(result, loading, { ms: Date.now() - t0 });
+  }
+  /** The listed worker is ours: state ready, its scope, and whether it runs
+   *  this herdr's code (an older worker is reported as pending; see
+   *  `stopStaleWorker`). Shared by `probe` and `sweep`. */
+  async adopt(sw, pingMs = COMPANION_CALL_MS) {
+    this.state = 'ready';
+    this.detail = '';
+    this.stale = false;
+    // (not URL.origin: Node answers "null" for chrome-extension: URLs)
+    this.scope = sw.url.slice(0, sw.url.lastIndexOf('/') + 1);
+    const ping = String(await withTimeout(this.call('herdrPing'), pingMs, 'companion ping').catch(() => ''));
+    const version = Number((ping.split('/')[1] || '0'));
+    if (version !== COMPANION_VERSION) {
+      this.stale = true; // retired by stopStaleWorker when herdr closes the browser
+      this.detail = `worker v${version || '?'}, this herdr expects v${COMPANION_VERSION} — extension update pending: \`herdr browser stop\` and open again`;
+    }
+    return this.info();
   }
   /** Is the extension loaded, and current? (at attach) A worker still running
    *  older code (the files were refreshed under it) keeps serving this
@@ -493,16 +559,7 @@ export class Companion {
     try {
       const sw = await this.worker(true);
       if (!sw) { this.state = 'missing'; this.detail = 'no companion service worker on the DevTools port'; return this.info(); }
-      this.state = 'ready';
-      this.detail = '';
-      // (not URL.origin: Node answers "null" for chrome-extension: URLs)
-      this.scope = sw.url.slice(0, sw.url.lastIndexOf('/') + 1);
-      const ping = String(await this.call('herdrPing').catch(() => ''));
-      const version = Number((ping.split('/')[1] || '0'));
-      if (version !== COMPANION_VERSION) {
-        this.stale = true; // retired by stopStaleWorker when herdr closes the browser
-        this.detail = `worker v${version || '?'}, this herdr expects v${COMPANION_VERSION} — extension update pending: \`herdr browser stop\` and open again`;
-      }
+      await this.adopt(sw);
     } catch (err) {
       this.state = 'missing';
       this.detail = String(err.message).slice(0, 120);

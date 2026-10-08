@@ -15,6 +15,8 @@ import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
 import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, SELECT_BUDGET_MS, describe, probePages } from './activity.mjs';
+/** Kept out of the connect for the post-timeout diagnosis (the page probe: a 1 s list fetch, 1 s probes). */
+const ATTACH_DIAG_RESERVE_MS = 2500;
 
 const require = createRequire(import.meta.url);
 // Real functions for page.evaluate: a string would be evaluated as an expression (yielding the function,
@@ -194,9 +196,16 @@ async function attach(profile, port, deadlineMs, pinDashboard) {
   // every page's init): the companion reloads them and they settle first,
   // inside the first half of the deadline. A failed sweep is a result, not
   // an error: the connect runs as before and the text names the state.
+  const deadlineAt = t0 + deadlineMs;
   const swept = await profile.companion.sweep(Math.min(8000, Math.floor(deadlineMs / 2)));
   log('debug', `${stamp()} sweep ${JSON.stringify(swept)}`);
-  const connectMs = Math.max(3000, deadlineMs - (Date.now() - t0) - 2500); // 2.5 s kept for the diagnosis
+  // An activity-off profile never keeps pinned dashboards: the worker's own
+  // default is pinned, so it is told before the connect (a blocked connect
+  // would otherwise leave them).
+  if (pinDashboard === false && swept.state === 'ready') {
+    await withTimeout(profile.companion.call('herdrDashboard', { pin: false }), Math.min(2000, Math.max(300, deadlineAt - Date.now() - ATTACH_DIAG_RESERVE_MS - 3000)), 'x', 'x').catch((err) => log('debug', `${stamp()} dashboard off: ${err.message}`));
+  }
+  const connectMs = Math.max(3000, deadlineAt - Date.now() - ATTACH_DIAG_RESERVE_MS);
   log('debug', `${stamp()} connectOverCDP… (${connectMs} ms)`);
   let browser;
   try {
@@ -209,7 +218,7 @@ async function attach(profile, port, deadlineMs, pinDashboard) {
     // dialog, a frozen page), the tabs that could not be loaded, what is
     // still loading — never a stop (a restart restores the same tabs).
     if (/Timeout/i.test(message)) {
-      const probe = await probePages(port, 1000).catch(() => ({ pages: 0, blocked: [] }));
+      const probe = await probePages(port, 1000, null, undefined, deadlineAt).catch(() => ({ pages: 0, blocked: [] }));
       log('debug', `${stamp()} probe ${JSON.stringify(probe)}`);
       fail('attach_timeout', `the browser did not accept the CDP connection within ${deadlineMs} ms: ${describe(swept, probe.blocked)}`);
     }
@@ -243,11 +252,15 @@ async function attach(profile, port, deadlineMs, pinDashboard) {
   await Promise.all(ctx.pages().map(page => track(profile, page, null).catch((err) => log('warn', `track failed: ${err.message}`))));
   log('debug', `${stamp()} tracked in ${Date.now() - t0} ms`);
   event('browser', { profile: profile.name, kind: 'attached', detail: browser.version() });
-  // The companion extension (tab groups): loaded or not, bounded.
-  const companion = await withTimeout(profile.companion.probe(), 6000, 'x', 'x').catch(() => ({ state: 'missing', detail: 'probe timed out' }));
+  // The companion extension: what the sweep found (it adopted the worker),
+  // else a probe bounded by what is left of the deadline.
+  const leftMs = () => Math.max(300, deadlineAt - Date.now());
+  const companion = swept.state === 'ready'
+    ? profile.companion.info()
+    : await withTimeout(profile.companion.probe(), Math.min(6000, leftMs()), 'x', 'x').catch(() => ({ state: 'missing', detail: 'probe timed out' }));
   log('debug', `${stamp()} companion ${companion.state}${companion.detail ? ' (' + companion.detail + ')' : ''}`);
   if (companion.state === 'ready' && pinDashboard !== undefined) {
-    await withTimeout(profile.companion.dashboard(pinDashboard), 3000, 'x', 'x').catch((err) => log('debug', `dashboard: ${err.message}`));
+    await withTimeout(profile.companion.dashboard(pinDashboard), Math.min(3000, leftMs()), 'x', 'x').catch((err) => log('debug', `dashboard: ${err.message}`));
   }
   return Object.assign(await tabs(profile), { companion });
 }

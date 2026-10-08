@@ -2505,11 +2505,16 @@ impl BrowserHub {
                     std::thread::sleep(Duration::from_millis(1500));
                 }
                 Err(err) if attach_timed_out(&err) => {
-                    // the sidecar's clause follows " ms: " in its message
-                    let clause = err
-                        .message
-                        .split_once(" ms: ")
-                        .map_or(err.message.as_str(), |(_, clause)| clause);
+                    // the sidecar's clause follows " ms: " in its message; a
+                    // hub-side timeout (no reply at all) gets the fixed one
+                    const UNKNOWN: &str = "the browser did not answer in time: a dialog, a frozen page, or many tabs still loading; look at the herdr+ Browser window, then retry";
+                    let clause = if err.code == "browser_timeout" {
+                        UNKNOWN
+                    } else {
+                        err.message
+                            .split_once(" ms: ")
+                            .map_or(UNKNOWN, |(_, clause)| clause)
+                    };
                     return Err(BrowserError::new(
                         "attach_blocked",
                         format!(
