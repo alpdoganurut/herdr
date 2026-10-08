@@ -1,7 +1,7 @@
 id = "claude"
-version = "2026.10.03.1"
+version = "2026.10.08.1"
 min_engine_version = 2
-updated_at = "2026-10-03T00:00:00Z"
+updated_at = "2026-10-08T00:00:00Z"
 aliases = ["claude-code"]
 
 [[rules]]
@@ -22,16 +22,27 @@ visible_idle = true
 # Claude (2.1.288) keeps the title spinner while background agents or MCP
 # tasks run after its own turn ended, and hides the in-screen spinner while it
 # streams text, so neither the title nor a missing spinner line tells a turn
-# from background work. Its turn-end status line does: the last line above the
-# prompt box is "✻ Waiting for N background agents to finish" or the
-# completion line "✻ Worked for 1m 3s · … · N MCP tasks still running" (the
-# verb is the one word before "for": the live spinner "✻ Hashing… (3s · thought
-# for 1s)" never matches).
+# from background work. The last block above the prompt box does, when it is
+# one of three turn-end lines (any gate):
+# - the turn-end status line "✻ Waiting for N background agents to finish" or
+#   the completion line "✻ Worked for 1m 3s · … · N MCP tasks still running"
+#   (the verb is the one word before "for": the live spinner "✻ Hashing… (3s ·
+#   thought for 1s)" never matches);
+# - a background agent's notice "⏺ Agent "<description>" finished · 34s"
+#   (2.1.293: a subagent's hand-back starts a turn, and when that turn ends
+#   Claude prints the task notice below its reply, with no status line after
+#   it; a live turn draws its spinner below the notice);
+# - "⎿  Interrupted · What should Claude do instead?" (Esc ended the turn; no
+#   Stop hook fires for it).
 # Background work is not a turn, so that line wins over the title. Only its
 # indented wrap (up to 3 lines), blank lines or right-aligned notices ("✔ Update
-# installed · …") may follow it; a new prompt ("❯ …") or a reply ("⏺ …") below
-# it puts the title back in charge.
-regex = ['(?m)^[\x{002A}\x{00B7}\x{2722}\x{2733}\x{2736}\x{273B}\x{273D}][ \t]+(?:Waiting for [1-9]\d* background agents? to finish|\S+ for \d+[smh]\b[^\n]*)[ \t]*(?:\n[ \t]+\S[^\n]*){0,3}(?:\n(?:[ \t]*|[ \t]{20,}\S[^\n]*))*\n?\z']
+# installed · …") may follow it; a new prompt ("❯ …"), a reply ("⏺ …") or a
+# spinner below it puts the title back in charge.
+any = [
+  { regex = ['(?m)^[\x{002A}\x{00B7}\x{2722}\x{2733}\x{2736}\x{273B}\x{273D}][ \t]+(?:Waiting for [1-9]\d* background agents? to finish|\S+ for \d+[smh]\b[^\n]*)[ \t]*(?:\n[ \t]+\S[^\n]*){0,3}(?:\n(?:[ \t]*|[ \t]{20,}\S[^\n]*))*\n?\z'] },
+  { regex = ['(?m)^\x{23FA} Agent "[^\n]*" (?:finished|completed|failed|stopped|was stopped|killed|was killed)\b[^\n]*(?:\n[ \t]+\S[^\n]*){0,3}(?:\n(?:[ \t]*|[ \t]{20,}\S[^\n]*))*\n?\z'] },
+  { regex = ['(?m)^[ \t]*\x{23BF}[ \t\x{00A0}]+Interrupted\b[^\n]*(?:\n[ \t]+\S[^\n]*){0,3}(?:\n(?:[ \t]*|[ \t]{20,}\S[^\n]*))*\n?\z'] },
+]
 not = [
   { line_regex = ['(?i)esc to close\s*$'] },
 ]
