@@ -135,8 +135,7 @@ pub fn parse_tail(agent: ContextAgent, tail: &str, whole_file: bool) -> Option<T
     if !whole_file {
         lines.next();
     }
-    let lines: Vec<&str> = lines.collect();
-    lines.into_iter().rev().find_map(|line| match agent {
+    lines.rev().find_map(|line| match agent {
         ContextAgent::Claude => parse_claude_line(line),
         ContextAgent::Codex => parse_codex_line(line),
     })

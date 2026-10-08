@@ -64,13 +64,17 @@ pub(crate) struct ProbeRequest {
     session: ContextSession,
 }
 
+/// One read: the pane, the session it was read for (agent and id) and the
+/// usage found, if any.
+pub(crate) type ProbeResult = (
+    TerminalId,
+    (ContextAgent, String),
+    Option<crate::agent_context::TranscriptUsage>,
+);
+
 pub(crate) struct ProbeOutcome {
     cache: ContextCache,
-    results: Vec<(
-        TerminalId,
-        ContextAgent,
-        Option<crate::agent_context::TranscriptUsage>,
-    )>,
+    results: Vec<ProbeResult>,
 }
 
 impl App {
@@ -98,21 +102,24 @@ impl App {
         if requests.is_empty() {
             return changed;
         }
-        for request in &requests {
-            let seq = self
-                .state
-                .terminals
-                .get(&request.terminal_id)
-                .and_then(|terminal| terminal.last_agent_state_change_seq);
-            self.agent_context.marks.insert(
-                request.terminal_id.clone(),
-                ReadMark {
-                    session: (request.session.agent, request.session.id.clone()),
-                    state_change_seq: seq,
-                    at: now,
-                },
-            );
-        }
+        let marks: Vec<(TerminalId, ReadMark)> = requests
+            .iter()
+            .map(|request| {
+                let seq = self
+                    .state
+                    .terminals
+                    .get(&request.terminal_id)
+                    .and_then(|terminal| terminal.last_agent_state_change_seq);
+                (
+                    request.terminal_id.clone(),
+                    ReadMark {
+                        session: (request.session.agent, request.session.id.clone()),
+                        state_change_seq: seq,
+                        at: now,
+                    },
+                )
+            })
+            .collect();
         let home = crate::integration::home_dir().ok();
         let codex_root = crate::integration::codex_dir()
             .ok()
@@ -122,7 +129,12 @@ impl App {
             .name("herdr-agent-context".into())
             .spawn(move || run_agent_context_probe(requests, cache, home, codex_root))
         {
-            Ok(thread) => self.agent_context.thread = Some(thread),
+            // Marked only once the read runs, so a failed spawn retries at
+            // the next tick.
+            Ok(thread) => {
+                self.agent_context.thread = Some(thread);
+                self.agent_context.marks.extend(marks);
+            }
             Err(err) => tracing::warn!(err = %err, "failed to spawn agent context thread"),
         }
         changed
@@ -182,6 +194,14 @@ impl App {
                 continue;
             };
             live.push((terminal_id.clone(), (session.agent, session.id.clone())));
+            // A new session: the old one's value no longer applies.
+            if marks
+                .get(terminal_id)
+                .is_some_and(|mark| mark.session.0 != session.agent || mark.session.1 != session.id)
+                && terminal.agent_context.take().is_some()
+            {
+                cleared = true;
+            }
             let due = marks.get(terminal_id).is_none_or(|mark| {
                 let reread = if terminal.state == AgentState::Working {
                     WORKING_REREAD
@@ -215,16 +235,9 @@ impl App {
 
     /// Store each read's value with the window resolved from `[agents]
     /// context_window`; bumps the revision when any value changed.
-    pub(crate) fn apply_agent_context_results(
-        &mut self,
-        results: Vec<(
-            TerminalId,
-            ContextAgent,
-            Option<crate::agent_context::TranscriptUsage>,
-        )>,
-    ) -> bool {
+    pub(crate) fn apply_agent_context_results(&mut self, results: Vec<ProbeResult>) -> bool {
         let mut changed = false;
-        for (terminal_id, agent, usage) in results {
+        for (terminal_id, (agent, session_id), usage) in results {
             let value = usage.as_ref().and_then(|usage| {
                 crate::agent_context::resolve_usage(
                     agent,
@@ -235,8 +248,10 @@ impl App {
             let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
                 continue;
             };
-            // The pane's agent changed while the thread read.
-            if Self::context_session(terminal).map(|session| session.agent) != Some(agent) {
+            // The pane's agent or session changed while the thread read.
+            if !Self::context_session(terminal)
+                .is_some_and(|session| session.agent == agent && session.id == session_id)
+            {
                 continue;
             }
             if terminal.agent_context != value {
@@ -328,7 +343,11 @@ fn run_agent_context_probe(
                     codex_root.as_deref(),
                 )
             });
-            (request.terminal_id, request.session.agent, usage)
+            (
+                request.terminal_id,
+                (request.session.agent, request.session.id),
+                usage,
+            )
         })
         .collect();
     ProbeOutcome { cache, results }
@@ -427,7 +446,7 @@ mod tests {
         assert_eq!(app.state.agent_context_view_rev, 0);
         assert!(app.apply_agent_context_results(vec![(
             terminal_id.clone(),
-            ContextAgent::Claude,
+            (ContextAgent::Claude, "s-1".into()),
             usage(164_000)
         )]));
         let rev = app.state.agent_context_view_rev;
@@ -461,14 +480,20 @@ mod tests {
         // The same value again: no push.
         assert!(!app.apply_agent_context_results(vec![(
             terminal_id.clone(),
-            ContextAgent::Claude,
+            (ContextAgent::Claude, "s-1".into()),
             usage(164_000)
         )]));
         assert_eq!(app.state.agent_context_view_rev, rev);
-        // A result for an agent the pane no longer runs is dropped.
+        // A result for an agent or a session the pane no longer runs is
+        // dropped.
         assert!(!app.apply_agent_context_results(vec![(
             terminal_id.clone(),
-            ContextAgent::Codex,
+            (ContextAgent::Claude, "s-0".into()),
+            usage(1)
+        )]));
+        assert!(!app.apply_agent_context_results(vec![(
+            terminal_id.clone(),
+            (ContextAgent::Codex, "s-1".into()),
             usage(1)
         )]));
         // Moves re-send; other events do not.
@@ -487,7 +512,7 @@ mod tests {
             .insert("claude".into(), 1_000_000);
         app.apply_agent_context_results(vec![(
             terminal_id.clone(),
-            ContextAgent::Claude,
+            (ContextAgent::Claude, "s-1".into()),
             usage(164_000),
         )]);
         assert_eq!(

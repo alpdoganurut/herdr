@@ -210,8 +210,9 @@ pub(super) fn render_tab_sidebar_with(
     );
     // Fork (sidebar v2): rows and per-tab facts come from the model compose
     // ensured; a caller without one (several endpoints, tests) gets a
-    // one-off build with the real voice and pins (only the times are left
-    // out), one set lookup per tab more while some tab is pinned.
+    // one-off build with the real voice, pins and mutes (the times and the
+    // context use are left out), one set lookup per tab more while some tab
+    // is pinned or muted.
     let one_off;
     let model = match state.sidebar_model {
         Some(model) => model,

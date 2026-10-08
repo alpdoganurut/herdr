@@ -2157,7 +2157,10 @@ async fn fork_smoke_agent_context_push_reaches_the_client_shell() {
     };
     assert!(server.app.apply_agent_context_results(vec![(
         terminal_id.clone(),
-        crate::agent_context::ContextAgent::Claude,
+        (
+            crate::agent_context::ContextAgent::Claude,
+            SESSION_ID.into()
+        ),
         Some(usage.clone()),
     )]));
     server.render_and_stream();
@@ -2184,7 +2187,10 @@ async fn fork_smoke_agent_context_push_reaches_the_client_shell() {
     // The same value again: no payload.
     server.app.apply_agent_context_results(vec![(
         terminal_id,
-        crate::agent_context::ContextAgent::Claude,
+        (
+            crate::agent_context::ContextAgent::Claude,
+            SESSION_ID.into(),
+        ),
         Some(usage),
     )]);
     server.render_and_stream();

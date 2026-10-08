@@ -352,7 +352,7 @@ fn tab_chips(
     }
     // Fork: notifications muted from the tab menu.
     if facts.muted {
-        chips.chip(&[("muted", fg(palette.overlay1))]);
+        chips.chip(&[("notifications off", fg(palette.overlay1))]);
     }
     if let Some(voice) = facts.voice {
         let (mark, color) = super::voice::voice_mark(voice, config);

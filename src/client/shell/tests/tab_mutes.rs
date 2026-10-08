@@ -140,12 +140,12 @@ fn a_muted_tab_says_so_in_the_detail_strip() {
     mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
     let frame = state.compose(COLS, ROWS).expect("composed frame");
     let text = detail_text(&state, &frame).join(" ");
-    assert!(text.contains("muted"), "{text:?}");
+    assert!(text.contains("notifications off"), "{text:?}");
     let row = row_of(&state, "t_done");
     mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
     let frame = state.compose(COLS, ROWS).expect("composed frame");
     let text = detail_text(&state, &frame).join(" ");
-    assert!(!text.contains("muted"), "{text:?}");
+    assert!(!text.contains("notifications off"), "{text:?}");
 }
 
 #[test]
