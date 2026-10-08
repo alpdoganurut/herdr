@@ -187,7 +187,7 @@ async function track(profile, page, initiator) {
 
 async function attach(profile, port, deadlineMs, pinDashboard) {
   if (profile.browser && profile.browser.isConnected()) {
-    return tabs(profile);
+    return { ...await tabs(profile), companion: profile.companion.info() };
   }
   profile.port = port;
   const t0 = Date.now();
@@ -202,10 +202,12 @@ async function attach(profile, port, deadlineMs, pinDashboard) {
   // An activity-off profile never keeps pinned dashboards: the worker's own
   // default is pinned, so it is told before the connect (a blocked connect
   // would otherwise leave them).
+  let unpinned = false;
   if (pinDashboard === false && swept.state === 'ready') {
-    await withTimeout(profile.companion.call('herdrDashboard', { pin: false }), Math.min(2000, Math.max(300, deadlineAt - Date.now() - ATTACH_DIAG_RESERVE_MS - 3000)), 'x', 'x').catch((err) => log('debug', `${stamp()} dashboard off: ${err.message}`));
+    unpinned = await withTimeout(profile.companion.call('herdrDashboard', { pin: false }), Math.min(2000, Math.max(1, deadlineAt - Date.now() - ATTACH_DIAG_RESERVE_MS - 3000)), 'x', 'x').then(() => true).catch((err) => { log('debug', `${stamp()} dashboard off: ${err.message}`); return false; });
   }
-  const connectMs = Math.max(3000, deadlineAt - Date.now() - ATTACH_DIAG_RESERVE_MS);
+  // (never 0: Playwright reads a 0 timeout as none)
+  const connectMs = Math.max(1, deadlineAt - Date.now() - ATTACH_DIAG_RESERVE_MS);
   log('debug', `${stamp()} connectOverCDP… (${connectMs} ms)`);
   let browser;
   try {
@@ -218,7 +220,7 @@ async function attach(profile, port, deadlineMs, pinDashboard) {
     // dialog, a frozen page), the tabs that could not be loaded, what is
     // still loading — never a stop (a restart restores the same tabs).
     if (/Timeout/i.test(message)) {
-      const probe = await probePages(port, 1000, null, undefined, deadlineAt).catch(() => ({ pages: 0, blocked: [] }));
+      const probe = await probePages(port, 1000, null, undefined, deadlineAt - 300).catch(() => ({ pages: 0, blocked: [] }));
       log('debug', `${stamp()} probe ${JSON.stringify(probe)}`);
       fail('attach_timeout', `the browser did not accept the CDP connection within ${deadlineMs} ms: ${describe(swept, probe.blocked)}`);
     }
@@ -254,13 +256,15 @@ async function attach(profile, port, deadlineMs, pinDashboard) {
   event('browser', { profile: profile.name, kind: 'attached', detail: browser.version() });
   // The companion extension: what the sweep found (it adopted the worker),
   // else a probe bounded by what is left of the deadline.
-  const leftMs = () => Math.max(300, deadlineAt - Date.now());
+  const leftMs = () => Math.max(1, deadlineAt - Date.now());
   const companion = swept.state === 'ready'
     ? profile.companion.info()
     : await withTimeout(profile.companion.probe(), Math.min(6000, leftMs()), 'x', 'x').catch(() => ({ state: 'missing', detail: 'probe timed out' }));
   log('debug', `${stamp()} companion ${companion.state}${companion.detail ? ' (' + companion.detail + ')' : ''}`);
-  if (companion.state === 'ready' && pinDashboard !== undefined) {
-    await withTimeout(profile.companion.dashboard(pinDashboard), Math.min(3000, leftMs()), 'x', 'x').catch((err) => log('debug', `dashboard: ${err.message}`));
+  // the dashboard: not again when the pre-connect un-pin took; about 1.2 s is kept for tabs()
+  const dashboardMs = Math.min(3000, leftMs() - 1200);
+  if (companion.state === 'ready' && pinDashboard !== undefined && !(pinDashboard === false && unpinned) && dashboardMs > 0) {
+    await withTimeout(profile.companion.dashboard(pinDashboard), dashboardMs, 'x', 'x').catch((err) => log('debug', `dashboard: ${err.message}`));
   }
   return Object.assign(await tabs(profile), { companion });
 }

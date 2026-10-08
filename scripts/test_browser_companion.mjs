@@ -9,6 +9,8 @@ const sent = [];
 let sweepAnswer = { unloaded: 3, reloaded: 2, left: ['Gmail – Inbox'], left_count: 1 };
 let loadingAnswers = [];
 let mutePolls = false; // a LOADING_EXPR poll that never answers, once the queued answers are used up
+let mutePing = false; // a herdrPing that never answers
+let pingAnswer = null; // a herdrPing answer other than this version; { exception } for an evaluation error
 function check(cond, msg) { if (!cond) { console.error(`FAIL: ${msg}`); process.exit(1); } }
 const worker = { type: 'service_worker', url: 'chrome-extension://abc/sw.js', webSocketDebuggerUrl: 'ws://fake/sw' };
 // The first call's lookups (one probe plus the nudge retries) all miss; later ones find the worker.
@@ -26,6 +28,15 @@ class FakeSocket {
     }
     sent.push(params.expression);
     if (params.expression === LOADING_EXPR && mutePolls && !loadingAnswers.length) return;
+    if (params.expression.startsWith('herdrPing') && mutePing) return;
+    if (params.expression.startsWith('herdrPing') && pingAnswer && pingAnswer.exception) {
+      setTimeout(() => this.onmessage && this.onmessage({ data: JSON.stringify({ id, result: { exceptionDetails: { text: pingAnswer.exception } } }) }), 0);
+      return;
+    }
+    if (params.expression.startsWith('herdrPing') && pingAnswer) {
+      setTimeout(() => this.onmessage && this.onmessage({ data: JSON.stringify({ id, result: { result: { value: pingAnswer } } }) }), 0);
+      return;
+    }
     const value = params.expression.startsWith('herdrPing') ? 'herdr-companion/11' : params.expression.startsWith('herdrGroup') ? { groupId: 3 } : params.expression.startsWith('herdrTabs') ? [] : params.expression === SWEEP_EXPR ? sweepAnswer : params.expression === LOADING_EXPR ? loadingAnswers.shift() || { loading: 0, loading_titles: [] } : { ok: true };
     setTimeout(() => this.onmessage && this.onmessage({ data: JSON.stringify({ id, result: { result: { value } } }) }), 0);
   }
@@ -157,21 +168,60 @@ mute = false;
 FakeSocket.prototype.send = realSend;
 companion.close();
 
-// SWEEP_EXPR against a fake chrome.tabs: every unloaded tab reloaded (active or not), the refusals counted
+// SWEEP_EXPR against a fake chrome.tabs: every unloaded tab reloaded (active or not), the refusals counted, a leftover nudge tab removed
 {
   const tabsList = [
     { id: 1, status: 'unloaded', active: true, title: 'Active restored' },
     { id: 2, status: 'unloaded', active: false, title: 'Gmail – Inbox' },
     { id: 3, status: 'unloaded', active: false, url: 'https://x.test/no-title' },
-    { id: 4, status: 'complete', active: false, title: 'Loaded' },
+    { id: 4, status: 'complete', active: false, title: 'Loaded', url: 'https://ok.test/' },
+    { id: 5, status: 'complete', active: false, title: '', url: NUDGE_URL },
   ];
   const reloaded = [];
+  const removed = [];
   const chrome = { tabs: {
     query: async (q) => tabsList.filter((t) => !q.status || t.status === q.status),
     reload: async (id) => { if (id === 3) throw new Error('No tab with id: 3.'); reloaded.push(id); },
+    remove: async (id) => { removed.push(id); },
   } };
   const r = await new Function('chrome', `return ${SWEEP_EXPR}`)(chrome);
   check(r.unloaded === 3 && r.reloaded === 2 && reloaded.join(',') === '1,2' && r.left_count === 1 && r.left[0] === 'https://x.test/no-title', `the expression reloads every unloaded tab and counts the refusals: ${JSON.stringify(r)}`);
+  check(r.nudges_removed === 1 && removed.join(',') === '5', `a leftover nudge tab is removed, nothing else: ${JSON.stringify(removed)}`);
+}
+
+// rawNudge cut short: a createTarget that never answers rejects inside the cap (no tab id to close — the next sweep removes the tab); a failing closeTarget rejects too
+{
+  class Mute { constructor() { setTimeout(() => this.onopen && this.onopen(), 0); } send() {} close() {} }
+  globalThis.fetch = async () => ({ json: async () => ({ webSocketDebuggerUrl: 'ws://fake/browser' }) });
+  const tCut = Date.now();
+  let cut = null;
+  try { await rawNudge(1, 300, () => new Mute()); } catch (err) { cut = err; }
+  check(cut && /took too long/.test(cut.message) && Date.now() - tCut < 800, `a mute createTarget: rejected inside the cap: ${cut && cut.message} ${Date.now() - tCut} ms`);
+  class CloseFails { constructor() { setTimeout(() => this.onopen && this.onopen(), 0); } send(text) { const { id, method } = JSON.parse(text); setTimeout(() => this.onmessage && this.onmessage({ data: JSON.stringify(method === 'Target.createTarget' ? { id, result: { targetId: 't1' } } : { id, error: { message: 'No target with given id found' } }) }), 0); } close() {} }
+  let closeErr = null;
+  try { await rawNudge(1, 1000, () => new CloseFails()); } catch (err) { closeErr = err; }
+  check(closeErr && /No target with given id/.test(closeErr.message), `a failing closeTarget is reported: ${closeErr && closeErr.message}`);
+  globalThis.fetch = realFetch;
+}
+
+// adopt: a ping that merely times out leaves the worker current; a different version, or a worker without herdrPing, is stale
+{
+  companion.close();
+  companion.state = 'ready';
+  const sw = { url: 'chrome-extension://abc/sw.js' };
+  mutePing = true;
+  const tPing = Date.now();
+  await companion.adopt(sw, 200);
+  mutePing = false;
+  check(companion.state === 'ready' && companion.stale === false && Date.now() - tPing < 700, `a slow ping: not stale, bounded: stale=${companion.stale}`);
+  pingAnswer = 'herdr-companion/10';
+  await companion.adopt(sw, 500);
+  check(companion.stale === true && /worker v10/.test(companion.detail), `another version: stale: ${companion.detail}`);
+  pingAnswer = { exception: 'ReferenceError: herdrPing is not defined' };
+  await companion.adopt(sw, 500);
+  check(companion.stale === true && /worker v\?/.test(companion.detail), `a worker without herdrPing: stale: ${companion.detail}`);
+  pingAnswer = null;
+  companion.close();
 }
 
 // describe(): one clause by precedence, never a stop
@@ -183,11 +233,16 @@ const clause5 = describe({ state: 'ready', unloaded: 3, reloaded: 3, left: [], l
 check(/^1 restored tab\(s\) could not be loaded \("Gmail – Inbox"\); ask the user to click them once/.test(clause1), clause1);
 check(/^these tabs are not responding \(a dialog may be open in one\): "Checkout — shop.test"; answer or close it/.test(clause2), clause2);
 const clauseLoading = describe({ state: 'ready', unloaded: 2, reloaded: 0, left: [], left_count: 0, loading: 2, loading_titles: ['A', 'B'] }, [{ title: 'A', host: 'a.test' }]);
-check(/^2 tab\(s\) are still loading/.test(clauseLoading) && !/dialog/.test(clauseLoading), `tabs still loading are not blamed on a dialog: ${clauseLoading}`);
+check(/and 2 tab\(s\) are still loading; answer a dialog if one is open/.test(clauseLoading) && !/a dialog may be open in one/.test(clauseLoading), `tabs still loading with a blocker: both facts, no blame on a dialog alone: ${clauseLoading}`);
 check(/^1 tab\(s\) are still loading \("Slow page"\); retry in a few seconds/.test(clause3), clause3);
 check(/^the companion extension is not reachable \(missing: no companion service worker/.test(clause4) && /click the restored tabs once/.test(clause4), clause4);
 check(/^3 restored tab\(s\) were loaded, so a page that is not answering is blocking — a dialog/.test(clause5), clause5);
 check([clause1, clause2, clause3, clause4, clause5].every((c) => !/stop/i.test(c)), 'no clause advises a stop');
+const many = Array.from({ length: 6 }, (_, i) => ({ title: `Tab ${i + 1}`, host: `h${i + 1}.test` }));
+const clauseMany = describe({ state: 'ready', unloaded: 0, reloaded: 0, left: [], left_count: 0, loading: 0 }, many);
+check(/"Tab 1 — h1.test", "Tab 2 — h2.test", "Tab 3 — h3.test" and 3 more; answer or close it/.test(clauseMany) && !/Tab 4/.test(clauseMany) && clauseMany.length < 300, `at most three blockers are named, the remedy survives: ${clauseMany}`);
+const clauseBoth = describe({ state: 'ready', unloaded: 2, reloaded: 2, left: [], left_count: 0, loading: 2, loading_titles: ['A', 'B'] }, [{ title: 'Checkout', host: 'shop.test' }]);
+check(/^these tabs are not responding \("Checkout — shop.test"\) and 2 tab\(s\) are still loading; answer a dialog if one is open in the herdr\+ Browser window, else retry in a few seconds$/.test(clauseBoth), `loading and blockers: one combined clause: ${clauseBoth}`);
 
 // probePages(): the page targets that do not answer Runtime.evaluate are the blockers
 {

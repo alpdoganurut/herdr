@@ -321,8 +321,11 @@ export const SWEEP_EXPR = `(async () => {
   const unloaded = await chrome.tabs.query({ status: 'unloaded' });
   const done = await Promise.allSettled(unloaded.map((t) => chrome.tabs.reload(t.id)));
   const left = unloaded.filter((t, i) => done[i].status !== 'fulfilled');
+  // a nudge tab a cut-short rawNudge left behind (match patterns cannot name an about: URL with a fragment)
+  const nudges = (await chrome.tabs.query({})).filter((t) => t.url === '${NUDGE_URL}');
+  await Promise.allSettled(nudges.map((t) => chrome.tabs.remove(t.id)));
   return { unloaded: unloaded.length, reloaded: unloaded.length - left.length,
-           left: left.slice(0, 3).map((t) => t.title || t.url), left_count: left.length };
+           left: left.slice(0, 3).map((t) => t.title || t.url), left_count: left.length, nudges_removed: nudges.length };
 })()`;
 /** Tabs still loading (the reloaded ones settle before the connect; a tab mid-load stalls it briefly). */
 export const LOADING_EXPR = `chrome.tabs.query({ status: 'loading' }).then((ts) => ({ loading: ts.length, loading_titles: ts.slice(0, 3).map((t) => t.title || t.url) }))`;
@@ -338,10 +341,13 @@ const titles = (list) => list.map((t) => `"${String(t).slice(0, 60)}"`).join(', 
  *  restart restores the same tabs. */
 export function describe(sweep, blockers = []) {
   const r = sweep || { state: 'failed', detail: 'no sweep' };
+  // at most three names, so the remedy survives the error's clip
+  const named = titles(blockers.slice(0, 3).map((b) => b.title ? `${b.title} — ${b.host}` : b.host)) + (blockers.length > 3 ? ` and ${blockers.length - 3} more` : '');
   if (r.left_count > 0) return `${r.left_count} restored tab(s) could not be loaded (${titles(r.left)}); ask the user to click them once in the herdr+ Browser window, then retry`;
-  // (tabs still loading come first: a tab mid-load does not answer the probe either, and that is no dialog)
+  // a tab mid-load does not answer the probe either: with tabs still loading, no blame on a dialog alone
+  if (r.loading > 0 && blockers.length) return `these tabs are not responding (${named}) and ${r.loading} tab(s) are still loading; answer a dialog if one is open in the herdr+ Browser window, else retry in a few seconds`;
   if (r.loading > 0) return `${r.loading} tab(s) are still loading (${titles(r.loading_titles || [])}); retry in a few seconds`;
-  if (blockers.length) return `these tabs are not responding (a dialog may be open in one): ${titles(blockers.map((b) => b.title ? `${b.title} — ${b.host}` : b.host))}; answer or close it in the herdr+ Browser window, then retry`;
+  if (blockers.length) return `these tabs are not responding (a dialog may be open in one): ${named}; answer or close it in the herdr+ Browser window, then retry`;
   if (r.state !== 'ready') return `the companion extension is not reachable (${r.state}${r.detail ? ': ' + r.detail : ''}), so restored tabs could not be loaded; ask the user to click the restored tabs once in the herdr+ Browser window, then retry`;
   return `${r.reloaded || 0} restored tab(s) were loaded, so a page that is not answering is blocking — a dialog (alert, 'Leave site?') or a frozen page; ask the user to look at the herdr+ Browser window, then retry`;
 }
@@ -387,9 +393,9 @@ export async function rawNudge(port, capMs = 1500, open = (url) => new WebSocket
   const ws = open(version.webSocketDebuggerUrl);
   const pending = new Map();
   let id = 0;
-  const send = (method, params) => new Promise((resolve, reject) => {
+  const send = (method, params, ms = Math.max(1, capMs - (Date.now() - t0))) => new Promise((resolve, reject) => {
     const n = ++id;
-    const timer = setTimeout(() => { pending.delete(n); reject(new Error(`${method} took too long`)); }, Math.max(1, capMs - (Date.now() - t0)));
+    const timer = setTimeout(() => { pending.delete(n); reject(new Error(`${method} took too long`)); }, ms);
     pending.set(n, (msg) => { clearTimeout(timer); msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result || {}); });
     ws.send(JSON.stringify({ id: n, method, params }));
   });
@@ -398,7 +404,8 @@ export async function rawNudge(port, capMs = 1500, open = (url) => new WebSocket
     ws.onmessage = (m) => { let msg; try { msg = JSON.parse(m.data); } catch { return; } const waiter = pending.get(msg.id); if (waiter) { pending.delete(msg.id); waiter(msg); } };
     const { targetId } = await send('Target.createTarget', { url: NUDGE_URL, background: true });
     await sleep(50);
-    await send('Target.closeTarget', { targetId });
+    // its own second, outside the cap: the tab is closed even when the cap is spent (the next sweep removes what is left)
+    await send('Target.closeTarget', { targetId }, 1000);
   } finally {
     try { ws.close(); } catch {}
   }
@@ -486,8 +493,8 @@ export class Companion {
       await link.close();
     }
   }
-  async targets() {
-    const res = await fetch(`http://127.0.0.1:${this.profile.port}/json/list`, { signal: AbortSignal.timeout(2000) });
+  async targets(capMs = 2000) {
+    const res = await fetch(`http://127.0.0.1:${this.profile.port}/json/list`, { signal: AbortSignal.timeout(Math.max(1, Math.min(2000, capMs))) });
     return res.json();
   }
   findIn(list) { return list.find((t) => t.type === 'service_worker' && /\/sw\.js$/.test(t.url)) || null; }
@@ -500,7 +507,7 @@ export class Companion {
     const t0 = Date.now();
     const left = () => budgetMs - (Date.now() - t0);
     if (typeof WebSocket !== 'function') return { state: 'unsupported', detail: 'node has no WebSocket' };
-    const listed = async () => this.findIn(await this.targets().catch(() => []));
+    const listed = async () => this.findIn(await this.targets(left()).catch(() => []));
     let sw = null;
     while (!(sw = await listed()) && Date.now() - t0 < Math.min(SWEEP_WORKER_WAIT_MS, budgetMs)) await sleep(200);
     if (!sw && left() > 500) {
@@ -541,7 +548,16 @@ export class Companion {
     this.stale = false;
     // (not URL.origin: Node answers "null" for chrome-extension: URLs)
     this.scope = sw.url.slice(0, sw.url.lastIndexOf('/') + 1);
-    const ping = String(await withTimeout(this.call('herdrPing'), pingMs, 'companion ping').catch(() => ''));
+    // stale only when the worker answered: another version string, or an
+    // evaluation error (a worker without herdrPing); a timed-out ping leaves
+    // the version unverified and the worker current
+    let ping;
+    try {
+      ping = String(await withTimeout(this.call('herdrPing'), pingMs, 'companion ping'));
+    } catch (err) {
+      if (/took more than/.test(String(err && err.message))) return this.info();
+      ping = '';
+    }
     const version = Number((ping.split('/')[1] || '0'));
     if (version !== COMPANION_VERSION) {
       this.stale = true; // retired by stopStaleWorker when herdr closes the browser
