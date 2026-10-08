@@ -1039,6 +1039,7 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
                         to: target.clone(),
                         text: text.clone(),
                         reply_to: None,
+                        urgent: false,
                     },
                 ),
             )

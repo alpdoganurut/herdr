@@ -19,6 +19,9 @@ pub const SPAWNS_PER_HOUR: usize = 20;
 pub const TEAM_AGENT_SPAWNED_MAX: usize = 40;
 /// Soft edits (rename, meta, notes, cosmetic, ...) per caller per hour.
 pub const SOFT_EDITS_PER_HOUR: usize = 300;
+/// One urgent message (it may interrupt the target's turn) per
+/// sender→target pair per this many seconds.
+pub const URGENT_GAP_S: u64 = 5 * 60;
 
 use std::collections::{HashMap, VecDeque};
 
@@ -33,12 +36,16 @@ pub enum LimitRefusal {
     },
     SenderHourly,
     LoopGuard,
+    /// `retry_s` seconds until another urgent message to the same agent.
+    UrgentGap {
+        retry_s: u64,
+    },
 }
 
 impl LimitRefusal {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::PairGap { .. } | Self::SenderHourly => {
+            Self::PairGap { .. } | Self::SenderHourly | Self::UrgentGap { .. } => {
                 crate::api::schema::agents_model::error_code::RATE_LIMITED
             }
             Self::LoopGuard => crate::api::schema::agents_model::error_code::LOOP_GUARD,
@@ -51,6 +58,10 @@ impl LimitRefusal {
                 "one message per {PAIR_GAP_S}s to the same agent; retry in {retry_s}s"
             ),
             Self::SenderHourly => format!("at most {SENDER_PER_HOUR} messages per hour"),
+            Self::UrgentGap { retry_s } => format!(
+                "one urgent message per {} minutes to the same agent; send it without urgent, or retry in {retry_s}s",
+                URGENT_GAP_S / 60
+            ),
             Self::LoopGuard => format!(
                 "more than {LOOP_MAX} messages with this agent in {} minutes; this looks like a loop; stop and ask your user",
                 LOOP_WINDOW_S / 60
@@ -70,6 +81,8 @@ pub struct Limiter {
     spawns: HashMap<TerminalId, VecDeque<u64>>,
     /// Soft edits per caller (unix times, the last hour).
     soft_edits: HashMap<TerminalId, VecDeque<u64>>,
+    /// The last urgent message per sender→target pair (unix).
+    urgent: HashMap<(TerminalId, TerminalId), u64>,
 }
 
 const HOUR_S: u64 = 3600;
@@ -147,6 +160,28 @@ impl Limiter {
         self.messages.push_back((from.clone(), to.clone(), now));
     }
 
+    /// Whether `from` may send `to` an urgent message now.
+    pub fn check_urgent(
+        &self,
+        from: &TerminalId,
+        to: &TerminalId,
+        now: u64,
+    ) -> Result<(), LimitRefusal> {
+        match self.urgent.get(&(from.clone(), to.clone())) {
+            Some(at) if now.saturating_sub(*at) < URGENT_GAP_S => Err(LimitRefusal::UrgentGap {
+                retry_s: URGENT_GAP_S - now.saturating_sub(*at),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Count an accepted urgent message.
+    pub fn record_urgent(&mut self, from: &TerminalId, to: &TerminalId, now: u64) {
+        self.urgent
+            .retain(|_, at| now.saturating_sub(*at) < URGENT_GAP_S);
+        self.urgent.insert((from.clone(), to.clone()), now);
+    }
+
     /// Whether `caller` may spawn once more outside a user turn.
     pub fn check_spawn(&mut self, caller: &TerminalId, now: u64) -> bool {
         let times = self.spawns.entry(caller.clone()).or_default();
@@ -183,6 +218,31 @@ impl Limiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_urgent_message_per_pair_per_five_minutes() {
+        let (a, b, c) = (
+            TerminalId::alloc(),
+            TerminalId::alloc(),
+            TerminalId::alloc(),
+        );
+        let mut limiter = Limiter::default();
+        assert!(limiter.check_urgent(&a, &b, 100).is_ok());
+        limiter.record_urgent(&a, &b, 100);
+        assert_eq!(
+            limiter.check_urgent(&a, &b, 160),
+            Err(LimitRefusal::UrgentGap {
+                retry_s: URGENT_GAP_S - 60
+            })
+        );
+        assert_eq!(
+            LimitRefusal::UrgentGap { retry_s: 1 }.code(),
+            crate::api::schema::agents_model::error_code::RATE_LIMITED
+        );
+        assert!(limiter.check_urgent(&a, &c, 160).is_ok(), "another target");
+        assert!(limiter.check_urgent(&b, &a, 160).is_ok(), "the other way");
+        assert!(limiter.check_urgent(&a, &b, 100 + URGENT_GAP_S).is_ok());
+    }
 
     #[test]
     fn the_pair_gap_and_a_reply_exemption() {

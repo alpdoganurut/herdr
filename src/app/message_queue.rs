@@ -81,6 +81,10 @@ pub(crate) const STUCK_SCREEN: Duration = Duration::from_secs(10 * 60);
 pub(crate) const STUCK_NOTICE_EVERY: Duration = Duration::from_secs(10 * 60);
 /// How often a target that waits on `working` is sampled.
 pub(crate) const STUCK_SAMPLE: Duration = Duration::from_secs(60);
+/// After an urgent message's Esc: no second Esc into the same target for
+/// this long, and the turn end it waits for is looked for this long; past
+/// it the message simply stays queued.
+pub(crate) const INTERRUPT_WAIT: Duration = Duration::from_secs(10);
 /// At most this many queued messages go into one paste.
 const MAX_COMBINED: usize = 8;
 const MAX_COMBINED_CHARS: usize = 16_000;
@@ -186,6 +190,8 @@ pub(crate) struct MessageQueue {
     screens: HashMap<String, ScreenWatch>,
     /// When each target's last stuck notice went out.
     stuck_notice_at: HashMap<String, Instant>,
+    /// Targets an urgent message interrupted (Esc), and when.
+    interrupted_at: HashMap<String, Instant>,
     /// `message_queue.json`; `None` = not persisted (tests, unpersisted sessions).
     pub(super) store: Option<PathBuf>,
     /// The coordinator directory (the message log); `None` = no log lines.
@@ -317,6 +323,12 @@ impl MessageQueue {
     }
 
     fn push(&mut self, entry: QueuedMessage) {
+        self.push_at(entry, false);
+    }
+
+    /// Queue `entry`; `front`: ahead of every message queued for the same
+    /// target (an urgent message).
+    fn push_at(&mut self, entry: QueuedMessage, front: bool) {
         let mut line = entry.message.clone();
         line.outcome = OUTCOME_QUEUED.into();
         if entry.legacy {
@@ -324,7 +336,15 @@ impl MessageQueue {
         } else {
             self.log(line);
         }
-        self.entries.push(entry);
+        let at = front
+            .then(|| {
+                self.entries
+                    .iter()
+                    .position(|queued| queued.terminal_id == entry.terminal_id)
+            })
+            .flatten()
+            .unwrap_or(self.entries.len());
+        self.entries.insert(at, entry);
         self.due = true;
         self.save();
     }
@@ -902,6 +922,189 @@ impl App {
         encode_success(id, ResponseResult::AgentsQueued { messages })
     }
 
+    /// An urgent message (`agents.send_message urgent`, the policy and the
+    /// rate limit already passed): typed in now when the target is free;
+    /// otherwise queued ahead of the target's other messages, and a working
+    /// Claude or Codex turn is interrupted with one Esc first (never a
+    /// blocked, suspended, starting or typing target, never the
+    /// coordinator, never twice within [`INTERRUPT_WAIT`]). The queue types
+    /// it in once the turn ended (its Stop hook or the screen reading idle)
+    /// and SETTLE passed. Returns the delivery and whether it interrupted.
+    #[allow(clippy::too_many_arguments)] // One message's parts, as deliver_agent_message.
+    pub(crate) fn deliver_urgent_message(
+        &mut self,
+        request_id: &str,
+        target: &super::terminal_targets::TerminalTarget,
+        check: MessageCheck,
+        message: AgentMessage,
+        envelope: String,
+        pointer: PointerFrom,
+        from: Option<crate::terminal::TerminalId>,
+        now_unix: u64,
+    ) -> Result<(MessageDelivery, bool), MessageRefused> {
+        let free = matches!(
+            check.0,
+            Check::Ready {
+                hook_ended: false,
+                ..
+            }
+        ) && !self.message_queue.queued_for(&target.terminal_id);
+        if free || check.0 == Check::Missing {
+            return self
+                .deliver_agent_message(
+                    request_id, target, check, message, envelope, pointer, from, now_unix,
+                )
+                .map(|delivery| (delivery, false));
+        }
+        if self.message_queue.entries.len() >= MAX_QUEUED {
+            return Err(MessageRefused::new(
+                "queue_full",
+                "too many queued agent messages",
+            ));
+        }
+        let message_id = message.id.clone().unwrap_or_default();
+        let blocked = self.urgent_interrupt_block(target);
+        let interrupted = match blocked {
+            None => self.interrupt_turn(target, &message_id, from.as_ref()),
+            Some(why) => {
+                tracing::info!(
+                    message = %message_id,
+                    why,
+                    "message queue: an urgent message queued without an interrupt"
+                );
+                false
+            }
+        };
+        let reason = if interrupted {
+            "interrupted its turn; typed in once the turn has ended".to_string()
+        } else {
+            match (&check.0, blocked) {
+                (Check::Wait(reason), _) => format!("{reason}; not interrupted"),
+                (_, Some(why)) => format!("{why}; not interrupted"),
+                _ => "queued ahead of its other messages".to_string(),
+            }
+        };
+        let entry = self.queued_message(
+            target,
+            message,
+            envelope,
+            Some(pointer),
+            false,
+            from,
+            now_unix,
+        );
+        self.message_queue.push_at(entry, true);
+        Ok((MessageDelivery::Queued { reason }, interrupted))
+    }
+
+    /// Why an urgent message may not interrupt `target`'s turn now; `None`
+    /// when one Esc may go in. Read in the same `&mut App` borrow as the
+    /// write, so no client input lands in between.
+    fn urgent_interrupt_block(
+        &self,
+        target: &super::terminal_targets::TerminalTarget,
+    ) -> Option<&'static str> {
+        let Some(terminal) = self
+            .state
+            .terminals
+            .values()
+            .find(|terminal| terminal.id.to_string() == target.terminal_id)
+        else {
+            return Some("gone");
+        };
+        if terminal.suspended_agent.is_some() {
+            return Some("suspended");
+        }
+        if terminal.managed_agent_launch_pending()
+            || (terminal.managed_agent_kind().is_some()
+                && !terminal.managed_agent_interactive_ready())
+        {
+            return Some("starting");
+        }
+        match terminal.state {
+            crate::detect::AgentState::Working => {}
+            crate::detect::AgentState::Blocked => return Some("blocked on its user"),
+            _ => return Some("not working"),
+        }
+        if terminal.turn().hook_turn_ended().is_some() {
+            return Some("its turn already ended");
+        }
+        let Some(agent) = terminal.effective_known_agent() else {
+            return Some("no agent");
+        };
+        // Esc ends a turn in Claude Code and Codex; other agents get no
+        // interrupt (an Esc may mean something else there).
+        if !matches!(
+            agent,
+            crate::detect::Agent::Claude | crate::detect::Agent::Codex
+        ) {
+            return Some("no interrupt for this agent");
+        }
+        if terminal.agent_voice().active() {
+            return Some("voice mode");
+        }
+        if self.is_coordinator_pane(target.ws_idx, target.pane_id) {
+            return Some("the coordinator is never interrupted");
+        }
+        if self
+            .message_queue
+            .interrupted_at
+            .get(&target.terminal_id)
+            .is_some_and(|at| Instant::now() < *at + INTERRUPT_WAIT)
+        {
+            return Some("already interrupted");
+        }
+        let Some(runtime) = self.lookup_runtime_sender(target.ws_idx, target.pane_id) else {
+            return Some("no runtime");
+        };
+        if super::typing_guard::runtime_typing_block(Some(agent), runtime, Instant::now()).is_some()
+        {
+            return Some("its user is typing");
+        }
+        None
+    }
+
+    /// Send one Esc into `target` (an urgent message's interrupt), recorded
+    /// as the sender's programmatic write for the turn origin.
+    fn interrupt_turn(
+        &mut self,
+        target: &super::terminal_targets::TerminalTarget,
+        message_id: &str,
+        from: Option<&crate::terminal::TerminalId>,
+    ) -> bool {
+        let Some(runtime) = self.lookup_runtime_sender(target.ws_idx, target.pane_id) else {
+            return false;
+        };
+        let bytes: Vec<u8> = match super::api_helpers::encode_api_keys(runtime, &["esc".into()]) {
+            Ok(encoded) => encoded.into_iter().flatten().collect(),
+            Err(_) => return false,
+        };
+        if let Err(err) = runtime.try_send_bytes(bytes::Bytes::from(bytes)) {
+            tracing::warn!(error = %err, "message queue: the urgent interrupt failed");
+            return false;
+        }
+        self.note_pane_input(
+            target.ws_idx,
+            target.pane_id,
+            crate::agents_model::InputSource::Programmatic(match from {
+                Some(from) => crate::agents_model::Programmatic::AgentMessage {
+                    id: message_id.to_string(),
+                    from: from.clone(),
+                },
+                None => crate::agents_model::Programmatic::Api,
+            }),
+        );
+        self.message_queue
+            .interrupted_at
+            .insert(target.terminal_id.clone(), Instant::now());
+        tracing::info!(
+            message = %message_id,
+            target = %target.terminal_id,
+            "message queue: an urgent message interrupted the target's turn"
+        );
+        true
+    }
+
     /// `agent.message_claim`.
     pub(crate) fn handle_agent_message_claim(
         &mut self,
@@ -1165,6 +1368,18 @@ impl App {
             Check::Wait(reason) => {
                 self.message_queue.missing_since.remove(&terminal_id);
                 self.message_queue.ready_since.remove(&terminal_id);
+                if let Some(at) = self.message_queue.interrupted_at.get(&terminal_id).copied() {
+                    if now >= at + INTERRUPT_WAIT {
+                        tracing::info!(
+                            target = %terminal_id,
+                            reason = %reason,
+                            "message queue: an interrupted turn did not end in time; the urgent message stays queued"
+                        );
+                        self.message_queue.interrupted_at.remove(&terminal_id);
+                    } else {
+                        next.push(at + INTERRUPT_WAIT);
+                    }
+                }
                 if reason == "working" {
                     return self.watch_stuck_target(&target, &reason, now, now_unix, next);
                 }
@@ -1227,6 +1442,7 @@ impl App {
         ) {
             Ok(()) => {
                 self.message_queue.ready_since.remove(&terminal_id);
+                self.message_queue.interrupted_at.remove(&terminal_id);
                 self.message_queue.finish(&ids, OUTCOME_DELIVERED, now_unix);
                 if self.message_queue.queued_for(&terminal_id) {
                     // The rest goes in once the target settled again.
@@ -1410,6 +1626,7 @@ impl App {
             name: "herdr".into(),
             pane: String::new(),
             relation: crate::agents_model::envelope::PointerRelation::Herdr,
+            urgent: false,
         };
         let line = AgentMessage {
             unix: now_unix,

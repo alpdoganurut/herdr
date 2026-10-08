@@ -2299,6 +2299,29 @@ impl App {
         self.model_authorize(&caller, relation, Action::Message, &facts, &line)?;
         let for_user = matches!(caller.actor, Actor::Coordinator) && facts.user_turn;
         let now = now_unix();
+        // Fork: an urgent message may interrupt the target's turn: only the
+        // user's own turn or the coordinator, one per pair per 5 minutes.
+        if params.urgent {
+            let refusal = match policy::authorize_urgent(caller.actor, &facts) {
+                Decision::Deny { code, hint } => Some((code, hint)),
+                Decision::Allow => self
+                    .agents_model
+                    .limiter
+                    .check_urgent(&caller.terminal_id, &to_terminal, now)
+                    .err()
+                    .map(|refusal| (refusal.code(), refusal.hint())),
+            };
+            if let Some((code, hint)) = refusal {
+                let mut denied = line.clone();
+                denied.code = Some(code.to_string());
+                denied.detail = Some(hint.clone());
+                self.log_message(
+                    &caller, &to_public, &to_name, &text, None, reply_to, code, None,
+                );
+                self.log_model_action(Some(&caller), AgentsActionOutcome::Denied, denied);
+                return Err(ModelError::new(code, hint));
+            }
+        }
         if let Err(refusal) =
             self.agents_model
                 .limiter
@@ -2364,10 +2387,14 @@ impl App {
             // started (a reply in a message turn stays a plain message).
             coordinator_for_user: for_user,
         };
-        let typed =
+        let mut typed =
             crate::agents_model::envelope::envelope(&sender, &id, reply_to, &text, now, teammate);
-        let pointer =
+        let mut pointer =
             crate::agents_model::envelope::PointerFrom::new(&sender, &id, reply_to, teammate);
+        if params.urgent {
+            typed = typed.replacen("[herdr+ message ", "[herdr+ URGENT message ", 1);
+            pointer.urgent = true;
+        }
         let line = self.message_line(
             &caller,
             &to_public,
@@ -2378,16 +2405,33 @@ impl App {
             crate::coordinator::messages::OUTCOME_QUEUED,
             log_team.clone(),
         );
-        let delivered = self.deliver_agent_message(
-            &format!("agents-model:{id}"),
-            &queue_target,
-            check,
-            line,
-            typed,
-            pointer,
-            Some(caller.terminal_id.clone()),
-            now,
-        );
+        let (delivered, interrupted) = if params.urgent {
+            match self.deliver_urgent_message(
+                &format!("agents-model:{id}"),
+                &queue_target,
+                check,
+                line,
+                typed,
+                pointer,
+                Some(caller.terminal_id.clone()),
+                now,
+            ) {
+                Ok((delivery, interrupted)) => (Ok(delivery), interrupted),
+                Err(refused) => (Err(refused), false),
+            }
+        } else {
+            let delivered = self.deliver_agent_message(
+                &format!("agents-model:{id}"),
+                &queue_target,
+                check,
+                line,
+                typed,
+                pointer,
+                Some(caller.terminal_id.clone()),
+                now,
+            );
+            (delivered, false)
+        };
         let reason = match delivered {
             Ok(crate::app::message_queue::MessageDelivery::Sent) => {
                 self.log_message(
@@ -2422,6 +2466,18 @@ impl App {
         self.agents_model
             .limiter
             .record_message(&caller.terminal_id, &to_terminal, now);
+        if params.urgent {
+            self.agents_model
+                .limiter
+                .record_urgent(&caller.terminal_id, &to_terminal, now);
+        }
+        if interrupted {
+            let mut interrupt = self.tab_line("interrupt", target);
+            interrupt.target_pane = Some(to_public.clone());
+            interrupt.target_name = Some(to_name.clone());
+            interrupt.detail = Some(format!("Esc for urgent message {id}"));
+            self.log_model_action(Some(&caller), AgentsActionOutcome::Ok, interrupt);
+        }
         self.reply_index().insert(
             id.clone(),
             caller.public.clone(),
@@ -3812,6 +3868,7 @@ pub(crate) mod tests {
                 to: notes,
                 text: "hi".into(),
                 reply_to: None,
+                urgent: false,
             }),
         );
         assert_eq!(code(&result), "not_an_agent", "{result}");
@@ -3822,6 +3879,7 @@ pub(crate) mod tests {
                 to: lead.clone(),
                 text: "hi".into(),
                 reply_to: None,
+                urgent: false,
             }),
         );
         assert_eq!(code(&result), "invalid_target", "{result}");
@@ -3838,6 +3896,7 @@ pub(crate) mod tests {
                 to: fixer_public,
                 text: "hi".into(),
                 reply_to: None,
+                urgent: false,
             }),
         );
         let message = &result["result"]["message"];
@@ -3874,6 +3933,71 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn urgent_needs_the_users_turn_is_rate_limited_and_logs_its_interrupt() {
+        let mut app = model_app();
+        let dir = temp_dir("urgent");
+        app.agents_model.dir = Some(dir.clone());
+        app.coordinator.assume_shell_ready = true;
+        let lead_pane = pane(&app, 1, 0);
+        let lead = public(&app, 1, 0);
+        let fixer = pane(&app, 1, 1);
+        let fixer_public = public(&app, 1, 1);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(fixer, runtime);
+        terminal_mut(&mut app, fixer).set_detected_state(Some(Agent::Claude), AgentState::Working);
+        let urgent = |app: &mut App, text: &str| {
+            call(
+                app,
+                Method::AgentsSendMessage(AgentsSendMessageParams {
+                    caller_pane: lead.clone(),
+                    to: fixer_public.clone(),
+                    text: text.into(),
+                    reply_to: None,
+                    urgent: true,
+                }),
+            )
+        };
+        // Not in its user's turn: refused, nothing written, logged.
+        let refused = urgent(&mut app, "stop");
+        assert_eq!(code(&refused), "urgent_not_allowed", "{refused}");
+        assert!(rx.try_recv().is_err());
+        assert!(app.message_queue.entries.is_empty());
+
+        // In its user's turn: one Esc, queued first, the interrupt logged.
+        user_turn(&mut app, lead_pane);
+        let sent = urgent(&mut app, "stop the deploy");
+        let message = &sent["result"]["message"];
+        assert_eq!(message["outcome"], "queued", "{sent}");
+        assert!(
+            message["reason"].as_str().unwrap().contains("interrupted"),
+            "{sent}"
+        );
+        let esc = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("an Esc")
+            .expect("bytes");
+        assert_eq!(&esc[..], b"\x1b");
+        let log = actions_log::read_tail(&dir, 10);
+        assert_eq!(log[0].action, "interrupt", "{log:?}");
+        assert_eq!(log[0].outcome, AgentsActionOutcome::Ok);
+        assert_eq!(log[0].target_pane.as_deref(), Some(fixer_public.as_str()));
+
+        // One per pair per 5 minutes (past the 2 s pair gap).
+        app.agents_model.limiter = Default::default();
+        app.agents_model.limiter.record_urgent(
+            &app.state.workspaces[1]
+                .terminal_id(lead_pane)
+                .cloned()
+                .unwrap(),
+            &app.state.workspaces[1].terminal_id(fixer).cloned().unwrap(),
+            now_unix(),
+        );
+        let again = urgent(&mut app, "stop again");
+        assert_eq!(code(&again), "rate_limited", "{again}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn the_coordinators_message_in_its_users_turn_carries_the_users_authority() {
         let mut app = model_app();
         // Its turn marker lives in the coordinator dir: never the user's.
@@ -3906,6 +4030,7 @@ pub(crate) mod tests {
                 to,
                 text: "run the tests".into(),
                 reply_to: None,
+                urgent: false,
             }),
         );
         assert_eq!(result["result"]["message"]["outcome"], "queued", "{result}");
@@ -3933,6 +4058,7 @@ pub(crate) mod tests {
                     to: to.to_string(),
                     text: "done: see notes".into(),
                     reply_to: None,
+                    urgent: false,
                 }),
             )
         };
@@ -4151,6 +4277,7 @@ pub(crate) mod tests {
                 include_str!("../server/headless.rs"),
             ),
             ("src/app/launch_gate.rs", include_str!("launch_gate.rs")),
+            ("src/app/message_queue.rs", include_str!("message_queue.rs")),
             (
                 "src/persist/snapshot.rs",
                 include_str!("../persist/snapshot.rs"),
@@ -4176,6 +4303,8 @@ pub(crate) mod tests {
                 "programmatic",
             ),
             ("src/app/news.rs", "news_pane_bytes", "internal"),
+            // An urgent message's Esc (the sender's write).
+            ("src/app/message_queue.rs", "interrupt_turn", "programmatic"),
             (
                 "src/app/agent_suspend.rs",
                 "suspend_resolved_agent",

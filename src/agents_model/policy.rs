@@ -171,6 +171,23 @@ impl Decision {
     }
 }
 
+/// An urgent message (it may interrupt the target's turn with Esc): the
+/// user, the coordinator, or an agent acting in its user's own turn. Checked
+/// after [`Action::Message`] allowed the message itself.
+pub fn authorize_urgent(actor: Actor, facts: &Facts) -> Decision {
+    match actor {
+        Actor::User | Actor::Coordinator => Decision::Allow,
+        Actor::Agent { .. } if facts.user_turn => Decision::Allow,
+        Actor::Agent { .. } => Decision::Deny {
+            code: error_code::URGENT_NOT_ALLOWED,
+            hint: format!(
+                "an urgent message interrupts {}'s turn: only your user's own turn may send one (this turn came from {}); send it without urgent, it is typed in once {} is free",
+                facts.target, facts.turn_desc, facts.target
+            ),
+        },
+    }
+}
+
 /// Decide `action` by `actor` on a target with `relation`.
 pub fn authorize(actor: Actor, relation: Relation, action: Action, facts: &Facts) -> Decision {
     match actor {
@@ -787,5 +804,21 @@ mod tests {
             hint.contains("from a teammate's message, not your user"),
             "{hint}"
         );
+    }
+
+    #[test]
+    fn urgent_needs_the_users_turn_or_the_coordinator() {
+        assert!(authorize_urgent(Actor::User, &facts(false)).is_allowed());
+        assert!(authorize_urgent(Actor::Coordinator, &facts(false)).is_allowed());
+        for team in [true, false] {
+            assert!(authorize_urgent(Actor::Agent { team }, &facts(true)).is_allowed());
+            let denied = authorize_urgent(Actor::Agent { team }, &facts(false));
+            assert_eq!(code(denied.clone()), error_code::URGENT_NOT_ALLOWED);
+            let Decision::Deny { hint, .. } = denied else {
+                unreachable!()
+            };
+            assert!(hint.contains("a teammate's message"), "{hint}");
+            assert!(hint.contains("without urgent"), "{hint}");
+        }
     }
 }

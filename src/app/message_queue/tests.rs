@@ -634,3 +634,140 @@ fn stuck_notice_durations_read_in_minutes() {
     assert_eq!(super::minutes(Duration::from_secs(12 * 60)), "12m");
     assert_eq!(super::minutes(Duration::from_secs(65 * 60)), "1h05m");
 }
+
+/// An urgent message to `rev`, as agents.send_message hands it over after
+/// its policy and rate-limit checks.
+fn urgent(app: &mut App, id: &str, body: &str) -> Result<(MessageDelivery, bool), MessageRefused> {
+    let terminal_id = terminal(app).id.to_string();
+    let target = app
+        .resolve_agent_target("rev")
+        .or_else(|_| app.resolve_terminal_target(&terminal_id))
+        .unwrap();
+    let check = app.agent_message_check(&target);
+    let envelope =
+        format!("[herdr+ URGENT message {id} from lead (w9:p1) 10:00 — another agent]\n{body}");
+    let pointer = PointerFrom::from_envelope(id, &envelope);
+    assert!(pointer.urgent);
+    let message = AgentMessage {
+        unix: now_unix(),
+        to_pane: "rev".into(),
+        text: body.into(),
+        outcome: OUTCOME_QUEUED.into(),
+        id: Some(id.into()),
+        ..AgentMessage::default()
+    };
+    app.deliver_urgent_message(
+        "req",
+        &target,
+        check,
+        message,
+        envelope,
+        pointer,
+        None,
+        now_unix(),
+    )
+}
+
+const ESC: &str = "\u{1b}";
+
+#[tokio::test]
+async fn an_urgent_message_to_a_free_target_goes_in_now_without_an_esc() {
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let mut rx = rev(&mut app, AgentState::Idle);
+    let (delivery, interrupted) = urgent(&mut app, "mu1", "stop the deploy").unwrap();
+    assert_eq!(delivery, MessageDelivery::Sent);
+    assert!(!interrupted);
+    let typed = typed(&mut rx);
+    assert!(typed.contains("stop the deploy"), "{typed:?}");
+    assert!(!typed.starts_with(ESC), "{typed:?}");
+}
+
+#[tokio::test]
+async fn an_urgent_message_interrupts_a_working_claude_and_goes_in_first_once_idle() {
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let mut rx = rev(&mut app, AgentState::Working);
+    let earlier = send(&mut app, "ma1", "when you have a moment");
+    assert_eq!(earlier["result"]["outcome"], "queued", "{earlier}");
+    let (delivery, interrupted) = urgent(&mut app, "mu1", "stop the deploy").unwrap();
+    assert!(interrupted);
+    let MessageDelivery::Queued { reason } = delivery else {
+        panic!("{delivery:?}");
+    };
+    assert!(reason.contains("interrupted"), "{reason}");
+    assert_eq!(typed(&mut rx), ESC, "one Esc, nothing else yet");
+    assert_eq!(app.message_queue.entries[0].id(), "mu1", "ahead of ma1");
+
+    // Another urgent message right after: no second Esc (two open Claude's
+    // rewind menu).
+    let (_, again) = urgent(&mut app, "mu2", "really, stop").unwrap();
+    assert!(!again);
+    assert!(typed(&mut rx).is_empty());
+
+    // The interrupted turn ends (the screen reads idle): typed in after SETTLE.
+    set_state(&mut app, AgentState::Idle);
+    let t0 = Instant::now();
+    app.message_queue_pass(t0, now_unix());
+    assert!(typed(&mut rx).is_empty(), "settling");
+    assert!(app.message_queue_pass(t0 + SETTLE, now_unix()));
+    let input = typed(&mut rx);
+    assert!(input.contains("URGENT"), "{input:?}");
+    assert!(input.contains("stop the deploy"), "{input:?}");
+}
+
+#[tokio::test]
+async fn an_urgent_message_never_sends_esc_into_a_blocked_suspended_typing_or_other_target() {
+    // A permission dialog: Esc would answer it.
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Blocked);
+    let (delivery, interrupted) = urgent(&mut app, "mu1", "stop").unwrap();
+    assert!(!interrupted);
+    assert!(
+        matches!(delivery, MessageDelivery::Queued { reason } if reason.contains("not interrupted"))
+    );
+    assert!(typed(&mut rx).is_empty());
+
+    // Suspended.
+    let mut app = self::app();
+    let mut rx = rev(&mut app, AgentState::Working);
+    terminal(&mut app).begin_agent_suspend(
+        crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("s1").expect("a session id"),
+            transcript_path: None,
+        },
+        Instant::now() + Duration::from_secs(30),
+    );
+    let (_, interrupted) = urgent(&mut app, "mu1", "stop").unwrap();
+    assert!(!interrupted);
+    assert!(typed(&mut rx).is_empty());
+
+    // Its user is typing.
+    let mut app = self::app();
+    let mut rx = rev(&mut app, AgentState::Working);
+    let pane_id = pane(&app);
+    app.lookup_runtime_sender(0, pane_id)
+        .unwrap()
+        .note_user_input(Instant::now());
+    let (_, interrupted) = urgent(&mut app, "mu1", "stop").unwrap();
+    assert!(!interrupted);
+    assert!(typed(&mut rx).is_empty());
+
+    // Its hooks say the turn already ended: no Esc, it goes in on settle.
+    let mut app = self::app();
+    let mut rx = rev(&mut app, AgentState::Working);
+    hook_turn(&mut app, false, "p1", 20);
+    let (_, interrupted) = urgent(&mut app, "mu1", "stop").unwrap();
+    assert!(!interrupted);
+    assert!(typed(&mut rx).is_empty());
+
+    // An agent without an Esc interrupt.
+    let mut app = self::app();
+    let mut rx = rev(&mut app, AgentState::Working);
+    terminal(&mut app).set_detected_state(Some(Agent::Gemini), AgentState::Working);
+    let (_, interrupted) = urgent(&mut app, "mu1", "stop").unwrap();
+    assert!(!interrupted);
+    assert!(typed(&mut rx).is_empty());
+}

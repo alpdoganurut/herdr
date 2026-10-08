@@ -127,6 +127,10 @@ pub struct PointerFrom {
     pub pane: String,
     #[serde(default)]
     pub relation: PointerRelation,
+    /// Fork: an urgent message (`agents_send_message urgent`); the pointer
+    /// line says `URGENT`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub urgent: bool,
 }
 
 impl PointerFrom {
@@ -144,6 +148,7 @@ impl PointerFrom {
             } else {
                 PointerRelation::Agent
             },
+            urgent: false,
         }
     }
 
@@ -178,6 +183,7 @@ impl PointerFrom {
             name: name.trim_start_matches("the ").to_string(),
             pane,
             relation,
+            urgent: header.starts_with("[herdr+ URGENT message "),
         }
     }
 
@@ -225,10 +231,17 @@ pub fn pointer_line(messages: &[PointerFrom]) -> String {
         .iter()
         .map(|message| pointer_word(&message.id, "", 32))
         .collect();
+    // Fork: an urgent message (it interrupted the target's turn) says so
+    // first; uppercase letters are pointer-safe.
+    let urgent = if messages.iter().any(|message| message.urgent) {
+        "URGENT "
+    } else {
+        ""
+    };
     let line = match messages {
         [] => String::new(),
         [one] => format!(
-            "herdr+ message {}{}: read it with agents_messages id={}",
+            "herdr+ {urgent}message {}{}: read it with agents_messages id={}",
             ids[0],
             one.sender(),
             ids[0]
@@ -240,7 +253,7 @@ pub fn pointer_line(messages: &[PointerFrom]) -> String {
                 .map(|(message, id)| format!("{id}{}", message.sender()))
                 .collect();
             format!(
-                "herdr+ {} messages: {}. Read them with agents_messages id={}",
+                "herdr+ {urgent}{} messages: {}. Read them with agents_messages id={}",
                 many.len(),
                 each.join("; "),
                 ids.join(",")
@@ -417,6 +430,7 @@ mod tests {
             name: name.into(),
             pane: pane.into(),
             relation,
+            urgent: false,
         }
     }
 

@@ -232,6 +232,7 @@ async fn fork_smoke_client_typing_in_an_agent_holds_messages_back() {
             to: fixer,
             text: "status?".into(),
             reply_to: None,
+            urgent: false,
         }),
     );
     // Queued, not refused: typed in once the user is quiet (the queue's
@@ -278,6 +279,7 @@ async fn fork_smoke_turn_hooks_free_a_working_claude_for_messages() {
                 to: fixer.clone(),
                 text: text.into(),
                 reply_to: None,
+                urgent: false,
             }),
         )
     };
@@ -363,6 +365,7 @@ async fn fork_smoke_a_stuck_queued_message_notifies_its_sender_once() {
             to: fixer,
             text: "status?".into(),
             reply_to: None,
+            urgent: false,
         }),
     );
     let id = sent["result"]["message"]["id"]
@@ -412,6 +415,72 @@ async fn fork_smoke_a_stuck_queued_message_notifies_its_sender_once() {
         server.app.message_queue_pass(at, now);
     }
     assert!(lead_input.try_recv().is_err(), "one notice per message");
+    shutdown_test_runtimes(&mut server);
+}
+
+/// An urgent message from a lead acting in its user's turn interrupts a
+/// working teammate (one Esc, logged as `interrupt`) and goes in, marked
+/// URGENT, once the interrupted turn reads idle and settled; without the
+/// user's turn it is refused.
+#[tokio::test]
+async fn fork_smoke_urgent_message_interrupts_a_working_teammate() {
+    let (mut server, mut input, panes) = crew_server();
+    server.app.coordinator.assume_shell_ready = true;
+    terminal(&mut server, panes[1]).set_detected_state(Some(Agent::Claude), AgentState::Working);
+    let lead = public(&server, panes[0]);
+    let fixer = public(&server, panes[1]);
+    let urgent = |server: &mut HeadlessServer| {
+        public_api(
+            server,
+            Method::AgentsSendMessage(AgentsSendMessageParams {
+                caller_pane: lead.clone(),
+                to: fixer.clone(),
+                text: "stop the deploy".into(),
+                reply_to: None,
+                urgent: true,
+            }),
+        )
+    };
+    let refused = urgent(&mut server);
+    assert_eq!(refused["error"]["code"], "urgent_not_allowed", "{refused}");
+    assert!(input.try_recv().is_err());
+
+    // The lead's user asks for it.
+    let now = std::time::Instant::now();
+    let lead_terminal = terminal(&mut server, panes[0]);
+    lead_terminal.turn_mut().note_input(
+        &InputSource::Client {
+            submit: true,
+            attach: false,
+        },
+        now,
+    );
+    lead_terminal
+        .turn_mut()
+        .on_status_edge(EdgeStatus::Idle, EdgeStatus::Working, false, now, 1);
+    let sent = urgent(&mut server);
+    assert_eq!(sent["result"]["message"]["outcome"], "queued", "{sent}");
+    let esc = tokio::time::timeout(std::time::Duration::from_secs(2), input.recv())
+        .await
+        .expect("an Esc")
+        .expect("bytes");
+    assert_eq!(&esc[..], b"\x1b");
+
+    // The interrupted turn reads idle: in it goes after SETTLE.
+    terminal(&mut server, panes[1]).set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    server.app.message_queue.mark_due();
+    let t0 = std::time::Instant::now();
+    let unix = crate::coordinator::now_unix();
+    server.app.message_queue_pass(t0, unix);
+    assert!(server
+        .app
+        .message_queue_pass(t0 + crate::app::message_queue::SETTLE, unix));
+    let typed = tokio::time::timeout(std::time::Duration::from_secs(2), input.recv())
+        .await
+        .expect("typed in")
+        .expect("bytes");
+    let typed = String::from_utf8_lossy(&typed).to_string();
+    assert!(typed.contains("URGENT"), "{typed:?}");
     shutdown_test_runtimes(&mut server);
 }
 

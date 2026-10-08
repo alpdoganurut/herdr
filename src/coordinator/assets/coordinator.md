@@ -205,6 +205,9 @@ browser_screenshot.
   agents_wait_for_message); `expired` (2 h in the queue) and `dropped` (the target is gone) were not
   delivered; `logged` (older senders) = a reply to a busy asker, delivered through the log; anything else
   (`offline`, `rate_limited`, `loop_guard`, ...) is a refusal and was not delivered.
+- `urgent=true` on agents_send_message interrupts a working agent's turn (one Esc) so the message goes in once
+  that turn ended: real emergencies only (work doing damage, an incident the user is waiting on), one per agent
+  per 5 minutes; a blocked, suspended or typing agent is never interrupted (the message queues first in line).
 - agents_messages lists your queued messages with how long each waited and why. A `herdr+ message … from
   herdr (a delivery notice)` line is herdr telling you a queued message seems stuck (its target reads working
   but its screen has not changed for 10 minutes): tell your user if it matters; do not resend.

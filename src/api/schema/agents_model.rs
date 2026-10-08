@@ -101,6 +101,9 @@ pub mod error_code {
     pub const OFFLINE: &str = "offline";
     /// A message rate limit.
     pub const RATE_LIMITED: &str = "rate_limited";
+    /// An urgent message from an agent outside its user's turn (only the
+    /// user's own turn or the coordinator may interrupt another agent).
+    pub const URGENT_NOT_ALLOWED: &str = "urgent_not_allowed";
     /// Two agents answering each other forever.
     pub const LOOP_GUARD: &str = "loop_guard";
     /// Too many agent-opened tabs.
@@ -451,6 +454,12 @@ pub struct AgentsSendMessageParams {
     /// The id of the message this answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
+    /// Fork: a real emergency. A working Claude or Codex target is
+    /// interrupted (Esc) and the message goes in once its turn ended; only
+    /// the sender's user turn or the coordinator may send one, one per
+    /// sender→target per 5 minutes. Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub urgent: bool,
 }
 
 /// `agents.read_messages`: the full text of messages herdr typed into the

@@ -2617,6 +2617,10 @@
             "to": {
               "description": "An agent pane id, agent name or unique tab label.",
               "type": "string"
+            },
+            "urgent": {
+              "description": "Fork: a real emergency. A working Claude or Codex target is\ninterrupted (Esc) and the message goes in once its turn ended; only\nthe sender's user turn or the coordinator may send one, one per\nsender→target per 5 minutes. Omitted when false.",
+              "type": "boolean"
             }
           },
           "required": [
