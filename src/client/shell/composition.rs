@@ -96,6 +96,7 @@ impl ClientShellState {
             active_endpoint_id: &self.active_endpoint_id,
             collapsed_endpoints: &self.collapsed_endpoints,
             collapsed_groups: &self.collapsed_groups,
+            expanded_runs: &self.expanded_runs,
             breathe_phase,
             breathe_reset_rgb,
             idle_reminders: &self.idle_reminders,
@@ -283,6 +284,7 @@ impl ClientShellState {
                 .ensure(super::sidebar_model::ModelInputs {
                     snapshot,
                     collapsed_groups: &self.collapsed_groups,
+                    expanded_runs: Some(&self.expanded_runs),
                     voice: super::voice::active_voice_of(
                         &self.voice,
                         &self.active_endpoint_id,
@@ -322,6 +324,7 @@ impl ClientShellState {
                 active_endpoint_id: &self.active_endpoint_id,
                 collapsed_endpoints: &self.collapsed_endpoints,
                 collapsed_groups: &self.collapsed_groups,
+                expanded_runs: &self.expanded_runs,
                 breathe_phase,
                 breathe_reset_rgb,
                 idle_reminders: &self.idle_reminders,

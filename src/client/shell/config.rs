@@ -65,6 +65,11 @@ impl ClientShellState {
             active_agents_folded: self.active_agents_folded,
             pinned_agents_folded: self.pinned_agents_folded,
             scheduled_agents_folded: self.scheduled_agents_folded,
+            expanded_runs: {
+                let mut runs = self.expanded_runs.iter().cloned().collect::<Vec<_>>();
+                runs.sort();
+                runs
+            },
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);
@@ -134,6 +139,7 @@ impl ClientShellConfig {
             sidebar_active_agents: config.ui.sidebar_active_agents,
             sidebar_pinned_agents: config.ui.sidebar_pinned_agents,
             sidebar_scheduled_agents: config.ui.sidebar_scheduled_agents,
+            sidebar_collapse_suspended: config.ui.sidebar_collapse_suspended,
             tab_agent_glyphs: config.ui.tab_agent_glyphs.clone(),
             tab_agent_glyph_colors: crate::config::resolve_tab_agent_glyph_colors(
                 &config.ui.tab_agent_glyph_colors,
@@ -352,6 +358,7 @@ impl ClientShellConfig {
                 self.sidebar_active_agents = ui.sidebar_active_agents;
                 self.sidebar_pinned_agents = ui.sidebar_pinned_agents;
                 self.sidebar_scheduled_agents = ui.sidebar_scheduled_agents;
+                self.sidebar_collapse_suspended = ui.sidebar_collapse_suspended;
                 self.tab_agent_glyphs = ui.tab_agent_glyphs.clone();
                 diagnostics.extend(crate::config::tab_agent_glyph_color_diagnostics(
                     &ui.tab_agent_glyph_colors,

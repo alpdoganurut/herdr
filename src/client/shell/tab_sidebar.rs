@@ -221,6 +221,7 @@ pub(super) fn render_tab_sidebar_with(
                 pins: state.tab_pins,
                 fixed_ids: fixed_tab_ids,
                 sections: sidebar_sections(config),
+                expanded_runs: Some(state.expanded_runs),
                 ..super::sidebar_model::ModelInputs::new(snapshot, state.collapsed_groups)
             });
             &one_off
@@ -359,7 +360,7 @@ pub(super) fn render_tab_sidebar_with(
     };
     let list_tab = |row: &Row| match row {
         Row::Tab { tab } => snapshot.tabs.get(*tab as usize),
-        Row::Header { .. } => None,
+        Row::Header { .. } | Row::Run { .. } => None,
     };
     let mut metrics =
         super::scroll::list_scroll_metrics(row_heights, gaps, body.height, *state.agent_scroll);
@@ -423,6 +424,10 @@ pub(super) fn render_tab_sidebar_with(
     };
     let hovered_tab_id = match hover {
         Some(SidebarHover::Tab(tab_id)) => Some(tab_id.as_str()),
+        _ => None,
+    };
+    let hovered_run = match hover {
+        Some(SidebarHover::Run(tab_id)) => Some(tab_id.as_str()),
         _ => None,
     };
     let mut y = body.y;
@@ -512,6 +517,22 @@ pub(super) fn render_tab_sidebar_with(
                 );
                 hits.sidebar_tabs.push((rect, tab.tab_id.clone()));
             }
+            Row::Run {
+                start,
+                len,
+                expanded,
+            } => {
+                let Some(first) = model
+                    .run(start, len)
+                    .first()
+                    .and_then(|tab| snapshot.tabs.get(*tab as usize))
+                else {
+                    continue;
+                };
+                let hovered = hovered_run == Some(first.tab_id.as_str());
+                render_run_row(buffer, rect, len, expanded, hovered, config);
+                hits.sidebar_runs.push((rect, first.tab_id.clone()));
+            }
         }
     }
 
@@ -596,6 +617,7 @@ pub(super) fn sidebar_sections(config: &ClientShellConfig) -> super::sidebar_mod
         active: config.sidebar_active_agents,
         pins: config.sidebar_pinned_agents,
         scheduled: config.sidebar_scheduled_agents,
+        suspended_runs: config.sidebar_collapse_suspended,
     }
 }
 
@@ -1570,6 +1592,64 @@ fn marks_cells(marks: &[(&str, Color)], gap: u16) -> u16 {
 /// truncates. The label is bold in the focused tab (tag color or `text`);
 /// elsewhere it takes its tag color, else `text` while the agent works,
 /// waits or finished, `overlay0` suspended and `subtext0` otherwise.
+/// Fork: a suspended run's row, ` ▎   ◌ N suspended … ▸ `: the suspended
+/// icon in the tab rows' icon column, the count dim in their label column,
+/// the fold arrow flush right with a one-cell margin.
+fn render_run_row(
+    buffer: &mut Buffer,
+    rect: Rect,
+    len: u16,
+    expanded: bool,
+    hovered: bool,
+    config: &ClientShellConfig,
+) {
+    use crate::api::schema::AgentStatus;
+    const ICON_X: u16 = 5;
+    const LABEL_X: u16 = 7;
+    let palette = &config.palette;
+    let (x, y, width) = (rect.x, rect.y, rect.width);
+    if hovered {
+        buffer.set_style(rect, Style::default().bg(palette.sidebar_hover_bg()));
+        put_text(
+            buffer,
+            x,
+            y,
+            1,
+            HOVER_BAR,
+            Style::default().fg(palette.accent),
+        );
+    }
+    let icon =
+        super::sidebar_model::tab_row_icon(AgentStatus::Suspended, 0, config.status_indicators);
+    put_text(
+        buffer,
+        x.saturating_add(ICON_X),
+        y,
+        width.saturating_sub(ICON_X).min(display_width(icon)),
+        icon,
+        Style::default().fg(status_color(AgentStatus::Suspended, palette)),
+    );
+    let arrow = if expanded { "\u{25BE}" } else { "\u{25B8}" };
+    let mut label = super::sidebar_model::StackStr::<24>::new();
+    let _ = write!(label, "{len} suspended");
+    put_truncated(
+        buffer,
+        x.saturating_add(LABEL_X),
+        y,
+        width.saturating_sub(LABEL_X + 3),
+        label.as_str(),
+        Style::default().fg(palette.overlay0),
+    );
+    put_text(
+        buffer,
+        x.saturating_add(width.saturating_sub(2)),
+        y,
+        u16::from(width > 2),
+        arrow,
+        Style::default().fg(palette.overlay1),
+    );
+}
+
 fn render_tab_row(
     buffer: &mut Buffer,
     rect: Rect,

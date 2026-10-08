@@ -40,6 +40,10 @@ pub(super) struct ClientChromePreferences {
     /// Fork (sidebar v3): the Scheduled block, folded or open, once toggled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) scheduled_agents_folded: Option<bool>,
+    /// Fork: the suspended runs expanded in the tabs sidebar, by their first
+    /// tab's id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) expanded_runs: Vec<String>,
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {

@@ -1042,6 +1042,12 @@
           "description": "Show the Scheduled block under the tab list in the \"tabs\" sidebar layout: the tabs with a scheduled reminder (tab menu → remind), each with its interval and the time to the next reminder (or the daily time), or fired while one is waiting. The block hides itself while no reminder is set. Settings → indicators toggles it too."
         },
         {
+          "key": "ui.sidebar_collapse_suspended",
+          "type": "boolean",
+          "default": "true",
+          "description": "In the \"tabs\" sidebar layout, fold three or more suspended tabs in a row into one \"N suspended\" row; a click expands or folds it again (remembered). The focused, pinned, important and scheduled tabs always keep their own rows."
+        },
+        {
           "key": "ui.mobile_width_threshold",
           "type": "integer",
           "default": "64",

@@ -2296,6 +2296,7 @@ impl ClientShellState {
                 if self.sidebar_active_press(point, outcome)
                     || self.sidebar_pins_press(point, outcome)
                     || self.sidebar_scheduled_press(point, outcome)
+                    || self.sidebar_run_press(point, outcome)
                 {
                     return;
                 }

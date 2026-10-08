@@ -113,6 +113,7 @@ pub(super) fn render_detail_strip(
             }
         }
         Selected::Fixed(kind) => fixed_chips(&mut chips, kind, config, state),
+        Selected::Run { start, len } => run_chips(&mut chips, snapshot, model, start, len, config),
         Selected::None => {}
     }
     chips.finish(palette);
@@ -493,6 +494,31 @@ fn active_chips(chips: &mut Chips<'_>, model: &SidebarModel, config: &ClientShel
 
 /// Fork (sidebar v3): the Pinned header (or its overflow row): the count
 /// and how to pin.
+/// Fork: a suspended run's row: the count, then its tabs' names (as many
+/// as fit).
+fn run_chips(
+    chips: &mut Chips<'_>,
+    snapshot: &ClientShellSnapshot,
+    model: &SidebarModel,
+    start: u32,
+    len: u16,
+    config: &ClientShellConfig,
+) {
+    let palette = &config.palette;
+    let mut count = StackStr::<24>::new();
+    let _ = write!(count, "{len} suspended");
+    chips.chip(&[(
+        count.as_str(),
+        fg(palette.text).add_modifier(Modifier::BOLD),
+    )]);
+    chips.newline();
+    for tab in model.run(start, len) {
+        if let Some(tab) = snapshot.tabs.get(*tab as usize) {
+            chips.chip(&[(tab.label.as_str(), fg(palette.overlay1))]);
+        }
+    }
+}
+
 fn pins_chips(chips: &mut Chips<'_>, model: &SidebarModel, config: &ClientShellConfig) {
     let palette = &config.palette;
     chips.chip(&[(

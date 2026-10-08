@@ -1144,6 +1144,10 @@ pub struct UiConfig {
     /// time to its next one) under the tab list in the "tabs" sidebar layout. It hides while
     /// none is set. Default: true.
     pub sidebar_scheduled_agents: bool,
+    /// Fork: in the "tabs" sidebar layout, fold three or more suspended tabs in a row into
+    /// one "N suspended" row that expands on a click. The focused, pinned, important and
+    /// scheduled tabs always keep their own rows. Default: true.
+    pub sidebar_collapse_suspended: bool,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
@@ -1419,6 +1423,7 @@ impl Default for UiConfig {
             sidebar_active_agents: true,
             sidebar_pinned_agents: true,
             sidebar_scheduled_agents: true,
+            sidebar_collapse_suspended: true,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,

@@ -302,6 +302,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # one) under the tab list in the "tabs" sidebar layout; it hides while none is set.
 # sidebar_scheduled_agents = true
 
+# Fold three or more suspended tabs in a row into one "N suspended" row in the
+# "tabs" sidebar layout; a click expands it. The focused, pinned, important and
+# scheduled tabs keep their own rows.
+# sidebar_collapse_suspended = true
+
 # Terminal width at or below which Herdr uses the mobile single-column layout.
 # Increase this for foldables, tablets, or wide phone terminals.
 # mobile_width_threshold = 64

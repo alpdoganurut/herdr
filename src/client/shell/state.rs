@@ -29,6 +29,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) sidebar_pinned_agents: bool,
     /// Fork (sidebar v3): `ui.sidebar_scheduled_agents`, the Scheduled block.
     pub(super) sidebar_scheduled_agents: bool,
+    /// Fork: `ui.sidebar_collapse_suspended`, runs of suspended tabs fold.
+    pub(super) sidebar_collapse_suspended: bool,
     pub(super) tab_agent_glyphs: std::collections::BTreeMap<String, String>,
     pub(super) tab_agent_glyph_colors:
         std::collections::BTreeMap<String, Option<ratatui::style::Color>>,
@@ -123,6 +125,8 @@ pub(super) struct ShellHitMap {
     /// Tab rows drawn by the `tabs` sidebar layout, separate from the tab bar's `tabs`
     /// so tab-bar drag/drop and mode-bar clearing keep their single-row assumptions.
     pub(super) sidebar_tabs: Vec<(Rect, String)>,
+    /// Fork: the suspended run rows (rect, the run's first tab id).
+    pub(super) sidebar_runs: Vec<(Rect, String)>,
     /// Fork: the frame drew a breathing agent glyph (`breathe.rs`), so the
     /// client loop schedules the next animation frame.
     pub(super) breathing: bool,
@@ -1401,6 +1405,9 @@ pub(crate) struct ClientShellState {
     pub(super) pinned_agents_folded: Option<bool>,
     /// Fork (sidebar v3): the Scheduled block folded (`None` until toggled; persisted).
     pub(super) scheduled_agents_folded: Option<bool>,
+    /// Fork: the suspended runs expanded by a click, by their first tab's id
+    /// (persisted).
+    pub(super) expanded_runs: HashSet<String>,
     /// Fork (sidebar v3): the Pinned block shows past its cap (client-only).
     pub(super) pins_expanded: bool,
     /// Fork (sidebar v3): the Scheduled block shows past its cap (client-only).
@@ -1474,6 +1481,7 @@ impl ClientShellState {
         let active_agents_folded = preferences.active_agents_folded;
         let pinned_agents_folded = preferences.pinned_agents_folded;
         let scheduled_agents_folded = preferences.scheduled_agents_folded;
+        let expanded_runs = preferences.expanded_runs.iter().cloned().collect();
         if let Some(sort) = preferences.agent_panel_sort {
             config.agent_panel_sort = sort;
         }
@@ -1610,6 +1618,7 @@ impl ClientShellState {
             tab_pins: HashMap::new(),
             pinned_agents_folded,
             scheduled_agents_folded,
+            expanded_runs,
             pins_expanded: false,
             scheduled_expanded: false,
             tab_history: super::tab_history::TabHistory::default(),

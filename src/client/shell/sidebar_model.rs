@@ -92,7 +92,18 @@ pub(crate) enum Row {
     },
     /// A tab row: `snapshot.tabs[tab]`.
     Tab { tab: u32 },
+    /// Fork: a run of `len` suspended tabs in a row folded into one row (or
+    /// its header while `expanded`, the tab rows following it). Its tabs are
+    /// `SidebarModel::run_tabs[start..start + len]`.
+    Run {
+        start: u32,
+        len: u16,
+        expanded: bool,
+    },
 }
+
+/// Fork: the fewest suspended tabs in a row that fold into a run.
+pub(crate) const MIN_RUN: usize = 3;
 
 /// The Active block's view state for one frame.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -115,6 +126,8 @@ pub(crate) struct Sections {
     pub(crate) active: bool,
     pub(crate) pins: bool,
     pub(crate) scheduled: bool,
+    /// Fork: `ui.sidebar_collapse_suspended`, runs of suspended tabs fold.
+    pub(crate) suspended_runs: bool,
 }
 
 impl Default for Sections {
@@ -123,6 +136,7 @@ impl Default for Sections {
             active: true,
             pins: true,
             scheduled: true,
+            suspended_runs: true,
         }
     }
 }
@@ -138,6 +152,8 @@ pub(crate) struct ModelInputs<'a> {
     /// The News and coordinator tab ids (fixed rows, never list rows).
     pub(crate) fixed_ids: (Option<&'a str>, Option<&'a str>),
     pub(crate) sections: Sections,
+    /// Fork: the expanded suspended runs, by their first tab's id.
+    pub(crate) expanded_runs: Option<&'a HashSet<String>>,
 }
 
 impl<'a> ModelInputs<'a> {
@@ -155,6 +171,7 @@ impl<'a> ModelInputs<'a> {
             pins: None,
             fixed_ids: (None, None),
             sections: Sections::default(),
+            expanded_runs: None,
         }
     }
 }
@@ -204,6 +221,8 @@ pub(crate) enum SidebarHover {
     ScheduledHeader,
     ScheduledEntry(String),
     ScheduledMore,
+    /// Fork: a suspended run's row, by its first tab's id.
+    Run(String),
 }
 
 /// The selected row of a frame: the hovered row, else the focused tab.
@@ -221,6 +240,11 @@ pub(crate) enum Selected {
     PinsEntry(u32),
     ScheduledHeader,
     ScheduledEntry(u32),
+    /// Fork: a suspended run's row (`Row::Run`'s `start` and `len`).
+    Run {
+        start: u32,
+        len: u16,
+    },
     None,
 }
 
@@ -235,6 +259,8 @@ pub(crate) struct SidebarModel {
     pub(crate) tabs: Vec<TabFacts>,
     /// The list rows, fold state applied; the focused tab's group is open.
     pub(crate) rows: Vec<Row>,
+    /// Fork: every suspended run's tabs, back to back (`Row::Run` slices it).
+    pub(crate) run_tabs: Vec<u32>,
     /// All 1, `rows.len()` long (`scroll::list_scroll_metrics`).
     pub(crate) row_heights: Vec<u16>,
     /// 1 after the row above every header that has one (spacer rows).
@@ -279,6 +305,7 @@ impl SidebarModel {
             fixed_ids: (None, None),
             tabs: Vec::new(),
             rows: Vec::new(),
+            run_tabs: Vec::new(),
             row_heights: Vec::new(),
             gaps_after: Vec::new(),
             no_gaps: Vec::new(),
@@ -328,6 +355,7 @@ impl SidebarModel {
             pins,
             fixed_ids,
             sections,
+            expanded_runs,
         } = inputs;
         self.dirty = false;
         if self.fixed_ids.0.as_deref() != fixed_ids.0 {
@@ -425,6 +453,7 @@ impl SidebarModel {
             }
         }
         self.rows.clear();
+        self.run_tabs.clear();
         for (index, (workspace, tabs)) in snapshot.workspaces.iter().zip(members).enumerate() {
             let mut folded = false;
             if super::tab_sidebar::is_group_index(index) {
@@ -437,8 +466,12 @@ impl SidebarModel {
                 });
             }
             if !folded {
-                self.rows
-                    .extend(tabs.into_iter().map(|tab| Row::Tab { tab }));
+                if sections.suspended_runs {
+                    self.push_tab_rows(snapshot, &tabs, expanded_runs);
+                } else {
+                    self.rows
+                        .extend(tabs.into_iter().map(|tab| Row::Tab { tab }));
+                }
             }
         }
         let rows = self.rows.len();
@@ -524,6 +557,77 @@ impl SidebarModel {
                 (rank, *index)
             });
         }
+    }
+
+    /// Fork: a group's tab rows with every run of `MIN_RUN` or more
+    /// foldable tabs in a row (`run_member`) as a `Row::Run`, followed by
+    /// its tab rows while expanded.
+    fn push_tab_rows(
+        &mut self,
+        snapshot: &ClientShellSnapshot,
+        tabs: &[u32],
+        expanded_runs: Option<&HashSet<String>>,
+    ) {
+        let mut index = 0;
+        while index < tabs.len() {
+            let run = tabs[index..]
+                .iter()
+                .take_while(|tab| self.run_member(snapshot, **tab))
+                .count();
+            if run < MIN_RUN {
+                // Not a run: this tab (and any short run) as plain rows.
+                let plain = run.max(1);
+                self.rows.extend(
+                    tabs[index..index + plain]
+                        .iter()
+                        .map(|tab| Row::Tab { tab: *tab }),
+                );
+                index += plain;
+                continue;
+            }
+            let members = &tabs[index..index + run];
+            let start = u32::try_from(self.run_tabs.len()).unwrap_or(u32::MAX);
+            self.run_tabs.extend_from_slice(members);
+            let expanded = expanded_runs.is_some_and(|runs| {
+                snapshot
+                    .tabs
+                    .get(members[0] as usize)
+                    .is_some_and(|tab| runs.contains(&tab.tab_id))
+            });
+            self.rows.push(Row::Run {
+                start,
+                len: u16::try_from(run).unwrap_or(u16::MAX),
+                expanded,
+            });
+            if expanded {
+                self.rows
+                    .extend(members.iter().map(|tab| Row::Tab { tab: *tab }));
+            }
+            index += run;
+        }
+    }
+
+    /// Fork: `snapshot.tabs[tab]` may fold into a suspended run: it is
+    /// suspended and not focused, pinned, important or scheduled.
+    fn run_member(&self, snapshot: &ClientShellSnapshot, tab: u32) -> bool {
+        let (Some(info), Some(facts)) =
+            (snapshot.tabs.get(tab as usize), self.tabs.get(tab as usize))
+        else {
+            return false;
+        };
+        info.agent_status == AgentStatus::Suspended
+            && !info.focused
+            && !info.important
+            && info.remind_every.is_none()
+            && !facts.pin
+    }
+
+    /// Fork: the tabs of the run `Row::Run { start, len, .. }`.
+    pub(crate) fn run(&self, start: u32, len: u16) -> &[u32] {
+        let start = start as usize;
+        self.run_tabs
+            .get(start..start.saturating_add(usize::from(len)))
+            .unwrap_or(&[])
     }
 
     /// The facts of `snapshot.tabs[tab]`.
@@ -623,6 +727,18 @@ pub(crate) fn resolve_selected(
         Some(SidebarHover::ScheduledHeader | SidebarHover::ScheduledMore) => {
             Some(Selected::ScheduledHeader)
         }
+        Some(SidebarHover::Run(tab_id)) => model.rows.iter().find_map(|row| match *row {
+            Row::Run { start, len, .. }
+                if model
+                    .run(start, len)
+                    .first()
+                    .and_then(|tab| snapshot.tabs.get(*tab as usize))
+                    .is_some_and(|tab| tab.tab_id == *tab_id) =>
+            {
+                Some(Selected::Run { start, len })
+            }
+            _ => None,
+        }),
         None => None,
     };
     hovered.unwrap_or_else(|| model.focused_tab.map_or(Selected::None, Selected::Tab))

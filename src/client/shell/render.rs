@@ -235,6 +235,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) active_endpoint_id: &'a ClientEndpointId,
     pub(super) collapsed_endpoints: &'a HashSet<ClientEndpointId>,
     pub(super) collapsed_groups: &'a HashSet<String>,
+    /// Fork: the expanded suspended runs (`ClientShellState::expanded_runs`).
+    pub(super) expanded_runs: &'a HashSet<String>,
     /// Fork: the breathing glyph's phase and the RGB of the terminal's
     /// default background (`breathe.rs`).
     pub(super) breathe_phase: f32,

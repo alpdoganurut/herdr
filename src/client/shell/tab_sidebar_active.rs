@@ -672,6 +672,7 @@ enum HoverAt<'a> {
     ActiveEntry(&'a str),
     ActiveMore,
     Fixed(FixedKind),
+    Run(&'a str),
     PinsHeader,
     PinsEntry(&'a str),
     PinsMore,
@@ -687,7 +688,8 @@ impl HoverAt<'_> {
             | (Self::Group(id), SidebarHover::Group(current))
             | (Self::ActiveEntry(id), SidebarHover::ActiveEntry(current))
             | (Self::PinsEntry(id), SidebarHover::PinsEntry(current))
-            | (Self::ScheduledEntry(id), SidebarHover::ScheduledEntry(current)) => id == current,
+            | (Self::ScheduledEntry(id), SidebarHover::ScheduledEntry(current))
+            | (Self::Run(id), SidebarHover::Run(current)) => id == current,
             (Self::ActiveHeader, SidebarHover::ActiveHeader)
             | (Self::ActiveMore, SidebarHover::ActiveMore)
             | (Self::PinsHeader, SidebarHover::PinsHeader)
@@ -707,6 +709,7 @@ impl HoverAt<'_> {
             Self::ActiveEntry(id) => SidebarHover::ActiveEntry(id.to_owned()),
             Self::ActiveMore => SidebarHover::ActiveMore,
             Self::Fixed(kind) => SidebarHover::Fixed(kind),
+            Self::Run(id) => SidebarHover::Run(id.to_owned()),
             Self::PinsHeader => SidebarHover::PinsHeader,
             Self::PinsEntry(id) => SidebarHover::PinsEntry(id.to_owned()),
             Self::PinsMore => SidebarHover::PinsMore,
@@ -740,6 +743,9 @@ impl ClientShellState {
             rows.iter()
                 .find(|(rect, _)| super::contains(*rect, point))
                 .map(|(_, id)| id.as_str())
+        }
+        if let Some(id) = id_at(&hits.sidebar_runs, point) {
+            return Some(HoverAt::Run(id));
         }
         if super::contains(hits.sidebar_active_header, point) {
             return Some(HoverAt::ActiveHeader);
@@ -849,6 +855,32 @@ impl ClientShellState {
             return false;
         };
         self.jump_to_sidebar_tab(tab_id, outcome);
+        true
+    }
+
+    /// Fork: a left press on a suspended run's row expands it, or folds it
+    /// again (persisted). Never starts a drag. Returns whether the press was
+    /// a run row's.
+    pub(super) fn sidebar_run_press(
+        &mut self,
+        point: (u16, u16),
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        let Some(tab_id) = self
+            .hits
+            .sidebar_runs
+            .iter()
+            .find(|(rect, _)| super::contains(*rect, point))
+            .map(|(_, tab_id)| tab_id.clone())
+        else {
+            return false;
+        };
+        if !self.expanded_runs.remove(&tab_id) {
+            self.expanded_runs.insert(tab_id);
+        }
+        self.sidebar_model.mark_dirty();
+        self.persist_chrome_preferences(outcome);
+        outcome.repaint = true;
         true
     }
 

@@ -3619,3 +3619,155 @@ mod fork_smoke {
         );
     }
 }
+
+/// Fork: one space whose tabs are a focused worker, `suspended` suspended
+/// tabs in a row, then an idle one.
+fn run_snapshot(suspended: usize) -> ClientShellSnapshot {
+    let mut snapshot = snapshot();
+    snapshot.tabs = vec![tab("tab_0", "ws_1", 1, "lead", true, AgentStatus::Working)];
+    for index in 1..=suspended {
+        snapshot.tabs.push(tab(
+            &format!("tab_{index}"),
+            "ws_1",
+            index + 1,
+            &format!("parked {index}"),
+            false,
+            AgentStatus::Suspended,
+        ));
+    }
+    snapshot.tabs.push(tab(
+        "tab_idle",
+        "ws_1",
+        suspended + 2,
+        "triage",
+        false,
+        AgentStatus::Idle,
+    ));
+    snapshot
+}
+
+fn run_state(snapshot: ClientShellSnapshot) -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state
+}
+
+fn listed_ids(state: &ClientShellState) -> Vec<&str> {
+    state
+        .hits
+        .sidebar_tabs
+        .iter()
+        .map(|(_, id)| id.as_str())
+        .collect()
+}
+
+fn press(state: &mut ClientShellState, rect: ratatui::layout::Rect) {
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: rect.x + 4,
+        row: rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+}
+
+#[test]
+fn three_suspended_tabs_in_a_row_fold_into_one_row_that_a_click_expands() {
+    let mut state = run_state(run_snapshot(4));
+    let frame = state.compose(106, 30).expect("composed frame");
+    assert_eq!(listed_ids(&state), ["tab_0", "tab_idle"]);
+    let [(run, first)] = &state.hits.sidebar_runs[..] else {
+        panic!("one run row: {:?}", state.hits.sidebar_runs);
+    };
+    assert_eq!(first, "tab_1", "keyed by its first tab");
+    let (run, text) = (*run, row_text(&frame, *run));
+    assert!(
+        text.contains("4 suspended") && text.contains('\u{25B8}'),
+        "{text:?}"
+    );
+
+    press(&mut state, run);
+    assert!(state.expanded_runs.contains("tab_1"));
+    let frame = state.compose(106, 30).expect("composed frame");
+    assert_eq!(
+        listed_ids(&state),
+        ["tab_0", "tab_1", "tab_2", "tab_3", "tab_4", "tab_idle"],
+        "the run row heads its tabs"
+    );
+    let run = state.hits.sidebar_runs[0].0;
+    assert!(row_text(&frame, run).contains('\u{25BE}'));
+
+    press(&mut state, run);
+    assert!(state.expanded_runs.is_empty());
+    state.compose(106, 30).expect("composed frame");
+    assert_eq!(listed_ids(&state), ["tab_0", "tab_idle"]);
+}
+
+#[test]
+fn short_runs_and_kept_tabs_stay_plain_rows() {
+    // Two in a row never fold.
+    let mut state = run_state(run_snapshot(2));
+    state.compose(106, 30).expect("composed frame");
+    assert!(state.hits.sidebar_runs.is_empty());
+    assert_eq!(listed_ids(&state), ["tab_0", "tab_1", "tab_2", "tab_idle"]);
+
+    // An important tab, a scheduled one or the focused one splits a run.
+    for keep in ["important", "scheduled", "focused"] {
+        let mut snapshot = run_snapshot(5);
+        for tab in &mut snapshot.tabs {
+            tab.focused = false;
+        }
+        let tab = &mut snapshot.tabs[3];
+        match keep {
+            "important" => tab.important = true,
+            "scheduled" => tab.remind_every = Some(crate::api::schema::TabRemindInterval::H1),
+            _ => tab.focused = true,
+        }
+        snapshot.tabs[0].focused = keep != "focused";
+        let mut state = run_state(snapshot);
+        state.compose(106, 30).expect("composed frame");
+        assert!(state.hits.sidebar_runs.is_empty(), "{keep}: 2 + kept + 2");
+        assert!(listed_ids(&state).contains(&"tab_3"), "{keep}");
+    }
+}
+
+#[test]
+fn suspended_runs_follow_their_config_toggle() {
+    let mut config = tabs_config();
+    config.ui.sidebar_collapse_suspended = false;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(run_snapshot(4)));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("composed frame");
+    assert!(state.hits.sidebar_runs.is_empty());
+    assert_eq!(listed_ids(&state).len(), 6);
+}
+
+#[test]
+fn hovering_a_run_lists_its_tabs_in_the_detail_strip() {
+    let mut state = run_state(run_snapshot(3));
+    state.compose(106, 40).expect("composed frame");
+    let run = state.hits.sidebar_runs[0].0;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: run.x + 4,
+        row: run.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let frame = state.compose(106, 40).expect("composed frame");
+    let detail = state.hits.sidebar_detail;
+    let text = (detail.y..detail.bottom())
+        .map(|y| {
+            row_text(
+                &frame,
+                ratatui::layout::Rect::new(detail.x, y, detail.width, 1),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(text.contains("3 suspended"), "{text:?}");
+    assert!(
+        text.contains("parked 1") && text.contains("parked 2"),
+        "{text:?}"
+    );
+}
