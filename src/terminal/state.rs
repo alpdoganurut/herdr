@@ -2194,6 +2194,8 @@ impl TerminalState {
             self.persisted_agent_session = None;
         }
         self.forget_subagents();
+        // The old agent's turn hooks describe nothing that runs here now.
+        self.turn.clear_hook_marks();
         let current_session = self.current_session_identity_for_persistence();
         Some(TerminalStateMutation {
             effective_state_change: self.recompute_effective_state(
@@ -2507,6 +2509,8 @@ impl TerminalState {
         self.stale_full_lifecycle_hook_sessions.clear();
         self.state = AgentState::Unknown;
         self.forget_subagents();
+        // The old agent's turn hooks describe nothing that runs here now.
+        self.turn.clear_hook_marks();
         self.last_agent_state_change_seq = None;
         self.agent_state_since_unix_ms = None;
         self.last_agent_completion_seq = None;
@@ -2562,6 +2566,8 @@ impl TerminalState {
         exit_deadline: Instant,
     ) {
         self.forget_subagents();
+        // The old agent's turn hooks describe nothing that runs here now.
+        self.turn.clear_hook_marks();
         self.suspended_agent = Some(SuspendedAgent {
             agent: session.agent.clone(),
             name: self.agent_name.clone(),
@@ -2855,6 +2861,8 @@ impl TerminalState {
         // a missed SubagentStop.
         if previous_agent_label != agent_label {
             self.forget_subagents();
+            // The old agent's turn hooks describe nothing that runs here now.
+            self.turn.clear_hook_marks();
         } else if detected_state == AgentState::Idle && !self.subagent_snapshot_seen {
             self.clear_subagents();
         } else if !self.active_subagents.is_empty() {

@@ -147,6 +147,20 @@ mod tests {
     }
 
     #[test]
+    fn a_replaced_agent_leaves_no_hook_marks() {
+        let mut app = app();
+        terminal(&mut app).set_detected_state(Some(Agent::Claude), AgentState::Working);
+        report(&mut app, "claude", TurnEvent::End, "p1", 20);
+        assert!(terminal(&mut app).turn().hook_turn_ended().is_some());
+        terminal(&mut app).set_detected_state(Some(Agent::Codex), AgentState::Working);
+        terminal(&mut app).set_detected_state(Some(Agent::Claude), AgentState::Working);
+        assert!(
+            terminal(&mut app).turn().hook_turn_ended().is_none(),
+            "a new agent starts from unknown"
+        );
+    }
+
+    #[test]
     fn another_agents_report_and_unknown_panes_are_ignored() {
         let mut app = app();
         terminal(&mut app).set_detected_state(Some(Agent::Codex), AgentState::Working);

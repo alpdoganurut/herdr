@@ -85,6 +85,13 @@ pub(crate) const STUCK_SAMPLE: Duration = Duration::from_secs(60);
 /// this long, and the turn end it waits for is looked for this long; past
 /// it the message simply stays queued.
 pub(crate) const INTERRUPT_WAIT: Duration = Duration::from_secs(10);
+/// An urgent message never interrupts a turn that herdr itself started by
+/// typing into the pane this recently (a delivered message, a wake-up): the
+/// turn is about to read that message.
+pub(crate) const INTERRUPT_AFTER_TYPING: Duration = Duration::from_secs(30);
+/// The wait reason while a target's hooks say its turn is live but its
+/// screen reads idle.
+const HOOK_LIVE_REASON: &str = "its turn is live by its hooks";
 /// At most this many queued messages go into one paste.
 const MAX_COMBINED: usize = 8;
 const MAX_COMBINED_CHARS: usize = 16_000;
@@ -200,6 +207,9 @@ pub(crate) struct MessageQueue {
     /// Log lines written (tests).
     #[cfg(test)]
     pub(crate) written: Vec<AgentMessage>,
+    /// What the urgent interrupt's fresh screen check answers (tests).
+    #[cfg(test)]
+    pub(crate) screen_blocker_for_test: Option<bool>,
 }
 
 /// Why a target cannot take a message now.
@@ -389,6 +399,15 @@ impl MessageQueue {
 }
 
 /// A short, stable hash of the detection text above the prompt box.
+/// Whether a fresh classification of a target's screen forbids an Esc: it
+/// shows a dialog or a question for its user. A transcript viewer
+/// (`skip_state_update`) says nothing about the prompt; its blocker flag
+/// still counts.
+fn detection_blocks_interrupt(detection: &crate::detect::AgentDetection) -> bool {
+    detection.visible_blocker
+        || (!detection.skip_state_update && detection.state == crate::detect::AgentState::Blocked)
+}
+
 fn screen_hash(detection_text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -548,6 +567,13 @@ impl App {
         let hook_ended = terminal.state == crate::detect::AgentState::Working
             && terminal.turn().hook_turn_ended().is_some();
         match terminal.state {
+            // Its own hooks say a turn is live (a start after its last
+            // end): wait a bounded time for its Stop (src/agents_model/turn.rs).
+            crate::detect::AgentState::Idle
+                if self.hook_live_until(&target.terminal_id).is_some() =>
+            {
+                return Check::Wait(HOOK_LIVE_REASON.into());
+            }
             crate::detect::AgentState::Idle => {}
             // Its own hooks say its last turn ended (src/app/hook_turn.rs):
             // the title spinner of background work is not a turn.
@@ -580,6 +606,22 @@ impl App {
             coordinator,
             hook_ended,
         }
+    }
+
+    /// Until when `terminal_id`'s hooks hold its idle screen as a live turn
+    /// ([`crate::agents_model::turn::TurnState::hook_turn_live_until`]).
+    /// Not after an urgent Esc: that turn ends without a Stop, and the
+    /// urgent message goes in once the screen reads idle.
+    fn hook_live_until(&self, terminal_id: &str) -> Option<Instant> {
+        if self.message_queue.interrupted_at.contains_key(terminal_id) {
+            return None;
+        }
+        self.state
+            .terminals
+            .values()
+            .find(|terminal| terminal.id.to_string() == terminal_id)?
+            .turn()
+            .hook_turn_live_until(Instant::now())
     }
 
     /// Type `items` into `pane` now (guarded): one pointer line when the
@@ -889,17 +931,21 @@ impl App {
         let messages = mine
             .into_iter()
             .map(|entry| {
+                let first = self
+                    .message_queue
+                    .entries
+                    .iter()
+                    .find(|other| other.terminal_id == entry.terminal_id)
+                    .filter(|first| first.id() != entry.id());
                 let reason = match self.message_target(&entry.terminal_id, entry.session.as_deref())
                 {
-                    _ if self
-                        .message_queue
-                        .entries
-                        .iter()
-                        .find(|other| other.terminal_id == entry.terminal_id)
-                        .is_some_and(|first| first.id() != entry.id()) =>
+                    _ if first.is_some_and(|first| {
+                        first.pointer.as_ref().is_some_and(|pointer| pointer.urgent)
+                    }) =>
                     {
-                        "earlier messages are waiting for it".to_string()
+                        "an urgent message goes in ahead of it".to_string()
                     }
+                    _ if first.is_some() => "earlier messages are waiting for it".to_string(),
                     Some(target) => match self.message_check(&target) {
                         Check::Ready {
                             hook_ended: true, ..
@@ -963,8 +1009,16 @@ impl App {
             ));
         }
         let message_id = message.id.clone().unwrap_or_default();
-        let blocked = self.urgent_interrupt_block(target);
+        // A target that is free (or whose hooks ended its turn) but has
+        // messages queued gets no interrupt: its turn is not live.
+        let ready = matches!(check.0, Check::Ready { .. });
+        let blocked = if ready {
+            None
+        } else {
+            self.urgent_interrupt_block(target)
+        };
         let interrupted = match blocked {
+            None if ready => false,
             None => self.interrupt_turn(target, &message_id, from.as_ref()),
             Some(why) => {
                 tracing::info!(
@@ -979,6 +1033,10 @@ impl App {
             "interrupted its turn; typed in once the turn has ended".to_string()
         } else {
             match (&check.0, blocked) {
+                (Check::Ready { .. }, _) => "queued ahead of its other messages".to_string(),
+                (Check::Wait(reason), Some(why)) if reason == "working" => {
+                    format!("{reason}; {why}; not interrupted")
+                }
                 (Check::Wait(reason), _) => format!("{reason}; not interrupted"),
                 (_, Some(why)) => format!("{why}; not interrupted"),
                 _ => "queued ahead of its other messages".to_string(),
@@ -1029,6 +1087,15 @@ impl App {
         if terminal.turn().hook_turn_ended().is_some() {
             return Some("its turn already ended");
         }
+        // A turn herdr just started by typing in (a delivered message, a
+        // wake-up, an earlier urgent) is about to read what it was given;
+        // the urgent message goes in after that turn instead.
+        if terminal
+            .turn()
+            .programmatic_within(INTERRUPT_AFTER_TYPING, Instant::now())
+        {
+            return Some("a herdr message just started its turn");
+        }
         let Some(agent) = terminal.effective_known_agent() else {
             return Some("no agent");
         };
@@ -1061,7 +1128,36 @@ impl App {
         {
             return Some("its user is typing");
         }
+        // The status above is the detector's last report, which lags the
+        // screen: read the screen once more, so an Esc never answers a
+        // permission dialog or a question drawn since.
+        if self.screen_shows_a_blocker(agent, runtime) {
+            return Some("blocked on its user");
+        }
         None
+    }
+
+    /// Whether `runtime`'s screen, classified now with the agent's
+    /// detection rules, shows something waiting on its user. Once per
+    /// urgent send, never per frame.
+    fn screen_shows_a_blocker(
+        &self,
+        agent: crate::detect::Agent,
+        runtime: &crate::terminal::TerminalRuntime,
+    ) -> bool {
+        #[cfg(test)]
+        if let Some(blocked) = self.message_queue.screen_blocker_for_test {
+            // Tests may not classify invented CLI screens with the bundled
+            // rules (CLAUDE.md); they set the classifier's answer instead.
+            return blocked;
+        }
+        let detection = crate::detect::detect_agent_with_osc(
+            Some(agent),
+            &runtime.detection_text(),
+            &runtime.agent_osc_title(),
+            &runtime.agent_osc_progress(),
+        );
+        detection_blocks_interrupt(&detection)
     }
 
     /// Send one Esc into `target` (an urgent message's interrupt), recorded
@@ -1363,7 +1459,7 @@ impl App {
             self.message_queue.save();
         }
         let terminal_id = target.terminal_id.clone();
-        let (pane, coordinator) = match self.message_check(&target) {
+        let (pane, coordinator, hook_ended) = match self.message_check(&target) {
             Check::Missing => return self.target_missing(&terminal_id, now, now_unix, next),
             Check::Wait(reason) => {
                 self.message_queue.missing_since.remove(&terminal_id);
@@ -1383,13 +1479,22 @@ impl App {
                 if reason == "working" {
                     return self.watch_stuck_target(&target, &reason, now, now_unix, next);
                 }
+                if reason == HOOK_LIVE_REASON {
+                    // The hold runs out without an event when no Stop comes.
+                    if let Some(until) = self.hook_live_until(&terminal_id) {
+                        next.push(now + until.saturating_duration_since(Instant::now()));
+                    }
+                }
                 self.message_queue.screens.remove(&terminal_id);
                 return false;
             }
             Check::Ready {
-                pane, coordinator, ..
-            } => (pane, coordinator),
+                pane,
+                coordinator,
+                hook_ended,
+            } => (pane, coordinator, hook_ended),
         };
+        self.message_queue.screens.remove(&terminal_id);
         self.message_queue.missing_since.remove(&terminal_id);
         let since = *self
             .message_queue
@@ -1441,6 +1546,16 @@ impl App {
             from.as_ref(),
         ) {
             Ok(()) => {
+                if hook_ended {
+                    // Typed into a screen that read working, on the Stop
+                    // hook's word alone (a lost UserPromptSubmit report or a
+                    // blocking Stop hook would make this mid-turn).
+                    tracing::info!(
+                        target = %terminal_id,
+                        messages = ids.len(),
+                        "message queue: delivered on the target's Stop hook while its screen read working"
+                    );
+                }
                 self.message_queue.ready_since.remove(&terminal_id);
                 self.message_queue.interrupted_at.remove(&terminal_id);
                 self.message_queue.finish(&ids, OUTCOME_DELIVERED, now_unix);
@@ -1517,24 +1632,35 @@ impl App {
         if unchanged < STUCK_SCREEN || !cooled {
             return false;
         }
-        let Some(entry) = self
+        // The oldest such message whose sender can still be reached (a
+        // herdr notice has none).
+        let candidates: Vec<QueuedMessage> = self
             .message_queue
             .entries
             .iter()
-            .find(|entry| {
+            .filter(|entry| {
                 entry.terminal_id == terminal_id
                     && !entry.stuck_notified
                     && !entry.legacy
+                    && (entry.from_terminal.is_some() || entry.message.from_pane.is_some())
                     && now_unix.saturating_sub(entry.message.unix) >= STUCK_WAIT.as_secs()
             })
             .cloned()
+            .collect();
+        let Some(entry) = candidates
+            .into_iter()
+            .find(|entry| self.stuck_notice_sender(entry).is_some())
         else {
             return false;
         };
         let status = self
             .message_status_name(target)
             .unwrap_or_else(|| reason.to_string());
-        self.send_stuck_notice(&entry, reason, &status, unchanged, now_unix);
+        if !self.send_stuck_notice(&entry, reason, &status, unchanged, now_unix) {
+            // Neither typed in nor queued: the message's one notice and the
+            // target's slot stay unused.
+            return false;
+        }
         if let Some(queued) = self
             .message_queue
             .entries
@@ -1569,9 +1695,23 @@ impl App {
             .and_then(|value| value.as_str().map(str::to_string))
     }
 
+    /// The live sender of a queued message, for its stuck notice.
+    fn stuck_notice_sender(
+        &self,
+        entry: &QueuedMessage,
+    ) -> Option<super::terminal_targets::TerminalTarget> {
+        entry
+            .from_terminal
+            .as_ref()
+            .and_then(|terminal| self.public_pane_of_terminal(terminal))
+            .or_else(|| entry.message.from_pane.clone())
+            .and_then(|pane| self.resolve_agent_target(&pane).ok())
+    }
+
     /// Tell `entry`'s sender, through the same delivery path, that its
-    /// message seems stuck. Logged (message log and tracing); a sender that
-    /// is gone gets nothing.
+    /// message seems stuck. Logged (message log and tracing). Returns
+    /// whether the notice was typed in or queued; a sender that is gone
+    /// gets nothing.
     fn send_stuck_notice(
         &mut self,
         entry: &QueuedMessage,
@@ -1579,7 +1719,7 @@ impl App {
         status: &str,
         unchanged: Duration,
         now_unix: u64,
-    ) {
+    ) -> bool {
         let message_id = entry.id().to_string();
         let target_name = entry
             .message
@@ -1594,6 +1734,9 @@ impl App {
             minutes(waited),
             minutes(unchanged),
         );
+        let Some(sender_target) = self.stuck_notice_sender(entry) else {
+            return false;
+        };
         tracing::info!(
             message = %message_id,
             target = %entry.message.to_pane,
@@ -1601,17 +1744,6 @@ impl App {
             unchanged_s = unchanged.as_secs(),
             "message queue: a queued message seems stuck; telling its sender"
         );
-        let sender = entry
-            .from_terminal
-            .as_ref()
-            .and_then(|terminal| self.public_pane_of_terminal(terminal))
-            .or_else(|| entry.message.from_pane.clone());
-        let Some(sender_target) = sender
-            .as_deref()
-            .and_then(|pane| self.resolve_agent_target(pane).ok())
-        else {
-            return;
-        };
         let sender_pane = self
             .public_pane_id(sender_target.ws_idx, sender_target.pane_id)
             .unwrap_or_default();
@@ -1657,12 +1789,16 @@ impl App {
                 let mut sent = line;
                 sent.outcome = messages::OUTCOME_SENT.into();
                 self.message_queue.log(sent);
+                true
             }
-            Ok(MessageDelivery::Queued { .. }) => {}
-            Err(refused) => tracing::warn!(
-                code = %refused.code,
-                "message queue: the stuck notice could not reach its sender"
-            ),
+            Ok(MessageDelivery::Queued { .. }) => true,
+            Err(refused) => {
+                tracing::warn!(
+                    code = %refused.code,
+                    "message queue: the stuck notice could not reach its sender"
+                );
+                false
+            }
         }
     }
 

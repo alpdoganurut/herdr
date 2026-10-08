@@ -15,6 +15,10 @@ use crate::api::schema::agents_model::{AgentsOriginDetail, AgentsTurnInfo, Agent
 /// A screen-detected idle shorter than this between two working phases is
 /// a flap between tool calls: the turn carries over (`bridged`).
 pub const BRIDGE: Duration = Duration::from_secs(5);
+/// How long after a hook-reported turn start (or the idle edge after it)
+/// message delivery trusts the hooks over a screen that reads idle
+/// ([`TurnState::hook_turn_live_until`]).
+pub const HOOK_LIVE_HOLD: Duration = Duration::from_secs(15);
 /// A user submit counts for the next turn only this long.
 pub const USER_SUBMIT_WINDOW: Duration = Duration::from_secs(10 * 60);
 
@@ -403,20 +407,71 @@ impl TurnState {
     /// landed after the end (the turn it starts reports itself).
     pub fn hook_turn_ended(&self) -> Option<Instant> {
         let end = self.hook_end.as_ref()?;
-        if let Some(start) = &self.hook_start {
-            let same_prompt = matches!(
-                (&start.prompt, &end.prompt),
-                (Some(started), Some(ended)) if started == ended
-            );
-            if !same_prompt && end.seq <= start.seq {
-                return None;
-            }
+        if self.hook_start_is_newest() {
+            return None;
         }
         let input_since = |at: Option<Instant>| at.is_some_and(|at| at >= end.at);
         if input_since(self.prov.last_client_submit) || input_since(self.prov.last_programmatic) {
             return None;
         }
         Some(end.at)
+    }
+
+    /// Whether the newest reported mark is a start: no end was reported, or
+    /// the reported end belongs to an older start (another prompt id and an
+    /// earlier hook clock).
+    fn hook_start_is_newest(&self) -> bool {
+        let Some(start) = &self.hook_start else {
+            return false;
+        };
+        let Some(end) = &self.hook_end else {
+            return true;
+        };
+        let same_prompt = matches!(
+            (&start.prompt, &end.prompt),
+            (Some(started), Some(ended)) if started == ended
+        );
+        !same_prompt && end.seq <= start.seq
+    }
+
+    /// Until when the agent's own hooks say a turn is live although its
+    /// screen may read idle: the newest reported mark is a start, nothing
+    /// was submitted or typed in by herdr after it, and `now` is within
+    /// [`HOOK_LIVE_HOLD`] of that start or of the last idle edge after it.
+    /// Message delivery waits on it (Claude can hide its spinner while it
+    /// streams under a background agent's notice). Bounded, because a turn
+    /// ended with Esc reports no Stop. `None` otherwise.
+    pub fn hook_turn_live_until(&self, now: Instant) -> Option<Instant> {
+        if !self.hook_start_is_newest() {
+            return None;
+        }
+        let start = self.hook_start.as_ref()?;
+        let input_after = |at: Option<Instant>| at.is_some_and(|at| at > start.at);
+        if input_after(self.prov.last_client_submit) || input_after(self.prov.last_programmatic) {
+            return None;
+        }
+        let edge = self
+            .prov
+            .last_idle_at
+            .filter(|idle| *idle > start.at)
+            .unwrap_or(start.at);
+        let until = edge + HOOK_LIVE_HOLD;
+        (now < until).then_some(until)
+    }
+
+    /// Whether herdr wrote into the pane (a message, a wake-up, an urgent
+    /// interrupt, a script) within `window` before `now`.
+    pub fn programmatic_within(&self, window: Duration, now: Instant) -> bool {
+        self.prov
+            .last_programmatic
+            .is_some_and(|at| now.saturating_duration_since(at) < window)
+    }
+
+    /// Forget the hook marks (the agent in the pane was replaced, went away
+    /// or was suspended: its hooks no longer describe what runs there).
+    pub fn clear_hook_marks(&mut self) {
+        self.hook_start = None;
+        self.hook_end = None;
     }
 
     /// The last client keystroke.
@@ -796,6 +851,45 @@ mod tests {
         typed.note_hook_turn(false, prompt("p1"), 20, secs(t0, 4));
         typed.note_input(&api(), secs(t0, 5));
         assert_eq!(typed.hook_turn_ended(), None, "herdr typed into it");
+    }
+
+    #[test]
+    fn a_reported_start_holds_an_idle_screen_for_a_bounded_time() {
+        let t0 = Instant::now();
+        let mut turn = idle(t0);
+        assert_eq!(turn.hook_turn_live_until(t0), None, "nothing reported");
+        turn.note_hook_turn(true, prompt("p1"), 10, secs(t0, 1));
+        assert_eq!(turn.hook_turn_live_until(secs(t0, 2)), Some(secs(t0, 16)));
+        // The screen flaps idle mid-turn: the hold counts from that edge.
+        turn.on_status_edge(Idle, Working, false, secs(t0, 3), 2);
+        turn.on_status_edge(Working, Idle, false, secs(t0, 10), 3);
+        assert_eq!(turn.hook_turn_live_until(secs(t0, 20)), Some(secs(t0, 25)));
+        // An Esc-ended turn reports no Stop: the hold runs out.
+        assert_eq!(turn.hook_turn_live_until(secs(t0, 25)), None);
+        // Its Stop ends it.
+        turn.note_hook_turn(false, prompt("p1"), 20, secs(t0, 11));
+        assert_eq!(turn.hook_turn_live_until(secs(t0, 12)), None);
+        // A start older than the last submit or herdr write is not trusted.
+        let mut typed = idle(t0);
+        typed.note_hook_turn(true, prompt("p2"), 10, secs(t0, 1));
+        typed.note_input(&api(), secs(t0, 2));
+        assert_eq!(typed.hook_turn_live_until(secs(t0, 3)), None);
+    }
+
+    #[test]
+    fn a_recent_programmatic_write_and_cleared_marks_are_seen() {
+        let t0 = Instant::now();
+        let mut turn = idle(t0);
+        let window = Duration::from_secs(30);
+        assert!(!turn.programmatic_within(window, t0));
+        turn.note_input(&api(), secs(t0, 1));
+        assert!(turn.programmatic_within(window, secs(t0, 30)));
+        assert!(!turn.programmatic_within(window, secs(t0, 31)));
+        turn.note_hook_turn(false, prompt("p1"), 20, secs(t0, 40));
+        assert!(turn.hook_turn_ended().is_some());
+        turn.clear_hook_marks();
+        assert_eq!(turn.hook_turn_ended(), None);
+        assert_eq!(turn.hook_turn_live_until(secs(t0, 41)), None);
     }
 
     #[test]

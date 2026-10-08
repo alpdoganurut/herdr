@@ -591,12 +591,25 @@ async fn a_hook_ended_turn_never_frees_a_blocked_or_suspended_target() {
 
 /// Queue one message to a working `rev`, 11 minutes old, then sample every
 /// minute for 11 minutes; `tick` writes into the screen at each sample.
+/// The sender is `rev` itself (the only pane), so its notice is queued.
 fn run_stuck_check(tick: impl Fn(&crate::terminal::TerminalRuntime, usize)) -> bool {
+    run_stuck_check_from(true, tick)
+}
+
+fn run_stuck_check_from(
+    sender_alive: bool,
+    tick: impl Fn(&crate::terminal::TerminalRuntime, usize),
+) -> bool {
     let mut app = app();
     let _rx = rev(&mut app, AgentState::Working);
     let reply = send(&mut app, "ms1", "status?");
     assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
     app.message_queue.entries[0].message.unix -= 11 * 60;
+    app.message_queue.entries[0].message.from_pane = if sender_alive {
+        app.public_pane_id(0, pane(&app))
+    } else {
+        Some("w9:p9".into())
+    };
     let now = now_unix();
     let t0 = Instant::now();
     app.message_queue.mark_due();
@@ -608,7 +621,20 @@ fn run_stuck_check(tick: impl Fn(&crate::terminal::TerminalRuntime, usize)) -> b
         }
         app.message_queue_pass(t0 + STUCK_SAMPLE * minute, now);
     }
-    app.message_queue.entries[0].stuck_notified
+    let notified = app.message_queue.entries[0].stuck_notified;
+    // The notice burns the target's slot only when it went somewhere.
+    assert_eq!(
+        app.message_queue
+            .stuck_notice_at
+            .contains_key(&app.message_queue.entries[0].terminal_id),
+        notified
+    );
+    notified
+}
+
+#[tokio::test]
+async fn a_stuck_message_whose_sender_is_gone_keeps_its_notice_unused() {
+    assert!(!run_stuck_check_from(false, |_, _| {}));
 }
 
 #[tokio::test]
@@ -626,6 +652,68 @@ async fn a_screen_frozen_above_its_prompt_box_is_stuck_but_a_live_turn_is_not() 
             format!("\x1b[1;1H\u{273b} Hashing\u{2026} ({minute}m)").as_bytes(),
         );
     }));
+}
+
+#[tokio::test]
+async fn an_idle_target_whose_hooks_report_a_live_turn_waits_for_its_stop() {
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let mut rx = rev(&mut app, AgentState::Idle);
+    hook_turn(&mut app, true, "p1", 10);
+    let reply = send(&mut app, "ml1", "after your turn");
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    assert_eq!(reply["result"]["reason"], HOOK_LIVE_REASON);
+    let t0 = Instant::now();
+    let now = now_unix();
+    app.message_queue_pass(t0, now);
+    assert!(!app.message_queue_pass(t0 + SETTLE * 2, now));
+    assert!(typed(&mut rx).is_empty(), "the hooks say the turn is live");
+    // The bounded hold schedules its own recheck.
+    assert!(app
+        .next_message_queue_deadline(t0)
+        .is_some_and(|at| at <= t0 + crate::agents_model::turn::HOOK_LIVE_HOLD));
+    hook_turn(&mut app, false, "p1", 20);
+    let t1 = t0 + SETTLE * 3;
+    app.message_queue_pass(t1, now);
+    assert!(app.message_queue_pass(t1 + SETTLE, now));
+    assert!(typed(&mut rx).contains("after your turn"));
+}
+
+#[test]
+fn only_a_shown_blocker_forbids_the_interrupt() {
+    let detection = |state, skip, blocker| crate::detect::AgentDetection {
+        state,
+        skip_state_update: skip,
+        visible_idle: false,
+        visible_blocker: blocker,
+        visible_working: false,
+        voice: crate::detect::AgentVoice::Off,
+    };
+    assert!(!super::detection_blocks_interrupt(&detection(
+        AgentState::Working,
+        false,
+        false
+    )));
+    assert!(!super::detection_blocks_interrupt(&detection(
+        AgentState::Idle,
+        false,
+        false
+    )));
+    assert!(super::detection_blocks_interrupt(&detection(
+        AgentState::Blocked,
+        false,
+        false
+    )));
+    assert!(super::detection_blocks_interrupt(&detection(
+        AgentState::Working,
+        false,
+        true
+    )));
+    assert!(!super::detection_blocks_interrupt(&detection(
+        AgentState::Blocked,
+        true,
+        false
+    )));
 }
 
 #[test]
@@ -770,4 +858,72 @@ async fn an_urgent_message_never_sends_esc_into_a_blocked_suspended_typing_or_ot
     let (_, interrupted) = urgent(&mut app, "mu1", "stop").unwrap();
     assert!(!interrupted);
     assert!(typed(&mut rx).is_empty());
+}
+
+#[tokio::test]
+async fn an_urgent_message_never_interrupts_a_turn_herdr_just_started_or_a_fresh_dialog() {
+    // A queued message was just typed in and started the turn.
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let mut rx = rev(&mut app, AgentState::Idle);
+    let first = send(&mut app, "mt1", "please read this");
+    assert_eq!(first["result"]["outcome"], "sent", "{first}");
+    assert!(typed(&mut rx).contains("mt1"));
+    set_state(&mut app, AgentState::Working);
+    let (delivery, interrupted) = urgent(&mut app, "mu1", "stop").unwrap();
+    assert!(!interrupted);
+    assert!(
+        matches!(&delivery, MessageDelivery::Queued { reason } if reason.contains("a herdr message just started its turn")),
+        "{delivery:?}"
+    );
+    assert!(typed(&mut rx).is_empty(), "no Esc");
+
+    // The detector last said working, but the screen now shows a dialog.
+    let mut app = self::app();
+    let mut rx = rev(&mut app, AgentState::Working);
+    app.message_queue.screen_blocker_for_test = Some(true);
+    let (delivery, interrupted) = urgent(&mut app, "mu1", "stop").unwrap();
+    assert!(!interrupted);
+    assert!(
+        matches!(&delivery, MessageDelivery::Queued { reason } if reason.contains("blocked on its user")),
+        "{delivery:?}"
+    );
+    assert!(typed(&mut rx).is_empty(), "no Esc into a dialog");
+}
+
+#[tokio::test]
+async fn an_urgent_message_to_an_idle_target_with_queued_messages_jumps_the_queue_without_an_esc() {
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let mut rx = rev(&mut app, AgentState::Working);
+    let earlier = send(&mut app, "ma1", "when you have a moment");
+    assert_eq!(earlier["result"]["outcome"], "queued", "{earlier}");
+    terminal(&mut app).set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    let (delivery, interrupted) = urgent(&mut app, "mu1", "stop").unwrap();
+    assert!(!interrupted);
+    assert_eq!(
+        delivery,
+        MessageDelivery::Queued {
+            reason: "queued ahead of its other messages".into()
+        }
+    );
+    assert!(typed(&mut rx).is_empty());
+    assert_eq!(app.message_queue.entries[0].id(), "mu1");
+}
+
+#[tokio::test]
+async fn an_urgent_interrupt_after_a_hook_reported_start_goes_in_once_the_screen_reads_idle() {
+    let mut app = app();
+    app.coordinator.assume_shell_ready = true;
+    let mut rx = rev(&mut app, AgentState::Working);
+    hook_turn(&mut app, true, "p1", 10);
+    let (_, interrupted) = urgent(&mut app, "mu1", "stop the deploy").unwrap();
+    assert!(interrupted);
+    assert_eq!(typed(&mut rx), ESC);
+    // Esc ends the turn without a Stop hook: no hook hold on the idle screen.
+    set_state(&mut app, AgentState::Idle);
+    let t0 = Instant::now();
+    app.message_queue_pass(t0, now_unix());
+    assert!(app.message_queue_pass(t0 + SETTLE, now_unix()));
+    assert!(typed(&mut rx).contains("stop the deploy"));
 }
