@@ -13,7 +13,7 @@ macro_rules! notify_sentence {
     () => {
         "Use the herdr_agents tool agents_notify only when your user should look now: kind question when you are \
 blocked on their decision, done when a long task finished, warning when something needs their care. Keep the title \
-short, put details in body, never use it for routine progress, and send at most a few per task."
+short, put details in body, never use it for routine progress, and send at most a few per task. If your notes have a `## Notify` section (your user's alert preference for this session, set with /plus:notify), follow it instead."
     };
 }
 macro_rules! messages_sentence {
