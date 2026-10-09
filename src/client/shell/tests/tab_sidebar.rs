@@ -3773,3 +3773,31 @@ fn hovering_a_run_lists_its_tabs_in_the_detail_strip() {
         "{text:?}"
     );
 }
+
+#[test]
+fn a_tab_dropped_on_a_folded_run_goes_before_the_run() {
+    let mut state = run_state(run_snapshot(4));
+    state.compose(106, 30).expect("composed frame");
+    let (run, _) = state.hits.sidebar_runs[0];
+    let idle = state
+        .hits
+        .sidebar_tabs
+        .iter()
+        .find(|(_, id)| id == "tab_idle")
+        .map(|(rect, _)| *rect)
+        .expect("the idle tab row");
+    let outcome = state.handle_raw_events(vec![
+        mouse(MouseEventKind::Down(MouseButton::Left), idle.x + 3, idle.y),
+        mouse(MouseEventKind::Drag(MouseButton::Left), idle.x + 3, run.y),
+        mouse(MouseEventKind::Up(MouseButton::Left), idle.x + 3, run.y),
+    ]);
+    assert!(
+        endpoint_methods(&outcome).iter().any(|method| matches!(
+            method,
+            crate::api::schema::Method::TabMove(params)
+                if params.tab_id == "tab_idle" && params.insert_index == 1
+        )),
+        "before the run's first tab, not above the tab before the run: {:?}",
+        endpoint_methods(&outcome)
+    );
+}

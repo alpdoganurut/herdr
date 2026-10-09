@@ -2654,6 +2654,14 @@ impl ClientShellState {
     ) -> Option<ClientSidebarTabDrop> {
         let snapshot = self.snapshot.as_deref()?;
         let body = self.hits.agent_body;
+        // Fork: a folded suspended run's row stands for its first tab (insert
+        // before the run), so it is a drop row like a tab row.
+        let list_rows: Vec<&(Rect, String)> = self
+            .hits
+            .sidebar_tabs
+            .iter()
+            .chain(&self.hits.sidebar_runs)
+            .collect();
         if body.height == 0 || point.1 < body.y.saturating_sub(1) || point.1 > body.bottom() {
             return None;
         }
@@ -2667,9 +2675,10 @@ impl ClientShellState {
         }
         // Append row per group: below its last visible tab row, else its header.
         let mut append_row: HashMap<&str, u16> = HashMap::new();
-        for (rect, tab_id) in &self.hits.sidebar_tabs {
+        for (rect, tab_id) in &list_rows {
             if let Some((workspace_id, _)) = tab_index.get(tab_id.as_str()) {
-                append_row.insert(workspace_id, rect.bottom());
+                let bottom = append_row.entry(workspace_id).or_insert(0);
+                *bottom = (*bottom).max(rect.bottom());
             }
         }
         for (rect, workspace_id) in &self.hits.sidebar_groups {
@@ -2691,10 +2700,9 @@ impl ClientShellState {
         {
             return Some(append_slot(workspace_id));
         }
-        if let Some((rect, tab_id)) = self
-            .hits
-            .sidebar_tabs
+        if let Some((rect, tab_id)) = list_rows
             .iter()
+            .copied()
             .find(|(rect, _)| rect.y == point.1)
         {
             let (workspace_id, index) = tab_index.get(tab_id.as_str()).copied()?;
@@ -2708,13 +2716,11 @@ impl ClientShellState {
                 append_slot(workspace_id)
             });
         }
-        let rows_by_y: HashMap<u16, &str> = self
-            .hits
-            .sidebar_tabs
+        let rows_by_y: HashMap<u16, &str> = list_rows
             .iter()
             .map(|(rect, tab_id)| (rect.y, tab_id.as_str()))
             .collect();
-        for (rect, tab_id) in &self.hits.sidebar_tabs {
+        for (rect, tab_id) in &list_rows {
             let Some((workspace_id, index)) = tab_index.get(tab_id.as_str()).copied() else {
                 continue;
             };
