@@ -146,7 +146,7 @@ pub(super) fn render_scheduled_block(
                 marks.push(super::tab_sidebar::remind_marker(every), color);
             }
         }
-        HeaderRight::Marks(marks)
+        HeaderRight::Marks(marks, model.scheduled.len())
     } else {
         HeaderRight::Count(model.scheduled.len())
     };

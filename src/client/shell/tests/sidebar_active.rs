@@ -598,6 +598,15 @@ fn active_header_click_folds_and_persists() {
     );
     assert_eq!(cell(&frame, last - 4, header.y).symbol, mic);
     assert_eq!(cell(&frame, last - 6, header.y).symbol, blocked);
+    // Fork: the entry count stays, one blank cell before the first mark.
+    let count = state.sidebar_model.active.len().to_string();
+    let count_end = last - 6 - 2;
+    let start = count_end + 1 - count.len() as u16;
+    let shown: String = (start..=count_end)
+        .map(|x| cell(&frame, x, header.y).symbol.clone())
+        .collect();
+    assert_eq!(shown, count);
+    assert_eq!(cell(&frame, count_end + 1, header.y).symbol, " ");
     assert_eq!(
         header.y,
         state.hits.agent_body.bottom() + 1,

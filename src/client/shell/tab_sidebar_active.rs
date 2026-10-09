@@ -189,7 +189,7 @@ pub(super) fn render_active_block(
                 marks.push(glyph, color);
             }
         }
-        HeaderRight::Marks(marks)
+        HeaderRight::Marks(marks, model.active.len())
     } else {
         HeaderRight::Count(model.active.len())
     };
@@ -244,10 +244,11 @@ pub(super) fn render_active_block(
 }
 
 /// A section header's right side: the entry count (open) or up to six
-/// marks (folded), at stride 2 ending one cell before the margin.
+/// marks (folded), at stride 2 ending one cell before the margin, with the
+/// entry count before them (fork: the count shows while folded too).
 pub(super) enum HeaderRight<'m> {
     Count(usize),
-    Marks(HeaderMarks<'m>),
+    Marks(HeaderMarks<'m>, usize),
 }
 
 /// A folded header's marks, on the stack.
@@ -316,8 +317,9 @@ pub(super) fn hover_band(buffer: &mut Buffer, row: Rect, palette: &Palette) {
     );
 }
 
-/// A section header: ` ▾ <title> … <count> ` (open) or ` ▸ <title> … <marks> `
-/// (folded); the hovered header has the bar and a brighter title.
+/// A section header: ` ▾ <title> … <count> ` (open) or
+/// ` ▸ <title> … <count> <marks> ` (folded); the hovered header has the bar
+/// and a brighter title.
 pub(super) fn render_section_header(
     buffer: &mut Buffer,
     row: Rect,
@@ -349,11 +351,27 @@ pub(super) fn render_section_header(
     );
     // The right side: the entry count (open) or the marks (folded); the
     // title keeps what is left.
+    let count_at = |buffer: &mut Buffer, entries: usize, last: u16| {
+        let mut count = StackStr::<8>::new();
+        let _ = write!(count, "{}", entries.min(9_999_999));
+        let width = display_width(count.as_str());
+        let x = (last + 1).saturating_sub(width);
+        put_text(
+            buffer,
+            row.x + x,
+            row.y,
+            width,
+            count.as_str(),
+            Style::default().fg(palette.overlay0),
+        );
+        x
+    };
     let right_x = match right {
-        HeaderRight::Marks(marks) => {
+        HeaderRight::Marks(marks, entries) => {
             let marks = marks.as_slice();
             if marks.is_empty() {
-                cw.saturating_sub(1)
+                // The count's last cell is cw - 4, as when open.
+                count_at(buffer, entries, cw.saturating_sub(4))
             } else {
                 let present = marks.len() as u16;
                 let first = cw
@@ -371,25 +389,12 @@ pub(super) fn render_section_header(
                     );
                     x += 2;
                 }
-                first
+                // The count, then one blank cell, then the marks.
+                count_at(buffer, entries, first.saturating_sub(2))
             }
         }
-        HeaderRight::Count(entries) => {
-            let mut count = StackStr::<8>::new();
-            let _ = write!(count, "{}", entries.min(9_999_999));
-            let width = display_width(count.as_str());
-            // The count's last cell is cw - 4.
-            let x = cw.saturating_sub(3).saturating_sub(width);
-            put_text(
-                buffer,
-                row.x + x,
-                row.y,
-                width,
-                count.as_str(),
-                Style::default().fg(palette.overlay0),
-            );
-            x
-        }
+        // The count's last cell is cw - 4.
+        HeaderRight::Count(entries) => count_at(buffer, entries, cw.saturating_sub(4)),
     };
     let title_style = Style::default()
         .fg(if hovered {

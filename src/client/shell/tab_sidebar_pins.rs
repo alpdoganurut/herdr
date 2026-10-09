@@ -81,7 +81,7 @@ pub(super) fn render_pins_block(
                 marks.push(glyph, color);
             }
         }
-        HeaderRight::Marks(marks)
+        HeaderRight::Marks(marks, model.pins.len())
     } else {
         HeaderRight::Count(model.pins.len())
     };
