@@ -47,6 +47,63 @@ impl ClientShellState {
         }
     }
 
+    /// Fork (sidebar v2): whether the expanded tabs sidebar draws (one
+    /// machine, `sidebar_layout = "tabs"`, not collapsed), ensuring its
+    /// derived model when it does. Shared by `compose` and the healthy-Local
+    /// pane-surface gap in `compose_unavailable`.
+    fn ensure_tabs_sidebar_model(
+        &mut self,
+        news_row: Option<&super::news::NewsRow>,
+        coordinator_row: Option<&super::coordinator::CoordinatorRow>,
+    ) -> bool {
+        if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs
+            || self.sidebar_collapsed
+            || self.endpoints.len() != 1
+        {
+            return false;
+        }
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return false;
+        };
+        self.sidebar_model
+            .ensure(super::sidebar_model::ModelInputs {
+                snapshot,
+                collapsed_groups: &self.collapsed_groups,
+                expanded_runs: Some(&self.expanded_runs),
+                voice: super::voice::active_voice_of(
+                    &self.voice,
+                    &self.active_endpoint_id,
+                    Some(snapshot),
+                ),
+                times: super::agent_times::active_agent_times_of(
+                    &self.agent_times,
+                    &self.active_endpoint_id,
+                    Some(snapshot),
+                ),
+                pins: super::tab_pins::active_tab_pins_of(
+                    &self.tab_pins,
+                    &self.active_endpoint_id,
+                    Some(snapshot),
+                ),
+                mutes: super::tab_mutes::active_tab_mutes_of(
+                    &self.tab_mutes,
+                    &self.active_endpoint_id,
+                    Some(snapshot),
+                ),
+                fixed_ids: (
+                    news_row.and_then(|row| row.tab_id.as_deref()),
+                    coordinator_row.and_then(|row| row.tab_id.as_deref()),
+                ),
+                sections: super::tab_sidebar::sidebar_sections(&self.config),
+                context: super::agent_context::active_agent_context_of(
+                    &self.agent_context,
+                    &self.active_endpoint_id,
+                    Some(snapshot),
+                ),
+            });
+        true
+    }
+
     fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
         let layout = self.layout(cols, rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
@@ -67,22 +124,23 @@ impl ClientShellState {
                 .navigate_workspace_id
                 .as_ref()
                 .is_some_and(|target| self.navigation_target_valid(target));
+        // A resize invalidates pane geometry, not the healthy Local workspace chrome.
+        // Fork: that chrome is the sidebar the full compose draws (any
+        // `sidebar_layout`, collapsed or not), never the machine list.
+        let local_healthy = self.snapshot.is_some()
+            && self.endpoints.len() == 1
+            && self.endpoint_status(&self.active_endpoint_id) == Some(ClientEndpointStatus::Online);
+        let news_row = self.news_row();
+        let coordinator_row = self.coordinator_row();
+        let tabs_sidebar = local_healthy
+            && self.ensure_tabs_sidebar_model(news_row.as_ref(), coordinator_row.as_ref());
+        let local_snapshot = self.snapshot.as_deref().filter(|_| local_healthy);
         let pending_workspace_highlight =
             self.pending_workspace_highlight.as_ref().filter(|pending| {
                 self.mode != ClientShellMode::Navigate
                     && pending.target.endpoint_id == self.active_endpoint_id
                     && self.navigation_target_valid(&pending.target)
             });
-        // A resize invalidates pane geometry, not the healthy Local workspace chrome.
-        let local_snapshot = self.snapshot.as_deref().filter(|_| {
-            self.endpoints.len() == 1
-                && !self.sidebar_collapsed
-                && layout.sidebar.width > 0
-                && self.endpoint_status(&self.active_endpoint_id)
-                    == Some(ClientEndpointStatus::Online)
-        });
-        let news_row = self.news_row();
-        let coordinator_row = self.coordinator_row();
         let breathe_phase = self.breathe_phase();
         let breathe_reset_rgb = self.breathe_reset_rgb();
         let browser_row = self.browser_row();
@@ -121,7 +179,7 @@ impl ClientShellState {
             tab_scroll: &mut self.tab_scroll,
             reveal_focused_workspace: &mut self.reveal_focused_workspace,
             reveal_focused_tab: &mut self.reveal_focused_tab,
-            sidebar_collapsed: false,
+            sidebar_collapsed: local_snapshot.is_some() && self.sidebar_collapsed,
             sidebar_section_split: self.sidebar_section_split,
             tab_drag_insert_index: None,
             selected_workspace_id: self
@@ -133,8 +191,8 @@ impl ClientShellState {
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
             sidebar_tab_drop_row: None,
-            sidebar_model: None,
-            sidebar_hover: None,
+            sidebar_model: tabs_sidebar.then_some(&self.sidebar_model),
+            sidebar_hover: self.sidebar_hover.as_ref(),
             now: self.sidebar_clock.unwrap_or_else(std::time::Instant::now),
             sidebar_reveal_tab: &mut self.sidebar_reveal_tab,
             active_view,
@@ -152,9 +210,18 @@ impl ClientShellState {
             ),
         };
         if let Some(snapshot) = local_snapshot {
-            render::render_sidebar(
+            if layout.mobile_header.height > 0 {
+                super::mobile::render_mobile_header(
+                    &mut buffer,
+                    layout.mobile_header,
+                    snapshot,
+                    &self.config,
+                    &mut self.hits,
+                );
+            }
+            render::render_sidebar_column(
                 &mut buffer,
-                sidebar,
+                layout.sidebar,
                 snapshot,
                 &self.config,
                 &mut render_state,
@@ -233,12 +300,6 @@ impl ClientShellState {
                 .navigate_workspace_id
                 .as_ref()
                 .is_some_and(|target| self.navigation_target_valid(target));
-        let pending_workspace_highlight =
-            self.pending_workspace_highlight.as_ref().filter(|pending| {
-                self.mode != ClientShellMode::Navigate
-                    && pending.target.endpoint_id == self.active_endpoint_id
-                    && self.navigation_target_valid(&pending.target)
-            });
         if self.snapshot.is_none() || self.pane_surface.is_none() {
             return Some(self.compose_unavailable(cols, rows));
         }
@@ -254,6 +315,14 @@ impl ClientShellState {
         if snapshot.revision != surface.projection_revision {
             return None;
         }
+        let news_row = self.news_row();
+        let coordinator_row = self.coordinator_row();
+        // Fork (sidebar v2): the tabs sidebar's derived state, rebuilt only
+        // after a data change (`sidebar_model.rs`).
+        let tabs_sidebar =
+            self.ensure_tabs_sidebar_model(news_row.as_ref(), coordinator_row.as_ref());
+        let snapshot = self.snapshot.as_deref()?;
+        let surface = self.pane_surface.as_ref()?;
         let layout = self.layout(cols, rows);
         if self.last_tab_bar_width != Some(layout.tab_bar.width) {
             self.last_tab_bar_width = Some(layout.tab_bar.width);
@@ -273,57 +342,16 @@ impl ClientShellState {
             ),
             _ => (None, None),
         };
-        let news_row = self.news_row();
-        let coordinator_row = self.coordinator_row();
         let breathe_phase = self.breathe_phase();
         let breathe_reset_rgb = self.breathe_reset_rgb();
         let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
-        // Fork (sidebar v2): the tabs sidebar's derived state, rebuilt only
-        // after a data change (`sidebar_model.rs`).
-        let tabs_sidebar = self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
-            && !self.sidebar_collapsed
-            && self.endpoints.len() == 1;
-        if tabs_sidebar {
-            self.sidebar_model
-                .ensure(super::sidebar_model::ModelInputs {
-                    snapshot,
-                    collapsed_groups: &self.collapsed_groups,
-                    expanded_runs: Some(&self.expanded_runs),
-                    voice: super::voice::active_voice_of(
-                        &self.voice,
-                        &self.active_endpoint_id,
-                        Some(snapshot),
-                    ),
-                    times: super::agent_times::active_agent_times_of(
-                        &self.agent_times,
-                        &self.active_endpoint_id,
-                        Some(snapshot),
-                    ),
-                    pins: super::tab_pins::active_tab_pins_of(
-                        &self.tab_pins,
-                        &self.active_endpoint_id,
-                        Some(snapshot),
-                    ),
-                    mutes: super::tab_mutes::active_tab_mutes_of(
-                        &self.tab_mutes,
-                        &self.active_endpoint_id,
-                        Some(snapshot),
-                    ),
-                    fixed_ids: (
-                        news_row.as_ref().and_then(|row| row.tab_id.as_deref()),
-                        coordinator_row
-                            .as_ref()
-                            .and_then(|row| row.tab_id.as_deref()),
-                    ),
-                    sections: super::tab_sidebar::sidebar_sections(&self.config),
-                    context: super::agent_context::active_agent_context_of(
-                        &self.agent_context,
-                        &self.active_endpoint_id,
-                        Some(snapshot),
-                    ),
-                });
-        }
+        let pending_workspace_highlight =
+            self.pending_workspace_highlight.as_ref().filter(|pending| {
+                self.mode != ClientShellMode::Navigate
+                    && pending.target.endpoint_id == self.active_endpoint_id
+                    && self.navigation_target_valid(&pending.target)
+            });
         let active_view = self.active_view();
         let pins_view = self.pins_view();
         let scheduled_view = self.scheduled_view();

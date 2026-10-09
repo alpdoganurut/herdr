@@ -296,6 +296,67 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) tab_mutes: Option<&'a super::tab_mutes::ClientTabMutesState>,
 }
 
+/// The sidebar column for the configured `sidebar_layout`, collapse state,
+/// and machine count. Shared by the full compose and the healthy-Local
+/// pane-surface gap (`compose_unavailable`), so a resize never flashes a
+/// different sidebar than the one it settles on.
+pub(super) fn render_sidebar_column(
+    buffer: &mut Buffer,
+    area: Rect,
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+    state: &mut ShellRenderState<'_>,
+    hits: &mut ShellHitMap,
+) {
+    if area.width == 0 {
+        return;
+    }
+    if state.endpoints.len() > 1 {
+        if state.sidebar_collapsed {
+            super::endpoint_sidebar::render_collapsed(buffer, area, config, state, hits);
+        } else {
+            super::endpoint_sidebar::render_expanded(
+                buffer,
+                area,
+                Some(snapshot),
+                config,
+                state,
+                hits,
+            );
+        }
+    } else if !state.sidebar_collapsed
+        && config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+    {
+        let coordinator_row = state.coordinator_row.take();
+        let teams = state.teams;
+        hits.coordinator_row = super::tab_sidebar::render_tab_sidebar_with(
+            buffer,
+            area,
+            snapshot,
+            config,
+            state,
+            hits,
+            super::tab_sidebar::TabSidebarCoordinator {
+                row: coordinator_row.as_ref(),
+                teams,
+            },
+        );
+    } else if state.sidebar_collapsed {
+        render_collapsed_sidebar(
+            buffer,
+            area,
+            snapshot,
+            config,
+            state
+                .selected_workspace_id
+                .map(|target| target.workspace_id.as_str()),
+            hits,
+        );
+    } else {
+        render_sidebar(buffer, area, snapshot, config, state, hits);
+    }
+}
+
 pub(super) fn render_shell(
     buffer: &mut Buffer,
     layout: ClientShellLayout,
@@ -313,65 +374,14 @@ pub(super) fn render_shell(
             &mut hits,
         );
     }
-    if layout.sidebar.width > 0 {
-        if state.endpoints.len() > 1 {
-            if state.sidebar_collapsed {
-                super::endpoint_sidebar::render_collapsed(
-                    buffer,
-                    layout.sidebar,
-                    config,
-                    &mut state,
-                    &mut hits,
-                );
-            } else {
-                super::endpoint_sidebar::render_expanded(
-                    buffer,
-                    layout.sidebar,
-                    Some(snapshot),
-                    config,
-                    &mut state,
-                    &mut hits,
-                );
-            }
-        } else if !state.sidebar_collapsed
-            && config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
-        {
-            let coordinator_row = state.coordinator_row.take();
-            let teams = state.teams;
-            hits.coordinator_row = super::tab_sidebar::render_tab_sidebar_with(
-                buffer,
-                layout.sidebar,
-                snapshot,
-                config,
-                &mut state,
-                &mut hits,
-                super::tab_sidebar::TabSidebarCoordinator {
-                    row: coordinator_row.as_ref(),
-                    teams,
-                },
-            );
-        } else if state.sidebar_collapsed {
-            render_collapsed_sidebar(
-                buffer,
-                layout.sidebar,
-                snapshot,
-                config,
-                state
-                    .selected_workspace_id
-                    .map(|target| target.workspace_id.as_str()),
-                &mut hits,
-            );
-        } else {
-            render_sidebar(
-                buffer,
-                layout.sidebar,
-                snapshot,
-                config,
-                &mut state,
-                &mut hits,
-            );
-        }
-    }
+    render_sidebar_column(
+        buffer,
+        layout.sidebar,
+        snapshot,
+        config,
+        &mut state,
+        &mut hits,
+    );
     if layout.tab_bar.height > 0 {
         // Fork: outside the `tabs` layout the coordinator tab carries its
         // row's glyph and status after its label.

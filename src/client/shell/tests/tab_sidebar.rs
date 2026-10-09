@@ -3801,3 +3801,107 @@ fn a_tab_dropped_on_a_folded_run_goes_before_the_run() {
         endpoint_methods(&outcome)
     );
 }
+
+fn sidebar_rows(frame: &FrameData, width: u16) -> Vec<String> {
+    (0..frame.height)
+        .map(|y| row_text(frame, ratatui::layout::Rect::new(0, y, width, 1)))
+        .collect()
+}
+
+/// A resize drops the pane surface until the server's resized one arrives;
+/// the frame composed in that gap keeps the very sidebar the full compose
+/// draws (layout, collapse state, rows, and hits), never the spaces list or
+/// the machine list in its place.
+#[test]
+fn the_pane_surface_gap_keeps_the_composed_sidebar() {
+    for (layout, active_agents, collapsed) in [
+        (SidebarLayoutConfig::Tabs, false, false),
+        (SidebarLayoutConfig::Tabs, true, false),
+        (SidebarLayoutConfig::Tabs, false, true),
+        (SidebarLayoutConfig::Spaces, false, false),
+        (SidebarLayoutConfig::Spaces, false, true),
+    ] {
+        let case = format!("{layout:?} active_agents={active_agents} collapsed={collapsed}");
+        let mut config = tabs_config();
+        config.ui.sidebar_layout = layout;
+        config.ui.sidebar_active_agents = active_agents;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.sidebar_collapsed = collapsed;
+        let clock = std::time::Instant::now();
+        state.sidebar_clock = Some(clock);
+        state.breathe_clock = Some(clock);
+        state.set_snapshot(Box::new(two_space_snapshot()));
+        state.set_pane_surface(surface());
+        let full = state.compose(106, 20).expect("composed frame");
+        let full_tabs = state.hits.sidebar_tabs.clone();
+        let full_spaces = state
+            .hits
+            .workspaces
+            .iter()
+            .map(|hit| hit.workspace_id.clone())
+            .collect::<Vec<_>>();
+        let width = state.layout(106, 20).sidebar.width;
+        assert!(width > 0, "{case}");
+
+        state.invalidate_pane_surface();
+        let gap = state
+            .compose(106, 20)
+            .expect("frame while the surface is on its way");
+        assert!(state.pane_surface.is_none(), "{case}");
+        assert_eq!(
+            sidebar_rows(&gap, width),
+            sidebar_rows(&full, width),
+            "{case}"
+        );
+        assert_eq!(state.hits.sidebar_tabs, full_tabs, "{case}");
+        let gap_spaces = state
+            .hits
+            .workspaces
+            .iter()
+            .map(|hit| hit.workspace_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(gap_spaces, full_spaces, "{case}");
+        assert!(state.hits.machines.is_empty(), "{case}");
+        let text = sidebar_rows(&gap, gap.width).concat();
+        assert!(!text.contains(" machines"), "{case}: {text}");
+        assert!(
+            !text.contains("Select a connected machine"),
+            "{case}: {text}"
+        );
+        if layout == SidebarLayoutConfig::Tabs && !collapsed {
+            assert!(!text.contains(" spaces"), "{case}: {text}");
+            let ids = full_tabs
+                .iter()
+                .map(|(_, id)| id.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(ids, ["tab_1", "tab_2", "tab_3"], "{case}");
+        }
+        if layout == SidebarLayoutConfig::Spaces && !collapsed {
+            assert!(text.contains(" spaces"), "{case}: {text}");
+            assert!(full_tabs.is_empty(), "{case}");
+        }
+    }
+}
+
+/// The hidden collapsed sidebar has no column: the gap draws no sidebar at
+/// all rather than a full-width machine list.
+#[test]
+fn the_pane_surface_gap_draws_no_machine_list_for_a_hidden_sidebar() {
+    let mut config = tabs_config();
+    config.ui.sidebar_collapsed_mode = crate::config::SidebarCollapsedModeConfig::Hidden;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.sidebar_collapsed = true;
+    state.set_snapshot(Box::new(two_space_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    assert_eq!(state.layout(106, 20).sidebar.width, 0);
+    state.invalidate_pane_surface();
+    let gap = state
+        .compose(106, 20)
+        .expect("frame while the surface is on its way");
+    let text = sidebar_rows(&gap, gap.width).concat();
+    assert!(!text.contains(" machines"), "{text}");
+    assert!(!text.contains("Select a connected machine"), "{text}");
+    assert!(state.hits.machines.is_empty());
+    assert!(state.hits.sidebar_tabs.is_empty());
+}
