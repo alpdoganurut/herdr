@@ -1374,6 +1374,11 @@ herdr_agents
 ::agents_
 `agents_
 fn agents_
+mod agents_model
+mod agents_close
+mod agents_migrate
+mod agents_reorder
+let agents_
 HERDR_COORDINATOR_
 agent.suspend
 agent.activate
@@ -1902,6 +1907,10 @@ InputSource::Client
 InputSource::Internal
 InputSource::Programmatic
 enum InputSource
+struct InputSource {
+struct InputSource(
+struct InputSource;
+trait InputSource
 note_input
 agent_meta
 public_aliases
@@ -1931,6 +1940,8 @@ notes_hook
 .peer_pid
 peer_pid: Option
 peer_pid: None
+fn peer_pid
+let peer_pid
 CONNECTION_PEER_PID
 local_stream_peer_pid
 parent_pid
@@ -2056,6 +2067,11 @@ tab_history_forward
 TabHistory::
 struct TabHistory {
 tab_history::
+enum TabHistory
+TabHistory,
+TabHistory;
+TabHistory>
+TabHistory)
 TabHistoryBack
 TabHistoryForward
 agent_context_view_rev
