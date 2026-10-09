@@ -7,6 +7,35 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Fork: a drag's sizes are coalesced: the first change at once, then at
+/// most one per gap while it keeps changing, and always the size it settles on.
+#[test]
+fn a_drag_reports_its_first_size_then_one_per_gap_and_the_settled_size() {
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    let poll = Duration::from_millis(100);
+    let size = |cols| (cols, 40, 8, 16, true);
+    let mut coalescer = ResizeCoalescer::new(size(100));
+    let at = |n: u32| start + poll * n;
+    // Nothing changed: nothing reported.
+    assert_eq!(coalescer.observe(at(0), false, size(100)), None);
+    // The first change after a quiet spell goes at once.
+    assert_eq!(coalescer.observe(at(1), true, size(101)), Some(size(101)));
+    // Still moving inside the gap: held back.
+    assert_eq!(coalescer.observe(at(2), true, size(102)), None);
+    assert_eq!(coalescer.observe(at(3), true, size(103)), None);
+    // Still moving once the gap is over: the current size goes.
+    assert!(poll * 3 >= RESIZE_REPORT_GAP);
+    assert_eq!(coalescer.observe(at(4), true, size(104)), Some(size(104)));
+    assert_eq!(coalescer.observe(at(5), true, size(105)), None);
+    // The drag stops: the settled size goes on the next poll.
+    assert_eq!(coalescer.observe(at(6), false, size(105)), Some(size(105)));
+    // Quiet again: nothing more.
+    assert_eq!(coalescer.observe(at(7), false, size(105)), None);
+    // A resize signal for the same size still reports it.
+    assert_eq!(coalescer.observe(at(8), true, size(105)), Some(size(105)));
+}
+
 #[test]
 fn resize_signal_reports_even_when_polled_size_is_unchanged() {
     let size = (120, 40, 8, 16, true);

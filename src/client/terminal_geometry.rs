@@ -122,6 +122,62 @@ pub(super) fn resize_report_required(
     signalled || new_size != last_size
 }
 
+/// Fork: the most often a size is reported while it keeps changing (a window
+/// drag): every intermediate size makes the server resize and re-read every
+/// visible pane, so a drag sends one now and then and the size it settles on.
+pub(super) const RESIZE_REPORT_GAP: Duration = Duration::from_millis(300);
+
+type TerminalSize = (u16, u16, u32, u32, bool);
+
+/// Fork: decides which polled sizes are reported (pure, see
+/// `resize_poll_loop`). A change after a quiet spell is reported at once;
+/// while the size keeps changing, at most one per `RESIZE_REPORT_GAP`; the
+/// size it settles on (unchanged for one poll) always.
+#[derive(Debug)]
+pub(super) struct ResizeCoalescer {
+    last_sent: TerminalSize,
+    last_sent_at: Option<std::time::Instant>,
+    last_polled: TerminalSize,
+}
+
+impl ResizeCoalescer {
+    pub(super) fn new(initial: TerminalSize) -> Self {
+        Self {
+            last_sent: initial,
+            last_sent_at: None,
+            last_polled: initial,
+        }
+    }
+
+    /// The size to report for this poll, if any.
+    pub(super) fn observe(
+        &mut self,
+        now: std::time::Instant,
+        signalled: bool,
+        size: TerminalSize,
+    ) -> Option<TerminalSize> {
+        let moving = size != self.last_polled;
+        self.last_polled = size;
+        if !resize_report_required(signalled, size, self.last_sent) {
+            return None;
+        }
+        if size == self.last_sent {
+            // A resize signal without a new size still asks for a report.
+            return Some(self.sent(now, size));
+        }
+        let gap_over = self
+            .last_sent_at
+            .is_none_or(|at| now.saturating_duration_since(at) >= RESIZE_REPORT_GAP);
+        (!moving || gap_over).then(|| self.sent(now, size))
+    }
+
+    fn sent(&mut self, now: std::time::Instant, size: TerminalSize) -> TerminalSize {
+        self.last_sent = size;
+        self.last_sent_at = Some(now);
+        size
+    }
+}
+
 /// Watches the terminal size and sends resize events when it changes.
 ///
 /// The baseline cell size must match what the handshake sent to the server:
@@ -148,6 +204,7 @@ pub(super) fn resize_poll_loop(
         initial_cell_height,
         initial_pixel_geometry_exact,
     );
+    let mut coalescer = ResizeCoalescer::new(last_size);
     while !should_quit.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(100));
         let signalled = crate::platform::take_terminal_resize_signal();
@@ -163,7 +220,9 @@ pub(super) fn resize_poll_loop(
                 break;
             }
         };
-        if resize_report_required(signalled, new_size, last_size) {
+        // Fork: a drag's intermediate sizes are coalesced (`ResizeCoalescer`).
+        let report = coalescer.observe(std::time::Instant::now(), signalled, new_size);
+        if let Some(new_size) = report {
             last_size = new_size;
             if resize_tx
                 .blocking_send(ClientLoopEvent::Resize(

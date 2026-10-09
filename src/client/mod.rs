@@ -66,7 +66,8 @@ use terminal_geometry::query_host_terminal_appearance;
 use terminal_geometry::{
     cell_size_fallback, current_terminal_geometry_with, ioctl_cell_size, pack_cell_size,
     resize_report_required, should_query_host_cell_size, write_host_cell_size_query,
-    write_host_terminal_appearance_query, write_host_terminal_theme_query,
+    write_host_terminal_appearance_query, write_host_terminal_theme_query, ResizeCoalescer,
+    RESIZE_REPORT_GAP,
 };
 use terminal_geometry::{
     host_cell_size_query_required, initial_terminal_geometry, query_host_cell_size,
