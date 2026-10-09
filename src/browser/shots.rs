@@ -75,9 +75,10 @@ pub fn stamp(now: u64) -> String {
         .ok()
         .and_then(|t| {
             let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-            let format =
-                time::format_description::parse("[year][month][day]-[hour][minute][second]")
-                    .ok()?;
+            let format = time::format_description::parse_borrowed::<1>(
+                "[year][month][day]-[hour][minute][second]",
+            )
+            .ok()?;
             t.to_offset(offset).format(&format).ok()
         })
         .unwrap_or_else(|| now.to_string())

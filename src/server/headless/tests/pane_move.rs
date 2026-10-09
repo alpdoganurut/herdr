@@ -29,7 +29,6 @@ fn public_move(
         },
         respond_to,
         response_write_complete: None,
-        stream_active: None,
         peer_pid: None,
     });
     let response = response_rx.recv().expect("pane move response");

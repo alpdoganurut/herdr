@@ -824,7 +824,7 @@ fn hover_tab(state: &mut ClientShellState, tab_id: &str) -> FrameData {
     state.sidebar_hover = Some(super::super::sidebar_model::SidebarHover::Tab(
         tab_id.into(),
     ));
-    state.compose(106, 20).expect("composed frame")
+    state.compose(106, 20).expect("composed frame").frame
 }
 
 #[test]
@@ -943,7 +943,7 @@ fn glyph_color_state(config: &Config, focused_tab: &str) -> (ClientShellState, F
     let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
     state.set_snapshot(Box::new(snapshot));
     state.set_pane_surface(surface());
-    let frame = state.compose(106, 20).expect("composed frame");
+    let frame = state.compose(106, 20).expect("composed frame").frame;
     (state, frame)
 }
 
@@ -1848,7 +1848,7 @@ fn colored_tabs_state(config: &Config) -> (ClientShellState, FrameData) {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
     state.set_snapshot(Box::new(snapshot));
     state.set_pane_surface(surface());
-    let frame = state.compose(106, 20).expect("composed frame");
+    let frame = state.compose(106, 20).expect("composed frame").frame;
     (state, frame)
 }
 
@@ -2414,7 +2414,7 @@ fn composed_at(
     let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
     state.set_snapshot(Box::new(snapshot));
     state.set_pane_surface(wide_surface());
-    let frame = state.compose(106, rows).expect("composed frame");
+    let frame = state.compose(106, rows).expect("composed frame").frame;
     (state, frame)
 }
 

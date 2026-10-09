@@ -4323,7 +4323,7 @@ pub(crate) mod tests {
             ),
             (
                 "src/app/api/agents.rs",
-                "queue_agent_prompt_as",
+                "submit_agent_prompt",
                 "programmatic",
             ),
             (
@@ -4431,7 +4431,7 @@ pub(crate) mod tests {
                         body.contains("note_input")
                             || body.contains("note_pane_input")
                             || body.contains(".turn_mut()")
-                            || function == "queue_agent_prompt_as",
+                            || function == "submit_agent_prompt",
                         "{file}: `{function}` writes ({class}) without recording provenance"
                     );
                 }

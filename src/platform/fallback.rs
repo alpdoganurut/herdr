@@ -14,6 +14,16 @@ pub(crate) fn set_default_plugin_pane_pwd(
 }
 
 #[cfg(unix)]
+pub(super) fn socket_peer_pid(_fd: std::os::fd::RawFd) -> Option<u32> {
+    None
+}
+
+#[cfg(unix)]
+pub(super) fn process_name_and_parent(_pid: u32) -> Option<(String, u32)> {
+    None
+}
+
+#[cfg(unix)]
 pub(super) const REMOTE_BRIDGE_CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
 
 pub(crate) fn forward_remote_bridge_stdio(
@@ -229,6 +239,16 @@ pub fn signal_processes(_pids: &[u32], _signal: Signal) {}
 pub fn signal_process_group(_process_group_id: u32, _signal: Signal) {}
 
 /// Unsupported platform stub.
+pub fn process_start_token(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// Unsupported platform stub.
+pub fn live_pane_process_group(_shell_pid: u32, _pid: u32, _start_token: u64) -> Option<u32> {
+    None
+}
+
+/// Unsupported platform stub.
 pub fn process_exists(_pid: u32) -> bool {
     false
 }
@@ -240,6 +260,11 @@ pub fn write_clipboard(_bytes: &[u8]) -> bool {
 
 /// Unsupported platform stub.
 pub fn read_clipboard_text() -> Option<String> {
+    None
+}
+
+/// Unsupported platform stub.
+pub fn clipboard_text_matches(_bytes: &[u8]) -> Option<bool> {
     None
 }
 
@@ -259,14 +284,6 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
 /// Unsupported platform stub.
 pub fn show_desktop_notification(_title: &str, _body: Option<&str>) -> std::io::Result<bool> {
     Ok(false)
-}
-
-/// The process on the other end of a local API connection (peer credentials).
-pub(crate) fn local_stream_peer_pid(stream: &crate::ipc::LocalStream) -> Option<u32> {
-    use interprocess::local_socket::traits::StreamCommon as _;
-
-    let pid = stream.peer_creds().ok()?.pid()?;
-    u32::try_from(pid).ok().filter(|pid| *pid > 0)
 }
 
 /// Process parents are not walked here: a caller is found by its own pid

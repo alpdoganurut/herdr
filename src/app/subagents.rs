@@ -304,6 +304,7 @@ mod tests {
                     agent_session_id: Some(id.into()),
                     agent_session_path: None,
                     session_start_source: Some(source.into()),
+                    resume_argv: None,
                 }),
             })
         };

@@ -233,7 +233,7 @@ fn recompose(state: &mut ClientShellState) -> Option<FrameData> {
     if state.pane_surface.is_none() {
         state.set_pane_surface(surface());
     }
-    state.compose(COLS, ROWS)
+    state.compose(COLS, ROWS).map(|composed| composed.frame)
 }
 
 fn info_requests(outcome: &ClientShellInput) -> Vec<(String, Method)> {

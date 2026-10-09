@@ -159,7 +159,7 @@ fn row_text(frame: &FrameData, rect: Rect) -> String {
 }
 
 fn header(state: &mut ClientShellState) -> (String, Rect, FrameData) {
-    let frame = state.compose(106, 24).expect("composed frame");
+    let frame = state.compose(106, 24).expect("composed frame").frame;
     let (rect, _) = state.hits.sidebar_groups[0];
     (row_text(&frame, rect), rect, frame)
 }

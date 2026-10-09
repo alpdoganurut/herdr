@@ -1521,7 +1521,7 @@ impl App {
         let Some(ws_idx) = (!self.state.workspaces.is_empty()).then_some(0) else {
             return Err("no space to open the News tab in".into());
         };
-        let (rows, cols) = self.state.estimate_pane_size();
+        let (rows, cols) = self.state.new_pane_size(crate::ui::NewPanePlacement::Alone);
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;

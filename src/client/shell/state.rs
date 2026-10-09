@@ -833,6 +833,7 @@ pub(super) enum ClientContextMenuTarget {
         is_git: bool,
         is_linked_worktree: bool,
         has_worktree_children: bool,
+        close_group: bool,
         collapsed: bool,
     },
     Tab {
@@ -920,11 +921,10 @@ pub(super) struct ClientTabCloseConfirmation {
 #[derive(Debug)]
 pub(super) struct ClientConfirmCloseOverlay {
     pub(super) workspace_id: String,
+    pub(super) close_group: bool,
     pub(super) tab_target: Option<ClientTabCloseConfirmation>,
     pub(super) title: String,
     pub(super) detail: String,
-    /// Whether the close also takes sibling worktree spaces (never for a tab group).
-    pub(super) close_group: bool,
     /// Fork: the confirmation is for "Ungroup (disbands team)": accepting
     /// ungroups instead of closing.
     pub(super) ungroup: bool,
@@ -1122,7 +1122,17 @@ pub(crate) enum ClientShellNotificationEffect {
     System {
         title: String,
         body: Option<String>,
+        #[cfg(windows)]
+        target: Option<ClientSystemNotificationTarget>,
     },
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ClientSystemNotificationTarget {
+    pub(crate) endpoint_id: ClientEndpointId,
+    pub(crate) boot_id: String,
+    pub(crate) pane_id: String,
 }
 
 pub(super) struct ClientPendingNotification {
@@ -1312,6 +1322,15 @@ pub(crate) struct ClientShellState {
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
     pub(super) link_hover: Option<super::link_hover::LinkHover>,
     pub(super) url_click_consumes_until_up: bool,
+    /// The host terminal reports key releases (Kitty event types), so text
+    /// presses can be tracked until their release arrives.
+    pub(super) host_reports_key_releases: bool,
+    /// The host tty's erase character is `^H`: a raw 0x08 is Backspace, not
+    /// Ctrl+H (MobaXterm, PuTTY-style terminals; tmux reads VERASE the same way).
+    pub(super) host_erase_is_ctrl_h: bool,
+    /// The focused pane asks for every key as an escape code, so Herdr pushed
+    /// report-all to the host; plain text input then reaches it as text.
+    pub(super) host_reports_all_keys: bool,
     pub(super) replaying_url_click: bool,
     pub(super) selection: Option<crate::selection::Selection<String>>,
     pub(super) last_pane_click: Option<ClientPaneClick>,
@@ -1522,7 +1541,7 @@ impl ClientShellState {
             pane_surface_generation: None,
             pane_surface: None,
             pending_pane_surface: None,
-            graphics: crate::kitty_graphics::surface::ClientState::default(),
+            graphics: crate::kitty_graphics::surface::ClientState::new(),
             graphics_cell_size: crate::kitty_graphics::HostCellSize {
                 width_px: 1,
                 height_px: 1,
@@ -1570,6 +1589,9 @@ impl ClientShellState {
             pane_mouse_gesture: None,
             link_hover: None,
             url_click_consumes_until_up: false,
+            host_reports_key_releases: false,
+            host_erase_is_ctrl_h: false,
+            host_reports_all_keys: false,
             replaying_url_click: false,
             selection: None,
             last_pane_click: None,

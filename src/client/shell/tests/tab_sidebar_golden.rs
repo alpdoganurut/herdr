@@ -514,7 +514,10 @@ fn assert_golden(name: &str, actual: &str) {
 
 fn compose_golden(rows: u16) -> (ClientShellState, FrameData) {
     let mut state = golden_state(&golden_config());
-    let frame = state.compose(GOLDEN_COLS, rows).expect("composed frame");
+    let frame = state
+        .compose(GOLDEN_COLS, rows)
+        .expect("composed frame")
+        .frame;
     (state, frame)
 }
 

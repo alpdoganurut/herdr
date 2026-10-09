@@ -2,7 +2,7 @@
 
 Section 1 drift check: `git diff --diff-filter=A --name-only $(git merge-base origin/master fork) fork -- . ':(exclude)docs/next/api'` must print exactly the section 1 list.
 
-Base: upstream master 621e6b73 (the merge base moves with each sync). Branch: fork (pushed to mine/fork). Sync tool: scripts/fork_sync.sh via /fork-sync.
+Base: upstream master 2563803d (the merge base moves with each sync). Branch: fork (pushed to mine/fork). Sync tool: scripts/fork_sync.sh via /fork-sync.
 The sync script parses the sections below by their `## N.` headings; keep the headings and the line formats stable. Machine-read sections (1, 2, 7, 8, 9, 10) hold no prose: one entry per line, blank lines ignored.
 Formats: 1 one path per line; 2 a pipe table `| struct | field | default |` whose first row is the header; 7 and 8 `<path><two or more spaces><keyword>: <detail>`, where `*` in section 7 is the default rule; 9 one fixed-string, case-sensitive identifier per line, matched against the added lines of `git diff <base> <upstream> -- . ':(exclude)vendor'` (vendored libghostty already contains `Suspended`); 10 one full nextest test name per line.
 Section 2 also covers E0027 (an exhaustive struct pattern missing a fork field): add `<field>: _`.
@@ -366,7 +366,6 @@ src/client/shell/tests/agent_context.rs
 | ClientSettingsOverlay | news | Box::default() |
 | ClientSettingsOverlay | browser | Box::default() |
 | ClientSettingsOverlay | coordinator | Box::default() |
-| ClientConfirmCloseOverlay | close_group | true |
 | ClientContextMenuTarget::Tab | agent | None |
 | ClientContextMenuTarget::Tab | color | Default::default() |
 | ClientContextMenuTarget::Tab | important | false |
@@ -560,6 +559,7 @@ app::tab_bar_status::spawn_status_command(7 args) -> #[cfg(test)] wrapper passin
 client::shell::ClientShellState::receive_notification -> kept; its replace-by-pane block moved into replace_pane_notifications(endpoint_id, pane_id, now) -> bool (cleared a visible card), shared with the idle reminder engine
 app::actions::AppState::update_terminal_state -> pub(crate) (was private; src/app/subagents.rs calls it)
 app::api::agents::App::queue_agent_prompt -> pub(in crate::app) (was private; src/app/coordinator.rs delivers wake-ups through it); agents v2: (id, params) -> (id, params, source: crate::agents_model::InputSource) (a new upstream call site = E0061: pass InputSource::Programmatic(Programmatic::Api)); its body moved into queue_agent_prompt_as(id, params, source, typed: bool), which it calls with typed = false (typed writes the text as plain keys, not a bracketed paste: an agent message's pointer line); upstream edits to the body land in queue_agent_prompt_as
+app::api::agents::App::submit_agent_prompt(validated, &params) (upstream's split of the old queue_agent_prompt into validate_agent_prompt + submit_agent_prompt, 2563803d) -> (validated, &params, source: crate::agents_model::InputSource, typed: bool) (a new upstream call site = E0061: pass InputSource::Programmatic(Programmatic::Api), false); queue_agent_prompt_as is validate_agent_prompt then submit_agent_prompt
 client::shell::tabs::render_tab_bar(b, area, snapshot, config, tab_scroll, reveal_focused_tab, tab_drag_insert_index, hits) -> (b, area, snapshot, config, coordinator_mark: Option<(&str, String)>, tab_scroll, reveal_focused_tab, tab_drag_insert_index, hits) (the spaces layout's coordinator tab mark)
 Visibility widened by the fork (upstream renaming or narrowing one breaks fork code): app::agents::DEFAULT_AGENT_START_TIMEOUT, app::agents::available_shell_name, app::api::agents::AGENT_PROMPT_SUBMIT_DELAY, app::terminal_targets::{terminal_targets, terminal_target_candidate}, integration::home_dir, client::shell::notification_policy::{notification_target_is_active, COMPLETION_EVIDENCE_GRACE} (pub(super)), app::agent_resume::shell_command_from_argv (pub(super); the closed-session reopen types it), app::api::sanitized_notification_text (pub(super); app::news sanitizes the editor's notification text with it), api::server::dispatch_to_app_with_timeout (pub(crate), re-exported as api::dispatch_to_app_with_timeout; browser::serve resolves the calling pane through it)
 client::shell::ClientShellConfig::layout(cols, rows, sidebar_collapsed, tab_count, sidebar_width) -> (cols, rows, sidebar_collapsed, tab_count, sidebar_width, info_dock_width: Option<u16>) (None = no info dock; the two call sites are ClientShellState::layout, which passes info_dock_width_for_focused_tab(), and ClientShellConfig::initial_surface_size, which passes None)
@@ -1099,11 +1099,11 @@ src/app/agent_suspend.rs  mid-logic: suspend_resolved_agent refuses with Subagen
 src/app/api.rs  mid-logic: emit_pane_state_update (status computed with suspended on both sides); handle_api_request dispatches Method::NewsRun / NewsStatus / NewsGet / NewsHistory / NewsOpen / NewsSetEnabled / NewsSetTimes directly after the SessionClosedRemove arm, then Method::BrowserRun (answers browser_lane: it belongs to the connection thread) and BrowserGet / BrowserStatus / BrowserFocus / BrowserStart / BrowserStop / BrowserLog / BrowserResolveCaller / BrowserProfiles / BrowserProfileCreate / BrowserProfileDelete / BrowserSettings / BrowserSettingsSet / BrowserFix (handlers in src/app/browser.rs) directly after NewsSetTimes
 src/app/browser.rs  mid-logic: install_browser_hub calls hub.refresh_checks(false) after the autostart (not under cfg(test), only with [browser] enabled); handle_browser_get calls hub.refresh_checks_if_older(5 min) and sets browser.setup_needed from hub.setup_needed(); set_browser_setting maps the key to a ConfigEdit::Browser* variant (steer_wrap → BrowserBools), writes it, calls App::reload_config, compares hub.config()'s value with the request (browser_config_value; mismatch = browser_config_write_failed, no fix), then hub.run_fixes for mcp_agents / shell_hook or hub.refresh_checks(true)
 src/browser/hub.rs  mid-logic: start's `herdr-browser-start` thread and ensure_running (after the already-attached early return, before the attach/launch decision) call auto_repair_once (setup::auto_repair under a std::sync::Once, never in test_mode); get() fills setup_needed from the cached checks; Inner carries setup: SetupState (checks, checked_at, checking, fixing, fixes, pending, generation) and setup_env_override (tests)
-src/app/api/agents.rs  mid-logic: queue_agent_prompt and handle_agent_send_keys refuse suspended panes; any new upstream input method does not
+src/app/api/agents.rs  mid-logic: validate_agent_prompt (the check half of the old queue_agent_prompt; upstream split it, 2563803d) and handle_agent_send_keys refuse suspended panes; any new upstream input method does not
 src/app/api/panes.rs  mid-logic: handle_pane_report_agent and handle_pane_report_agent_session derive transcript_path
 src/app/api_helpers.rs  mid-logic: status mapping moved to workspace::aggregate
 src/app/creation.rs  mid-logic: tab_info (color, important, remind_every), pane_info, workspace_info, terminal_agent_session_info
-src/app/mod.rs  mid-logic: App::new (news field from NewsState::new; `app.install_browser_hub(&config.browser)` directly after configure_window_title, before `app` is returned), apply_live_config (session section block restructured; a `news` section block directly before the graphics check applies NewsState::apply_config, a `browser` section block directly after it hands config.browser to crate::browser::hub())
+src/app/mod.rs  mid-logic: App::new (news field from NewsState::new; `app.install_browser_hub(&config.browser)` directly after configure_window_title, before upstream's refresh_restored_workspace_git_metadata and `Ok(app)`), apply_live_config (session section block restructured; a `news` section block directly before the graphics check applies NewsState::apply_config, a `browser` section block directly after it hands config.browser to crate::browser::hub())
 src/server/headless.rs  mid-logic: the run loop's exit calls crate::browser::hub().stop_with_server_if_configured() directly after save_session_on_shutdown, skipped while handoff_in_progress (the replacement server reattaches to the same Chromium)
 src/api/server.rs  mid-logic: handle_connection_with_stop runs Method::BrowserRun on the connection thread (crate::browser::serve::run, answered through finish_wait_response) in an arm directly after the PaneWaitForOutput arm, before `method_body =>`
 src/app/session.rs  mid-logic: save_session_on_shutdown (early return became if/else, backup pass appended)
@@ -1138,7 +1138,7 @@ src/config.rs  mid-logic: Config::collect_diagnostics chains tab_agent_glyph_col
 src/client/shell/tests/graphics.rs  depends: assert_graphics_cover is pub(super) for tests/sticky_notifications.rs; its ClientContextMenuTarget::Tab literal carries `color: Default::default()` and its ClientSettingsOverlay literal `news: Box::default()` (section 2)
 src/client/shell/actions.rs  mid-logic: record_binding (topology lock, group keys; OpenBrowser opens the Browser overlay directly after the Settings branch), endpoint_method_for_action (SwitchTab/NextTab/PreviousTab index keyboard_tab_list — the sidebar's order with the pinned News tab left out in the tabs layout, the focused space in the spaces layout; Next/Previous from the News tab land on the first/last entry —, CycleTabColor, ToggleTabImportant, OpenNews -> news.open); the `impl ClientShellState` block with keyboard_tab_list at the end of the file
 src/client/shell/context_menu.rs  mid-logic: items (a Browser target lists Focus window and Stop profile or Start profile on a local endpoint, then Open overlay; a News target lists Run now, Open, Pause / Resume schedule; after Close, so upstream item indices hold: the important toggle, the two reminder selector rows, then the swatch row `Color` last), activate_context_menu_item's target match sends News to activate_news_context_action and Browser to activate_browser_context_action, open_tab_context_menu (captures the tab color, important and remind_every into the Tab target), activate_context_menu_item (the swatch row, Important and the selector act before the target dispatch, so no tab focus; the Tab arm ignores `color`, `important` and `remind` with `..`)
-src/client/shell/overlay_input.rs  mid-logic: route_overlay_key hands a Browser overlay's keys to route_browser_overlay_key first (before the Onboarding check); save_rename_overlay, accept_close_confirmation (close_group now from the overlay); the ContextMenu key block asks route_tab_remind_menu_key, then route_tab_color_menu_key first (Up/Down move between and re-seat the selector and swatch cursors, Left/Right/h/l on either row)
+src/client/shell/overlay_input.rs  mid-logic: route_overlay_key hands a Browser overlay's keys to route_browser_overlay_key first (before the Onboarding check); save_rename_overlay; the ContextMenu key block asks route_tab_remind_menu_key, then route_tab_color_menu_key first (Up/Down move between and re-seat the selector and swatch cursors, Left/Right/h/l on either row)
 src/client/shell/overlays.rs  mid-logic: render_context_menu widens a tab menu to the swatch row and the reminder selector, draws the swatches and the selector's options in place of their items' labels (only the cursor one highlighted, while its row is) and returns their rects as menu_swatches / menu_remind_options; render_client_overlay passes the config to the settings overlay and draws ClientShellOverlay::Browser through browser_overlay::render_browser_overlay (an arm directly before the ContextMenu | GlobalMenu arm)
 src/client/shell/tabs.rs  mid-logic: render_tab_bar tints unfocused tabs with their color tag (focused tab unchanged)
 src/app/api/tabs.rs  mid-logic: handle_tab_close captures closed_session_entries_for_workspaces (last tab) or closed_session_entries_for_tab before the close and calls record_closed_sessions after it, in both branches; a new upstream close path records nothing
@@ -1176,7 +1176,7 @@ src/app/runtime.rs  mid-logic: next_headless_loop_deadline_with_git_refresh chai
 src/server/headless.rs  mid-logic: `mod coordinator_notify;` directly after `mod news_notify;`; handle_scheduled_tasks_headless runs handle_coordinator_tasks then flush_coordinator_notifications directly after handle_news_tasks
 src/events.rs  mid-logic: AppEvent::CoordinatorPassFinished (the coordinator worker's output, sent with try_send from the herdr-coordinator worker)
 src/app/agents.rs  mid-logic: start_agent's shell check has a #[cfg(test)] coordinator.assume_shell_ready seam (the smoke tests' stub pane) Agents v2: an agent start writes its command as Programmatic::Api (note_input). Agent wrap: start_agent types herdr_launch_argv of its argv (a managed argv, like the coordinator's, stays as built) and still answers the native argv.
-src/app/api/agents.rs  mid-logic: queue_agent_prompt is pub(in crate::app) and its runtime_hosts_agent check has a #[cfg(test)] coordinator.assume_shell_ready seam
+src/app/api/agents.rs  mid-logic: queue_agent_prompt is pub(in crate::app) and validate_agent_prompt's runtime_hosts_agent check has a #[cfg(test)] coordinator.assume_shell_ready seam
 src/platform/mod.rs  mid-logic: coordinator_supported() (cfg!(unix): the coordinator needs the public JSON API socket)
 src/server/client_commands.rs  mid-logic: CLIENT_SHELL_METHODS lists the nine coordinator.* methods (sorted), every_coordinator_method_is_advertised_to_client_shells checks them
 src/client/mod.rs  mid-logic: the client loop's tick block calls shell.tick_coordinator(now, &mut outcome) directly after tick_news
@@ -1235,8 +1235,8 @@ src/client/shell/context_menu.rs  mid-logic: items adds "Info pane" to the pane 
 src/client/shell/worktrees.rs  mid-logic: the exhaustive PendingEndpointKind error arm lists the five PendingEndpointKind::Info* kinds
 src/client/mod.rs  mid-logic: the client loop's tick block calls shell.tick_info_dock(now, &mut outcome)
 src/server/client_commands.rs  mid-logic: CLIENT_SHELL_METHODS lists the eight notes.* / checkpoints.* methods (sorted); every_notes_method_is_advertised_to_client_shells
-src/app/api/agents.rs  mid-logic: queue_agent_prompt runs the typing guard (app::typing_guard::runtime_typing_block) when params.guard_user_typing, after the hosts_agent check and before any write (the Copilot focus bytes included), answering `user_typing`
-src/app/api/agents.rs  mid-logic: queue_agent_prompt is a wrapper over queue_agent_prompt_as(id, params, source, typed); with typed the text bytes are written as they are (no bracketed paste) before the same delayed Enter, after every guard and after the Copilot focus bytes; the Windows Codex paste boundary still follows
+src/app/api/agents.rs  mid-logic: validate_agent_prompt runs the typing guard (app::typing_guard::runtime_typing_block) when params.guard_user_typing, after the hosts_agent check and before any write (the Copilot focus bytes included), answering `user_typing`
+src/app/api/agents.rs  mid-logic: queue_agent_prompt is a wrapper over queue_agent_prompt_as(id, params, source, typed) = validate_agent_prompt + submit_agent_prompt (upstream's ValidatedAgentPrompt carries the fork field terminal_id, filled in validate_agent_prompt, so submit_agent_prompt can call note_input(&terminal_id, source) after the write); handle_deferred_agent_api_request keeps upstream's waiter thread spawned before submit and answers a legacy message refused by either half through legacy_refusal_response; with typed the text bytes are written as they are (no bracketed paste) before the same delayed Enter, after every guard and after the Copilot focus bytes; the Windows Codex paste boundary still follows
 src/server/pane_input.rs  mid-logic: apply_client_terminal_input_events stamps runtime.note_user_input on a key press/repeat (not release, not the host-scrolled page keys), text and paste; apply_terminal_attach_input stamps non-empty input and calls send_terminal_attach_input, which apply_scroll's PageKey branch calls unstamped
 src/pane.rs  mid-logic: PaneRuntime.last_user_input (Cell<Option<Instant>>, Cell::new(None) in every literal) with note_user_input / last_user_input directly after current_size
 src/terminal/runtime.rs  mid-logic: note_user_input / last_user_input directly after current_size
@@ -1255,13 +1255,13 @@ src/cli/pane.rs, src/cli/workspace.rs  mid-logic: agents v2: a command run from 
 src/server/headless.rs  mid-logic: Codex sessions: handle_scheduled_tasks_headless runs handle_codex_session_probe directly after the transcript backup pass
 src/app/runtime.rs  mid-logic: Codex sessions: next_headless_loop_deadline_with_git_refresh chains next_codex_session_probe_deadline directly after agent_transcript_backup_deadline
 src/agent_resume.rs  mid-logic: graceful_exit_input gains a `"codex" => Some("/quit")` arm (verified on codex-cli 0.160: `/quit` exits and prints `codex resume <thread id>`), so Codex panes suspend, restart and close resumably; its test expects it
-src/api/server.rs  mid-logic: stale caller ids: the CONNECTION_PEER_PID thread local (set by handle_connection_with_stop from crate::platform::local_stream_peer_pid around the upstream body, renamed serve_connection, and cleared when the connection ends) fills ApiRequestMessage.peer_pid in dispatch_to_app
+src/api/server.rs  mid-logic: stale caller ids: the CONNECTION_PEER_PID thread local (set by handle_connection_with_stop (same parameters as serve_connection, server_stop: Option<&ServerStop>) from crate::platform::local_stream_peer_pid around the upstream body, renamed serve_connection, and cleared when the connection ends) fills ApiRequestMessage.peer_pid in dispatch_to_app
 src/api/mod.rs  mid-logic: ApiRequestMessage.peer_pid (last field; None in every upstream literal: the endpoint/client requests and tests)
 src/server/headless.rs  mid-logic: stale caller ids: handle_api_request_with_shutdown_check_inner sets app.agents_model.caller_process from msg.peer_pid around the upstream body, renamed handle_api_request_dispatch
 src/app/browser.rs  mid-logic: handle_browser_resolve_caller resolves through resolve_caller_pane; browser_actor_for_pane delegates to browser_actor_for(ws_idx, pane)
 src/app/api/panes.rs  mid-logic: handle_pane_current resolves caller_pane_id through resolve_caller_pane (a stale id finds the caller by its process)
 src/pane.rs, src/terminal/runtime.rs  mid-logic: test_set_child_pid in the cfg(test) impls (tests give a pane a process)
-src/platform/macos.rs, src/platform/linux.rs, src/platform/windows.rs, src/platform/fallback.rs, src/platform/mod.rs  mid-logic: local_stream_peer_pid (macOS LOCAL_PEERPID, else interprocess peer_creds), parent_pid (macOS proc_bsdinfo, Linux /proc stat, None elsewhere) and the shared process_ancestry wrapper before `mod linux;`
+src/platform/macos.rs, src/platform/linux.rs, src/platform/windows.rs, src/platform/fallback.rs, src/platform/mod.rs, src/platform/unix_common.rs  mid-logic: local_stream_peer_pid (unix: unix_common over upstream's per-platform socket_peer_pid, re-exported in mod.rs's `pub(crate) use unix_common::{…}` list; windows: interprocess peer_creds), parent_pid (macOS proc_bsdinfo, Linux /proc stat, None elsewhere) and the shared process_ancestry wrapper before `mod linux;`
 src/app/api/panes.rs  mid-logic: stale hook ids: handle_pane_report_agent, handle_pane_report_agent_session, handle_pane_report_metadata, handle_pane_clear_agent_authority and handle_pane_release_agent resolve params.pane_id through resolve_reported_pane (an id naming no pane finds the reporting pane by its process and becomes an alias; an id naming a live pane is kept)
 
 src/terminal/state.rs  mid-logic: argv sessions: persistable_agent_session and suspendable_agent_session fall back last to process_agent_session() (the argv-derived session, only while its agent is the live one); hook routing never reads the field
@@ -1277,7 +1277,7 @@ src/terminal/state.rs  mid-logic: voice: TerminalState.agent_voice (runtime only
 src/app/api.rs  mid-logic: voice: handle_internal_event_with_pane_updates reads the voice report before handle_app_event (StateChanged: its voice while it names an agent, else Off; AgentProcessDetected and PaneDied: Off) and applies it after (App::apply_agent_voice, src/app/voice.rs); emit_event calls note_voice_event (O(1); bumps voice_view_rev on moves and closes once a voice mode was seen) directly before the agent cards follow
 src/app/actions.rs  mid-logic: voice: handle_app_event's StateChanged arm ignores `voice: _` (the App applies it)
 src/app/agents.rs  mid-logic: voice: agent_info sets AgentInfo.voice from terminal.agent_voice() directly after subagents
-src/app/api/agents.rs  mid-logic: voice: queue_agent_prompt's typing guard answers TypingBlock::VoiceMode (`user_typing`, "it is in voice mode") first while terminal.agent_voice().active(), before runtime_typing_block
+src/app/api/agents.rs  mid-logic: voice: validate_agent_prompt's typing guard answers TypingBlock::VoiceMode (`user_typing`, "it is in voice mode") first while terminal.agent_voice().active(), before runtime_typing_block
 src/server/headless/render.rs  mid-logic: voice: the per-client render pass calls voice::sync_client (one PassFrame per pass, built only when a client is behind; O(1) per client when the revision was sent) directly after teams::sync_client
 src/client/mod.rs  mid-logic: voice: the endpoint control match handles EndpointControlMessage::Voice (receive_voice, a recompose) directly after Teams
 src/client/shell/composition.rs  mid-logic: voice: both ShellRenderState literals pass voice (voice::active_voice_of) directly after teams
@@ -1368,7 +1368,12 @@ OpenCoordinator
 open_coordinator
 SidebarLayoutTabs
 herdr_agents
-agents_
+"agents_
+.agents_
+(agents_
+::agents_
+`agents_
+fn agents_
 HERDR_COORDINATOR_
 agent.suspend
 agent.activate
@@ -1706,7 +1711,7 @@ row_labels
 next_color
 next_mcp_agents
 fixable_issues
-install_command
+fn install_command(
 hex_color
 SetupEnv
 SetupRecord
@@ -1893,7 +1898,10 @@ user_request_line
 AgentLifecycle
 agents_model
 TurnOrigin
-InputSource
+InputSource::Client
+InputSource::Internal
+InputSource::Programmatic
+enum InputSource
 note_input
 agent_meta
 public_aliases
@@ -1920,7 +1928,9 @@ claude_settings_file
 codex_wants_recall
 notes_conflicts
 notes_hook
-peer_pid
+.peer_pid
+peer_pid: Option
+peer_pid: None
 CONNECTION_PEER_PID
 local_stream_peer_pid
 parent_pid
@@ -2043,7 +2053,9 @@ FixedRow
 FixedKind
 tab_history_back
 tab_history_forward
-TabHistory
+TabHistory::
+struct TabHistory {
+tab_history::
 TabHistoryBack
 TabHistoryForward
 agent_context_view_rev
@@ -2245,3 +2257,4 @@ Compare PROTOCOL_VERSION (src/protocol/wire.rs) and ENDPOINT_PROTOCOL_GENERATION
 between ~/.local/state/herdr-fork-sync/installed-sha and the merge. Changed: stage as ~/.local/bin/herdr.next, never install.
 Unchanged: cp .new, codesign -s - -f, keep .prev, mv -f. Never restart the server.
 Any fork change that adds a field or enum variant to a bincode-encoded wire type (ServerMessage, ClientShellSnapshot and everything it contains) must bump PROTOCOL_VERSION, so a new client refuses an old server with "Stop the old server" instead of misdecoding.
+Sync to upstream 2563803d (base was 621e6b73): PROTOCOL_VERSION stays 25 and ENDPOINT_PROTOCOL_GENERATION 1. Upstream's wire edits in that range are negotiated or bincode-identical (EndpointClientHello.surface_scroll is serde(default) JSON plus the optional endpoint.surface-scroll.v1 control; SurfaceGraphicsAsset.data switched to serialize_bytes with an identical bincode layout; ClientInputEvent::HostDefaultColor is a client-local Windows event that no ClientMessage carries), so the merged binary speaks the installed fork 25 wire and installs through the unchanged path.

@@ -78,7 +78,6 @@ fn public_api(server: &mut HeadlessServer, method: Method) -> serde_json::Value 
         },
         respond_to,
         response_write_complete: None,
-        stream_active: None,
         peer_pid: None,
     });
     serde_json::from_str(&response_rx.recv().expect("api response")).expect("json response")
@@ -95,7 +94,6 @@ fn client_api(server: &mut HeadlessServer, client_id: u64, method: Method) -> se
             },
             respond_to,
             response_write_complete: None,
-            stream_active: None,
             peer_pid: None,
         },
     );
@@ -506,7 +504,6 @@ fn api_from(server: &mut HeadlessServer, peer: Option<u32>, method: Method) -> s
         },
         respond_to,
         response_write_complete: None,
-        stream_active: None,
         peer_pid: peer,
     });
     assert_eq!(server.app.agents_model.caller_process, None);
@@ -630,6 +627,7 @@ fn report_session(
             agent_session_id: Some(SESSION.into()),
             agent_session_path: None,
             session_start_source: Some("resume".into()),
+            resume_argv: None,
         }),
     )
 }

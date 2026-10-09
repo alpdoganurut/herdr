@@ -52,7 +52,6 @@ fn client_api(server: &mut HeadlessServer, client_id: u64, method: Method) -> se
             },
             respond_to,
             response_write_complete: None,
-            stream_active: None,
             peer_pid: None,
         },
     );
@@ -69,7 +68,6 @@ fn public_api(server: &mut HeadlessServer, method: Method) -> serde_json::Value 
         },
         respond_to,
         response_write_complete: None,
-        stream_active: None,
         peer_pid: None,
     });
     serde_json::from_str(&response_rx.recv().expect("api response")).expect("json response")
@@ -166,6 +164,7 @@ async fn fork_smoke_team_make_and_roles_reach_every_client_but_status_does_not()
             seq: Some(1),
             agent_session_id: None,
             agent_session_path: None,
+            resume_argv: None,
         }),
     );
     assert!(reported.get("error").is_none(), "{reported}");
