@@ -1957,6 +1957,12 @@
           "description": "The context window in tokens per agent (`claude`, `codex`) for the tabs sidebar's context use and `AgentInfo.context`, e.g. `{ claude = 1000000 }`. A missing or zero entry uses the window the session file states (Codex) or, for Claude, 1M when the model id carries `[1m]` or the use already exceeds 200k, else 200k (Claude Code transcripts do not record the window). Applies at the next read."
         },
         {
+          "key": "agents.program_status",
+          "type": "boolean",
+          "default": "true",
+          "description": "Answer the OSC 7501 Program Status probe and record what agents report (Claude Code 2.1.295+): one root record per pane plus one per background subagent, shown by `herdr agent explain` (`program_status`). When a record disagrees with screen detection for more than 2 seconds, one line goes to `program-status-disagreements.jsonl` in the state dir; screen detection still decides the state. Applies to agents started after the change: a running Claude that got no reply stays silent, one that got a reply keeps reporting (ignored while off). Claude Code sends nothing while `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` is set. `false`: no reply, reports ignored, no log."
+        },
+        {
           "key": "agents.handoff.enabled",
           "type": "boolean",
           "default": "true",

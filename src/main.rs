@@ -596,6 +596,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # The context window in tokens per agent for the sidebar's context use; unset uses the
 # window the session states (Codex) or 200k / 1M by model and use (Claude).
 # context_window = { claude = 1000000 }
+# Answer the OSC 7501 Program Status probe and keep what agents report (Claude Code 2.1.295+;
+# silent while Claude's terminal title updates are turned off in its environment). Observe
+# only: shown by `herdr agent explain`; disagreements with screen detection go to the state dir.
+# program_status = true
 
 # [agents.handoff]
 # Handoff, then compact (Claude Code): herdr saves the transcript, asks the agent for a

@@ -384,6 +384,13 @@ impl TerminalRuntime {
         self.0.agent_osc_progress()
     }
 
+    /// Fork (OSC 7501): the pane's Program Status records, for explain.
+    pub(crate) fn program_status_snapshot(
+        &self,
+    ) -> crate::pane::program_status::ProgramStatusSnapshot {
+        self.0.program_status_snapshot()
+    }
+
     pub(crate) fn recent_text_snapshot(&self, lines: usize) -> crate::pane::TerminalReadSnapshot {
         self.0.recent_text_snapshot(lines)
     }

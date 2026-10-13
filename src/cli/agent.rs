@@ -251,6 +251,90 @@ fn agent_explain(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
+/// Fork (OSC 7501): the `program_status` explain object as text lines.
+/// Messages are untrusted: truncated and printed quoted.
+fn print_program_status_text(status: &serde_json::Value, verbose: bool) {
+    if !status.is_object() {
+        return;
+    }
+    if !status["enabled"].as_bool().unwrap_or(true) {
+        println!("program_status: off");
+        return;
+    }
+    let Some(root) = status["root"].as_object() else {
+        println!(
+            "program_status: none (probe answered: {})",
+            if status["probe_answered"].as_bool().unwrap_or(false) {
+                "yes"
+            } else {
+                "no"
+            }
+        );
+        return;
+    };
+    let children = status["children"].as_array().map_or(0, Vec::len);
+    let agrees = match status["agrees_with_screen"].as_bool() {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "-",
+    };
+    println!(
+        "program_status: {}{} agrees={agrees} children={children}",
+        program_status_state_text(root),
+        program_status_msg_text(root),
+    );
+    if !verbose {
+        return;
+    }
+    for child in status["children"].as_array().into_iter().flatten() {
+        let Some(child) = child.as_object() else {
+            continue;
+        };
+        println!(
+            "  child {} {}{} age={:.1}s",
+            child.get("id").and_then(|id| id.as_str()).unwrap_or("-"),
+            program_status_state_text(child),
+            program_status_msg_text(child),
+            child
+                .get("age_ms")
+                .and_then(|age| age.as_u64())
+                .unwrap_or(0) as f64
+                / 1000.0,
+        );
+    }
+    if let Some(reject) = status["last_reject"].as_str() {
+        println!(
+            "program_status_rejected: {} (last: {reject})",
+            status["rejected_reports"].as_u64().unwrap_or(0)
+        );
+    }
+}
+
+fn program_status_state_text(record: &serde_json::Map<String, serde_json::Value>) -> String {
+    let state = record
+        .get("state")
+        .and_then(|state| state.as_str())
+        .unwrap_or("-");
+    match record.get("kind").and_then(|kind| kind.as_str()) {
+        Some(kind) => format!("{state}/{kind}"),
+        None => state.to_string(),
+    }
+}
+
+fn program_status_msg_text(record: &serde_json::Map<String, serde_json::Value>) -> String {
+    let text = record
+        .get("msg")
+        .and_then(|msg| msg.as_str())
+        .or_else(|| record.get("title").and_then(|title| title.as_str()));
+    match text {
+        Some(text) => {
+            let truncated: String = text.chars().take(80).collect();
+            format!(" {truncated:?}")
+        }
+        None => String::new(),
+    }
+}
+
 fn print_agent_explain_text(explain: &serde_json::Value, verbose: bool) {
     println!("agent: {}", explain["agent"].as_str().unwrap_or("unknown"));
     println!("state: {}", explain["state"].as_str().unwrap_or("unknown"));
@@ -292,6 +376,8 @@ fn print_agent_explain_text(explain: &serde_json::Value, verbose: bool) {
     if let Some(warning) = explain["warning"].as_str() {
         println!("warning: {warning}");
     }
+    // Fork (OSC 7501).
+    print_program_status_text(&explain["program_status"], verbose);
 
     if !verbose {
         return;

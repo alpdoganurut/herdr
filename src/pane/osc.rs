@@ -4,6 +4,7 @@ use tracing::info;
 
 use crate::layout::PaneId;
 
+use super::program_status::{self, ProgramStatusStore};
 use super::terminal::GhosttyPaneCore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,10 +368,26 @@ enum OscStreamState {
     DiscardingEscape,
 }
 
+/// Fork (OSC 7501): what the collector reports, with the chunk-relative
+/// offset one past a body's terminator, and RIS (`ESC c`) seen at ground.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OscStreamEvent<'a> {
+    Body { body: &'a [u8], end_offset: usize },
+    Ris,
+}
+
 impl OscStreamCollector {
     const MAX_BODY_BYTES: usize = 4096;
 
     fn observe(&mut self, bytes: &[u8], mut receive: impl FnMut(&[u8])) {
+        self.observe_events(bytes, |event| {
+            if let OscStreamEvent::Body { body, .. } = event {
+                receive(body);
+            }
+        });
+    }
+
+    fn observe_events(&mut self, bytes: &[u8], mut receive: impl FnMut(OscStreamEvent<'_>)) {
         let mut cursor = 0;
         while cursor < bytes.len() {
             if matches!(
@@ -399,19 +416,23 @@ impl OscStreamCollector {
                     byte if is_ignored_string_intro(byte) => {
                         self.state = OscStreamState::IgnoringString;
                     }
+                    b'c' => {
+                        self.state = OscStreamState::Ground;
+                        receive(OscStreamEvent::Ris);
+                    }
                     _ => self.state = OscStreamState::Ground,
                 },
                 OscStreamState::Body => match byte {
-                    0x07 => self.finish(&mut receive),
+                    0x07 => self.finish(&mut receive, cursor),
                     0x1b => self.state = OscStreamState::BodyEscape,
                     _ => self.push(byte),
                 },
                 OscStreamState::BodyEscape => match byte {
-                    b'\\' => self.finish(&mut receive),
+                    b'\\' => self.finish(&mut receive, cursor),
                     0x07 => {
                         self.push(0x1b);
                         if matches!(self.state, OscStreamState::Body) {
-                            self.finish(&mut receive);
+                            self.finish(&mut receive, cursor);
                         } else {
                             self.state = OscStreamState::Ground;
                         }
@@ -471,8 +492,13 @@ impl OscStreamCollector {
         }
     }
 
-    fn finish(&mut self, receive: &mut impl FnMut(&[u8])) {
-        receive(&self.body);
+    /// `end_offset` is the cursor after the terminator byte, which the loop
+    /// has already advanced past.
+    fn finish(&mut self, receive: &mut impl FnMut(OscStreamEvent<'_>), end_offset: usize) {
+        receive(OscStreamEvent::Body {
+            body: &self.body,
+            end_offset,
+        });
         self.body.clear();
         self.state = OscStreamState::Ground;
     }
@@ -496,18 +522,38 @@ pub(super) struct AgentOscStateTracker {
     latest_title: Option<String>,
     terminal_title: Option<String>,
     latest_progress: Option<String>,
+    /// Fork (OSC 7501): the pane's Program Status records.
+    program_status: ProgramStatusStore,
+    /// Fork (OSC 7501): the end offset of this chunk's first `?` probe.
+    program_status_probe: Option<usize>,
 }
 
 impl AgentOscStateTracker {
     pub(super) fn observe(&mut self, bytes: &[u8]) -> bool {
-        let (collector, latest_title, terminal_title, latest_progress) = (
+        let (
+            collector,
+            latest_title,
+            terminal_title,
+            latest_progress,
+            program_status,
+            program_status_probe,
+        ) = (
             &mut self.collector,
             &mut self.latest_title,
             &mut self.terminal_title,
             &mut self.latest_progress,
+            &mut self.program_status,
+            &mut self.program_status_probe,
         );
         let mut terminal_title_changed = false;
-        collector.observe(bytes, |body| {
+        collector.observe_events(bytes, |event| {
+            let (body, end_offset) = match event {
+                OscStreamEvent::Body { body, end_offset } => (body, end_offset),
+                OscStreamEvent::Ris => {
+                    program_status.clear_records();
+                    return;
+                }
+            };
             let Some((command, payload)) = parse_agent_osc_body(body) else {
                 return;
             };
@@ -523,10 +569,30 @@ impl AgentOscStateTracker {
                     *latest_progress =
                         Some(sanitize_agent_osc_string(payload, AGENT_OSC_MAX_CHARS));
                 }
+                b"7501" => program_status::observe_report(
+                    program_status,
+                    program_status_probe,
+                    payload,
+                    end_offset,
+                ),
                 _ => {}
             }
         });
         terminal_title_changed
+    }
+
+    /// Fork (OSC 7501): the end offset of the probe this chunk asked, if any.
+    pub(super) fn take_program_status_probe(&mut self) -> Option<usize> {
+        self.program_status_probe.take()
+    }
+
+    /// Fork (OSC 7501): the packed root, when it changed.
+    pub(super) fn take_program_status_packed_if_changed(&mut self) -> Option<u64> {
+        self.program_status.take_packed_if_changed()
+    }
+
+    pub(super) fn program_status(&self) -> &ProgramStatusStore {
+        &self.program_status
     }
 
     pub(super) fn terminal_title(&self) -> Option<&str> {
@@ -558,6 +624,7 @@ impl AgentOscStateTracker {
     pub(super) fn clear_retained(&mut self) {
         self.latest_title = None;
         self.latest_progress = None;
+        self.program_status.clear_retained();
     }
 }
 

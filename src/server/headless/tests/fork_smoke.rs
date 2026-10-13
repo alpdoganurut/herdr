@@ -2463,6 +2463,76 @@ async fn fork_smoke_handoff_then_compact_runs_through_the_claude_hooks() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Fork (OSC 7501): reports written by the pane's program reach `herdr agent
+/// explain` with the probe answered, are cleared by the program's own clear
+/// and by RIS, and never touch the screen-detected state.
+#[tokio::test]
+async fn fork_smoke_program_status_reports_reach_explain() {
+    let (mut server, _rx) = server_with_claude(None);
+    let terminal_id = root_terminal_id(&server);
+    let explain = |server: &mut HeadlessServer| {
+        let response = api(
+            server,
+            Method::AgentExplain(crate::api::schema::AgentTarget {
+                target: AGENT_NAME.into(),
+            }),
+        );
+        response["result"]["explain"]["program_status"].clone()
+    };
+    let feed = |server: &HeadlessServer, bytes: &[u8]| {
+        server
+            .app
+            .terminal_runtimes
+            .get(&terminal_id)
+            .expect("runtime")
+            .test_process_pty_bytes(bytes);
+    };
+
+    let status = explain(&mut server);
+    assert_eq!(status["probe_answered"], false, "{status}");
+    assert!(status["root"].is_null());
+
+    feed(&server, b"\x1b]7501;?\x07");
+    feed(
+        &server,
+        b"\x1b]7501;state=blocked:app=claude-code:kind=permission:msg=YXBwcm92ZSBCYXNoOiB0b3VjaCAvdG1wL29zYy1zcGlrZS9ydW4veC50eHQ=\x07",
+    );
+    let status = explain(&mut server);
+    assert_eq!(status["enabled"], true);
+    assert_eq!(status["probe_answered"], true);
+    assert_eq!(status["root"]["state"], "blocked");
+    assert_eq!(status["root"]["kind"], "permission");
+    assert_eq!(
+        status["root"]["msg"],
+        "approve Bash: touch /tmp/osc-spike/run/x.txt"
+    );
+    assert_eq!(status["mapped_state"], "blocked");
+    assert_eq!(
+        server.app.state.terminals[&terminal_id].state,
+        AgentState::Idle,
+        "observe only: the agent state is screen detection's"
+    );
+
+    feed(&server, b"\x1b]7501;state=working:id=a5a666839654a9adb\x07");
+    assert_eq!(
+        explain(&mut server)["children"][0]["id"],
+        "a5a666839654a9adb"
+    );
+
+    feed(&server, b"\x1b]7501;state=clear\x07");
+    let status = explain(&mut server);
+    assert!(status["root"].is_null(), "{status}");
+    assert_eq!(status["children"].as_array().map(Vec::len), Some(0));
+
+    feed(&server, b"\x1b]7501;state=working\x07");
+    assert_eq!(explain(&mut server)["root"]["state"], "working");
+    feed(&server, b"\x1bc");
+    assert!(
+        explain(&mut server)["root"].is_null(),
+        "RIS clears the records"
+    );
+}
+
 #[path = "fork_smoke/coordinator.rs"]
 mod coordinator;
 

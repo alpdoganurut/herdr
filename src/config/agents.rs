@@ -38,6 +38,11 @@ pub struct AgentsConfig {
     /// imply (Claude: 200k, 1M for `[1m]` models or usage past 200k).
     /// Applies at the next read. Default: empty.
     pub context_window: std::collections::BTreeMap<String, u64>,
+    /// Answer the OSC 7501 Program Status probe and keep what agents report
+    /// (Claude Code 2.1.295+), for `herdr agent explain` and the
+    /// disagreement log; screen detection still decides the state. Off: no
+    /// reply, reports ignored. Applied live. Default: true.
+    pub program_status: bool,
     /// `[agents.handoff]`: handoff, then compact, for Claude agents.
     pub handoff: AgentHandoffConfig,
 }
@@ -100,6 +105,7 @@ impl Default for AgentsConfig {
             notices: true,
             team_roster: true,
             context_window: std::collections::BTreeMap::new(),
+            program_status: true,
             handoff: AgentHandoffConfig::default(),
         }
     }

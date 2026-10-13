@@ -30,6 +30,8 @@ mod cursor;
 mod input;
 mod kitty_keyboard;
 mod osc;
+pub(crate) mod program_status;
+mod program_status_log;
 mod state;
 mod terminal;
 mod xtgettcap;
@@ -978,6 +980,7 @@ fn spawn_basic_detection_task(
         let mut last_codex_prompt_ready = false;
         let mut last_self_reported_shell_check = None;
         let mut agent_job = AgentJobTracker::default();
+        let mut status_disagreement = program_status_log::DisagreementTracker::new(pane_id);
 
         loop {
             let sleep_duration = if pending_idle.active() {
@@ -1012,6 +1015,7 @@ fn spawn_basic_detection_task(
                     agent_startup_grace_until = None;
                     pending_idle.clear();
                     agent_job = AgentJobTracker::default();
+                    status_disagreement.reset();
                 }
             }
 
@@ -1117,6 +1121,12 @@ fn spawn_basic_detection_task(
                         // A replacement agent must not inherit OSC evidence
                         // from the previous process; a first acquisition keeps
                         // the evidence its own process already emitted.
+                        program_status_log::end_agent_session(
+                            &mut status_disagreement,
+                            &terminal,
+                            previous_agent,
+                            now,
+                        );
                         clear_osc_evidence_for_agent_transition(&terminal, previous_agent);
                         if let Some(agent) = agent {
                             agent_startup_grace_until = Some(now + AGENT_STARTUP_GRACE_WINDOW);
@@ -1143,6 +1153,22 @@ fn spawn_basic_detection_task(
             let process_exited = pending_foreground_shell_clear
                 && agent.is_some()
                 && !foreground_shell_exit_reported;
+
+            // Fork (OSC 7501): log where the program's own status disagrees
+            // with screen detection. Observe only; runs before the skips.
+            program_status_log::tick_detector(
+                &mut status_disagreement,
+                &terminal,
+                agent,
+                state,
+                lifecycle_authority_active
+                    || agent_job.in_background()
+                    || agent_startup_grace_until.is_some()
+                    || process_exited
+                    || agent_changed,
+                &last_detection_text.text,
+                now,
+            );
 
             // The visible screen belongs to another job while the agent waits
             // in the background, so it says nothing about the agent's state.
@@ -2926,6 +2952,7 @@ impl PaneRuntime {
                 let mut last_codex_prompt_ready = false;
                 let mut last_self_reported_shell_check = None;
                 let mut agent_job = AgentJobTracker::default();
+                let mut status_disagreement = program_status_log::DisagreementTracker::new(pane_id);
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -2970,6 +2997,7 @@ impl PaneRuntime {
                             agent_startup_grace_until = None;
                             pending_idle.clear();
                             agent_job = AgentJobTracker::default();
+                            status_disagreement.reset();
                         }
                     }
 
@@ -3112,6 +3140,12 @@ impl PaneRuntime {
                                     // evidence from the previous process; a first
                                     // acquisition keeps the evidence its own
                                     // process already emitted.
+                                    program_status_log::end_agent_session(
+                                        &mut status_disagreement,
+                                        &terminal,
+                                        previous_agent,
+                                        now,
+                                    );
                                     clear_osc_evidence_for_agent_transition(
                                         &terminal,
                                         previous_agent,
@@ -3171,6 +3205,23 @@ impl PaneRuntime {
                     let process_exited = pending_foreground_shell_clear
                         && agent.is_some()
                         && !foreground_shell_exit_reported;
+
+                    // Fork (OSC 7501): log where the program's own status
+                    // disagrees with screen detection. Observe only; runs
+                    // before the skips.
+                    program_status_log::tick_detector(
+                        &mut status_disagreement,
+                        &terminal,
+                        agent,
+                        state,
+                        lifecycle_authority_active
+                            || agent_job.in_background()
+                            || agent_startup_grace_until.is_some()
+                            || process_exited
+                            || agent_changed,
+                        &last_detection_text.text,
+                        now,
+                    );
 
                     // The visible screen belongs to another job while the agent
                     // waits in the background, so it says nothing about its state.
@@ -3590,6 +3641,11 @@ impl PaneRuntime {
 
     pub fn agent_osc_progress(&self) -> String {
         self.terminal.agent_osc_progress()
+    }
+
+    /// Fork (OSC 7501): the pane's Program Status records, for explain.
+    pub(crate) fn program_status_snapshot(&self) -> program_status::ProgramStatusSnapshot {
+        self.terminal.program_status_snapshot()
     }
 
     pub(crate) fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {

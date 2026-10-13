@@ -581,7 +581,7 @@ impl App {
             return agent_not_found(id, &target.target);
         };
         if terminal.full_lifecycle_hook_authority_active() {
-            let explain = serde_json::json!({
+            let mut explain = serde_json::json!({
                 "agent": terminal.effective_agent_label().unwrap_or("unknown"),
                 "state": crate::detect::manifest::agent_state_label(terminal.state),
                 "manifest_source": null,
@@ -602,6 +602,8 @@ impl App {
                 "warning": null,
                 "evaluated_rules": [],
             });
+            // Fork (OSC 7501): the records, with no screen state to compare.
+            insert_program_status(&mut explain, pane.program_status_snapshot().to_json(None));
             return encode_success(id, ResponseResult::AgentExplain { explain });
         }
         let Some(agent) = terminal.effective_known_agent().or(terminal.detected_agent) else {
@@ -626,7 +628,13 @@ impl App {
                 osc_progress: &osc_progress,
             },
         );
-        let value = crate::detect::manifest::explain_to_json_value(&explain);
+        let mut value = crate::detect::manifest::explain_to_json_value(&explain);
+        // Fork (OSC 7501): the program's own status records next to the
+        // screen verdict they are compared with.
+        insert_program_status(
+            &mut value,
+            pane.program_status_snapshot().to_json(Some(explain.state)),
+        );
 
         encode_success(id, ResponseResult::AgentExplain { explain: value })
     }
@@ -682,6 +690,13 @@ impl App {
         );
 
         encode_success(id, ResponseResult::Ok {})
+    }
+}
+
+/// Fork (OSC 7501): adds `program_status` to an explain object.
+fn insert_program_status(explain: &mut serde_json::Value, program_status: serde_json::Value) {
+    if let Some(object) = explain.as_object_mut() {
+        object.insert("program_status".into(), program_status);
     }
 }
 

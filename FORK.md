@@ -248,6 +248,9 @@ src/agent_handoff/tests.rs
 src/app/agent_handoff.rs
 src/app/agent_handoff/tests.rs
 src/integration/claude_handoff_permissions.rs
+src/pane/program_status.rs
+src/pane/program_status/tests.rs
+src/pane/program_status_log.rs
 
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
@@ -553,6 +556,9 @@ src/integration/claude_handoff_permissions.rs
 | KeysConfig | handoff_compact | crate::config::BindingConfig::default() |
 | KeysConfigOverlay | handoff_compact | None |
 | Keybinds | handoff_compact | crate::config::ActionKeybinds::default() |
+| AgentOscStateTracker | program_status | ProgramStatusStore::default() |
+| AgentOscStateTracker | program_status_probe | None |
+| GhosttyPaneTerminal | program_status_root | std::sync::atomic::AtomicU64::new(0) |
 
 
 ## 3. Removed or re-signatured upstream symbols (E0425/E0061 at a new upstream call site = deny)
@@ -575,6 +581,7 @@ client::shell::tabs::render_tab_bar(b, area, snapshot, config, tab_scroll, revea
 Visibility widened by the fork (upstream renaming or narrowing one breaks fork code): app::agents::DEFAULT_AGENT_START_TIMEOUT, app::agents::available_shell_name, app::api::agents::AGENT_PROMPT_SUBMIT_DELAY, app::terminal_targets::{terminal_targets, terminal_target_candidate}, integration::home_dir, client::shell::notification_policy::{notification_target_is_active, COMPLETION_EVIDENCE_GRACE} (pub(super)), app::agent_resume::shell_command_from_argv (pub(super); the closed-session reopen types it), app::api::sanitized_notification_text (pub(super); app::news sanitizes the editor's notification text with it), api::server::dispatch_to_app_with_timeout (pub(crate), re-exported as api::dispatch_to_app_with_timeout; browser::serve resolves the calling pane through it)
 client::shell::ClientShellConfig::layout(cols, rows, sidebar_collapsed, tab_count, sidebar_width) -> (cols, rows, sidebar_collapsed, tab_count, sidebar_width, info_dock_width: Option<u16>) (None = no info dock; the two call sites are ClientShellState::layout, which passes info_dock_width_for_focused_tab(), and ClientShellConfig::initial_surface_size, which passes None)
 client::shell::voice::voice_mark(voice, palette: &Palette) -> (&'static str, Color) -> voice_mark(voice, config: &ClientShellConfig) -> (&str, Color) (the glyph borrows the config) (fork function; sidebar v2 lets ui.tab_agent_glyphs override the glyph)
+pane::terminal::GhosttyPaneTerminal::write_pty_bytes_with_ordered_responses(core, bytes, default_color_events, in_progress_default_color_event, c1_xtgettcap_responses, terminal_responses) -> (core, bytes, default_color_events, in_progress_default_color_event, c1_xtgettcap_responses, program_status_probe: Option<usize>, terminal_responses) (OSC 7501; a new upstream call site = E0061: pass None)
 
 
 ## 4. Owned enum variants (append last; E0004 in upstream match = deny)
@@ -802,6 +809,8 @@ KeybindAction::HandoffCompact   [src/input/keybindings.rs, directly after Toggle
 ClientContextMenuAction::HandoffCompact   [src/client/shell/state.rs, last after Mute; the tab menu's "Handoff & compact"; internal]
 AgentsHandoffOutcome, CompactEvent, agent_handoff::{HandoffAgent, Trigger, Kind, Phase, Effect (TypeReminder after CheckFile)}, agent_handoff::files::{Job (Copy after Start), Outcome (Written carries the Kind)}   [src/api/schema/agents_model.rs, src/api/schema/panes.rs, src/agent_handoff.rs, src/agent_handoff/files.rs; fork-owned enums; the wire ones (AgentsHandoffOutcome started | already_running, CompactEvent pre | post) carry a serde(other) Unknown fallback]
 agent_handoff::{Run, RunSettings, RunPaths, Facts, Mechanical}, app::agent_handoff::{AgentHandoffRuntime, SavedHandoff, StartRefusal}   [src/agent_handoff.rs, src/app/agent_handoff.rs; fork-owned module internals (structs, not upstream enums): their fields (Run.missing_since / reminded / blocked_since / blocked_noted / check_since, SavedHandoff.session_id, AgentHandoffRuntime.auto_retry_at / last_finished included) need no merge rule and are not listed one by one]
+OrderedColorOrC1Event::ProgramStatusProbe   [src/pane/terminal.rs, last after C1; private, no wire (the OSC 7501 probe reply's end offset)]
+OscStreamEvent   [src/pane/osc.rs, fork-owned enum (Body { body, end_offset } | Ris) in an upstream file; private, no wire; OscStreamCollector::observe is a wrapper over observe_events that drops Ris and the offset]
 
 
 ## 5. Owned API methods and digests
@@ -905,7 +914,7 @@ agents.handoff: fork-defined (Method::AgentsHandoff, api_method_name arm naming 
 agents.handoff digest: a6dc34c81fc956443b38c6db2f59ef52b358f991389cc096ad9e3c36f1b8f714 (AgentsHandoffParams { caller_pane: Option<String> skipped when None, target: String }).
 pane.report_compact: fork-defined (Method::PaneReportCompact, api_method_name arm, no request_changes_ui, handler in src/app/agent_handoff.rs), sent by the Claude hook asset's `precompact` action (PreCompact: event pre, with Claude's trigger, session_id and transcript_path) and by its `session` action after the session report when SessionStart's source is compact (event post); not advertised to the client shell, so no digest. Params PaneReportCompactParams { pane_id, agent, event: CompactEvent (pre | post), trigger?, session_id?, transcript_path? } (the transcript path is copied only when it has the shape of Claude's own transcript for that session, agent_resume::transcript_path_from_report). Result ResponseResult::PaneReportCompact { context: Option<String> }: for post, the text the hook prints as SessionStart additionalContext (`[herdr+ handoff] ...`, the handoff and transcript paths), else absent.
 endpoint.agent-context.v1 (agent handoff): AgentContextPane gains optional handoff_unix (`#[serde(default, skip_serializing_if = "Option::is_none")]`, when the pane's agent last saved a handoff, runtime only); agent_context_panes also lists a pane known only for it, with used = window = 0, which every client drops as no context use (ClientAgentContextState::from_payload filters window > 0). The revision bumps when a handoff is saved. JSON control only: no bincode type and no PROTOCOL_VERSION change.
-
+agent.explain (upstream method), OSC 7501: the explain JSON gains `program_status` (enabled, probe_answered, revision, root, children, mapped_state, agrees_with_screen, rejected_reports, last_reject, last_reject_age_ms) in both the screen branch and the full-lifecycle branch (agrees_with_screen null there); ResponseResult::AgentExplain carries a serde_json::Value, so no schema, digest, bincode or PROTOCOL_VERSION change (stays 25). AgentInfo is unchanged: reviewer R1 found agent_info on the client-shell render path (session_metadata_snapshot -> collect_agent_infos), so stage 1 exposes the records through explain only.
 
 
 ## 6. Config keys (cross-checked by scripts/config_reference_check.py)
@@ -929,6 +938,8 @@ ui.sidebar_collapse_suspended (config-reference.json directly after ui.sidebar_s
 keys.tab_history_back, keys.tab_history_forward (sidebar v3: config-reference.json and DEFAULT_CONFIG comments directly after keys.toggle_info_pane; defaults "cmd+[" / "cmd+]", direct bindings, not prefix; not in configuration.mdx).
 ui.sidebar_context_usage (agent context: bool, default true; config-reference.json directly after ui.sidebar_collapse_suspended; DEFAULT_CONFIG directly after `# sidebar_collapse_suspended = true`), agents.context_window (agent context: table of agent key → window tokens, default empty; config-reference.json directly after agents.team_roster, the last agents.* entry; DEFAULT_CONFIG comment lines directly after `# team_roster = true`, the last lines of the `[agents]` block; read live by the server through App.agents_config at the next read; not in configuration.mdx).
 agents.handoff.enabled, agents.handoff.at_percent, agents.handoff.command, agents.handoff.resume (agent handoff: `[agents.handoff]`, AgentHandoffConfig in src/config/agents.rs; defaults true, 80 (0 = no automatic trigger), "" (herdr's own prompt; `{path}` is the handoff file), true; config-reference.json directly after agents.context_window, the last agents.* entries; DEFAULT_CONFIG a commented `# [agents.handoff]` block directly after the `context_window` comment lines; read live through App.agents_config; not in configuration.mdx), keys.handoff_compact (unset; config-reference.json directly after keys.toggle_agent_suspend; DEFAULT_CONFIG comment directly after `# toggle_agent_suspend`).
+agents.program_status (OSC 7501: bool, default true; AgentsConfig.program_status in the fork-owned src/config/agents.rs; config-reference.json directly after agents.context_window, before the agents.handoff.* entries; DEFAULT_CONFIG comment lines directly after the `context_window` comment lines, before `# [agents.handoff]`, so the key stays in the `[agents]` table; applied live through crate::pane::program_status::set_enabled in App::try_new and the `agents` block of apply_live_config; not in configuration.mdx). The name is neutral: the protocol is not Claude-specific (the brief's `claude_status_signal` was rejected for that reason). The variable name CLAUDE_CODE_DISABLE_TERMINAL_TITLE appears only in config-reference.json and docs/fork: `grep -rn DISABLE_TERMINAL_TITLE src scripts` stays empty and herdr never sets it.
+
 
 
 
@@ -1138,6 +1149,16 @@ src/server/headless/tests/fork_smoke.rs  additive: agent handoff: run_claude_hoo
 docs/next/website/src/data/config-reference.json  additive: agent handoff: entries placed per section 6
 docs/next/website/src/content/docs/socket-api.mdx  additive: agent handoff: `pane.report_compact` in the Pane row after `pane.report_turn`; its paragraph (with agents.handoff) directly after the `pane.report_turn` one
 docs/next/website/src/content/docs/integrations.mdx  additive: agent handoff: the PreCompact / SessionStart(compact) sentences appended to the Claude v12 paragraph, opening with "Claude integration v13 adds"
+src/pane/osc.rs  additive: OSC 7501: OscStreamEvent and OscStreamCollector::observe_events (observe wraps it; finish takes the end offset; the Escape state's `b'c'` arm reports Ris); AgentOscStateTracker.program_status / program_status_probe, the `b"7501"` arm and the Ris arm in observe, take_program_status_probe, take_program_status_packed_if_changed and program_status after observe, and the program_status.clear_retained() line in clear_retained; `use super::program_status::{self, ProgramStatusStore};` before the terminal import
+src/pane/terminal.rs  additive: OSC 7501: GhosttyPaneTerminal.program_status_root (section 2); program_status_snapshot, program_status_session_counters and program_status_root_packed after clear_agent_osc_state (which stores the packed root under the core lock); the PaneTerminal wrappers after its clear_agent_osc_state; the probe drain and mirror store in process_pty_bytes directly after `agent_osc_state.observe`; the program_status_* ordering tests directly before process_pty_bytes_orders_xtgettcap_reply_before_following_default_color_reply
+src/pane.rs  additive: OSC 7501: `pub(crate) mod program_status;` and `mod program_status_log;` directly after `mod osc;`; PaneRuntime::program_status_snapshot directly after agent_osc_progress
+src/terminal/runtime.rs  additive: OSC 7501: program_status_snapshot directly after agent_osc_progress
+src/app/api/agents.rs  additive: OSC 7501: handle_agent_explain inserts `program_status` (insert_program_status, directly before ValidatedAgentPrompt) in both branches
+src/cli/agent.rs  additive: OSC 7501: print_program_status_text (with program_status_state_text and program_status_msg_text) directly before print_agent_explain_text, called after the warning line
+src/app/mod.rs  additive: OSC 7501: crate::pane::program_status::set_enabled directly after kitty_graphics::set_enabled in try_new and directly after agent_notices.set_enabled in the `agents` block of apply_live_config
+src/main.rs  additive: OSC 7501: the `program_status` DEFAULT_CONFIG comment lines directly after the `context_window` ones, before `# [agents.handoff]`
+docs/next/website/src/data/config-reference.json  additive: OSC 7501: agents.program_status placed per section 6
+src/server/headless/tests/fork_smoke.rs  additive: OSC 7501: fork_smoke_program_status_reports_reach_explain directly before the coordinator mod lines
 
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
@@ -1403,7 +1424,8 @@ src/client/shell/tab_sidebar_detail.rs  mid-logic: agent handoff: tab_chips draw
 src/client/shell/tests/tab_sidebar.rs  mid-logic: agent handoff: the three swatch-row tests press Down 13 times (12 upstream): the agent tab's menu has "Handoff & compact"
 src/client/shell/tests/context_menu_session.rs  mid-logic: agent handoff: tab_menu_lists_copy_session_id_after_restart_once_the_id_arrives expects HandoffCompact directly after RestartAgent, CopySessionId and Close one row later
 src/integration/assets/claude/herdr-agent-state.sh  depends: agent handoff: `precompact` (PreCompact) and the `session` action's SessionStart(compact) block send pane.report_compact; the post answer's `context` is printed as SessionStart additionalContext (call() reads the whole answer line within 3 s)
-
+src/pane/terminal.rs  mid-logic: OSC 7501: write_pty_bytes_with_ordered_responses orders the probe reply at the query's end offset (OrderedColorOrC1Event::ProgramStatusProbe, after libghostty's replies to the bytes before it), so it precedes a DA1 reply to later bytes; at most one reply per chunk (the first probe)
+src/pane.rs  mid-logic: OSC 7501: both detector loops (spawn_basic_detection_task and the PaneRuntime one) hold a program_status_log::DisagreementTracker (reset in the detect_reset arm), call program_status_log::end_agent_session directly before clear_osc_evidence_for_agent_transition, and call program_status_log::tick_detector directly after `let process_exited = ...;`, before the lifecycle/background skip, every tick (observe only: it never changes state or a publish decision)
 
 
 ## 9. Identifier watch-list (any hit in the incoming upstream diff = deny "upstream collision")
@@ -2158,6 +2180,10 @@ handoff_compact
 HandoffCompact
 handoff_unix
 claude_handoff_permissions
+ProgramStatus
+program_status
+OscStreamEvent
+
 
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot
@@ -2229,11 +2255,13 @@ server::headless::tests::fork_smoke::fork_smoke_tab_mute_reaches_every_client_si
 server::headless::tests::agent_notices_smoke::fork_smoke_agent_notice_carries_the_senders_team
 server::headless::tests::fork_smoke::fork_smoke_agent_context_push_reaches_the_client_shell
 server::headless::tests::fork_smoke::fork_smoke_handoff_then_compact_runs_through_the_claude_hooks
+server::headless::tests::fork_smoke::fork_smoke_program_status_reports_reach_explain
 
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 A user-facing feature or fix that changes what herdr+ offers also updates the showcase page `docs/fork/herdr-plus.html` (self-contained, no network resources, no personal data; mockups follow the current code), in the same change.
 ### Added
+- Claude Code's OSC 7501 Program Status, observe only (`[agents] program_status`, on by default): herdr answers the status probe Claude Code 2.1.295+ sends at startup (before the DA1 reply, so Claude turns its reports on) and keeps each pane's status records: the root record (working, blocked with its kind and message, done, idle, error) and one per background subagent. `herdr agent explain` shows them as `program_status`, with whether they agree with screen detection. When the root record disagrees with screen detection for more than 2 seconds, herdr writes one line to `program-status-disagreements.jsonl` in its state dir (lengths only, never the message text; rotated at 1 MiB, at most 600 lines an hour), and a summary line per agent session. Screen detection still decides every state. `program_status = false` turns the reply, the records and the log off. Claude Code sends nothing while `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` is set, and an agent started before this build stays silent until it restarts.
 - `docs/fork/herdr-plus.html`: a self-contained showcase page of everything herdr+ adds (coordinator, agents model and tools, teams, messaging, sidebar, notes pane, notifications, more), kept up to date with each user-facing change.
 - Handoff, then compact, for Claude Code agents (`[agents.handoff]`): once an agent's context use reaches `at_percent` (80 by default, the same reading the sidebar shows; 0 = off), or on request — the tab menu's new "Handoff & compact", the new `keys.handoff_compact` (unset by default), `herdr agent handoff <target>` or `agents.handoff` (an agent may ask for itself, the coordinator for any agent; for a teammate only in its user's turn) — herdr copies the session transcript to `<state dir>/handoffs/<session>/<UTC time>/transcript.jsonl`, waits until the agent is free (idle, its user not typing or holding a draft, not blocked, suspended, starting or in voice mode; never the coordinator), types a prompt asking it to write a handoff (state, decisions and why, dead ends, files in play, next step) to `handoff.md` there (`command` replaces the prompt; `{path}` is the file), and once the turn ended and the file is written types `/compact` and copies the transcript again. A turn that ends without the file gets one reminder; without the file after it, or 10 minutes after the request, herdr writes a mechanical handoff itself (notes log, checkpoints, git status, the last prompts) and compacts anyway. If the handoff turn waits on a prompt for 2 minutes, an agent card says so. `latest.txt` points at the newest run with a handoff, `meta.json` records the trigger and who wrote it, the agent's notes get a Log line and a checkpoint, and `actions.jsonl` logs every step. With the Claude integration installed (v13: run `herdr integration install claude` again, then restart the agents), the compacted session's SessionStart hook adds the handoff and transcript paths to the agent's context, and with `resume` (default) herdr types one line asking it to read the handoff and continue, or pause when nothing is active; the install also adds `Edit(//<state dir>/handoffs/**)` and `Read(...)` rules to `permissions.allow` in Claude's settings, so the agent writes and reads its handoff without a permission prompt (uninstall removes them). A compaction herdr did not start (Claude's auto-compact, your own `/compact`) gets the transcript copy and a mechanical handoff through the new PreCompact hook; during a run it keeps the run's files and a handoff the agent already wrote. Queued agent messages and `agent.prompt` wait until the run ends. If the automatic trigger could not start or its run stopped before `/compact`, it tries again 5 minutes later. The tabs sidebar's detail strip shows `handoff 5m ago` for the session it was written for; a failure shows an agent card.
 - Tabs sidebar: a folded Active, Pinned or Scheduled header keeps its entry count, before its status marks (`▸ Active  3 ● ●`).
