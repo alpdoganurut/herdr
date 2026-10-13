@@ -12,7 +12,7 @@
 //! | Message | invalid_target | ✓ | ✓ | UT or reply | ✓ |
 //! | SoftEdit | ✓ | ✓ | outside_team | UT | protected_tab |
 //! | SuspendRestart, Activate (the coordinator too) | ✓ | ✓ | outside_team | UT | protected_tab |
-//! | Handoff (handoff, then compact) | ✓ | UT | outside_team | UT | protected_tab |
+//! | Handoff (handoff, then compact) | ✓ | UT | outside_team | ✓ | protected_tab |
 //! | Reopen/Activate of a user's entry (D4) | UT | UT | outside_team | UT | - |
 //! | MoveTab (not into another team) | ✓ | ✓ | outside_team | UT | protected_tab |
 //! | MoveTab into another team | outside_team | outside_team | outside_team | UT | protected_tab |
@@ -224,6 +224,10 @@ fn coordinator(relation: Relation, action: Action, facts: &Facts) -> Decision {
     }
     match action {
         Action::Read | Action::ReadShellScreen => Decision::Allow,
+        // Fork (agent handoff): the coordinator may hand off and compact a
+        // worker on its own (a full context is its call to make); herdr
+        // types only when the agent is free.
+        Action::SoftEdit(SoftEdit::Handoff) => Decision::Allow,
         Action::Message if facts.user_turn || facts.reply_to_turn_starter => Decision::Allow,
         _ if facts.user_turn => Decision::Allow,
         _ => non_user_turn(facts),
@@ -469,7 +473,11 @@ mod tests {
                     &facts(false),
                 ));
                 match action {
-                    Action::Read | Action::ReadShellScreen => assert_eq!(without, "allow"),
+                    // Fork: handoff, then compact is the coordinator's own
+                    // call (herdr types only when the agent is free).
+                    Action::Read
+                    | Action::ReadShellScreen
+                    | Action::SoftEdit(SoftEdit::Handoff) => assert_eq!(without, "allow"),
                     _ => assert_eq!(without, "non_user_turn", "{action:?}"),
                 }
             }
@@ -526,16 +534,20 @@ mod tests {
             "outside_team"
         );
         assert!(authorize(Actor::User, Relation::Protected, handoff, &facts(false)).is_allowed());
+        // The coordinator may on its own, never on its own tab.
+        assert!(
+            authorize(Actor::Coordinator, Relation::Other, handoff, &facts(false)).is_allowed()
+        );
+        assert!(authorize(Actor::Coordinator, Relation::Other, handoff, &facts(true)).is_allowed());
         assert_eq!(
             code(authorize(
                 Actor::Coordinator,
-                Relation::Other,
+                Relation::Protected,
                 handoff,
                 &facts(false)
             )),
-            "non_user_turn"
+            "protected_tab"
         );
-        assert!(authorize(Actor::Coordinator, Relation::Other, handoff, &facts(true)).is_allowed());
     }
 
     #[test]

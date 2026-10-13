@@ -170,6 +170,23 @@ impl App {
                 return true;
             }
         };
+        // Fork (agent handoff, src/app/agent_handoff.rs): nothing lands
+        // between the handoff turn, /compact and the resume line. Checked
+        // here, not in validate_agent_prompt, which herdr's own typing for
+        // the run goes through. A legacy message is queued and held.
+        if self
+            .agent_handoff
+            .holds_messages(&validated.terminal_id.to_string())
+        {
+            let response = encode_error(
+                request_id.clone(),
+                "agent_not_ready",
+                "handoff and compaction in progress; try again once it is done",
+            );
+            let response = self.legacy_refusal_response(legacy, &request_id, &params, response);
+            let _ = respond_to.send(response);
+            return true;
+        }
         // Start the completion waiter before submitting, so a refused thread
         // fails the request while nothing has been sent yet.
         let (handoff_tx, handoff_rx) = std::sync::mpsc::channel::<(

@@ -18,7 +18,9 @@
 //! ```text
 //! AwaitPrompt --free--> type the prompt --> AwaitHandoff
 //! AwaitHandoff --turn ended after the prompt + handoff.md non-empty--> AwaitCompact
-//! AwaitHandoff --timeout--> WritingFallback (mechanical handoff) --> AwaitCompact
+//! AwaitHandoff --turn ended, no file, grace--> one reminder line --> AwaitHandoff
+//! AwaitHandoff --no file after the reminder (grace) or timeout-->
+//!     WritingFallback (mechanical handoff) --> AwaitCompact
 //! AwaitCompact --free--> type /compact --> Compacting
 //! Compacting --SessionStart(compact) or an idle edge--> AwaitResume | done
 //! AwaitResume --free--> type the resume line --> done
@@ -37,6 +39,13 @@ pub(crate) mod files;
 pub(crate) const DEFAULT_AT_PERCENT: u8 = 80;
 /// How long the agent has to write its handoff after the prompt went in.
 pub(crate) const HANDOFF_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// After a turn end that left no handoff file: how long herdr waits for a
+/// later turn end before it reminds the agent once (then, after the same
+/// wait again, writes the mechanical handoff).
+pub(crate) const MISSING_GRACE: Duration = Duration::from_secs(90);
+/// How long the handoff turn may read blocked (a permission prompt, a
+/// question) before the user is told the run waits on it.
+pub(crate) const BLOCKED_NOTICE: Duration = Duration::from_secs(2 * 60);
 /// How long a run waits for the agent to be free before it gives up.
 pub(crate) const FREE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// How long `/compact` may take before the run gives up on it.
@@ -129,9 +138,10 @@ pub(crate) enum Phase {
     /// The run's files are being set up (the transcript copy) or the agent
     /// is not free yet: the prompt goes in once it is.
     AwaitPrompt,
-    /// The prompt was typed at `typed_at`; `checked` is the turn end the
-    /// last file check was for (each end is checked once), `checking` while
-    /// a check is on the worker.
+    /// The prompt (or the reminder) was typed at `typed_at`; `checked` is
+    /// the turn end the last file check was for (each end is checked once),
+    /// `checking` while a check is on the worker. The phase's own start
+    /// (the prompt) bounds it by [`HANDOFF_TIMEOUT`].
     AwaitHandoff {
         typed_at: Instant,
         checked: Option<Instant>,
@@ -193,6 +203,15 @@ pub(crate) struct Run {
     pub(crate) free_since: Option<Instant>,
     /// Failed writes in a row (a refusal other than the typing guard).
     pub(crate) write_failures: u32,
+    /// Since when a turn end after the prompt found no handoff file (cleared
+    /// by the reminder).
+    pub(crate) missing_since: Option<Instant>,
+    /// The reminder line was typed.
+    pub(crate) reminded: bool,
+    /// Since when the handoff turn has read blocked without a break.
+    pub(crate) blocked_since: Option<Instant>,
+    /// The user was told the handoff turn waits on a prompt.
+    pub(crate) blocked_noted: bool,
 }
 
 impl Run {
@@ -232,6 +251,8 @@ pub(crate) enum Effect {
     CheckFile {
         end: Instant,
     },
+    /// The turn ended without the file: remind the agent once.
+    TypeReminder,
     /// The agent did not write in time: herdr writes the handoff.
     WriteMechanical,
     TypeCompact,
@@ -271,7 +292,7 @@ pub(crate) fn next(run: &Run, facts: &Facts) -> Effect {
             if checking {
                 return Effect::Wait;
             }
-            if facts.now.saturating_duration_since(typed_at) >= HANDOFF_TIMEOUT {
+            if waited >= HANDOFF_TIMEOUT {
                 return Effect::WriteMechanical;
             }
             // The turn the prompt started ended: its Stop hook reported an
@@ -281,13 +302,25 @@ pub(crate) fn next(run: &Run, facts: &Facts) -> Effect {
             let idle_end = facts
                 .idle_edge
                 .filter(|edge| *edge > typed_at && facts.free);
-            let Some(end) = hook_end.or(idle_end) else {
-                return Effect::Wait;
-            };
-            if checked.is_some_and(|checked| checked >= end) {
-                return Effect::Wait;
+            if let Some(end) = hook_end.or(idle_end) {
+                if checked.is_none_or(|checked| checked < end) {
+                    return Effect::CheckFile { end };
+                }
             }
-            Effect::CheckFile { end }
+            // A turn ended without the file and no later end came in the
+            // grace: remind the agent once, then write herdr's own.
+            match run.missing_since {
+                Some(since) if facts.now.saturating_duration_since(since) >= MISSING_GRACE => {
+                    if run.reminded {
+                        Effect::WriteMechanical
+                    } else if facts.free {
+                        Effect::TypeReminder
+                    } else {
+                        Effect::Wait
+                    }
+                }
+                _ => Effect::Wait,
+            }
         }
         Phase::WritingFallback => Effect::Wait,
         Phase::AwaitCompact => {
@@ -307,7 +340,14 @@ pub(crate) fn next(run: &Run, facts: &Facts) -> Effect {
             {
                 Effect::Compacted
             } else if waited >= COMPACT_TIMEOUT {
-                Effect::Abort("/compact did not finish in time".into())
+                match run.trigger {
+                    // Not herdr's compaction: no report of its end is not a
+                    // failure the user needs a card for.
+                    Trigger::External { .. } => {
+                        Effect::Finish("no report of the compaction's end".into())
+                    }
+                    _ => Effect::Abort("/compact did not finish in time".into()),
+                }
             } else {
                 Effect::Wait
             }
@@ -375,6 +415,14 @@ pub(crate) fn prompt(run: &Run, percent: Option<u8>) -> String {
         Some(template) => render_command(template, &run.paths.handoff),
         None => default_prompt(&run.paths.handoff, percent),
     }
+}
+
+/// The reminder typed when the handoff turn ended without the file.
+pub(crate) fn reminder_line(handoff: &Path) -> String {
+    format!(
+        "herdr: the handoff file is still missing at {}. Write it now (the current state, decisions and why, dead ends, files in play, the exact next step), then end your turn.",
+        handoff.display()
+    )
 }
 
 /// The line typed after the compaction, so the agent starts a turn.
@@ -615,7 +663,7 @@ pub(crate) fn last_user_prompts(jsonl: &str, max: usize) -> Vec<String> {
         };
         let text = text.trim();
         if text.is_empty()
-            || text.starts_with('<')
+            || is_claude_wrapper(text)
             || text.starts_with('/')
             || text.starts_with("herdr:")
         {
@@ -625,6 +673,22 @@ pub(crate) fn last_user_prompts(jsonl: &str, max: usize) -> Vec<String> {
     }
     let skip = prompts.len().saturating_sub(max);
     prompts.split_off(skip)
+}
+
+/// Whether a user line is one of Claude Code's own wrappers (a slash
+/// command's echo, a local command's output, a reminder, a `!` shell line, a
+/// task notification), not text the user typed. A prompt that merely starts
+/// with markup (`<div>`) is kept.
+fn is_claude_wrapper(text: &str) -> bool {
+    const WRAPPERS: [&str; 6] = [
+        "<command-",
+        "<local-command-",
+        "<system-reminder",
+        "<bash-",
+        "<task-notification",
+        "<user-prompt-submit-hook",
+    ];
+    WRAPPERS.iter().any(|prefix| text.starts_with(prefix))
 }
 
 #[cfg(test)]

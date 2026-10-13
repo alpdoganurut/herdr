@@ -9,14 +9,15 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
 
-use super::{Mechanical, RunPaths};
+use super::{Kind, Mechanical, RunPaths};
 
 /// The transcript tail read for the last prompts.
 const PROMPTS_TAIL_BYTES: u64 = 1024 * 1024;
 
 pub(crate) enum Job {
-    /// Create the run's directory, copy the transcript, point `latest.txt`
-    /// at the run, write `meta.json`.
+    /// Create the run's directory, write `meta.json`, copy the transcript.
+    /// `latest.txt` moves only once the run has a handoff ([`Job::Check`],
+    /// [`Job::Mechanical`]).
     Start {
         run: u64,
         paths: RunPaths,
@@ -27,14 +28,25 @@ pub(crate) enum Job {
         home: Option<PathBuf>,
         meta: serde_json::Value,
     },
+    /// Copy the transcript again (right before the compaction, so the copy
+    /// has the handoff turn too); answers [`Outcome::Started`].
+    Copy {
+        run: u64,
+        paths: RunPaths,
+        source: Option<PathBuf>,
+        locate: Option<crate::agent_context::ContextSession>,
+        home: Option<PathBuf>,
+    },
     /// Whether the handoff file exists and is not empty (the turn that
-    /// ended at `end`).
+    /// ended at `end`); a written one moves `latest.txt` to the run.
     Check {
         run: u64,
         end: Instant,
-        path: PathBuf,
+        paths: RunPaths,
     },
-    /// Read git and the last prompts, write herdr's own handoff.
+    /// Read git and the last prompts, write herdr's own handoff. A handoff
+    /// the agent already wrote there is kept (`Written` answers
+    /// [`Kind::Agent`]).
     Mechanical {
         run: u64,
         paths: RunPaths,
@@ -59,9 +71,10 @@ pub(crate) enum Outcome {
         end: Instant,
         nonempty: bool,
     },
+    /// The run's handoff is there: who wrote it, or why herdr could not.
     Written {
         run: u64,
-        result: Result<(), String>,
+        result: Result<Kind, String>,
     },
 }
 
@@ -110,25 +123,45 @@ pub(crate) fn run_job(job: Job) -> Option<Outcome> {
             home,
             meta,
         } => {
-            let source = source.filter(|path| path.is_file()).or_else(|| {
-                locate.as_ref().and_then(|session| {
-                    crate::agent_context::locate_session_file(session, home.as_deref(), None)
-                })
-            });
+            let source = resolve_source(source, locate.as_ref(), home.as_deref());
             Some(Outcome::Started {
                 run,
                 transcript: start(&paths, source.as_deref(), &meta),
             })
         }
-        Job::Check { run, end, path } => Some(Outcome::Checked {
+        Job::Copy {
             run,
-            end,
-            nonempty: nonempty(&path),
-        }),
-        Job::Mechanical { run, paths, input } => Some(Outcome::Written {
-            run,
-            result: write_mechanical(&paths, *input).map_err(|err| err.to_string()),
-        }),
+            paths,
+            source,
+            locate,
+            home,
+        } => {
+            let source = resolve_source(source, locate.as_ref(), home.as_deref());
+            Some(Outcome::Started {
+                run,
+                transcript: copy_transcript(&paths, source.as_deref()),
+            })
+        }
+        Job::Check { run, end, paths } => {
+            let nonempty = nonempty(&paths.handoff);
+            if nonempty {
+                write_latest(&paths);
+            }
+            Some(Outcome::Checked { run, end, nonempty })
+        }
+        Job::Mechanical { run, paths, input } => {
+            let result = if nonempty(&paths.handoff) {
+                Ok(Kind::Agent)
+            } else {
+                write_mechanical(&paths, *input)
+                    .map(|()| Kind::Mechanical)
+                    .map_err(|err| err.to_string())
+            };
+            if result.is_ok() {
+                write_latest(&paths);
+            }
+            Some(Outcome::Written { run, result })
+        }
         Job::Meta { paths, meta } => {
             if let Err(err) = write_json(&paths.meta, &meta) {
                 tracing::warn!(err = %err, dir = %paths.dir.display(), "agent handoff: cannot write meta.json");
@@ -138,21 +171,41 @@ pub(crate) fn run_job(job: Job) -> Option<Outcome> {
     }
 }
 
+/// The reported transcript when it is there, else the session's file
+/// looked up under `home`.
+fn resolve_source(
+    source: Option<PathBuf>,
+    locate: Option<&crate::agent_context::ContextSession>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    source.filter(|path| path.is_file()).or_else(|| {
+        locate.and_then(|session| crate::agent_context::locate_session_file(session, home, None))
+    })
+}
+
 fn start(paths: &RunPaths, source: Option<&Path>, meta: &serde_json::Value) -> Result<u64, String> {
     std::fs::create_dir_all(&paths.dir)
         .map_err(|err| format!("create {}: {err}", paths.dir.display()))?;
+    if let Err(err) = write_json(&paths.meta, meta) {
+        tracing::warn!(err = %err, "agent handoff: cannot write meta.json");
+    }
+    copy_transcript(paths, source)
+}
+
+fn copy_transcript(paths: &RunPaths, source: Option<&Path>) -> Result<u64, String> {
+    let source = source.ok_or_else(|| "the transcript path is not known".to_string())?;
+    copy_atomic(source, &paths.transcript)
+        .map_err(|err| format!("copy {}: {err}", source.display()))
+}
+
+/// Point `<session>/latest.txt` at the run (it has a handoff now).
+fn write_latest(paths: &RunPaths) {
     if let Err(err) = write_atomic(
         &paths.latest,
         format!("{}\n", paths.dir.display()).as_bytes(),
     ) {
         tracing::warn!(err = %err, "agent handoff: cannot write latest.txt");
     }
-    if let Err(err) = write_json(&paths.meta, meta) {
-        tracing::warn!(err = %err, "agent handoff: cannot write meta.json");
-    }
-    let source = source.ok_or_else(|| "the transcript path is not known".to_string())?;
-    copy_atomic(source, &paths.transcript)
-        .map_err(|err| format!("copy {}: {err}", source.display()))
 }
 
 /// Whether `path` is a file with content.

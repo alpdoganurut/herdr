@@ -152,6 +152,18 @@ pub(crate) fn install_claude() -> io::Result<ClaudeInstallPaths> {
     } else {
         super::claude_subagent_hooks::install(&updated_settings, &settings_path, &hook_path)?
     };
+    // Fork (agent handoff): the agent writes and reads its handoff under
+    // herdr's state dir without a permission prompt. Not on Windows, whose
+    // asset has no handoff hooks.
+    let updated_settings = if cfg!(windows) {
+        updated_settings
+    } else {
+        super::claude_handoff_permissions::install(
+            &updated_settings,
+            &settings_path,
+            &super::claude_handoff_permissions::current_rules(),
+        )?
+    };
     remove_legacy_bash_hook_file(&hook_path)?;
 
     if updated_settings != existing_settings {
@@ -604,6 +616,11 @@ pub(crate) fn uninstall_claude() -> io::Result<ClaudeUninstallResult> {
             uninstall_claude_settings(&existing_settings, &settings_path, &hook_path)?;
         let new_settings =
             super::claude_subagent_hooks::uninstall(&new_settings, &settings_path, &hook_path)?;
+        let new_settings = super::claude_handoff_permissions::uninstall(
+            &new_settings,
+            &settings_path,
+            &super::claude_handoff_permissions::current_rules(),
+        )?;
         updated_settings = new_settings != existing_settings;
         if updated_settings {
             write_config(&settings_path, new_settings)?;

@@ -15,9 +15,16 @@
 //! - Typing follows the message queue's rules
 //!   ([`App::agent_handoff_target`]: live, idle, not starting, suspended,
 //!   blocked or in voice mode, not the coordinator, no hook-held turn,
-//!   nothing queued) for [`SETTLE`], then `agent.prompt`'s own path with the
-//!   typing guard. Queued messages wait while a run holds the pane
-//!   ([`crate::agent_handoff::Run::holds_messages`]).
+//!   nothing queued before the prompt) for [`SETTLE`], then `agent.prompt`'s
+//!   own path with the typing guard. Queued messages and other
+//!   `agent.prompt` calls wait while a run holds the pane
+//!   ([`crate::agent_handoff::Run::holds_messages`]); they never keep the
+//!   run from `/compact`.
+//! - The automatic trigger fires once per compaction cycle; a start it
+//!   could not make, or a run that stopped before `/compact`, re-arms it
+//!   after [`AUTO_RETRY`].
+//! - A PreCompact during a run (before `/compact`) turns the run into that
+//!   compaction's, keeping its files and a handoff the agent wrote.
 //! - Every step is logged in `actions.jsonl` (action `handoff`); a failure
 //!   shows the user an agent card from the pane.
 
@@ -51,10 +58,17 @@ const MAX_WRITE_FAILURES: u32 = 5;
 const SAVED_FRESH: Duration = Duration::from_secs(15 * 60);
 /// Checkpoints copied into a mechanical handoff.
 const MECHANICAL_CHECKPOINTS: u32 = 10;
+/// The automatic trigger tries again this long after a start it could not
+/// make or a run that stopped before `/compact` (the context stays over the
+/// threshold until a compaction, so it would never re-arm on its own).
+const AUTO_RETRY: Duration = Duration::from_secs(5 * 60);
 
 /// A handoff saved for a terminal (the latest).
 #[derive(Debug, Clone)]
 pub(crate) struct SavedHandoff {
+    /// The agent session it was saved for (a later session of the pane
+    /// does not get it).
+    pub(crate) session_id: String,
     pub(crate) paths: handoff::RunPaths,
     pub(crate) kind: Kind,
     pub(crate) at: Instant,
@@ -76,6 +90,9 @@ pub(crate) struct AgentHandoffRuntime {
     pub(crate) runs: HashMap<TerminalId, Run>,
     /// Whether the automatic trigger may fire for a terminal (absent = yes).
     pub(crate) armed: HashMap<TerminalId, bool>,
+    /// Not before then: the automatic trigger's retry after a refused start
+    /// or a run that stopped before `/compact`.
+    pub(crate) auto_retry_at: HashMap<TerminalId, Instant>,
     /// The latest saved handoff per terminal (the sidebar's age, the
     /// SessionStart(compact) text without a run).
     pub(crate) saved: HashMap<TerminalId, SavedHandoff>,
@@ -241,6 +258,7 @@ impl App {
         }
         let hook_end = terminal.turn().hook_turn_ended();
         let idle_edge = terminal.turn().last_idle().map(|(at, _)| at);
+        let blocked = terminal.state == crate::detect::AgentState::Blocked;
         let percent = terminal.agent_context.map(|usage| usage.percent());
         let free = self.handoff_free(terminal_id);
         let pane = match free {
@@ -256,6 +274,28 @@ impl App {
             }
             Ok(pane) => Some(pane),
         };
+        let Some(run) = self.agent_handoff.runs.get_mut(terminal_id) else {
+            return false;
+        };
+        // The handoff turn stuck on a prompt (a permission, a question): tell
+        // the user once instead of failing 40 minutes later.
+        let blocked_notice = if blocked && matches!(run.phase, Phase::AwaitHandoff { .. }) {
+            let since = *run.blocked_since.get_or_insert(now);
+            let due = !run.blocked_noted && now >= since + handoff::BLOCKED_NOTICE;
+            if due {
+                run.blocked_noted = true;
+            }
+            due
+        } else {
+            run.blocked_since = None;
+            false
+        };
+        if blocked_notice {
+            let reason = "the handoff turn waits on a prompt in the agent (a permission or a question); answer it, or herdr writes its own handoff 10 minutes after the request";
+            self.log_handoff(terminal_id, AgentsActionOutcome::Ok, reason);
+            self.agent_handoff_card(terminal_id, "Handoff waits on you", reason);
+            return true;
+        }
         let Some(run) = self.agent_handoff.runs.get_mut(terminal_id) else {
             return false;
         };
@@ -291,7 +331,7 @@ impl App {
                 true
             }
             Effect::CheckFile { end } => {
-                let path = run.paths.handoff.clone();
+                let paths = run.paths.clone();
                 let id = run.id;
                 run.phase = Phase::AwaitHandoff {
                     typed_at: match run.phase {
@@ -301,7 +341,11 @@ impl App {
                     checked: Some(end),
                     checking: true,
                 };
-                if !self.submit_handoff_job(Job::Check { run: id, end, path }) {
+                if !self.submit_handoff_job(Job::Check {
+                    run: id,
+                    end,
+                    paths,
+                }) {
                     self.finish_agent_handoff(
                         terminal_id,
                         Err("the handoff worker could not start".into()),
@@ -310,28 +354,56 @@ impl App {
                 }
                 true
             }
+            Effect::TypeReminder => {
+                let line = handoff::reminder_line(&run.paths.handoff);
+                if self.type_for_handoff(terminal_id, &pane, &line, now) {
+                    if let Some(run) = self.agent_handoff.runs.get_mut(terminal_id) {
+                        run.reminded = true;
+                        run.missing_since = None;
+                        // The same phase (its start still bounds it): the
+                        // reminder's turn is the one waited for now.
+                        run.phase = Phase::AwaitHandoff {
+                            typed_at: now,
+                            checked: None,
+                            checking: false,
+                        };
+                        run.free_since = None;
+                    }
+                    self.log_handoff(
+                        terminal_id,
+                        AgentsActionOutcome::Ok,
+                        "the turn ended without the handoff file; reminder typed",
+                    );
+                }
+                true
+            }
             Effect::WriteMechanical => {
+                let reason = if run.reminded {
+                    "the agent did not write one after the prompt and a reminder"
+                } else {
+                    "the agent did not write one within 10 minutes of the prompt"
+                };
                 run.enter(Phase::WritingFallback, now);
                 self.log_handoff(
                     terminal_id,
                     AgentsActionOutcome::Ok,
                     "no handoff from the agent in time; herdr writes a mechanical one",
                 );
-                self.start_mechanical_handoff(
-                    terminal_id,
-                    "the agent did not write one within 10 minutes of the prompt",
-                    now,
-                );
+                self.start_mechanical_handoff(terminal_id, reason, now);
                 true
             }
             Effect::TypeCompact => {
                 let command = run.agent.compact_command();
+                let (id, paths) = (run.id, run.paths.clone());
                 if self.type_for_handoff(terminal_id, &pane, command, now) {
                     if let Some(run) = self.agent_handoff.runs.get_mut(terminal_id) {
                         run.enter(Phase::Compacting { typed_at: now }, now);
                     }
                     self.agent_handoff.armed.insert(terminal_id.clone(), false);
                     self.log_handoff(terminal_id, AgentsActionOutcome::Ok, "/compact typed");
+                    // The copy again, now with the handoff turn in it (the
+                    // compaction appends only after its summary call).
+                    self.submit_transcript_copy(terminal_id, id, paths, None);
                 }
                 true
             }
@@ -423,10 +495,12 @@ impl App {
                     return false;
                 };
                 let terminal_id = terminal_id.clone();
-                current.transcript_saved = Some(transcript.is_ok());
+                // A failed second copy leaves the first in place.
+                let saved_copy = transcript.is_ok() || current.transcript_saved == Some(true);
+                current.transcript_saved = Some(saved_copy);
                 if let Some(saved) = self.agent_handoff.saved.get_mut(&terminal_id) {
                     if saved.paths == current.paths {
-                        saved.transcript = transcript.is_ok();
+                        saved.transcript = saved_copy;
                     }
                 }
                 match transcript {
@@ -465,6 +539,7 @@ impl App {
                 if nonempty {
                     current.kind = Some(Kind::Agent);
                     let saved = SavedHandoff {
+                        session_id: current.session_id.clone(),
                         paths: current.paths.clone(),
                         kind: Kind::Agent,
                         at: now,
@@ -479,6 +554,7 @@ impl App {
                         checked,
                         checking: false,
                     };
+                    current.missing_since.get_or_insert(now);
                 }
                 true
             }
@@ -486,7 +562,8 @@ impl App {
                 let pending = self.agent_handoff.pending_writes.remove(&run);
                 let terminal_id = pending.as_ref().map(|pending| pending.terminal_id.clone());
                 match (result, pending) {
-                    (Ok(()), Some(pending)) => {
+                    (Ok(kind), Some(mut pending)) => {
+                        pending.saved.kind = kind;
                         self.record_saved_handoff(&pending.terminal_id, pending.saved);
                         if let Some(current) = self
                             .agent_handoff
@@ -494,7 +571,7 @@ impl App {
                             .get_mut(&pending.terminal_id)
                             .filter(|current| current.id == run)
                         {
-                            current.kind = Some(Kind::Mechanical);
+                            current.kind = Some(kind);
                             if current.phase == Phase::WritingFallback {
                                 current.enter(Phase::AwaitCompact, now);
                             }
@@ -516,7 +593,11 @@ impl App {
                             self.finish_agent_handoff(&terminal_id, Err(reason), now);
                         } else {
                             self.log_handoff(&terminal_id, AgentsActionOutcome::Failed, &reason);
-                            self.agent_handoff_card(&terminal_id, &reason);
+                            self.agent_handoff_card(
+                                &terminal_id,
+                                "Handoff & compact failed",
+                                &reason,
+                            );
                         }
                     }
                     (_, None) => return false,
@@ -609,6 +690,10 @@ impl App {
             kind: None,
             free_since: None,
             write_failures: 0,
+            missing_since: None,
+            reminded: false,
+            blocked_since: None,
+            blocked_noted: false,
         };
         let meta = self.handoff_meta(&run, &pane, None);
         let locate = Some(crate::agent_context::ContextSession {
@@ -694,7 +779,13 @@ impl App {
             .and_then(|terminal| terminal.agent_name.clone())
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| "claude".to_string());
-        let cwd = terminal.map(|terminal| terminal.cwd.clone());
+        // The agent's own directory (it may have been started after a cd),
+        // else the pane's; one process lookup per mechanical handoff.
+        let cwd = self
+            .terminal_runtimes
+            .get(terminal_id)
+            .and_then(|runtime| runtime.foreground_cwd())
+            .or_else(|| terminal.map(|terminal| terminal.cwd.clone()));
         let transcript_hint = terminal
             .and_then(|terminal| terminal.persistable_agent_session())
             .and_then(|session| session.transcript_path);
@@ -721,6 +812,7 @@ impl App {
             PendingWrite {
                 terminal_id: terminal_id.clone(),
                 saved: SavedHandoff {
+                    session_id: run.session_id.clone(),
                     paths: run.paths.clone(),
                     kind: Kind::Mechanical,
                     at: now,
@@ -878,7 +970,7 @@ impl App {
         &mut self,
         terminal_id: &TerminalId,
         outcome: Result<String, String>,
-        _now: Instant,
+        now: Instant,
     ) {
         let Some(run) = self.agent_handoff.runs.remove(terminal_id) else {
             return;
@@ -893,6 +985,15 @@ impl App {
             paths: run.paths.clone(),
             meta,
         });
+        // A run that stopped before /compact leaves the context over the
+        // threshold: the automatic trigger may try again after a while.
+        let compacted = matches!(run.phase, Phase::Compacting { .. } | Phase::AwaitResume);
+        if outcome.is_err() && !compacted {
+            self.agent_handoff.armed.insert(terminal_id.clone(), true);
+            self.agent_handoff
+                .auto_retry_at
+                .insert(terminal_id.clone(), now + AUTO_RETRY);
+        }
         // Queued messages held for the run go in now.
         self.message_queue.mark_due();
         match outcome {
@@ -908,13 +1009,13 @@ impl App {
                     AgentsActionOutcome::Failed,
                     &format!("stopped at {}: {reason}", run.phase.name()),
                 );
-                self.agent_handoff_card(terminal_id, &reason);
+                self.agent_handoff_card(terminal_id, "Handoff & compact failed", &reason);
             }
         }
     }
 
     /// An agent card from the pane telling the user a handoff failed.
-    fn agent_handoff_card(&mut self, terminal_id: &TerminalId, reason: &str) {
+    fn agent_handoff_card(&mut self, terminal_id: &TerminalId, title: &str, reason: &str) {
         let Some(pane) = self
             .resolve_terminal_target(&terminal_id.to_string())
             .ok()
@@ -925,8 +1026,7 @@ impl App {
         let Some(sender) = self.notice_sender(&pane) else {
             return;
         };
-        let title = crate::app::agent_notices::sanitize_title("Handoff & compact failed")
-            .unwrap_or_default();
+        let title = crate::app::agent_notices::sanitize_title(title).unwrap_or_default();
         let body = crate::app::agent_notices::sanitize_body(reason);
         if let Ok((_, outcome)) = self.agent_notices.notify(
             sender,
@@ -997,6 +1097,13 @@ impl App {
         {
             return;
         }
+        // The coordinator is never handed off: no retries every read.
+        if self
+            .resolve_terminal_target(&terminal_id.to_string())
+            .is_ok_and(|target| self.is_coordinator_pane(target.ws_idx, target.pane_id))
+        {
+            return;
+        }
         let armed = self
             .agent_handoff
             .armed
@@ -1006,13 +1113,36 @@ impl App {
         let running = self.agent_handoff.runs.contains_key(terminal_id);
         let percent = usage.percent();
         let (fire, armed) = handoff::auto_fire(armed, percent, at_percent, running);
+        if armed {
+            // Below the threshold: a pending retry is moot.
+            self.agent_handoff.auto_retry_at.remove(terminal_id);
+        }
+        if fire
+            && self
+                .agent_handoff
+                .auto_retry_at
+                .get(terminal_id)
+                .is_some_and(|at| now < *at)
+        {
+            // Armed, but a refused start or a stopped run is recent.
+            return;
+        }
         self.agent_handoff.armed.insert(terminal_id.clone(), armed);
         if !fire {
             return;
         }
-        if let Err(refusal) = self.start_agent_handoff(terminal_id, Trigger::Auto { percent }, now)
-        {
-            tracing::info!(code = refusal.code, reason = %refusal.message, "agent handoff: the automatic trigger did not start");
+        match self.start_agent_handoff(terminal_id, Trigger::Auto { percent }, now) {
+            Ok(_) => {
+                self.agent_handoff.auto_retry_at.remove(terminal_id);
+            }
+            Err(refusal) => {
+                // Not disarmed: try again after a while.
+                self.agent_handoff.armed.insert(terminal_id.clone(), true);
+                self.agent_handoff
+                    .auto_retry_at
+                    .insert(terminal_id.clone(), now + AUTO_RETRY);
+                tracing::info!(code = refusal.code, reason = %refusal.message, "agent handoff: the automatic trigger did not start; it tries again later");
+            }
         }
     }
 
@@ -1025,15 +1155,26 @@ impl App {
         self.agent_handoff
             .saved
             .retain(|terminal_id, _| terminals.contains_key(terminal_id));
+        self.agent_handoff
+            .auto_retry_at
+            .retain(|terminal_id, _| terminals.contains_key(terminal_id));
     }
 
     /// When the handoff of a terminal was saved (unix seconds), for the
     /// sidebar.
+    /// Only for the session it was saved for (not after `/clear` or
+    /// another session in the pane).
     pub(crate) fn agent_handoff_saved_unix(&self, terminal_id: &TerminalId) -> Option<u64> {
-        self.agent_handoff
-            .saved
+        let saved = self.agent_handoff.saved.get(terminal_id)?;
+        let current = self
+            .state
+            .terminals
             .get(terminal_id)
-            .map(|saved| saved.at_unix)
+            .and_then(|terminal| terminal.persistable_agent_session());
+        match current {
+            Some(session) if session.session_ref.value != saved.session_id => None,
+            _ => Some(saved.at_unix),
+        }
     }
 
     // ----- agents.handoff ---------------------------------------------------------
@@ -1151,7 +1292,8 @@ impl App {
                 none(id)
             }
             CompactEvent::Post => {
-                let context = self.agent_handoff_injection(&terminal_id, now);
+                let context =
+                    self.agent_handoff_injection(&terminal_id, params.session_id.as_deref(), now);
                 self.agent_handoff_compacted(&terminal_id, "its SessionStart hook", now);
                 encode_success(id, ResponseResult::PaneReportCompact { context })
             }
@@ -1170,22 +1312,35 @@ impl App {
         if !self.agents_config.handoff.enabled {
             return;
         }
+        let auto = params.trigger.as_deref() == Some("auto");
         if let Some(run) = self.agent_handoff.runs.get(terminal_id) {
-            if matches!(run.phase, Phase::Compacting { .. }) {
-                self.log_handoff(
+            match run.phase {
+                Phase::Compacting { .. } => {
+                    let detail = match run.trigger {
+                        Trigger::External { .. } => {
+                            "PreCompact again while a compaction herdr did not start is on"
+                        }
+                        _ => "PreCompact (herdr's /compact)",
+                    };
+                    self.log_handoff(terminal_id, AgentsActionOutcome::Ok, detail);
+                    return;
+                }
+                // Compacted, before the resume line: this is a new
+                // compaction, with its own files.
+                Phase::AwaitResume => self.finish_agent_handoff(
                     terminal_id,
-                    AgentsActionOutcome::Ok,
-                    "PreCompact (herdr's /compact)",
-                );
-                return;
+                    Ok("compacted; a new compaction came before the resume line".into()),
+                    now,
+                ),
+                // The agent is compacted before the run got there (the
+                // user's /compact, Claude's auto-compact during the handoff
+                // turn or the wait for /compact): the compaction goes on
+                // with the run's files, keeping a handoff already written.
+                _ => {
+                    self.supersede_agent_handoff(terminal_id, params, auto, now);
+                    return;
+                }
             }
-            // The agent is compacted before the run got there (the user's
-            // /compact, Claude's auto-compact): herdr saves its own instead.
-            self.finish_agent_handoff(
-                terminal_id,
-                Ok("superseded by a compaction herdr did not start".into()),
-                now,
-            );
         }
         let Some(target) = self.resolve_terminal_target(&terminal_id.to_string()).ok() else {
             return;
@@ -1220,7 +1375,6 @@ impl App {
                 )
             })
             .or_else(|| session.as_ref().and_then(|s| s.transcript_path.clone()));
-        let auto = params.trigger.as_deref() == Some("auto");
         let id = self.next_handoff_id();
         let started_unix = now_unix();
         let paths = handoff::run_paths(&self.agent_handoff.root(), &session_id, started_unix);
@@ -1238,9 +1392,14 @@ impl App {
             session_id: session_id.clone(),
             paths: paths.clone(),
             transcript_saved: None,
-            kind: Some(Kind::Mechanical),
+            // Known once the worker wrote (or kept) the handoff.
+            kind: None,
             free_since: None,
             write_failures: 0,
+            missing_since: None,
+            reminded: false,
+            blocked_since: None,
+            blocked_noted: false,
         };
         let meta = self.handoff_meta(&run, &pane, None);
         let locate = session.map(|session| crate::agent_context::ContextSession {
@@ -1250,6 +1409,21 @@ impl App {
         });
         self.agent_handoff.runs.insert(terminal_id.clone(), run);
         self.agent_handoff.armed.insert(terminal_id.clone(), false);
+        self.log_handoff(
+            terminal_id,
+            AgentsActionOutcome::Ok,
+            &format!(
+                "PreCompact ({}): herdr saves the transcript and a mechanical handoff",
+                if auto { "auto" } else { "manual" }
+            ),
+        );
+        // The handoff first: the SessionStart(compact) answer names it, and
+        // a long transcript copy must not hold it up (the mechanical one
+        // reads the prompts from the live transcript meanwhile).
+        self.start_mechanical_handoff(terminal_id, external_reason(auto), now);
+        if !self.agent_handoff.runs.contains_key(terminal_id) {
+            return;
+        }
         if !self.submit_handoff_job(Job::Start {
             run: id,
             paths,
@@ -1265,29 +1439,102 @@ impl App {
             );
             return;
         }
+        self.wake_agent_handoff(now);
+    }
+
+    /// PreCompact while herdr's run had not typed `/compact` yet: the run
+    /// becomes the compaction's (its files, a handoff the agent already
+    /// wrote), herdr writes its own only when there is none, and the
+    /// transcript is copied again now.
+    fn supersede_agent_handoff(
+        &mut self,
+        terminal_id: &TerminalId,
+        params: &PaneReportCompactParams,
+        auto: bool,
+        now: Instant,
+    ) {
+        let Some(run) = self.agent_handoff.runs.get_mut(terminal_id) else {
+            return;
+        };
+        let was = run.phase;
+        let before = trigger_detail(&run.trigger);
+        run.trigger = Trigger::External { auto };
+        run.enter(Phase::Compacting { typed_at: now }, now);
+        let (id, paths, kind, session_id) =
+            (run.id, run.paths.clone(), run.kind, run.session_id.clone());
+        self.agent_handoff.armed.insert(terminal_id.clone(), false);
         self.log_handoff(
             terminal_id,
             AgentsActionOutcome::Ok,
             &format!(
-                "PreCompact ({}): herdr saves the transcript and a mechanical handoff",
-                if auto { "auto" } else { "manual" }
+                "PreCompact ({}) during the run ({before}) at {}: the compaction goes on with the run's files",
+                if auto { "auto" } else { "manual" },
+                was.name()
             ),
         );
-        self.start_mechanical_handoff(
-            terminal_id,
-            if auto {
-                "Claude compacted the session on its own"
-            } else {
-                "the session was compacted with /compact"
-            },
-            now,
-        );
+        // A saved handoff stays; herdr's own is on the worker already in
+        // WritingFallback; else herdr writes one (keeping a file the agent
+        // wrote that no check saw yet).
+        if kind.is_none() && was != Phase::WritingFallback {
+            self.start_mechanical_handoff(terminal_id, external_reason(auto), now);
+        }
+        let source =
+            crate::agent_resume::AgentSessionRef::id(&session_id).and_then(|session_ref| {
+                crate::agent_resume::transcript_path_from_report(
+                    "herdr:claude",
+                    "claude",
+                    Some(&session_ref),
+                    params.transcript_path.as_deref(),
+                )
+            });
+        if self.agent_handoff.runs.contains_key(terminal_id) {
+            self.submit_transcript_copy(terminal_id, id, paths, source);
+        }
         self.wake_agent_handoff(now);
     }
 
+    /// Copy the transcript of `terminal_id`'s session into the run's files
+    /// again (on the worker): `source` when the hook named it, else the
+    /// session's known or looked-up file.
+    fn submit_transcript_copy(
+        &mut self,
+        terminal_id: &TerminalId,
+        run: u64,
+        paths: handoff::RunPaths,
+        source: Option<PathBuf>,
+    ) {
+        let session = self
+            .state
+            .terminals
+            .get(terminal_id)
+            .and_then(|terminal| terminal.persistable_agent_session())
+            .filter(|session| session.agent == "claude");
+        let source = source.or_else(|| session.as_ref().and_then(|s| s.transcript_path.clone()));
+        let locate = session.map(|session| crate::agent_context::ContextSession {
+            agent: crate::agent_context::ContextAgent::Claude,
+            id: session.session_ref.value.clone(),
+            session,
+        });
+        if !self.submit_handoff_job(Job::Copy {
+            run,
+            paths,
+            source,
+            locate,
+            home: crate::integration::home_dir().ok(),
+        }) {
+            tracing::warn!("agent handoff: the transcript was not copied again");
+        }
+    }
+
     /// The SessionStart(compact) text: the run's files, else a handoff saved
-    /// in the last [`SAVED_FRESH`].
-    fn agent_handoff_injection(&self, terminal_id: &TerminalId, now: Instant) -> Option<String> {
+    /// in the last [`SAVED_FRESH`] for the same session (`session_id` from
+    /// the hook; without one the saved handoff is offered).
+    fn agent_handoff_injection(
+        &self,
+        terminal_id: &TerminalId,
+        session_id: Option<&str>,
+        now: Instant,
+    ) -> Option<String> {
         if let Some(run) = self
             .agent_handoff
             .runs
@@ -1306,12 +1553,26 @@ impl App {
             .agent_handoff
             .saved
             .get(terminal_id)
-            .filter(|saved| now.saturating_duration_since(saved.at) < SAVED_FRESH)?;
+            .filter(|saved| now.saturating_duration_since(saved.at) < SAVED_FRESH)
+            .filter(|saved| {
+                session_id
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .is_none_or(|id| id == saved.session_id)
+            })?;
         Some(handoff::injection(
             &saved.paths.handoff,
             saved.transcript.then_some(saved.paths.transcript.as_path()),
             saved.kind,
         ))
+    }
+}
+
+fn external_reason(auto: bool) -> &'static str {
+    if auto {
+        "Claude compacted the session on its own"
+    } else {
+        "the session was compacted with /compact"
     }
 }
 

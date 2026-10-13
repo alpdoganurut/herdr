@@ -18,6 +18,10 @@ fn run_at(phase: Phase, now: Instant) -> Run {
         kind: None,
         free_since: None,
         write_failures: 0,
+        missing_since: None,
+        reminded: false,
+        blocked_since: None,
+        blocked_noted: false,
     }
 }
 
@@ -368,14 +372,19 @@ fn user_prompts_skip_tool_results_meta_and_herdr_lines() {
         r#"{"type":"user","isCompactSummary":true,"message":{"content":"This session is being continued"}}"#,
         r#"{"type":"user","message":{"content":[{"type":"text","text":"second"},{"type":"image"}]}}"#,
         "not json",
+        r#"{"type":"user","message":{"content":"<local-command-stdout>done</local-command-stdout>"}}"#,
+        r#"{"type":"user","message":{"content":"<div> renders wrong"}}"#,
         r#"{"type":"user","message":{"content":"third"}}"#,
     ]
     .join("\n");
     assert_eq!(
         last_user_prompts(&jsonl, 5),
-        vec!["first", "second", "third"]
+        vec!["first", "second", "<div> renders wrong", "third"]
     );
-    assert_eq!(last_user_prompts(&jsonl, 2), vec!["second", "third"]);
+    assert_eq!(
+        last_user_prompts(&jsonl, 2),
+        vec!["<div> renders wrong", "third"]
+    );
     assert_eq!(one_line("a\n  b   c", 10), "a b c");
     assert_eq!(one_line("abcdef", 4), "abc\u{2026}");
     assert_eq!(tail_lines("1\n2\n3\n", 2), "2\n3");
@@ -412,9 +421,9 @@ fn the_worker_jobs_copy_point_check_and_write() {
         std::fs::read_to_string(&paths.transcript).unwrap(),
         std::fs::read_to_string(&source).unwrap()
     );
-    assert_eq!(
-        std::fs::read_to_string(&paths.latest).unwrap().trim(),
-        paths.dir.display().to_string()
+    assert!(
+        !paths.latest.exists(),
+        "latest.txt moves only once the run has a handoff"
     );
     assert!(std::fs::read_to_string(&paths.meta)
         .unwrap()
@@ -424,7 +433,7 @@ fn the_worker_jobs_copy_point_check_and_write() {
         files::run_job(files::Job::Check {
             run: 7,
             end,
-            path: paths.handoff.clone()
+            paths: paths.clone()
         }),
         Some(files::Outcome::Checked {
             run: 7,
@@ -448,7 +457,8 @@ fn the_worker_jobs_copy_point_check_and_write() {
             ..
         })
     ));
-    assert!(other.latest.is_file());
+    assert!(other.dir.is_dir());
+    assert!(!other.latest.exists());
     // The mechanical handoff reads the copy's prompts.
     let written = files::run_job(files::Job::Mechanical {
         run: 7,
@@ -466,12 +476,115 @@ fn the_worker_jobs_copy_point_check_and_write() {
         written,
         Some(files::Outcome::Written {
             run: 7,
-            result: Ok(())
+            result: Ok(Kind::Mechanical)
         })
     );
     let text = std::fs::read_to_string(&paths.handoff).unwrap();
     assert!(text.contains("- build it"), "{text}");
     assert!(text.contains(&paths.transcript.display().to_string()));
     assert!(files::nonempty(&paths.handoff));
+    assert_eq!(
+        std::fs::read_to_string(&paths.latest).unwrap().trim(),
+        paths.dir.display().to_string(),
+        "a handoff moves latest.txt to the run"
+    );
+    // A handoff the agent wrote is kept, not overwritten by herdr's.
+    std::fs::write(&other.handoff, "# mine\n").unwrap();
+    assert_eq!(
+        files::run_job(files::Job::Mechanical {
+            run: 8,
+            paths: other.clone(),
+            input: Box::new(Mechanical::default()),
+        }),
+        Some(files::Outcome::Written {
+            run: 8,
+            result: Ok(Kind::Agent)
+        })
+    );
+    assert_eq!(std::fs::read_to_string(&other.handoff).unwrap(), "# mine\n");
+    // A found handoff moves latest.txt too; the copy again refreshes it.
+    assert_eq!(
+        files::run_job(files::Job::Check {
+            run: 8,
+            end,
+            paths: other.clone()
+        }),
+        Some(files::Outcome::Checked {
+            run: 8,
+            end,
+            nonempty: true
+        })
+    );
+    assert!(other.latest.is_file());
+    std::fs::write(
+        &source,
+        "{\"type\":\"user\",\"message\":{\"content\":\"more\"}}\n",
+    )
+    .unwrap();
+    assert!(matches!(
+        files::run_job(files::Job::Copy {
+            run: 7,
+            paths: paths.clone(),
+            source: Some(source.clone()),
+            locate: None,
+            home: None,
+        }),
+        Some(files::Outcome::Started {
+            run: 7,
+            transcript: Ok(_)
+        })
+    ));
+    assert!(std::fs::read_to_string(&paths.transcript)
+        .unwrap()
+        .contains("more"));
     let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn a_turn_end_without_the_file_reminds_once_then_falls_back() {
+    let t0 = Instant::now();
+    let end = t0 + Duration::from_secs(5);
+    let mut run = run_at(
+        Phase::AwaitHandoff {
+            typed_at: t0,
+            checked: Some(end),
+            checking: false,
+        },
+        t0,
+    );
+    let mut f = facts(end + Duration::from_secs(10), true);
+    f.hook_end = Some(end);
+    assert_eq!(next(&run, &f), Effect::Wait, "no file seen yet");
+    run.missing_since = Some(end);
+    assert_eq!(next(&run, &f), Effect::Wait, "in the grace");
+    f.now = end + MISSING_GRACE;
+    assert_eq!(next(&run, &f), Effect::TypeReminder);
+    f.free = false;
+    assert_eq!(next(&run, &f), Effect::Wait, "only when free");
+    // A later turn end is checked first.
+    f.hook_end = Some(end + Duration::from_secs(1));
+    assert_eq!(
+        next(&run, &f),
+        Effect::CheckFile {
+            end: end + Duration::from_secs(1)
+        }
+    );
+    f.hook_end = Some(end);
+    run.reminded = true;
+    assert_eq!(
+        next(&run, &f),
+        Effect::WriteMechanical,
+        "after the reminder"
+    );
+}
+
+#[test]
+fn a_compaction_herdr_did_not_start_ends_quietly_without_a_report() {
+    let t0 = Instant::now();
+    let mut run = run_at(Phase::Compacting { typed_at: t0 }, t0);
+    run.trigger = Trigger::External { auto: true };
+    assert!(matches!(
+        next(&run, &facts(t0 + COMPACT_TIMEOUT, false)),
+        Effect::Finish(_)
+    ));
 }

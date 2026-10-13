@@ -989,6 +989,31 @@ fn install_claude_writes_hook_and_updates_settings() {
         (!cfg!(windows)).then_some(1)
     );
     assert!(settings["hooks"].get("SessionEnd").is_none());
+    // Fork (agent handoff): the agent writes and reads its handoff under
+    // herdr's state dir without a prompt; the user's rules stay.
+    let allow: Vec<&str> = settings["permissions"]["allow"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(allow.first(), Some(&"Read"));
+    if !cfg!(windows) {
+        assert!(
+            allow
+                .iter()
+                .any(|rule| rule.starts_with("Edit(//") && rule.ends_with("/handoffs/**)")),
+            "{allow:?}"
+        );
+        let uninstalled = uninstall_claude().unwrap();
+        assert!(uninstalled.updated_settings);
+        let settings: Value =
+            serde_json::from_str(&fs::read_to_string(&installed.settings_path).unwrap()).unwrap();
+        assert_eq!(
+            settings["permissions"]["allow"],
+            serde_json::json!(["Read"])
+        );
+    }
 
     std::env::remove_var("HOME");
     let _ = fs::remove_dir_all(base);

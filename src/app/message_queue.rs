@@ -577,8 +577,10 @@ impl App {
     /// Fork (agent handoff, src/app/agent_handoff.rs): whether herdr may
     /// type into the agent of `terminal_id` now by the queue's own rules:
     /// `Ok(pane)` when it could take a message, is not the coordinator, its
-    /// screen reads idle (not working with only its Stop hook's word) and
-    /// nothing is queued for it (those messages go first); `Err(None)` when
+    /// screen reads idle (not working with only its Stop hook's word) and,
+    /// before the run holds the queue, nothing is queued for it (those
+    /// messages go first; once the prompt is typed they wait for the run
+    /// instead, so they cannot keep it from `/compact`); `Err(None)` when
     /// the pane or its agent is gone, `Err(Some(reason))` otherwise.
     pub(super) fn agent_handoff_target(&self, terminal_id: &str) -> Result<String, Option<String>> {
         let target = self.message_target(terminal_id, None).ok_or(None)?;
@@ -591,7 +593,10 @@ impl App {
             Check::Ready {
                 hook_ended: true, ..
             } => Err(Some("working".into())),
-            Check::Ready { .. } if self.message_queue.queued_for(terminal_id) => {
+            Check::Ready { .. }
+                if !self.agent_handoff.holds_messages(terminal_id)
+                    && self.message_queue.queued_for(terminal_id) =>
+            {
                 Err(Some("messages are queued for it".into()))
             }
             Check::Ready { pane, .. } => Ok(pane),
