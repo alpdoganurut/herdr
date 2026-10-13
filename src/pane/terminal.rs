@@ -6921,9 +6921,9 @@ mod tests {
     #[test]
     fn program_status_switch_off_sends_no_probe_reply() {
         let (pane, tx, pane_id) = program_status_test_pane();
-        super::super::program_status::set_enabled(false);
+        let off = super::super::program_status::SwitchOffForTest::new();
         let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]7501;?\x07\x1b[c", &tx);
-        super::super::program_status::set_enabled(true);
+        drop(off);
         assert_eq!(result.terminal_responses.len(), 1);
         assert!(is_da1_reply(&result.terminal_responses[0]));
     }

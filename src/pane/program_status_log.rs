@@ -35,6 +35,9 @@ const RATE_WINDOW: Duration = Duration::from_secs(3600);
 #[cfg_attr(test, allow(dead_code))] // tests write through append_with_cap
 const ROTATE_BYTES: u64 = 1024 * 1024;
 const LOG_FILE: &str = "program-status-disagreements.jsonl";
+/// The fork's build identity in each line, so these lines never pass for an
+/// upstream build's.
+const HERDR_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+fork");
 const ROTATED_FILE: &str = "program-status-disagreements.1.jsonl";
 
 #[derive(Clone, Copy, Debug)]
@@ -144,10 +147,15 @@ pub(super) struct SessionSummaryLine {
     pub ts_ms: u64,
     pub pane: u64,
     pub agent: &'static str,
-    pub probe_answered: bool,
-    pub reports: u32,
-    pub rejects: u32,
-    pub root_transitions: u32,
+    /// `agent_changed`, `reset` (the loop's detect reset) or `dropped` (the
+    /// pane closed or herdr stopped with the agent still running).
+    pub end_reason: &'static str,
+    /// The store's counters; null for `reset` and `dropped`, which cannot
+    /// read the store (a reset keeps it, a drop must not take the core lock).
+    pub probe_answered: Option<bool>,
+    pub reports: Option<u32>,
+    pub rejects: Option<u32>,
+    pub root_transitions: Option<u32>,
     pub agree_ticks: u64,
     pub disagree_ticks: u64,
     pub episodes: u32,
@@ -194,6 +202,9 @@ pub(super) struct DisagreementTracker {
     /// After the switch comes back on, the record the mirror still holds
     /// predates the off period until its revision moves.
     stale_revision: Option<u64>,
+    /// The agent the session's ticks belong to, for a summary written
+    /// without an agent change (reset, drop).
+    last_agent: Option<Agent>,
 }
 
 fn wall_ms() -> u64 {
@@ -220,14 +231,62 @@ impl DisagreementTracker {
             last_packed: 0,
             was_disabled: false,
             stale_revision: None,
+            last_agent: None,
         }
     }
 
-    /// The loop's detect reset: forget everything without logging.
-    pub(super) fn reset(&mut self) {
-        self.episode = None;
-        self.session = SessionTicks::default();
+    /// The loop's detect reset: close the episode (logged when it outlived
+    /// the debounce) and summarize the ticks so far. The store is not
+    /// cleared by a reset, so the summary carries no store counters.
+    pub(super) fn reset(&mut self, now: Instant) -> Vec<LogLine> {
         self.stale_revision = None;
+        self.close_session("reset", now)
+    }
+
+    /// Closes the episode as `reason` and, when the session saw a record,
+    /// writes a ticks-only summary (store counters null).
+    fn close_session(&mut self, reason: &'static str, now: Instant) -> Vec<LogLine> {
+        let mut lines = Vec::new();
+        if let DisagreementAction::Emit(line) = self.end(reason, now) {
+            lines.push(*line);
+        }
+        let session = std::mem::take(&mut self.session);
+        let agent = self.last_agent.take();
+        if let Some(agent) = agent {
+            if session.agree_ticks > 0 || session.disagree_ticks > 0 {
+                lines.push(self.summary(agent, reason, None, session));
+            }
+        }
+        lines
+    }
+
+    fn summary(
+        &self,
+        agent: Agent,
+        end_reason: &'static str,
+        counters: Option<program_status::ProgramStatusSessionCounters>,
+        session: SessionTicks,
+    ) -> LogLine {
+        LogLine::Summary(SessionSummaryLine {
+            kind: "session_summary",
+            ts_ms: wall_ms(),
+            pane: self.pane,
+            agent: crate::detect::agent_label(agent),
+            end_reason,
+            probe_answered: counters.map(|counters| counters.probe_answered),
+            reports: counters.map(|counters| counters.reports),
+            rejects: counters.map(|counters| counters.rejects),
+            root_transitions: counters.map(|counters| counters.root_transitions),
+            agree_ticks: session.agree_ticks,
+            disagree_ticks: session.disagree_ticks,
+            episodes: session.episodes,
+            logged_episodes: session.logged_episodes,
+            short_episodes: session.short_episodes,
+            short_max_ms: session.short_max_ms,
+            osc_children_max: session.children_max,
+            dropped_before: 0,
+            herdr_version: HERDR_VERSION,
+        })
     }
 
     pub(super) fn tick(&mut self, input: DisagreementInput) -> DisagreementAction {
@@ -257,6 +316,7 @@ impl DisagreementTracker {
         let Some(record_state) = root.state else {
             return self.end("no_record", input.now);
         };
+        self.last_agent = Some(agent);
         self.session.children_max = self.session.children_max.max(root.children);
         let mapped = program_status::mapped_agent_state(record_state);
         if mapped == input.screen_state {
@@ -366,7 +426,7 @@ impl DisagreementTracker {
             osc_children: episode.children,
             osc_age_ms_at_start,
             dropped_before: 0,
-            herdr_version: env!("CARGO_PKG_VERSION"),
+            herdr_version: HERDR_VERSION,
         })
     }
 
@@ -405,28 +465,24 @@ impl DisagreementTracker {
             lines.push(*line);
         }
         let session = std::mem::take(&mut self.session);
+        self.last_agent = None;
         if counters.probe_answered || counters.reports > 0 {
-            lines.push(LogLine::Summary(SessionSummaryLine {
-                kind: "session_summary",
-                ts_ms: wall_ms(),
-                pane: self.pane,
-                agent: crate::detect::agent_label(agent),
-                probe_answered: counters.probe_answered,
-                reports: counters.reports,
-                rejects: counters.rejects,
-                root_transitions: counters.root_transitions,
-                agree_ticks: session.agree_ticks,
-                disagree_ticks: session.disagree_ticks,
-                episodes: session.episodes,
-                logged_episodes: session.logged_episodes,
-                short_episodes: session.short_episodes,
-                short_max_ms: session.short_max_ms,
-                osc_children_max: session.children_max,
-                dropped_before: 0,
-                herdr_version: env!("CARGO_PKG_VERSION"),
-            }));
+            lines.push(self.summary(agent, "agent_changed", Some(counters), session));
         }
         lines
+    }
+}
+
+/// The detector task is aborted when its pane closes or herdr stops, and
+/// the loop body never runs again: the open episode and the session summary
+/// are written here. No core lock (the tracker holds no terminal) and a
+/// synchronous write, because a runtime shutting down discards blocking
+/// work. Bounded: at most two short lines per pane.
+impl Drop for DisagreementTracker {
+    fn drop(&mut self) {
+        for line in self.close_session("dropped", Instant::now()) {
+            emit_with(line, WriteMode::Sync);
+        }
     }
 }
 
@@ -543,7 +599,26 @@ static LIMITER: Mutex<RateLimiter> = Mutex::new(RateLimiter {
 });
 static APPEND_LOCK: Mutex<()> = Mutex::new(());
 
-fn emit(mut line: LogLine) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WriteMode {
+    /// Off the detector loop's thread, through the blocking pool.
+    Background,
+    /// On the calling thread (the tracker's drop).
+    Sync,
+}
+
+fn emit(line: LogLine) {
+    emit_with(line, WriteMode::Background);
+}
+
+/// Called by the loops on a detect reset.
+pub(super) fn reset(tracker: &mut DisagreementTracker, now: Instant) {
+    for line in tracker.reset(now) {
+        emit(line);
+    }
+}
+
+fn emit_with(mut line: LogLine, mode: WriteMode) {
     let admitted = match LIMITER.lock() {
         Ok(mut limiter) => limiter.admit(Instant::now(), LINES_PER_HOUR),
         Err(poisoned) => poisoned.into_inner().admit(Instant::now(), LINES_PER_HOUR),
@@ -562,26 +637,26 @@ fn emit(mut line: LogLine) {
             tracing::info!(target: "herdr::program_status", line = %json, "status session summary")
         }
     }
-    write_line(json);
+    write_line(json, mode);
 }
 
 /// Tests never touch the real state dir; they call [`append_with_cap`].
 #[cfg(test)]
-fn write_line(_json: String) {}
+fn write_line(_json: String, _mode: WriteMode) {}
 
 #[cfg(not(test))]
-fn write_line(json: String) {
+fn write_line(json: String, mode: WriteMode) {
     let dir = crate::config::state_dir();
     let write = move || {
         if let Err(err) = append_with_cap(&dir, &json, ROTATE_BYTES) {
             tracing::warn!(target: "herdr::program_status", err = %err, "program status log write failed");
         }
     };
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
+    match (mode, tokio::runtime::Handle::try_current()) {
+        (WriteMode::Background, Ok(handle)) => {
             handle.spawn_blocking(write);
         }
-        Err(_) => write(),
+        _ => write(),
     }
 }
 
@@ -897,12 +972,79 @@ mod tests {
         let [LogLine::Summary(summary)] = lines.as_slice() else {
             panic!("expected one summary, got {lines:?}");
         };
-        assert_eq!(summary.reports, 9);
+        assert_eq!(summary.end_reason, "agent_changed");
+        assert_eq!(summary.reports, Some(9));
+        assert_eq!(summary.probe_answered, Some(true));
         assert_eq!(summary.agree_ticks, 1);
         assert_eq!(summary.disagree_ticks, 1);
         assert_eq!(summary.short_episodes, 1);
         assert_eq!(summary.short_max_ms, 600);
         assert_eq!(tracker.session, SessionTicks::default());
+        assert_eq!(tracker.last_agent, None);
+    }
+
+    /// A long disagreement, captured, still open.
+    fn tracker_with_open_episode(start: Instant) -> DisagreementTracker {
+        let mut tracker = tracker();
+        let root = packed(Some(ProgramState::Working), 3);
+        tracker.tick(input(start, AgentState::Idle, root));
+        tracker.tick(input(start + DEBOUNCE, AgentState::Idle, root));
+        tracker.capture(Captured::default());
+        tracker
+    }
+
+    #[test]
+    fn a_reset_closes_the_episode_and_summarizes_the_ticks() {
+        let start = Instant::now();
+        let mut tracker = tracker_with_open_episode(start);
+        let lines = tracker.reset(start + DEBOUNCE * 2);
+        let [LogLine::Disagreement(episode), LogLine::Summary(summary)] = lines.as_slice() else {
+            panic!("expected the episode and a summary, got {lines:?}");
+        };
+        assert_eq!(episode.end_reason, "reset");
+        assert_eq!(episode.duration_ms, duration_ms(DEBOUNCE * 2));
+        assert_eq!(summary.end_reason, "reset");
+        assert_eq!(summary.agent, "claude");
+        assert_eq!(summary.disagree_ticks, 2);
+        assert_eq!(summary.logged_episodes, 1);
+        assert_eq!(summary.reports, None, "a reset cannot read the store");
+        assert_eq!(summary.probe_answered, None);
+        assert!(tracker.episode.is_none());
+        assert!(
+            tracker.reset(start + DEBOUNCE * 3).is_empty(),
+            "nothing left"
+        );
+    }
+
+    #[test]
+    fn a_pane_closed_mid_session_still_writes_its_episode_and_summary() {
+        let start = Instant::now();
+        let mut tracker = tracker_with_open_episode(start);
+        // What the drop writes.
+        let lines = tracker.close_session("dropped", start + DEBOUNCE * 4);
+        let [LogLine::Disagreement(episode), LogLine::Summary(summary)] = lines.as_slice() else {
+            panic!("expected the episode and a summary, got {lines:?}");
+        };
+        assert_eq!(episode.end_reason, "dropped");
+        assert_eq!(summary.end_reason, "dropped");
+        assert_eq!(summary.root_transitions, None);
+        let json: serde_json::Value =
+            serde_json::from_str(&LogLine::Summary(summary.clone()).to_json()).expect("json");
+        assert!(
+            json["reports"].is_null(),
+            "unknown counters are null: {json}"
+        );
+        drop(tracker);
+    }
+
+    #[test]
+    fn a_pane_without_records_writes_nothing_on_reset_or_drop() {
+        let start = Instant::now();
+        let mut tracker = tracker();
+        tracker.tick(input(start, AgentState::Working, packed(None, 0)));
+        assert!(tracker.reset(start).is_empty());
+        tracker.tick(input(start, AgentState::Working, packed(None, 0)));
+        assert!(tracker.close_session("dropped", start).is_empty());
     }
 
     #[test]
@@ -985,5 +1127,11 @@ mod tests {
         }
         assert!(json.get("msg").is_none());
         assert_eq!(json["agent"], "claude");
+        assert!(
+            json["herdr_version"]
+                .as_str()
+                .is_some_and(|version| version.ends_with("+fork")),
+            "fork identity: {json}"
+        );
     }
 }

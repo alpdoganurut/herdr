@@ -543,15 +543,28 @@ impl ProgramStatusStore {
         self.session
     }
 
+    /// False while the records predate the switch's last change (they are
+    /// dropped by the next report's `sync_epoch`; until then, every reader
+    /// sees none).
+    fn records_current(&self) -> bool {
+        self.epoch == epoch()
+    }
+
     fn root_state(&self) -> Option<ProgramState> {
-        self.records.get("").map(|stored| stored.record.state)
+        self.root().map(|record| record.state)
     }
 
     pub(crate) fn root(&self) -> Option<&ProgramStatusRecord> {
+        if !self.records_current() {
+            return None;
+        }
         self.records.get("").map(|stored| &stored.record)
     }
 
     fn child_count(&self) -> usize {
+        if !self.records_current() {
+            return 0;
+        }
         self.records.len() - usize::from(self.records.contains_key(""))
     }
 
@@ -616,7 +629,7 @@ impl ProgramStatusStore {
     /// while the switch is off, are hidden.
     pub(crate) fn snapshot(&self, now: Instant) -> ProgramStatusSnapshot {
         let enabled = enabled();
-        let visible = enabled && self.epoch == epoch();
+        let visible = enabled && self.records_current();
         let (root, children) = if visible {
             (
                 self.records
@@ -790,9 +803,24 @@ pub(super) fn observe_report(
     }
 }
 
+/// Turns the switch off for one test and back on when dropped, so a
+/// failing assertion cannot leave it off for the tests after it.
 #[cfg(test)]
-pub(crate) fn test_reset_switch() {
-    set_enabled(true);
+pub(crate) struct SwitchOffForTest;
+
+#[cfg(test)]
+impl SwitchOffForTest {
+    pub(crate) fn new() -> Self {
+        set_enabled(false);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for SwitchOffForTest {
+    fn drop(&mut self) {
+        set_enabled(true);
+    }
 }
 
 #[cfg(test)]

@@ -262,14 +262,15 @@ fn print_program_status_text(status: &serde_json::Value, verbose: bool) {
         return;
     }
     let Some(root) = status["root"].as_object() else {
-        println!(
-            "program_status: none (probe answered: {})",
-            if status["probe_answered"].as_bool().unwrap_or(false) {
-                "yes"
-            } else {
-                "no"
-            }
-        );
+        let probe_answered = status["probe_answered"].as_bool().unwrap_or(false);
+        let rejected = status["rejected_reports"].as_u64().unwrap_or(0);
+        // Most agents never speak OSC 7501: say nothing unless asked.
+        if probe_answered || rejected > 0 || verbose {
+            println!(
+                "program_status: none (probe answered: {}, rejected reports: {rejected})",
+                if probe_answered { "yes" } else { "no" }
+            );
+        }
         return;
     };
     let children = status["children"].as_array().map_or(0, Vec::len);

@@ -1015,7 +1015,7 @@ fn spawn_basic_detection_task(
                     agent_startup_grace_until = None;
                     pending_idle.clear();
                     agent_job = AgentJobTracker::default();
-                    status_disagreement.reset();
+                    program_status_log::reset(&mut status_disagreement, std::time::Instant::now());
                 }
             }
 
@@ -2997,7 +2997,7 @@ impl PaneRuntime {
                             agent_startup_grace_until = None;
                             pending_idle.clear();
                             agent_job = AgentJobTracker::default();
-                            status_disagreement.reset();
+                            program_status_log::reset(&mut status_disagreement, std::time::Instant::now());
                         }
                     }
 

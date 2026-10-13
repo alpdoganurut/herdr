@@ -553,12 +553,12 @@ fn run2_fixture_tracks_the_background_subagent_child() {
 fn switch_off_ignores_reports_and_hides_records() {
     let mut tracker = AgentOscStateTracker::default();
     tracker.observe(&osc("state=blocked"));
-    set_enabled(false);
+    let off = SwitchOffForTest::new();
     tracker.observe(&osc("?"));
     tracker.observe(&osc("state=working"));
     let probe = tracker.take_program_status_probe();
     let hidden = tracker.program_status().snapshot(Instant::now());
-    set_enabled(true);
+    drop(off);
     assert_eq!(probe, None, "no reply while off");
     assert!(hidden.root.is_none(), "records hidden while off");
     assert!(!hidden.enabled);
@@ -568,7 +568,10 @@ fn switch_off_ignores_reports_and_hides_records() {
         .snapshot(Instant::now())
         .root
         .is_none());
+    // Every read side agrees before the next report syncs the epoch: the
+    // stage 2 region text included.
+    assert!(tracker.program_status().root().is_none());
+    assert_eq!(tracker.program_status().root_region_text(), "");
     tracker.observe(&osc("state=idle"));
     assert_eq!(root_state(&tracker), Some(ProgramState::Idle));
-    test_reset_switch();
 }
