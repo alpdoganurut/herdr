@@ -475,12 +475,18 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 <!-- ============ AUTO HANDOFF ============ -->
 <section id="handoff">
   <p class="eyebrow">09 · auto handoff &amp; compact</p>
-  <h2>Auto handoff &amp; compact <span class="tag wip">in progress</span></h2>
-  <p class="lede">Still being built. When an agent's context fills up, herdr takes care of the handoff and brings the agent back without losing the thread.</p>
-  <div class="flow" aria-label="Planned handoff flow">
-    <span>trigger at 80% or manually</span><i>→</i><span>transcript snapshot</span><i>→</i><span>handoff</span><i>→</i><span>compact</span><i>→</i><span>resume</span>
+  <h2>Auto handoff &amp; compact</h2>
+  <p class="lede">When a Claude agent's context fills up, herdr has it write a handoff, compacts it, and brings it back on the same work, without you pasting anything.</p>
+  <div class="flow" aria-label="Handoff flow">
+    <span>80% context or manual</span><i>→</i><span>transcript snapshot</span><i>→</i><span>handoff.md</span><i>→</i><span>/compact</span><i>→</i><span>resume</span>
   </div>
-  <p class="dim" style="font-size:.85rem;margin-top:.8rem">Plan only; details may change.</p>
+  <div class="grid" style="margin-top:1rem">
+    <div class="card"><h3><span class="g">◔</span>Two ways to start</h3><p>Automatically at <code>[agents.handoff] at_percent</code> (80 by default, 0 = off), once per compaction cycle and only while the agent is idle. Or by hand: tab menu “Handoff &amp; compact”, a key, <code>herdr agent handoff &lt;target&gt;</code>.</p></div>
+    <div class="card"><h3><span class="g">✎</span>Your handoff skill, or herdr's</h3><p>Set <code>command</code> to your own skill line with a <code>{path}</code> placeholder, or leave it empty for herdr's short prompt. If the agent never writes the file, herdr writes a mechanical handoff from notes, checkpoints, git state and recent prompts.</p></div>
+    <div class="card"><h3><span class="g">▤</span>Known place, nothing lost</h3><p>Each run keeps <code>transcript.jsonl</code> and <code>handoff.md</code> under <code>handoffs/&lt;session&gt;/&lt;time&gt;/</code>, with a <code>latest</code> pointer, a notes entry and a checkpoint. The sidebar shows “handoff 12m ago”.</p></div>
+    <div class="card"><h3><span class="g">↻</span>Back to work</h3><p>After <code>/compact</code> the agent's new context names the handoff and transcript, and a short line asks it to continue, or to pause if nothing was in flight.</p></div>
+    <div class="card"><h3><span class="g">⛨</span>Safety net</h3><p>When Claude compacts on its own or you type <code>/compact</code>, herdr still saves the transcript and a handoff first. Messages wait for the run; nothing is typed over you.</p></div>
+  </div>
 </section>
 
 <!-- ============ ENGINEERING ============ -->
