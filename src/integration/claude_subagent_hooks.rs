@@ -23,13 +23,16 @@ use super::command::hook_command;
 use super::config_edit::{hook_command_variants, is_matching_command_hook};
 
 /// The hook events that report subagents, each with the asset action it runs.
-pub(crate) const SUBAGENT_HOOKS: [(&str, &str); 4] = [
+pub(crate) const SUBAGENT_HOOKS: [(&str, &str); 5] = [
     ("SubagentStart", "subagent"),
     ("SubagentStop", "subagent"),
     ("Stop", "stop"),
     // A main turn's start, for message delivery (`pane.report_turn`; Stop
     // reports its end).
     ("UserPromptSubmit", "turn"),
+    // A compaction starts, for handoff, then compact (`pane.report_compact`;
+    // the `session` action reports SessionStart(compact)).
+    ("PreCompact", "precompact"),
 ];
 const SUBAGENT_HOOK_TIMEOUT: u64 = 10;
 
@@ -316,6 +319,7 @@ mod tests {
         let subagent = hook_command(hook_path, Some("subagent"));
         let stop = hook_command(hook_path, Some("stop"));
         let turn = hook_command(hook_path, Some("turn"));
+        let precompact = hook_command(hook_path, Some("precompact"));
         let input = concat!(
             "{\n",
             "  \"permissions\": {\"allow\": [\"Read\"]},\n",
@@ -349,6 +353,12 @@ mod tests {
             std::slice::from_ref(&turn)
         );
         assert!(turn.ends_with(" turn"), "{turn}");
+        // Fork (agent handoff): PreCompact runs the asset's precompact action.
+        assert_eq!(
+            subagent_commands(&settings, "PreCompact"),
+            std::slice::from_ref(&precompact)
+        );
+        assert!(precompact.ends_with(" precompact"), "{precompact}");
         assert!(subagent.ends_with(" subagent"), "{subagent}");
         assert!(stop.ends_with(" stop"), "{stop}");
         assert!(installed.contains("\"permissions\": {\"allow\": [\"Read\"]}"));
@@ -364,6 +374,7 @@ mod tests {
         let settings: Value = serde_json::from_str(&removed).unwrap();
         assert!(settings["hooks"].get("SubagentStart").is_none());
         assert!(settings["hooks"].get("UserPromptSubmit").is_none());
+        assert!(settings["hooks"].get("PreCompact").is_none());
         assert_eq!(subagent_commands(&settings, "SubagentStop"), ["echo keep"]);
         assert_eq!(
             subagent_commands(&settings, "Stop"),

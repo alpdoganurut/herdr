@@ -278,6 +278,19 @@ fn tab_chips(
             chips.chip(&[(name, fg(palette.overlay1))]);
         }
     }
+    // Fork (agent handoff): the last handoff saved before a compaction,
+    // before the context use (the row shows that from 75 %).
+    if let Some(at) = facts.handoff_unix {
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let text = handoff_chip_text(at, now_unix);
+        chips.chip(&[(text.as_str(), fg(palette.overlay1))]);
+        // Repaint when the minute turns.
+        let next =
+            state.now + std::time::Duration::from_secs(60 - now_unix.saturating_sub(at) % 60);
+        tick = Some(tick.map_or(next, |tick: std::time::Instant| tick.min(next)));
+    }
     // Fork: the agents' context use, at any level.
     if let Some(usage) = facts.context {
         let text = context_chip_text(usage);
@@ -369,6 +382,16 @@ fn tab_chips(
     }
     chips.chip(&[(&tab.tab_id, fg(palette.overlay0))]);
     tick
+}
+
+/// Fork (agent handoff): `handoff 5m ago` (`handoff <1m ago` at first).
+pub(super) fn handoff_chip_text(at_unix: u64, now_unix: u64) -> StackStr<24> {
+    let age = super::sidebar_model::format_age(std::time::Duration::from_secs(
+        now_unix.saturating_sub(at_unix),
+    ));
+    let mut text = StackStr::new();
+    let _ = write!(text, "handoff {} ago", age.as_str());
+    text
 }
 
 /// Fork: `ctx 82% · 164k/200k`.

@@ -23,13 +23,22 @@ pub(crate) struct ClientAgentContextState {
     pub(crate) revision: u64,
     /// Public pane id → context use.
     pub(crate) panes: HashMap<String, ContextUsage>,
+    /// Fork (agent handoff): public pane id → when its agent last saved a
+    /// handoff before a compaction (unix seconds).
+    pub(crate) handoffs: HashMap<String, u64>,
 }
 
 impl ClientAgentContextState {
     pub(crate) fn from_payload(payload: AgentContextPayload) -> Self {
+        let handoffs = payload
+            .panes
+            .iter()
+            .filter_map(|pane| Some((pane.pane_id.clone(), pane.handoff_unix?)))
+            .collect();
         Self {
             boot_id: payload.boot_id,
             revision: payload.revision,
+            handoffs,
             panes: payload
                 .panes
                 .into_iter()
@@ -49,6 +58,10 @@ impl ClientAgentContextState {
 
     pub(crate) fn usage_of(&self, pane_id: &str) -> Option<ContextUsage> {
         self.panes.get(pane_id).copied()
+    }
+
+    pub(crate) fn handoff_of(&self, pane_id: &str) -> Option<u64> {
+        self.handoffs.get(pane_id).copied()
     }
 }
 

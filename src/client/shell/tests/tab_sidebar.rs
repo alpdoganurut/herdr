@@ -2080,7 +2080,8 @@ fn tab_menu_ends_with_a_swatch_row_marking_the_current_color() {
         .iter()
         .all(|(rect, _)| cell(*rect, 0).bg == color_to_u32(palette.panel_bg)));
 
-    state.handle_raw_events((0..12).map(|_| key(KeyCode::Down)).collect());
+    // 13 rows: the agent tab offers "Handoff & compact" (fork, agent handoff).
+    state.handle_raw_events((0..13).map(|_| key(KeyCode::Down)).collect());
     assert_eq!(menu_state(&state).0, row);
     let frame = state.compose(106, 20).expect("menu frame");
     let bg = |index: usize| {
@@ -2120,7 +2121,8 @@ fn swatch_row_keys_move_along_the_row_and_enter_picks_without_focusing() {
     assert_eq!(menu_state(&state), (0, menu_state(&state).1));
     assert_eq!(menu_state(&state).1.cursor, 4);
 
-    state.handle_raw_events((0..12).map(|_| key(KeyCode::Down)).collect());
+    // 13 rows: the agent tab offers "Handoff & compact" (fork, agent handoff).
+    state.handle_raw_events((0..13).map(|_| key(KeyCode::Down)).collect());
     assert_eq!(menu_state(&state).0, row, "the swatch row is one row");
     assert_eq!(
         menu_state(&state).1.cursor,
@@ -2145,7 +2147,8 @@ fn swatch_row_keys_move_along_the_row_and_enter_picks_without_focusing() {
 
     // Re-entering the row puts the cursor back on the current color.
     let row = open_menu_with_swatches(&mut state, 1);
-    state.handle_raw_events((0..12).map(|_| key(KeyCode::Down)).collect());
+    // 13 rows: the agent tab offers "Handoff & compact" (fork, agent handoff).
+    state.handle_raw_events((0..13).map(|_| key(KeyCode::Down)).collect());
     state.handle_raw_events(vec![key(KeyCode::Right)]);
     assert_eq!(menu_state(&state).1.cursor, 2);
     state.handle_raw_events(vec![key(KeyCode::Up), key(KeyCode::Down)]);

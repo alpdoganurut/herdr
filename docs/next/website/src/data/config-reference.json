@@ -734,6 +734,12 @@
           "description": "Suspend the focused pane's agent (graceful exit, native session reference kept), or activate it again when it is suspended. Unset by default; for example, toggle_agent_suspend = \"alt+s\"."
         },
         {
+          "key": "keys.handoff_compact",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Handoff, then compact, for the focused pane's Claude Code agent (see `agents.handoff`): herdr saves the transcript, asks the agent for a handoff file once it is free, types /compact, then points it back at both. The tab menu's \"Handoff & compact\" does the same. Unset by default; for example, handoff_compact = \"prefix+shift+h\"."
+        },
+        {
           "key": "keys.move_tab_to_group",
           "type": "keybinding",
           "default": "unset",
@@ -1949,6 +1955,30 @@
           "type": "table",
           "default": "{}",
           "description": "The context window in tokens per agent (`claude`, `codex`) for the tabs sidebar's context use and `AgentInfo.context`, e.g. `{ claude = 1000000 }`. A missing or zero entry uses the window the session file states (Codex) or, for Claude, 1M when the model id carries `[1m]` or the use already exceeds 200k, else 200k (Claude Code transcripts do not record the window). Applies at the next read."
+        },
+        {
+          "key": "agents.handoff.enabled",
+          "type": "boolean",
+          "default": "true",
+          "description": "Handoff, then compact, for Claude Code agents: before compacting, herdr copies the session transcript and asks the agent to write a handoff (state, decisions and why, dead ends, files in play, next step) to `<state dir>/handoffs/<session>/<UTC time>/handoff.md`, types `/compact` once the handoff is saved (or, after 10 minutes without one, writes a mechanical handoff itself), and points the compacted session back at both: the Claude integration's SessionStart hook adds them to the agent's context and, with `resume`, herdr types one line asking it to continue. Triggers: `at_percent`, the tab menu's \"Handoff & compact\", the `handoff_compact` key, `herdr agent handoff` and `agents.handoff`. With the Claude integration installed, a compaction herdr did not start (Claude's auto-compact or your own `/compact`) still gets the transcript copy and a mechanical handoff through its PreCompact hook. Off turns every trigger off."
+        },
+        {
+          "key": "agents.handoff.at_percent",
+          "type": "integer",
+          "default": "80",
+          "description": "Start a handoff once a Claude Code agent's context use (as the sidebar shows it, see `context_window`) reaches this percent; 0 turns the automatic trigger off. Fires once per compaction cycle, only when the agent is free (idle, its user not typing or holding a draft, not blocked, suspended, starting or in voice mode); never for the coordinator."
+        },
+        {
+          "key": "agents.handoff.command",
+          "type": "string",
+          "default": "\"\"",
+          "description": "The prompt line typed to ask for the handoff, with `{path}` replaced by the handoff file's path (a line without `{path}` gets the path appended), e.g. `/my:handoff --compact {path}`. Empty uses herdr's own prompt."
+        },
+        {
+          "key": "agents.handoff.resume",
+          "type": "boolean",
+          "default": "true",
+          "description": "After the compaction, type one line naming the handoff and the transcript and asking the agent to continue (or pause when nothing is active). Not after Claude's own mid-turn auto-compact, whose turn carries on by itself."
         }
       ]
     },

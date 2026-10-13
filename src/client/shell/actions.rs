@@ -1195,6 +1195,13 @@ impl ClientShellState {
                 let pane_id = focused_pane?;
                 Some(agent_restart_method(snapshot, &pane_id)?)
             }
+            // Fork (agent handoff): only for a live Claude agent of a server
+            // with `agents.handoff`.
+            KeybindAction::HandoffCompact => {
+                let pane_id = focused_pane?;
+                let method = agent_handoff_method(snapshot, &pane_id)?;
+                self.supports_endpoint_method(&method).then_some(method)
+            }
             KeybindAction::CycleTabColor => {
                 let tab_id = focused_tab?;
                 Some(tab_color_cycle_method(snapshot, &tab_id)?)
@@ -1258,6 +1265,27 @@ fn agent_suspend_toggle_method(
             target: pane_id.to_string(),
         })
     })
+}
+
+/// Fork (agent handoff): `agents.handoff` (as the user) for a live Claude
+/// agent pane; `None` for any other pane.
+pub(super) fn agent_handoff_method(
+    snapshot: &ClientShellSnapshot,
+    pane_id: &str,
+) -> Option<crate::api::schema::Method> {
+    use crate::api::schema::{AgentStatus, Method};
+    let agent = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.pane_id == pane_id)?;
+    (agent.agent_status != AgentStatus::Suspended && agent.agent.as_deref() == Some("claude")).then(
+        || {
+            Method::AgentsHandoff(crate::api::schema::agents_model::AgentsHandoffParams {
+                caller_pane: None,
+                target: pane_id.to_string(),
+            })
+        },
+    )
 }
 
 /// `agent.restart` for a live agent pane; `None` when the pane hosts no agent

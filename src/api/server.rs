@@ -778,6 +778,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::PaneReportTurn(_) => "pane.report_turn",
         Method::AgentsQueued(_) => crate::api::schema::agents_model::method::QUEUED,
         Method::AgentsInbox(_) => crate::api::schema::agents_model::method::INBOX,
+        Method::AgentsHandoff(_) => crate::api::schema::agents_model::method::HANDOFF,
+        Method::PaneReportCompact(_) => "pane.report_compact",
         Method::AgentPrompt(_) => "agent.prompt",
         Method::AgentWait(_) => "agent.wait",
         Method::PaneSplit(_) => "pane.split",

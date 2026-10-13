@@ -318,6 +318,16 @@ pub enum ResponseResult {
         #[serde(default)]
         messages: Vec<super::agents_model::AgentsInboxMessage>,
     },
+    /// Fork: `agents.handoff`.
+    AgentsHandoff {
+        handoff: super::agents_model::AgentsHandoffResult,
+    },
+    /// Fork: `pane.report_compact`; `context` is the text the hook adds to
+    /// the compacted session (only for `post`, only after a handoff).
+    PaneReportCompact {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

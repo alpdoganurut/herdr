@@ -59,6 +59,9 @@ pub(crate) struct TabFacts {
     /// `endpoint.agent-context.v1` push); `None` while none is known or
     /// `ui.sidebar_context_usage` is off.
     pub(crate) context: Option<crate::agent_context::ContextUsage>,
+    /// Fork (agent handoff): the newest handoff saved by the tab's agents
+    /// before a compaction (unix seconds), from the same push.
+    pub(crate) handoff_unix: Option<u64>,
 }
 
 impl Default for TabFacts {
@@ -77,6 +80,7 @@ impl Default for TabFacts {
             pin: false,
             muted: false,
             context: None,
+            handoff_unix: None,
         }
     }
 }
@@ -411,7 +415,9 @@ impl SidebarModel {
         // No voice lookups while no pane is in voice mode.
         let voice = voice.filter(|voice| !voice.panes.is_empty());
         // Fork: no context lookups while none is known or the toggle is off.
-        let context = context.filter(|context| sections.context_usage && !context.panes.is_empty());
+        let context = context.filter(|context| {
+            sections.context_usage && !(context.panes.is_empty() && context.handoffs.is_empty())
+        });
         for (agent_index, agent) in snapshot.agents.iter().enumerate() {
             let Some(&tab_index) = index.get(agent.tab_id.as_str()) else {
                 continue;
@@ -429,6 +435,9 @@ impl SidebarModel {
             }
             if let Some(usage) = context.and_then(|context| context.usage_of(&agent.pane_id)) {
                 facts.context = Some(super::agent_context::fuller(facts.context, usage));
+            }
+            if let Some(at) = context.and_then(|context| context.handoff_of(&agent.pane_id)) {
+                facts.handoff_unix = Some(facts.handoff_unix.map_or(at, |newest| newest.max(at)));
             }
             if agent.agent_status == tab_status {
                 let seq = if agent.state_change_seq == 0 {

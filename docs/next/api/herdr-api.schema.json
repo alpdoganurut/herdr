@@ -2229,6 +2229,25 @@
           },
           "type": "object"
         },
+        "AgentsHandoffParams": {
+          "description": "`agents.handoff` (fork): handoff, then compact, for a Claude agent\n(src/agent_handoff.rs). Without `caller_pane` the caller is the user\n(the tab menu, the keybinding, `herdr agent handoff` outside an agent);\nan agent may start it for itself, for a teammate in its user's turn.",
+          "properties": {
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "description": "A tab id, a pane id or an agent name (its tab's agent).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
         "AgentsInboxParams": {
           "description": "`agents.inbox`: the messages to the caller still waiting in herdr's\nqueue (queued while it was busy), oldest first. Read-only: nothing is\nclaimed.",
           "properties": {
@@ -4641,6 +4660,22 @@
           ],
           "type": "object"
         },
+        "CompactEvent": {
+          "oneOf": [
+            {
+              "enum": [
+                "pre",
+                "post"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An event this side does not know (a newer hook); ignored.",
+              "type": "string"
+            }
+          ]
+        },
         "CoordinatorOpenDashboardParams": {
           "description": "`coordinator.open_dashboard`: clears unread suggestions; with `open`\n(default true) the server opens the dashboard URL.",
           "properties": {
@@ -6180,6 +6215,45 @@
             "pane_id",
             "source",
             "agent"
+          ],
+          "type": "object"
+        },
+        "PaneReportCompactParams": {
+          "description": "Fork: `pane.report_compact`, from the Claude hook asset: PreCompact\n(`pre`, before a compaction) and SessionStart with source `compact`\n(`post`, the compacted session starts). The answer to `post` carries the\ntext the hook adds to the agent's context.",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "event": {
+              "$ref": "#/schemas/request/$defs/CompactEvent"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "transcript_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "trigger": {
+              "description": "PreCompact's `trigger`: `manual` (a typed /compact) or `auto`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id",
+            "agent",
+            "event"
           ],
           "type": "object"
         },
@@ -10454,6 +10528,40 @@
           "type": "object"
         },
         {
+          "description": "Fork: handoff, then compact, for a Claude agent.",
+          "properties": {
+            "method": {
+              "const": "agents.handoff",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsHandoffParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork: a compaction of the pane's agent starts or started over (its\nPreCompact / SessionStart(compact) hooks).",
+          "properties": {
+            "method": {
+              "const": "pane.report_compact",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneReportCompactParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "agent.prompt",
@@ -12740,6 +12848,52 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "AgentsHandoffOutcome": {
+          "description": "What `agents.handoff` did.",
+          "oneOf": [
+            {
+              "const": "started",
+              "description": "A run started: the prompt goes in once the agent is free.",
+              "type": "string"
+            },
+            {
+              "const": "already_running",
+              "description": "A run for that agent was already on.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "An outcome this side does not know (a newer peer).",
+              "type": "string"
+            }
+          ]
+        },
+        "AgentsHandoffResult": {
+          "description": "`agents.handoff`'s result.",
+          "properties": {
+            "dir": {
+              "description": "The run's directory (`handoff.md`, `transcript.jsonl`, `meta.json`).",
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/schemas/success_response/$defs/AgentsHandoffOutcome"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "phase": {
+              "description": "Where the run is (`await_prompt`, `await_handoff`, ...).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "outcome",
+            "dir",
+            "phase"
+          ],
           "type": "object"
         },
         "AgentsInboxMessage": {
@@ -19396,6 +19550,42 @@
                 },
                 "type": {
                   "const": "agents_inbox",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork: `agents.handoff`.",
+              "properties": {
+                "handoff": {
+                  "$ref": "#/schemas/success_response/$defs/AgentsHandoffResult"
+                },
+                "type": {
+                  "const": "agents_handoff",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "handoff"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork: `pane.report_compact`; `context` is the text the hook adds to\nthe compacted session (only for `post`, only after a handoff).",
+              "properties": {
+                "context": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "pane_report_compact",
                   "type": "string"
                 }
               },

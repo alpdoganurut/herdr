@@ -110,11 +110,13 @@ mod tests {
                     pane_id: "w1:p2".into(),
                     used: 164_000,
                     window: 200_000,
+                    handoff_unix: None,
                 },
                 AgentContextPane {
                     pane_id: "w2:p1".into(),
                     used: 184_995,
                     window: 258_400,
+                    handoff_unix: Some(1_760_350_500),
                 },
             ],
         };

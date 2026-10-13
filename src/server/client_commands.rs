@@ -19,6 +19,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "agent.suspend",
     "agent.transcripts",
     "agents.fix",
+    "agents.handoff",
     "agents.set_meta",
     "agents.settings",
     "agents.settings.set",
@@ -377,6 +378,11 @@ mod tests {
             actual.remove("tab.set_color").as_deref(),
             Some("47beb991c2a5f54fffc12c8bfc0a27c725487f94e3088474e80bc8526ced74c2")
         );
+        // Fork (agent handoff): AgentsHandoffParams { caller_pane?, target }.
+        assert_eq!(
+            actual.remove("agents.handoff").as_deref(),
+            Some("a6dc34c81fc956443b38c6db2f59ef52b358f991389cc096ad9e3c36f1b8f714")
+        );
         assert_eq!(
             actual.remove("tab.set_remind").as_deref(),
             Some("e9c63bb9f29eacf951cfee82469449b61eb3b72ae80d0c0c9a3cb6319aa4bb29")
@@ -612,7 +618,7 @@ mod tests {
         assert!(!supports_client_shell_method_name(
             crate::api::schema::team::method::CONTEXT
         ));
-        assert_eq!(CLIENT_SHELL_METHODS.len(), 96);
+        assert_eq!(CLIENT_SHELL_METHODS.len(), 97);
     }
 
     #[test]

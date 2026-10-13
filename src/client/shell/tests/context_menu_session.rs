@@ -144,12 +144,17 @@ fn tab_menu_lists_copy_session_id_after_restart_once_the_id_arrives() {
         .iter()
         .position(|action| *action == ClientContextMenuAction::RestartAgent)
         .expect("restart item");
+    // Fork (agent handoff): "Handoff & compact" follows "Restart agent".
     assert_eq!(
         items.get(restart + 1),
-        Some(&ClientContextMenuAction::CopySessionId)
+        Some(&ClientContextMenuAction::HandoffCompact)
     );
     assert_eq!(
         items.get(restart + 2),
+        Some(&ClientContextMenuAction::CopySessionId)
+    );
+    assert_eq!(
+        items.get(restart + 3),
         Some(&ClientContextMenuAction::Close)
     );
     let frame = state.compose(106, 20).expect("menu frame");

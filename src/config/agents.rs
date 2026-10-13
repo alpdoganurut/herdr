@@ -38,6 +38,56 @@ pub struct AgentsConfig {
     /// imply (Claude: 200k, 1M for `[1m]` models or usage past 200k).
     /// Applies at the next read. Default: empty.
     pub context_window: std::collections::BTreeMap<String, u64>,
+    /// `[agents.handoff]`: handoff, then compact, for Claude agents.
+    pub handoff: AgentHandoffConfig,
+}
+
+/// `[agents.handoff]` (fork): before a Claude agent's context is compacted,
+/// herdr has it write a handoff, saves the transcript, types `/compact` and
+/// points the compacted session back at both (src/agent_handoff.rs).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct AgentHandoffConfig {
+    /// The switch for the whole feature: the automatic trigger, the menu
+    /// item, the keybinding and `agents.handoff`. The PreCompact safety net
+    /// (a compaction herdr did not start) also needs it. Default: true.
+    pub enabled: bool,
+    /// Start a handoff once a Claude agent's context use reaches this
+    /// percent (`[agents] context_window`); 0 turns the automatic trigger
+    /// off. Default: 80.
+    pub at_percent: u8,
+    /// The prompt line typed to ask for the handoff, `{path}` replaced by
+    /// the handoff file's path (a line without it gets the path appended),
+    /// for example `/my:handoff {path}`. Empty: herdr's own prompt.
+    /// Default: empty.
+    pub command: String,
+    /// After the compaction, type one line asking the agent to read the
+    /// handoff and continue (or pause when nothing is active). Default: true.
+    pub resume: bool,
+}
+
+impl Default for AgentHandoffConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            at_percent: crate::agent_handoff::DEFAULT_AT_PERCENT,
+            command: String::new(),
+            resume: true,
+        }
+    }
+}
+
+impl AgentHandoffConfig {
+    /// The custom prompt line, trimmed; `None` for herdr's own.
+    pub fn command(&self) -> Option<&str> {
+        let command = self.command.trim();
+        (!command.is_empty()).then_some(command)
+    }
+
+    /// The automatic trigger's percent, `None` when off (capped at 100).
+    pub fn auto_percent(&self) -> Option<u8> {
+        (self.enabled && self.at_percent > 0).then_some(self.at_percent.min(100))
+    }
 }
 
 impl Default for AgentsConfig {
@@ -50,6 +100,7 @@ impl Default for AgentsConfig {
             notices: true,
             team_roster: true,
             context_window: std::collections::BTreeMap::new(),
+            handoff: AgentHandoffConfig::default(),
         }
     }
 }
@@ -138,6 +189,32 @@ mod tests {
         let config: Config =
             toml::from_str("[agents]\ncontext_window = { claude = 1000000 }\n").unwrap();
         assert_eq!(config.agents.context_window.get("claude"), Some(&1_000_000));
+    }
+
+    #[test]
+    fn the_handoff_section_parses_with_defaults() {
+        let config = Config::default();
+        assert!(config.agents.handoff.enabled && config.agents.handoff.resume);
+        assert_eq!(config.agents.handoff.at_percent, 80);
+        assert_eq!(config.agents.handoff.auto_percent(), Some(80));
+        assert_eq!(config.agents.handoff.command(), None);
+        let config: Config = toml::from_str(
+            "[agents.handoff]\nat_percent = 30\ncommand = \" /leap:handoff --compact {path} \"\nresume = false\n",
+        )
+        .unwrap();
+        assert_eq!(config.agents.handoff.auto_percent(), Some(30));
+        assert_eq!(
+            config.agents.handoff.command(),
+            Some("/leap:handoff --compact {path}")
+        );
+        assert!(!config.agents.handoff.resume);
+        let config: Config = toml::from_str("[agents.handoff]\nat_percent = 0\n").unwrap();
+        assert_eq!(config.agents.handoff.auto_percent(), None, "0 = no auto");
+        assert!(config.agents.handoff.enabled, "the manual trigger stays");
+        let config: Config = toml::from_str("[agents.handoff]\nenabled = false\n").unwrap();
+        assert_eq!(config.agents.handoff.auto_percent(), None);
+        let config: Config = toml::from_str("[agents.handoff]\nat_percent = 250\n").unwrap();
+        assert_eq!(config.agents.handoff.auto_percent(), Some(100));
     }
 
     #[test]

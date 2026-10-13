@@ -739,6 +739,34 @@ pub struct PaneReportTurnParams {
     pub seq: u64,
 }
 
+/// Fork: `pane.report_compact`, from the Claude hook asset: PreCompact
+/// (`pre`, before a compaction) and SessionStart with source `compact`
+/// (`post`, the compacted session starts). The answer to `post` carries the
+/// text the hook adds to the agent's context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneReportCompactParams {
+    pub pane_id: String,
+    pub agent: String,
+    pub event: CompactEvent,
+    /// PreCompact's `trigger`: `manual` (a typed /compact) or `auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactEvent {
+    Pre,
+    Post,
+    /// An event this side does not know (a newer hook); ignored.
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnEvent {

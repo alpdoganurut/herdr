@@ -30,6 +30,7 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "suspend" => agent_suspend(&args[1..]),
         "activate" => agent_activate(&args[1..]),
         "restart" => agent_restart(&args[1..]),
+        "handoff" => agent_handoff(&args[1..]),
         "explain" => agent_explain(&args[1..]),
         "transcripts" => agent_transcripts(&args[1..]),
         "wrap" => super::agent_wrap::run(&args[1..]),
@@ -664,6 +665,33 @@ fn agent_restart(args: &[String]) -> std::io::Result<i32> {
     }
 }
 
+/// Fork: handoff, then compact (`agents.handoff`). An agent calls as itself
+/// (its own agent freely, a teammate in its user's turn); the user without
+/// a caller.
+fn agent_handoff(args: &[String]) -> std::io::Result<i32> {
+    let (Some(target), 1) = (args.first(), args.len()) else {
+        eprintln!("usage: herdr agent handoff <target>");
+        return Ok(2);
+    };
+    let params = |caller_pane| crate::api::schema::agents_model::AgentsHandoffParams {
+        caller_pane,
+        target: target.clone(),
+    };
+    match super::agent_route::route()? {
+        Err(code) => Ok(code),
+        Ok(super::agent_route::Route::Agent(pane)) => super::agent_route::call(
+            "cli:agents.handoff",
+            Method::AgentsHandoff(params(Some(pane))),
+        ),
+        Ok(super::agent_route::Route::User | super::agent_route::Route::OldServer) => {
+            super::print_response(&super::send_request(&Request {
+                id: "cli:agents.handoff".into(),
+                method: Method::AgentsHandoff(params(None)),
+            })?)
+        }
+    }
+}
+
 fn agent_attach(args: &[String]) -> std::io::Result<i32> {
     let (target, takeover) =
         match super::parse_attach_target(args, "usage: herdr agent attach <target> [--takeover]") {
@@ -1172,6 +1200,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent suspend <target>");
     eprintln!("  herdr agent activate <target>");
     eprintln!("  herdr agent restart <target>");
+    eprintln!("  herdr agent handoff <target>");
     eprintln!("  herdr agent explain <target> [--json|--format text|json] [--verbose]");
     eprintln!(
         "  herdr agent explain --file PATH --agent LABEL [--json|--format text|json] [--verbose]"

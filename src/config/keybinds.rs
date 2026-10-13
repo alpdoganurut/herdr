@@ -382,6 +382,7 @@ pub struct Keybinds {
     pub edit_scrollback: ActionKeybinds,
     pub clear_pane: ActionKeybinds,
     pub toggle_agent_suspend: ActionKeybinds,
+    pub handoff_compact: ActionKeybinds,
     pub move_tab_to_group: ActionKeybinds,
     pub toggle_groups_folded: ActionKeybinds,
     pub restart_agent: ActionKeybinds,
@@ -577,6 +578,7 @@ impl Config {
             edit_scrollback: empty_action!(),
             clear_pane: empty_action!(),
             toggle_agent_suspend: empty_action!(),
+            handoff_compact: empty_action!(),
             move_tab_to_group: empty_action!(),
             toggle_groups_folded: empty_action!(),
             restart_agent: empty_action!(),
@@ -737,6 +739,7 @@ impl Config {
             apply_action!(keybinds.edit_scrollback, edit_scrollback, source);
             apply_action!(keybinds.clear_pane, clear_pane, source);
             apply_action!(keybinds.toggle_agent_suspend, toggle_agent_suspend, source);
+            apply_action!(keybinds.handoff_compact, handoff_compact, source);
             apply_action!(keybinds.move_tab_to_group, move_tab_to_group, source);
             apply_action!(keybinds.toggle_groups_folded, toggle_groups_folded, source);
             apply_action!(keybinds.restart_agent, restart_agent, source);

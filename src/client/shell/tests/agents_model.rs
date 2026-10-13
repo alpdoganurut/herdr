@@ -255,3 +255,31 @@ fn team_info_names_the_rights_only_on_a_v2_server() {
         assert!(!text.contains(line), "{line:?} in\n{text}");
     }
 }
+
+/// Fork (agent handoff): "Handoff & compact" follows "Restart agent" on a
+/// live Claude agent's tab of a server with `agents.handoff`, and asks it as
+/// the user (no caller).
+#[test]
+fn handoff_and_compact_is_offered_on_a_claude_tab_of_a_server_that_has_it() {
+    use ClientContextMenuAction as Action;
+    let mut state = plain_state();
+    let actions = menu_actions(&mut state, "tab_2");
+    let restart = actions
+        .iter()
+        .position(|a| *a == Action::RestartAgent)
+        .expect("restart");
+    assert_eq!(actions[restart + 1], Action::HandoffCompact);
+    let outcome = pick(&mut state, Action::HandoffCompact);
+    let requests = endpoint_requests(&outcome);
+    // The tab menu focuses its tab first, as for the other agent items.
+    let [.., (_, Method::AgentsHandoff(params))] = &requests[..] else {
+        panic!("agents.handoff last, got {requests:?}");
+    };
+    assert_eq!(params.caller_pane, None);
+    assert_eq!(params.target, "pane_2");
+
+    // A shell tab never offers it; nor does a server without the method.
+    assert!(!menu_actions(&mut state, "tab_4").contains(&Action::HandoffCompact));
+    state.set_endpoint_methods(Some(v1_team_methods()));
+    assert!(!menu_actions(&mut state, "tab_2").contains(&Action::HandoffCompact));
+}

@@ -54,6 +54,7 @@ pub(crate) enum KeybindAction {
     EditScrollback,
     ClearPane,
     ToggleAgentSuspend,
+    HandoffCompact,
     MoveTabToGroup,
     ToggleGroupsFolded,
     RestartAgent,
@@ -142,6 +143,7 @@ pub(crate) fn resolve_non_indexed_action(
             &keybinds.toggle_agent_suspend,
             KeybindAction::ToggleAgentSuspend,
         ),
+        (&keybinds.handoff_compact, KeybindAction::HandoffCompact),
         (&keybinds.move_tab_to_group, KeybindAction::MoveTabToGroup),
         (
             &keybinds.toggle_groups_folded,

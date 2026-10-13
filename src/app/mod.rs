@@ -39,6 +39,8 @@ mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
 /// Fork: how full each agent's context window is (`endpoint.agent-context.v1`).
 pub(crate) mod agent_context;
+/// Fork: handoff, then compact, for Claude agents (`agents.handoff`).
+pub(crate) mod agent_handoff;
 /// Fork (sidebar v2): when each agent entered its state (`endpoint.agent-times.v1`).
 pub(crate) mod agent_times;
 mod creation;
@@ -195,6 +197,8 @@ pub struct App {
     pub(crate) codex_sessions: codex_sessions::CodexSessionProbe,
     /// Fork: agents' context use read from their session files.
     pub(crate) agent_context: agent_context::AgentContextProbe,
+    /// Fork: handoff, then compact, runs per terminal (runtime only).
+    pub(crate) agent_handoff: agent_handoff::AgentHandoffRuntime,
     /// The AI news desk: schedule, tab and run in flight (`news.*`).
     pub(crate) news: news::NewsState,
     /// The coordinator (fork): lifecycle, tab, worker and read model.
@@ -791,6 +795,7 @@ impl App {
             agent_transcript_backup_pending: std::collections::BTreeMap::new(),
             codex_sessions: codex_sessions::CodexSessionProbe::default(),
             agent_context: agent_context::AgentContextProbe::default(),
+            agent_handoff: agent_handoff::AgentHandoffRuntime::default(),
             detached_process_children: Vec::new(),
             tab_bar_status_generation: 0,
             tab_bar_datetimes: Vec::new(),

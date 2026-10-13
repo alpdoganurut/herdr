@@ -535,6 +535,8 @@ pub struct KeysConfig {
     pub clear_pane: BindingConfig,
     /// Suspend the focused pane's agent, or activate it again when it is suspended. Unset by default.
     pub toggle_agent_suspend: BindingConfig,
+    /// The focused pane's Claude agent writes a handoff, then herdr types /compact (`[agents.handoff]`). Unset by default.
+    pub handoff_compact: BindingConfig,
     /// "tabs" sidebar layout: move the focused tab to a group by name, creating it when new. Unset by default.
     pub move_tab_to_group: BindingConfig,
     /// "tabs" sidebar layout: fold every group, or expand all once every group is folded. Unset by default.
@@ -698,6 +700,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_agent_suspend: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    handoff_compact: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     move_tab_to_group: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_groups_folded: Option<BindingConfig>,
@@ -854,6 +858,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(edit_scrollback);
         apply_field!(clear_pane);
         apply_field!(toggle_agent_suspend);
+        apply_field!(handoff_compact);
         apply_field!(move_tab_to_group);
         apply_field!(toggle_groups_folded);
         apply_field!(restart_agent);
@@ -971,6 +976,7 @@ impl KeysConfig {
         copy_effective_action_field!(edit_scrollback, keybinds.edit_scrollback);
         copy_effective_action_field!(clear_pane, keybinds.clear_pane);
         copy_effective_action_field!(toggle_agent_suspend, keybinds.toggle_agent_suspend);
+        copy_effective_action_field!(handoff_compact, keybinds.handoff_compact);
         copy_effective_action_field!(move_tab_to_group, keybinds.move_tab_to_group);
         copy_effective_action_field!(toggle_groups_folded, keybinds.toggle_groups_folded);
         copy_effective_action_field!(restart_agent, keybinds.restart_agent);
@@ -1393,6 +1399,7 @@ impl Default for KeysConfig {
             edit_scrollback: BindingConfig::one("prefix+e"),
             clear_pane: BindingConfig::default(),
             toggle_agent_suspend: BindingConfig::default(),
+            handoff_compact: BindingConfig::default(),
             move_tab_to_group: BindingConfig::default(),
             toggle_groups_folded: BindingConfig::default(),
             restart_agent: BindingConfig::default(),

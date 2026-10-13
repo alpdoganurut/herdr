@@ -1,0 +1,536 @@
+use super::*;
+use crate::api::schema::{PaneReportTurnParams, Request, TurnEvent};
+use crate::config::Config;
+use crate::detect::{Agent, AgentState};
+use crate::workspace::Workspace;
+use bytes::Bytes;
+use serde_json::Value;
+
+const CLAUDE_EMPTY: &[u8] =
+    "\r\n─────\r\n❯ \x1b[2mTry \"something\"\x1b[0m\r\n─────\r\n  footer".as_bytes();
+const SESSION: &str = "0f3e9c1a-handoff";
+
+struct Setup {
+    app: App,
+    rx: tokio::sync::mpsc::Receiver<Bytes>,
+    terminal_id: TerminalId,
+    pane: String,
+    base: PathBuf,
+}
+
+impl Drop for Setup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.base);
+    }
+}
+
+fn setup(agent: Agent) -> Setup {
+    let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(
+        &Config::default(),
+        crate::app::AppPolicy::TEST,
+        None,
+        api_rx,
+        crate::api::EventHub::default(),
+    );
+    app.state.workspaces = vec![Workspace::test_new("handoff")];
+    app.state.ensure_test_terminals();
+    app.state.active = Some(0);
+    app.state.selected = 0;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let base = std::env::temp_dir().join(format!(
+        "herdr-app-handoff-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&base).unwrap();
+    app.agent_handoff.root = Some(base.join("handoffs"));
+    let transcript = base.join("live.jsonl");
+    std::fs::write(
+        &transcript,
+        "{\"type\":\"user\",\"message\":{\"content\":\"build the parser\"}}\n",
+    )
+    .unwrap();
+    let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+    let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+        .attached_terminal_id
+        .clone();
+    let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+    terminal.set_agent_name("rev".into());
+    terminal.set_detected_state(Some(agent), AgentState::Idle);
+    terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+        source: format!("herdr:{}", agent_key(agent)),
+        agent: agent_key(agent).into(),
+        session_ref: crate::agent_resume::AgentSessionRef::id(SESSION).unwrap(),
+        transcript_path: Some(transcript),
+    });
+    let (runtime, rx) =
+        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(40, 8, 0, b"", 4);
+    runtime.test_process_pty_bytes(CLAUDE_EMPTY);
+    app.state.insert_test_runtime(pane_id, runtime);
+    let pane = app.public_pane_id(0, pane_id).unwrap();
+    Setup {
+        app,
+        rx,
+        terminal_id,
+        pane,
+        base,
+    }
+}
+
+fn agent_key(agent: Agent) -> &'static str {
+    match agent {
+        Agent::Codex => "codex",
+        _ => "claude",
+    }
+}
+
+/// One step of the tick at the real clock.
+fn tick(app: &mut App) {
+    app.agent_handoff.deadline = Some(Instant::now());
+    app.handle_agent_handoff_tasks(Instant::now());
+}
+
+/// Tick until the worker's jobs came back.
+fn wait_worker(app: &mut App) {
+    for _ in 0..200 {
+        if app.agent_handoff.in_flight == 0 {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        app.agent_handoff.deadline = Some(Instant::now());
+        let outcomes = app
+            .agent_handoff
+            .worker
+            .as_ref()
+            .map(files::Worker::drain)
+            .unwrap_or_default();
+        for outcome in outcomes {
+            app.agent_handoff.in_flight -= 1;
+            app.apply_handoff_outcome(outcome, Instant::now());
+        }
+    }
+    panic!("the handoff worker did not answer");
+}
+
+/// The agent has been free for the settle time.
+fn settle(s: &mut Setup) {
+    if let Some(run) = s.app.agent_handoff.runs.get_mut(&s.terminal_id) {
+        run.free_since = Some(Instant::now() - SETTLE - Duration::from_millis(1));
+    }
+}
+
+fn phase(s: &Setup) -> Option<&'static str> {
+    s.app
+        .agent_handoff
+        .runs
+        .get(&s.terminal_id)
+        .map(|run| run.phase.name())
+}
+
+/// Everything typed so far (each submission's Enter follows its text after
+/// `AGENT_PROMPT_SUBMIT_DELAY`), without the Enters.
+fn typed(rx: &mut tokio::sync::mpsc::Receiver<Bytes>) -> String {
+    std::thread::sleep(crate::app::api::AGENT_PROMPT_SUBMIT_DELAY + Duration::from_millis(150));
+    let mut out = String::new();
+    while let Ok(bytes) = rx.try_recv() {
+        out.push_str(&String::from_utf8_lossy(&bytes));
+    }
+    out.replace('\r', "")
+}
+
+fn handoff_api(app: &mut App, caller: Option<&str>, target: &str) -> Value {
+    let response = app.handle_api_request(Request {
+        id: "req".into(),
+        method: Method::AgentsHandoff(AgentsHandoffParams {
+            caller_pane: caller.map(str::to_string),
+            target: target.into(),
+        }),
+    });
+    serde_json::from_str(&response).unwrap()
+}
+
+fn report_turn(s: &mut Setup, event: TurnEvent, prompt: &str) {
+    let seq = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let response = s.app.handle_api_request(Request {
+        id: "turn".into(),
+        method: Method::PaneReportTurn(PaneReportTurnParams {
+            pane_id: s.pane.clone(),
+            agent: "claude".into(),
+            event,
+            prompt_id: Some(prompt.into()),
+            seq,
+        }),
+    });
+    assert!(!response.contains("\"error\""), "{response}");
+}
+
+fn report_compact(s: &mut Setup, event: CompactEvent, trigger: Option<&str>) -> Value {
+    let response = s.app.handle_api_request(Request {
+        id: "compact".into(),
+        method: Method::PaneReportCompact(PaneReportCompactParams {
+            pane_id: s.pane.clone(),
+            agent: "claude".into(),
+            event,
+            trigger: trigger.map(str::to_string),
+            session_id: Some(SESSION.into()),
+            transcript_path: None,
+        }),
+    });
+    serde_json::from_str(&response).unwrap()
+}
+
+fn set_state(s: &mut Setup, state: AgentState) {
+    s.app
+        .state
+        .terminals
+        .get_mut(&s.terminal_id)
+        .unwrap()
+        .set_detected_state(Some(Agent::Claude), state);
+}
+
+/// Start a run as the user and step it to the typed prompt.
+fn to_prompt_typed(s: &mut Setup) -> String {
+    let pane = s.pane.clone();
+    let reply = handoff_api(&mut s.app, None, &pane);
+    assert_eq!(reply["result"]["handoff"]["outcome"], "started", "{reply}");
+    wait_worker(&mut s.app);
+    tick(&mut s.app);
+    assert_eq!(phase(s), Some("await_prompt"), "not settled yet");
+    assert!(typed(&mut s.rx).is_empty());
+    settle(s);
+    tick(&mut s.app);
+    assert_eq!(phase(s), Some("await_handoff"));
+    typed(&mut s.rx)
+}
+
+#[tokio::test]
+async fn a_manual_run_types_the_prompt_then_compact_then_the_resume_line() {
+    let mut s = setup(Agent::Claude);
+    let typed_prompt = to_prompt_typed(&mut s);
+    let run = s.app.agent_handoff.runs[&s.terminal_id].clone();
+    assert!(typed_prompt.contains("write a handoff"), "{typed_prompt}");
+    assert!(
+        typed_prompt.contains(&run.paths.handoff.display().to_string()),
+        "{typed_prompt}"
+    );
+    // The transcript was copied before the prompt went in.
+    assert_eq!(run.transcript_saved, Some(true));
+    assert!(std::fs::read_to_string(&run.paths.transcript)
+        .unwrap()
+        .contains("build the parser"));
+    assert_eq!(
+        std::fs::read_to_string(&run.paths.latest).unwrap().trim(),
+        run.paths.dir.display().to_string()
+    );
+    // Messages wait from here on.
+    assert!(s
+        .app
+        .agent_handoff
+        .holds_messages(&s.terminal_id.to_string()));
+
+    // The agent works and writes the file; its Stop hook ends the turn.
+    set_state(&mut s, AgentState::Working);
+    report_turn(&mut s, TurnEvent::Start, "p1");
+    std::fs::write(&run.paths.handoff, "# Handoff\nstate: parser half done\n").unwrap();
+    report_turn(&mut s, TurnEvent::End, "p1");
+    tick(&mut s.app);
+    wait_worker(&mut s.app);
+    assert_eq!(phase(&s), Some("await_compact"));
+    let saved = &s.app.agent_handoff.saved[&s.terminal_id];
+    assert_eq!(saved.kind, Kind::Agent);
+    assert!(s.app.agent_handoff_saved_unix(&s.terminal_id).is_some());
+
+    // /compact goes in once the screen reads idle and settled.
+    tick(&mut s.app);
+    assert!(typed(&mut s.rx).is_empty(), "still working on screen");
+    set_state(&mut s, AgentState::Idle);
+    tick(&mut s.app);
+    settle(&mut s);
+    tick(&mut s.app);
+    assert_eq!(typed(&mut s.rx), "/compact");
+    assert_eq!(phase(&s), Some("compacting"));
+
+    // Claude's PreCompact for herdr's own /compact saves nothing more; the
+    // compacted session's start gets the handoff in its context.
+    let pre = report_compact(&mut s, CompactEvent::Pre, Some("manual"));
+    assert!(pre["result"]["context"].is_null(), "{pre}");
+    assert_eq!(phase(&s), Some("compacting"));
+    let post = report_compact(&mut s, CompactEvent::Post, None);
+    let context = post["result"]["context"].as_str().expect("context text");
+    assert!(context.starts_with(handoff::INJECTION_PREFIX), "{context}");
+    assert!(context.contains(&run.paths.handoff.display().to_string()));
+    assert!(context.contains(&run.paths.transcript.display().to_string()));
+    assert_eq!(phase(&s), Some("await_resume"));
+
+    tick(&mut s.app);
+    settle(&mut s);
+    tick(&mut s.app);
+    let line = typed(&mut s.rx);
+    assert!(line.starts_with("herdr: compacted"), "{line}");
+    assert!(line.contains(&run.paths.handoff.display().to_string()));
+    assert_eq!(phase(&s), None, "done");
+    assert!(!s
+        .app
+        .agent_handoff
+        .holds_messages(&s.terminal_id.to_string()));
+    // The final meta.json is written on the worker (no outcome comes back).
+    let mut meta = String::new();
+    for _ in 0..200 {
+        meta = std::fs::read_to_string(&run.paths.meta).unwrap_or_default();
+        if meta.contains("\"outcome\"") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(meta.contains("\"outcome\": \"ok\""), "{meta}");
+    assert!(meta.contains("\"kind\": \"agent\""), "{meta}");
+}
+
+#[tokio::test]
+async fn a_handoff_that_never_comes_is_written_by_herdr_and_compaction_goes_on() {
+    let mut s = setup(Agent::Claude);
+    to_prompt_typed(&mut s);
+    let run = s.app.agent_handoff.runs.get_mut(&s.terminal_id).unwrap();
+    run.phase = Phase::AwaitHandoff {
+        typed_at: Instant::now() - handoff::HANDOFF_TIMEOUT,
+        checked: None,
+        checking: false,
+    };
+    let paths = run.paths.clone();
+    tick(&mut s.app);
+    assert_eq!(phase(&s), Some("writing_fallback"));
+    wait_worker(&mut s.app);
+    assert_eq!(phase(&s), Some("await_compact"));
+    let text = std::fs::read_to_string(&paths.handoff).unwrap();
+    assert!(text.contains("written by herdr"), "{text}");
+    assert!(text.contains("- build the parser"), "{text}");
+    assert_eq!(
+        s.app.agent_handoff.saved[&s.terminal_id].kind,
+        Kind::Mechanical
+    );
+    settle(&mut s);
+    tick(&mut s.app);
+    assert_eq!(typed(&mut s.rx), "/compact");
+}
+
+#[tokio::test]
+async fn an_empty_handoff_file_waits_for_the_next_turn_end() {
+    let mut s = setup(Agent::Claude);
+    to_prompt_typed(&mut s);
+    report_turn(&mut s, TurnEvent::Start, "p1");
+    report_turn(&mut s, TurnEvent::End, "p1");
+    tick(&mut s.app);
+    wait_worker(&mut s.app);
+    assert_eq!(phase(&s), Some("await_handoff"), "no file yet");
+    tick(&mut s.app);
+    assert_eq!(
+        s.app.agent_handoff.in_flight, 0,
+        "the same end is not checked twice"
+    );
+}
+
+#[tokio::test]
+async fn nothing_is_typed_into_a_blocked_working_or_typing_agent() {
+    let mut s = setup(Agent::Claude);
+    let pane = s.pane.clone();
+    handoff_api(&mut s.app, None, &pane);
+    wait_worker(&mut s.app);
+    for state in [AgentState::Blocked, AgentState::Working] {
+        set_state(&mut s, state);
+        tick(&mut s.app);
+        settle(&mut s);
+        tick(&mut s.app);
+        assert_eq!(phase(&s), Some("await_prompt"), "{state:?}");
+        assert!(typed(&mut s.rx).is_empty(), "{state:?}");
+    }
+    set_state(&mut s, AgentState::Idle);
+    // The user typed into the pane a moment ago: the guard refuses.
+    let pane_id = s.app.state.workspaces[0].tabs[0].root_pane;
+    s.app
+        .lookup_runtime_sender(0, pane_id)
+        .unwrap()
+        .note_user_input(Instant::now());
+    tick(&mut s.app);
+    settle(&mut s);
+    tick(&mut s.app);
+    assert_eq!(phase(&s), Some("await_prompt"));
+    assert!(typed(&mut s.rx).is_empty());
+}
+
+#[tokio::test]
+async fn suspended_coordinator_codex_and_switched_off_runs_are_refused() {
+    let mut s = setup(Agent::Codex);
+    let pane = s.pane.clone();
+    let reply = handoff_api(&mut s.app, None, &pane);
+    assert_eq!(reply["error"]["code"], "unsupported_agent", "{reply}");
+
+    let mut s = setup(Agent::Claude);
+    let pane = s.pane.clone();
+    s.app.state.coordinator_terminal_id = Some(s.terminal_id.clone());
+    let reply = handoff_api(&mut s.app, None, &pane);
+    assert_eq!(reply["error"]["code"], "protected_tab", "{reply}");
+    // The automatic trigger never fires for it either.
+    s.app
+        .state
+        .terminals
+        .get_mut(&s.terminal_id)
+        .unwrap()
+        .agent_context = Some(crate::agent_context::ContextUsage {
+        used: 190_000,
+        window: 200_000,
+    });
+    s.app
+        .note_agent_handoff_context(&s.terminal_id.clone(), Instant::now());
+    assert_eq!(phase(&s), None);
+
+    let mut s = setup(Agent::Claude);
+    let session = s.app.state.terminals[&s.terminal_id]
+        .persistable_agent_session()
+        .unwrap();
+    s.app
+        .state
+        .terminals
+        .get_mut(&s.terminal_id)
+        .unwrap()
+        .begin_agent_suspend(session, Instant::now() + Duration::from_secs(30));
+    let pane = s.pane.clone();
+    let reply = handoff_api(&mut s.app, None, &pane);
+    assert_eq!(reply["error"]["code"], "agent_suspended", "{reply}");
+
+    let mut s = setup(Agent::Claude);
+    let pane = s.pane.clone();
+    s.app.agents_config.handoff.enabled = false;
+    let reply = handoff_api(&mut s.app, None, &pane);
+    assert!(reply["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("enabled = false"));
+}
+
+#[tokio::test]
+async fn a_second_request_reports_the_run_already_on() {
+    let mut s = setup(Agent::Claude);
+    let pane = s.pane.clone();
+    handoff_api(&mut s.app, None, &pane);
+    let reply = handoff_api(&mut s.app, None, &pane);
+    assert_eq!(
+        reply["result"]["handoff"]["outcome"], "already_running",
+        "{reply}"
+    );
+    assert_eq!(reply["result"]["handoff"]["pane_id"], pane.as_str());
+    wait_worker(&mut s.app);
+}
+
+#[tokio::test]
+async fn an_agent_may_hand_off_itself() {
+    let mut s = setup(Agent::Claude);
+    let pane = s.pane.clone();
+    let reply = handoff_api(&mut s.app, Some(&pane), &pane);
+    assert_eq!(reply["result"]["handoff"]["outcome"], "started", "{reply}");
+    wait_worker(&mut s.app);
+}
+
+#[tokio::test]
+async fn the_automatic_trigger_fires_once_and_rearms_after_the_compaction() {
+    let mut s = setup(Agent::Claude);
+    s.app.agents_config.handoff.at_percent = 30;
+    let read = |s: &mut Setup, used: u64| {
+        s.app
+            .state
+            .terminals
+            .get_mut(&s.terminal_id)
+            .unwrap()
+            .agent_context = Some(crate::agent_context::ContextUsage {
+            used,
+            window: 20_000,
+        });
+        let id = s.terminal_id.clone();
+        s.app.note_agent_handoff_context(&id, Instant::now());
+    };
+    read(&mut s, 5_000);
+    assert_eq!(phase(&s), None, "25%");
+    read(&mut s, 7_000);
+    assert_eq!(phase(&s), Some("await_prompt"), "35%");
+    assert!(matches!(
+        s.app.agent_handoff.runs[&s.terminal_id].trigger,
+        Trigger::Auto { percent: 35 }
+    ));
+    wait_worker(&mut s.app);
+    s.app
+        .finish_agent_handoff(&s.terminal_id.clone(), Ok("test".into()), Instant::now());
+    read(&mut s, 9_000);
+    assert_eq!(phase(&s), None, "still over it: the same cycle");
+    read(&mut s, 2_000);
+    read(&mut s, 8_000);
+    assert_eq!(phase(&s), Some("await_prompt"), "re-armed below 30%");
+    wait_worker(&mut s.app);
+    // at_percent 0: never.
+    s.app
+        .finish_agent_handoff(&s.terminal_id.clone(), Ok("test".into()), Instant::now());
+    s.app.agents_config.handoff.at_percent = 0;
+    read(&mut s, 1_000);
+    read(&mut s, 19_000);
+    assert_eq!(phase(&s), None);
+}
+
+#[tokio::test]
+async fn a_compaction_herdr_did_not_start_gets_a_copy_and_a_mechanical_handoff() {
+    let mut s = setup(Agent::Claude);
+    let pre = report_compact(&mut s, CompactEvent::Pre, Some("auto"));
+    assert!(pre["result"]["context"].is_null(), "{pre}");
+    assert_eq!(phase(&s), Some("compacting"));
+    let paths = s.app.agent_handoff.runs[&s.terminal_id].paths.clone();
+    wait_worker(&mut s.app);
+    assert!(std::fs::read_to_string(&paths.transcript)
+        .unwrap()
+        .contains("build the parser"));
+    assert!(std::fs::read_to_string(&paths.handoff)
+        .unwrap()
+        .contains("Claude compacted the session on its own"));
+    let post = report_compact(&mut s, CompactEvent::Post, None);
+    let context = post["result"]["context"].as_str().expect("context");
+    assert!(context.contains("written by herdr"), "{context}");
+    // Claude's own auto-compact carries its turn on: no resume line.
+    assert_eq!(phase(&s), None);
+    // A later SessionStart(compact) without a run still finds the handoff.
+    let again = report_compact(&mut s, CompactEvent::Post, None);
+    assert!(again["result"]["context"].as_str().is_some(), "{again}");
+
+    // The user's own /compact: the resume line follows.
+    let mut s = setup(Agent::Claude);
+    report_compact(&mut s, CompactEvent::Pre, Some("manual"));
+    wait_worker(&mut s.app);
+    report_compact(&mut s, CompactEvent::Post, None);
+    assert_eq!(phase(&s), Some("await_resume"));
+}
+
+#[tokio::test]
+async fn a_run_holds_queued_messages_until_it_ends() {
+    let mut s = setup(Agent::Claude);
+    to_prompt_typed(&mut s);
+    let target = s
+        .app
+        .resolve_terminal_target(&s.terminal_id.to_string())
+        .unwrap();
+    assert_eq!(
+        s.app.message_check(&target),
+        super::super::message_queue::Check::Wait("handoff and compaction in progress".into())
+    );
+    s.app
+        .finish_agent_handoff(&s.terminal_id.clone(), Err("test".into()), Instant::now());
+    assert!(matches!(
+        s.app.message_check(&target),
+        super::super::message_queue::Check::Ready { .. }
+    ));
+    // A failure shows the user a card from the pane.
+    assert!(s
+        .app
+        .agent_notices
+        .list()
+        .iter()
+        .any(|card| card.title.contains("Handoff")));
+}

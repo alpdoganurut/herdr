@@ -40,6 +40,11 @@ pub struct AgentContextPane {
     pub used: u64,
     /// The context window in tokens.
     pub window: u64,
+    /// Fork (agent handoff): when the pane's agent last saved a handoff
+    /// before a compaction (unix seconds). A pane listed only for it has
+    /// `used` and `window` 0 (no known use; clients skip a zero window).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_unix: Option<u64>,
 }
 
 /// What the tick last read for a terminal.
@@ -223,6 +228,7 @@ impl App {
         self.agent_context
             .marks
             .retain(|terminal_id, _| live.iter().any(|(live, _)| live == terminal_id));
+        self.retain_agent_handoff_terminals();
         if let Some(cache) = self.agent_context.cache.as_mut() {
             let sessions: Vec<_> = live.into_iter().map(|(_, session)| session).collect();
             cache.retain_sessions(&sessions);
@@ -237,6 +243,8 @@ impl App {
     /// context_window`; bumps the revision when any value changed.
     pub(crate) fn apply_agent_context_results(&mut self, results: Vec<ProbeResult>) -> bool {
         let mut changed = false;
+        // Fork (agent handoff): the stored reads, for the automatic trigger.
+        let mut stored: Vec<TerminalId> = Vec::new();
         for (terminal_id, (agent, session_id), usage) in results {
             let value = usage.as_ref().and_then(|usage| {
                 crate::agent_context::resolve_usage(
@@ -258,9 +266,16 @@ impl App {
                 terminal.agent_context = value;
                 changed = true;
             }
+            if value.is_some() {
+                stored.push(terminal_id);
+            }
         }
         if changed {
             self.bump_agent_context_view_rev();
+        }
+        let now = Instant::now();
+        for terminal_id in stored {
+            self.note_agent_handoff_context(&terminal_id, now);
         }
         changed
     }
@@ -294,19 +309,21 @@ impl App {
         let mut panes = Vec::new();
         for (ws_idx, workspace) in self.state.workspaces.iter().enumerate() {
             for (pane_id, pane) in workspace.tabs.iter().flat_map(|tab| tab.panes.iter()) {
-                let Some(usage) = self
+                let usage = self
                     .state
                     .terminals
                     .get(&pane.attached_terminal_id)
-                    .and_then(|terminal| terminal.agent_context)
-                else {
+                    .and_then(|terminal| terminal.agent_context);
+                let handoff_unix = self.agent_handoff_saved_unix(&pane.attached_terminal_id);
+                if usage.is_none() && handoff_unix.is_none() {
                     continue;
-                };
+                }
                 if let Some(public) = self.public_pane_id(ws_idx, *pane_id) {
                     panes.push(AgentContextPane {
                         pane_id: public,
-                        used: usage.used,
-                        window: usage.window,
+                        used: usage.map_or(0, |usage| usage.used),
+                        window: usage.map_or(0, |usage| usage.window),
+                        handoff_unix,
                     });
                 }
             }
@@ -467,6 +484,7 @@ mod tests {
                 pane_id: public,
                 used: 164_000,
                 window: 200_000,
+                handoff_unix: None,
             }]
         );
         let info = app

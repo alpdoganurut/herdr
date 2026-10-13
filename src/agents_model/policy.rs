@@ -12,6 +12,7 @@
 //! | Message | invalid_target | ✓ | ✓ | UT or reply | ✓ |
 //! | SoftEdit | ✓ | ✓ | outside_team | UT | protected_tab |
 //! | SuspendRestart, Activate (the coordinator too) | ✓ | ✓ | outside_team | UT | protected_tab |
+//! | Handoff (handoff, then compact) | ✓ | UT | outside_team | UT | protected_tab |
 //! | Reopen/Activate of a user's entry (D4) | UT | UT | outside_team | UT | - |
 //! | MoveTab (not into another team) | ✓ | ✓ | outside_team | UT | protected_tab |
 //! | MoveTab into another team | outside_team | outside_team | outside_team | UT | protected_tab |
@@ -88,6 +89,9 @@ pub enum SoftEdit {
     Activate {
         by_agent: bool,
     },
+    /// Handoff, then compact (fork, `agents.handoff`): free for the
+    /// caller's own agent; another's context is its team's user's call.
+    Handoff,
 }
 
 /// Writes only the owner may make.
@@ -209,7 +213,10 @@ fn coordinator(relation: Relation, action: Action, facts: &Facts) -> Decision {
             | Action::MoveTab { .. }
             | Action::ReorderTab
             | Action::SoftEdit(
-                SoftEdit::RenameTab | SoftEdit::SuspendRestart | SoftEdit::Activate { .. }
+                SoftEdit::RenameTab
+                    | SoftEdit::SuspendRestart
+                    | SoftEdit::Activate { .. }
+                    | SoftEdit::Handoff
             )
     );
     if relation == Relation::Protected && tab_change {
@@ -256,6 +263,12 @@ fn agent(team: bool, relation: Relation, action: Action, facts: &Facts) -> Decis
             Other => outside_team(facts),
             SelfPane | Teammate if by_agent => Decision::Allow,
             SelfPane | Teammate => turn_gate(facts),
+        },
+        Action::SoftEdit(SoftEdit::Handoff) => match relation {
+            SelfPane => Decision::Allow,
+            Teammate => turn_gate(facts),
+            Other => outside_team(facts),
+            Protected => protected(facts),
         },
         Action::SoftEdit(_) => match relation {
             SelfPane | Teammate => Decision::Allow,
@@ -404,6 +417,7 @@ mod tests {
             SoftEdit::ShellInput,
             SoftEdit::Activate { by_agent: true },
             SoftEdit::Activate { by_agent: false },
+            SoftEdit::Handoff,
         ] {
             out.push(Action::SoftEdit(soft));
         }
@@ -478,6 +492,7 @@ mod tests {
             Action::SoftEdit(SoftEdit::SuspendRestart),
             Action::SoftEdit(SoftEdit::Activate { by_agent: true }),
             Action::SoftEdit(SoftEdit::Activate { by_agent: false }),
+            Action::SoftEdit(SoftEdit::Handoff),
             Action::ReorderTab,
         ] {
             assert_eq!(
@@ -490,6 +505,37 @@ mod tests {
                 "protected_tab"
             );
         }
+    }
+
+    #[test]
+    fn an_agent_hands_off_itself_and_a_teammate_only_in_its_users_turn() {
+        let handoff = Action::SoftEdit(SoftEdit::Handoff);
+        assert_eq!(agent(Relation::SelfPane, handoff, false), "allow");
+        assert_eq!(agent(Relation::Teammate, handoff, true), "allow");
+        assert_eq!(agent(Relation::Teammate, handoff, false), "non_user_turn");
+        assert_eq!(agent(Relation::Other, handoff, true), "outside_team");
+        assert_eq!(agent(Relation::Protected, handoff, true), "protected_tab");
+        // Without a team a "teammate" is any other tab.
+        assert_eq!(
+            code(authorize(
+                Actor::Agent { team: false },
+                Relation::Teammate,
+                handoff,
+                &facts(true)
+            )),
+            "outside_team"
+        );
+        assert!(authorize(Actor::User, Relation::Protected, handoff, &facts(false)).is_allowed());
+        assert_eq!(
+            code(authorize(
+                Actor::Coordinator,
+                Relation::Other,
+                handoff,
+                &facts(false)
+            )),
+            "non_user_turn"
+        );
+        assert!(authorize(Actor::Coordinator, Relation::Other, handoff, &facts(true)).is_allowed());
     }
 
     #[test]

@@ -2205,6 +2205,264 @@ async fn fork_smoke_agent_context_push_reaches_the_client_shell() {
     assert!(!shell.receive_agent_context(&local, payload));
 }
 
+/// Run the shipped Claude hook asset against a socket this test answers
+/// through the app (one request per connection, as the server does), and
+/// return the requests it sent and what it printed.
+#[cfg(unix)]
+fn run_claude_hook_asset_live(
+    server: &mut HeadlessServer,
+    dir: &std::path::Path,
+    pane_id: &str,
+    action: &str,
+    input: serde_json::Value,
+) -> (Vec<Request>, String) {
+    use std::io::{BufRead as _, Read as _, Write as _};
+
+    let asset = dir.join("herdr-agent-state.sh");
+    fs::write(
+        &asset,
+        include_str!("../../../integration/assets/claude/herdr-agent-state.sh"),
+    )
+    .unwrap();
+    let socket_path = dir.join(format!("live-{action}.sock"));
+    let _ = fs::remove_file(&socket_path);
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut child = std::process::Command::new("sh")
+        .arg(&asset)
+        .arg(action)
+        .env("HERDR_ENV", "1")
+        .env("HERDR_SOCKET_PATH", &socket_path)
+        .env("HERDR_PANE_ID", pane_id)
+        .env_remove("CURSOR_VERSION")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("run the claude hook asset");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut requests = Vec::new();
+    let mut exited = false;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                let mut line = String::new();
+                std::io::BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let request: Request = serde_json::from_str(line.trim()).unwrap();
+                let response = server.app.handle_api_request(request.clone());
+                let mut stream = stream;
+                let _ = stream.write_all(format!("{response}\n").as_bytes());
+                requests.push(request);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if exited {
+                    break;
+                }
+                // One more pass after the exit: a connection made just
+                // before it is still pending.
+                exited = child.try_wait().unwrap().is_some();
+                assert!(std::time::Instant::now() < deadline, "the hook hung");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(err) => panic!("accept: {err}"),
+        }
+    }
+    assert!(child.wait().unwrap().success());
+    let mut out = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    (requests, out)
+}
+
+/// Everything typed into the pane so far, its chunks joined.
+fn typed_so_far(rx: &mut tokio::sync::mpsc::Receiver<Bytes>) -> String {
+    // The Enter follows each text after 300 ms (AGENT_PROMPT_SUBMIT_DELAY).
+    std::thread::sleep(Duration::from_millis(450));
+    let mut out = String::new();
+    while let Ok(bytes) = rx.try_recv() {
+        out.push_str(&String::from_utf8_lossy(&bytes));
+    }
+    out.replace('\r', "")
+}
+
+/// Fork (agent handoff): the context use crossing `[agents.handoff]
+/// at_percent` starts a run; herdr copies the transcript, types the handoff
+/// prompt into the free agent, sees its Stop hook (through the shipped
+/// asset) and the written file, types `/compact`; the asset's PreCompact for
+/// herdr's own `/compact` saves nothing more, its SessionStart(compact)
+/// prints the handoff as additional context, and the resume line goes in.
+/// The sidebar push carries the handoff's time.
+#[cfg(unix)]
+#[tokio::test]
+async fn fork_smoke_handoff_then_compact_runs_through_the_claude_hooks() {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "hfs-handoff-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let (mut server, mut rx) = server_with_claude(None);
+    server.app.agent_handoff.root = Some(dir.join("handoffs"));
+    let pane_id = server
+        .app
+        .public_pane_id(0, root_pane(&server))
+        .expect("public pane id");
+    // Where Claude keeps it (the session report only takes that shape).
+    let transcript = dir
+        .join("claude-config")
+        .join("projects")
+        .join("-fork-smoke")
+        .join(format!("{SESSION_ID}.jsonl"));
+    fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    fs::write(
+        &transcript,
+        "{\"type\":\"user\",\"message\":{\"content\":\"refactor the parser\"}}\n",
+    )
+    .unwrap();
+    let (requests, _) = run_claude_hook_asset_live(
+        &mut server,
+        &dir,
+        &pane_id,
+        "session",
+        serde_json::json!({
+            "hook_event_name": "SessionStart",
+            "session_id": SESSION_ID,
+            "transcript_path": transcript.to_str().unwrap(),
+            "source": "startup",
+        }),
+    );
+    assert_eq!(requests.len(), 1, "a startup reports only its session");
+
+    // The context read crosses 80 %: a run starts (once).
+    let terminal_id = root_terminal_id(&server);
+    let read = |server: &mut HeadlessServer, used: u64| {
+        server.app.apply_agent_context_results(vec![(
+            terminal_id.clone(),
+            (
+                crate::agent_context::ContextAgent::Claude,
+                SESSION_ID.into(),
+            ),
+            Some(crate::agent_context::TranscriptUsage {
+                used,
+                model: Some("claude-opus-5-5".into()),
+                window: None,
+            }),
+        )]);
+    };
+    read(&mut server, 170_000);
+    let run = server.app.agent_handoff.runs[&terminal_id].clone();
+    server.app.drive_agent_handoff_for_test();
+    assert!(fs::read_to_string(&run.paths.transcript)
+        .unwrap()
+        .contains("refactor the parser"));
+    server.app.settle_agent_handoff_for_test();
+    server.app.drive_agent_handoff_for_test();
+    let prompt = typed_so_far(&mut rx);
+    assert!(prompt.contains("85% full"), "{prompt}");
+    assert!(prompt.contains(&run.paths.handoff.display().to_string()));
+
+    // The agent's turn: UserPromptSubmit, the file, Stop (the shipped asset).
+    run_claude_hook_asset_live(
+        &mut server,
+        &dir,
+        &pane_id,
+        "turn",
+        serde_json::json!({"hook_event_name": "UserPromptSubmit", "prompt_id": "p1"}),
+    );
+    fs::write(&run.paths.handoff, "# Handoff\nnext: wire the lexer\n").unwrap();
+    run_claude_hook_asset_live(
+        &mut server,
+        &dir,
+        &pane_id,
+        "stop",
+        serde_json::json!({"hook_event_name": "Stop", "prompt_id": "p1"}),
+    );
+    server.app.drive_agent_handoff_for_test();
+    server.app.drive_agent_handoff_for_test();
+    server.app.settle_agent_handoff_for_test();
+    server.app.drive_agent_handoff_for_test();
+    assert_eq!(typed_so_far(&mut rx), "/compact");
+
+    // Herdr's own /compact: PreCompact saves nothing more.
+    let (requests, out) = run_claude_hook_asset_live(
+        &mut server,
+        &dir,
+        &pane_id,
+        "precompact",
+        serde_json::json!({
+            "hook_event_name": "PreCompact",
+            "session_id": SESSION_ID,
+            "transcript_path": transcript.to_str().unwrap(),
+            "trigger": "manual",
+        }),
+    );
+    assert!(matches!(requests[0].method, Method::PaneReportCompact(_)));
+    assert!(out.trim().is_empty(), "{out}");
+    assert_eq!(
+        server.app.agent_handoff.runs[&terminal_id].paths, run.paths,
+        "the same run"
+    );
+
+    // The compacted session starts: the hook prints the handoff.
+    let (requests, out) = run_claude_hook_asset_live(
+        &mut server,
+        &dir,
+        &pane_id,
+        "session",
+        serde_json::json!({
+            "hook_event_name": "SessionStart",
+            "session_id": SESSION_ID,
+            "transcript_path": transcript.to_str().unwrap(),
+            "source": "compact",
+        }),
+    );
+    assert_eq!(
+        requests.len(),
+        2,
+        "the session report, then the compact report"
+    );
+    let printed: serde_json::Value = serde_json::from_str(out.trim()).expect("hook JSON");
+    assert_eq!(
+        printed["hookSpecificOutput"]["hookEventName"],
+        "SessionStart"
+    );
+    let context = printed["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        context.contains(&run.paths.handoff.display().to_string()),
+        "{context}"
+    );
+    assert!(context.contains(&run.paths.transcript.display().to_string()));
+
+    server.app.settle_agent_handoff_for_test();
+    server.app.drive_agent_handoff_for_test();
+    let line = typed_so_far(&mut rx);
+    assert!(line.starts_with("herdr: compacted"), "{line}");
+    assert!(!server.app.agent_handoff.runs.contains_key(&terminal_id));
+
+    // The sidebar push carries when it was saved.
+    let panes = server.app.agent_context_panes();
+    assert!(panes[0].handoff_unix.is_some());
+
+    shutdown_test_runtimes(&mut server);
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[path = "fork_smoke/coordinator.rs"]
 mod coordinator;
 

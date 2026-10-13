@@ -219,7 +219,7 @@ pub(crate) struct MessageQueue {
 
 /// Why a target cannot take a message now.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Check {
+pub(super) enum Check {
     /// Deliverable: its public pane id, and whether it is the coordinator.
     /// `hook_ended`: its screen reads working but its own hooks reported
     /// its turn's end (src/app/hook_turn.rs); typed in only after
@@ -570,7 +570,41 @@ impl App {
     }
 
     /// Whether the agent in this pane can take a message now.
-    fn message_check(&self, target: &super::terminal_targets::TerminalTarget) -> Check {
+    pub(super) fn message_check(&self, target: &super::terminal_targets::TerminalTarget) -> Check {
+        self.message_check_with(target, true)
+    }
+
+    /// Fork (agent handoff, src/app/agent_handoff.rs): whether herdr may
+    /// type into the agent of `terminal_id` now by the queue's own rules:
+    /// `Ok(pane)` when it could take a message, is not the coordinator, its
+    /// screen reads idle (not working with only its Stop hook's word) and
+    /// nothing is queued for it (those messages go first); `Err(None)` when
+    /// the pane or its agent is gone, `Err(Some(reason))` otherwise.
+    pub(super) fn agent_handoff_target(&self, terminal_id: &str) -> Result<String, Option<String>> {
+        let target = self.message_target(terminal_id, None).ok_or(None)?;
+        match self.message_check_with(&target, false) {
+            Check::Missing => Err(None),
+            Check::Wait(reason) => Err(Some(reason)),
+            Check::Ready {
+                coordinator: true, ..
+            } => Err(Some("the coordinator".into())),
+            Check::Ready {
+                hook_ended: true, ..
+            } => Err(Some("working".into())),
+            Check::Ready { .. } if self.message_queue.queued_for(terminal_id) => {
+                Err(Some("messages are queued for it".into()))
+            }
+            Check::Ready { pane, .. } => Ok(pane),
+        }
+    }
+
+    /// [`Self::message_check`]; `handoff_hold` makes a pane whose agent
+    /// handoff is on wait (src/app/agent_handoff.rs).
+    fn message_check_with(
+        &self,
+        target: &super::terminal_targets::TerminalTarget,
+        handoff_hold: bool,
+    ) -> Check {
         let Some(pane) = self.public_pane_id(target.ws_idx, target.pane_id) else {
             return Check::Missing;
         };
@@ -624,6 +658,11 @@ impl App {
         // agent; typed text would land in it (src/app/voice.rs).
         if terminal.agent_voice().active() {
             return Check::Wait("voice mode".into());
+        }
+        // Fork (agent handoff): nothing lands between the handoff turn,
+        // /compact and the resume line.
+        if handoff_hold && self.agent_handoff.holds_messages(&target.terminal_id) {
+            return Check::Wait("handoff and compaction in progress".into());
         }
         let coordinator = self.is_coordinator_pane(target.ws_idx, target.pane_id);
         if coordinator {

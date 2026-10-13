@@ -422,6 +422,7 @@ mod tests {
                 pane_id: "w1:p1".into(),
                 used: 164_000,
                 window: 200_000,
+                handoff_unix: None,
             }],
         };
         let crate::protocol::ServerMessage::EndpointControl { kind, data } =

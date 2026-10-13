@@ -1487,6 +1487,10 @@ impl App {
             }
             Method::AgentsQueued(params) => return self.handle_agents_queued(request.id, params),
             Method::AgentsInbox(params) => return self.handle_agents_inbox(request.id, params),
+            Method::AgentsHandoff(params) => return self.handle_agents_handoff(request.id, params),
+            Method::PaneReportCompact(params) => {
+                return self.handle_pane_report_compact(request.id, params)
+            }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

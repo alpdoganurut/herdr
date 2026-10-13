@@ -795,6 +795,9 @@ pub(super) enum ClientContextMenuAction {
     /// Fork, tab menu: mute or unmute the tab's notifications
     /// (`tab.set_muted`).
     Mute,
+    /// Fork, tab menu of a live Claude agent tab: handoff, then compact
+    /// (`agents.handoff`).
+    HandoffCompact,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -824,6 +827,9 @@ pub(super) struct ClientTabMenuAgent {
     /// Fork: "Set role…" is offered (the server advertised
     /// `agents.set_meta` when the menu opened).
     pub(super) set_role: bool,
+    /// Fork: "Handoff & compact" is offered (a live Claude agent and a
+    /// server that advertised `agents.handoff` when the menu opened).
+    pub(super) handoff: bool,
 }
 
 #[derive(Debug)]

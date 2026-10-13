@@ -13,7 +13,7 @@ trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
 
 case "$action" in
-  session|subagent|stop|turn) ;;
+  session|subagent|stop|turn|precompact) ;;
   *) exit 0 ;;
 esac
 
@@ -68,6 +68,48 @@ def send(request):
     except Exception:
         pass
 
+
+# One request whose answer is read in full (a line of JSON), within `timeout`
+# seconds; None on any failure.
+def call(payload, timeout=3.0):
+    try:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(timeout)
+        client.connect(socket_path)
+        client.sendall((json.dumps(payload) + "\n").encode())
+        data = b""
+        while not data.endswith(b"\n") and len(data) < 262144:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        client.close()
+        return json.loads(data.decode("utf-8", "replace") or "null")
+    except Exception:
+        return None
+
+
+# A compaction starts (PreCompact) or the compacted session starts
+# (SessionStart, source compact), for herdr's handoff, then compact
+# (pane.report_compact): herdr saves the transcript and a handoff before a
+# compaction it did not start, and answers the compacted session's start with
+# the handoff to read. A server without the method answers with an error.
+def report_compact(event):
+    params = {"pane_id": pane_id, "agent": "claude", "event": event}
+    for key in ("session_id", "transcript_path"):
+        value = hook_input.get(key)
+        if isinstance(value, str) and value:
+            params[key] = value
+    trigger = hook_input.get("trigger")
+    if isinstance(trigger, str) and trigger:
+        params["trigger"] = trigger
+    return call({"id": request_id, "method": "pane.report_compact", "params": params})
+
+
+if action == "precompact":
+    if hook_event_name == "PreCompact" and not hook_input.get("agent_id"):
+        report_compact("pre")
+    raise SystemExit(0)
 
 # Subagents running under the pane's agent (pane.report_subagent). A server
 # without the method answers with an error, which is ignored.
@@ -182,4 +224,17 @@ else:
     raise SystemExit(0)
 
 send(request)
+
+# The compacted session starts: add herdr's handoff to its context.
+if session_start_source == "compact":
+    response = report_compact("post")
+    result = response.get("result") if isinstance(response, dict) else None
+    context = result.get("context") if isinstance(result, dict) else None
+    if isinstance(context, str) and context:
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": context,
+            }
+        }))
 PY

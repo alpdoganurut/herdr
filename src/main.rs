@@ -12,6 +12,7 @@ const NESTED_HERDR_MESSAGES: [&str; 6] = [
 ];
 
 mod agent_context;
+mod agent_handoff;
 mod agent_resume;
 mod agent_view_eval;
 mod agent_wrap;
@@ -186,6 +187,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # edit_scrollback = "prefix+e"
 # clear_pane = ""                  # unbound; e.g. "prefix+ctrl+k"
 # toggle_agent_suspend = ""        # unbound; suspends the focused agent, or activates it again
+# handoff_compact = ""             # unbound; the focused Claude agent writes a handoff, then /compact
 # move_tab_to_group = ""            # unbound; "tabs" layout: move the focused tab to a group by name
 # toggle_groups_folded = ""         # unbound; "tabs" layout: fold all groups, or expand all once folded
 # restart_agent = ""                # unbound; exits the focused idle agent and relaunches it in place
@@ -594,6 +596,17 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # The context window in tokens per agent for the sidebar's context use; unset uses the
 # window the session states (Codex) or 200k / 1M by model and use (Claude).
 # context_window = { claude = 1000000 }
+
+# [agents.handoff]
+# Handoff, then compact (Claude Code): herdr saves the transcript, asks the agent for a
+# handoff file, types /compact, then points the compacted session back at both.
+# enabled = true
+# Start automatically at this context use percent; 0 = only the menu, key and CLI.
+# at_percent = 80
+# Your own prompt line instead of herdr's; {path} is the handoff file.
+# command = "/my:handoff --compact {path}"
+# Type one line after the compaction asking the agent to read the handoff and continue.
+# resume = true
 
 [notes]
 # Per-session notes and checkpoints behind the info pane, `herdr notes`,

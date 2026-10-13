@@ -177,6 +177,10 @@ pub(crate) fn keybind_help_groups(
                     "suspend/activate agent",
                 ),
                 entry(
+                    binding_label(&keybinds.handoff_compact),
+                    "handoff & compact agent",
+                ),
+                entry(
                     binding_label(&keybinds.move_tab_to_group),
                     "move tab to group",
                 ),

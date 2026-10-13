@@ -41,14 +41,16 @@ pub mod method {
     pub const REORDER_TAB: &str = "agents.reorder_tab";
     pub const QUEUED: &str = "agents.queued";
     pub const INBOX: &str = "agents.inbox";
+    pub const HANDOFF: &str = "agents.handoff";
 
-    /// The one method advertised to client shells (the TUI's "Set role…").
+    /// The methods advertised to client shells (the TUI's "Set role…" and
+    /// "Handoff & compact").
     #[cfg(test)]
-    pub const CLIENT_SHELL: [&str; 1] = [SET_META];
+    pub const CLIENT_SHELL: [&str; 2] = [SET_META, HANDOFF];
 
     /// Every method.
     #[cfg(test)]
-    pub const ALL: [&str; 22] = [
+    pub const ALL: [&str; 23] = [
         ACTOR,
         DIRECTORY,
         READ,
@@ -71,6 +73,7 @@ pub mod method {
         REORDER_TAB,
         QUEUED,
         INBOX,
+        HANDOFF,
     ];
 }
 
@@ -916,6 +919,42 @@ pub struct AgentsInboxParams {
     pub caller_pane: String,
 }
 
+/// `agents.handoff` (fork): handoff, then compact, for a Claude agent
+/// (src/agent_handoff.rs). Without `caller_pane` the caller is the user
+/// (the tab menu, the keybinding, `herdr agent handoff` outside an agent);
+/// an agent may start it for itself, for a teammate in its user's turn.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsHandoffParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane: Option<String>,
+    /// A tab id, a pane id or an agent name (its tab's agent).
+    pub target: String,
+}
+
+/// What `agents.handoff` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentsHandoffOutcome {
+    /// A run started: the prompt goes in once the agent is free.
+    Started,
+    /// A run for that agent was already on.
+    AlreadyRunning,
+    /// An outcome this side does not know (a newer peer).
+    #[serde(other)]
+    Unknown,
+}
+
+/// `agents.handoff`'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsHandoffResult {
+    pub pane_id: String,
+    pub outcome: AgentsHandoffOutcome,
+    /// The run's directory (`handoff.md`, `transcript.jsonl`, `meta.json`).
+    pub dir: String,
+    /// Where the run is (`await_prompt`, `await_handoff`, ...).
+    pub phase: String,
+}
+
 /// One message of `agents.inbox`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentsInboxMessage {
@@ -1087,7 +1126,7 @@ pub struct AgentActionEntry {
 
 /// The type names the params structs may reference (digest hygiene).
 #[cfg(test)]
-pub const PARAM_TYPES: [&str; 23] = [
+pub const PARAM_TYPES: [&str; 24] = [
     "AgentsActorParams",
     "AgentsDirectoryParams",
     "AgentsReadParams",
@@ -1111,6 +1150,7 @@ pub const PARAM_TYPES: [&str; 23] = [
     "AgentsReorderTabParams",
     "AgentsQueuedParams",
     "AgentsInboxParams",
+    "AgentsHandoffParams",
 ];
 
 #[cfg(test)]

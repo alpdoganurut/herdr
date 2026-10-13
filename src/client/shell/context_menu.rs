@@ -65,10 +65,17 @@ impl ClientContextMenuOverlay {
                         suspended: true, ..
                     }) => items.push(item("Activate agent", Action::ActivateAgent)),
                     Some(ClientTabMenuAgent {
-                        suspended: false, ..
+                        suspended: false,
+                        handoff,
+                        ..
                     }) => {
                         items.push(item("Suspend agent", Action::SuspendAgent));
                         items.push(item("Restart agent", Action::RestartAgent));
+                        // Fork (agent handoff): a live Claude agent of a
+                        // server with `agents.handoff`.
+                        if *handoff {
+                            items.push(item("Handoff & compact", Action::HandoffCompact));
+                        }
                     }
                     None => {}
                 }
@@ -290,6 +297,8 @@ impl ClientShellState {
                     pane_id: agent.pane_id.clone(),
                     suspended: agent.agent_status == crate::api::schema::AgentStatus::Suspended,
                     set_role,
+                    handoff: super::actions::agent_handoff_method(snapshot, &agent.pane_id)
+                        .is_some_and(|method| self.supports_endpoint_method(&method)),
                 })
         });
         let color = super::tab_color::tab_menu_color(tab.color);
@@ -717,6 +726,19 @@ impl ClientShellState {
                         Method::AgentRestart(crate::api::schema::AgentRestartParams {
                             target: pane_id,
                         }),
+                        outcome,
+                    );
+                }
+            }
+            ClientContextMenuAction::HandoffCompact => {
+                if let Some(pane_id) = agent.map(|agent| agent.pane_id) {
+                    self.push_endpoint_method(
+                        Method::AgentsHandoff(
+                            crate::api::schema::agents_model::AgentsHandoffParams {
+                                caller_pane: None,
+                                target: pane_id,
+                            },
+                        ),
                         outcome,
                     );
                 }

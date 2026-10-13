@@ -3414,6 +3414,8 @@ impl HeadlessServer {
         changed |= self.app.handle_codex_session_probe(now);
         // Fork: agents' context use from their session files (off-thread reads).
         changed |= self.app.handle_agent_context_probe(now);
+        // Fork: handoff, then compact, runs (about once a second while one is on).
+        changed |= self.app.handle_agent_handoff_tasks(now);
 
         if let Some(deadline) = self
             .app

@@ -78,6 +78,7 @@ fn payload(revision: u64, panes: &[(&str, u64, u64)]) -> AgentContextPayload {
                 pane_id: (*pane_id).into(),
                 used: *used,
                 window: *window,
+                handoff_unix: None,
             })
             .collect(),
     }
@@ -272,4 +273,41 @@ fn context_chip_text_formats_tokens() {
     assert_eq!(text(820_271, 1_000_000), "ctx 82% \u{b7} 820k/1M");
     assert_eq!(text(1_250_000, 2_000_000), "ctx 62% \u{b7} 1.2M/2M");
     assert_eq!(text(950, 258_400), "ctx 0% \u{b7} 950/258k");
+}
+
+#[test]
+fn the_detail_strip_shows_the_last_handoff_age_even_without_a_context_use() {
+    let config = tabs_config();
+    let mut state = state_with(&config);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut push = payload(1, &[]);
+    push.panes.push(AgentContextPane {
+        pane_id: "pane_1".into(),
+        used: 0,
+        window: 0,
+        handoff_unix: Some(now - 5 * 60),
+    });
+    assert!(state.receive_agent_context(&ClientEndpointId::Local, push));
+    let context = &state.agent_context[&ClientEndpointId::Local];
+    assert_eq!(context.usage_of("pane_1"), None, "a zero window is no use");
+    assert_eq!(context.handoff_of("pane_1"), Some(now - 5 * 60));
+    let frame = state.compose(COLS, ROWS).expect("composed frame");
+    let text = detail_text(&state, &frame);
+    assert!(text.contains("handoff 5m ago"), "{text}");
+    assert!(!text.contains("ctx"), "{text}");
+}
+
+#[test]
+fn handoff_chip_text_reads_as_an_age() {
+    let text = |at, now| {
+        super::super::tab_sidebar_detail::handoff_chip_text(at, now)
+            .as_str()
+            .to_owned()
+    };
+    assert_eq!(text(1_000, 1_030), "handoff <1m ago");
+    assert_eq!(text(1_000, 1_000 + 5 * 60), "handoff 5m ago");
+    assert_eq!(text(2_000, 1_000), "handoff <1m ago", "a clock skew");
 }

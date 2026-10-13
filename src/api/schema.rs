@@ -356,6 +356,13 @@ pub enum Method {
     /// Fork: the messages to the caller still queued.
     #[serde(rename = "agents.inbox")]
     AgentsInbox(agents_model::AgentsInboxParams),
+    /// Fork: handoff, then compact, for a Claude agent.
+    #[serde(rename = "agents.handoff")]
+    AgentsHandoff(agents_model::AgentsHandoffParams),
+    /// Fork: a compaction of the pane's agent starts or started over (its
+    /// PreCompact / SessionStart(compact) hooks).
+    #[serde(rename = "pane.report_compact")]
+    PaneReportCompact(PaneReportCompactParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

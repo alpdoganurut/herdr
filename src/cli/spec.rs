@@ -554,6 +554,15 @@ fn agent_command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("handoff")
+                .about("Have a Claude agent write a handoff, then compact it")
+                .override_usage("herdr agent handoff <TARGET>")
+                .arg(required("target", "TARGET"))
+                .after_help(
+                    "Herdr copies the agent's transcript and, once the agent is free (idle, its user not typing), asks it to write a handoff to <state dir>/handoffs/<session>/<UTC time>/handoff.md ([agents.handoff] command, or herdr's own prompt). When the file is written (or after 10 minutes, a mechanical handoff by herdr), herdr types /compact; after the compaction the agent is pointed back at the handoff and the transcript. Inside an agent, `herdr agent handoff` on its own pane always works; another agent's needs its user's turn. Returns at once with the run's directory (outcome `started`, or `already_running`).\n\nnext: herdr agent read <TARGET>",
+                ),
+        )
+        .subcommand(
             Command::new("explain")
                 .about("Explain agent detection state")
                 .arg(Arg::new("target").value_name("TARGET"))
@@ -2008,7 +2017,7 @@ mod tests {
     #[test]
     fn spec_models_agent_suspend_and_activate_targets() {
         let cmd = super::command();
-        for name in ["suspend", "activate", "restart"] {
+        for name in ["suspend", "activate", "restart", "handoff"] {
             let command = command_path(&cmd, &["agent", name]);
             let target = command
                 .get_arguments()
