@@ -485,7 +485,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="card"><h3><span class="g">✎</span>Your handoff skill, or herdr's</h3><p>Set <code>command</code> to your own skill line with a <code>{path}</code> placeholder, or leave it empty for herdr's short prompt. If the agent never writes the file, herdr writes a mechanical handoff from notes, checkpoints, git state and recent prompts.</p></div>
     <div class="card"><h3><span class="g">▤</span>Known place, nothing lost</h3><p>Each run keeps <code>transcript.jsonl</code> and <code>handoff.md</code> under <code>handoffs/&lt;session&gt;/&lt;time&gt;/</code>, with a <code>latest</code> pointer, a notes entry and a checkpoint. The sidebar shows “handoff 12m ago”.</p></div>
     <div class="card"><h3><span class="g">↻</span>Back to work</h3><p>After <code>/compact</code> the agent's new context names the handoff and transcript, and a short line asks it to continue, or to pause if nothing was in flight.</p></div>
-    <div class="card"><h3><span class="g">⛨</span>Safety net</h3><p>When Claude compacts on its own or you type <code>/compact</code>, herdr still saves the transcript and a handoff first. Messages wait for the run; nothing is typed over you.</p></div>
+    <div class="card"><h3><span class="g">⛨</span>Safety net</h3><p>When Claude compacts on its own or you type <code>/compact</code>, herdr still saves the transcript and a handoff first. Messages wait for the run; nothing is typed over you. A <code>/clear</code> or another session in the pane ends the run, and another agent cannot hand the same agent off again within 10 minutes.</p></div>
   </div>
 </section>
 

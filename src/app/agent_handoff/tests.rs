@@ -839,3 +839,262 @@ async fn a_saved_handoff_is_offered_only_to_its_own_session() {
         });
     assert_eq!(s.app.agent_handoff_saved_unix(&s.terminal_id), None);
 }
+
+fn bind_session(s: &mut Setup, session: Option<&str>) {
+    s.app
+        .state
+        .terminals
+        .get_mut(&s.terminal_id)
+        .unwrap()
+        .persisted_agent_session = session.map(|id| crate::agent_resume::PersistedAgentSession {
+        source: "herdr:claude".into(),
+        agent: "claude".into(),
+        session_ref: crate::agent_resume::AgentSessionRef::id(id).unwrap(),
+        transcript_path: None,
+    });
+}
+
+fn messages_ready(s: &Setup) -> bool {
+    let target = s
+        .app
+        .resolve_terminal_target(&s.terminal_id.to_string())
+        .unwrap();
+    matches!(
+        s.app.message_check(&target),
+        super::super::message_queue::Check::Ready { .. }
+    )
+}
+
+#[tokio::test]
+async fn a_new_session_in_the_pane_ends_the_run_and_releases_held_messages() {
+    // `/clear` (or a resume of another session) during the handoff turn.
+    let mut s = setup(Agent::Claude);
+    to_prompt_typed(&mut s);
+    let reply = message(&mut s, "ms1", "please review");
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    assert!(!messages_ready(&s));
+    bind_session(&mut s, Some("another-session"));
+    tick(&mut s.app);
+    assert_eq!(phase(&s), None, "the run ended");
+    assert!(messages_ready(&s), "held messages go in");
+    assert!(s.app.agent_notices.list().iter().any(|card| card
+        .body
+        .as_deref()
+        .is_some_and(|body| body.contains("session changed"))));
+
+    // During the compaction too (Claude keeps the id across /compact, so
+    // a new one there is another session as well).
+    let mut s = setup(Agent::Claude);
+    to_prompt_typed(&mut s);
+    let now = Instant::now();
+    s.app
+        .agent_handoff
+        .runs
+        .get_mut(&s.terminal_id)
+        .unwrap()
+        .enter(Phase::Compacting { typed_at: now }, now);
+    bind_session(&mut s, Some("another-session"));
+    tick(&mut s.app);
+    assert_eq!(phase(&s), None);
+    assert!(messages_ready(&s));
+}
+
+#[tokio::test]
+async fn an_empty_session_binding_does_not_end_the_run() {
+    let mut s = setup(Agent::Claude);
+    to_prompt_typed(&mut s);
+    // Briefly empty around SessionStart.
+    bind_session(&mut s, None);
+    assert!(s.app.state.terminals[&s.terminal_id]
+        .persistable_agent_session()
+        .is_none());
+    tick(&mut s.app);
+    assert_eq!(phase(&s), Some("await_handoff"));
+    // The same session again: the run goes on.
+    bind_session(&mut s, Some(SESSION));
+    tick(&mut s.app);
+    assert_eq!(phase(&s), Some("await_handoff"));
+}
+
+#[tokio::test]
+async fn a_compaction_report_for_another_session_gets_nothing_from_the_run() {
+    let mut s = setup(Agent::Claude);
+    to_prompt_typed(&mut s);
+    agent_writes_handoff(&mut s, "# Handoff\n", "p1");
+    let now = Instant::now();
+    s.app
+        .agent_handoff
+        .runs
+        .get_mut(&s.terminal_id)
+        .unwrap()
+        .enter(Phase::Compacting { typed_at: now }, now);
+    let response = s.app.handle_api_request(Request {
+        id: "c".into(),
+        method: Method::PaneReportCompact(PaneReportCompactParams {
+            pane_id: s.pane.clone(),
+            agent: "claude".into(),
+            event: CompactEvent::Post,
+            trigger: None,
+            session_id: Some("another-session".into()),
+            transcript_path: None,
+        }),
+    });
+    let reply: Value = serde_json::from_str(&response).unwrap();
+    assert!(reply["result"]["context"].is_null(), "{reply}");
+    assert_eq!(phase(&s), None, "the run ended, no resume line");
+    assert!(messages_ready(&s));
+    tick(&mut s.app);
+    assert!(typed(&mut s.rx).is_empty());
+}
+
+#[tokio::test]
+async fn each_wait_on_a_hung_worker_aborts_and_releases_held_messages() {
+    let waits: [fn(&mut Run, Instant); 3] = [
+        // The transcript copy before the prompt.
+        |run, now| {
+            run.transcript_saved = None;
+            run.enter(Phase::AwaitPrompt, now - handoff::WORKER_TIMEOUT);
+        },
+        // A file check in flight.
+        |run, now| {
+            run.phase = Phase::AwaitHandoff {
+                typed_at: now,
+                checked: Some(now),
+                checking: true,
+            };
+            run.phase_since = now;
+            run.check_since = Some(now - handoff::WORKER_TIMEOUT);
+        },
+        // herdr's own handoff.
+        |run, now| run.enter(Phase::WritingFallback, now - handoff::WORKER_TIMEOUT),
+    ];
+    for (n, hang) in waits.into_iter().enumerate() {
+        let mut s = setup(Agent::Claude);
+        to_prompt_typed(&mut s);
+        let reply = message(&mut s, &format!("mw{n}"), "please review");
+        assert_eq!(reply["result"]["outcome"], "queued", "{n}: {reply}");
+        let now = Instant::now();
+        let run = s.app.agent_handoff.runs.get_mut(&s.terminal_id).unwrap();
+        hang(run, now);
+        let id = run.id;
+        s.app.agent_handoff.pending_writes.insert(
+            id,
+            PendingWrite {
+                terminal_id: s.terminal_id.clone(),
+                saved: SavedHandoff {
+                    session_id: SESSION.into(),
+                    paths: run.paths.clone(),
+                    kind: Kind::Mechanical,
+                    at: now,
+                    at_unix: 0,
+                    transcript: false,
+                },
+            },
+        );
+        tick(&mut s.app);
+        assert_eq!(phase(&s), None, "{n}: aborted");
+        assert!(messages_ready(&s), "{n}: held messages go in");
+        assert!(
+            !s.app.agent_handoff.pending_writes.contains_key(&id),
+            "{n}: a late write is not recorded for the failed run"
+        );
+        assert!(
+            s.app
+                .agent_notices
+                .list()
+                .iter()
+                .any(|card| card.title.contains("Handoff")),
+            "{n}: the user is told"
+        );
+    }
+}
+
+#[test]
+fn the_loop_guard_holds_only_other_agents_back_for_ten_minutes() {
+    let recent = Some(Duration::from_secs(60));
+    let old = Some(HANDOFF_COOLDOWN);
+    assert_eq!(
+        handoff_cooldown_left(true, false, recent),
+        Some(HANDOFF_COOLDOWN - Duration::from_secs(60))
+    );
+    assert_eq!(handoff_cooldown_left(true, false, old), None);
+    assert_eq!(handoff_cooldown_left(true, false, None), None);
+    assert_eq!(
+        handoff_cooldown_left(false, false, recent),
+        None,
+        "the agent itself or the user"
+    );
+    assert_eq!(
+        handoff_cooldown_left(true, true, recent),
+        None,
+        "a run on answers already_running"
+    );
+}
+
+#[tokio::test]
+async fn the_coordinator_may_not_hand_off_an_agent_again_within_ten_minutes() {
+    let mut s = setup(Agent::Claude);
+    // The coordinator in a second space.
+    s.app.state.workspaces.push(Workspace::test_new("coord"));
+    s.app.state.ensure_test_terminals();
+    let coordinator_pane = s.app.state.workspaces[1].tabs[0].root_pane;
+    let coordinator_terminal = s.app.state.workspaces[1].tabs[0].panes[&coordinator_pane]
+        .attached_terminal_id
+        .clone();
+    s.app
+        .state
+        .terminals
+        .get_mut(&coordinator_terminal)
+        .unwrap()
+        .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    s.app.state.coordinator_terminal_id = Some(coordinator_terminal);
+    let coordinator = s.app.public_pane_id(1, coordinator_pane).unwrap();
+    let pane = s.pane.clone();
+
+    // A run that compacted just now.
+    to_prompt_typed(&mut s);
+    let now = Instant::now();
+    s.app
+        .agent_handoff
+        .runs
+        .get_mut(&s.terminal_id)
+        .unwrap()
+        .enter(Phase::Compacting { typed_at: now }, now);
+    s.app
+        .finish_agent_handoff(&s.terminal_id.clone(), Ok("compacted".into()), now);
+    assert!(s
+        .app
+        .agent_handoff
+        .last_finished
+        .contains_key(&s.terminal_id));
+
+    let reply = handoff_api(&mut s.app, Some(&coordinator), &pane);
+    assert_eq!(reply["error"]["code"], "loop_guard", "{reply}");
+    assert!(reply["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("10 minutes"));
+    assert_eq!(phase(&s), None);
+
+    // The agent itself may.
+    let reply = handoff_api(&mut s.app, Some(&pane), &pane);
+    assert_eq!(reply["result"]["handoff"]["outcome"], "started", "{reply}");
+    wait_worker(&mut s.app);
+    s.app
+        .finish_agent_handoff(&s.terminal_id.clone(), Err("test".into()), now);
+    // So may the user.
+    let reply = handoff_api(&mut s.app, None, &pane);
+    assert_eq!(reply["result"]["handoff"]["outcome"], "started", "{reply}");
+    wait_worker(&mut s.app);
+    s.app
+        .finish_agent_handoff(&s.terminal_id.clone(), Err("test".into()), now);
+
+    // Ten minutes on, the coordinator may again.
+    s.app
+        .agent_handoff
+        .last_finished
+        .insert(s.terminal_id.clone(), Instant::now() - HANDOFF_COOLDOWN);
+    let reply = handoff_api(&mut s.app, Some(&coordinator), &pane);
+    assert_eq!(reply["result"]["handoff"]["outcome"], "started", "{reply}");
+    wait_worker(&mut s.app);
+}

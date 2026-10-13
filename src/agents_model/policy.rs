@@ -226,7 +226,8 @@ fn coordinator(relation: Relation, action: Action, facts: &Facts) -> Decision {
         Action::Read | Action::ReadShellScreen => Decision::Allow,
         // Fork (agent handoff): the coordinator may hand off and compact a
         // worker on its own (a full context is its call to make); herdr
-        // types only when the agent is free.
+        // types only when the agent is free. agents.handoff refuses a repeat
+        // within HANDOFF_COOLDOWN (src/app/agent_handoff.rs, the loop guard).
         Action::SoftEdit(SoftEdit::Handoff) => Decision::Allow,
         Action::Message if facts.user_turn || facts.reply_to_turn_starter => Decision::Allow,
         _ if facts.user_turn => Decision::Allow,

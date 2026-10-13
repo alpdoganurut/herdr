@@ -22,6 +22,7 @@ fn run_at(phase: Phase, now: Instant) -> Run {
         reminded: false,
         blocked_since: None,
         blocked_noted: false,
+        check_since: None,
     }
 }
 
@@ -587,4 +588,75 @@ fn a_compaction_herdr_did_not_start_ends_quietly_without_a_report() {
         next(&run, &facts(t0 + COMPACT_TIMEOUT, false)),
         Effect::Finish(_)
     ));
+}
+
+#[test]
+fn each_wait_on_the_worker_ends_in_an_abort_after_the_worker_timeout() {
+    let t0 = Instant::now();
+    let later = t0 + WORKER_TIMEOUT;
+    let before = later - Duration::from_secs(1);
+
+    // The transcript copy before the prompt.
+    let mut copying = run_at(Phase::AwaitPrompt, t0);
+    copying.transcript_saved = None;
+    assert_eq!(next(&copying, &facts(before, true)), Effect::Wait);
+    assert!(matches!(
+        next(&copying, &facts(later, true)),
+        Effect::Abort(reason) if reason.contains("transcript copy")
+    ));
+
+    // A file check in flight, counted from when it went out (not from the
+    // prompt, nor the turn end it is for).
+    let mut checking = run_at(
+        Phase::AwaitHandoff {
+            typed_at: t0,
+            checked: Some(t0),
+            checking: true,
+        },
+        t0,
+    );
+    let sent = t0 + Duration::from_secs(60);
+    checking.check_since = Some(sent);
+    assert_eq!(next(&checking, &facts(later, true)), Effect::Wait);
+    assert!(matches!(
+        next(&checking, &facts(sent + WORKER_TIMEOUT, true)),
+        Effect::Abort(reason) if reason.contains("check")
+    ));
+
+    // herdr's own handoff: an abort, never another write behind the hung one.
+    let writing = run_at(Phase::WritingFallback, t0);
+    assert_eq!(next(&writing, &facts(before, true)), Effect::Wait);
+    assert!(matches!(
+        next(&writing, &facts(later, true)),
+        Effect::Abort(reason) if reason.contains("not written in time")
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_git_that_hangs_is_killed_and_gives_no_lines() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = std::env::temp_dir().join(format!(
+        "herdr-agent-handoff-git-{}-{}",
+        std::process::id(),
+        crate::codex_sessions::now_unix_ms()
+    ));
+    std::fs::create_dir_all(&base).unwrap();
+    let hang = base.join("git-hang");
+    std::fs::write(&hang, "#!/bin/sh\necho '## main'\nexec sleep 30\n").unwrap();
+    let quick = base.join("git-quick");
+    std::fs::write(&quick, "#!/bin/sh\necho '## main'\necho ' M src/lib.rs'\n").unwrap();
+    for script in [&hang, &quick] {
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let t0 = Instant::now();
+    let lines = files::git_status_with(&hang, &base, Duration::from_millis(300));
+    assert!(lines.is_empty(), "{lines:?}");
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    let lines = files::git_status_with(&quick, &base, Duration::from_secs(5));
+    assert_eq!(
+        lines,
+        vec!["## main".to_string(), " M src/lib.rs".to_string()]
+    );
+    let _ = std::fs::remove_dir_all(&base);
 }

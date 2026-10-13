@@ -7,12 +7,15 @@
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::{Kind, Mechanical, RunPaths};
 
 /// The transcript tail read for the last prompts.
 const PROMPTS_TAIL_BYTES: u64 = 1024 * 1024;
+/// How long `git status` may take for a mechanical handoff (a hung git, a
+/// network mount): after it the handoff is written without git lines.
+const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) enum Job {
     /// Create the run's directory, write `meta.json`, copy the transcript.
@@ -277,20 +280,20 @@ fn read_tail(path: &Path) -> std::io::Result<String> {
 
 /// `git status --porcelain=v1 -b` in `cwd` (branch line first), bounded.
 fn git_status(cwd: &Path) -> Vec<String> {
-    let output = crate::noninteractive_process::command("git")
+    git_status_with(Path::new("git"), cwd, GIT_TIMEOUT)
+}
+
+/// [`git_status`] with the program and the time limit (tests).
+pub(crate) fn git_status_with(program: &Path, cwd: &Path, timeout: Duration) -> Vec<String> {
+    let mut command = crate::noninteractive_process::command(program);
+    command
         .arg("-C")
         .arg(cwd)
-        .args(["status", "--porcelain=v1", "-b", "--untracked-files=normal"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output();
-    let Ok(output) = output else {
+        .args(["status", "--porcelain=v1", "-b", "--untracked-files=normal"]);
+    let Some(stdout) = bounded_stdout(command, timeout) else {
         return Vec::new();
     };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
+    let text = String::from_utf8_lossy(&stdout);
     let mut lines: Vec<String> = text
         .lines()
         .take(super::MECHANICAL_GIT_LINES)
@@ -301,6 +304,62 @@ fn git_status(cwd: &Path) -> Vec<String> {
         lines.push(format!("… {} more", total - lines.len()));
     }
     lines
+}
+
+/// Run `command` and return its stdout when it exits successfully within
+/// `timeout`; else kill it and return `None`. stdout is read on a helper
+/// thread so a full pipe cannot stall the child. On a timeout the helper is
+/// not joined (a grandchild holding the pipe would hold the worker too); it
+/// ends once the pipe closes.
+fn bounded_stdout(mut command: std::process::Command, timeout: Duration) -> Option<Vec<u8>> {
+    use std::process::Stdio;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let reader = crate::thread_spawn::spawn_named("herdr-handoff-git", move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        let _ = tx.send(bytes);
+    });
+    if reader.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    }
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) | Err(_) => break None,
+        }
+    };
+    let Some(status) = status else {
+        tracing::info!(
+            timeout = ?timeout,
+            "agent handoff: git did not answer in time; the handoff goes on without it"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    if !status.success() {
+        return None;
+    }
+    // The child exited: its stdout closes unless a grandchild still holds it.
+    let left = deadline.saturating_duration_since(Instant::now());
+    rx.recv_timeout(left.max(Duration::from_millis(200))).ok()
 }
 
 fn write_mechanical(paths: &RunPaths, mut input: Mechanical) -> std::io::Result<()> {

@@ -29,6 +29,9 @@
 //! A compaction herdr did not start (Claude's auto-compact, the user's own
 //! `/compact`) reports PreCompact first: herdr saves the transcript and a
 //! mechanical handoff and the run starts at `Compacting`.
+//!
+//! A run that waits on the worker (the transcript copy before the prompt,
+//! a file check, herdr's own handoff) longer than [`WORKER_TIMEOUT`] stops.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -53,6 +56,11 @@ pub(crate) const COMPACT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// A detection idle edge counts as the end of `/compact` only this long
 /// after it was typed (the command's first frames can read idle).
 pub(crate) const COMPACT_MIN: Duration = Duration::from_secs(3);
+/// How long a run waits on the worker (the transcript copy before the
+/// prompt, a handoff file check, herdr's own handoff) before it stops: a
+/// job that hangs (a stuck disk) holds the serial worker, so the run ends
+/// rather than queue another job behind it.
+pub(crate) const WORKER_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 /// The directory under the state dir.
 pub(crate) const DIR_NAME: &str = "handoffs";
 pub(crate) const HANDOFF_FILE: &str = "handoff.md";
@@ -212,6 +220,8 @@ pub(crate) struct Run {
     pub(crate) blocked_since: Option<Instant>,
     /// The user was told the handoff turn waits on a prompt.
     pub(crate) blocked_noted: bool,
+    /// When the handoff file check in flight went to the worker.
+    pub(crate) check_since: Option<Instant>,
 }
 
 impl Run {
@@ -274,6 +284,9 @@ pub(crate) fn next(run: &Run, facts: &Facts) -> Effect {
         Phase::AwaitPrompt => {
             if run.transcript_saved.is_none() {
                 // The prompt names files the copy is creating.
+                if waited >= WORKER_TIMEOUT {
+                    return Effect::Abort("the transcript copy did not finish in time".into());
+                }
                 return Effect::Wait;
             }
             if facts.free {
@@ -290,6 +303,10 @@ pub(crate) fn next(run: &Run, facts: &Facts) -> Effect {
             checking,
         } => {
             if checking {
+                let since = run.check_since.unwrap_or(run.phase_since);
+                if facts.now.saturating_duration_since(since) >= WORKER_TIMEOUT {
+                    return Effect::Abort("the handoff file check did not finish in time".into());
+                }
                 return Effect::Wait;
             }
             if waited >= HANDOFF_TIMEOUT {
@@ -321,6 +338,11 @@ pub(crate) fn next(run: &Run, facts: &Facts) -> Effect {
                 }
                 _ => Effect::Wait,
             }
+        }
+        // Not WriteMechanical again: a new job would queue behind the hung
+        // one on the serial worker.
+        Phase::WritingFallback if waited >= WORKER_TIMEOUT => {
+            Effect::Abort("herdr's own handoff was not written in time".into())
         }
         Phase::WritingFallback => Effect::Wait,
         Phase::AwaitCompact => {

@@ -25,6 +25,10 @@
 //!   after [`AUTO_RETRY`].
 //! - A PreCompact during a run (before `/compact`) turns the run into that
 //!   compaction's, keeping its files and a handoff the agent wrote.
+//! - A run belongs to one Claude session (the id stays across `/compact`):
+//!   another session in the pane (`/clear`, a resume) ends it.
+//! - A handoff the coordinator or another agent asks for is refused for
+//!   [`HANDOFF_COOLDOWN`] after the target's last one (a loop guard).
 //! - Every step is logged in `actions.jsonl` (action `handoff`); a failure
 //!   shows the user an agent card from the pane.
 
@@ -62,6 +66,11 @@ const MECHANICAL_CHECKPOINTS: u32 = 10;
 /// make or a run that stopped before `/compact` (the context stays over the
 /// threshold until a compaction, so it would never re-arm on its own).
 const AUTO_RETRY: Duration = Duration::from_secs(5 * 60);
+/// A handoff the coordinator or another agent asks for is refused this long
+/// after the terminal's last handoff or compaction (a loop guard: an agent
+/// handing another off again and again). The agent itself, its user and
+/// the automatic trigger are not held back.
+pub(crate) const HANDOFF_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 
 /// A handoff saved for a terminal (the latest).
 #[derive(Debug, Clone)]
@@ -96,6 +105,9 @@ pub(crate) struct AgentHandoffRuntime {
     /// The latest saved handoff per terminal (the sidebar's age, the
     /// SessionStart(compact) text without a run).
     pub(crate) saved: HashMap<TerminalId, SavedHandoff>,
+    /// When a terminal's last run compacted or finished well: a handoff
+    /// another agent asks for is refused for [`HANDOFF_COOLDOWN`] after it.
+    pub(crate) last_finished: HashMap<TerminalId, Instant>,
     pending_writes: HashMap<u64, PendingWrite>,
     worker: Option<files::Worker>,
     /// Jobs whose outcome has not come back.
@@ -256,6 +268,18 @@ impl App {
             self.finish_agent_handoff(terminal_id, Err("its agent was suspended".into()), now);
             return true;
         }
+        // The run is for one Claude session: `/clear` or a resume of another
+        // one in the pane ends it (Claude keeps the id across `/compact`). An
+        // empty binding (briefly, around SessionStart) does not.
+        let session_changed = self
+            .agent_handoff
+            .runs
+            .get(terminal_id)
+            .is_some_and(|run| session_changed(run, terminal.persistable_agent_session()));
+        if session_changed {
+            self.finish_agent_handoff(terminal_id, Err("the agent's session changed".into()), now);
+            return true;
+        }
         let hook_end = terminal.turn().hook_turn_ended();
         let idle_edge = terminal.turn().last_idle().map(|(at, _)| at);
         let blocked = terminal.state == crate::detect::AgentState::Blocked;
@@ -341,6 +365,7 @@ impl App {
                     checked: Some(end),
                     checking: true,
                 };
+                run.check_since = Some(now);
                 if !self.submit_handoff_job(Job::Check {
                     run: id,
                     end,
@@ -536,6 +561,7 @@ impl App {
                     return false;
                 }
                 let terminal_id = terminal_id.clone();
+                current.check_since = None;
                 if nonempty {
                     current.kind = Some(Kind::Agent);
                     let saved = SavedHandoff {
@@ -694,6 +720,7 @@ impl App {
             reminded: false,
             blocked_since: None,
             blocked_noted: false,
+            check_since: None,
         };
         let meta = self.handoff_meta(&run, &pane, None);
         let locate = Some(crate::agent_context::ContextSession {
@@ -850,7 +877,14 @@ impl App {
             Ok(ResponseResult::NotesGet { notes }) => notes
                 .text
                 .map(|text| handoff::tail_lines(&text, handoff::MECHANICAL_NOTES_LINES)),
-            _ => None,
+            Ok(_) => {
+                tracing::debug!(pane, "agent handoff: notes.get answered another result");
+                None
+            }
+            Err(err) => {
+                tracing::debug!(pane, code = %err.code, message = %err.message, "agent handoff: no notes for the mechanical handoff");
+                None
+            }
         };
         let checkpoints = match self.call_method(Method::CheckpointsList(CheckpointsListParams {
             target,
@@ -880,7 +914,17 @@ impl App {
                     })
                     .collect()
             }
-            _ => Vec::new(),
+            Ok(_) => {
+                tracing::debug!(
+                    pane,
+                    "agent handoff: checkpoints.list answered another result"
+                );
+                Vec::new()
+            }
+            Err(err) => {
+                tracing::debug!(pane, code = %err.code, message = %err.message, "agent handoff: no checkpoints for the mechanical handoff");
+                Vec::new()
+            }
         };
         (notes, checkpoints)
     }
@@ -988,6 +1032,17 @@ impl App {
         // A run that stopped before /compact leaves the context over the
         // threshold: the automatic trigger may try again after a while.
         let compacted = matches!(run.phase, Phase::Compacting { .. } | Phase::AwaitResume);
+        if compacted || outcome.is_ok() {
+            // The loop guard for handoffs another agent asks for.
+            self.agent_handoff
+                .last_finished
+                .insert(terminal_id.clone(), now);
+        }
+        if outcome.is_err() {
+            // A mechanical handoff still on the worker (a timed-out write)
+            // is not recorded for a run the user was told failed.
+            self.agent_handoff.pending_writes.remove(&run.id);
+        }
         if outcome.is_err() && !compacted {
             self.agent_handoff.armed.insert(terminal_id.clone(), true);
             self.agent_handoff
@@ -1158,6 +1213,9 @@ impl App {
         self.agent_handoff
             .auto_retry_at
             .retain(|terminal_id, _| terminals.contains_key(terminal_id));
+        self.agent_handoff
+            .last_finished
+            .retain(|terminal_id, _| terminals.contains_key(terminal_id));
     }
 
     /// When the handoff of a terminal was saved (unix seconds), for the
@@ -1199,6 +1257,13 @@ impl App {
             .ok_or_else(|| ModelError::new(error_code::NOT_FOUND, "no pane"))?;
         let mut line = self.tab_line("handoff", target);
         line.target_pane = self.public_pane_id(target.ws_idx, pane);
+        let terminal_id = self
+            .state
+            .workspaces
+            .get(target.ws_idx)
+            .and_then(|ws| ws.terminal_id(pane))
+            .cloned()
+            .ok_or_else(|| ModelError::new(error_code::NOT_FOUND, "no pane"))?;
         if let Some(caller) = &caller {
             self.authorize_on_tab(
                 caller,
@@ -1208,15 +1273,29 @@ impl App {
                 ),
                 &line,
             )?;
+            // The loop guard, before the soft edit is spent.
+            let other_agent = caller.actor != crate::agents_model::policy::Actor::User
+                && caller.terminal_id != terminal_id;
+            let running = self.agent_handoff.runs.contains_key(&terminal_id);
+            let since_last = self
+                .agent_handoff
+                .last_finished
+                .get(&terminal_id)
+                .map(|at| Instant::now().saturating_duration_since(*at));
+            if let Some(left) = handoff_cooldown_left(other_agent, running, since_last) {
+                let minutes = left.as_secs().div_ceil(60).max(1);
+                let message = format!(
+                    "this agent finished a handoff and compaction less than {} minutes ago; another one asked by another agent is refused for {minutes} more minute{} (the agent itself or its user may still ask)",
+                    HANDOFF_COOLDOWN.as_secs() / 60,
+                    if minutes == 1 { "" } else { "s" }
+                );
+                line.code = Some(error_code::LOOP_GUARD.to_string());
+                line.detail = Some(message.clone());
+                self.log_model_action(Some(caller), AgentsActionOutcome::Failed, line);
+                return Err(ModelError::new(error_code::LOOP_GUARD, message));
+            }
             self.take_soft_edit(caller, &line)?;
         }
-        let terminal_id = self
-            .state
-            .workspaces
-            .get(target.ws_idx)
-            .and_then(|ws| ws.terminal_id(pane))
-            .cloned()
-            .ok_or_else(|| ModelError::new(error_code::NOT_FOUND, "no pane"))?;
         let by = caller
             .as_ref()
             .map(|caller| caller.name.clone())
@@ -1292,12 +1371,37 @@ impl App {
                 none(id)
             }
             CompactEvent::Post => {
+                // The compacted session is not the run's: the run ends
+                // (no injection of its files, no resume line).
+                self.end_agent_handoff_of_other_session(
+                    &terminal_id,
+                    params.session_id.as_deref(),
+                    now,
+                );
                 let context =
                     self.agent_handoff_injection(&terminal_id, params.session_id.as_deref(), now);
                 self.agent_handoff_compacted(&terminal_id, "its SessionStart hook", now);
                 encode_success(id, ResponseResult::PaneReportCompact { context })
             }
             CompactEvent::Unknown => none(id),
+        }
+    }
+
+    /// End the run of `terminal_id` when a hook reported `session_id` for
+    /// another session than the run's.
+    fn end_agent_handoff_of_other_session(
+        &mut self,
+        terminal_id: &TerminalId,
+        session_id: Option<&str>,
+        now: Instant,
+    ) {
+        let other = self
+            .agent_handoff
+            .runs
+            .get(terminal_id)
+            .is_some_and(|run| hook_session_differs(run, session_id));
+        if other {
+            self.finish_agent_handoff(terminal_id, Err("the agent's session changed".into()), now);
         }
     }
 
@@ -1313,6 +1417,9 @@ impl App {
             return;
         }
         let auto = params.trigger.as_deref() == Some("auto");
+        // Another session compacts: the run ends and the compaction gets
+        // its own files below.
+        self.end_agent_handoff_of_other_session(terminal_id, params.session_id.as_deref(), now);
         if let Some(run) = self.agent_handoff.runs.get(terminal_id) {
             match run.phase {
                 Phase::Compacting { .. } => {
@@ -1400,6 +1507,7 @@ impl App {
             reminded: false,
             blocked_since: None,
             blocked_noted: false,
+            check_since: None,
         };
         let meta = self.handoff_meta(&run, &pane, None);
         let locate = session.map(|session| crate::agent_context::ContextSession {
@@ -1528,7 +1636,7 @@ impl App {
 
     /// The SessionStart(compact) text: the run's files, else a handoff saved
     /// in the last [`SAVED_FRESH`] for the same session (`session_id` from
-    /// the hook; without one the saved handoff is offered).
+    /// the hook; without one the run's or the saved handoff is offered).
     fn agent_handoff_injection(
         &self,
         terminal_id: &TerminalId,
@@ -1540,6 +1648,7 @@ impl App {
             .runs
             .get(terminal_id)
             .filter(|run| matches!(run.phase, Phase::Compacting { .. }))
+            .filter(|run| !hook_session_differs(run, session_id))
         {
             let transcript =
                 (run.transcript_saved != Some(false)).then_some(run.paths.transcript.as_path());
@@ -1566,6 +1675,40 @@ impl App {
             saved.kind,
         ))
     }
+}
+
+/// The loop guard (pure): how much of [`HANDOFF_COOLDOWN`] is left for a
+/// handoff `other_agent` (the coordinator or another agent, not the agent
+/// itself or the user) asks for, `since_last` after the terminal's last
+/// handoff or compaction; `None` lets it through. A run already on answers
+/// `already_running` instead.
+pub(crate) fn handoff_cooldown_left(
+    other_agent: bool,
+    running: bool,
+    since_last: Option<Duration>,
+) -> Option<Duration> {
+    if !other_agent || running {
+        return None;
+    }
+    let since = since_last?;
+    (since < HANDOFF_COOLDOWN).then(|| HANDOFF_COOLDOWN - since)
+}
+
+/// Whether the pane's agent session is no longer the run's: a known session
+/// with another id. A run without a session id, or a pane whose binding is
+/// empty for the moment, has not changed.
+fn session_changed(run: &Run, current: Option<crate::agent_resume::PersistedAgentSession>) -> bool {
+    !run.session_id.is_empty()
+        && current.is_some_and(|session| session.session_ref.value != run.session_id)
+}
+
+/// Whether a hook's `session_id` names another session than the run's
+/// (an absent or empty one does not).
+fn hook_session_differs(run: &Run, session_id: Option<&str>) -> bool {
+    !run.session_id.is_empty()
+        && session_id
+            .map(str::trim)
+            .is_some_and(|id| !id.is_empty() && id != run.session_id)
 }
 
 fn external_reason(auto: bool) -> &'static str {
