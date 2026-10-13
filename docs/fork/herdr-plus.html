@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>herdr+ · what the fork adds</title>
+<style>
+:root{
+  --crust:#11111b; --mantle:#181825; --base:#1e1e2e; --s0:#313244; --s1:#45475a; --s2:#585b70;
+  --o0:#6c7086; --o1:#7f849c; --o2:#9399b2; --sub0:#a6adc8; --sub1:#bac2de; --text:#cdd6f4;
+  --blue:#89b4fa; --green:#a6e3a1; --yellow:#f9e2af; --red:#f38ba8; --teal:#94e2d5; --peach:#fab387; --mauve:#cba6f7;
+  --claude:#D97757; --codex:#3B82F6; --tag:#b06cf5;
+  --chrome:var(--mantle); --sb:var(--base); --rowbg:var(--s0);
+  --mono:"JetBrainsMono Nerd Font","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Inter","Helvetica Neue",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:64px}
+body{margin:0;background:var(--crust);color:var(--text);font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+code,kbd,.m{font-family:var(--mono);font-size:.86em}
+code{background:var(--s0);color:var(--sub1);padding:.08em .38em;border-radius:4px}
+kbd{border:1px solid var(--s1);border-bottom-width:2px;border-radius:4px;padding:0 .35em;color:var(--text);background:var(--mantle)}
+
+/* nav */
+nav{position:sticky;top:0;z-index:10;background:rgba(17,17,27,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--s0)}
+nav .in{max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:1.2rem;padding:.55rem 1.25rem;overflow-x:auto;scrollbar-width:none}
+nav .in::-webkit-scrollbar{display:none}
+nav .brand{font-family:var(--mono);font-weight:700;color:var(--text);white-space:nowrap}
+nav .brand b{color:var(--blue)}
+nav a.l{color:var(--o2);font-size:.83rem;white-space:nowrap;padding:.2rem 0;border-bottom:2px solid transparent}
+nav a.l:hover{color:var(--text);text-decoration:none}
+nav a.l.on{color:var(--text);border-bottom-color:var(--blue)}
+
+main{max-width:1180px;margin:0 auto;padding:0 1.25rem 4rem}
+section{padding:3.6rem 0 1rem;border-top:1px solid var(--s0)}
+section:first-of-type{border-top:0}
+.eyebrow{font-family:var(--mono);font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;color:var(--o1);margin:0 0 .4rem}
+h1{font-size:clamp(2.2rem,5vw,3.4rem);line-height:1.08;margin:.2rem 0 1rem;letter-spacing:-.02em}
+h1 .p{color:var(--blue)}
+h2{font-size:1.7rem;margin:0 0 .35rem;letter-spacing:-.01em}
+h3{font-size:1.02rem;margin:0 0 .3rem;color:var(--text)}
+.lede{color:var(--sub0);max-width:62ch;margin:0 0 1.6rem}
+p{margin:.25rem 0}
+.dim{color:var(--o1)}
+
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.two{display:grid;gap:22px;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start}
+@media (max-width:880px){.two{grid-template-columns:1fr}}
+.card{background:var(--mantle);border:1px solid var(--s0);border-radius:10px;padding:1rem 1.1rem}
+.card p,.card li{color:var(--sub0);font-size:.92rem}
+.card ul{margin:.3rem 0 0;padding-left:1.1rem}
+.card .g{font-family:var(--mono);color:var(--blue);margin-right:.35rem}
+.tag{display:inline-block;font:600 .68rem/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:.28rem .45rem;border-radius:4px;vertical-align:middle;margin-left:.4rem}
+.tag.wip{background:rgba(249,226,175,.12);color:var(--yellow);border:1px solid rgba(249,226,175,.35)}
+.tag.new{background:rgba(137,180,250,.1);color:var(--blue);border:1px solid rgba(137,180,250,.3)}
+
+table{width:100%;border-collapse:collapse;font-size:.88rem}
+th,td{text-align:left;padding:.42rem .6rem;border-bottom:1px solid var(--s0);vertical-align:top}
+th{color:var(--o1);font-weight:600;font-size:.74rem;text-transform:uppercase;letter-spacing:.06em}
+td{color:var(--sub0)} td:first-child{color:var(--text);white-space:nowrap}
+.tbl td.re{color:var(--red)} .tbl td.o0{color:var(--o0)} .tbl td.ac{color:var(--blue)} .tbl td.ye{color:var(--yellow)}
+.tbl{background:var(--mantle);border:1px solid var(--s0);border-radius:10px;padding:.3rem .6rem;overflow-x:auto}
+
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:.4rem 0 0}
+.chips code{background:var(--base);border:1px solid var(--s0);color:var(--sub1)}
+.chips code.w{border-color:rgba(137,180,250,.35);color:var(--blue)}
+
+/* terminal mockups */
+.term{font-family:var(--mono);font-size:13px;line-height:1.42;background:var(--sb);border:1px solid var(--s1);border-radius:10px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.45)}
+.term .bar{display:flex;gap:6px;align-items:center;padding:.45rem .7rem;background:var(--crust);border-bottom:1px solid var(--s0);font:12px var(--sans);color:var(--o1)}
+.term .bar i{width:10px;height:10px;border-radius:50%;background:var(--s1);display:inline-block}
+.term .body{display:flex}
+.sb{width:31ch;flex:none;border-right:1px solid var(--s1)}
+.r{display:flex;justify-content:space-between;white-space:pre;padding:0 1ch;height:1.42em;color:var(--sub0);background:var(--sb)}
+.r>span:first-child{overflow:hidden;text-overflow:ellipsis}
+.r.c{background:var(--chrome)}
+.r.f{background:var(--rowbg)}
+.r.h{color:var(--text)}
+.r.rule{color:var(--s1)} .r.rule>span:first-child{text-overflow:clip}
+.pane{flex:1;min-width:0;padding:.6rem 1.1ch;color:var(--o1);white-space:pre;overflow:hidden;background:var(--sb)}
+.solo .sb{border-right:0;width:100%}
+.solo{display:inline-block;width:31ch;max-width:100%}
+.t{color:var(--text)} .s0{color:var(--sub0)} .o0{color:var(--o0)} .o1{color:var(--o1)} .s1c{color:var(--s1)}
+.ac{color:var(--blue)} .gr{color:var(--green)} .ye{color:var(--yellow)} .re{color:var(--red)} .te{color:var(--teal)} .pe{color:var(--peach)}
+.cl{color:var(--claude)} .cx{color:var(--codex)} .pu{color:var(--tag)}
+.b{font-weight:700}
+.ic{width:1em;height:1em;vertical-align:-.12em;display:inline-block}
+.breath{animation:br 2s ease-in-out infinite}
+@keyframes br{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.breath{animation:none}}
+
+/* agent cards */
+.ncard{position:relative;font-family:var(--mono);font-size:12.5px;background:var(--mantle);border:1px solid var(--s1);border-radius:6px;padding:.55rem .8rem .5rem 1.1rem;margin:0 0 12px;max-width:44ch}
+.ncard::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:3px;border-radius:2px;background:var(--k)}
+.ncard .top{display:flex;justify-content:space-between;color:var(--sub0)}
+.ncard .top b{color:var(--k);margin-right:.6ch}
+.ncard .ttl{color:var(--text)}
+.ncard .bd{color:var(--o2)}
+.ncard .team{position:absolute;top:-.75em;left:1.2ch;background:var(--crust);padding:0 .6ch;color:var(--sub0);font-size:11.5px}
+.ncard .x{color:var(--o0)}
+.k-info{--k:var(--blue)} .k-q{--k:var(--red)} .k-done{--k:var(--green)} .k-warn{--k:var(--red)}
+
+/* info pane */
+.dock{font-family:var(--mono);font-size:12.5px;line-height:1.5;background:var(--base);border:1px solid var(--s1);border-radius:10px;padding:.7rem 1.1ch;white-space:pre;overflow-x:auto;color:var(--sub0)}
+
+/* flow */
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:.6rem 0 0}
+.flow span{font-family:var(--mono);font-size:.8rem;background:var(--base);border:1px solid var(--s0);border-radius:6px;padding:.3rem .55rem;color:var(--sub1)}
+.flow i{color:var(--o0);font-style:normal}
+
+.hero{display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.25fr);gap:34px;align-items:center;padding-top:3rem}
+@media (max-width:980px){.hero{grid-template-columns:1fr}}
+.stats{display:flex;flex-wrap:wrap;gap:22px;margin:1.4rem 0 0}
+.stats div{font-size:.8rem;color:var(--o1)}
+.stats b{display:block;font:700 1.35rem var(--mono);color:var(--text)}
+.legend{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:4px 18px;margin-top:1rem;font-size:.85rem;color:var(--sub0)}
+.legend span.m{display:inline-block;width:3.2ch}
+
+footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px solid var(--s0);color:var(--o1);font-size:.85rem;font-family:var(--mono)}
+</style>
+</head>
+<body>
+
+<nav aria-label="Sections"><div class="in">
+  <span class="brand">herdr<b>+</b></span>
+  <a class="l" href="#top">Overview</a>
+  <a class="l" href="#coordinator">Coordinator</a>
+  <a class="l" href="#control">Agents control herdr</a>
+  <a class="l" href="#teams">Teams</a>
+  <a class="l" href="#messaging">Messaging</a>
+  <a class="l" href="#sidebar">Sidebar</a>
+  <a class="l" href="#info">Info pane</a>
+  <a class="l" href="#notify">Notifications</a>
+  <a class="l" href="#more">More</a>
+  <a class="l" href="#handoff">Auto handoff</a>
+  <a class="l" href="#eng">Engineering</a>
+</div></nav>
+
+<main>
+
+<!-- ============ HERO ============ -->
+<section id="top" class="hero">
+  <div>
+    <p class="eyebrow">a fork of herdr</p>
+    <h1>herdr<span class="p">+</span><br>run many coding agents, together.</h1>
+    <p class="lede">herdr is a terminal runtime for coding agents. herdr+ adds what you need when ten or twenty of them run at once: a coordinator, teams, safe agent-to-agent messages, a sidebar that shows who needs you, notes that survive <code>/clear</code>, and notification cards.</p>
+    <div class="stats">
+      <div><b>1</b>coordinator agent</div>
+      <div><b>30+</b>agents_* tools</div>
+      <div><b>0</b>wire breaks</div>
+      <div><b>0.9.3</b>upstream base</div>
+    </div>
+    <div class="legend">
+      <div><span class="m gr">○</span>idle</div>
+      <div><span class="m ye">●</span>working</div>
+      <div><span class="m re">●</span>blocked, needs you</div>
+      <div><span class="m te">●</span>finished</div>
+      <div><span class="m o0">◌</span>suspended</div>
+      <div><span class="m ye">⚭</span>subagents running</div>
+      <div><span class="m ac">◆</span>team</div>
+      <div><span class="m cl">⧆</span>Claude Code <span class="cx m" style="width:auto">⧇</span> Codex</div>
+    </div>
+  </div>
+
+  <div class="term" role="img" aria-label="Mockup of the herdr+ tabs sidebar">
+    <div class="bar"><i></i><i></i><i></i>&nbsp; herdr+ · tabs sidebar</div>
+    <div class="body">
+      <div class="sb">
+        <div class="r c"><span class="o0">⏶</span><span class="o0">+</span></div>
+        <div class="r c"><span><span class="t b">reviewer</span>  <span class="ye">● working</span> <span class="o1">12m</span></span><span></span></div>
+        <div class="r c"><span><span class="cl">⧆</span> claude  <span class="o1">1 pane · ◎ browser</span></span><span></span></div>
+        <div class="r c"><span><span class="ac">◆</span> api rewrite · reviewer</span><span></span></div>
+        <div class="r c"><span><span class="o1">ctx</span> <span class="ye">78%</span> <span class="o1">· 156k/200k</span></span><span></span></div>
+        <div class="r c"><span><span class="o1">◷ 30m · w3:t2 ·</span> <span class="pu">purple</span></span><span></span></div>
+        <div class="r c rule"><span>───────────────────────────</span><span></span></div>
+        <div class="r"><span>    <span class="gr">○</span> <span class="s0">scratch</span></span><span class="ac">◎</span></div>
+        <div class="r"><span>    <span class="re">●</span> <span class="t">deploy-fix</span></span><span><span class="re">★</span> <span class="o0">◷</span></span></div>
+        <div class="r"><span> </span><span></span></div>
+        <div class="r"><span> <span class="s0">▾</span>   <span class="t b">infra</span></span><span><span class="o0">3</span> <span class="re">●</span></span></div>
+        <div class="r"><span>    <span class="ye breath">⚭</span> <span class="t">migrate-db</span> <span class="ye">⚭2</span></span><span class="re">91%</span></div>
+        <div class="r"><span>    <span class="gr">○</span> <span class="re"><svg class="ic" viewBox="0 0 16 16" aria-label="mic live"><path d="M8 1.5a2.3 2.3 0 0 0-2.3 2.3v3.9a2.3 2.3 0 0 0 4.6 0V3.8A2.3 2.3 0 0 0 8 1.5zM4.2 7.4a3.8 3.8 0 0 0 7.6 0M8 11.3v2.6M5.6 13.9h4.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span> <span class="s0">voice-chat</span></span><span></span></div>
+        <div class="r"><span>  <span class="o0"><svg class="ic" viewBox="0 0 16 16" aria-label="muted"><path d="M4 11.5h8l-1.2-1.6V7a2.8 2.8 0 0 0-5.6 0v2.9zM6.8 13.3a1.3 1.3 0 0 0 2.4 0M2.5 2.5l11 11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span> <span class="gr">○</span> <span class="s0">logs-tail</span></span><span class="o0">☼</span></div>
+        <div class="r"><span>    <span class="o0">◌ 3 suspended ▸</span></span><span></span></div>
+        <div class="r"><span> </span><span></span></div>
+        <div class="r"><span> <span class="s0">▾</span> <span class="ac">◆</span> <span class="s0 b">api rewrite</span></span><span><span class="o0">3</span> <span class="ye">●</span></span></div>
+        <div class="r"><span>    <span class="re">●</span> <span class="t">planner</span></span><span class="o0">◷ ◆</span></div>
+        <div class="r f"><span>    <span class="ye breath">●</span> <span class="t b">reviewer</span></span><span><span class="ye">78%</span> <span class="o0">◆</span> <span class="cl breath">⧆</span></span></div>
+        <div class="r"><span>    <span class="te">●</span> <span class="t">builder</span></span><span class="o0">◆</span></div>
+        <div class="r"><span> </span><span></span></div>
+        <div class="r"><span> <span class="o1">▸</span>   <span class="o1 b">bird sort</span></span><span><span class="o0">2</span> <span class="ye">●</span></span></div>
+        <div class="r c rule"><span>───────────────────────────</span><span></span></div>
+        <div class="r c"><span><span class="o1">▾</span> <span class="s0 b">Active</span></span><span class="o0">3  </span></div>
+        <div class="r c"><span>  <span class="re">●</span> <span class="t">deploy-fix</span> <span class="o1">top</span></span><span class="re">42m</span></div>
+        <div class="r c"><span>  <span class="ye">⚭</span> <span class="t">migrate-db</span> <span class="ye">⚭2</span></span><span class="o1">12m</span></div>
+        <div class="r c"><span>  <span class="ye">●</span> <span class="t">reviewer</span> <span class="o1">◆ api…</span></span><span class="o1">12m</span></div>
+        <div class="r c rule"><span>───────────────────────────</span><span></span></div>
+        <div class="r c"><span><span class="o1">▸</span> <span class="s0 b">Pinned</span>  <span class="o0">2</span> <span class="ye">●</span> <span class="gr">○</span></span><span></span></div>
+        <div class="r c rule"><span>───────────────────────────</span><span></span></div>
+        <div class="r c"><span><span class="o1">▾</span> <span class="s0 b">Scheduled</span></span><span class="o0">2  </span></div>
+        <div class="r c"><span>  <span class="o0">◷</span> <span class="t">planner</span> <span class="o0">30m</span></span><span>in 12m</span></div>
+        <div class="r c"><span>  <span class="o0">☼</span> <span class="t">logs-tail</span> <span class="o0">daily</span></span><span>09:30</span></div>
+        <div class="r c rule"><span>───────────────────────────</span><span></span></div>
+        <div class="r"><span>  <span class="ac">◎</span> <span class="s0">Browser</span></span><span class="o1">3 tabs · 2 agents</span></div>
+        <div class="r"><span>  <span class="gr">○</span> <span class="s0">News</span></span><span class="o1">next 13:00</span></div>
+        <div class="r"><span>  <span class="gr">○</span> <span class="s0">coordinator</span></span><span class="o1">74 watched</span></div>
+        <div class="r c"><span class="o1">cpu 12%  mem 80%  net ok</span><span></span></div>
+        <div class="r c"><span></span><span class="o0">menu «</span></div>
+      </div>
+      <div class="pane"><span class="o0">reviewer · w3:t2</span>
+
+<span class="t">&gt; review the auth changes</span>
+
+<span class="t">●</span> Read(src/auth/session.rs)
+  <span class="o0">⎿  Read 412 lines</span>
+
+<span class="t">●</span> agents_send_message(to="role:lead")
+  <span class="o0">⎿  queued · lead is working</span>
+
+<span class="ye">✻ Reviewing… (esc to interrupt)</span>
+</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ COORDINATOR ============ -->
+<section id="coordinator">
+  <p class="eyebrow">01 · coordinator</p>
+  <h2>A coordinator agent, run by herdr itself</h2>
+  <p class="lede">One long-running Claude Code session that knows who is doing what, keeps a dashboard, remembers things for you, and acts for you when you ask. It is not a relay: agents talk to each other directly, it sees the log.</p>
+  <div class="two">
+    <div class="grid" style="grid-template-columns:1fr">
+      <div class="card"><h3><span class="g">◉</span>Native, server-run</h3><p>The herdr server starts it in a <code>coordinator</code> tab, resumes it, and relaunches it if it goes missing. Turn on with <code>[coordinator] enabled = true</code>.</p></div>
+      <div class="card"><h3><span class="g">▤</span>HTML dashboard on <code>127.0.0.1:7718</code></h3><p>Served by herdr. Live data (agents, status, messages, actions) plus the coordinator's own summaries and suggestions. Opens in herdr's browser or yours.</p></div>
+      <div class="card"><h3><span class="g">❖</span>Its own memory</h3><p><code>memory/</code> with one fact per file and a <code>MEMORY.md</code> index it reads on every start and wake-up. State lives in files, so it can restart fresh.</p></div>
+      <div class="card"><h3><span class="g">⊘</span>Acts only on your word</h3><p>Write tools refuse unless the turn started from your own typing in its pane (<code>non_user_turn</code>). Wake-ups update the board and suggest; they never act.</p></div>
+    </div>
+    <div>
+      <div class="term solo" style="width:100%;margin-bottom:14px" role="img" aria-label="Coordinator row states">
+        <div class="bar">pinned bottom row, its states</div>
+        <div class="sb">
+          <div class="r"><span>  <span class="gr">○</span> <span class="s0">coordinator</span></span><span class="o1">12 agents</span></div>
+          <div class="r"><span>  <span class="ye">◐</span> <span class="s0">coordinator</span></span><span class="o1">waking</span></div>
+          <div class="r"><span>  <span class="ac">●</span> <span class="s0">coordinator</span></span><span class="o1">3 ideas</span></div>
+          <div class="r"><span>  <span class="o0">◌</span> <span class="s0">coordinator</span></span><span class="o1">capped</span></div>
+          <div class="r"><span>  <span class="re">!</span> <span class="s0">coordinator</span></span><span class="o1">locked</span></div>
+          <div class="r"><span>  <span class="re">×</span> <span class="s0">coordinator</span></span><span class="o1">down</span></div>
+        </div>
+      </div>
+      <div class="tbl"><table>
+        <tr><th>Wake-up limit</th><th>Default</th></tr>
+        <tr><td><code>cap_hour</code></td><td>12 wake-ups an hour</td></tr>
+        <tr><td><code>cap_day</code></td><td>80 a day</td></tr>
+        <tr><td><code>periodic_minutes</code></td><td>a slow check every 60 min</td></tr>
+        <tr><td><code>relaunch_cap_hour</code></td><td>3 relaunches an hour, then <code>down</code></td></tr>
+        <tr><td><code>notify_daily_cap</code></td><td>6 of its own notifications a day, plus <code>quiet_hours</code></td></tr>
+        <tr><td><code>wake_scope</code></td><td><code>opened</code>: only agents it opened wake it</td></tr>
+      </table></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CONTROL ============ -->
+<section id="control">
+  <p class="eyebrow">02 · agents control herdr</p>
+  <h2>Agents can drive herdr, within clear rules</h2>
+  <p class="lede">Every Claude Code or Codex agent can get the <code>herdr_agents</code> MCP tools. One server-side check decides what each agent may do. Every write and every refusal is logged.</p>
+
+  <div class="card" style="margin-bottom:14px">
+    <h3>herdr_agents tools</h3>
+    <div class="chips">
+      <code>agents_whoami</code><code>agents_list</code><code>agents_get</code><code>agents_read</code><code>agents_messages</code><code>agents_wait</code><code>agents_wait_for_message</code><code>agents_actions</code><code>agents_notes_read</code><code>agents_checkpoints_list</code>
+      <code class="w">agents_send_message</code><code class="w">agents_notify</code><code class="w">agents_notes_append</code><code class="w">agents_notes_write</code><code class="w">agents_checkpoint</code><code class="w">agents_open_tab</code><code class="w">agents_rename_tab</code><code class="w">agents_move_to_group</code><code class="w">agents_create_group</code><code class="w">agents_set_meta</code><code class="w">agents_reorder_tab</code><code class="w">agents_reorder_group</code><code class="w">agents_suspend</code><code class="w">agents_activate</code><code class="w">agents_restart</code><code class="w">agents_close_tab</code><code class="w">agents_reopen_tab</code><code class="w">agents_team</code>
+    </div>
+    <p class="dim" style="margin-top:.5rem;font-size:.82rem">Blue = writes, checked by the server. Grey = reads.</p>
+  </div>
+
+  <div class="two">
+    <div class="tbl"><table>
+      <tr><th>Who</th><th>May do</th></tr>
+      <tr><td>Itself</td><td>Edit its own tab.</td></tr>
+      <tr><td>Teammates</td><td>Rename, move, set role and note, add notes and checkpoints, open new teammates, suspend / activate / restart.</td></tr>
+      <tr><td>Everyone else</td><td>Read screens and message. Nothing more (<code>outside_team</code>).</td></tr>
+      <tr><td>Shell screens</td><td>Readable by teammates and the coordinator only.</td></tr>
+      <tr><td>Closing a tab</td><td>Only in a turn you started in that agent (<code>non_user_turn</code>). Reopenable.</td></tr>
+      <tr><td>Coordinator tab</td><td>Off limits to every agent.</td></tr>
+    </table></div>
+    <div class="grid" style="grid-template-columns:1fr">
+      <div class="card"><h3><span class="g">›</span>User turns are tracked</h3><p>herdr knows whether a turn started from your typing or from a script, message or wake-up. Sensitive actions need your turn.</p></div>
+      <div class="card"><h3><span class="g">≡</span>Actions log</h3><p>Every agent write, every refusal, and your own tab and team actions go to <code>actions.jsonl</code>. The dashboard shows it; <code>agents_actions</code> reads it.</p></div>
+      <div class="card"><h3><span class="g">≤</span>Loose limits, server-side</h3><p>200 messages an hour, a 30-in-10-minutes loop guard per pair, 20 spawns an hour, 300 soft edits an hour.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TEAMS ============ -->
+<section id="teams">
+  <p class="eyebrow">03 · teams</p>
+  <h2>Turn a group into a team</h2>
+  <p class="lede">A group of tabs becomes a team with a purpose and roles. Members know each other from their first turn.</p>
+  <div class="two">
+    <div class="grid" style="grid-template-columns:1fr">
+      <div class="card"><h3><span class="g">◆</span>Make team from a group</h3><p><em>Make team…</em> on the group menu, <code>herdr team make &lt;group&gt; --purpose T</code>, or the coordinator. The header shows <code>◆ &lt;purpose&gt;</code>.</p></div>
+      <div class="card"><h3><span class="g">@</span>Roles name the members</h3><p>Every Claude or Codex started in the group joins. A member is named after its role: <code>fixer</code>, <code>reviewer</code>, <code>reviewer-2</code>. Address one by <code>to="role:lead"</code>.</p></div>
+      <div class="card"><h3><span class="g">≣</span>Roster in the instructions</h3><p>The roster, roles and purpose go into the system prompt. Changes reach Claude through a hook on the next prompt, and Codex on its next tool result.</p></div>
+      <div class="card"><h3><span class="g">↩</span>Report-back rule</h3><p>A member that finishes, gets stuck on, or drops work it was given sends one short report: what is done, where the details are, what is next.</p></div>
+    </div>
+    <div>
+      <div class="term solo" style="width:100%" role="img" aria-label="Team info mockup">
+        <div class="bar">Team info · group menu</div>
+        <div class="sb" style="padding:.4rem 0">
+          <div class="r"><span><span class="ac">◆</span> <span class="t b">api rewrite</span></span><span class="o0">✎</span></div>
+          <div class="r"><span class="o1">purpose: ship the v2 auth API</span><span></span></div>
+          <div class="r"><span> </span><span></span></div>
+          <div class="r"><span><span class="ye">●</span> <span class="t">lead</span>      <span class="o1">lead</span></span><span class="o1">8m  ✎ ×</span></div>
+          <div class="r"><span><span class="re">●</span> <span class="t">planner</span>   <span class="o1">planner</span></span><span class="re">3m  <span class="o1">✎ ×</span></span></div>
+          <div class="r f"><span><span class="ye">●</span> <span class="t">reviewer</span>  <span class="o1">reviewer</span></span><span class="o1">12m ✎ ×</span></div>
+          <div class="r"><span><span class="te">●</span> <span class="t">builder</span>   <span class="o1">fixer</span></span><span class="o1">1m  ✎ ×</span></div>
+          <div class="r"><span class="ac">+ join</span><span class="o1">disband</span></div>
+        </div>
+      </div>
+      <p class="dim" style="font-size:.85rem;margin-top:.7rem">The coordinator is in every team and speaks for you. A teammate's message is acted on when it fits the team's purpose; nothing destructive without you.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ MESSAGING ============ -->
+<section id="messaging">
+  <p class="eyebrow">04 · agent-to-agent messaging</p>
+  <h2>Messages that never type over you</h2>
+  <p class="lede">Sending to a busy agent used to fail or land on top of your half-written prompt. Now the server queues it and types it in at the right moment.</p>
+
+  <div class="term" style="margin-bottom:16px" role="img" aria-label="Pointer line example">
+    <div class="bar">what the receiving agent sees</div>
+    <div class="pane" style="padding:.7rem 1.4ch;color:var(--sub0)"><span class="t">&gt;</span> herdr+ message <span class="ac">m_7f3a</span> from <span class="t">reviewer</span> (teammate, w3:p2): read it with agents_messages id=<span class="ac">m_7f3a</span>
+
+<span class="t">●</span> agents_messages(id="m_7f3a")
+  <span class="o0">⎿  from reviewer · "auth review done, 2 issues in session.rs, notes in ## Log"</span></div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h3><span class="g">⇶</span>Server-side queue</h3><p>Per target, oldest first. Saved with the session, survives restarts. Expires after 2 h, dropped if the target is gone.</p></div>
+    <div class="card"><h3><span class="g">‖</span>Typing guard</h3><p>Nothing is typed while you typed in that pane in the last 10 s, or have an unsent draft in its input box.</p></div>
+    <div class="card"><h3><span class="g">›</span>Pointer-line delivery</h3><p>One short plain line instead of a paste, so Claude does not treat it as your pasted content. The agent reads the full message by id.</p></div>
+    <div class="card"><h3><span class="g">⧉</span>Batch delivery</h3><p>Several queued messages go in together once the target has been idle for 3 s, as one line.</p></div>
+    <div class="card"><h3><span class="g">⏱</span>Stuck-message notice</h3><p>If a message waited 10 min on an agent whose screen has not moved for 10 min, the sender gets one notice with the reason.</p></div>
+    <div class="card"><h3><span class="g">!</span>Urgent interrupt, safely</h3><p><code>urgent=true</code>: one Esc to a working agent, then the message goes first. Only from your turn or the coordinator; once per pair every 5 min. Never into a dialog, voice mode, or while you type.</p></div>
+    <div class="card"><h3><span class="g">↯</span>Claude turn hooks</h3><p>Claude reports each turn's start and end, so messages are not stuck behind background agents that keep its spinner going.</p></div>
+    <div class="card"><h3><span class="g">⇣</span>Wait backlog + inbox</h3><p><code>agents_wait_for_message</code> returns what is already queued for you first. <code>agents_messages inbox=true</code> lists it without taking it.</p></div>
+    <div class="card"><h3><span class="g">✓</span>Exactly once</h3><p>A waiting agent claims a message before it is returned, so it is never also typed in, and never returned twice.</p></div>
+    <div class="card"><h3><span class="g">◔</span>100 s waits</h3><p>Waits stop at 100 s, under Claude Code's 120 s mark, and a timeout is a normal result, not a failed tool call.</p></div>
+  </div>
+  <div class="flow" aria-label="Delivery flow"><span>send</span><i>→</i><span>queued (busy / typing / blocked)</span><i>→</i><span>idle 3 s + guard clear</span><i>→</i><span>pointer line typed</span><i>→</i><span>read by id</span></div>
+</section>
+
+<!-- ============ SIDEBAR ============ -->
+<section id="sidebar">
+  <p class="eyebrow">05 · sidebar v2 / v3</p>
+  <h2>A sidebar that shows who needs you</h2>
+  <p class="lede">One row per tab across every space, grouped and foldable. From top to bottom: toolbar, detail strip, list, Active, Pinned, Scheduled, fixed rows, status footer. The chrome sits on the theme's <code>surface_dim</code>.</p>
+
+  <div class="two">
+    <div class="grid" style="grid-template-columns:1fr">
+      <div class="card"><h3><span class="g">☰</span>Detail strip on top</h3><p>About the hovered row, else the focused tab: status and time, agent, team role, reminders, browser use, colour tag, context use.</p></div>
+      <div class="card"><h3><span class="g">▾</span>Active · Pinned · Scheduled</h3><p><b>Active</b>: blocked first, then voice, working, idle-with-subagents, finished, longest first. <b>Pinned</b>: tabs you pin from the menu. <b>Scheduled</b>: tabs with a reminder and the time to the next one. Folded headers keep their count.</p></div>
+      <div class="card"><h3><span class="g">◌</span>Suspended runs fold</h3><p>Three or more suspended tabs in a row become one <code>◌ N suspended ▸</code> row. Hover lists them.</p></div>
+      <div class="card"><h3><span class="g">%</span>Context use</h3><p><code>NN%</code> on the row from 75% (yellow), red from 90%. The detail strip shows <code>ctx 78% · 156k/200k</code> at any level.</p></div>
+    </div>
+    <div>
+      <div class="tbl" style="margin-bottom:14px"><table>
+        <tr><th>Mark</th><th>Meaning</th></tr>
+        <tr><td class="m re">★</td><td>Important: reminds you while the agent waits on you</td></tr>
+        <tr><td class="m o0">◷ ◑ ☼</td><td>Scheduled reminder: minutes, hours, daily</td></tr>
+        <tr><td class="m ac">◎</td><td>This tab's agent used the browser in the last 2 min</td></tr>
+        <tr><td class="m ac">◆</td><td>Team member (header shows the purpose)</td></tr>
+        <tr><td class="m"><span class="cl">⧆</span> <span class="cx">⧇</span></td><td>Harness glyph, focused row only, in brand colour, breathing while it works</td></tr>
+        <tr><td class="m re"><svg class="ic" viewBox="0 0 16 16"><path d="M8 1.5a2.3 2.3 0 0 0-2.3 2.3v3.9a2.3 2.3 0 0 0 4.6 0V3.8A2.3 2.3 0 0 0 8 1.5zM4.2 7.4a3.8 3.8 0 0 0 7.6 0M8 11.3v2.6M5.6 13.9h4.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></td><td>Voice mode: red mic live, dim mic muted (Codex)</td></tr>
+        <tr><td class="m o0"><svg class="ic" viewBox="0 0 16 16"><path d="M4 11.5h8l-1.2-1.6V7a2.8 2.8 0 0 0-5.6 0v2.9zM6.8 13.3a1.3 1.3 0 0 0 2.4 0M2.5 2.5l11 11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></td><td>Muted tab, in the left gutter</td></tr>
+        <tr><td class="m ye">⚭2</td><td>Two subagents still running</td></tr>
+        <tr><td class="m ye">84%</td><td>Context window use (red from 90%)</td></tr>
+      </table></div>
+      <div class="term solo" style="width:100%" role="img" aria-label="Folded blocks with counts">
+        <div class="bar">folded blocks keep their count</div>
+        <div class="sb">
+          <div class="r c"><span><span class="o1">▸</span> <span class="s0 b">Active</span>  <span class="o0">3</span> <span class="re">●</span> <span class="ye">●</span></span><span></span></div>
+          <div class="r c"><span><span class="o1">▸</span> <span class="s0 b">Pinned</span>  <span class="o0">2</span> <span class="ye">●</span> <span class="gr">○</span></span><span></span></div>
+          <div class="r c"><span><span class="o1">▾</span> <span class="s0 b">Scheduled</span></span><span class="o0">1  </span></div>
+          <div class="r c"><span>  <span class="o0">◑</span> <span class="pu">notes</span> <span class="o0">Planni… 1h</span></span><span>in 1h00</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ INFO PANE ============ -->
+<section id="info">
+  <p class="eyebrow">06 · info pane</p>
+  <h2>Notes and history beside every agent</h2>
+  <p class="lede">A dock on the right of the pane. Notes are the agent's memory; History is its timeline. Nothing is computed until you open it.</p>
+  <div class="two">
+    <div class="dock" role="img" aria-label="Info pane History view"><span class="ac">❦</span> <span class="t b">C A L E N D A R - F I X</span>
+  <span class="o1">claude · 6f1c2a9e · since 09:41 · 2h 30m</span>
+
+<span class="o1">──  Notes  ──</span> <span class="t">✦ History ✦</span> <span class="o1">──────────────</span>
+<span class="ac">◇ 3</span>  <span class="gr">○ 3</span>  <span class="re">× 2</span>  <span class="ye">⚐ 3</span>  <span class="o0">· 1</span>          <span class="o1">all</span>
+
+<span class="o1">09:43</span> <span class="o0">·</span> Session start: reproduce DST
+<span class="o1">09:58</span> <span class="gr">○</span> Reproduced with fixed clock
+<span class="o1">10:14</span> <span class="ac">◇</span> Store next fire as zoned
+      <span class="o0">│</span> wall-clock
+<span class="o1">10:31</span> <span class="re">×</span> Snapshot round-trip loses tz
+      <span class="o0">│ ┆</span> <span class="o1">you</span>
+      <span class="o0">│ ┆</span> <span class="o1">(continuing)</span>
+      <span class="o0">│ ┆</span> <span class="cl">claude</span>
+      <span class="o0">│ ┆</span> The fix works live but fails
+      <span class="o0">│ ┆</span> after restore…
+<span class="o1">10:57</span> <span class="ye">⚐</span> Spring-forward edge case
+<span class="o1">11:12</span> <span class="gr">○</span> DST tests green
+<span class="o1">12:03</span> <span class="ac">◇</span> Migrate on load (option a)
+<span class="o0">      ┊</span>
+    <span class="o0">❧  12:12 · now</span>
+<span class="o0">j/k move  ⏎ open  f kind  b pin  ⇥ notes</span></div>
+    <div class="grid" style="grid-template-columns:1fr">
+      <div class="card"><h3><span class="g">✎</span>Notes, edited in place</h3><p>Markdown notes per agent session. Click to edit; saves on Esc or after 2 s idle. <code>- [ ]</code> tasks tick with a click. Toggle with <code>keys.toggle_info_pane</code> or the menu.</p></div>
+      <div class="card"><h3><span class="g">◇</span>Checkpoints</h3><p>Decisions, milestones, failures and notes the agent marks, plus your bookmarks. Expand one to see the prompt and reply around it.</p></div>
+      <div class="card"><h3><span class="g">◷</span>Auto history</h3><p>herdr adds its own dim checkpoints: a bookmark per prompt you send, a milestone per commit, a failure when an agent stays blocked 10+ min.</p></div>
+      <div class="card"><h3><span class="g">↻</span>Survives /clear and compaction</h3><p>The last 60 lines of notes and 8 checkpoints are put back into the agent's context at start, resume, <code>/clear</code> and compaction.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ NOTIFICATIONS ============ -->
+<section id="notify">
+  <p class="eyebrow">07 · notifications</p>
+  <h2>Cards from agents, and quiet when you want it</h2>
+  <p class="lede">An agent can put a sticky card in front of you. It stays until you dismiss it or open the agent's tab.</p>
+  <div class="two">
+    <div style="padding-top:.8rem" role="img" aria-label="Agent cards by kind">
+      <div class="ncard k-q"><span class="team">◆ api rewrite · planner</span><div class="top"><span><b>?</b>w3:p1 · planner</span><span>1m <span class="x">×</span></span></div><div class="ttl">which schema version?</div><div class="bd">need a decision</div></div>
+      <div class="ncard k-done"><div class="top"><span><b>✓</b>w1:p1 · lead</span><span>now <span class="x">×</span></span></div><div class="ttl">lead done</div></div>
+      <div class="ncard k-warn"><div class="top"><span><b>!</b>w1:p3 · docs</span><span>1m <span class="x">×</span></span></div><div class="ttl">docs build is flaky</div></div>
+      <div class="ncard k-info"><span class="team">◆ api rewrite · builder</span><div class="top"><span><b>●</b>w3:p2 · builder</span><span>now <span class="x">×</span></span></div><div class="ttl">deploy finished staging</div></div>
+      <p class="m o1" style="text-align:right;max-width:44ch;margin:0">+1 more from agents</p>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr">
+      <div class="card"><h3><span class="g">▣</span>Agent cards (<code>agents_notify</code>)</h3><p>Kinds: info, question, done, warning. Accent from your theme: done green, info blue, question and warning red. The team and role sit in the top border. A question rings, done plays the done sound.</p></div>
+      <div class="card"><h3><span class="g">✍</span>You decide when</h3><p>Agents follow a <code>## Notify</code> section in the session's notes: when, and about what, to ping you (<code>/plus:notify</code>).</p></div>
+      <div class="card"><h3><span class="g">∅</span>Per-tab mute</h3><p>No toasts, sounds, bells or reminders from that tab. Its agent's own cards still show. Saved with the session.</p></div>
+      <div class="card"><h3><span class="g">★</span>Reminders and important tabs</h3><p><b>Important</b>: reminds you while the agent waits on you. <b>Remind</b>: 5m, 10m, 30m, 1h, 6h or daily, whatever the agent does. Sticky cards optional.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ MORE ============ -->
+<section id="more">
+  <p class="eyebrow">08 · more</p>
+  <h2>Smaller things that add up</h2>
+  <div class="grid">
+    <div class="card"><h3><span class="g">◫</span>Agent wrap &amp; Settings → Agents</h3><p><code>herdr agent wrap claude|codex</code> adds the herdr_agents tools and herdr+ instructions. Off by default; Settings → Agents turns it on and shows the exact <code>.zshrc</code> line before it fixes anything.</p></div>
+    <div class="card"><h3><span class="g">⏎</span>Launch gate</h3><p>herdr waits until the new tab's shell is ready before typing a launch, and runs long launch lines from a one-shot script, so nothing gets cut off.</p></div>
+    <div class="card"><h3><span class="g">◉</span>Better detection</h3><p>Codex voice mode shows on the tab. A Claude whose turn ended while background agents run reads idle, not working.</p></div>
+    <div class="card"><h3><span class="g">%</span>Context usage</h3><p>Read from the tail of the agent's own session file after state changes, never per frame. Also in <code>agent.list</code> as <code>context</code>.</p></div>
+    <div class="card"><h3><span class="g">⎘</span>Copy session ID</h3><p>Tab and pane menus copy the Claude session uuid or Codex thread id.</p></div>
+    <div class="card"><h3><span class="g">⇆</span><kbd>cmd</kbd>+<kbd>[</kbd> / <kbd>cmd</kbd>+<kbd>]</kbd> tab history</h3><p>Back and forward through the tabs you focused, like a browser. Closed tabs are skipped.</p></div>
+    <div class="card"><h3><span class="g">⤧</span>Drag &amp; drop and resize fixes</h3><p>Drops land where the indicator shows. A window drag sends one size every 300 ms instead of ten a second, and the sidebar no longer flashes during it.</p></div>
+    <div class="card"><h3><span class="g">◎</span>Built-in browser</h3><p>herdr runs its own Chromium for agents (<code>herdr-browser</code> MCP): tabs grouped per agent, a glow and cursor while an agent acts, password fields protected, never pulls the window forward.</p></div>
+    <div class="card"><h3><span class="g">◌</span>Suspend, activate, restart</h3><p>Park an agent and bring it back in the same pane with its session. Transcripts are backed up so <code>--resume</code> keeps working.</p></div>
+    <div class="card"><h3><span class="g">↺</span>Recently closed sessions</h3><p>Closed agent tabs can be reopened with label, colour, group and reminders (<code>herdr tab reopen</code>, Settings → closed).</p></div>
+    <div class="card"><h3><span class="g">■</span>Tab colours &amp; groups</h3><p>Colour tags, foldable groups, drag tabs and groups, move to group by name.</p></div>
+    <div class="card"><h3><span class="g">❧</span>AI news desk</h3><p>A pinned News tab that runs a news edition at fixed times and marks what is new since you last read.</p></div>
+  </div>
+</section>
+
+<!-- ============ AUTO HANDOFF ============ -->
+<section id="handoff">
+  <p class="eyebrow">09 · auto handoff &amp; compact</p>
+  <h2>Auto handoff &amp; compact <span class="tag wip">in progress</span></h2>
+  <p class="lede">Still being built. When an agent's context fills up, herdr takes care of the handoff and brings the agent back without losing the thread.</p>
+  <div class="flow" aria-label="Planned handoff flow">
+    <span>trigger at 80% or manually</span><i>→</i><span>transcript snapshot</span><i>→</i><span>handoff</span><i>→</i><span>compact</span><i>→</i><span>resume</span>
+  </div>
+  <p class="dim" style="font-size:.85rem;margin-top:.8rem">Plan only; details may change.</p>
+</section>
+
+<!-- ============ ENGINEERING ============ -->
+<section id="eng">
+  <p class="eyebrow">10 · engineering notes</p>
+  <h2>How the fork stays healthy</h2>
+  <div class="grid">
+    <div class="card"><h3><span class="g">⇄</span>Protocol-compatible</h3><p>New features ride new API methods and optional pushes. Protocol 25 and endpoint generation 1 hold, so an install is a live handoff: no restart, sessions keep running.</p></div>
+    <div class="card"><h3><span class="g">§</span>FORK.md merge contract</h3><p>Owned files, fields, enum variants, methods, merge rules and a watch-list. The <code>fork-sync</code> tool reads it and refuses a sync that would collide.</p></div>
+    <div class="card"><h3><span class="g">✓</span>Audited</h3><p>Big features go through tri-audits and a cross-model check, then live smoke tests on a throwaway dev server.</p></div>
+    <div class="card"><h3><span class="g">↑</span>Synced with upstream</h3><p>On upstream herdr 0.9.3 (master <code>2563803d</code>).</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer>built on herdr (upstream: <a href="https://github.com/herdrdev/herdr">herdrdev/herdr</a>) · fork branch <code>fork</code></footer>
+
+<script>
+(function(){
+  var links=[].slice.call(document.querySelectorAll('nav a.l'));
+  var map={}; links.forEach(function(a){map[a.getAttribute('href').slice(1)]=a;});
+  var obs=new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if(e.isIntersecting){links.forEach(function(a){a.classList.remove('on');});
+        var a=map[e.target.id]; if(a){a.classList.add('on');}}
+    });
+  },{rootMargin:'-45% 0px -50% 0px'});
+  document.querySelectorAll('main section[id]').forEach(function(s){obs.observe(s);});
+})();
+</script>
+</body>
+</html>

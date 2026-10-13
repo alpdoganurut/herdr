@@ -10,6 +10,7 @@ Section 2 also covers E0027 (an exhaustive struct pattern missing a fork field):
 ## 1. Owned files (added by the fork; upstream R/D/T on any = deny)
 .claude/skills/fork-sync/SKILL.md
 FORK.md
+docs/fork/herdr-plus.html
 scripts/fork_sync.sh
 scripts/fork_sync_lib.py
 scripts/test_browser_companion.mjs
@@ -1090,6 +1091,7 @@ src/app/api.rs  additive: message delivery: the Method::AgentsInbox dispatch dir
 src/detect/manifest.rs  additive: message delivery: pub(crate) above_prompt_box_text (the above_prompt_box region for the stuck queue check) directly before above_prompt_box
 src/client/shell/render.rs  mid-logic: sidebar gap: render_shell's sidebar branch moved verbatim into render_sidebar_column (directly before render_shell; returns on a zero-width area), which render_shell and compose_unavailable both call; an upstream edit to that branch goes into render_sidebar_column
 src/client/shell/composition.rs  mid-logic: sidebar gap: ensure_tabs_sidebar_model (directly before compose_unavailable) holds the ModelInputs literal; compose takes news_row / coordinator_row and the ensure right after the projection_revision check (rebinding snapshot and surface), and pending_workspace_highlight after browser_marked_tabs; compose_unavailable's healthy-Local branch (local_healthy: snapshot, one endpoint, Online; no collapse or width condition) draws the mobile header and render_sidebar_column over layout.sidebar with sidebar_collapsed, the ensured sidebar_model and sidebar_hover; the endpoint-sidebar fallback keeps sidebar_collapsed false
+.gitignore  additive: showcase: `# Fork: the herdr+ showcase page.` with `!/docs/fork/` and `!/docs/fork/**` directly after `!/docs/versions/**`
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
 src/client/shell/notifications.rs  mid-logic: render_visible_notification and render_mobile_notification_banner swap the drawn `●` for notification_glyph (reminder marker, `✓` finished, `×` needs attention) via put_notification_glyph after the upstream render; render_notification_card and render_mobile_notice_banner are unchanged; Finished uses palette.green (was blue)
@@ -2157,7 +2159,9 @@ server::headless::tests::agent_notices_smoke::fork_smoke_agent_notice_carries_th
 server::headless::tests::fork_smoke::fork_smoke_agent_context_push_reaches_the_client_shell
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
+A user-facing feature or fix that changes what herdr+ offers also updates the showcase page `docs/fork/herdr-plus.html` (self-contained, no network resources, no personal data; mockups follow the current code), in the same change.
 ### Added
+- `docs/fork/herdr-plus.html`: a self-contained showcase page of everything herdr+ adds (coordinator, agents model and tools, teams, messaging, sidebar, notes pane, notifications, more), kept up to date with each user-facing change.
 - Tabs sidebar: a folded Active, Pinned or Scheduled header keeps its entry count, before its status marks (`▸ Active  3 ● ●`).
 - Mute a tab's notifications: the tab menu's new "Mute notifications" / "Unmute notifications" item (after Pin / Unpin), or `tab.set_muted` over the API. A muted tab raises none of herdr's own automatic notifications: no finished or needs-attention toast, no done / request sound, no system or terminal notification, no terminal bell, and no important or scheduled reminder alert (the reminder clock does not run while muted). Notices its agent sends with `agents_notify` still show and ring, and its status, the Active block and the sidebar status are unchanged. The mute is server-side, saved with the session, kept across a whole-tab move, a live handoff and close / reopen, and pushed to clients as `endpoint.tab-mutes.v1`. In the `tabs` sidebar a muted tab shows a dim bell-off mark (Nerd Font U+F009B; `ui.tab_agent_glyphs.muted` replaces it) in its row's left gutter and a `notifications off` chip in the detail strip.
 - Tabs sidebar: a tab whose agent (Claude Code or Codex) has used 75% or more of its context window shows `NN%` on its row, just left of the marks (yellow, red from 90%); the detail strip shows `ctx NN% · 164k/200k` at any level. Herdr reads the usage from the tail of the agent's own session file after state changes (at most every 30 s while it works), never per frame. Claude Code transcripts do not record the window: it is 1M for `[1m]` models or once the use passes 200k, else 200k; `[agents] context_window = { claude = 1000000 }` sets it. `agent.list` / `agent.get` carry it as `context`. `[ui] sidebar_context_usage = false` hides it.
