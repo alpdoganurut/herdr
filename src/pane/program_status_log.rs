@@ -129,6 +129,7 @@ pub(super) struct DisagreementLine {
     pub open_emitted: bool,
     pub record_revisions: u32,
     pub rejects_during_episode: u32,
+    /// The most child records seen during the episode.
     pub osc_children: u8,
     /// The root record's age when the episode started; null when the record
     /// changed during the episode.
@@ -297,7 +298,7 @@ impl DisagreementTracker {
             episode.revisions_seen = episode.revisions_seen.saturating_add(1);
         }
         episode.record_state = record_state;
-        episode.children = root.children;
+        episode.children = episode.children.max(root.children);
         let age = input.now.saturating_duration_since(episode.since);
         if age >= DEBOUNCE && episode.captured.is_none() {
             return DisagreementAction::Capture;
