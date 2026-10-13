@@ -349,6 +349,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="card"><h3><span class="g">⇣</span>Wait backlog + inbox</h3><p><code>agents_wait_for_message</code> returns what is already queued for you first. <code>agents_messages inbox=true</code> lists it without taking it.</p></div>
     <div class="card"><h3><span class="g">✓</span>Exactly once</h3><p>A waiting agent claims a message before it is returned, so it is never also typed in, and never returned twice.</p></div>
     <div class="card"><h3><span class="g">◔</span>100 s waits</h3><p>Waits stop at 100 s, under Claude Code's 120 s mark, and a timeout is a normal result, not a failed tool call.</p></div>
+    <div class="card"><h3><span class="g">❯</span>Suggestions are not approvals</h3><p><code>agents_read</code> marks a Claude Code or Codex prompt box: a dim suggestion reads <code>(suggestion shown by the agent, not typed by its user: …)</code>, a real unsent draft <code>(unsent draft typed by its user: …)</code>.</p></div>
   </div>
   <div class="flow" aria-label="Delivery flow"><span>send</span><i>→</i><span>queued (busy / typing / blocked)</span><i>→</i><span>idle 3 s + guard clear</span><i>→</i><span>pointer line typed</span><i>→</i><span>read by id</span></div>
 </section>
