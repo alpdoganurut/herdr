@@ -49,6 +49,8 @@ fn server_with_claude(
     }
     terminal.set_agent_name(AGENT_NAME.into());
     let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+    // An idle agent's free input box (the typing guard fails closed).
+    runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
     server.app.terminal_runtimes.insert(terminal_id, runtime);
     (server, rx)
 }

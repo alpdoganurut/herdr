@@ -3648,6 +3648,16 @@ impl PaneRuntime {
         self.terminal.program_status_snapshot()
     }
 
+    /// Fork (OSC 7501): the program's own status report says it waits on its
+    /// user (a question, a permission, a login). Lock-free (the packed root
+    /// mirror); `false` while `[agents] program_status` is off, so a record
+    /// kept from before the switch cannot hold anything.
+    pub(crate) fn program_status_blocked(&self) -> bool {
+        program_status::enabled()
+            && program_status::unpack_root(self.terminal.program_status_root_packed()).state
+                == Some(program_status::ProgramState::Blocked)
+    }
+
     pub(crate) fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         let result = self.terminal.recent_text_snapshot(lines);
         self.compression.wake();

@@ -492,7 +492,9 @@ impl App {
                     return false;
                 };
                 run.free_since = None;
-                if code != "user_typing" {
+                // Its user typing or a dialog over its input box holds the
+                // write; neither counts as a failure.
+                if code != "user_typing" && code != "input_box_absent" {
                     run.write_failures += 1;
                     tracing::info!(code = %code, phase = run.phase.name(), "agent handoff: a write was refused");
                     if run.write_failures >= MAX_WRITE_FAILURES {

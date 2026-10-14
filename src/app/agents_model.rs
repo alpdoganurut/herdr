@@ -271,7 +271,9 @@ impl App {
         let agent = self
             .model_terminal(ws_idx, pane_id)
             .and_then(crate::terminal::TerminalState::effective_known_agent);
-        crate::app::typing_guard::runtime_typing_block(agent, runtime, Instant::now()).is_some()
+        // A missing input box (a dialog) is not its user typing.
+        crate::app::typing_guard::runtime_typing_block(agent, runtime, Instant::now())
+            .is_some_and(crate::app::typing_guard::TypingBlock::is_user_typing)
     }
 
     // ----- lookups -----------------------------------------------------------
@@ -3537,6 +3539,7 @@ pub(crate) mod tests {
         assert_eq!(code(&result), "target_busy", "{result}");
         // Typing in a target refuses the close (the typing guard).
         let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         runtime.note_user_input(Instant::now());
         app.state.insert_test_runtime(fixer, runtime);
         let result = close(&mut app, &fixer_tab);
@@ -3607,6 +3610,7 @@ pub(crate) mod tests {
         terminal.set_agent_name(name.into());
         let terminal_id = terminal.id.clone();
         let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         app.terminal_runtimes.insert(terminal_id, runtime);
         rx
     }
@@ -3731,6 +3735,7 @@ pub(crate) mod tests {
         // (A fresh runtime: the user has been quiet since.)
         let id = terminal_mut(&mut app, fixer).id.clone();
         let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         app.terminal_runtimes.insert(id, runtime);
         let result = lifecycle(&mut app, AgentLifecycle::Suspend, &lead, &fixer_tab);
         assert_eq!(result["result"]["type"], "agent_suspended", "{result}");
@@ -3887,6 +3892,7 @@ pub(crate) mod tests {
         // nothing typed in.
         let fixer = pane(&app, 1, 1);
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         runtime.note_user_input(Instant::now());
         app.state.insert_test_runtime(fixer, runtime);
         let result = call(
@@ -3916,6 +3922,7 @@ pub(crate) mod tests {
         // The user is quiet again: typed in once settled, and the turn it
         // starts is the sender's message, not the user's.
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         app.state.insert_test_runtime(fixer, runtime);
         app.coordinator.assume_shell_ready = true;
         let t0 = Instant::now();
@@ -3943,6 +3950,7 @@ pub(crate) mod tests {
         let fixer = pane(&app, 1, 1);
         let fixer_public = public(&app, 1, 1);
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         app.state.insert_test_runtime(fixer, runtime);
         terminal_mut(&mut app, fixer).set_detected_state(Some(Agent::Claude), AgentState::Working);
         let urgent = |app: &mut App, text: &str| {
@@ -4020,6 +4028,7 @@ pub(crate) mod tests {
         user_turn(&mut app, coordinator_pane);
         let fixer = pane(&app, 1, 1);
         let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         runtime.note_user_input(Instant::now());
         app.state.insert_test_runtime(fixer, runtime);
         let (from, to) = (public(&app, 0, 0), public(&app, 1, 1));
@@ -4071,6 +4080,7 @@ pub(crate) mod tests {
         set_role(&mut app, fixer, "fixer");
         // Its user types in the target: queued, so nothing needs a PTY.
         let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         runtime.note_user_input(Instant::now());
         app.state.insert_test_runtime(fixer, runtime);
         let result = send(&mut app, &lead, "role:FIXER");
@@ -4081,6 +4091,7 @@ pub(crate) mod tests {
         assert!(!queued.envelope.contains("acting for your user"));
         // The fixer reaches the lead by its role slug; never itself.
         let (runtime, _lead_rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         runtime.note_user_input(Instant::now());
         app.state.insert_test_runtime(lead_pane, runtime);
         let result = send(&mut app, &fixer_public, "role:team-lead");

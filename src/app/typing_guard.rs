@@ -22,11 +22,26 @@
 //! The same classification ([`prompt_box`]) marks the input box in an
 //! agents_read ([`annotate_prompt_box`]): plain text loses the faint style,
 //! so a suggestion would read like something the user typed.
+//!
+//! Fail closed for Claude Code and Codex: automatic typing goes in only
+//! when the input box is on the screen, its first visible cell is the
+//! prompt marker and nothing but faint text follows it. A dialog, a
+//! permission prompt, a plan approval or a menu that replaces or hides the
+//! box ([`TypingBlock::InputBoxAbsent`]) holds it like a draft would: the
+//! pointer line's characters and its Enter would otherwise answer the
+//! dialog (Claude Code 2.1.299 captures in `typing_guard/`).
 
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use crate::detect::Agent;
+
+/// Tests: a screen whose Claude Code box (between the last two rules) and
+/// Codex composer (the last `›` line) are both free. Without an input box
+/// the guard holds automatic typing (fails closed), so a test runtime that
+/// stands in for an idle agent draws this.
+#[cfg(test)]
+pub(crate) const TEST_FREE_INPUT_BOX: &[u8] = "\r\n─────\r\n❯ \r\n─────\r\n› ".as_bytes();
 
 /// How long after the user's last keystroke in a pane automatic typing waits.
 pub(crate) const USER_INPUT_QUIET: Duration = Duration::from_secs(10);
@@ -40,6 +55,10 @@ pub(crate) enum TypingBlock {
     UnsentDraft,
     /// The agent is in a voice session (live or muted, src/app/voice.rs).
     VoiceMode,
+    /// The agent's input box is not on its screen, or something other than
+    /// the bare prompt marker leads it: a dialog, a permission prompt or a
+    /// menu is shown (Claude Code and Codex only).
+    InputBoxAbsent,
 }
 
 impl TypingBlock {
@@ -48,12 +67,31 @@ impl TypingBlock {
             TypingBlock::RecentInput => "the user is typing in it",
             TypingBlock::UnsentDraft => "the user has an unsent draft in its input box",
             TypingBlock::VoiceMode => "it is in voice mode",
+            TypingBlock::InputBoxAbsent => "its input box is not on screen (a dialog or a menu?)",
         }
+    }
+
+    /// The `agent.prompt` error code a guarded prompt is refused with:
+    /// `input_box_absent` for a missing input box, else `user_typing`.
+    pub(crate) fn error_code(self) -> &'static str {
+        match self {
+            TypingBlock::InputBoxAbsent => "input_box_absent",
+            TypingBlock::RecentInput | TypingBlock::UnsentDraft | TypingBlock::VoiceMode => {
+                "user_typing"
+            }
+        }
+    }
+
+    /// Whether the block is the user's own typing (recent input, a draft,
+    /// voice), not a missing input box.
+    pub(crate) fn is_user_typing(self) -> bool {
+        !matches!(self, TypingBlock::InputBoxAbsent)
     }
 }
 
 /// The guard's decision. `bottom_ansi` is only read when the recent-input
-/// check passes and the agent's input box is recognised.
+/// check passes and the agent's input box is recognised. Fails closed for
+/// agents whose box it knows ([`composer`]).
 pub(crate) fn typing_block(
     agent: Agent,
     last_user_input: Option<Instant>,
@@ -66,7 +104,40 @@ pub(crate) fn typing_block(
     if !draft_detection_supported(agent) {
         return None;
     }
-    (unsent_draft(agent, &bottom_ansi()) == Some(true)).then_some(TypingBlock::UnsentDraft)
+    match composer(agent, &bottom_ansi()) {
+        Composer::Free => None,
+        Composer::Draft => Some(TypingBlock::UnsentDraft),
+        Composer::Absent => Some(TypingBlock::InputBoxAbsent),
+    }
+}
+
+/// What the screen offers automatic typing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Composer {
+    /// The input box is on the screen, led by its prompt marker, with no
+    /// text the user typed: typing may go in.
+    Free,
+    /// The input box, led by its marker, holds the user's unsent text.
+    Draft,
+    /// No input box led by its marker: a dialog, a menu or an unknown
+    /// screen. Never typed into.
+    Absent,
+}
+
+/// The fail-closed composer check behind [`typing_block`]: `Free` only when
+/// the agent's box is located, its first visible cell is the prompt marker
+/// and only faint text (a placeholder or suggestion) follows it.
+pub(crate) fn composer(agent: Agent, ansi: &str) -> Composer {
+    let lines: Vec<Vec<Cell>> = ansi.lines().map(parse_styled_line).collect();
+    let Some((body, marker)) = locate_box(agent, &lines) else {
+        return Composer::Absent;
+    };
+    let (prompt, marker_seen) = classify(&lines[body], marker);
+    match (prompt, marker_seen) {
+        (PromptBox::Empty | PromptBox::Suggestion(_), true) => Composer::Free,
+        (PromptBox::Draft { .. }, true) => Composer::Draft,
+        (_, false) => Composer::Absent,
+    }
 }
 
 /// The guard for a pane's terminal runtime: `agent` is its known agent
@@ -96,14 +167,16 @@ fn draft_detection_supported(agent: Agent) -> bool {
 
 /// Whether the agent's input box (read from the bottom of the screen with
 /// its SGR styles) holds non-placeholder text. `None` when the agent is not
-/// supported or its input box is not on the screen.
+/// supported or its input box is not on the screen. (Tests; the guard reads
+/// [`composer`].)
+#[cfg(test)]
 pub(crate) fn unsent_draft(agent: Agent, ansi: &str) -> Option<bool> {
     prompt_box(agent, ansi).map(|prompt| matches!(prompt, PromptBox::Draft { .. }))
 }
 
 /// What the agent's input box holds, read from the screen with its styles.
-/// The one classification behind the typing guard ([`unsent_draft`]) and
-/// the agents_read annotation ([`annotate_prompt_box`]).
+/// The one classification behind the typing guard ([`composer`]) and the
+/// agents_read annotation ([`annotate_prompt_box`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PromptBox {
     /// Only the prompt marker.
@@ -119,11 +192,17 @@ pub(crate) enum PromptBox {
 }
 
 /// The input box of `agent` in `ansi`; `None` when the agent is not
-/// supported or its input box is not on the screen.
+/// supported or its input box is not on the screen. A blank body without
+/// the prompt marker is not a box. (Tests; the guard reads [`composer`],
+/// the agents_read mark [`annotate_prompt_box`].)
+#[cfg(test)]
 pub(crate) fn prompt_box(agent: Agent, ansi: &str) -> Option<PromptBox> {
     let lines: Vec<Vec<Cell>> = ansi.lines().map(parse_styled_line).collect();
     let (body, marker) = locate_box(agent, &lines)?;
-    Some(classify(&lines[body], marker))
+    match classify(&lines[body], marker) {
+        (PromptBox::Empty, false) => None,
+        (prompt, _) => Some(prompt),
+    }
 }
 
 /// Whether [`prompt_box`] and [`annotate_prompt_box`] know the agent's
@@ -152,7 +231,7 @@ fn locate_box(agent: Agent, lines: &[Vec<Cell>]) -> Option<(Range<usize>, char)>
 pub(crate) fn annotate_prompt_box(agent: Agent, text: &str, ansi: &str) -> Option<String> {
     let styled: Vec<Vec<Cell>> = ansi.lines().map(parse_styled_line).collect();
     let (styled_body, marker) = locate_box(agent, &styled)?;
-    let note = match classify(&styled[styled_body.clone()], marker) {
+    let note = match classify(&styled[styled_body.clone()], marker).0 {
         PromptBox::Empty => return None,
         PromptBox::Suggestion(shown) => {
             format!("(suggestion shown by the agent, not typed by its user: {shown:?})")
@@ -233,17 +312,21 @@ fn codex_composer(lines: &[Vec<Cell>]) -> Option<Range<usize>> {
 
 /// A draft is any visible, non-faint character other than the leading
 /// prompt marker; faint text alone is the agent's suggestion. Lines are
-/// joined with a space.
-fn classify(body: &[Vec<Cell>], marker: char) -> PromptBox {
+/// joined with a space. The flag: the body's first visible cell is the
+/// prompt marker (a blank body, or one led by other text, is not a box the
+/// typing guard may type into).
+fn classify(body: &[Vec<Cell>], marker: char) -> (PromptBox, bool) {
+    let mut first_seen = false;
     let mut marker_seen = false;
     let mut has_text = false;
     let (mut typed, mut shown) = (Vec::new(), Vec::new());
     for line in body {
         let (mut typed_line, mut shown_line) = (String::new(), String::new());
         for cell in line {
-            if !marker_seen && !cell.ch.is_whitespace() {
-                marker_seen = true;
+            if !first_seen && !cell.ch.is_whitespace() {
+                first_seen = true;
                 if cell.ch == marker {
+                    marker_seen = true;
                     continue;
                 }
             }
@@ -266,7 +349,7 @@ fn classify(body: &[Vec<Cell>], marker: char) -> PromptBox {
             .join(" ")
     };
     let (typed, shown) = (join(typed), join(shown));
-    match (has_text, shown.is_empty()) {
+    let prompt = match (has_text, shown.is_empty()) {
         (true, true) => PromptBox::Draft {
             typed,
             suggestion: None,
@@ -277,7 +360,8 @@ fn classify(body: &[Vec<Cell>], marker: char) -> PromptBox {
         },
         (false, false) => PromptBox::Suggestion(shown),
         (false, true) => PromptBox::Empty,
-    }
+    };
+    (prompt, marker_seen)
 }
 
 /// Same shape as the detection manifests' rule check: a run of `─`, alone or
@@ -606,6 +690,145 @@ mod tests {
             None,
             "the window has passed"
         );
+    }
+
+    /// Claude Code 2.1.299's screens, captured (`typing_guard/`).
+    fn captured(name: &str) -> String {
+        const SCREENS: &str = include_str!("typing_guard/claude_2_1_299_screens.ansi");
+        let header = format!("### {name}\n");
+        let start = SCREENS
+            .find(&header)
+            .unwrap_or_else(|| panic!("no captured screen {name}"))
+            + header.len();
+        let end = SCREENS[start..]
+            .find("\n### ")
+            .map_or(SCREENS.len(), |end| start + end);
+        SCREENS[start..end].to_string()
+    }
+
+    #[test]
+    fn captured_claude_screens_type_only_into_a_free_input_box() {
+        for name in ["empty_box_auto_mode_statusline", "empty_box_manual_mode"] {
+            assert_eq!(
+                composer(Agent::Claude, &captured(name)),
+                Composer::Free,
+                "{name}"
+            );
+        }
+        // The `/` picker draws over the transcript; its box holds the `/`.
+        for name in ["draft", "slash_picker"] {
+            assert_eq!(
+                composer(Agent::Claude, &captured(name)),
+                Composer::Draft,
+                "{name}"
+            );
+        }
+        // AskUserQuestion (one question, three with a multiSelect, its
+        // Submit page, after a resize), a Bash permission prompt and the
+        // plan approval: no input box led by its marker. The Submit page,
+        // the permission prompt and the plan approval draw one rule only
+        // (the old guard found no box there and let typing through); the
+        // plan approval also has an older rule above it on the screen.
+        for name in [
+            "ask_user_question",
+            "ask_user_question_resized",
+            "ask_user_question_three",
+            "ask_user_question_multiselect",
+            "ask_user_question_submit",
+            "bash_permission",
+            "plan_exit",
+        ] {
+            assert_eq!(
+                composer(Agent::Claude, &captured(name)),
+                Composer::Absent,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dialog_holds_typing_like_a_draft_with_its_own_reason() {
+        let now = Instant::now();
+        let block = typing_block(Agent::Claude, None, now, || captured("bash_permission"));
+        assert_eq!(block, Some(TypingBlock::InputBoxAbsent));
+        let block = block.expect("held");
+        assert_eq!(block.error_code(), "input_box_absent");
+        assert!(!block.is_user_typing());
+        assert_eq!(
+            block.reason(),
+            "its input box is not on screen (a dialog or a menu?)"
+        );
+        assert_eq!(
+            typing_block(Agent::Claude, None, now, || captured("draft"))
+                .map(TypingBlock::error_code),
+            Some("user_typing")
+        );
+        assert_eq!(
+            typing_block(Agent::Claude, None, now, || {
+                captured("empty_box_auto_mode_statusline")
+            }),
+            None
+        );
+        // No box at all (an unknown screen) fails closed too.
+        assert_eq!(
+            typing_block(Agent::Claude, None, now, || "plain output".to_string()),
+            Some(TypingBlock::InputBoxAbsent)
+        );
+        assert_eq!(
+            typing_block(Agent::Codex, None, now, String::new),
+            Some(TypingBlock::InputBoxAbsent)
+        );
+        // Other agents keep the recent-input check alone.
+        assert_eq!(
+            typing_block(Agent::Pi, None, now, || panic!("not read")),
+            None
+        );
+    }
+
+    #[test]
+    fn the_test_input_box_is_free_for_claude_and_codex() {
+        let screen = String::from_utf8_lossy(TEST_FREE_INPUT_BOX);
+        assert_eq!(composer(Agent::Claude, &screen), Composer::Free);
+        assert_eq!(composer(Agent::Codex, &screen), Composer::Free);
+    }
+
+    #[test]
+    fn a_blank_body_without_the_marker_is_not_a_box() {
+        // Two rules with nothing but blanks between them (a dialog's frame,
+        // the last two rules of the screen) used to read as an empty box.
+        let blank = claude("   \r");
+        assert_eq!(prompt_box(Agent::Claude, &blank), None);
+        assert_eq!(composer(Agent::Claude, &blank), Composer::Absent);
+        // Faint text or other text first, without the marker: not a box
+        // typing may go into.
+        assert_eq!(
+            composer(Agent::Claude, &claude("\x1b[2m  Esc to cancel\x1b[0m\r")),
+            Composer::Absent
+        );
+        assert_eq!(
+            composer(Agent::Claude, &claude(" ☐ Drink\r\n❯ 1. Tea\r")),
+            Composer::Absent
+        );
+        assert_eq!(composer(Agent::Claude, &claude("❯ \r")), Composer::Free);
+        assert_eq!(
+            composer(
+                Agent::Codex,
+                &codex("\x1b[2mAsk Codex to do anything\x1b[0m")
+            ),
+            Composer::Free
+        );
+    }
+
+    #[test]
+    fn a_dialog_under_an_older_box_reads_absent_not_empty() {
+        // The last two rules: the old box's lower rule (scrolled up) and
+        // the dialog's top rule; the transcript between them is not a box.
+        let screen = format!(
+            "{RULE}\n❯ earlier prompt\r\n{RULE}\n\r\n⏺ answer text\r\n{RULE}\n Do you want to proceed?\r\n ❯ 1. Yes\r\n   2. No\r"
+        );
+        assert_eq!(composer(Agent::Claude, &screen), Composer::Absent);
+        let screen = format!("{RULE}\n\r\n\r\n{RULE}\n Do you want to proceed?\r\n ❯ 1. Yes\r");
+        assert_eq!(composer(Agent::Claude, &screen), Composer::Absent);
     }
 
     #[test]

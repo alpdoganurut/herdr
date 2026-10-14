@@ -2326,6 +2326,9 @@ impl App {
                 // there: hold the wake-up (retried after the held backoff).
                 let outcome = if code == "user_typing" {
                     WakeOutcome::Held("you are typing in the coordinator".into())
+                } else if code == "input_box_absent" {
+                    // Fork: a dialog or a menu covers its input box.
+                    WakeOutcome::Held("the coordinator's input box is not on screen".into())
                 } else {
                     WakeOutcome::Failed(code)
                 };
@@ -2669,6 +2672,9 @@ mod tests {
             .expect("terminal")
             .clone();
         let (runtime, input) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
+        // An idle agent's free input box (the typing guard fails closed).
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         app.terminal_runtimes.insert(id, runtime);
         // Keep the pane's input open for the rest of the test (typed launch
         // commands and prompts must not fail on a closed channel).
@@ -3901,6 +3907,7 @@ mod tests {
         let own = app.existing_coordinator_pane().unwrap();
         let pane = app.public_pane_id(own.ws_idx, own.pane_id).unwrap();
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         runtime.note_user_input(Instant::now());
         app.state.insert_test_runtime(own.pane_id, runtime);
         prompt_effect(&mut app, &pane);
@@ -3915,6 +3922,7 @@ mod tests {
         // Once the user is quiet the same wake-up is typed in.
         app.coordinator.sent.clear();
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         app.state.insert_test_runtime(own.pane_id, runtime);
         prompt_effect(&mut app, &pane);
         assert_eq!(wake_outcomes(&app), vec![WakeOutcome::Delivered]);
@@ -3932,6 +3940,7 @@ mod tests {
         let own = app.existing_coordinator_pane().unwrap();
         let pane = app.public_pane_id(own.ws_idx, own.pane_id).unwrap();
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         app.state.insert_test_runtime(own.pane_id, runtime);
         for voice in [
             crate::detect::AgentVoice::Live,
@@ -3984,6 +3993,7 @@ mod tests {
         assert_eq!(terminal.state, crate::detect::AgentState::Idle);
         assert_eq!(app.wake_coordinator(None).unwrap(), None, "deliverable");
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         app.state.insert_test_runtime(own.pane_id, runtime);
         app.coordinator.sent.clear();
         prompt_effect(&mut app, &pane);

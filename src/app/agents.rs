@@ -444,11 +444,24 @@ impl App {
             subagents: terminal.active_subagent_count(),
             voice: crate::api::schema::AgentVoiceMode::from_detected(terminal.agent_voice()),
             context: super::agent_context::agent_context_info(terminal.agent_context),
+            blocked_since: self.agent_blocked_since(terminal),
             completion_seq: terminal.last_agent_completion_seq,
             cwd: pane.cwd,
             foreground_cwd: pane.foreground_cwd,
             revision: pane.revision,
         })
+    }
+
+    /// Fork: `AgentInfo.blocked_since`: the message queue's user-blocked
+    /// wait for the terminal (src/app/message_queue.rs), else the time its
+    /// screen state turned blocked.
+    fn agent_blocked_since(&self, terminal: &crate::terminal::TerminalState) -> Option<u64> {
+        if let Some(blocked) = self.message_queue.user_blocked.get(terminal.id.as_str()) {
+            return Some(blocked.since_unix);
+        }
+        (terminal.state == crate::detect::AgentState::Blocked)
+            .then_some(terminal.agent_state_since_unix_ms?)
+            .map(|ms| ms / 1000)
     }
 
     fn agent_name_conflicts(

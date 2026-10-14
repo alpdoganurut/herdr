@@ -11889,6 +11889,15 @@
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
             },
+            "blocked_since": {
+              "description": "Fork: since when (Unix seconds) the agent has been waiting on its\nuser: its screen reads blocked, or herdr holds agent messages for it\nbecause its own status report reads blocked or its input box is not\non screen. Absent otherwise.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "completion_seq": {
               "description": "The current idle transition completed work, independently of who has viewed it.",
               "format": "uint64",

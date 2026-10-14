@@ -1128,3 +1128,298 @@ async fn an_interrupt_is_forgotten_once_it_is_stale_or_its_message_is_gone() {
     assert!(app.message_queue.is_empty());
     assert!(!app.message_queue.interrupted_at.contains_key(&terminal_id));
 }
+
+// ----- lost messages: fail-closed input box, OSC 7501 veto, liveness -----
+
+/// A Claude dialog (a permission prompt): one rule, no input box.
+const CLAUDE_DIALOG: &[u8] =
+    "\r\n─────\r\n Do you want to proceed?\r\n ❯ 1. Yes\r\n   2. No\r\n\r\n Esc to cancel"
+        .as_bytes();
+
+/// A fresh runtime for `rev` whose screen shows `bytes`.
+fn runtime_showing(app: &mut App, bytes: &[u8]) -> tokio::sync::mpsc::Receiver<Bytes> {
+    let (runtime, rx) =
+        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(40, 8, 0, b"", 4);
+    runtime.test_process_pty_bytes(bytes);
+    let pane_id = pane(app);
+    app.state.insert_test_runtime(pane_id, runtime);
+    rx
+}
+
+/// Feed `rev`'s runtime (an OSC 7501 report, a redraw).
+fn feed(app: &App, bytes: &[u8]) {
+    app.lookup_runtime_sender(0, pane(app))
+        .expect("runtime")
+        .test_process_pty_bytes(bytes);
+}
+
+fn terminal_id(app: &App) -> String {
+    app.state.workspaces[0].tabs[0].panes[&pane(app)]
+        .attached_terminal_id
+        .to_string()
+}
+
+const INPUT_BOX_ABSENT: &str = "its input box is not on screen (a dialog or a menu?)";
+
+#[tokio::test]
+async fn a_target_without_its_input_box_on_screen_gets_nothing_until_the_box_is_back() {
+    let mut app = app();
+    rev(&mut app, AgentState::Idle);
+    // The screen detection missed the dialog: the target reads idle.
+    let mut rx = runtime_showing(&mut app, CLAUDE_DIALOG);
+    let reply = send(&mut app, "ma1", "hi there");
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    assert_eq!(reply["result"]["reason"], INPUT_BOX_ABSENT, "{reply}");
+    assert!(typed(&mut rx).is_empty(), "nothing reaches the dialog");
+
+    let t0 = Instant::now();
+    for step in 0..6 {
+        app.message_queue.mark_due();
+        app.message_queue_pass(t0 + SETTLE * step, now_unix());
+    }
+    assert!(
+        typed(&mut rx).is_empty(),
+        "no byte, no Enter into the dialog"
+    );
+    assert_eq!(app.message_queue.entries.len(), 1);
+    let blocked = &app.message_queue.user_blocked[&terminal_id(&app)];
+    assert_eq!(blocked.reason, INPUT_BOX_ABSENT);
+    let info = app.agent_info(0, pane(&app)).expect("agent info");
+    assert_eq!(info.blocked_since, Some(blocked.since_unix));
+    // The sender's agents.queued reads the same reason, not idle.
+    let caller = app.public_pane_id(0, pane(&app)).expect("pane");
+    app.message_queue.entries[0].message.from_pane = Some(caller.clone());
+    let queued = app.handle_agents_queued(
+        "q".into(),
+        crate::api::schema::agents_model::AgentsQueuedParams {
+            caller_pane: caller,
+        },
+    );
+    assert!(queued.contains(INPUT_BOX_ABSENT), "{queued}");
+
+    // The dialog is gone, the box is back: typed in once, after SETTLE.
+    let mut rx = fresh_runtime(&mut app);
+    let mut delivered_at = None;
+    for step in 6..10 {
+        if app.message_queue_pass(t0 + SETTLE * step, now_unix()) {
+            delivered_at = Some(step);
+            break;
+        }
+    }
+    assert!(delivered_at.is_some(), "delivered once the box is back");
+    assert!(typed(&mut rx).contains("hi there"));
+    assert!(app.message_queue.is_empty());
+    assert!(app.message_queue.user_blocked.is_empty());
+    let delivered = outcomes(&app)
+        .into_iter()
+        .filter(|(id, outcome, _)| id == "ma1" && outcome == "delivered")
+        .count();
+    assert_eq!(delivered, 1);
+}
+
+#[tokio::test]
+async fn an_agents_own_blocked_report_holds_messages_while_its_screen_reads_idle() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    feed(&app, b"\x1b]7501;state=blocked:kind=question\x07");
+    let reply = send(&mut app, "ma1", "hello");
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    assert_eq!(
+        reply["result"]["reason"], PROGRAM_STATUS_BLOCKED_REASON,
+        "{reply}"
+    );
+    let t0 = Instant::now();
+    for step in 0..4 {
+        app.message_queue.mark_due();
+        app.message_queue_pass(t0 + SETTLE * step, now_unix());
+    }
+    assert!(typed(&mut rx).is_empty());
+    // The report can clear without a screen event: the queue looks again.
+    assert!(app
+        .next_message_queue_deadline(t0 + SETTLE * 3)
+        .is_some_and(|at| at <= t0 + SETTLE * 3 + RETRY));
+
+    // A user's own unguarded prompt is refused too (a dialog takes Enter).
+    let reply = deferred_prompt(&mut app, "cli:agent:prompt", "my own", false);
+    assert_eq!(reply["error"]["code"], "agent_blocked", "{reply}");
+    assert!(typed(&mut rx).is_empty());
+
+    // Its hooks ended its turn while its screen reads working: still held.
+    terminal(&mut app).set_detected_state(Some(Agent::Claude), AgentState::Working);
+    hook_turn(&mut app, true, "go", 1);
+    hook_turn(&mut app, false, "", 2);
+    app.message_queue.mark_due();
+    app.message_queue_pass(t0 + SETTLE * 5, now_unix());
+    app.message_queue_pass(t0 + SETTLE * 7, now_unix());
+    assert!(typed(&mut rx).is_empty(), "a veto before every ready arm");
+
+    // An idle report never frees a screen that reads blocked.
+    set_state(&mut app, AgentState::Blocked);
+    feed(&app, b"\x1b]7501;state=idle\x07");
+    app.message_queue_pass(t0 + SETTLE * 8, now_unix());
+    app.message_queue_pass(t0 + SETTLE * 10, now_unix());
+    assert!(typed(&mut rx).is_empty(), "veto only, never a release");
+
+    // Both clear: it goes in.
+    set_state(&mut app, AgentState::Idle);
+    app.message_queue_pass(t0 + SETTLE * 11, now_unix());
+    assert!(app.message_queue_pass(t0 + SETTLE * 13, now_unix()));
+    assert!(typed(&mut rx).contains("hello"));
+}
+
+#[tokio::test]
+async fn a_reset_clears_a_blocked_report() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    feed(&app, b"\x1b]7501;state=blocked:kind=permission\x07");
+    assert_eq!(send(&mut app, "ma1", "hi")["result"]["outcome"], "queued");
+    let t0 = Instant::now();
+    app.message_queue_pass(t0, now_unix());
+    // RIS drops every record; the agent redraws its box.
+    feed(&app, b"\x1bc");
+    feed(&app, CLAUDE_EMPTY);
+    app.message_queue_pass(t0 + RETRY, now_unix());
+    assert!(app.message_queue_pass(t0 + RETRY + SETTLE, now_unix()));
+    assert!(typed(&mut rx).contains("hi"));
+}
+
+#[tokio::test]
+async fn with_program_status_off_a_blocked_report_holds_nothing() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    feed(&app, b"\x1b]7501;state=blocked:kind=question\x07");
+    let _off = crate::pane::program_status::SwitchOffForTest::new();
+    let reply = send(&mut app, "ma1", "hi");
+    assert_eq!(reply["result"]["outcome"], "sent", "{reply}");
+    assert!(typed(&mut rx).contains("hi"));
+}
+
+/// Queue `ms1` from `rev` to itself (the only pane, so its notices are
+/// queued for it too), sent `age_s` ago, while `rev` reads `state`.
+fn held_message(app: &mut App, state: AgentState, age_s: u64) {
+    rev(app, state);
+    let reply = send(app, "ms1", "status?");
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    let from = app.public_pane_id(0, pane(app));
+    let entry = &mut app.message_queue.entries[0];
+    entry.message.unix -= age_s;
+    entry.expires_unix -= age_s;
+    entry.message.from_pane = from;
+}
+
+fn notices_about(app: &App, needle: &str) -> usize {
+    app.message_queue
+        .written
+        .iter()
+        .filter(|line| !line.is_update() && line.text.contains(needle))
+        .count()
+}
+
+#[tokio::test]
+async fn a_message_held_by_its_targets_user_tells_its_sender_with_backoff_and_its_user_once() {
+    let mut app = app();
+    held_message(&mut app, AgentState::Blocked, 11 * 60);
+    let now = now_unix();
+    let t0 = Instant::now();
+    let waiting = "is waiting on its user";
+    let pass = |app: &mut App, at: Duration| {
+        app.message_queue.mark_due();
+        app.message_queue_pass(t0 + at, now);
+    };
+    pass(&mut app, Duration::ZERO);
+    pass(&mut app, STUCK_WAIT - Duration::from_secs(1));
+    assert_eq!(
+        notices_about(&app, waiting),
+        0,
+        "the wait is younger than STUCK_WAIT"
+    );
+    assert!(app.agent_notices.list().is_empty());
+    assert!(app
+        .next_message_queue_deadline(t0 + STUCK_WAIT - Duration::from_secs(1))
+        .is_some_and(|at| at <= t0 + STUCK_WAIT));
+
+    pass(&mut app, STUCK_WAIT);
+    assert_eq!(notices_about(&app, waiting), 1);
+    assert!(app.message_queue.entries[0].stuck_notified);
+    let cards = app.agent_notices.list();
+    assert_eq!(cards.len(), 1, "its user gets one card");
+    assert!(cards[0].title.contains("wait"), "{}", cards[0].title);
+
+    // Backoff: 1 h after the first, then every 4 h.
+    let first = STUCK_WAIT;
+    pass(&mut app, first + Duration::from_secs(30 * 60));
+    assert_eq!(notices_about(&app, waiting), 1);
+    pass(&mut app, first + Duration::from_secs(3600));
+    assert_eq!(notices_about(&app, waiting), 2);
+    let second = first + Duration::from_secs(3600);
+    pass(&mut app, second + Duration::from_secs(3 * 3600));
+    assert_eq!(notices_about(&app, waiting), 2);
+    pass(&mut app, second + Duration::from_secs(4 * 3600));
+    assert_eq!(notices_about(&app, waiting), 3);
+    assert_eq!(app.agent_notices.list().len(), 1, "one card per wait");
+}
+
+#[tokio::test]
+async fn a_message_held_by_its_targets_user_survives_two_hours_and_expires_at_24() {
+    let mut app = app();
+    rev(&mut app, AgentState::Blocked);
+    send(&mut app, "ms1", "status?");
+    let queued = app.message_queue.entries[0].message.unix;
+    let t0 = Instant::now();
+    // The queue looks at least once a minute while it waits; hourly here.
+    for hour in 1..24u64 {
+        app.message_queue.mark_due();
+        app.message_queue_pass(t0 + Duration::from_secs(hour * 3600), queued + hour * 3600);
+        assert_eq!(app.message_queue.entries.len(), 1, "kept at {hour} h");
+        assert!(app.message_queue.entries[0].expires_unix <= queued + MESSAGE_TTL_USER_BLOCKED_S);
+    }
+    app.message_queue.mark_due();
+    app.message_queue_pass(
+        t0 + Duration::from_secs(MESSAGE_TTL_USER_BLOCKED_S),
+        queued + MESSAGE_TTL_USER_BLOCKED_S,
+    );
+    assert!(app
+        .message_queue
+        .entries
+        .iter()
+        .all(|entry| entry.id() != "ms1"));
+    assert!(outcomes(&app).contains(&("ms1".into(), "expired".into(), true)));
+
+    // A target that only works keeps the 2 h rule.
+    let mut app = self::app();
+    rev(&mut app, AgentState::Working);
+    send(&mut app, "mw1", "status?");
+    let queued = app.message_queue.entries[0].message.unix;
+    app.message_queue.mark_due();
+    app.message_queue_pass(t0 + Duration::from_secs(3600), queued + 3600);
+    assert_eq!(
+        app.message_queue.entries[0].expires_unix,
+        queued + MESSAGE_TTL_S
+    );
+    app.message_queue_pass(
+        t0 + Duration::from_secs(MESSAGE_TTL_S),
+        queued + MESSAGE_TTL_S,
+    );
+    assert!(app.message_queue.is_empty());
+}
+
+#[tokio::test]
+async fn an_expired_message_tells_its_sender() {
+    let mut app = app();
+    held_message(&mut app, AgentState::Working, 0);
+    let expires = app.message_queue.entries[0].expires_unix;
+    assert!(app.message_queue_pass(Instant::now(), expires));
+    assert!(outcomes(&app).contains(&("ms1".into(), "expired".into(), true)));
+    assert_eq!(notices_about(&app, "expired after"), 1);
+    assert!(
+        app.message_queue
+            .written
+            .iter()
+            .any(|line| line.text.contains("ms1") && line.text.contains("never typed in")),
+        "the notice names the message"
+    );
+    // A herdr notice that expires itself tells nobody.
+    let notice_expires = app.message_queue.entries[0].expires_unix;
+    app.message_queue_pass(Instant::now(), notice_expires);
+    assert_eq!(notices_about(&app, "expired after"), 1);
+}

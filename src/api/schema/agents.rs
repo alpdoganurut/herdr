@@ -301,6 +301,12 @@ pub struct AgentInfo {
     /// file (Claude Code, Codex); absent while unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<AgentContextInfo>,
+    /// Fork: since when (Unix seconds) the agent has been waiting on its
+    /// user: its screen reads blocked, or herdr holds agent messages for it
+    /// because its own status report reads blocked or its input box is not
+    /// on screen. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_since: Option<u64>,
     /// The current idle transition completed work, independently of who has viewed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_seq: Option<u64>,

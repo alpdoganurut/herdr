@@ -27,6 +27,8 @@ fn crew_server() -> (
     let (runtime, input) = crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
         80, 24, 0, b"FIXER", 4,
     );
+    // An idle agent's free input box (the typing guard fails closed).
+    runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
     crew.insert_test_runtime(fixer, runtime);
     crew.switch_tab(1);
     server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("bucket"), crew];
@@ -344,6 +346,8 @@ async fn fork_smoke_a_stuck_queued_message_notifies_its_sender_once() {
         .insert(fixer_terminal, fixer_runtime);
     let (lead_runtime, mut lead_input) =
         crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+    // An idle agent's free input box (the typing guard fails closed).
+    lead_runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
     let lead_terminal = server.app.state.workspaces[1]
         .pane_state(panes[0])
         .unwrap()

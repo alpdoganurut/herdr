@@ -17,9 +17,17 @@
 //! with its own envelope and id. A target whose herdr_agents server reads
 //! messages by id gets one typed pointer line for them instead of the paste
 //! (src/app/message_pointer.rs). A message is never typed into a blocked
-//! target (a permission dialog) or a suspended one: it waits. It expires after
-//! [`MESSAGE_TTL_S`] and is dropped when its target pane or agent is gone for
-//! [`GONE_GRACE`] (long enough for a restart to detect the agent again).
+//! target (a permission dialog) or a suspended one: it waits. Blocked means
+//! the screen reads blocked, or the agent's own OSC 7501 status report says
+//! blocked (a veto only: an idle report never frees a blocked screen), or
+//! its input box is not on its screen (the typing guard fails closed,
+//! src/app/typing_guard.rs). It expires after [`MESSAGE_TTL_S`], or while
+//! its target waits on its user up to [`MESSAGE_TTL_USER_BLOCKED_S`] after it
+//! was sent; every expiry tells its sender. It is dropped when its target
+//! pane or agent is gone for [`GONE_GRACE`] (long enough for a restart to
+//! detect the agent again). A target that waits on its user for
+//! [`STUCK_WAIT`] with messages held tells their senders (again after
+//! [`USER_BLOCKED_NOTICE_BACKOFF`]) and its user (one agent card).
 //!
 //! The log (`messages.jsonl` in the coordinator directory) stays append-only:
 //! the queued message is logged in full with outcome `queued`, and later
@@ -66,6 +74,15 @@ use crate::coordinator::messages::{
 
 /// How long a queued message waits before it expires.
 pub(crate) const MESSAGE_TTL_S: u64 = 2 * 3600;
+/// While its target waits on its user (a dialog, a question, a permission),
+/// a queued message is kept alive up to this long after it was sent: each
+/// queue pass that sees the wait moves its expiry to [`MESSAGE_TTL_S`] from
+/// now, never past this cap.
+pub(crate) const MESSAGE_TTL_USER_BLOCKED_S: u64 = 24 * 3600;
+/// After the first notice about a target that waits on its user, the next
+/// notices go out this long after the previous one (the last value repeats).
+pub(crate) const USER_BLOCKED_NOTICE_BACKOFF: [Duration; 2] =
+    [Duration::from_secs(3600), Duration::from_secs(4 * 3600)];
 /// How long a target stays idle before queued messages are typed in.
 pub(crate) const SETTLE: Duration = Duration::from_secs(3);
 /// Retry interval while the user types in the target (or a delivery failed).
@@ -93,6 +110,19 @@ pub(crate) const INTERRUPT_AFTER_TYPING: Duration = Duration::from_secs(30);
 /// The wait reason while a target's hooks say its turn is live but its
 /// screen reads idle.
 const HOOK_LIVE_REASON: &str = "its turn is live by its hooks";
+/// The wait reason while a target's screen reads blocked.
+const SCREEN_BLOCKED_REASON: &str = "blocked on its user (a question or an approval)";
+/// The wait reason while a target's own status report (OSC 7501) reads
+/// blocked.
+const PROGRAM_STATUS_BLOCKED_REASON: &str = "blocked on its user (its own status report)";
+
+/// Whether a wait reason means the target waits on its user: its screen or
+/// its own status report reads blocked, or its input box is not on screen.
+fn is_user_blocked(reason: &str) -> bool {
+    reason == SCREEN_BLOCKED_REASON
+        || reason == PROGRAM_STATUS_BLOCKED_REASON
+        || reason == super::typing_guard::TypingBlock::InputBoxAbsent.reason()
+}
 // At most this many queued messages go into one paste (shared with
 // agents_wait_for_message all=true).
 use crate::api::schema::agent_messages::{MAX_COMBINED, MAX_COMBINED_CHARS};
@@ -163,6 +193,22 @@ struct QueueFile {
     delivered: Vec<DeliveredMessage>,
 }
 
+/// A target that waits on its user while messages are queued for it
+/// (runtime only).
+#[derive(Debug, Clone)]
+pub(crate) struct UserBlocked {
+    /// Since when the queue has seen the wait.
+    since: Instant,
+    /// The same moment as a Unix time (`AgentInfo.blocked_since`).
+    pub(crate) since_unix: u64,
+    /// The latest wait reason.
+    reason: String,
+    /// Notices sent to senders about this wait.
+    notices: usize,
+    /// Its user was shown the agent card about this wait.
+    carded: bool,
+}
+
 /// One target's screen samples for the stuck check.
 #[derive(Debug, Clone, Copy)]
 struct ScreenWatch {
@@ -202,6 +248,8 @@ pub(crate) struct MessageQueue {
     settle_screens: HashMap<String, u64>,
     /// When each target's last stuck notice went out.
     stuck_notice_at: HashMap<String, Instant>,
+    /// Targets whose last check was a wait on their user (runtime only).
+    pub(crate) user_blocked: HashMap<String, UserBlocked>,
     /// Targets an urgent message interrupted (Esc), and when.
     interrupted_at: HashMap<String, Instant>,
     /// `message_queue.json`; `None` = not persisted (tests, unpersisted sessions).
@@ -445,6 +493,16 @@ fn screen_hash(detection_text: &str) -> u64 {
     hasher.finish()
 }
 
+/// The target as a notice names it: its agent name, else its pane.
+fn notice_target_name(entry: &QueuedMessage) -> String {
+    entry
+        .message
+        .to_name
+        .clone()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| entry.message.to_pane.clone())
+}
+
 /// `12m`, `1h05m`; under a minute rounds up to `1m`.
 fn minutes(duration: Duration) -> String {
     let total = duration.as_secs().div_ceil(60).max(1);
@@ -472,6 +530,16 @@ fn envelope_id(text: &str) -> Option<String> {
     messages::is_id(&id).then_some(id)
 }
 
+/// The wait reason for a guarded prompt refused because its target waits on
+/// its user (`input_box_absent`, `agent_blocked`); `None` for other codes.
+fn user_blocked_reason(code: &str) -> Option<&'static str> {
+    match code {
+        "input_box_absent" => Some(super::typing_guard::TypingBlock::InputBoxAbsent.reason()),
+        "agent_blocked" => Some(PROGRAM_STATUS_BLOCKED_REASON),
+        _ => None,
+    }
+}
+
 fn error_code(response: &str) -> String {
     serde_json::from_str::<serde_json::Value>(response)
         .ok()
@@ -481,7 +549,10 @@ fn error_code(response: &str) -> String {
 
 /// Errors from a typing attempt that mean "not now" rather than "never".
 fn retryable(code: &str) -> bool {
-    matches!(code, "user_typing" | "agent_blocked" | "agent_not_ready")
+    matches!(
+        code,
+        "user_typing" | "input_box_absent" | "agent_blocked" | "agent_not_ready"
+    )
 }
 
 /// A target's deliverability, read once by the sender (opaque outside).
@@ -633,6 +704,15 @@ impl App {
         if terminal.effective_known_agent().is_none() {
             return Check::Missing;
         }
+        // Fork (OSC 7501): the agent's own status report says it waits on
+        // its user. A veto before every ready arm (an idle screen, a working
+        // screen its hooks ended, the hook hold); never a release.
+        if self
+            .lookup_runtime_sender(target.ws_idx, target.pane_id)
+            .is_some_and(crate::terminal::TerminalRuntime::program_status_blocked)
+        {
+            return Check::Wait(PROGRAM_STATUS_BLOCKED_REASON.into());
+        }
         let hook_ended = terminal.state == crate::detect::AgentState::Working
             && terminal.turn().hook_turn_ended().is_some();
         match terminal.state {
@@ -648,9 +728,7 @@ impl App {
             // the title spinner of background work is not a turn.
             crate::detect::AgentState::Working if hook_ended => {}
             crate::detect::AgentState::Working => return Check::Wait("working".into()),
-            crate::detect::AgentState::Blocked => {
-                return Check::Wait("blocked on its user (a question or an approval)".into())
-            }
+            crate::detect::AgentState::Blocked => return Check::Wait(SCREEN_BLOCKED_REASON.into()),
             crate::detect::AgentState::Unknown => return Check::Wait("status unknown".into()),
         }
         if terminal.managed_agent_launch_pending()
@@ -962,7 +1040,8 @@ impl App {
                         match code.as_str() {
                             "user_typing" => "its user is typing in it".to_string(),
                             "busy" => "a coordinator turn is live".to_string(),
-                            _ => "not ready".to_string(),
+                            code => user_blocked_reason(code)
+                                .map_or_else(|| "not ready".to_string(), str::to_string),
                         }
                     }
                 }
@@ -1028,12 +1107,24 @@ impl App {
                         "an urgent message goes in ahead of it".to_string()
                     }
                     _ if first.is_some() => "earlier messages are waiting for it".to_string(),
-                    Some(target) => match self.message_check(&target) {
-                        Check::Ready {
-                            hook_ended: true, ..
-                        } => "its turn just ended".to_string(),
-                        check => MessageCheck(check).status(),
-                    },
+                    Some(target) => {
+                        // Its last typing attempt found no input box.
+                        let blocked = self
+                            .message_queue
+                            .user_blocked
+                            .get(&target.terminal_id)
+                            .map(|blocked| blocked.reason.clone());
+                        match (self.message_check(&target), blocked) {
+                            (
+                                Check::Ready {
+                                    hook_ended: true, ..
+                                },
+                                _,
+                            ) => "its turn just ended".to_string(),
+                            (Check::Ready { .. }, Some(reason)) => reason,
+                            (check, _) => MessageCheck(check).status(),
+                        }
+                    }
                     None => "offline".to_string(),
                 };
                 crate::api::schema::agents_model::AgentsQueuedMessage {
@@ -1203,6 +1294,13 @@ impl App {
             crate::detect::AgentState::Blocked => return Some("blocked on its user"),
             _ => return Some("not working"),
         }
+        // Fork (OSC 7501): its own status report says it waits on its user.
+        if self
+            .lookup_runtime_sender(target.ws_idx, target.pane_id)
+            .is_some_and(crate::terminal::TerminalRuntime::program_status_blocked)
+        {
+            return Some("blocked on its user");
+        }
         if terminal.turn().hook_turn_ended().is_some() {
             return Some("its turn already ended");
         }
@@ -1243,9 +1341,12 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(target.ws_idx, target.pane_id) else {
             return Some("no runtime");
         };
-        if super::typing_guard::runtime_typing_block(Some(agent), runtime, Instant::now()).is_some()
-        {
-            return Some("its user is typing");
+        match super::typing_guard::runtime_typing_block(Some(agent), runtime, Instant::now()) {
+            Some(super::typing_guard::TypingBlock::InputBoxAbsent) => {
+                return Some("its input box is not on screen")
+            }
+            Some(_) => return Some("its user is typing"),
+            None => {}
         }
         // The status above is the detector's last report, which lags the
         // screen: read the screen once more, so an Esc never answers a
@@ -1513,16 +1614,24 @@ impl App {
         self.message_queue.retry_at = None;
         let mut changed = false;
 
-        let expired: Vec<String> = self
+        let expired: Vec<QueuedMessage> = self
             .message_queue
             .entries
             .iter()
             .filter(|entry| entry.expires_unix <= now_unix)
-            .map(|entry| entry.id().to_string())
+            .cloned()
             .collect();
         if !expired.is_empty() {
-            self.message_queue
-                .finish(&expired, OUTCOME_EXPIRED, now_unix);
+            // Why each waited, read before they leave the queue.
+            let reasons: Vec<String> = expired
+                .iter()
+                .map(|entry| self.queued_wait_reason(entry))
+                .collect();
+            let ids: Vec<String> = expired.iter().map(|entry| entry.id().to_string()).collect();
+            self.message_queue.finish(&ids, OUTCOME_EXPIRED, now_unix);
+            for (entry, reason) in expired.iter().zip(reasons) {
+                self.send_expiry_notice(entry, &reason, now_unix);
+            }
             changed = true;
         }
 
@@ -1555,6 +1664,9 @@ impl App {
             .retain(|terminal, _| live.contains(terminal));
         self.message_queue
             .settle_screens
+            .retain(|terminal, _| live.contains(terminal));
+        self.message_queue
+            .user_blocked
             .retain(|terminal, _| live.contains(terminal));
         self.message_queue
             .interrupted_at
@@ -1602,6 +1714,20 @@ impl App {
                         next.push(at + INTERRUPT_WAIT);
                     }
                 }
+                if is_user_blocked(&reason) {
+                    self.message_queue.screens.remove(&terminal_id);
+                    // The screen reads blocked: its change is an event. The
+                    // status report alone may clear without one: look again.
+                    next.push(
+                        now + if reason == PROGRAM_STATUS_BLOCKED_REASON {
+                            RETRY
+                        } else {
+                            STUCK_SAMPLE
+                        },
+                    );
+                    return self.watch_user_blocked_target(&target, &reason, now, now_unix, next);
+                }
+                self.message_queue.user_blocked.remove(&terminal_id);
                 if reason == "working" {
                     return self.watch_stuck_target(&target, &reason, now, now_unix, next);
                 }
@@ -1692,6 +1818,7 @@ impl App {
                 self.message_queue.ready_since.remove(&terminal_id);
                 self.message_queue.settle_screens.remove(&terminal_id);
                 self.message_queue.interrupted_at.remove(&terminal_id);
+                self.message_queue.user_blocked.remove(&terminal_id);
                 self.message_queue.finish(&ids, OUTCOME_DELIVERED, now_unix);
                 if self.message_queue.queued_for(&terminal_id) {
                     // The rest goes in once the target settled again.
@@ -1701,6 +1828,17 @@ impl App {
             }
             Err(response) => {
                 let code = error_code(&response);
+                if let Some(reason) = user_blocked_reason(&code) {
+                    // No input box (a dialog, a menu) or its own report
+                    // reads blocked: nothing was typed. Look again after a
+                    // fresh SETTLE.
+                    self.message_queue
+                        .ready_since
+                        .insert(terminal_id.clone(), now);
+                    next.push(now + SETTLE);
+                    return self.watch_user_blocked_target(&target, reason, now, now_unix, next);
+                }
+                self.message_queue.user_blocked.remove(&terminal_id);
                 if !retryable(&code) && code != "busy" {
                     tracing::warn!(code, "message queue: delivery failed, retrying");
                 }
@@ -1708,6 +1846,261 @@ impl App {
                 false
             }
         }
+    }
+
+    /// Why `entry` waits now (the reason `agents.queued` shows), for its
+    /// expiry notice.
+    fn queued_wait_reason(&self, entry: &QueuedMessage) -> String {
+        let Some(target) = self.message_target(&entry.terminal_id, entry.session.as_deref()) else {
+            return "offline".to_string();
+        };
+        match self.message_check(&target) {
+            Check::Ready { .. } => self
+                .message_queue
+                .user_blocked
+                .get(&target.terminal_id)
+                .map_or_else(
+                    || "not typed in yet".to_string(),
+                    |blocked| blocked.reason.clone(),
+                ),
+            check => MessageCheck(check).status(),
+        }
+    }
+
+    /// A target waits on its user (`reason`: its screen or its own status
+    /// report reads blocked, or its input box is not on screen). Keeps its
+    /// queued messages alive (up to [`MESSAGE_TTL_USER_BLOCKED_S`] after
+    /// each was sent); once the wait has lasted [`STUCK_WAIT`] tells its
+    /// user (one agent card per wait) and, for a message that has waited
+    /// [`STUCK_WAIT`], that message's sender (per target: the first notice,
+    /// then after each [`USER_BLOCKED_NOTICE_BACKOFF`] step, never more often
+    /// than [`STUCK_NOTICE_EVERY`]). Returns whether a notice went out.
+    fn watch_user_blocked_target(
+        &mut self,
+        target: &super::terminal_targets::TerminalTarget,
+        reason: &str,
+        now: Instant,
+        now_unix: u64,
+        next: &mut Vec<Instant>,
+    ) -> bool {
+        let terminal_id = target.terminal_id.clone();
+        let blocked = self
+            .message_queue
+            .user_blocked
+            .entry(terminal_id.clone())
+            .or_insert_with(|| UserBlocked {
+                since: now,
+                since_unix: now_unix,
+                reason: reason.to_string(),
+                notices: 0,
+                carded: false,
+            });
+        blocked.reason = reason.to_string();
+        let (since, notices, carded) = (blocked.since, blocked.notices, blocked.carded);
+
+        // Its messages stay queued while it waits (each pass that sees the
+        // wait moves the expiry; at most once an hour per message).
+        let mut extended = false;
+        for entry in &mut self.message_queue.entries {
+            if entry.terminal_id != terminal_id {
+                continue;
+            }
+            let cap = entry
+                .message
+                .unix
+                .saturating_add(MESSAGE_TTL_USER_BLOCKED_S);
+            let wanted = now_unix.saturating_add(MESSAGE_TTL_S).min(cap);
+            if entry.expires_unix.saturating_sub(now_unix) <= MESSAGE_TTL_S / 2
+                && wanted > entry.expires_unix
+            {
+                entry.expires_unix = wanted;
+                extended = true;
+            }
+        }
+        if extended {
+            self.message_queue.save();
+        }
+
+        let blocked_for = now.saturating_duration_since(since);
+        if blocked_for < STUCK_WAIT {
+            next.push(since + STUCK_WAIT);
+            return false;
+        }
+        if !carded {
+            self.user_blocked_card(target, reason, blocked_for);
+            if let Some(blocked) = self.message_queue.user_blocked.get_mut(&terminal_id) {
+                blocked.carded = true;
+            }
+        }
+        let last = self
+            .message_queue
+            .stuck_notice_at
+            .get(&terminal_id)
+            .copied();
+        let due_at = match (notices, last) {
+            (0, last) => last.map(|at| at + STUCK_NOTICE_EVERY),
+            (sent, Some(at)) => {
+                let step = USER_BLOCKED_NOTICE_BACKOFF
+                    [(sent - 1).min(USER_BLOCKED_NOTICE_BACKOFF.len() - 1)];
+                Some(at + step.max(STUCK_NOTICE_EVERY))
+            }
+            (_, None) => None,
+        };
+        if let Some(at) = due_at.filter(|at| now < *at) {
+            next.push(at);
+            return false;
+        }
+        // The oldest message that has waited STUCK_WAIT and whose sender
+        // can still be reached (a herdr notice has none).
+        let candidates: Vec<QueuedMessage> = self
+            .message_queue
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.terminal_id == terminal_id
+                    && !entry.legacy
+                    && (entry.from_terminal.is_some() || entry.message.from_pane.is_some())
+            })
+            .cloned()
+            .collect();
+        let waited_enough = |entry: &QueuedMessage| {
+            now_unix.saturating_sub(entry.message.unix) >= STUCK_WAIT.as_secs()
+        };
+        if let Some(youngest) = candidates
+            .iter()
+            .filter(|entry| !waited_enough(entry))
+            .map(|entry| entry.message.unix)
+            .min()
+        {
+            // A later message reaches STUCK_WAIT at this time.
+            let wait = youngest
+                .saturating_add(STUCK_WAIT.as_secs())
+                .saturating_sub(now_unix);
+            next.push(now + Duration::from_secs(wait));
+        }
+        let Some(entry) = candidates
+            .into_iter()
+            .filter(waited_enough)
+            .find(|entry| self.stuck_notice_sender(entry).is_some())
+        else {
+            return false;
+        };
+        let target_name = notice_target_name(&entry);
+        let text = format!(
+            "herdr: your message {} to {target_name} ({}) has waited {}; {target_name} is waiting on its user ({reason}) for {}. It stays queued (up to {}h after you sent it) and goes in once its user is done; check it with agents_messages.",
+            entry.id(),
+            entry.message.to_pane,
+            minutes(Duration::from_secs(
+                now_unix.saturating_sub(entry.message.unix)
+            )),
+            minutes(blocked_for),
+            MESSAGE_TTL_USER_BLOCKED_S / 3600,
+        );
+        tracing::info!(
+            message = %entry.id(),
+            target = %entry.message.to_pane,
+            reason,
+            blocked_s = blocked_for.as_secs(),
+            notices,
+            "message queue: a queued message waits on its target's user; telling its sender"
+        );
+        if !self.send_stuck_notice(&entry, text, now_unix) {
+            return false;
+        }
+        if let Some(queued) = self
+            .message_queue
+            .entries
+            .iter_mut()
+            .find(|queued| queued.id() == entry.id())
+        {
+            queued.stuck_notified = true;
+        }
+        if let Some(blocked) = self.message_queue.user_blocked.get_mut(&terminal_id) {
+            blocked.notices += 1;
+        }
+        self.message_queue.stuck_notice_at.insert(terminal_id, now);
+        self.message_queue.save();
+        true
+    }
+
+    /// One agent card from `target`'s pane telling its user that agent
+    /// messages wait on them (once per wait; [`App::watch_user_blocked_target`]).
+    fn user_blocked_card(
+        &mut self,
+        target: &super::terminal_targets::TerminalTarget,
+        reason: &str,
+        blocked_for: Duration,
+    ) {
+        let Some(pane) = self.public_pane_id(target.ws_idx, target.pane_id) else {
+            return;
+        };
+        let Some(sender) = self.notice_sender(&pane) else {
+            return;
+        };
+        let held = self
+            .message_queue
+            .entries
+            .iter()
+            .filter(|entry| entry.terminal_id == target.terminal_id)
+            .count();
+        let title = super::agent_notices::sanitize_title(&format!(
+            "{held} agent message{} wait{} for you",
+            if held == 1 { "" } else { "s" },
+            if held == 1 { "s" } else { "" },
+        ))
+        .unwrap_or_default();
+        let body = super::agent_notices::sanitize_body(&format!(
+            "It has waited on you for {} ({reason}); they go in once you are done.",
+            minutes(blocked_for)
+        ));
+        tracing::info!(
+            target = %target.terminal_id,
+            held,
+            reason,
+            "message queue: messages wait on the target's user; showing an agent card"
+        );
+        match self.agent_notices.notify(
+            sender,
+            crate::api::schema::AgentNoticeKind::Warning,
+            title,
+            body,
+            crate::coordinator::now_unix(),
+        ) {
+            Ok((_, outcome)) => {
+                if outcome == crate::api::schema::AgentNotifyOutcome::Shown {
+                    self.render_dirty.request_generic();
+                    self.render_notify.notify_one();
+                }
+            }
+            Err(refused) => {
+                tracing::debug!(code = %refused.code, "message queue: the wait card was not shown");
+            }
+        }
+    }
+
+    /// Tell an expired message's sender that it was never typed in
+    /// (`reason`: why it waited). A sender that is gone, or herdr (a notice
+    /// expiring), gets nothing.
+    fn send_expiry_notice(&mut self, entry: &QueuedMessage, reason: &str, now_unix: u64) {
+        if entry.legacy || (entry.from_terminal.is_none() && entry.message.from_pane.is_none()) {
+            return;
+        }
+        let target_name = notice_target_name(entry);
+        let text = format!(
+            "herdr: your message {} to {target_name} ({}) expired after {} and was never typed in (it waited: {reason}). Send it again if it still matters.",
+            entry.id(),
+            entry.message.to_pane,
+            minutes(Duration::from_secs(
+                now_unix.saturating_sub(entry.message.unix)
+            )),
+        );
+        tracing::info!(
+            message = %entry.id(),
+            target = %entry.message.to_pane,
+            reason,
+            "message queue: a queued message expired; telling its sender"
+        );
+        self.send_stuck_notice(entry, text, now_unix);
     }
 
     /// A target freed by its Stop hook alone (its screen reads working): the
@@ -1828,7 +2221,23 @@ impl App {
         let status = self
             .message_status_name(target)
             .unwrap_or_else(|| reason.to_string());
-        if !self.send_stuck_notice(&entry, reason, &status, unchanged, now_unix) {
+        let target_name = notice_target_name(&entry);
+        let text = format!(
+            "herdr: your message {} to {target_name} ({}) has waited {}; {target_name} reads {status} but its screen has not changed for {} (queued: {reason}). It stays queued; check it with agents_messages.",
+            entry.id(),
+            entry.message.to_pane,
+            minutes(Duration::from_secs(
+                now_unix.saturating_sub(entry.message.unix)
+            )),
+            minutes(unchanged),
+        );
+        tracing::info!(
+            message = %entry.id(),
+            target = %entry.message.to_pane,
+            unchanged_s = unchanged.as_secs(),
+            "message queue: a queued message seems stuck; telling its sender"
+        );
+        if !self.send_stuck_notice(&entry, text, now_unix) {
             // Neither typed in nor queued: the message's one notice and the
             // target's slot stay unused.
             return false;
@@ -1880,42 +2289,15 @@ impl App {
             .and_then(|pane| self.resolve_agent_target(&pane).ok())
     }
 
-    /// Tell `entry`'s sender, through the same delivery path, that its
-    /// message seems stuck. Logged (message log and tracing). Returns
-    /// whether the notice was typed in or queued; a sender that is gone
-    /// gets nothing.
-    fn send_stuck_notice(
-        &mut self,
-        entry: &QueuedMessage,
-        reason: &str,
-        status: &str,
-        unchanged: Duration,
-        now_unix: u64,
-    ) -> bool {
+    /// Tell `entry`'s sender `text` about its message (stuck, waiting on
+    /// its target's user, expired), through the same delivery path. Logged
+    /// in the message log. Returns whether the notice was typed in or
+    /// queued; a sender that is gone gets nothing.
+    fn send_stuck_notice(&mut self, entry: &QueuedMessage, text: String, now_unix: u64) -> bool {
         let message_id = entry.id().to_string();
-        let target_name = entry
-            .message
-            .to_name
-            .clone()
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| entry.message.to_pane.clone());
-        let target = format!("{target_name} ({})", entry.message.to_pane);
-        let waited = Duration::from_secs(now_unix.saturating_sub(entry.message.unix));
-        let text = format!(
-            "herdr: your message {message_id} to {target} has waited {}; {target_name} reads {status} but its screen has not changed for {} (queued: {reason}). It stays queued; check it with agents_messages.",
-            minutes(waited),
-            minutes(unchanged),
-        );
         let Some(sender_target) = self.stuck_notice_sender(entry) else {
             return false;
         };
-        tracing::info!(
-            message = %message_id,
-            target = %entry.message.to_pane,
-            waited_s = waited.as_secs(),
-            unchanged_s = unchanged.as_secs(),
-            "message queue: a queued message seems stuck; telling its sender"
-        );
         let sender_pane = self
             .public_pane_id(sender_target.ws_idx, sender_target.pane_id)
             .unwrap_or_default();

@@ -191,6 +191,12 @@ fn running_coordinator(server: &mut HeadlessServer, dir: &std::path::Path, port:
     pump_until(server, "the coordinator running", |server| {
         get(server)["state"] == "running"
     });
+    // The stub draws no Claude screen: draw its free input box (the typing
+    // guard fails closed without one).
+    let terminal_id = coordinator_terminal_id(server);
+    if let Some(runtime) = server.app.terminal_runtimes.get(&terminal_id) {
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
+    }
     pane_id
 }
 

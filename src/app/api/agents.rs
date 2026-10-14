@@ -250,7 +250,7 @@ impl App {
                     .ok()
                     .and_then(|value| value["error"]["code"].as_str().map(str::to_string))
                     .as_deref(),
-                Some("user_typing" | "agent_blocked" | "agent_not_ready")
+                Some("user_typing" | "input_box_absent" | "agent_blocked" | "agent_not_ready")
             );
         if busy {
             self.queue_legacy_message(request_id, params.clone())
@@ -349,6 +349,19 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
             return Err(agent_not_found(id, &params.target));
         };
+        // Fork (OSC 7501): the agent's own status report says it waits on
+        // its user. A veto only, guarded or not: the screen may misread a
+        // dialog as idle, and an idle report never frees a blocked screen.
+        if runtime.program_status_blocked() {
+            return Err(encode_error(
+                id,
+                "agent_blocked",
+                format!(
+                    "agent {} is blocked and requires interactive input (its own status report)",
+                    params.target
+                ),
+            ));
+        }
         let hosts_agent = super::super::agents::runtime_hosts_agent(runtime, expected_agent);
         // Fork test seam: the coordinator smoke tests' stub pane stands in
         // for the agent process.
@@ -380,9 +393,11 @@ impl App {
                 )
             });
             if let Some(block) = block {
+                // Fork: `input_box_absent` when the agent's input box is not
+                // on its screen (a dialog, a menu), else `user_typing`.
                 return Err(encode_error(
                     id,
-                    "user_typing",
+                    block.error_code(),
                     format!(
                         "not typed into {}: {}; retry later",
                         params.target,

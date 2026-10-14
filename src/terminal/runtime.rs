@@ -391,6 +391,10 @@ impl TerminalRuntime {
         self.0.program_status_snapshot()
     }
 
+    pub(crate) fn program_status_blocked(&self) -> bool {
+        self.0.program_status_blocked()
+    }
+
     pub(crate) fn recent_text_snapshot(&self, lines: usize) -> crate::pane::TerminalReadSnapshot {
         self.0.recent_text_snapshot(lines)
     }
