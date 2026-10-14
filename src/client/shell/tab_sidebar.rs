@@ -521,6 +521,7 @@ pub(super) fn render_tab_sidebar_with(
                         hovered,
                         background: (hovered || tab.focused).then_some(background),
                         voice,
+                        pinned: facts.pin.then(|| super::tab_pins::pin_mark(config)),
                         muted: facts.muted.then(|| super::tab_mutes::mute_mark(config)),
                         marks: marks.as_slice(),
                         context,
@@ -1581,6 +1582,8 @@ struct TabRowLook<'a, 'c> {
     background: Option<Color>,
     /// The voice mark (`voice::voice_mark`), left of the label.
     voice: Option<(&'c str, Color)>,
+    /// Fork: the pinned mark (`tab_pins::pin_mark`), in the left gutter.
+    pinned: Option<(&'c str, Color)>,
     /// Fork: the muted mark (`tab_mutes::mute_mark`), in the left gutter.
     muted: Option<(&'c str, Color)>,
     /// The right-hand marks, left to right.
@@ -1601,8 +1604,9 @@ fn marks_cells(marks: &[(&str, Color)], gap: u16) -> u16 {
     glyphs + gap * (marks.len() as u16 - 1) + 1
 }
 
-/// A tab row: ` ▎ <muted> <status> <voice> <label> … <marks> `. The muted
-/// mark (fork) sits at x=3 in the otherwise empty gutter, the status icon
+/// A tab row: ` ▎<pinned> <muted> <status> <voice> <label> … <marks> `. The
+/// pinned mark (fork) sits at x=1 and the muted mark (fork) at x=3 in the
+/// otherwise empty gutter, the status icon
 /// at x=5 (`sidebar_model::tab_row_icon`: the subagent icon while
 /// subagents run), the voice mark at x=7 with the label after it, else the
 /// label at x=7. The marks are packed flush right with a one-cell margin,
@@ -1678,6 +1682,7 @@ fn render_tab_row(
     config: &ClientShellConfig,
 ) {
     use crate::api::schema::AgentStatus;
+    const PINNED_X: u16 = 1;
     const MUTED_X: u16 = 3;
     const ICON_X: u16 = 5;
     const LABEL_X: u16 = 7;
@@ -1694,6 +1699,17 @@ fn render_tab_row(
             1,
             HOVER_BAR,
             Style::default().fg(palette.accent),
+        );
+    }
+    // Fork: a pinned tab's mark, one cell right of the hover bar.
+    if let Some((glyph, color)) = look.pinned {
+        put_text(
+            buffer,
+            x.saturating_add(PINNED_X),
+            y,
+            width.saturating_sub(PINNED_X).min(1),
+            glyph,
+            Style::default().fg(color),
         );
     }
     // Fork: a muted tab's mark, one cell in the gutter between the hover

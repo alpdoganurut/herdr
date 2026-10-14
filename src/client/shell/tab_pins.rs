@@ -12,6 +12,22 @@ use std::collections::{HashMap, HashSet};
 use super::*;
 use crate::server::headless::tab_pins::TabPinsPayload;
 
+/// The mark of a pinned tab: Nerd Font `nf-md-pin`, one cell wide.
+pub(crate) const PINNED_MARK: &str = "\u{F0403}";
+/// The `ui.tab_agent_glyphs` key that overrides the mark.
+pub(crate) const PINNED_GLYPH_KEY: &str = "pinned";
+
+/// The pinned tab mark and its color: `ui.tab_agent_glyphs.pinned` overrides
+/// the glyph (exact key, no `other` fallback), dim `overlay0` like the muted
+/// mark beside it.
+pub(crate) fn pin_mark(config: &ClientShellConfig) -> (&str, ratatui::style::Color) {
+    let glyph = config
+        .tab_agent_glyphs
+        .get(PINNED_GLYPH_KEY)
+        .map_or(PINNED_MARK, String::as_str);
+    (glyph, config.palette.overlay0)
+}
+
 /// One endpoint's pinned tabs, as its last push listed them.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ClientTabPinsState {

@@ -692,3 +692,24 @@ mod fork_smoke {
         assert!(home.contains("in 4m"), "{home:?}");
     }
 }
+
+#[test]
+fn a_pinned_tab_row_shows_the_pin_mark_at_column_1_and_no_other_row_does() {
+    use crate::client::shell::tab_pins::PINNED_MARK;
+    let mut state = pinned_state();
+    let frame = state.compose(COLS, ROWS).expect("composed frame");
+    let buffer = frame.to_ratatui_buffer().expect("buffer");
+    let overlay0 = state.config.palette.overlay0;
+    let rows = state.hits.sidebar_tabs.clone();
+    assert!(rows.iter().any(|(_, id)| id == "t_done"));
+    for (rect, id) in rows {
+        let cell = &buffer[(rect.x + 1, rect.y)];
+        if id == "t_done" || id == "t_home" {
+            assert_eq!((cell.symbol(), cell.fg), (PINNED_MARK, overlay0), "{id}");
+        } else {
+            assert_eq!(cell.symbol(), " ", "{id} is not pinned");
+        }
+    }
+    // One cell wide in a non-CJK terminal, so the muted mark keeps x=3.
+    assert_eq!(unicode_width::UnicodeWidthStr::width(PINNED_MARK), 1);
+}
