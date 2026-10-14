@@ -297,7 +297,8 @@ impl App {
     }
 
     /// Runs every check that can reject a prompt without touching the pane.
-    fn validate_agent_prompt(
+    /// (Fork: the message queue runs it before a coordinator turn marker.)
+    pub(in crate::app) fn validate_agent_prompt(
         &self,
         id: String,
         params: &AgentPromptParams,
@@ -715,7 +716,7 @@ fn insert_program_status(explain: &mut serde_json::Value, program_status: serde_
     }
 }
 
-struct ValidatedAgentPrompt {
+pub(in crate::app) struct ValidatedAgentPrompt {
     id: String,
     ws_idx: usize,
     pane_id: crate::layout::PaneId,

@@ -221,8 +221,12 @@ pub struct AgentPromptParams {
     pub wait: Option<AgentPromptWaitOptions>,
     /// Fork: refuse with `user_typing` (nothing typed) while the user typed
     /// into the pane in the last few seconds or has an unsent draft in the
-    /// agent's input box. Set by automatic callers (agent messages); a
-    /// user's own `agent prompt` leaves it off.
+    /// agent's input box. For Claude Code and Codex it fails closed: when
+    /// the input box is not on screen (a dialog, a permission prompt, a
+    /// menu) it refuses with `input_box_absent`. Set by automatic callers
+    /// (agent messages); a user's own `agent prompt` leaves it off. Guarded
+    /// or not, an agent whose own status report (OSC 7501) reads blocked is
+    /// refused with `agent_blocked`.
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub guard_user_typing: bool,
 }

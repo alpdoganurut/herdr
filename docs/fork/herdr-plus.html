@@ -339,7 +339,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   </div>
 
   <div class="grid">
-    <div class="card"><h3><span class="g">⇶</span>Server-side queue</h3><p>Per target, oldest first. Saved with the session, survives restarts. Expires after 2 h, dropped if the target is gone.</p></div>
+    <div class="card"><h3><span class="g">⇶</span>Server-side queue</h3><p>Per target, oldest first. Saved with the session, survives restarts. Expires after 2 h; messages waiting on the target's user are kept up to 24 h. Dropped if the target is gone.</p></div>
     <div class="card"><h3><span class="g">‖</span>Typing guard</h3><p>Nothing is typed while you typed in that pane in the last 10 s, or have an unsent draft in its input box. For Claude Code and Codex it fails closed: no visible input box (a question, a permission prompt, a menu) means the message waits.</p></div>
     <div class="card"><h3><span class="g">›</span>Pointer-line delivery</h3><p>One short plain line instead of a paste, so Claude does not treat it as your pasted content. The agent reads the full message by id.</p></div>
     <div class="card"><h3><span class="g">⧉</span>Batch delivery</h3><p>Several queued messages go in together once the target has been idle for 3 s, as one line.</p></div>

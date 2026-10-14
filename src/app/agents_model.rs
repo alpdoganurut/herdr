@@ -276,6 +276,24 @@ impl App {
             .is_some_and(crate::app::typing_guard::TypingBlock::is_user_typing)
     }
 
+    /// Whether the pane's agent waits on its user: its input box is not on
+    /// screen (a dialog, a menu; app::typing_guard fails closed) or its own
+    /// status report (OSC 7501) reads blocked. Text typed now would answer
+    /// the dialog.
+    pub(crate) fn pane_waits_on_user(&self, ws_idx: usize, pane_id: PaneId) -> bool {
+        let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
+            return false;
+        };
+        if runtime.program_status_blocked() {
+            return true;
+        }
+        let agent = self
+            .model_terminal(ws_idx, pane_id)
+            .and_then(crate::terminal::TerminalState::effective_known_agent);
+        crate::app::typing_guard::runtime_typing_block(agent, runtime, Instant::now())
+            == Some(crate::app::typing_guard::TypingBlock::InputBoxAbsent)
+    }
+
     // ----- lookups -----------------------------------------------------------
 
     pub(crate) fn model_terminal(
@@ -2166,6 +2184,19 @@ impl App {
                 format!("your user is typing in {public}; ask again later"),
             ));
         }
+        // Suspend and restart type the exit command into the agent: never
+        // into a dialog or a menu that covers its input box (activate types
+        // into the pane's shell, where no agent runs).
+        if matches!(op, AgentLifecycle::Suspend | AgentLifecycle::Restart)
+            && self.pane_waits_on_user(target.ws_idx, pane)
+        {
+            line.code = Some(error_code::AGENT_BLOCKED.into());
+            self.log_model_action(Some(&caller), AgentsActionOutcome::Denied, line);
+            return Err(ModelError::new(
+                error_code::AGENT_BLOCKED,
+                format!("{public} waits on its user (a dialog or a menu); ask again later"),
+            ));
+        }
         self.take_soft_edit(&caller, &line)?;
         let by = Some(caller.who());
         let result = match op {
@@ -3744,6 +3775,42 @@ pub(crate) mod tests {
         let result = lifecycle(&mut app, AgentLifecycle::Activate, &lead, &fixer_tab);
         assert_eq!(code(&result), "user_typing", "{result}");
         assert!(terminal_mut(&mut app, fixer).suspended_agent.is_some());
+    }
+
+    #[tokio::test]
+    async fn suspend_and_restart_never_type_into_a_dialog() {
+        let mut app = model_app();
+        let lead = public(&app, 1, 0);
+        let fixer = pane(&app, 1, 1);
+        let fixer_tab = app.public_tab_id(1, 1).unwrap();
+        let mut rx = host_suspendable(&mut app, fixer, "fixer");
+        let id = terminal_mut(&mut app, fixer).id.clone();
+        fn runtime<'a>(
+            app: &'a App,
+            id: &crate::terminal::TerminalId,
+        ) -> &'a crate::terminal::TerminalRuntime {
+            app.terminal_runtimes.get(id).expect("runtime")
+        }
+        // A permission prompt replaces the input box.
+        runtime(&app, &id).test_process_pty_bytes(
+            b"\x1b[2J\x1b[H\r\n-----\r\n Do you want to proceed?\r\n 1. Yes\r\n 2. No",
+        );
+        for op in [AgentLifecycle::Suspend, AgentLifecycle::Restart] {
+            let result = lifecycle(&mut app, op, &lead, &fixer_tab);
+            assert_eq!(code(&result), "agent_blocked", "{result}");
+            assert!(terminal_mut(&mut app, fixer).suspended_agent.is_none());
+        }
+        // Its own status report reads blocked while the box is back.
+        runtime(&app, &id).test_process_pty_bytes(b"\x1b[2J\x1b[H");
+        runtime(&app, &id).test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
+        runtime(&app, &id).test_process_pty_bytes(b"\x1b]7501;state=blocked:kind=question\x07");
+        let result = lifecycle(&mut app, AgentLifecycle::Suspend, &lead, &fixer_tab);
+        assert_eq!(code(&result), "agent_blocked", "{result}");
+        assert!(rx.try_recv().is_err(), "nothing typed");
+        // Cleared: suspend goes in.
+        runtime(&app, &id).test_process_pty_bytes(b"\x1b]7501;state=idle\x07");
+        let result = lifecycle(&mut app, AgentLifecycle::Suspend, &lead, &fixer_tab);
+        assert_eq!(result["result"]["type"], "agent_suspended", "{result}");
     }
 
     #[test]

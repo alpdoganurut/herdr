@@ -202,7 +202,7 @@ pub(crate) struct UserBlocked {
     /// The same moment as a Unix time (`AgentInfo.blocked_since`).
     pub(crate) since_unix: u64,
     /// The latest wait reason.
-    reason: String,
+    pub(crate) reason: String,
     /// Notices sent to senders about this wait.
     notices: usize,
     /// Its user was shown the agent card about this wait.
@@ -431,6 +431,13 @@ impl MessageQueue {
                 true
             }
         });
+        // A target with nothing queued any more (a claim takes the last one
+        // outside a pass) has no user-blocked wait to report.
+        for terminal_id in &targets {
+            if !self.queued_for(terminal_id) {
+                self.user_blocked.remove(terminal_id);
+            }
+        }
         // An interrupt is over once no urgent message waits on it (typed in,
         // claimed, expired or dropped): the target's hook hold applies again.
         for terminal_id in targets {
@@ -801,6 +808,18 @@ impl App {
     ) -> Result<(), String> {
         let message_id = items.first().map(|item| item.id.as_str()).unwrap_or("");
         let input = self.message_input(terminal_id, items);
+        let params = AgentPromptParams {
+            target: pane.to_string(),
+            text: input.text,
+            wait: None,
+            guard_user_typing: true,
+        };
+        // The coordinator's turn marker is written only when the prompt can
+        // go in now (typing guard, input box, OSC 7501 blocked): a dialog
+        // held for a while must not write and clear it every SETTLE.
+        if coordinator {
+            self.validate_agent_prompt(request_id.clone(), &params)?;
+        }
         let marker = if coordinator {
             match self.write_coordinator_message_turn(pane, message_id) {
                 Ok(marker) => Some(marker),
@@ -813,12 +832,7 @@ impl App {
         };
         let queued = self.queue_agent_prompt_as(
             request_id,
-            AgentPromptParams {
-                target: pane.to_string(),
-                text: input.text,
-                wait: None,
-                guard_user_typing: true,
-            },
+            params,
             crate::agents_model::InputSource::Programmatic(match from {
                 Some(from) => crate::agents_model::Programmatic::AgentMessage {
                     id: message_id.to_string(),
@@ -1871,10 +1885,11 @@ impl App {
     /// report reads blocked, or its input box is not on screen). Keeps its
     /// queued messages alive (up to [`MESSAGE_TTL_USER_BLOCKED_S`] after
     /// each was sent); once the wait has lasted [`STUCK_WAIT`] tells its
-    /// user (one agent card per wait) and, for a message that has waited
-    /// [`STUCK_WAIT`], that message's sender (per target: the first notice,
-    /// then after each [`USER_BLOCKED_NOTICE_BACKOFF`] step, never more often
-    /// than [`STUCK_NOTICE_EVERY`]). Returns whether a notice went out.
+    /// user (one agent card per wait) and every sender of a message that
+    /// has waited [`STUCK_WAIT`] (one notice per sender: at once the first
+    /// time, again in rounds per target after each
+    /// [`USER_BLOCKED_NOTICE_BACKOFF`] step, never more often than
+    /// [`STUCK_NOTICE_EVERY`]). Returns whether a notice went out.
     fn watch_user_blocked_target(
         &mut self,
         target: &super::terminal_targets::TerminalTarget,
@@ -1946,12 +1961,16 @@ impl App {
             }
             (_, None) => None,
         };
-        if let Some(at) = due_at.filter(|at| now < *at) {
-            next.push(at);
-            return false;
-        }
-        // The oldest message that has waited STUCK_WAIT and whose sender
-        // can still be reached (a herdr notice has none).
+        // A round (every sender with a message held STUCK_WAIT hears again)
+        // follows the per-target backoff; a sender that has not heard about
+        // this target yet hears as soon as its message has waited STUCK_WAIT.
+        let round_due = match due_at {
+            Some(at) if now < at => {
+                next.push(at);
+                false
+            }
+            _ => true,
+        };
         let candidates: Vec<QueuedMessage> = self
             .message_queue
             .entries
@@ -1978,47 +1997,81 @@ impl App {
                 .saturating_sub(now_unix);
             next.push(now + Duration::from_secs(wait));
         }
-        let Some(entry) = candidates
-            .into_iter()
-            .filter(waited_enough)
-            .find(|entry| self.stuck_notice_sender(entry).is_some())
-        else {
-            return false;
+        // One notice per distinct reachable sender: its oldest message that
+        // waited STUCK_WAIT, one it was not told about yet first.
+        let sender_key = |entry: &QueuedMessage| match &entry.from_terminal {
+            Some(terminal) => format!("t:{terminal}"),
+            None => format!("p:{}", entry.message.from_pane.as_deref().unwrap_or("")),
         };
-        let target_name = notice_target_name(&entry);
-        let text = format!(
-            "herdr: your message {} to {target_name} ({}) has waited {}; {target_name} is waiting on its user ({reason}) for {}. It stays queued (up to {}h after you sent it) and goes in once its user is done; check it with agents_messages.",
-            entry.id(),
-            entry.message.to_pane,
-            minutes(Duration::from_secs(
-                now_unix.saturating_sub(entry.message.unix)
-            )),
-            minutes(blocked_for),
-            MESSAGE_TTL_USER_BLOCKED_S / 3600,
-        );
-        tracing::info!(
-            message = %entry.id(),
-            target = %entry.message.to_pane,
-            reason,
-            blocked_s = blocked_for.as_secs(),
-            notices,
-            "message queue: a queued message waits on its target's user; telling its sender"
-        );
-        if !self.send_stuck_notice(&entry, text, now_unix) {
+        let mut picks: Vec<QueuedMessage> = Vec::new();
+        let mut keys: Vec<String> = Vec::new();
+        for entry in &candidates {
+            let key = sender_key(entry);
+            if keys.contains(&key) || !waited_enough(entry) {
+                continue;
+            }
+            keys.push(key.clone());
+            let mine = candidates
+                .iter()
+                .filter(|other| sender_key(other) == key && waited_enough(other));
+            let heard = mine.clone().any(|other| other.stuck_notified);
+            if !round_due && heard {
+                continue;
+            }
+            let Some(pick) = mine
+                .clone()
+                .find(|other| !other.stuck_notified)
+                .or_else(|| mine.clone().next())
+            else {
+                continue;
+            };
+            if self.stuck_notice_sender(pick).is_some() {
+                picks.push(pick.clone());
+            }
+        }
+        let mut sent = false;
+        for entry in picks {
+            let target_name = notice_target_name(&entry);
+            let text = format!(
+                "herdr: your message {} to {target_name} ({}) has waited {}; {target_name} is waiting on its user ({reason}) for {}. It stays queued (up to {}h after you sent it) and goes in once its user is done; check it with agents_messages.",
+                entry.id(),
+                entry.message.to_pane,
+                minutes(Duration::from_secs(
+                    now_unix.saturating_sub(entry.message.unix)
+                )),
+                minutes(blocked_for),
+                MESSAGE_TTL_USER_BLOCKED_S / 3600,
+            );
+            tracing::info!(
+                message = %entry.id(),
+                target = %entry.message.to_pane,
+                reason,
+                blocked_s = blocked_for.as_secs(),
+                notices,
+                "message queue: a queued message waits on its target's user; telling its sender"
+            );
+            if !self.send_stuck_notice(&entry, text, now_unix) {
+                continue;
+            }
+            sent = true;
+            if let Some(queued) = self
+                .message_queue
+                .entries
+                .iter_mut()
+                .find(|queued| queued.id() == entry.id())
+            {
+                queued.stuck_notified = true;
+            }
+        }
+        if !sent {
             return false;
         }
-        if let Some(queued) = self
-            .message_queue
-            .entries
-            .iter_mut()
-            .find(|queued| queued.id() == entry.id())
-        {
-            queued.stuck_notified = true;
+        if round_due {
+            if let Some(blocked) = self.message_queue.user_blocked.get_mut(&terminal_id) {
+                blocked.notices += 1;
+            }
+            self.message_queue.stuck_notice_at.insert(terminal_id, now);
         }
-        if let Some(blocked) = self.message_queue.user_blocked.get_mut(&terminal_id) {
-            blocked.notices += 1;
-        }
-        self.message_queue.stuck_notice_at.insert(terminal_id, now);
         self.message_queue.save();
         true
     }

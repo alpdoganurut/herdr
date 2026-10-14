@@ -2329,6 +2329,10 @@ impl App {
                 } else if code == "input_box_absent" {
                     // Fork: a dialog or a menu covers its input box.
                     WakeOutcome::Held("the coordinator's input box is not on screen".into())
+                } else if code == "agent_blocked" {
+                    // Fork: its screen or its own status report (OSC 7501)
+                    // reads blocked on its user.
+                    WakeOutcome::Held("the coordinator waits on its user".into())
                 } else {
                     WakeOutcome::Failed(code)
                 };
@@ -2672,7 +2676,6 @@ mod tests {
             .expect("terminal")
             .clone();
         let (runtime, input) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
-        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         // An idle agent's free input box (the typing guard fails closed).
         runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
         app.terminal_runtimes.insert(id, runtime);
@@ -4197,5 +4200,67 @@ mod tests {
             .collect();
         assert_eq!(left, ["mq2"], "the second message waits for its own turn");
         let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+    }
+
+    #[tokio::test]
+    async fn a_dialog_in_the_coordinator_holds_its_messages_without_a_turn_marker() {
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        let own = app.existing_coordinator_pane().expect("tab");
+        let target = app
+            .public_pane_id(own.ws_idx, own.pane_id)
+            .expect("pane id");
+        let id = app.state.workspaces[own.ws_idx]
+            .terminal_id(own.pane_id)
+            .expect("terminal")
+            .clone();
+        // The screen detection missed a dialog: idle, but no input box.
+        let (runtime, input) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(b"\r\n Do you want to proceed?\r\n 1. Yes\r\n 2. No");
+        app.terminal_runtimes.insert(id.clone(), runtime);
+        std::mem::forget(input);
+        coordinator_terminal_mut(&mut app).set_detected_state(
+            Some(crate::detect::Agent::Claude),
+            crate::detect::AgentState::Idle,
+        );
+        // A marker that cannot be written: the guard must refuse first (a
+        // marker write would fail as `busy`, "a coordinator turn is live").
+        let real_dir = app.coordinator.dir.clone();
+        let blocker = real_dir.with_extension("not-a-dir");
+        std::fs::write(&blocker, b"").expect("blocker file");
+        app.coordinator.dir = blocker.join("coordinator");
+        let reply = app.handle_agent_message_send(
+            "req".into(),
+            crate::api::schema::AgentMessageSendParams {
+                target: target.clone(),
+                id: "mq1".into(),
+                envelope: "[herdr+ message mq1 from w9:p1]\nquestion".into(),
+                text: "question".into(),
+                from_pane: Some("w9:p1".into()),
+                ..Default::default()
+            },
+        );
+        assert!(reply.contains("queued"), "{reply}");
+        assert!(reply.contains("its input box is not on screen"), "{reply}");
+        let t0 = Instant::now();
+        for step in 0..4 {
+            app.message_queue.mark_due();
+            app.message_queue_pass(
+                t0 + crate::app::message_queue::SETTLE * step,
+                crate::coordinator::now_unix(),
+            );
+        }
+        assert_eq!(app.message_queue.entries.len(), 1);
+        let terminal = id.to_string();
+        assert_eq!(
+            app.message_queue
+                .user_blocked
+                .get(&terminal)
+                .map(|b| b.reason.as_str()),
+            Some("its input box is not on screen (a dialog or a menu?)"),
+            "held by the guard, never by a marker write"
+        );
+        let _ = std::fs::remove_file(&blocker);
+        let _ = std::fs::remove_dir_all(&real_dir);
     }
 }

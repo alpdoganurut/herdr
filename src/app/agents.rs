@@ -452,16 +452,22 @@ impl App {
         })
     }
 
-    /// Fork: `AgentInfo.blocked_since`: the message queue's user-blocked
-    /// wait for the terminal (src/app/message_queue.rs), else the time its
-    /// screen state turned blocked.
+    /// Fork: `AgentInfo.blocked_since`: the earlier of the message queue's
+    /// user-blocked wait for the terminal (src/app/message_queue.rs) and the
+    /// time its screen state turned blocked (while it reads blocked).
     fn agent_blocked_since(&self, terminal: &crate::terminal::TerminalState) -> Option<u64> {
-        if let Some(blocked) = self.message_queue.user_blocked.get(terminal.id.as_str()) {
-            return Some(blocked.since_unix);
+        let queued = self
+            .message_queue
+            .user_blocked
+            .get(terminal.id.as_str())
+            .map(|blocked| blocked.since_unix);
+        let screen = (terminal.state == crate::detect::AgentState::Blocked)
+            .then(|| terminal.agent_state_since_unix_ms.map(|ms| ms / 1000))
+            .flatten();
+        match (queued, screen) {
+            (Some(queued), Some(screen)) => Some(queued.min(screen)),
+            (queued, screen) => queued.or(screen),
         }
-        (terminal.state == crate::detect::AgentState::Blocked)
-            .then_some(terminal.agent_state_since_unix_ms?)
-            .map(|ms| ms / 1000)
     }
 
     fn agent_name_conflicts(

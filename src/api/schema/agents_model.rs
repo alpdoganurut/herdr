@@ -102,6 +102,9 @@ pub mod error_code {
     pub const NOT_AN_AGENT: &str = "not_an_agent";
     /// The user is typing in the target.
     pub const USER_TYPING: &str = "user_typing";
+    /// The target waits on its user: a dialog or a menu covers its input
+    /// box, or its own status report (OSC 7501) reads blocked.
+    pub const AGENT_BLOCKED: &str = "agent_blocked";
     /// The target is gone (a message to it is neither typed in nor queued).
     pub const OFFLINE: &str = "offline";
     /// A message rate limit.

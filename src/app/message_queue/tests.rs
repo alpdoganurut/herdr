@@ -1423,3 +1423,131 @@ async fn an_expired_message_tells_its_sender() {
     app.message_queue_pass(Instant::now(), notice_expires);
     assert_eq!(notices_about(&app, "expired after"), 1);
 }
+
+/// A second Claude agent `lead` in its own tab of the test workspace, with
+/// a free input box; returns its public pane id.
+fn add_lead(app: &mut App) -> String {
+    let tab = app.state.workspaces[0].test_add_tab(Some("lead"));
+    app.state.ensure_test_terminals();
+    let pane_id = app.state.workspaces[0].tabs[tab].root_pane;
+    let terminal_id = app.state.workspaces[0].tabs[tab].panes[&pane_id]
+        .attached_terminal_id
+        .clone();
+    let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+    terminal.set_agent_name("lead".into());
+    terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    let (runtime, rx) =
+        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(40, 8, 0, b"", 4);
+    runtime.test_process_pty_bytes(CLAUDE_EMPTY);
+    app.state.insert_test_runtime(pane_id, runtime);
+    // Keep its input open (notices are typed into it).
+    std::mem::forget(rx);
+    app.public_pane_id(0, pane_id).expect("lead pane")
+}
+
+#[tokio::test]
+async fn every_sender_of_a_message_held_by_the_targets_user_hears_once_per_round() {
+    let mut app = app();
+    held_message(&mut app, AgentState::Blocked, 11 * 60);
+    let rev_pane = app.public_pane_id(0, pane(&app)).expect("rev pane");
+    let lead = add_lead(&mut app);
+    // A second sender (lead) with two messages, the older one first.
+    for (id, age) in [("ml1", 12 * 60), ("ml2", 11 * 60)] {
+        let mut params = params(id, "from lead");
+        params.from_pane = Some(lead.clone());
+        params.from_name = Some("lead".into());
+        let reply: Value =
+            serde_json::from_str(&app.handle_agent_message_send("req".into(), params)).unwrap();
+        assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+        let entry = app
+            .message_queue
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id() == id)
+            .unwrap();
+        entry.message.unix -= age;
+    }
+    let notices_to = |app: &App, to: &str| {
+        app.message_queue
+            .written
+            .iter()
+            .filter(|line| {
+                !line.is_update()
+                    && line.to_pane == to
+                    && line.text.contains("is waiting on its user")
+            })
+            .count()
+    };
+    let now = now_unix();
+    let t0 = Instant::now();
+    let pass = |app: &mut App, at: Duration| {
+        app.message_queue.mark_due();
+        app.message_queue_pass(t0 + at, now);
+    };
+    pass(&mut app, Duration::ZERO);
+    pass(&mut app, STUCK_WAIT);
+    assert_eq!(notices_to(&app, &rev_pane), 1, "rev hears");
+    assert_eq!(notices_to(&app, &lead), 1, "lead hears too, once");
+    let notified: Vec<&str> = app
+        .message_queue
+        .entries
+        .iter()
+        .filter(|entry| entry.stuck_notified)
+        .map(QueuedMessage::id)
+        .collect();
+    assert!(
+        notified.contains(&"ms1") && notified.contains(&"ml1"),
+        "{notified:?}"
+    );
+    assert!(
+        !notified.contains(&"ml2"),
+        "one notice per sender: its oldest"
+    );
+    // No spam between rounds.
+    pass(&mut app, STUCK_WAIT + Duration::from_secs(30 * 60));
+    assert_eq!(notices_to(&app, &lead), 1);
+    // The next round: each sender again, about a message not named yet first.
+    pass(&mut app, STUCK_WAIT + Duration::from_secs(3600));
+    assert_eq!(notices_to(&app, &rev_pane), 2);
+    assert_eq!(notices_to(&app, &lead), 2);
+    assert!(app
+        .message_queue
+        .entries
+        .iter()
+        .any(|entry| entry.id() == "ml2" && entry.stuck_notified));
+}
+
+#[tokio::test]
+async fn a_claim_of_the_last_held_message_ends_the_user_blocked_wait() {
+    let mut app = app();
+    held_message(&mut app, AgentState::Blocked, 0);
+    app.message_queue.mark_due();
+    app.message_queue_pass(Instant::now(), now_unix());
+    let terminal = terminal_id(&app);
+    assert!(app.message_queue.user_blocked.contains_key(&terminal));
+    let reply = app.handle_agent_message_claim(
+        "c".into(),
+        AgentMessageClaimParams {
+            pane: app.public_pane_id(0, pane(&app)).unwrap(),
+            id: "ms1".into(),
+        },
+    );
+    assert!(reply.contains("true"), "{reply}");
+    assert!(app.message_queue.is_empty());
+    assert!(!app.message_queue.user_blocked.contains_key(&terminal));
+    // Its screen still reads blocked: blocked_since falls back to that.
+    let info = app.agent_info(0, pane(&app)).expect("agent info");
+    assert_eq!(
+        info.blocked_since,
+        terminal_ref(&app)
+            .agent_state_since_unix_ms
+            .map(|ms| ms / 1000)
+    );
+}
+
+fn terminal_ref(app: &App) -> &crate::terminal::TerminalState {
+    let id = app.state.workspaces[0].tabs[0].panes[&pane(app)]
+        .attached_terminal_id
+        .clone();
+    &app.state.terminals[&id]
+}
