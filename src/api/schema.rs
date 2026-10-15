@@ -363,6 +363,10 @@ pub enum Method {
     /// PreCompact / SessionStart(compact) hooks).
     #[serde(rename = "pane.report_compact")]
     PaneReportCompact(PaneReportCompactParams),
+    /// Fork: a wait of the caller started or finished (the herdr_agents
+    /// MCP), for its turn origin.
+    #[serde(rename = "agents.report_wait")]
+    AgentsReportWait(agents_model::AgentsReportWaitParams),
     #[serde(rename = "agent.prompt")]
     AgentPrompt(AgentPromptParams),
     #[serde(rename = "agent.wait")]

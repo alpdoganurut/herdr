@@ -1491,6 +1491,9 @@ impl App {
             Method::PaneReportCompact(params) => {
                 return self.handle_pane_report_compact(request.id, params)
             }
+            Method::AgentsReportWait(params) => {
+                return self.handle_agents_report_wait(request.id, params)
+            }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

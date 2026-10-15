@@ -2629,6 +2629,28 @@
           ],
           "type": "object"
         },
+        "AgentsReportWaitParams": {
+          "description": "`agents.report_wait`: the herdr_agents MCP started (`started`) or\nfinished a wait of the caller (agents_wait_for_message, agents_wait).\nA wait started in the caller's user turn that outlives the turn carries\nthe user's authority into the turn its end opens\n(`TurnState::note_wait`). `seq` is the MCP's id for the wait (an end\nmatches its own start). Answers `ok`.",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            },
+            "seq": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "started": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "caller_pane",
+            "started"
+          ],
+          "type": "object"
+        },
         "AgentsSendMessageParams": {
           "description": "`agents.send_message`: type a message into an idle agent. Never waits.",
           "properties": {
@@ -10562,6 +10584,23 @@
           "type": "object"
         },
         {
+          "description": "Fork: a wait of the caller started or finished (the herdr_agents\nMCP), for its turn origin.",
+          "properties": {
+            "method": {
+              "const": "agents.report_wait",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsReportWaitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "agent.prompt",
@@ -13589,6 +13628,10 @@
         "AgentsTurnInfo": {
           "description": "A pane's current turn.",
           "properties": {
+            "continued": {
+              "description": "A user turn only as the continuation of a wait the user's turn\nstarted (the agent's own turn after that wait returned).",
+              "type": "boolean"
+            },
             "detail": {
               "anyOf": [
                 {

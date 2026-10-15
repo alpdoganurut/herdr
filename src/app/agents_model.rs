@@ -610,6 +610,7 @@ impl App {
             bridged: false,
             attach: false,
             started_unix: 0,
+            continued: false,
         });
         Ok(Some(ModelCaller {
             ws_idx,

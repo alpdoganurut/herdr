@@ -486,6 +486,102 @@ async fn fork_smoke_urgent_message_interrupts_a_working_teammate() {
     shutdown_test_runtimes(&mut server);
 }
 
+/// A wait the lead started in its user's turn (`agents.report_wait`) that
+/// outlived the turn (an async MCP task: the pane went idle) makes the turn
+/// its end opens the user's: an urgent message from it is allowed, once.
+#[tokio::test]
+async fn fork_smoke_a_user_turn_wait_carries_urgent_authority_into_its_continuation() {
+    use crate::api::schema::agents_model::AgentsReportWaitParams;
+    let (mut server, mut input, panes) = crew_server();
+    server.app.coordinator.assume_shell_ready = true;
+    terminal(&mut server, panes[1]).set_detected_state(Some(Agent::Claude), AgentState::Working);
+    let lead = public(&server, panes[0]);
+    let fixer = public(&server, panes[1]);
+    let urgent = |server: &mut HeadlessServer| {
+        public_api(
+            server,
+            Method::AgentsSendMessage(AgentsSendMessageParams {
+                caller_pane: lead.clone(),
+                to: fixer.clone(),
+                text: "stop the deploy".into(),
+                reply_to: None,
+                urgent: true,
+            }),
+        )
+    };
+    let report = |server: &mut HeadlessServer, started: bool| {
+        public_api(
+            server,
+            Method::AgentsReportWait(AgentsReportWaitParams {
+                caller_pane: lead.clone(),
+                started,
+                seq: 1,
+            }),
+        )
+    };
+    // The lead's user asks; the lead starts a wait and its turn ends.
+    let t0 = std::time::Instant::now();
+    let lead_terminal = terminal(&mut server, panes[0]);
+    lead_terminal.turn_mut().note_input(
+        &InputSource::Client {
+            submit: true,
+            attach: false,
+        },
+        t0,
+    );
+    lead_terminal
+        .turn_mut()
+        .on_status_edge(EdgeStatus::Idle, EdgeStatus::Working, false, t0, 1);
+    let started = report(&mut server, true);
+    assert!(started.get("error").is_none(), "{started}");
+    terminal(&mut server, panes[0]).turn_mut().on_status_edge(
+        EdgeStatus::Working,
+        EdgeStatus::Idle,
+        false,
+        std::time::Instant::now(),
+        2,
+    );
+    // The wait returns; the lead starts a turn on its own.
+    let ended = report(&mut server, false);
+    assert!(ended.get("error").is_none(), "{ended}");
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    terminal(&mut server, panes[0]).turn_mut().on_status_edge(
+        EdgeStatus::Idle,
+        EdgeStatus::Working,
+        false,
+        later,
+        3,
+    );
+    let sent = urgent(&mut server);
+    assert_eq!(sent["result"]["message"]["outcome"], "queued", "{sent}");
+    let esc = tokio::time::timeout(std::time::Duration::from_secs(2), input.recv())
+        .await
+        .expect("an Esc")
+        .expect("bytes");
+    assert_eq!(&esc[..], b"\x1b");
+
+    // One turn only: the lead's next turn of its own is not its user's.
+    let lead_terminal = terminal(&mut server, panes[0]);
+    lead_terminal.turn_mut().on_status_edge(
+        EdgeStatus::Working,
+        EdgeStatus::Idle,
+        false,
+        later + std::time::Duration::from_secs(10),
+        4,
+    );
+    lead_terminal.turn_mut().on_status_edge(
+        EdgeStatus::Idle,
+        EdgeStatus::Working,
+        false,
+        later + std::time::Duration::from_secs(20),
+        5,
+    );
+    let lead_id = terminal(&mut server, panes[0]).id.clone();
+    let turn = server.app.effective_turn(&lead_id).expect("a turn");
+    assert!(!turn.user_turn(), "{turn:?}");
+    shutdown_test_runtimes(&mut server);
+}
+
 /// Give a pane a runtime whose process (its shell or agent) is `pid`.
 fn set_pane_pid(server: &mut HeadlessServer, pane: crate::layout::PaneId, pid: u32) {
     let id = server.app.state.workspaces[1]

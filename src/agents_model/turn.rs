@@ -26,6 +26,14 @@ pub const HOOK_LIVE_HOLD: Duration = Duration::from_secs(15);
 pub const LATE_HOOK_REPORT: Duration = Duration::from_secs(30);
 /// A user submit counts for the next turn only this long.
 pub const USER_SUBMIT_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// A wait the agent started in its user's turn (`agents_wait_for_message`,
+/// `agents_wait`) that outlived that turn (an async MCP task: the pane went
+/// idle while it ran) carries the user's authority into the turn its
+/// completion opens, when that turn starts within this long of the wait's
+/// end ([`TurnState::note_wait`]). The wait itself may last as long as the
+/// MCP lets it (`api::MAX_WAIT_S` per call); this bounds only the gap from
+/// its end to the new turn, which the agent opens at once.
+pub const WAIT_CONTINUATION_WINDOW: Duration = Duration::from_secs(2 * 60);
 
 /// The coarse agent status a status edge is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +113,23 @@ struct TurnRecord {
     poison: Option<TurnOrigin>,
     bridged: bool,
     attach: bool,
+    /// A user turn carried over a wait ([`UserWait`]), not a submit.
+    continued: bool,
+}
+
+/// A wait the agent started in its user's own turn (`agents.report_wait`
+/// from the herdr_agents MCP). Pending until the next turn captures.
+#[derive(Debug, Clone, Copy)]
+struct UserWait {
+    /// The MCP's id for that wait: only its own end completes it.
+    seq: u64,
+    /// The pane went idle (the turn ended) while the wait ran: the wait
+    /// outlived its turn (an async task), so the turn its end opens is the
+    /// user's continuation. A wait inside one turn (a synchronous call)
+    /// never sees one.
+    idle_seen: bool,
+    /// When the wait returned.
+    ended: Option<Instant>,
 }
 
 /// The effective turn, as the policy and the MCP header see it.
@@ -115,6 +140,9 @@ pub struct EffectiveTurn {
     pub bridged: bool,
     pub attach: bool,
     pub started_unix: u64,
+    /// The user turn continues a wait the user's turn started
+    /// ([`WAIT_CONTINUATION_WINDOW`]).
+    pub continued: bool,
 }
 
 impl EffectiveTurn {
@@ -146,6 +174,7 @@ impl EffectiveTurn {
             user_turn: self.user_turn(),
             poisoned: self.poisoned,
             started_unix: (self.started_unix > 0).then_some(self.started_unix),
+            continued: self.continued && self.user_turn(),
             ..AgentsTurnInfo::default()
         };
         info.detail = if self.bridged {
@@ -194,6 +223,8 @@ pub struct TurnState {
     /// a report arrives, so after a restart or a handoff.
     hook_start: Option<HookMark>,
     hook_end: Option<HookMark>,
+    /// A wait started in a user turn, until the next turn captures.
+    user_wait: Option<UserWait>,
 }
 
 impl TurnState {
@@ -222,6 +253,9 @@ impl TurnState {
             }
             InputSource::Programmatic(programmatic) => {
                 self.prov.last_programmatic = Some(now);
+                // A herdr write (a message, a wake-up, an interrupt, a
+                // script) is not the user's: no wait carries over it.
+                self.user_wait = None;
                 if self.prov.programmatic_since_idle.is_none() {
                     self.prov.programmatic_since_idle = Some(programmatic.clone());
                 }
@@ -266,6 +300,7 @@ impl TurnState {
                 // idle): its first turn is not captured (12b) until the
                 // agent is next seen idle.
                 self.record = TurnRecord::default();
+                self.user_wait = None;
                 self.in_turn = true;
                 self.clear_since_idle();
                 TurnEdge::Started { user: false }
@@ -274,11 +309,21 @@ impl TurnState {
             (_, EdgeStatus::Working) => TurnEdge::None,
             (EdgeStatus::Working | EdgeStatus::Blocked, EdgeStatus::Idle | EdgeStatus::Unknown) => {
                 self.idle_edge(next == EdgeStatus::Idle && hook, now);
+                if next == EdgeStatus::Idle {
+                    // The turn ended while a wait it started still runs.
+                    if let Some(wait) = self.user_wait.as_mut().filter(|w| w.ended.is_none()) {
+                        wait.idle_seen = true;
+                    }
+                } else {
+                    // The agent went away: nothing to continue.
+                    self.user_wait = None;
+                }
                 TurnEdge::Ended
             }
             (EdgeStatus::Unknown, EdgeStatus::Idle) => {
                 // An agent came up idle: no turn ran.
                 self.restored = false;
+                self.user_wait = None;
                 self.in_turn = false;
                 self.prov.last_idle_at = None;
                 self.clear_since_idle();
@@ -315,33 +360,85 @@ impl TurnState {
             && self.record.origin != TurnOrigin::Unknown;
         if bridge {
             self.record.bridged = true;
+            match self.user_wait.as_mut() {
+                // The idle was a flap inside the turn, not its end.
+                Some(wait) if wait.ended.is_none() => wait.idle_seen = false,
+                // It ended inside the (carried-over) turn.
+                Some(_) => self.user_wait = None,
+                None => {}
+            }
         } else {
-            let (origin, attach) = self.rule(now);
+            let (origin, attach, continued) = self.rule(now);
             self.record = TurnRecord {
                 origin,
                 started_unix: now_unix,
                 poison: None,
                 bridged: false,
                 attach,
+                continued,
             };
+            // One turn only, whatever started it.
+            self.user_wait = None;
         }
         self.in_turn = true;
         self.clear_since_idle();
     }
 
-    /// §3.3 steps 2-4: the origin of a turn starting now.
-    fn rule(&self, now: Instant) -> (TurnOrigin, bool) {
+    /// §3.3 steps 2-4: the origin of a turn starting now, whether it came
+    /// through a terminal-attach session, and whether it is the user's only
+    /// as the continuation of a wait ([`WAIT_CONTINUATION_WINDOW`]).
+    fn rule(&self, now: Instant) -> (TurnOrigin, bool, bool) {
         if let Some(programmatic) = &self.prov.programmatic_since_idle {
-            return (TurnOrigin::from(programmatic), false);
+            return (TurnOrigin::from(programmatic), false, false);
         }
         let recent_submit = self
             .prov
             .last_client_submit
             .is_some_and(|at| now.saturating_duration_since(at) < USER_SUBMIT_WINDOW);
         if self.prov.client_submit_since_idle && recent_submit {
-            return (TurnOrigin::User, self.prov.client_attach_since_idle);
+            return (TurnOrigin::User, self.prov.client_attach_since_idle, false);
         }
-        (TurnOrigin::SelfStarted, false)
+        if self.wait_continues(now) {
+            return (TurnOrigin::User, false, true);
+        }
+        (TurnOrigin::SelfStarted, false, false)
+    }
+
+    /// A wait started in a user turn outlived it and ended within
+    /// [`WAIT_CONTINUATION_WINDOW`] before `now`.
+    fn wait_continues(&self, now: Instant) -> bool {
+        self.user_wait.is_some_and(|wait| {
+            wait.idle_seen
+                && wait.ended.is_some_and(|ended| {
+                    now.saturating_duration_since(ended) < WAIT_CONTINUATION_WINDOW
+                })
+        })
+    }
+
+    /// A wait of the agent started (`started`) or returned
+    /// (`agents.report_wait`). `seq` is the MCP's id for the wait;
+    /// `user_turn`: the caller's effective turn was its user's when the
+    /// start was reported. A start in a user turn is remembered (the newest
+    /// wait wins; a start in any other turn forgets it) until the next turn
+    /// captures; its end, matched by `seq`, completes it. The turn the
+    /// completion opens is the user's when the pane went idle while the
+    /// wait ran and nothing else started it (`rule`). O(1), runtime only.
+    pub fn note_wait(&mut self, started: bool, seq: u64, user_turn: bool, now: Instant) {
+        if started {
+            self.user_wait = user_turn.then_some(UserWait {
+                seq,
+                idle_seen: false,
+                ended: None,
+            });
+            return;
+        }
+        if let Some(wait) = self
+            .user_wait
+            .as_mut()
+            .filter(|wait| wait.seq == seq && wait.ended.is_none())
+        {
+            wait.ended = Some(now);
+        }
     }
 
     /// The effective turn now (§3.5): while the agent shows idle and input
@@ -350,13 +447,14 @@ impl TurnState {
         let pending =
             self.prov.client_submit_since_idle || self.prov.programmatic_since_idle.is_some();
         if status == EdgeStatus::Idle && pending && !self.restored {
-            let (origin, attach) = self.rule(now);
+            let (origin, attach, continued) = self.rule(now);
             return EffectiveTurn {
                 origin,
                 poisoned: false,
                 bridged: false,
                 attach,
                 started_unix: now_unix,
+                continued,
             };
         }
         match &self.record.poison {
@@ -366,6 +464,7 @@ impl TurnState {
                 bridged: self.record.bridged,
                 attach: false,
                 started_unix: self.record.started_unix,
+                continued: false,
             },
             None => EffectiveTurn {
                 origin: self.record.origin.clone(),
@@ -373,6 +472,7 @@ impl TurnState {
                 bridged: self.record.bridged,
                 attach: self.record.attach,
                 started_unix: self.record.started_unix,
+                continued: self.record.continued,
             },
         }
     }
@@ -500,6 +600,8 @@ impl TurnState {
     pub fn clear_hook_marks(&mut self) {
         self.hook_start = None;
         self.hook_end = None;
+        // Nor does a wait its predecessor started.
+        self.user_wait = None;
     }
 
     /// The last client keystroke.
@@ -963,5 +1065,156 @@ mod tests {
         // The first end after a restart is the last thing known.
         turn.note_hook_turn(false, prompt("p9"), 90, secs(t0, 1));
         assert_eq!(turn.hook_turn_ended(), Some(secs(t0, 1)));
+    }
+
+    /// A user turn that started a wait (`agents.report_wait`, seq 1) at 3 s
+    /// and ended (the pane idle) at 10 s while the wait runs: an async MCP
+    /// task.
+    fn user_turn_waiting(t0: Instant) -> TurnState {
+        let mut turn = idle(t0);
+        turn.note_input(&SUBMIT, secs(t0, 1));
+        turn.on_status_edge(Idle, Working, false, secs(t0, 2), 2);
+        let user = turn.effective(Working, secs(t0, 3), 3).user_turn();
+        assert!(user);
+        turn.note_wait(true, 1, user, secs(t0, 3));
+        turn.on_status_edge(Working, Idle, false, secs(t0, 10), 10);
+        turn
+    }
+
+    #[test]
+    fn the_turn_a_user_turn_wait_opens_is_the_users() {
+        let t0 = Instant::now();
+        let mut turn = user_turn_waiting(t0);
+        // The wait returns at 60 s; the agent starts a turn on its own.
+        turn.note_wait(false, 1, false, secs(t0, 60));
+        turn.on_status_edge(Idle, Working, false, secs(t0, 61), 61);
+        let effective = turn.effective(Working, secs(t0, 62), 62);
+        assert_eq!(effective.origin, TurnOrigin::User);
+        assert!(effective.user_turn());
+        assert!(effective.continued);
+        assert!(effective.info(|_| None).continued);
+        // The urgent check reads the effective user turn.
+        let facts = super::super::policy::Facts {
+            user_turn: effective.user_turn(),
+            reply_to_turn_starter: false,
+            turn_desc: effective.describe(),
+            target: "lane-b".into(),
+            own_plain_group: None,
+        };
+        let actor = super::super::policy::Actor::Agent { team: true };
+        assert!(super::super::policy::authorize_urgent(actor, &facts).is_allowed());
+        // A script typed in later still poisons it.
+        turn.note_input(&api(), secs(t0, 63));
+        assert!(!turn.effective(Working, secs(t0, 64), 64).user_turn());
+    }
+
+    #[test]
+    fn a_wait_started_outside_a_user_turn_carries_nothing() {
+        let t0 = Instant::now();
+        let mut turn = idle(t0);
+        // A self-started turn starts the wait.
+        turn.on_status_edge(Idle, Working, false, secs(t0, 2), 2);
+        let user = turn.effective(Working, secs(t0, 3), 3).user_turn();
+        assert!(!user);
+        turn.note_wait(true, 1, user, secs(t0, 3));
+        turn.on_status_edge(Working, Idle, false, secs(t0, 10), 10);
+        turn.note_wait(false, 1, false, secs(t0, 60));
+        turn.on_status_edge(Idle, Working, false, secs(t0, 61), 61);
+        let effective = turn.effective(Working, secs(t0, 62), 62);
+        assert_eq!(effective.origin, TurnOrigin::SelfStarted);
+        assert!(!effective.user_turn());
+        // A start in another turn forgets an earlier user wait.
+        let mut turn = user_turn_waiting(t0);
+        turn.note_wait(true, 2, false, secs(t0, 20));
+        turn.note_wait(false, 2, false, secs(t0, 60));
+        turn.on_status_edge(Idle, Working, false, secs(t0, 61), 61);
+        assert_eq!(
+            origin(&turn, Working, secs(t0, 62)),
+            TurnOrigin::SelfStarted
+        );
+    }
+
+    #[test]
+    fn a_herdr_write_before_the_new_turn_keeps_its_own_origin() {
+        let t0 = Instant::now();
+        // The write lands after the wait returned: the turn is the message's.
+        let mut turn = user_turn_waiting(t0);
+        turn.note_wait(false, 1, false, secs(t0, 60));
+        turn.note_input(&api(), secs(t0, 61));
+        turn.on_status_edge(Idle, Working, false, secs(t0, 62), 62);
+        let effective = turn.effective(Working, secs(t0, 63), 63);
+        assert_eq!(effective.origin, TurnOrigin::Programmatic);
+        assert!(!effective.user_turn());
+        assert!(!effective.continued);
+        // It lands while the wait runs: nothing carries over either.
+        let mut turn = user_turn_waiting(t0);
+        turn.note_input(&api(), secs(t0, 30));
+        turn.on_status_edge(Idle, Working, false, secs(t0, 31), 31);
+        turn.on_status_edge(Working, Idle, false, secs(t0, 40), 40);
+        turn.note_wait(false, 1, false, secs(t0, 60));
+        turn.on_status_edge(Idle, Working, false, secs(t0, 61), 61);
+        assert_eq!(
+            origin(&turn, Working, secs(t0, 62)),
+            TurnOrigin::SelfStarted
+        );
+    }
+
+    #[test]
+    fn a_wait_continuation_expires() {
+        let t0 = Instant::now();
+        let mut turn = user_turn_waiting(t0);
+        turn.note_wait(false, 1, false, secs(t0, 60));
+        let late = secs(t0, 60) + WAIT_CONTINUATION_WINDOW;
+        turn.on_status_edge(Idle, Working, false, late, 200);
+        assert_eq!(origin(&turn, Working, late), TurnOrigin::SelfStarted);
+        // Without its end reported, nothing carries over.
+        let mut turn = user_turn_waiting(t0);
+        turn.on_status_edge(Idle, Working, false, secs(t0, 61), 61);
+        assert_eq!(
+            origin(&turn, Working, secs(t0, 62)),
+            TurnOrigin::SelfStarted
+        );
+        // Nor with another wait's end.
+        let mut turn = user_turn_waiting(t0);
+        turn.note_wait(false, 7, false, secs(t0, 60));
+        turn.on_status_edge(Idle, Working, false, secs(t0, 61), 61);
+        assert_eq!(
+            origin(&turn, Working, secs(t0, 62)),
+            TurnOrigin::SelfStarted
+        );
+    }
+
+    #[test]
+    fn a_wait_continuation_lasts_one_turn() {
+        let t0 = Instant::now();
+        let mut turn = user_turn_waiting(t0);
+        turn.note_wait(false, 1, false, secs(t0, 60));
+        turn.on_status_edge(Idle, Working, false, secs(t0, 61), 61);
+        assert!(turn.effective(Working, secs(t0, 62), 62).user_turn());
+        turn.on_status_edge(Working, Idle, false, secs(t0, 70), 70);
+        turn.on_status_edge(Idle, Working, false, secs(t0, 80), 80);
+        let effective = turn.effective(Working, secs(t0, 81), 81);
+        assert_eq!(effective.origin, TurnOrigin::SelfStarted);
+        assert!(!effective.continued);
+    }
+
+    #[test]
+    fn a_wait_inside_its_turn_carries_nothing() {
+        let t0 = Instant::now();
+        let mut turn = idle(t0);
+        turn.note_input(&SUBMIT, secs(t0, 1));
+        turn.on_status_edge(Idle, Working, false, secs(t0, 2), 2);
+        turn.note_wait(true, 1, true, secs(t0, 3));
+        // A screen flap inside the wait is bridged, not the turn's end.
+        turn.on_status_edge(Working, Idle, false, secs(t0, 4), 4);
+        turn.on_status_edge(Idle, Working, false, secs(t0, 5), 5);
+        // The synchronous wait returns; the turn ends after it.
+        turn.note_wait(false, 1, false, secs(t0, 20));
+        turn.on_status_edge(Working, Idle, false, secs(t0, 30), 30);
+        turn.on_status_edge(Idle, Working, false, secs(t0, 40), 40);
+        assert_eq!(
+            origin(&turn, Working, secs(t0, 41)),
+            TurnOrigin::SelfStarted
+        );
     }
 }

@@ -42,6 +42,7 @@ pub mod method {
     pub const QUEUED: &str = "agents.queued";
     pub const INBOX: &str = "agents.inbox";
     pub const HANDOFF: &str = "agents.handoff";
+    pub const REPORT_WAIT: &str = "agents.report_wait";
 
     /// The methods advertised to client shells (the TUI's "Set role…" and
     /// "Handoff & compact").
@@ -50,7 +51,7 @@ pub mod method {
 
     /// Every method.
     #[cfg(test)]
-    pub const ALL: [&str; 23] = [
+    pub const ALL: [&str; 24] = [
         ACTOR,
         DIRECTORY,
         READ,
@@ -74,6 +75,7 @@ pub mod method {
         QUEUED,
         INBOX,
         HANDOFF,
+        REPORT_WAIT,
     ];
 }
 
@@ -671,6 +673,10 @@ pub struct AgentsTurnInfo {
     pub wake_seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_unix: Option<u64>,
+    /// A user turn only as the continuation of a wait the user's turn
+    /// started (the agent's own turn after that wait returned).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub continued: bool,
 }
 
 impl Default for AgentsTurnInfo {
@@ -684,6 +690,7 @@ impl Default for AgentsTurnInfo {
             from_pane: None,
             wake_seq: None,
             started_unix: None,
+            continued: false,
         }
     }
 }
@@ -922,6 +929,20 @@ pub struct AgentsInboxParams {
     pub caller_pane: String,
 }
 
+/// `agents.report_wait`: the herdr_agents MCP started (`started`) or
+/// finished a wait of the caller (agents_wait_for_message, agents_wait).
+/// A wait started in the caller's user turn that outlives the turn carries
+/// the user's authority into the turn its end opens
+/// (`TurnState::note_wait`). `seq` is the MCP's id for the wait (an end
+/// matches its own start). Answers `ok`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsReportWaitParams {
+    pub caller_pane: String,
+    pub started: bool,
+    #[serde(default)]
+    pub seq: u64,
+}
+
 /// `agents.handoff` (fork): handoff, then compact, for a Claude agent
 /// (src/agent_handoff.rs). Without `caller_pane` the caller is the user
 /// (the tab menu, the keybinding, `herdr agent handoff` outside an agent);
@@ -1129,7 +1150,7 @@ pub struct AgentActionEntry {
 
 /// The type names the params structs may reference (digest hygiene).
 #[cfg(test)]
-pub const PARAM_TYPES: [&str; 24] = [
+pub const PARAM_TYPES: [&str; 25] = [
     "AgentsActorParams",
     "AgentsDirectoryParams",
     "AgentsReadParams",
@@ -1154,6 +1175,7 @@ pub const PARAM_TYPES: [&str; 24] = [
     "AgentsQueuedParams",
     "AgentsInboxParams",
     "AgentsHandoffParams",
+    "AgentsReportWaitParams",
 ];
 
 #[cfg(test)]

@@ -46,8 +46,9 @@ use crate::api::schema::agents_model::{
     AgentsQueuedParams, AgentsReadFormat, AgentsReadMessagesParams, AgentsReadParams,
     AgentsReadResult, AgentsReadSource, AgentsRenameResult, AgentsRenameTabParams,
     AgentsReopenResult, AgentsReopenTabParams, AgentsReorderGroupParams, AgentsReorderResult,
-    AgentsReorderTabParams, AgentsScreenAccess, AgentsSendMessageParams, AgentsSetMetaParams,
-    AgentsSetMetaResult, AgentsTabInfo, AgentsTeamRef, AgentsTurnInfo, AgentsTurnOrigin,
+    AgentsReorderTabParams, AgentsReportWaitParams, AgentsScreenAccess, AgentsSendMessageParams,
+    AgentsSetMetaParams, AgentsSetMetaResult, AgentsTabInfo, AgentsTeamRef, AgentsTurnInfo,
+    AgentsTurnOrigin,
 };
 use crate::api::schema::notes::{
     CheckpointKind, CheckpointWriteInfo, CheckpointsAddParams, CheckpointsListInfo,
@@ -427,6 +428,10 @@ pub struct Session<A: Api> {
     /// dropped messages (`None` until the first tool call, which starts at
     /// the log's end).
     notice_offset: Cell<Option<u64>>,
+    /// The id of this server's last wait (`agents.report_wait`).
+    wait_seq: Cell<u64>,
+    /// The server does not know `agents.report_wait` (an older one).
+    wait_report_unsupported: Cell<bool>,
 }
 
 impl<A: Api> Session<A> {
@@ -439,6 +444,8 @@ impl<A: Api> Session<A> {
             returned: RefCell::new(HashSet::new()),
             canonical: RefCell::new(None),
             notice_offset: Cell::new(None),
+            wait_seq: Cell::new(0),
+            wait_report_unsupported: Cell::new(false),
         }
     }
 
@@ -692,8 +699,10 @@ impl<A: Api> Session<A> {
             "agents_get" => return self.get_agent(caller, args),
             "agents_read" => return self.read_agent(caller, args),
             "agents_messages" => return self.messages(caller, args),
-            "agents_wait_for_message" => return self.wait_for_message(caller, args),
-            "agents_wait" => return self.wait_agent(caller, args),
+            "agents_wait_for_message" => {
+                return self.reporting_wait(caller, || self.wait_for_message(caller, args))
+            }
+            "agents_wait" => return self.reporting_wait(caller, || self.wait_agent(caller, args)),
             "agents_notes_read" => return self.notes_read(caller, args),
             "agents_checkpoints_list" => return self.checkpoints_list(caller, args),
             "agents_actions" => return self.actions(args),
@@ -1436,6 +1445,44 @@ impl<A: Api> Session<A> {
         message.outcome = messages::OUTCOME_QUEUED.into();
         self.returned.borrow_mut().insert(id);
         Some(message)
+    }
+
+    /// Run a wait, telling the server when it starts and when it returns
+    /// (`agents.report_wait`): a wait started in the caller's user turn that
+    /// outlives the turn (an async task) carries the user's authority into
+    /// the turn its end opens. The end is reported before the result goes
+    /// back, so it lands before that turn starts. Best effort: an older
+    /// server or a failed report changes nothing about the wait.
+    fn reporting_wait(&self, caller: &Caller, wait: impl FnOnce() -> ToolResult) -> ToolResult {
+        let seq = self.wait_seq.get().wrapping_add(1);
+        self.wait_seq.set(seq);
+        self.report_wait(caller, true, seq);
+        let result = wait();
+        self.report_wait(caller, false, seq);
+        result
+    }
+
+    fn report_wait(&self, caller: &Caller, started: bool, seq: u64) {
+        if self.wait_report_unsupported.get() {
+            return;
+        }
+        match self
+            .api
+            .call(Method::AgentsReportWait(AgentsReportWaitParams {
+                caller_pane: caller.pane_id.clone(),
+                started,
+                seq,
+            })) {
+            Ok(_) => {}
+            Err(error)
+                if error.code == "not_implemented" || error.message.contains("unknown variant") =>
+            {
+                self.wait_report_unsupported.set(true);
+            }
+            Err(error) => {
+                tracing::debug!(code = %error.code, "agents.report_wait failed: {}", error.message);
+            }
+        }
     }
 
     fn wait_for_message(&self, caller: &Caller, args: &Value) -> ToolResult {
@@ -2823,6 +2870,9 @@ fn turn_text(turn: &AgentsTurnInfo) -> String {
         Some(AgentsOriginDetail::ClientAttach) => text.push_str(" (attach)"),
         _ => {}
     }
+    if turn.continued {
+        text.push_str(" (continued after your wait)");
+    }
     if turn.poisoned {
         text.push_str(" (a script typed in since)");
     }
@@ -4186,6 +4236,7 @@ mod tests {
                     "messages": params.ids.iter().map(|id| json!({ "id": id, "found": false })).collect::<Vec<_>>(),
                 })),
                 Method::AgentsQueued(_) => Ok(json!({ "type": "agents_queued", "messages": [] })),
+                Method::AgentsReportWait(_) => Ok(json!({ "type": "ok" })),
                 other => panic!("unexpected request {other:?}"),
             }
         }
@@ -4377,6 +4428,7 @@ mod tests {
                 | Method::CheckpointsAdd(_)
                 | Method::CheckpointsList(_)) => self.notes_answer(notes),
                 Method::AgentsQueued(_) => Ok(json!({ "type": "agents_queued", "messages": [] })),
+                Method::AgentsReportWait(_) => Ok(json!({ "type": "ok" })),
                 // The server queue: its ids, read through the log, to the caller.
                 Method::AgentsInbox(params) => {
                     let caller = self

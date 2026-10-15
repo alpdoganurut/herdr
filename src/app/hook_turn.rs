@@ -13,6 +13,10 @@
 //! last reported turn ended counts as free whatever its displayed status.
 //! The displayed status never reads them; a Claude whose screen says
 //! `working` keeps saying so.
+//!
+//! `agents.report_wait`: the herdr_agents MCP's waits, for the turn origin
+//! (`TurnState::note_wait`): the turn a wait's end opens continues the user
+//! turn that started the wait.
 
 use std::time::Instant;
 
@@ -76,6 +80,31 @@ impl App {
             // The status may not change (the title spinner stays): look at
             // the queue now, or a message waits for the next status edge.
             self.message_queue.mark_due();
+        }
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    /// `agents.report_wait`: a wait of the caller (the herdr_agents MCP's
+    /// agents_wait_for_message or agents_wait) started or returned. A wait
+    /// started in the caller's effective user turn that outlives the turn
+    /// (an async MCP task: the pane goes idle while it runs) makes the turn
+    /// its end opens the user's (`TurnState::note_wait`).
+    pub(crate) fn handle_agents_report_wait(
+        &mut self,
+        id: String,
+        params: crate::api::schema::agents_model::AgentsReportWaitParams,
+    ) -> String {
+        let caller = match self.required_caller(&params.caller_pane) {
+            Ok(caller) => caller,
+            Err(error) => return Self::model_reply(id, Err(error)),
+        };
+        if let Some(terminal) = self.state.terminals.get_mut(&caller.terminal_id) {
+            terminal.turn_mut().note_wait(
+                params.started,
+                params.seq,
+                caller.live && caller.turn.user_turn(),
+                Instant::now(),
+            );
         }
         encode_success(id, ResponseResult::Ok {})
     }
