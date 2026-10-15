@@ -586,7 +586,8 @@ impl App {
             now,
             now_unix(),
         );
-        if turn.user_turn() && turn.started_unix > deferral.requested_unix {
+        // A turn continued from a wait is not a new request of the user's.
+        if turn.user_turn() && !turn.continued && turn.started_unix > deferral.requested_unix {
             log(
                 self,
                 AgentsActionOutcome::Aborted,

@@ -34,6 +34,14 @@ pub const USER_SUBMIT_WINDOW: Duration = Duration::from_secs(10 * 60);
 /// MCP lets it (`api::MAX_WAIT_S` per call); this bounds only the gap from
 /// its end to the new turn, which the agent opens at once.
 pub const WAIT_CONTINUATION_WINDOW: Duration = Duration::from_secs(2 * 60);
+/// A wait end reported longer than this after its start is not trusted
+/// (dropped, nothing carries over): one MCP wait lasts at most
+/// [`crate::coordinator::api::MAX_WAIT_S`], plus slack for the reports.
+pub const WAIT_SPAN_MAX: Duration = Duration::from_secs(crate::coordinator::api::MAX_WAIT_S + 30);
+/// Waits chain (a wait started in a continued turn carries again), but only
+/// this long after the user's own turn the chain descends from started:
+/// past it, the agent's turns are its own again.
+pub const WAIT_CHAIN_MAX: Duration = Duration::from_secs(30 * 60);
 
 /// The coarse agent status a status edge is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +123,9 @@ struct TurnRecord {
     attach: bool,
     /// A user turn carried over a wait ([`UserWait`]), not a submit.
     continued: bool,
+    /// For a user turn: when the user's own turn it is or descends from
+    /// (through waits) started ([`WAIT_CHAIN_MAX`]).
+    root: Option<Instant>,
 }
 
 /// A wait the agent started in its user's own turn (`agents.report_wait`
@@ -123,6 +134,11 @@ struct TurnRecord {
 struct UserWait {
     /// The MCP's id for that wait: only its own end completes it.
     seq: u64,
+    /// When the wait started ([`WAIT_SPAN_MAX`]).
+    started: Instant,
+    /// When the user's own turn the wait descends from started
+    /// ([`WAIT_CHAIN_MAX`]).
+    root: Instant,
     /// The pane went idle (the turn ended) while the wait ran: the wait
     /// outlived its turn (an async task), so the turn its end opens is the
     /// user's continuation. A wait inside one turn (a synchronous call)
@@ -290,8 +306,10 @@ impl TurnState {
                 if self.record.bridged {
                     TurnEdge::Bridged
                 } else {
+                    // A continued turn is not a new prompt of the user's (no
+                    // automatic "you" checkpoint).
                     TurnEdge::Started {
-                        user: self.record.origin == TurnOrigin::User,
+                        user: self.record.origin == TurnOrigin::User && !self.record.continued,
                     }
                 }
             }
@@ -319,6 +337,11 @@ impl TurnState {
                     self.user_wait = None;
                 }
                 TurnEdge::Ended
+            }
+            (EdgeStatus::Idle, EdgeStatus::Unknown) => {
+                // The agent went away while idle: nothing to continue.
+                self.user_wait = None;
+                TurnEdge::None
             }
             (EdgeStatus::Unknown, EdgeStatus::Idle) => {
                 // An agent came up idle: no turn ran.
@@ -369,6 +392,17 @@ impl TurnState {
             }
         } else {
             let (origin, attach, continued) = self.rule(now);
+            let root = match self.user_wait {
+                Some(wait) if continued => {
+                    tracing::debug!(
+                        seq = wait.seq,
+                        root_age_s = now.saturating_duration_since(wait.root).as_secs(),
+                        "turn: a wait started in a user turn continues it"
+                    );
+                    Some(wait.root)
+                }
+                _ => (origin == TurnOrigin::User).then_some(now),
+            };
             self.record = TurnRecord {
                 origin,
                 started_unix: now_unix,
@@ -376,6 +410,7 @@ impl TurnState {
                 bridged: false,
                 attach,
                 continued,
+                root,
             };
             // One turn only, whatever started it.
             self.user_wait = None;
@@ -405,10 +440,12 @@ impl TurnState {
     }
 
     /// A wait started in a user turn outlived it and ended within
-    /// [`WAIT_CONTINUATION_WINDOW`] before `now`.
+    /// [`WAIT_CONTINUATION_WINDOW`] before `now`, within [`WAIT_CHAIN_MAX`]
+    /// of the user's own turn it descends from.
     fn wait_continues(&self, now: Instant) -> bool {
         self.user_wait.is_some_and(|wait| {
             wait.idle_seen
+                && now.saturating_duration_since(wait.root) < WAIT_CHAIN_MAX
                 && wait.ended.is_some_and(|ended| {
                     now.saturating_duration_since(ended) < WAIT_CONTINUATION_WINDOW
                 })
@@ -422,21 +459,33 @@ impl TurnState {
     /// wait wins; a start in any other turn forgets it) until the next turn
     /// captures; its end, matched by `seq`, completes it. The turn the
     /// completion opens is the user's when the pane went idle while the
-    /// wait ran and nothing else started it (`rule`). O(1), runtime only.
+    /// wait ran and nothing else started it (`rule`). A wait started in a
+    /// continued turn inherits its root (chains end [`WAIT_CHAIN_MAX`] after
+    /// the user's own turn); an end past [`WAIT_SPAN_MAX`] drops the wait.
+    /// O(1), runtime only.
     pub fn note_wait(&mut self, started: bool, seq: u64, user_turn: bool, now: Instant) {
         if started {
-            self.user_wait = user_turn.then_some(UserWait {
-                seq,
-                idle_seen: false,
-                ended: None,
-            });
+            let root = self.record.root.unwrap_or(now);
+            self.user_wait = (user_turn && now.saturating_duration_since(root) < WAIT_CHAIN_MAX)
+                .then_some(UserWait {
+                    seq,
+                    started: now,
+                    root,
+                    idle_seen: false,
+                    ended: None,
+                });
             return;
         }
-        if let Some(wait) = self
+        let Some(wait) = self
             .user_wait
             .as_mut()
             .filter(|wait| wait.seq == seq && wait.ended.is_none())
-        {
+        else {
+            return;
+        };
+        if now.saturating_duration_since(wait.started) > WAIT_SPAN_MAX {
+            self.user_wait = None;
+        } else {
             wait.ended = Some(now);
         }
     }
@@ -1196,6 +1245,67 @@ mod tests {
         let effective = turn.effective(Working, secs(t0, 81), 81);
         assert_eq!(effective.origin, TurnOrigin::SelfStarted);
         assert!(!effective.continued);
+    }
+
+    #[test]
+    fn an_end_reported_past_the_wait_span_grants_nothing() {
+        let t0 = Instant::now();
+        let mut turn = user_turn_waiting(t0);
+        let late = secs(t0, 3) + WAIT_SPAN_MAX + Duration::from_secs(1);
+        turn.note_wait(false, 1, false, late);
+        turn.on_status_edge(Idle, Working, false, late + Duration::from_secs(1), 300);
+        let effective = turn.effective(Working, late + Duration::from_secs(2), 301);
+        assert_eq!(effective.origin, TurnOrigin::SelfStarted);
+    }
+
+    #[test]
+    fn waits_chain_until_the_chain_max_after_the_users_turn() {
+        let t0 = Instant::now();
+        let mut turn = user_turn_waiting(t0);
+        // Every 10 minutes a wait in the continued turn returns and opens
+        // the next one.
+        let mut at = 3u64;
+        for round in 1..=4u64 {
+            let end = at + 60;
+            turn.note_wait(false, round, false, secs(t0, end));
+            turn.on_status_edge(Idle, Working, false, secs(t0, end + 1), end + 1);
+            let effective = turn.effective(Working, secs(t0, end + 2), end + 2);
+            let within = secs(t0, end + 1).saturating_duration_since(secs(t0, 2)) < WAIT_CHAIN_MAX;
+            assert_eq!(effective.user_turn(), within, "round {round}");
+            if !within {
+                break;
+            }
+            assert!(effective.continued);
+            // The continued turn starts another wait and ends.
+            at = end + 540;
+            let user = effective.user_turn();
+            turn.note_wait(true, round + 1, user, secs(t0, at));
+            turn.on_status_edge(Working, Idle, false, secs(t0, at + 5), at + 5);
+        }
+        assert!(!turn.effective(Working, secs(t0, 4000), 4000).user_turn());
+    }
+
+    #[test]
+    fn an_unknown_edge_after_the_wait_grants_nothing() {
+        let t0 = Instant::now();
+        let mut turn = user_turn_waiting(t0);
+        turn.note_wait(false, 1, false, secs(t0, 60));
+        turn.on_status_edge(Idle, Unknown, false, secs(t0, 61), 61);
+        turn.on_status_edge(Unknown, Working, false, secs(t0, 62), 62);
+        assert_eq!(
+            origin(&turn, Working, secs(t0, 63)),
+            TurnOrigin::SelfStarted
+        );
+    }
+
+    #[test]
+    fn a_continued_turn_is_not_reported_as_a_new_user_prompt() {
+        let t0 = Instant::now();
+        let mut turn = user_turn_waiting(t0);
+        turn.note_wait(false, 1, false, secs(t0, 60));
+        let edge = turn.on_status_edge(Idle, Working, false, secs(t0, 61), 61);
+        assert_eq!(edge, TurnEdge::Started { user: false });
+        assert!(turn.effective(Working, secs(t0, 62), 62).continued);
     }
 
     #[test]
