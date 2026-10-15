@@ -935,8 +935,9 @@ impl BrowserHub {
             .map(|record| record.pid)
             .filter(|pid| crate::platform::process_exists(*pid))
             .or_else(|| {
-                launch::singleton_lock_pid(&profile_dir)
-                    .filter(|pid| crate::platform::process_exists(*pid))
+                launch::singleton_lock_holder(&profile_dir, &|pid| {
+                    crate::platform::process_exists(pid)
+                })
             });
         if let Some(pid) = live_pid {
             return Err(BrowserError::new(

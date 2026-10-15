@@ -228,6 +228,33 @@ pub fn singleton_lock_pid(profile_dir: &Path) -> Option<u32> {
     parse_singleton_lock(&target.to_string_lossy())
 }
 
+/// The pid of a live Chromium holding `profile_dir`: its `SingletonLock` pid
+/// is alive and its `SingletonSocket` accepts a connection. A lock whose
+/// browser died and whose pid the OS gave to another process has no
+/// listening socket, so it is stale (Chromium takes such a lock over itself).
+pub fn singleton_lock_holder(profile_dir: &Path, alive: &dyn Fn(u32) -> bool) -> Option<u32> {
+    let pid = singleton_lock_pid(profile_dir).filter(|pid| alive(*pid))?;
+    singleton_socket_answers(profile_dir).then_some(pid)
+}
+
+/// Whether the profile's `SingletonSocket` (Chromium's single-instance
+/// socket) accepts a connection. Without Unix sockets the live pid decides.
+pub fn singleton_socket_answers(profile_dir: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        // Connect to the link's target (Chromium puts it in a short temp
+        // dir): the profile path itself can exceed a socket path's limit.
+        let link = profile_dir.join("SingletonSocket");
+        let target = fs::read_link(&link).unwrap_or(link);
+        std::os::unix::net::UnixStream::connect(target).is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = profile_dir;
+        true
+    }
+}
+
 pub fn parse_singleton_lock(target: &str) -> Option<u32> {
     let pid: u32 = target.rsplit_once('-')?.1.trim().parse().ok()?;
     // A pid is a positive i32; anything else is garbage, never signalled.
@@ -283,8 +310,8 @@ pub fn clear_run_record(home: &Path, name: &str) {
 pub enum AttachDecision {
     /// herdr launched it and it still answers.
     Attach(RunRecord),
-    /// Something else holds the profile (a live `SingletonLock` pid herdr did
-    /// not record); never killed.
+    /// Something else holds the profile (a `SingletonLock` herdr did not
+    /// record, whose pid is alive and whose socket answers); never killed.
     InUse { pid: u32 },
     /// Nothing usable: launch.
     Launch,
@@ -303,10 +330,8 @@ pub fn attach_decision(
         }
         clear_run_record(home, name);
     }
-    if let Some(pid) = singleton_lock_pid(profile_dir) {
-        if alive(pid) {
-            return AttachDecision::InUse { pid };
-        }
+    if let Some(pid) = singleton_lock_holder(profile_dir, alive) {
+        return AttachDecision::InUse { pid };
     }
     AttachDecision::Launch
 }
@@ -759,6 +784,17 @@ mod tests {
         {
             std::os::unix::fs::symlink(format!("host-{me}"), profile.join("SingletonLock"))
                 .unwrap();
+            // A live pid without a listening SingletonSocket: the browser
+            // died and the OS reused its pid, so the lock is stale.
+            assert_eq!(
+                attach_decision(&root, "main", &profile, &alive, &|_| false),
+                AttachDecision::Launch,
+                "a reused pid without the socket is not a holder"
+            );
+            let socket = std::env::temp_dir().join(format!("herdr-sl-{me}.sock"));
+            let _ = fs::remove_file(&socket);
+            let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            std::os::unix::fs::symlink(&socket, profile.join("SingletonSocket")).unwrap();
             assert_eq!(
                 attach_decision(&root, "main", &profile, &alive, &|_| false),
                 AttachDecision::InUse { pid: me }
@@ -770,6 +806,7 @@ mod tests {
                 AttachDecision::Launch,
                 "a dead SingletonLock pid is ignored"
             );
+            let _ = fs::remove_file(&socket);
         }
         let _ = fs::remove_dir_all(&root);
     }

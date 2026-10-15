@@ -795,15 +795,23 @@ fn profile_delete_refuses_starting_in_use_live_lock_and_busy() {
         "profile_running"
     );
     hub.with_state_mut(|state| state.set_profile("scratch", super::state::ProfileStatus::Stopped));
-    // a live SingletonLock pid herdr did not record
+    // a live SingletonLock pid herdr did not record, with a listening
+    // SingletonSocket
     std::os::unix::fs::symlink(
         format!("host-{}", std::process::id()),
         store.dir("scratch").join("SingletonLock"),
     )
     .unwrap();
+    let socket = std::env::temp_dir().join(format!("herdr-pd-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&socket);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::os::unix::fs::symlink(&socket, store.dir("scratch").join("SingletonSocket")).unwrap();
     let err = hub.profile_delete("scratch").unwrap_err();
     assert_eq!(err.code, "profile_running");
     assert!(err.message.contains("still holds"));
+    std::fs::remove_file(store.dir("scratch").join("SingletonSocket")).unwrap();
+    drop(listener);
+    let _ = std::fs::remove_file(&socket);
     std::fs::remove_file(store.dir("scratch").join("SingletonLock")).unwrap();
     // a stale run record with a live pid
     super::launch::write_run_record(
