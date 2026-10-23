@@ -28,6 +28,8 @@ pub(crate) mod coordinator;
 pub(crate) mod launch_gate;
 pub(crate) mod message_pointer;
 pub(crate) mod message_queue;
+/// Fork: a pane whose saved directory is gone starts in a recreated one.
+pub(crate) mod missing_cwd;
 pub(crate) mod news;
 mod notes;
 mod notes_auto;
@@ -821,6 +823,8 @@ impl App {
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
         app.install_browser_hub(&config.browser);
+        // Fork: restored panes whose missing directory was recreated.
+        app.note_recreated_cwds();
         app.refresh_restored_workspace_git_metadata();
         Ok(app)
     }

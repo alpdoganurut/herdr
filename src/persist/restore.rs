@@ -629,6 +629,9 @@ fn restore_tab(
 
         let cwd = saved_cwd;
         let has_import = old_id.is_some_and(|old_id| imported_panes.contains_key(old_id));
+        // Fork: a missing directory under the home is recreated (src/app/missing_cwd.rs).
+        let cwd_recreated =
+            !has_import && !cwd.is_dir() && crate::app::missing_cwd::recreate_missing_cwd(&cwd);
         if !has_import && !cwd.is_dir() {
             let terminal = unavailable_restored_terminal(
                 saved_pane,
@@ -735,6 +738,7 @@ fn restore_tab(
                     std::time::Instant::now(),
                 );
             }
+            terminal.cwd_recreated = cwd_recreated;
             panes.insert(*id, PaneState::new(terminal_id));
             terminals.push(terminal);
             continue;
@@ -853,6 +857,7 @@ fn restore_tab(
                 if let Some(agent_state) = handoff_agent_state {
                     terminal.restore_handoff_agent_state(agent_state);
                 }
+                terminal.cwd_recreated = cwd_recreated;
                 panes.insert(*id, PaneState::new(terminal_id.clone()));
                 terminal_runtimes.insert(terminal_id, runtime);
                 terminals.push(terminal);

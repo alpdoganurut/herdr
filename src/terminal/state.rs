@@ -322,6 +322,10 @@ pub struct TerminalState {
     /// The last fallback of the session readers, only while its agent is the
     /// live one; hook routing never sees it, so any reported session wins.
     process_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
+    /// Fork: restore recreated this pane's missing directory
+    /// (src/app/missing_cwd.rs); `App::note_recreated_cwds` takes it once.
+    /// Runtime only, never persisted.
+    pub cwd_recreated: bool,
 }
 
 /// Most subagents a pane tracks; further starts are ignored until some stop.
@@ -384,6 +388,7 @@ impl TerminalState {
                 .map(|elapsed| elapsed.as_secs())
                 .unwrap_or(0),
             process_agent_session: None,
+            cwd_recreated: false,
         }
     }
 

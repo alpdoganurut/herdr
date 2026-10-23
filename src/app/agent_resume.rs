@@ -281,6 +281,8 @@ impl App {
             return false;
         };
 
+        // Fork: a missing directory under the home is recreated (src/app/missing_cwd.rs).
+        let cwd_recreated = !cwd.is_dir() && super::missing_cwd::recreate_missing_cwd(&cwd);
         if !cwd.is_dir() {
             if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
                 terminal.pending_agent_resume_plan = None;
@@ -351,6 +353,9 @@ impl App {
         if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
             terminal.pending_agent_resume_plan = None;
             terminal.respawn_shell_on_exit = false;
+        }
+        if cwd_recreated {
+            self.note_recreated_cwd(&terminal_id, true);
         }
         true
     }

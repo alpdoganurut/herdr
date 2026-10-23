@@ -252,6 +252,8 @@ src/integration/claude_handoff_permissions.rs
 src/pane/program_status.rs
 src/pane/program_status/tests.rs
 src/pane/program_status_log.rs
+src/app/missing_cwd.rs
+src/app/missing_cwd/tests.rs
 
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
@@ -561,6 +563,7 @@ src/pane/program_status_log.rs
 | AgentOscStateTracker | program_status | ProgramStatusStore::default() |
 | AgentOscStateTracker | program_status_probe | None |
 | GhosttyPaneTerminal | program_status_root | std::sync::atomic::AtomicU64::new(0) |
+| TerminalState | cwd_recreated | false |
 
 
 ## 3. Removed or re-signatured upstream symbols (E0425/E0061 at a new upstream call site = deny)
@@ -1168,6 +1171,10 @@ src/app/mod.rs  additive: OSC 7501: crate::pane::program_status::set_enabled dir
 src/main.rs  additive: OSC 7501: the `program_status` DEFAULT_CONFIG comment lines directly after the `context_window` ones, before `# [agents.handoff]`
 docs/next/website/src/data/config-reference.json  additive: OSC 7501: agents.program_status placed per section 6
 src/server/headless/tests/fork_smoke.rs  additive: OSC 7501: fork_smoke_program_status_reports_reach_explain directly before the coordinator mod lines
+src/app/mod.rs  additive: missing directories: `pub(crate) mod missing_cwd;` (with its doc line) directly after `pub(crate) mod message_queue;`; `app.note_recreated_cwds();` (with its fork comment) in App::new directly after `app.install_browser_hub(&config.browser);`
+src/terminal/state.rs  additive: missing directories: TerminalState.cwd_recreated (runtime only) last in the struct and in new(), after process_agent_session
+src/persist/restore.rs  additive: missing directories: restore_tab computes `cwd_recreated` (crate::app::missing_cwd::recreate_missing_cwd, only without an import and while the directory is missing) directly before upstream's `if !has_import && !cwd.is_dir()` card branch, which still runs when the directory could not be recreated; `terminal.cwd_recreated = cwd_recreated;` directly before `panes.insert` in the pending-resume branch and in the Ok(runtime) branch
+src/app/agent_resume.rs  additive: missing directories: start_pending_agent_resume computes `cwd_recreated` (super::missing_cwd::recreate_missing_cwd) directly before upstream's `if !cwd.is_dir()` card branch, and calls `self.note_recreated_cwd(&terminal_id, true)` after the successful spawn, directly before the final `true`
 
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
@@ -1188,11 +1195,11 @@ src/api/server.rs  mid-logic: handle_connection_with_stop runs Method::BrowserRu
 src/app/session.rs  mid-logic: save_session_on_shutdown (early return became if/else, backup pass appended)
 src/app/agents.rs  mid-logic: rename refuses suspended; live_runtime_agent split into live_runtime_agent_job; agent_info sets subagents from active_subagent_count
 src/app/agent_view.rs  mid-logic: apply_agent_view, validate_field_value, status_name
-src/app/agent_resume.rs  mid-logic: start_pending_agent_resume restores the transcript backup before the resume command Agent wrap: it types resume_shell_command (herdr_launch_argv: `<herdr> agent wrap claude|codex -- <native args>` while [agents] wrap is on, the native command otherwise); closed_sessions.rs's reopen types the same
+src/app/agent_resume.rs  mid-logic: start_pending_agent_resume restores the transcript backup before the resume command Agent wrap: it types resume_shell_command (herdr_launch_argv: `<herdr> agent wrap claude|codex -- <native args>` while [agents] wrap is on, the native command otherwise); closed_sessions.rs's reopen types the same Missing directories: the saved directory is recreated (src/app/missing_cwd.rs) before upstream's unavailable card, which runs only when that fails.
 src/app/runtime.rs  mid-logic: next_headless_loop_deadline_with_git_refresh gains four deadlines (suspend exit, restart resume, transcript backup, next_news_deadline directly after next_tab_bar_status_deadline)
 src/workspace/aggregate.rs  mid-logic: pane_details, aggregate_state, agent_status, agent_status_priority
 src/persist/snapshot.rs  mid-logic: capture_tab agent_session block rewritten to persistable_agent_session; capture_tab copies Tab.color, important (also as the legacy `remind`) and remind_every into TabSnapshot
-src/persist/restore.rs  mid-logic: restore_tab (resume disabled for suspended panes, handoff exit wait, color restored with Unknown dropped to None, important from important or the legacy remind, remind_every with Unknown dropped), unavailable_restored_terminal, pane_restore_startup, persisted_agent_session_from_snapshot
+src/persist/restore.rs  mid-logic: restore_tab (resume disabled for suspended panes, handoff exit wait, color restored with Unknown dropped to None, important from important or the legacy remind, remind_every with Unknown dropped), unavailable_restored_terminal, pane_restore_startup, persisted_agent_session_from_snapshot Missing directories: restore_tab recreates the saved directory (src/app/missing_cwd.rs) before upstream's unavailable card, which runs only when that fails, and flags the terminal (cwd_recreated).
 src/server/headless.rs  mid-logic: `mod news_notify;` directly after `mod lifecycle;`; handle_scheduled_tasks_headless (backup pass, suspend escalation, start_pending_agent_restarts, handle_news_tasks directly after handle_tab_bar_status_tasks, then flush_news_notifications); the client-connected block of handle_server_event ends with flush_news_notifications (a queued news notification goes out when a client shell attaches) directly before its `true`
 src/server/headless/lifecycle.rs  mid-logic: perform_live_handoff sets suspended_exit_pending
 src/pane.rs  mid-logic: handoff_runtime_state, from_handoff_fd
@@ -2206,6 +2213,13 @@ AgentsReportWait
 WAIT_CONTINUATION_WINDOW
 WAIT_SPAN_MAX
 WAIT_CHAIN_MAX
+missing_cwd
+MISSING_CWD_MESSAGE
+MissingCwdNotices
+recreate_missing_cwd
+cwd_recreated
+note_recreated_cwd
+queue_herdr_notice
 
 
 ## 10. Fork smoke tests (run by name in the gate)
@@ -2285,6 +2299,7 @@ server::headless::tests::agents_model_smoke::fork_smoke_a_user_turn_wait_carries
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 A user-facing feature or fix that changes what herdr+ offers also updates the showcase page `docs/fork/herdr-plus.html` (self-contained, no network resources, no personal data; mockups follow the current code), in the same change.
 ### Added
+- A pane whose saved working directory is gone (a removed git worktree, typically) starts again instead of showing "Saved directory is unavailable": on a server restart or a deferred agent resume herdr recreates the directory, empty, at the same path (only an absolute path inside your home; if it cannot, the old card stays) and starts the pane there, so Claude Code or Codex resumes its session as before. Each such pane logs it (`recreate_cwd` in `actions.jsonl`) and shows one warning card. An agent pane is also told once, through the normal message queue (so the usual gates hold: nothing is typed into a dialog, a busy agent or past your draft): `herdr+: your working directory <path> was missing (a removed worktree?) and herdr recreated it empty so this session could resume. …`, asking it to tell you with `agents_notify` first. Plain shell panes just start. Reopening a closed session (`session.closed_reopen`) still refuses a missing directory. A suspended agent is told after its activation.
 - Tabs sidebar: a pinned tab's row shows a dim pin mark (Nerd Font U+F0403; `ui.tab_agent_glyphs.pinned` replaces it) in its left gutter at x=1, left of the muted mark, so pinned tabs that break a folded suspended run are visible as pinned.
 - Claude Code's OSC 7501 Program Status, observe only (`[agents] program_status`, on by default): herdr answers the status probe Claude Code 2.1.295+ sends at startup (before the DA1 reply, so Claude turns its reports on) and keeps each pane's status records: the root record (working, blocked with its kind and message, done, idle, error) and one per background subagent. `herdr agent explain` shows them as `program_status`, with whether they agree with screen detection. When the root record disagrees with screen detection for more than 2 seconds, herdr writes one line to `program-status-disagreements.jsonl` in its state dir (lengths only, never the message text; rotated at 1 MiB, at most 600 lines an hour), and a summary line when an agent session ends: the agent changes, detection resets, or the pane closes while the agent still runs. Screen detection still decides every state. `program_status = false` turns the reply, the records and the log off. Claude Code sends nothing while `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` is set, and an agent started before this build stays silent until it restarts.
 - `docs/fork/herdr-plus.html`: a self-contained showcase page of everything herdr+ adds (coordinator, agents model and tools, teams, messaging, sidebar, notes pane, notifications, more), kept up to date with each user-facing change.

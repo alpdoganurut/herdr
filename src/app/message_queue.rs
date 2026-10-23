@@ -252,6 +252,9 @@ pub(crate) struct MessageQueue {
     pub(crate) user_blocked: HashMap<String, UserBlocked>,
     /// Targets an urgent message interrupted (Esc), and when.
     interrupted_at: HashMap<String, Instant>,
+    /// Agent panes whose missing directory herdr recreated, waiting to be
+    /// told so once their agent is up (src/app/missing_cwd.rs; runtime only).
+    pub(crate) missing_cwd: super::missing_cwd::MissingCwdNotices,
     /// `message_queue.json`; `None` = not persisted (tests, unpersisted sessions).
     pub(super) store: Option<PathBuf>,
     /// The coordinator directory (the message log); `None` = no log lines.
@@ -463,8 +466,12 @@ impl MessageQueue {
 
     /// When the server loop should run the next pass.
     pub(crate) fn next_deadline(&self, now: Instant, now_unix: u64) -> Option<Instant> {
+        let missing_cwd = self.missing_cwd.next_deadline();
         if self.entries.is_empty() {
-            return None;
+            return missing_cwd;
+        }
+        if let Some(at) = missing_cwd.filter(|at| *at <= now) {
+            return Some(at);
         }
         if self.due {
             return Some(now);
@@ -474,7 +481,10 @@ impl MessageQueue {
             .iter()
             .map(|entry| now + Duration::from_secs(entry.expires_unix.saturating_sub(now_unix)))
             .min();
-        [self.retry_at, expiry].into_iter().flatten().min()
+        [self.retry_at, expiry, missing_cwd]
+            .into_iter()
+            .flatten()
+            .min()
     }
 }
 
@@ -1581,6 +1591,13 @@ impl App {
     /// Mark the queue due on events that can change a target's deliverability.
     pub(crate) fn note_message_queue_event(&mut self, event: &crate::api::schema::EventKind) {
         use crate::api::schema::EventKind;
+        // Fork (missing directories): an agent coming up may take its notice.
+        if matches!(
+            event,
+            EventKind::PaneAgentDetected | EventKind::PaneAgentStatusChanged
+        ) {
+            self.message_queue.missing_cwd.mark_due(Instant::now());
+        }
         if self.message_queue.is_empty() {
             return;
         }
@@ -1607,7 +1624,67 @@ impl App {
     /// whether anything was typed in or removed.
     pub(crate) fn handle_message_queue_tasks(&mut self, now: Instant) -> bool {
         let now_unix = crate::coordinator::now_unix();
-        self.message_queue_pass(now, now_unix)
+        let queued = self.deliver_missing_cwd_notices(now, now_unix);
+        self.message_queue_pass(now, now_unix) || queued
+    }
+
+    /// Queue a notice from herdr itself (no sender) for `target`: it goes in
+    /// through the queue (SETTLE, the typing guard, the blocked and
+    /// suspended vetoes) like any other message, never typed in directly.
+    /// `about` names what it is about in the envelope. Returns its id.
+    pub(super) fn queue_herdr_notice(
+        &mut self,
+        target: &super::terminal_targets::TerminalTarget,
+        text: String,
+        about: &str,
+        now_unix: u64,
+    ) -> String {
+        let id = messages::new_id();
+        let envelope = format!(
+            "[herdr+ notice {id} from herdr {} \u{2014} about {about}, not your user]\n{text}\n[no reply needed]",
+            crate::agents_model::envelope::clock(now_unix),
+        );
+        let pointer = PointerFrom {
+            id: id.clone(),
+            reply_to: None,
+            name: "herdr".into(),
+            pane: String::new(),
+            relation: crate::agents_model::envelope::PointerRelation::Herdr,
+            urgent: false,
+        };
+        let to_name = self
+            .state
+            .terminals
+            .values()
+            .find(|terminal| terminal.id.to_string() == target.terminal_id)
+            .and_then(|terminal| terminal.agent_name.clone());
+        let message = AgentMessage {
+            unix: now_unix,
+            from_pane: None,
+            from_name: Some("herdr".into()),
+            to_pane: self
+                .public_pane_id(target.ws_idx, target.pane_id)
+                .unwrap_or_default(),
+            to_name,
+            text,
+            outcome: OUTCOME_QUEUED.into(),
+            id: Some(id.clone()),
+            reply_to: None,
+            from_role: None,
+            kind: None,
+            team: None,
+        };
+        let entry = self.queued_message(
+            target,
+            message,
+            envelope,
+            Some(pointer),
+            false,
+            None,
+            now_unix,
+        );
+        self.message_queue.push(entry);
+        id
     }
 
     pub(crate) fn message_queue_pass(&mut self, now: Instant, now_unix: u64) -> bool {
