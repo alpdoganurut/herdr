@@ -169,6 +169,14 @@ impl QueuedMessage {
         self.message.id.as_deref().unwrap_or("")
     }
 
+    /// A notice from herdr itself ([`App::queue_herdr_notice`]).
+    fn is_herdr_notice(&self) -> bool {
+        self.message.from_pane.is_none()
+            && self.pointer.as_ref().is_some_and(|pointer| {
+                pointer.relation == crate::agents_model::envelope::PointerRelation::Herdr
+            })
+    }
+
     /// The message on its way in.
     fn outgoing(&self) -> Outgoing {
         Outgoing {
@@ -1674,7 +1682,7 @@ impl App {
             kind: None,
             team: None,
         };
-        let entry = self.queued_message(
+        let mut entry = self.queued_message(
             target,
             message,
             envelope,
@@ -1683,6 +1691,9 @@ impl App {
             None,
             now_unix,
         );
+        // It waits for the agent as long as a message to a user-blocked
+        // agent may (a resume can take minutes to be detected).
+        entry.expires_unix = now_unix.saturating_add(MESSAGE_TTL_USER_BLOCKED_S);
         self.message_queue.push(entry);
         id
     }
@@ -2504,15 +2515,45 @@ impl App {
             next.push(since + GONE_GRACE);
             return false;
         }
+        // herdr's own notices (a recreated directory) wait while their pane
+        // is there and its agent is not detected yet (a slow resume), up to
+        // the user-blocked hold; delivered once when it is.
+        let pane_there = self
+            .state
+            .terminals
+            .values()
+            .any(|terminal| terminal.id.to_string() == terminal_id);
+        let held = |entry: &QueuedMessage| {
+            pane_there
+                && entry.is_herdr_notice()
+                && now_unix
+                    < entry
+                        .message
+                        .unix
+                        .saturating_add(MESSAGE_TTL_USER_BLOCKED_S)
+        };
+        let mut holding = false;
         let ids: Vec<String> = self
             .message_queue
             .entries
             .iter()
             .filter(|entry| entry.terminal_id == terminal_id)
+            .filter(|entry| {
+                let keep = held(entry);
+                holding |= keep;
+                !keep
+            })
             .map(|entry| entry.id().to_string())
             .collect();
+        if holding {
+            next.push(now + GONE_GRACE);
+        } else {
+            self.message_queue.missing_since.remove(terminal_id);
+        }
+        if ids.is_empty() {
+            return false;
+        }
         self.message_queue.finish(&ids, OUTCOME_DROPPED, now_unix);
-        self.message_queue.missing_since.remove(terminal_id);
         true
     }
 }

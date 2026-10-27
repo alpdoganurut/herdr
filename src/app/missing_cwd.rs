@@ -13,7 +13,11 @@
 //! runtime up, its agent detected), then goes into the queue, which types it
 //! in once the agent is free. A plain shell gets no message. Pending notices
 //! are runtime only and dropped when their pane is gone or after
-//! [`GIVE_UP`] (counted from the activation of a suspended agent).
+//! [`GIVE_UP`] (counted from the activation of a suspended agent). Once
+//! queued, a herdr notice whose agent is not detected (a slow resume) waits
+//! in the queue while its pane is there, up to the user-blocked hold
+//! ([`super::message_queue::MESSAGE_TTL_USER_BLOCKED_S`]), instead of the
+//! queue's 60 s grace.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};

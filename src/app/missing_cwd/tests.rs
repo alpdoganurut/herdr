@@ -270,6 +270,71 @@ async fn a_deferred_agent_resume_recreates_the_directory_and_queues_one_notice()
     assert_eq!(app.agent_notices.list().len(), 1);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn an_agent_detected_minutes_after_the_restart_still_gets_exactly_one_notice() {
+    let home = TestHome::new("slow-detect");
+    let missing = home.0.join("worktrees/slow");
+    let (mut app, terminal_id) = app_in(&missing);
+    app.state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
+        agent: "claude".into(),
+        argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+        dedupe_key: "missing-cwd-slow".into(),
+    });
+    assert!(app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80, true));
+    let detect = |app: &mut App, agent: Option<Agent>| {
+        let state = if agent.is_some() {
+            AgentState::Idle
+        } else {
+            AgentState::Unknown
+        };
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(agent, state);
+        app.note_message_queue_event(&crate::api::schema::EventKind::PaneAgentStatusChanged);
+    };
+    // The agent shows up once, the notice is queued, then the resumed
+    // session takes minutes to be detected again.
+    detect(&mut app, Some(Agent::Claude));
+    let start = Instant::now();
+    let start_unix = crate::coordinator::now_unix();
+    assert!(app.deliver_missing_cwd_notices(start, start_unix));
+    assert_eq!(app.message_queue.entries.len(), 1);
+    let id = app.message_queue.entries[0].message.id.clone();
+    detect(&mut app, None);
+    let mut at = start;
+    for minute in 1..=2u64 {
+        at = start + std::time::Duration::from_secs(60 * minute);
+        app.note_message_queue_event(&crate::api::schema::EventKind::PaneAgentStatusChanged);
+        app.message_queue_pass(at, start_unix + 60 * minute);
+        assert_eq!(
+            app.message_queue.entries.len(),
+            1,
+            "held past the 60 s grace at minute {minute}"
+        );
+    }
+    assert!(
+        app.message_queue.entries[0].expires_unix
+            >= start_unix + crate::app::message_queue::MESSAGE_TTL_USER_BLOCKED_S,
+        "kept for the user-blocked hold, not the 2 h message TTL"
+    );
+
+    // Detected after 2 minutes: the same one notice, nothing new queued.
+    detect(&mut app, Some(Agent::Claude));
+    assert!(!app.deliver_missing_cwd_notices(at, start_unix + 120));
+    app.note_message_queue_event(&crate::api::schema::EventKind::PaneAgentStatusChanged);
+    app.message_queue_pass(at, start_unix + 120);
+    assert_eq!(app.message_queue.entries.len(), 1);
+    assert_eq!(app.message_queue.entries[0].message.id, id);
+    assert_eq!(app.message_queue.missing_cwd.pending_len(), 0);
+}
+
 #[tokio::test]
 async fn a_suspended_agent_keeps_its_notice_without_polling_until_activation() {
     let home = TestHome::new("parked");
