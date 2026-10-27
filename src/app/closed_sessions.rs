@@ -275,7 +275,14 @@ impl App {
         };
         // A Claude session backgrounded out of its pane reopens as the
         // newest session of its chain (src/agent_session_chain.rs).
-        let session = crate::agent_session_chain::advanced(session);
+        // Not onto a session another pane already records.
+        let session = match crate::agent_session_chain::advance(&session) {
+            Some(next) if !self.session_recorded_elsewhere(None, &next.session_ref.value) => {
+                self.follow_queued_session(&session.session_ref.value, &next.session_ref.value);
+                next
+            }
+            _ => session,
+        };
         let Some(plan) =
             crate::agent_resume::plan(&session.source, &session.agent, &session.session_ref)
         else {

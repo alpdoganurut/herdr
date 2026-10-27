@@ -655,13 +655,13 @@ impl<A: Api> Session<A> {
                 ..AgentsActorParams::default()
             }))
             .map_err(|error| {
-                if let Some(session) = claude_session {
-                    no_pane_error(Some(session), Some(&error.message))
-                } else if error.code == "not_implemented" || error.message.contains("unknown variant") {
+                if error.code == "not_implemented" || error.message.contains("unknown variant") {
                     err(
                         "server_too_old",
                         "the herdr server predates agents v2; hand it off to this herdr (herdr server live-handoff) and restart the session",
                     )
+                } else if let Some(session) = claude_session {
+                    no_pane_error(Some(session), Some(&error.message))
                 } else {
                     error
                 }

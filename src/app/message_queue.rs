@@ -162,19 +162,16 @@ pub(crate) struct QueuedMessage {
     /// Its sender was told it seems stuck (at most once per message).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) stuck_notified: bool,
+    /// Fork: a notice from herdr about its target's own pane
+    /// ([`App::queue_herdr_notice`]): it waits for that agent past the
+    /// gone grace while the pane still records the same session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) herdr_notice: bool,
 }
 
 impl QueuedMessage {
     fn id(&self) -> &str {
         self.message.id.as_deref().unwrap_or("")
-    }
-
-    /// A notice from herdr itself ([`App::queue_herdr_notice`]).
-    fn is_herdr_notice(&self) -> bool {
-        self.message.from_pane.is_none()
-            && self.pointer.as_ref().is_some_and(|pointer| {
-                pointer.relation == crate::agents_model::envelope::PointerRelation::Herdr
-            })
     }
 
     /// The message on its way in.
@@ -902,6 +899,7 @@ impl App {
             from_terminal,
             pointer,
             stuck_notified: false,
+            herdr_notice: false,
         }
     }
 
@@ -1636,6 +1634,41 @@ impl App {
         self.message_queue_pass(now, now_unix) || queued
     }
 
+    /// Fork (session chains): messages queued for Claude session `from`
+    /// now wait for `to`, the newest session of its chain
+    /// (src/agent_session_chain.rs), so a restart still finds their target.
+    pub(crate) fn follow_queued_session(&mut self, from: &str, to: &str) {
+        let mut moved = false;
+        for entry in &mut self.message_queue.entries {
+            if entry.session.as_deref() == Some(from) {
+                entry.session = Some(to.to_string());
+                moved = true;
+            }
+        }
+        if moved {
+            self.message_queue.save();
+        }
+    }
+
+    /// Fork (session chains): after a restore, the queued messages of each
+    /// pane whose saved session was advanced follow it (once).
+    pub(crate) fn follow_restored_sessions(&mut self) {
+        let moves: Vec<(String, String)> = self
+            .state
+            .terminals
+            .values_mut()
+            .filter_map(|terminal| {
+                let from = terminal.session_advanced_from.take()?;
+                Some((from, super::coordinator::terminal_session(terminal)?))
+            })
+            .collect();
+        for (from, to) in moves {
+            if from != to {
+                self.follow_queued_session(&from, &to);
+            }
+        }
+    }
+
     /// Queue a notice from herdr itself (no sender) for `target`: it goes in
     /// through the queue (SETTLE, the typing guard, the blocked and
     /// suspended vetoes) like any other message, never typed in directly.
@@ -1694,6 +1727,7 @@ impl App {
         // It waits for the agent as long as a message to a user-blocked
         // agent may (a resume can take minutes to be detected).
         entry.expires_unix = now_unix.saturating_add(MESSAGE_TTL_USER_BLOCKED_S);
+        entry.herdr_notice = true;
         self.message_queue.push(entry);
         id
     }
@@ -2515,17 +2549,21 @@ impl App {
             next.push(since + GONE_GRACE);
             return false;
         }
-        // herdr's own notices (a recreated directory) wait while their pane
-        // is there and its agent is not detected yet (a slow resume), up to
-        // the user-blocked hold; delivered once when it is.
-        let pane_there = self
+        // herdr's own notices about a pane (a recreated directory) wait
+        // while the pane is there, still records the session they were
+        // queued for, and its agent is not detected yet (a slow resume), up
+        // to the user-blocked hold; delivered once when it is. An agent
+        // that exited (its session cleared) drops them after the grace.
+        let pane_session = self
             .state
             .terminals
             .values()
-            .any(|terminal| terminal.id.to_string() == terminal_id);
+            .find(|terminal| terminal.id.to_string() == terminal_id)
+            .map(super::coordinator::terminal_session);
         let held = |entry: &QueuedMessage| {
-            pane_there
-                && entry.is_herdr_notice()
+            entry.herdr_notice
+                && entry.session.is_some()
+                && pane_session.as_ref() == Some(&entry.session)
                 && now_unix
                     < entry
                         .message

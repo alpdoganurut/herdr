@@ -473,6 +473,7 @@ fn only_agent_events_mark_a_non_empty_queue_due() {
         from_terminal: None,
         pointer: None,
         stuck_notified: false,
+        herdr_notice: false,
     });
     app.note_message_queue_event(&EventKind::TabRenamed);
     assert!(!app.message_queue.due);
@@ -1550,4 +1551,117 @@ fn terminal_ref(app: &App) -> &crate::terminal::TerminalState {
         .attached_terminal_id
         .clone();
     &app.state.terminals[&id]
+}
+
+/// Fork (session chains): a queued entry for the test pane.
+fn missing_target_entry(
+    app: &mut App,
+    id: &str,
+    herdr_relation: bool,
+    herdr_notice: bool,
+) -> QueuedMessage {
+    QueuedMessage {
+        message: AgentMessage {
+            id: Some(id.into()),
+            unix: now_unix(),
+            ..AgentMessage::default()
+        },
+        envelope: "x".into(),
+        terminal_id: terminal(app).id.to_string(),
+        session: Some("11111111-1111-4111-8111-111111111111".into()),
+        expires_unix: u64::MAX,
+        legacy: false,
+        from_terminal: None,
+        pointer: herdr_relation.then(|| crate::agents_model::envelope::PointerFrom {
+            id: id.into(),
+            reply_to: None,
+            name: "herdr".into(),
+            pane: String::new(),
+            relation: crate::agents_model::envelope::PointerRelation::Herdr,
+            urgent: false,
+        }),
+        stuck_notified: false,
+        herdr_notice,
+    }
+}
+
+fn record_session(app: &mut App, id: &str) {
+    terminal(app).set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+        source: "herdr:claude".into(),
+        agent: "claude".into(),
+        session_ref: crate::agent_resume::AgentSessionRef::id(id).unwrap(),
+        transcript_path: None,
+    });
+}
+
+fn queued_ids(app: &App) -> Vec<String> {
+    app.message_queue
+        .entries
+        .iter()
+        .map(|entry| entry.id().to_string())
+        .collect()
+}
+
+#[test]
+fn only_a_herdr_notice_for_the_panes_own_session_outlives_the_gone_grace() {
+    // No agent detected in the pane: every entry for it is missing its target.
+    let mut app = app();
+    record_session(&mut app, "11111111-1111-4111-8111-111111111111");
+    for (id, relation, notice) in [
+        ("mplain", false, false),
+        ("mstuck", true, false),
+        ("mnote", true, true),
+    ] {
+        let entry = missing_target_entry(&mut app, id, relation, notice);
+        app.message_queue.entries.push(entry);
+    }
+    let t0 = Instant::now();
+    app.message_queue.due = true;
+    app.message_queue_pass(t0, now_unix());
+    assert_eq!(queued_ids(&app).len(), 3, "within the grace");
+    app.message_queue.due = true;
+    assert!(app.message_queue_pass(t0 + GONE_GRACE, now_unix()));
+    assert_eq!(
+        queued_ids(&app),
+        ["mnote"],
+        "ordinary messages and stuck notices drop after 60 s"
+    );
+
+    // The agent exited: its session is no longer the pane's, so the
+    // notice drops too.
+    record_session(&mut app, "22222222-2222-4222-8222-222222222222");
+    app.message_queue.due = true;
+    assert!(app.message_queue_pass(t0 + GONE_GRACE * 2, now_unix()));
+    assert!(app.message_queue.entries.is_empty());
+}
+
+#[test]
+fn a_herdr_notice_drops_once_its_pane_is_gone() {
+    let mut app = app();
+    record_session(&mut app, "11111111-1111-4111-8111-111111111111");
+    let entry = missing_target_entry(&mut app, "mnote", true, true);
+    app.message_queue.entries.push(entry);
+    app.state.terminals.clear();
+    let t0 = Instant::now();
+    app.message_queue.due = true;
+    app.message_queue_pass(t0, now_unix());
+    assert_eq!(queued_ids(&app), ["mnote"], "within the grace");
+    app.message_queue.due = true;
+    assert!(app.message_queue_pass(t0 + GONE_GRACE, now_unix()));
+    assert!(app.message_queue.entries.is_empty());
+}
+
+#[test]
+fn queued_messages_follow_a_session_restore_advanced() {
+    let mut app = app();
+    record_session(&mut app, "22222222-2222-4222-8222-222222222222");
+    terminal(&mut app).session_advanced_from = Some("11111111-1111-4111-8111-111111111111".into());
+    let entry = missing_target_entry(&mut app, "mplain", false, false);
+    app.message_queue.entries.push(entry);
+    app.follow_restored_sessions();
+    assert_eq!(
+        app.message_queue.entries[0].session.as_deref(),
+        Some("22222222-2222-4222-8222-222222222222")
+    );
+    assert_eq!(terminal(&mut app).session_advanced_from, None, "once");
 }

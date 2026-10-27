@@ -285,6 +285,17 @@ async fn an_agent_detected_minutes_after_the_restart_still_gets_exactly_one_noti
         argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
         dedupe_key: "missing-cwd-slow".into(),
     });
+    // Restore records the session it resumes.
+    app.state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("slow-session").unwrap(),
+            transcript_path: None,
+        });
     assert!(app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80, true));
     let detect = |app: &mut App, agent: Option<Agent>| {
         let state = if agent.is_some() {

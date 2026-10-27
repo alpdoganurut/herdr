@@ -42,6 +42,9 @@ struct RestoreRuntimeContext<'a> {
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
     render_dirty: Arc<RenderSignal>,
+    /// Fork: every session the snapshot's panes record (live or parked), so
+    /// a session chain is not advanced onto another pane's session.
+    saved_agent_sessions: Arc<HashSet<String>>,
 }
 
 type RestoredSession = (
@@ -281,6 +284,7 @@ fn restore_with_imports_and_failures(
     let mut terminal_runtimes = HashMap::new();
     let mut resumed_agent_sessions = HashSet::new();
     let mut failed_imports = 0;
+    let saved_agent_sessions = Arc::new(saved_agent_session_values(snapshot));
     for (idx, ws_snap) in snapshot.workspaces.iter().enumerate() {
         let runtime_context = RestoreRuntimeContext {
             scrollback_limit_bytes,
@@ -289,6 +293,7 @@ fn restore_with_imports_and_failures(
             events: events.clone(),
             render_notify: render_notify.clone(),
             render_dirty: render_dirty.clone(),
+            saved_agent_sessions: saved_agent_sessions.clone(),
         };
         let (restored, workspace_failed_imports) = restore_workspace(
             ws_snap,
@@ -654,13 +659,21 @@ fn restore_tab(
         // Fork: a Claude session backgrounded out of its pane resumes as the
         // newest session of its chain (src/agent_session_chain.rs); a pane
         // whose agent comes over live (a handoff) keeps what it runs.
+        // A parked pane keeps its record until it is activated; a link
+        // another saved pane already records stays that pane's.
         let resumes_agent = runtime_context.resume_agents_on_restore
-            && !reverse_id_map
-                .get(id)
-                .is_some_and(|old_id| imported_panes.contains_key(old_id));
-        let advanced_agent_session = saved_agent_session
-            .filter(|_| resumes_agent)
-            .and_then(advanced_agent_session_snapshot);
+            && !has_import
+            && saved_pane.is_some_and(|p| p.suspended_agent.is_none());
+        let advanced_agent_session =
+            saved_agent_session
+                .filter(|_| resumes_agent)
+                .and_then(|saved| {
+                    advanced_agent_session_snapshot(saved, &runtime_context.saved_agent_sessions)
+                });
+        let session_advanced_from = advanced_agent_session
+            .as_ref()
+            .and(saved_agent_session)
+            .map(|saved| saved.value.clone());
         let saved_agent_session = advanced_agent_session.as_ref().or(saved_agent_session);
         let saved_suspended_agent = saved_pane.and_then(|p| p.suspended_agent.as_ref());
         let saved_agent_resume = saved_pane.and_then(saved_reported_resume);
@@ -727,6 +740,7 @@ fn restore_tab(
             }
             if let Some(session) = restored_agent_session {
                 terminal.set_persisted_agent_session(session);
+                terminal.session_advanced_from = session_advanced_from.clone();
             }
             if let Some(resume) = restored_agent_resume {
                 terminal.restore_reported_resume(resume);
@@ -828,6 +842,7 @@ fn restore_tab(
                 }
                 if let Some(session) = restored_agent_session {
                     terminal.set_persisted_agent_session(session);
+                    terminal.session_advanced_from = session_advanced_from.clone();
                 }
                 if let Some(resume) = restored_agent_resume {
                     terminal.restore_reported_resume(resume);
@@ -1058,16 +1073,40 @@ fn persisted_agent_session_from_snapshot(
 }
 
 /// Fork: a saved Claude session advanced to the newest session of its chain
-/// (src/agent_session_chain.rs), or `None` when it has none.
+/// (src/agent_session_chain.rs), or `None` when it has none or when that
+/// newest session is one another saved pane records (`recorded`).
 fn advanced_agent_session_snapshot(
     saved: &PaneAgentSessionSnapshot,
+    recorded: &HashSet<String>,
 ) -> Option<PaneAgentSessionSnapshot> {
     let next = crate::agent_session_chain::advance(&persisted_agent_session_from_snapshot(saved)?)?;
+    if recorded.contains(&next.session_ref.value) {
+        // Another saved pane already resumes that session.
+        return None;
+    }
     Some(PaneAgentSessionSnapshot {
         value: next.session_ref.value,
         transcript_path: next.transcript_path,
         ..saved.clone()
     })
+}
+
+/// Fork: the session id of every saved pane's agent session and parked agent.
+fn saved_agent_session_values(snapshot: &SessionSnapshot) -> HashSet<String> {
+    snapshot
+        .workspaces
+        .iter()
+        .flat_map(|ws| &ws.tabs)
+        .flat_map(|tab| tab.panes.values())
+        .flat_map(|pane| {
+            [
+                pane.agent_session.as_ref(),
+                pane.suspended_agent.as_ref().map(|parked| &parked.session),
+            ]
+        })
+        .flatten()
+        .map(|session| session.value.clone())
+        .collect()
 }
 
 fn restored_terminal_agent_session(
@@ -3254,19 +3293,48 @@ mod tests {
         (snapshot, history)
     }
 
-    /// Fork: restore one native Claude pane saved with session `id`
-    /// (transcript in `project`); the pane's pending resume argv and the
-    /// session it records.
+    /// Fork: a snapshot with one tab per session id, each a native Claude
+    /// pane saved with that session (transcripts in `project`).
     #[cfg(unix)]
-    fn restored_claude_pane(
+    fn claude_panes_snapshot(
         project: &crate::agent_session_chain::test_support::Project,
-        id: &str,
-    ) -> (
-        Vec<String>,
-        Option<crate::agent_resume::PersistedAgentSession>,
-    ) {
+        ids: &[&str],
+    ) -> SessionSnapshot {
         let cwd = std::env::current_dir().unwrap();
-        let snapshot = SessionSnapshot {
+        let tab = |id: &str| TabSnapshot {
+            custom_name: None,
+            color: None,
+            remind: false,
+            important: false,
+            remind_every: None,
+            pinned: false,
+            muted: false,
+            layout: LayoutSnapshot::Pane(0),
+            panes: HashMap::from([(
+                0,
+                super::super::snapshot::PaneSnapshot {
+                    agent_meta: Default::default(),
+                    cwd: cwd.clone(),
+                    label: None,
+                    agent_name: None,
+                    managed_agent_kind: None,
+                    agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
+                        source: "herdr:claude".into(),
+                        agent: "claude".into(),
+                        kind: crate::agent_resume::AgentSessionRefKind::Id,
+                        value: id.into(),
+                        transcript_path: Some(project.file(id)),
+                    }),
+                    agent_resume: None,
+                    launch_argv: None,
+                    suspended_agent: None,
+                },
+            )]),
+            zoomed: false,
+            focused: Some(0),
+            root_pane: Some(0),
+        };
+        SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("workspace".into()),
@@ -3278,39 +3346,7 @@ mod tests {
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
                 next_public_tab_number: 0,
-                tabs: vec![TabSnapshot {
-                    custom_name: None,
-                    color: None,
-                    remind: false,
-                    important: false,
-                    remind_every: None,
-                    pinned: false,
-                    muted: false,
-                    layout: LayoutSnapshot::Pane(0),
-                    panes: HashMap::from([(
-                        0,
-                        super::super::snapshot::PaneSnapshot {
-                            agent_meta: Default::default(),
-                            cwd,
-                            label: None,
-                            agent_name: None,
-                            managed_agent_kind: None,
-                            agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
-                                source: "herdr:claude".into(),
-                                agent: "claude".into(),
-                                kind: crate::agent_resume::AgentSessionRefKind::Id,
-                                value: id.into(),
-                                transcript_path: Some(project.file(id)),
-                            }),
-                            agent_resume: None,
-                            launch_argv: None,
-                            suspended_agent: None,
-                        },
-                    )]),
-                    zoomed: false,
-                    focused: Some(0),
-                    root_pane: Some(0),
-                }],
+                tabs: ids.iter().map(|id| tab(id)).collect(),
                 active_tab: 0,
             }],
             active: Some(0),
@@ -3318,8 +3354,21 @@ mod tests {
             sidebar_width: None,
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
-        };
-        let (_workspaces, terminals, _runtimes) = restore(
+        }
+    }
+
+    /// Fork: restore [`claude_panes_snapshot`]; per tab, the pane's pending
+    /// resume argv (none for a duplicate) and the session it records.
+    #[cfg(unix)]
+    fn restored_claude_panes(
+        project: &crate::agent_session_chain::test_support::Project,
+        ids: &[&str],
+    ) -> Vec<(
+        Option<Vec<String>>,
+        Option<crate::agent_resume::PersistedAgentSession>,
+    )> {
+        let snapshot = claude_panes_snapshot(project, ids);
+        let (workspaces, terminals, _runtimes) = restore(
             &snapshot,
             None,
             24,
@@ -3332,14 +3381,121 @@ mod tests {
             Arc::new(Notify::new()),
             Arc::new(RenderSignal::new()),
         );
-        let terminal = terminals.values().next().expect("a restored pane");
-        let argv = terminal
-            .pending_agent_resume_plan
-            .as_ref()
-            .expect("a native resume")
-            .argv
-            .clone();
-        (argv, terminal.persisted_agent_session.clone())
+        workspaces[0]
+            .tabs
+            .iter()
+            .map(|tab| {
+                let id = &tab.panes[&tab.root_pane].attached_terminal_id;
+                let terminal = &terminals[id];
+                (
+                    terminal
+                        .pending_agent_resume_plan
+                        .as_ref()
+                        .map(|plan| plan.argv.clone()),
+                    terminal.persisted_agent_session.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(unix)]
+    fn restored_claude_pane(
+        project: &crate::agent_session_chain::test_support::Project,
+        id: &str,
+    ) -> (
+        Vec<String>,
+        Option<crate::agent_resume::PersistedAgentSession>,
+    ) {
+        let (argv, session) = restored_claude_panes(project, &[id]).remove(0);
+        (argv.expect("a native resume"), session)
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_shared_lineage_restore_keeps_both_panes_resuming() {
+        const OLD: &str = "62766cda-e2c3-4fc3-bb20-0a9094158ef2";
+        const NEW: &str = "8ac93ea8-c090-43aa-a1e4-58a2abbee34c";
+        let project = crate::agent_session_chain::test_support::Project::new("restore-shared");
+        project.session_file(OLD, Some(NEW));
+        project.session_file(NEW, None);
+        let panes = restored_claude_panes(&project, &[OLD, NEW]);
+        assert_eq!(
+            panes[0].0.as_deref(),
+            Some(&["claude".to_string(), "--resume".into(), OLD.into()][..]),
+            "the other pane already resumes the newest session: no advance"
+        );
+        assert_eq!(panes[0].1, Some(project.session(OLD)));
+        assert_eq!(
+            panes[1].0.as_deref(),
+            Some(&["claude".to_string(), "--resume".into(), NEW.into()][..]),
+            "not blanked as a duplicate"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_live_handoff_pane_keeps_its_saved_session() {
+        const OLD: &str = "62766cda-e2c3-4fc3-bb20-0a9094158ef2";
+        const NEW: &str = "8ac93ea8-c090-43aa-a1e4-58a2abbee34c";
+        let project = crate::agent_session_chain::test_support::Project::new("restore-import");
+        project.session_file(OLD, Some(NEW));
+        project.session_file(NEW, None);
+        let (snapshot, _) = snapshot_with_saved_pane_history();
+        let (events, _events_rx) = mpsc::channel(32);
+        let (workspaces, mut terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let terminal = terminals.values_mut().next().unwrap();
+        terminal.set_persisted_agent_session(project.session(OLD));
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let snapshot = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let pane_id = workspaces[0].tabs[0].panes.keys().next().copied().unwrap();
+        let runtime = runtimes.values().next().unwrap();
+        runtime
+            .pause_handoff_reader(std::time::Duration::from_secs(2))
+            .unwrap();
+        let state = runtime.handoff_runtime_state(pane_id.raw());
+        let state = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        let mut imports = HashMap::from([(
+            pane_id.raw(),
+            crate::handoff_runtime::ImportedHandoffRuntime {
+                master_fd: runtime.duplicate_handoff_fd().unwrap(),
+                state,
+            },
+        )]);
+        let (_, restored_terminals, restored_runtimes) = restore_handoff(
+            &snapshot,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            &mut imports,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+        drop(restored_runtimes);
+        drop(runtimes);
+        let terminal = restored_terminals.values().next().unwrap();
+        assert_eq!(
+            terminal
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.as_str()),
+            Some(OLD),
+            "the agent that came over live keeps the session it runs"
+        );
+        assert_eq!(terminal.session_advanced_from, None);
     }
 
     #[tokio::test]

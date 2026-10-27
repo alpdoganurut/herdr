@@ -326,6 +326,10 @@ pub struct TerminalState {
     /// (src/app/missing_cwd.rs); `App::note_recreated_cwds` takes it once.
     /// Runtime only, never persisted.
     pub cwd_recreated: bool,
+    /// Fork: restore advanced this pane's saved Claude session from this id
+    /// to the newest of its chain (src/agent_session_chain.rs); App::new
+    /// moves the queued messages for it once. Runtime only, never persisted.
+    pub session_advanced_from: Option<String>,
 }
 
 /// Most subagents a pane tracks; further starts are ignored until some stop.
@@ -389,6 +393,7 @@ impl TerminalState {
                 .unwrap_or(0),
             process_agent_session: None,
             cwd_recreated: false,
+            session_advanced_from: None,
         }
     }
 

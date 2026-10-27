@@ -788,6 +788,11 @@ impl App {
         let Some(next) = crate::agent_session_chain::advance(&session) else {
             return;
         };
+        // Another pane already runs (or parks) the newest session.
+        if self.session_recorded_elsewhere(Some(terminal_id), &next.session_ref.value) {
+            return;
+        }
+        self.follow_queued_session(&session.session_ref.value, &next.session_ref.value);
         if let Some(record) = self
             .state
             .terminals
@@ -797,6 +802,17 @@ impl App {
             record.session = next;
             self.state.mark_session_dirty();
         }
+    }
+
+    /// Fork (session chains): whether a terminal other than `except`
+    /// records agent session `id` (a live, launched or parked agent).
+    pub(crate) fn session_recorded_elsewhere(&self, except: Option<&TerminalId>, id: &str) -> bool {
+        self.state.terminals.values().any(|terminal| {
+            Some(&terminal.id) != except
+                && terminal
+                    .persistable_agent_session()
+                    .is_some_and(|session| session.session_ref.value == id)
+        })
     }
 
     /// Escalate suspended agents whose exit grace has run out.

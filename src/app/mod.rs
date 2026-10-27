@@ -825,6 +825,8 @@ impl App {
         app.install_browser_hub(&config.browser);
         // Fork: restored panes whose missing directory was recreated.
         app.note_recreated_cwds();
+        // Fork: queued messages follow sessions restore advanced.
+        app.follow_restored_sessions();
         app.refresh_restored_workspace_git_metadata();
         Ok(app)
     }

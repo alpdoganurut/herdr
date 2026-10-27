@@ -231,11 +231,6 @@ pub fn advance(session: &PersistedAgentSession) -> Option<PersistedAgentSession>
     })
 }
 
-/// [`advance`], or the session unchanged.
-pub fn advanced(session: PersistedAgentSession) -> PersistedAgentSession {
-    advance(&session).unwrap_or(session)
-}
-
 /// Claude-shaped project directories for tests (here and in the app).
 #[cfg(test)]
 pub(crate) mod test_support {

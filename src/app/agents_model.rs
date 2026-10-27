@@ -1227,28 +1227,39 @@ impl App {
                 "{session:?} is not a Claude Code session id"
             )));
         }
-        let mut hits = Vec::new();
+        let mut recorded = Vec::new();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
             for tab in &ws.tabs {
                 for pane_id in tab.panes.keys() {
-                    let Some(recorded) = self
+                    if let Some(session) = self
                         .model_terminal(ws_idx, *pane_id)
                         .and_then(crate::terminal::TerminalState::persistable_agent_session)
                         .filter(|recorded| {
                             recorded.source == "herdr:claude" && recorded.agent == "claude"
                         })
-                    else {
-                        continue;
-                    };
-                    let matches = recorded.session_ref.value == session
-                        || crate::agent_session_chain::session_chain(&recorded)
-                            .last()
-                            .is_some_and(|newest| newest == session);
-                    if matches {
-                        hits.push((ws_idx, *pane_id));
+                    {
+                        recorded.push((ws_idx, *pane_id, session));
                     }
                 }
             }
+        }
+        // A pane that records the session itself first; chains (transcript
+        // reads) only when none does.
+        let mut hits: Vec<(usize, PaneId)> = recorded
+            .iter()
+            .filter(|(_, _, recorded)| recorded.session_ref.value == session)
+            .map(|(ws_idx, pane_id, _)| (*ws_idx, *pane_id))
+            .collect();
+        if hits.is_empty() {
+            hits = recorded
+                .iter()
+                .filter(|(_, _, recorded)| {
+                    crate::agent_session_chain::session_chain(recorded)
+                        .last()
+                        .is_some_and(|newest| newest == session)
+                })
+                .map(|(ws_idx, pane_id, _)| (*ws_idx, *pane_id))
+                .collect();
         }
         let (ws_idx, pane_id) = match hits.as_slice() {
             [hit] => *hit,
