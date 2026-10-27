@@ -280,6 +280,11 @@ pub type Reverify = Box<dyn Fn(&str) -> Verdict>;
 pub struct McpOpts {
     pub dir: PathBuf,
     pub env_pane: Option<String>,
+    /// The calling Claude Code session (`CLAUDE_CODE_SESSION_ID`), read
+    /// only when there is no `env_pane`: a session backgrounded out of its
+    /// pane runs under Claude's daemon without herdr's environment, and the
+    /// server finds its pane by the session's lineage.
+    pub claude_session: Option<String>,
     pub verdict: Verdict,
     /// The herdr server's dashboard port (`[coordinator] dashboard_port`,
     /// passed as `--port`, default 7718; `0` = not served), for the URL
@@ -630,22 +635,29 @@ impl<A: Api> Session<A> {
     /// The caller from `agents.actor` (one request), with the verdict for
     /// its canonical pane.
     fn caller(&self) -> Result<Caller, ApiError> {
-        let Some(env_pane) = self.opts.env_pane.as_deref() else {
-            return Err(err(
-                "no_pane",
-                "this herdr coordinator mcp server is not running inside a herdr pane",
-            ));
+        let env_pane = self.opts.env_pane.as_deref();
+        // No pane id: the Claude session's id, the one other proof (§ the
+        // server's `agents.actor` claude_session); a pane id always wins.
+        let claude_session = match env_pane {
+            Some(_) => None,
+            None => match self.opts.claude_session.as_deref() {
+                Some(session) => Some(session),
+                None => return Err(no_pane_error(None, None)),
+            },
         };
         let result = self
             .api
             .call(Method::AgentsActor(AgentsActorParams {
-                caller_pane: env_pane.to_string(),
+                caller_pane: env_pane.unwrap_or_default().to_string(),
                 ack: true,
                 reads_messages: true,
+                claude_session: claude_session.map(str::to_string),
                 ..AgentsActorParams::default()
             }))
             .map_err(|error| {
-                if error.code == "not_implemented" || error.message.contains("unknown variant") {
+                if let Some(session) = claude_session {
+                    no_pane_error(Some(session), Some(&error.message))
+                } else if error.code == "not_implemented" || error.message.contains("unknown variant") {
                     err(
                         "server_too_old",
                         "the herdr server predates agents v2; hand it off to this herdr (herdr server live-handoff) and restart the session",
@@ -655,7 +667,21 @@ impl<A: Api> Session<A> {
                 }
             })?;
         let actor: AgentsActorInfo = typed(result, "actor")?;
-        let verdict = self.verdict_for(&actor.pane_id)?;
+        let verdict = match claude_session {
+            // The server found the one live pane whose Claude session is
+            // this one (directly or through its continued-in chain): that
+            // is the proof, in place of the pane shell among this process's
+            // ancestors (a backgrounded session runs under Claude's daemon,
+            // outside the pane's process tree). Only without a pane id.
+            Some(_) if actor.by_session => Verdict::Verified,
+            Some(session) => {
+                return Err(no_pane_error(
+                    Some(session),
+                    Some("the herdr server does not find callers by their Claude session"),
+                ))
+            }
+            None => self.verdict_for(&actor.pane_id)?,
+        };
         Ok(Caller::from_actor(actor, verdict))
     }
 
@@ -2760,6 +2786,25 @@ fn char_floor(text: &str, index: usize) -> usize {
     index
 }
 
+/// `no_pane`: this server has no herdr pane id, and its Claude `session`
+/// (when known) found no pane, for `why` (the server's refusal).
+fn no_pane_error(session: Option<&str>, why: Option<&str>) -> ApiError {
+    let head =
+        "this herdr coordinator mcp server is not running inside a herdr pane (no HERDR_PANE_ID)";
+    let mut message = match session {
+        Some(session) => format!(
+            "{head}: this Claude Code session was likely backgrounded out of its herdr pane; resume it in that pane with `claude --resume {session}`"
+        ),
+        None => format!(
+            "{head}: a Claude Code session backgrounded out of its herdr pane runs outside it; resume it in that pane with `claude --resume <session id>`"
+        ),
+    };
+    if let Some(why) = why.map(str::trim).filter(|why| !why.is_empty()) {
+        message.push_str(&format!(" (herdr could not find its pane: {why})"));
+    }
+    err("no_pane", message)
+}
+
 fn kind_text(kind: CheckpointKind) -> &'static str {
     match kind {
         CheckpointKind::Decision => "decision",
@@ -3941,9 +3986,22 @@ mod tests {
         }
 
         fn actor(&self, params: &AgentsActorParams) -> Result<Value, ApiError> {
-            let fake = self
-                .pane(&params.caller_pane)
-                .ok_or_else(|| ApiError::new("caller_unresolved", "no such pane"))?;
+            // Like the server: an empty pane id with a Claude session finds
+            // the one live pane recording that session.
+            let by_session = params.caller_pane.is_empty() && params.claude_session.is_some();
+            let fake = if by_session {
+                self.panes
+                    .borrow()
+                    .iter()
+                    .find(|fake| fake.live && fake.session == params.claude_session)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ApiError::new("caller_unresolved", "no herdr pane records that session")
+                    })?
+            } else {
+                self.pane(&params.caller_pane)
+                    .ok_or_else(|| ApiError::new("caller_unresolved", "no such pane"))?
+            };
             let kind = match (&fake.agent, fake.live, fake.coordinator) {
                 (Some(_), true, true) => AgentActorKind::Coordinator,
                 (Some(_), true, false) => AgentActorKind::Agent,
@@ -3987,6 +4045,7 @@ mod tests {
                 team_update: update,
                 team_revision: None,
                 ack_key: None,
+                by_session,
             };
             Ok(json!({ "type": "agents_actor", "actor": actor }))
         }
@@ -4465,6 +4524,17 @@ mod tests {
         verdict: Verdict,
         reverify: Option<Reverify>,
     ) -> Session<impl Api> {
+        session_opts(world, Some(pane), None, verdict, reverify)
+    }
+
+    /// A server with `env_pane` and `claude_session` as given.
+    fn session_opts(
+        world: &Rc<World>,
+        env_pane: Option<&str>,
+        claude_session: Option<&str>,
+        verdict: Verdict,
+        reverify: Option<Reverify>,
+    ) -> Session<impl Api> {
         let answer = world.clone();
         let clock = Rc::new(Cell::new(NOW));
         let now = clock.clone();
@@ -4473,7 +4543,8 @@ mod tests {
             move |method| answer.answer(method),
             McpOpts {
                 dir: world.dir.clone(),
-                env_pane: Some(pane.to_string()),
+                env_pane: env_pane.map(str::to_string),
+                claude_session: claude_session.map(str::to_string),
                 verdict,
                 port: 7719,
                 reverify,
@@ -5144,6 +5215,123 @@ mod tests {
             .insert("w9:p1".into(), "w2:p4".into());
         let out = call(&mut s, "agents_get", json!({ "target": "w9:p1" }));
         assert!(out.text.contains("pane: w2:p4"), "{}", out.text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_backgrounded_session_without_a_pane_id_acts_as_its_pane() {
+        let (dir, world) = world("mcp-by-session");
+        world.set("w2:p3", |lead| lead.session = Some("bg-session".into()));
+        // Started under Claude's daemon: no pane id, so no ancestry verdict;
+        // the reverify (ancestry) must not run for it.
+        let reverify: Reverify = Box::new(|_| panic!("no ancestry check by session"));
+        let mut s = session_opts(
+            &world,
+            None,
+            Some("bg-session"),
+            Verdict::Unverified,
+            Some(reverify),
+        );
+        let out = call(
+            &mut s,
+            "agents_send_message",
+            json!({ "to": "fixer", "text": "still here" }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.starts_with("[you: w2:p3 lead"), "{}", out.text);
+        let Method::AgentsActor(actor) = &world.calls_of("agents.actor")[0] else {
+            panic!("an actor read");
+        };
+        assert_eq!(actor.caller_pane, "");
+        assert_eq!(actor.claude_session.as_deref(), Some("bg-session"));
+        let Method::AgentsSendMessage(params) = &world.calls_of("agents.send_message")[0] else {
+            panic!("a send");
+        };
+        assert_eq!(
+            params.caller_pane, "w2:p3",
+            "every call names the found pane"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pane_id_wins_over_the_claude_session() {
+        let (dir, world) = world("mcp-env-wins");
+        world.set("w2:p3", |lead| lead.session = Some("bg-session".into()));
+        let mut s = session_opts(
+            &world,
+            Some("w3:p1"),
+            Some("bg-session"),
+            Verdict::Verified,
+            None,
+        );
+        let out = call(&mut s, "agents_whoami", json!({}));
+        assert!(out.text.starts_with("[you: w3:p1 fixer"), "{}", out.text);
+        let Method::AgentsActor(actor) = &world.calls_of("agents.actor")[0] else {
+            panic!("an actor read");
+        };
+        assert_eq!(actor.caller_pane, "w3:p1");
+        assert_eq!(actor.claude_session, None, "not even sent");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unresolved_session_says_how_to_resume_it_in_its_pane() {
+        let (dir, world) = world("mcp-no-pane");
+        let mut s = session_opts(
+            &world,
+            None,
+            Some("lost-session"),
+            Verdict::Unverified,
+            None,
+        );
+        let out = call(
+            &mut s,
+            "agents_send_message",
+            json!({ "to": "fixer", "text": "x" }),
+        );
+        assert!(out.is_error);
+        assert!(out.text.contains("no_pane"), "{}", out.text);
+        assert!(
+            out.text.contains("backgrounded out of its herdr pane"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("`claude --resume lost-session`"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("no herdr pane records that session"),
+            "{}",
+            out.text
+        );
+        assert!(world.calls_of("agents.send_message").is_empty());
+
+        // A server that ignores the session (an older one) answers as for
+        // any pane; without the session proof the caller stays unresolved.
+        world.queue(
+            "agents.actor",
+            Ok(json!({ "type": "agents_actor", "actor": {
+                "pane_id": "w2:p3", "kind": "agent", "live": true, "workspace_id": "w2" } })),
+        );
+        let out = call(&mut s, "agents_whoami", json!({}));
+        assert!(out.text.contains("caller unresolved"), "{}", out.text);
+        assert!(
+            out.text.contains("claude --resume lost-session"),
+            "{}",
+            out.text
+        );
+
+        let mut bare = session_opts(&world, None, None, Verdict::Unverified, None);
+        let out = call(&mut bare, "agents_list", json!({}));
+        assert!(out.is_error && out.text.contains("no_pane"), "{}", out.text);
+        assert!(
+            out.text.contains("`claude --resume <session id>`"),
+            "{}",
+            out.text
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

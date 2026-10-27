@@ -671,6 +671,7 @@ impl App {
             .and_then(|workspace| workspace.terminal_id(resolved.pane_id))
             .cloned()
             .ok_or_else(not_found)?;
+        self.advance_suspended_agent_session(&terminal_id);
         let terminal = self
             .state
             .terminals
@@ -767,6 +768,35 @@ impl App {
         Ok(self
             .public_pane_id(resolved.ws_idx, resolved.pane_id)
             .unwrap_or_else(|| target.to_string()))
+    }
+
+    /// A parked Claude session that was backgrounded out of its pane and
+    /// carried on under a new id (src/agent_session_chain.rs) is resumed as
+    /// the newest session of its chain: the record follows it, and the
+    /// session file is saved with the new id. Activation and restart read
+    /// the record here, never on a render or detection path.
+    fn advance_suspended_agent_session(&mut self, terminal_id: &TerminalId) {
+        let Some(session) = self
+            .state
+            .terminals
+            .get(terminal_id)
+            .and_then(|terminal| terminal.suspended_agent.as_ref())
+            .map(|record| record.session.clone())
+        else {
+            return;
+        };
+        let Some(next) = crate::agent_session_chain::advance(&session) else {
+            return;
+        };
+        if let Some(record) = self
+            .state
+            .terminals
+            .get_mut(terminal_id)
+            .and_then(|terminal| terminal.suspended_agent.as_mut())
+        {
+            record.session = next;
+            self.state.mark_session_dirty();
+        }
     }
 
     /// Escalate suspended agents whose exit grace has run out.
@@ -2552,5 +2582,47 @@ mod tests {
             sent.starts_with(&expected),
             "sent {sent:?}, expected {expected:?}"
         );
+    }
+
+    /// A parked Claude session activated with no shell to type into: the
+    /// deferred resume takes the record's session.
+    fn activate_parked(session: crate::agent_resume::PersistedAgentSession) -> App {
+        let mut app = test_app();
+        let terminal_id = root_terminal_id(&app);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .restore_suspended_agent("claude".into(), Some("reviewer".into()), session);
+        app.state.default_shell = "__herdr_missing_activate_shell__".into();
+        let response = activate(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_activated", "{response}");
+        app
+    }
+
+    #[tokio::test]
+    async fn activating_a_session_continued_elsewhere_resumes_the_newest_one() {
+        const OLD: &str = "62766cda-e2c3-4fc3-bb20-0a9094158ef2";
+        const NEW: &str = "8ac93ea8-c090-43aa-a1e4-58a2abbee34c";
+        let project = crate::agent_session_chain::test_support::Project::new("activate-fork");
+        project.session_file(OLD, Some(NEW));
+        project.session_file(NEW, None);
+        let app = activate_parked(project.session(OLD));
+        let terminal = &app.state.terminals[&root_terminal_id(&app)];
+        assert_eq!(
+            terminal.persisted_agent_session,
+            Some(project.session(NEW)),
+            "the pane now records the newest session, saved like any activation"
+        );
+    }
+
+    #[tokio::test]
+    async fn activating_a_session_without_a_chain_keeps_it() {
+        const ID: &str = "11111111-1111-4111-8111-111111111111";
+        let project = crate::agent_session_chain::test_support::Project::new("activate-plain");
+        project.session_file(ID, None);
+        let app = activate_parked(project.session(ID));
+        let terminal = &app.state.terminals[&root_terminal_id(&app)];
+        assert_eq!(terminal.persisted_agent_session, Some(project.session(ID)));
     }
 }

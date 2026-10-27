@@ -1122,7 +1122,24 @@ impl App {
     }
 
     fn agents_actor(&mut self, params: &AgentsActorParams) -> ModelResult<AgentsActorInfo> {
-        let caller = self.required_caller(&params.caller_pane)?;
+        // Fork: a herdr_agents server without a pane id (its Claude session
+        // was backgrounded out of the pane) names its session instead; a
+        // pane id, when sent, always wins.
+        let by_session = params.caller_pane.trim().is_empty()
+            && params
+                .claude_session
+                .as_deref()
+                .is_some_and(|session| !session.trim().is_empty());
+        let caller = if by_session {
+            let session = params.claude_session.as_deref().unwrap_or_default();
+            // A pane's session may so far be known only from its command
+            // line (read once per process group).
+            self.fill_process_agent_sessions();
+            let pane = self.caller_pane_by_claude_session(session)?;
+            self.required_caller(&pane)?
+        } else {
+            self.required_caller(&params.caller_pane)?
+        };
         if params.reads_messages {
             if let Some(pid) = self.agents_model.caller_process {
                 self.note_message_reader(&caller.terminal_id, pid);
@@ -1189,7 +1206,93 @@ impl App {
             team_update,
             team_revision,
             ack_key,
+            by_session,
         })
+    }
+
+    /// Fork: the public id of the one live pane whose recorded Claude
+    /// session is `session`, directly or as the newest session of its
+    /// `continued-in` chain (src/agent_session_chain.rs). Only a pane's own
+    /// lineage can match it, so a session never claims another pane. Refused
+    /// when no pane matches, when several do, when the match hosts no live
+    /// Claude, or when the calling process runs inside another pane. Reads
+    /// transcript tails of the Claude panes (cached); `agents.actor` only.
+    pub(crate) fn caller_pane_by_claude_session(&self, session: &str) -> ModelResult<String> {
+        let session = session.trim();
+        let unresolved = |why: String| ModelError::new(error_code::CALLER_UNRESOLVED, why);
+        if crate::agent_resume::AgentSessionRef::id(session).is_none()
+            || !crate::agent_resume::is_safe_path_component(session)
+        {
+            return Err(unresolved(format!(
+                "{session:?} is not a Claude Code session id"
+            )));
+        }
+        let mut hits = Vec::new();
+        for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
+            for tab in &ws.tabs {
+                for pane_id in tab.panes.keys() {
+                    let Some(recorded) = self
+                        .model_terminal(ws_idx, *pane_id)
+                        .and_then(crate::terminal::TerminalState::persistable_agent_session)
+                        .filter(|recorded| {
+                            recorded.source == "herdr:claude" && recorded.agent == "claude"
+                        })
+                    else {
+                        continue;
+                    };
+                    let matches = recorded.session_ref.value == session
+                        || crate::agent_session_chain::session_chain(&recorded)
+                            .last()
+                            .is_some_and(|newest| newest == session);
+                    if matches {
+                        hits.push((ws_idx, *pane_id));
+                    }
+                }
+            }
+        }
+        let (ws_idx, pane_id) = match hits.as_slice() {
+            [hit] => *hit,
+            [] => {
+                return Err(unresolved(format!(
+                    "no herdr pane records Claude session {session}"
+                )))
+            }
+            _ => {
+                return Err(unresolved(format!(
+                    "{} herdr panes record Claude session {session}",
+                    hits.len()
+                )))
+            }
+        };
+        let public = self
+            .public_pane_id(ws_idx, pane_id)
+            .ok_or_else(|| unresolved(format!("the pane of Claude session {session} is gone")))?;
+        let live_claude = self.pane_hosts_live_agent(ws_idx, pane_id)
+            && self
+                .model_terminal(ws_idx, pane_id)
+                .and_then(crate::terminal::TerminalState::effective_known_agent)
+                == Some(crate::detect::Agent::Claude);
+        if !live_claude {
+            return Err(unresolved(format!(
+                "pane {public} records Claude session {session} but runs no live Claude"
+            )));
+        }
+        // A process inside another pane is that pane's, whatever it says.
+        if let Some(peer) = self.agents_model.caller_process {
+            let ancestry = crate::platform::process_ancestry(peer);
+            if let Some(other) = self
+                .caller_pane_by_ancestry("", None, &ancestry)
+                .filter(|found| *found != (ws_idx, pane_id))
+            {
+                let other = self
+                    .public_pane_id(other.0, other.1)
+                    .unwrap_or_else(|| "another pane".into());
+                return Err(unresolved(format!(
+                    "Claude session {session} belongs to pane {public}, but this process runs in {other}"
+                )));
+            }
+        }
+        Ok(public)
     }
 
     /// One line: what the caller may do.
@@ -3323,6 +3426,114 @@ pub(crate) mod tests {
             }),
         );
         assert_eq!(code(&result), "caller_unresolved");
+    }
+
+    const OLD_SESSION: &str = "62766cda-e2c3-4fc3-bb20-0a9094158ef2";
+    const NEW_SESSION: &str = "8ac93ea8-c090-43aa-a1e4-58a2abbee34c";
+    const FIXER_SESSION: &str = "33333333-3333-4333-8333-333333333333";
+    const FIXER_NEXT: &str = "44444444-4444-4444-8444-444444444444";
+
+    /// `model_app` with the team lead recording `OLD_SESSION` (continued in
+    /// `NEW_SESSION`) and the fixer `FIXER_SESSION` (continued in
+    /// `FIXER_NEXT`).
+    fn session_app(project: &crate::agent_session_chain::test_support::Project) -> App {
+        project.session_file(OLD_SESSION, Some(NEW_SESSION));
+        project.session_file(NEW_SESSION, None);
+        project.session_file(FIXER_SESSION, Some(FIXER_NEXT));
+        project.session_file(FIXER_NEXT, None);
+        let mut app = model_app();
+        let lead = pane(&app, 1, 0);
+        terminal_mut(&mut app, lead).set_persisted_agent_session(project.session(OLD_SESSION));
+        let fixer = pane(&app, 1, 1);
+        terminal_mut(&mut app, fixer).set_persisted_agent_session(project.session(FIXER_SESSION));
+        app
+    }
+
+    fn actor_by_session(app: &mut App, caller_pane: &str, session: &str) -> serde_json::Value {
+        call(
+            app,
+            Method::AgentsActor(AgentsActorParams {
+                caller_pane: caller_pane.into(),
+                claude_session: Some(session.into()),
+                ..Default::default()
+            }),
+        )
+    }
+
+    #[test]
+    fn a_backgrounded_claude_session_resolves_to_its_pane_as_that_pane() {
+        let project = crate::agent_session_chain::test_support::Project::new("actor-session");
+        let mut app = session_app(&project);
+        let lead = public(&app, 1, 0);
+        let by_env = call(
+            &mut app,
+            Method::AgentsActor(AgentsActorParams {
+                caller_pane: lead.clone(),
+                ..Default::default()
+            }),
+        );
+        for session in [NEW_SESSION, OLD_SESSION] {
+            let result = actor_by_session(&mut app, "", session);
+            let actor = &result["result"]["actor"];
+            assert_eq!(actor["pane_id"], lead.as_str(), "{session}: {result}");
+            assert_eq!(actor["by_session"], true);
+            // Exactly the pane's own rules: nothing more than its env caller.
+            for key in ["kind", "live", "team", "turn", "rights", "role"] {
+                assert_eq!(actor[key], by_env["result"]["actor"][key], "{key}");
+            }
+        }
+        assert!(by_env["result"]["actor"].get("by_session").is_none());
+    }
+
+    #[test]
+    fn a_session_caller_is_refused_unless_exactly_one_live_pane_has_its_lineage() {
+        let project = crate::agent_session_chain::test_support::Project::new("actor-refusals");
+        let mut app = session_app(&project);
+        let unknown = actor_by_session(&mut app, "", "55555555-5555-4555-8555-555555555555");
+        assert_eq!(code(&unknown), "caller_unresolved", "{unknown}");
+        let garbled = actor_by_session(&mut app, "", "../x");
+        assert_eq!(code(&garbled), "caller_unresolved");
+
+        // Another pane's chain names that pane, never the lead.
+        let fixer = actor_by_session(&mut app, "", FIXER_NEXT);
+        assert_eq!(fixer["result"]["actor"]["pane_id"], public(&app, 1, 1));
+
+        // A second pane with the same lineage: ambiguous.
+        let plain = pane(&app, 2, 0);
+        terminal_mut(&mut app, plain).set_persisted_agent_session(project.session(OLD_SESSION));
+        let both = actor_by_session(&mut app, "", NEW_SESSION);
+        assert_eq!(code(&both), "caller_unresolved", "{both}");
+        assert!(both["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("2 herdr panes"));
+        project.session_file("66666666-6666-4666-8666-666666666666", None);
+        terminal_mut(&mut app, plain)
+            .set_persisted_agent_session(project.session("66666666-6666-4666-8666-666666666666"));
+
+        // The lead's Claude is gone: its pane runs no live agent.
+        let lead = pane(&app, 1, 0);
+        terminal_mut(&mut app, lead).set_detected_state(None, AgentState::Unknown);
+        let gone = actor_by_session(&mut app, "", NEW_SESSION);
+        assert_eq!(code(&gone), "caller_unresolved", "{gone}");
+        assert!(gone["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no live Claude"));
+    }
+
+    #[test]
+    fn a_pane_id_wins_over_a_claude_session() {
+        let project = crate::agent_session_chain::test_support::Project::new("actor-env-wins");
+        let mut app = session_app(&project);
+        let fixer = public(&app, 1, 1);
+        let result = actor_by_session(&mut app, &fixer, NEW_SESSION);
+        assert_eq!(
+            result["result"]["actor"]["pane_id"],
+            fixer.as_str(),
+            "{result}"
+        );
+        assert!(result["result"]["actor"].get("by_session").is_none());
     }
 
     #[test]

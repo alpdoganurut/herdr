@@ -273,6 +273,9 @@ impl App {
         let Some(session) = entry_session(&entry) else {
             return not_resumable(id, "its session reference is invalid");
         };
+        // A Claude session backgrounded out of its pane reopens as the
+        // newest session of its chain (src/agent_session_chain.rs).
+        let session = crate::agent_session_chain::advanced(session);
         let Some(plan) =
             crate::agent_resume::plan(&session.source, &session.agent, &session.session_ref)
         else {

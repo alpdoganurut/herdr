@@ -2021,6 +2021,13 @@
             "caller_pane": {
               "type": "string"
             },
+            "claude_session": {
+              "description": "Fork: the calling Claude Code session (`CLAUDE_CODE_SESSION_ID`),\nsent only by a herdr_agents server that has no pane id (a session\nbackgrounded out of its pane): with an empty `caller_pane`, the\ncaller is the one live pane whose recorded Claude session is this\none, directly or through that session's `continued-in` chain.\nIgnored when `caller_pane` is set.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "full": {
               "default": false,
               "description": "The whole roster, not just the changes since the last ack.",
@@ -12488,6 +12495,10 @@
                 "string",
                 "null"
               ]
+            },
+            "by_session": {
+              "description": "Fork: the caller was found by its `claude_session` (no pane id).",
+              "type": "boolean"
             },
             "kind": {
               "$ref": "#/schemas/success_response/$defs/AgentActorKind"

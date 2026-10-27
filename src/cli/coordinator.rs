@@ -681,6 +681,9 @@ fn mcp(args: &[String]) -> Result<i32, Fail> {
     let parsed = parse(args, &["--port"], &[])?;
     parsed.at_most_positionals(0)?;
     let env_pane = super::target::caller_pane_id();
+    // No pane id: a Claude Code session backgrounded out of its pane names
+    // itself instead (the server matches it against the panes' sessions).
+    let claude_session = env_pane.is_none().then(claude_session_id).flatten();
     let verdict = caller_verdict(&SocketApi, env_pane.as_deref());
     // The canonical pane may change (the tab moved, or the id now names
     // another pane): the verdict is computed again for the new one.
@@ -694,11 +697,24 @@ fn mcp(args: &[String]) -> Result<i32, Fail> {
     let opts = coordinator::mcp::McpOpts {
         dir: parsed.dir()?,
         env_pane,
+        claude_session,
         verdict,
         port: parsed.port()?,
         reverify: Some(reverify),
     };
     Ok(coordinator::mcp::run(SocketApi, opts)?)
+}
+
+/// The calling Claude Code session (`CLAUDE_CODE_SESSION_ID`), local
+/// servers only (a remote server has other sessions).
+fn claude_session_id() -> Option<String> {
+    if super::target::is_remote() {
+        return None;
+    }
+    std::env::var("CLAUDE_CODE_SESSION_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn seed(args: &[String]) -> Result<i32, Fail> {
@@ -1471,6 +1487,7 @@ mod tests {
             coordinator::mcp::McpOpts {
                 dir: dir.clone(),
                 env_pane: Some("w2:p3".into()),
+                claude_session: None,
                 verdict: Verdict::Verified,
                 port: DEFAULT_PORT,
                 reverify: None,

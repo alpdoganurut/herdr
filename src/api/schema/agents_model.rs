@@ -377,6 +377,14 @@ pub struct AgentsActorParams {
     /// as a one-line pointer while that server process runs, not pasted.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reads_messages: bool,
+    /// Fork: the calling Claude Code session (`CLAUDE_CODE_SESSION_ID`),
+    /// sent only by a herdr_agents server that has no pane id (a session
+    /// backgrounded out of its pane): with an empty `caller_pane`, the
+    /// caller is the one live pane whose recorded Claude session is this
+    /// one, directly or through that session's `continued-in` chain.
+    /// Ignored when `caller_pane` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_session: Option<String>,
 }
 
 /// `agents.directory`: every group and tab, scoped. Without a filter and
@@ -734,6 +742,9 @@ pub struct AgentsActorInfo {
     pub team_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ack_key: Option<String>,
+    /// Fork: the caller was found by its `claude_session` (no pane id).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_session: bool,
 }
 
 /// A group's team, in the directory.

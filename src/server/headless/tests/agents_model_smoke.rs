@@ -667,6 +667,45 @@ async fn fork_smoke_agents_stale_caller_pane_is_found_by_its_process() {
 }
 
 #[tokio::test]
+async fn fork_smoke_agents_backgrounded_claude_session_is_found_by_its_session_id() {
+    const OLD: &str = "62766cda-e2c3-4fc3-bb20-0a9094158ef2";
+    const NEW: &str = "8ac93ea8-c090-43aa-a1e4-58a2abbee34c";
+    let project = crate::agent_session_chain::test_support::Project::new("smoke-bg-session");
+    project.session_file(OLD, Some(NEW));
+    project.session_file(NEW, None);
+    let (mut server, _input, panes) = crew_server();
+    let me = std::process::id();
+    set_pane_pid(&mut server, panes[0], UNRELATED_PID);
+    set_pane_pid(&mut server, panes[1], UNRELATED_PID - 1);
+    terminal(&mut server, panes[0]).set_persisted_agent_session(project.session(OLD));
+    let lead = public(&server, panes[0]);
+    let by_session = |server: &mut HeadlessServer, peer: u32| {
+        api_from(
+            server,
+            Some(peer),
+            Method::AgentsActor(crate::api::schema::agents_model::AgentsActorParams {
+                claude_session: Some(NEW.into()),
+                ..Default::default()
+            }),
+        )
+    };
+
+    // Claude's daemon runs the forked session outside every pane: its
+    // session's lineage names the lead's pane, as an agent of its team.
+    let found = by_session(&mut server, me);
+    let actor = &found["result"]["actor"];
+    assert_eq!(actor["pane_id"], lead.as_str(), "{found}");
+    assert_eq!(actor["kind"], "agent");
+    assert_eq!(actor["by_session"], true);
+    assert_eq!(actor["team"]["label"], "crew");
+
+    // A process inside another pane cannot claim the lead by its session.
+    set_pane_pid(&mut server, panes[1], me);
+    let refused = by_session(&mut server, me);
+    assert_eq!(refused["error"]["code"], "caller_unresolved", "{refused}");
+}
+
+#[tokio::test]
 async fn fork_smoke_agents_stale_caller_without_its_process_is_refused() {
     let (mut server, _input, panes) = crew_server();
     let me = std::process::id();

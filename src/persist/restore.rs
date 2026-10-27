@@ -651,6 +651,17 @@ fn restore_tab(
             .and_then(crate::detect::parse_canonical_agent_label);
         let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
+        // Fork: a Claude session backgrounded out of its pane resumes as the
+        // newest session of its chain (src/agent_session_chain.rs); a pane
+        // whose agent comes over live (a handoff) keeps what it runs.
+        let resumes_agent = runtime_context.resume_agents_on_restore
+            && !reverse_id_map
+                .get(id)
+                .is_some_and(|old_id| imported_panes.contains_key(old_id));
+        let advanced_agent_session = saved_agent_session
+            .filter(|_| resumes_agent)
+            .and_then(advanced_agent_session_snapshot);
+        let saved_agent_session = advanced_agent_session.as_ref().or(saved_agent_session);
         let saved_suspended_agent = saved_pane.and_then(|p| p.suspended_agent.as_ref());
         let saved_agent_resume = saved_pane.and_then(saved_reported_resume);
         let saved_history =
@@ -1044,6 +1055,19 @@ fn persisted_agent_session_from_snapshot(
         &session.value,
     )
     .map(|persisted| persisted.with_transcript_path(session.transcript_path.clone()))
+}
+
+/// Fork: a saved Claude session advanced to the newest session of its chain
+/// (src/agent_session_chain.rs), or `None` when it has none.
+fn advanced_agent_session_snapshot(
+    saved: &PaneAgentSessionSnapshot,
+) -> Option<PaneAgentSessionSnapshot> {
+    let next = crate::agent_session_chain::advance(&persisted_agent_session_from_snapshot(saved)?)?;
+    Some(PaneAgentSessionSnapshot {
+        value: next.session_ref.value,
+        transcript_path: next.transcript_path,
+        ..saved.clone()
+    })
 }
 
 fn restored_terminal_agent_session(
@@ -3228,5 +3252,111 @@ mod tests {
         };
         history.layout_fingerprint = super::super::snapshot::layout_fingerprint(&snapshot);
         (snapshot, history)
+    }
+
+    /// Fork: restore one native Claude pane saved with session `id`
+    /// (transcript in `project`); the pane's pending resume argv and the
+    /// session it records.
+    #[cfg(unix)]
+    fn restored_claude_pane(
+        project: &crate::agent_session_chain::test_support::Project,
+        id: &str,
+    ) -> (
+        Vec<String>,
+        Option<crate::agent_resume::PersistedAgentSession>,
+    ) {
+        let cwd = std::env::current_dir().unwrap();
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                team: None,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    color: None,
+                    remind: false,
+                    important: false,
+                    remind_every: None,
+                    pinned: false,
+                    muted: false,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneSnapshot {
+                            agent_meta: Default::default(),
+                            cwd,
+                            label: None,
+                            agent_name: None,
+                            managed_agent_kind: None,
+                            agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
+                                source: "herdr:claude".into(),
+                                agent: "claude".into(),
+                                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                                value: id.into(),
+                                transcript_path: Some(project.file(id)),
+                            }),
+                            agent_resume: None,
+                            launch_argv: None,
+                            suspended_agent: None,
+                        },
+                    )]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (_workspaces, terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            true,
+            mpsc::channel(4).0,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let terminal = terminals.values().next().expect("a restored pane");
+        let argv = terminal
+            .pending_agent_resume_plan
+            .as_ref()
+            .expect("a native resume")
+            .argv
+            .clone();
+        (argv, terminal.persisted_agent_session.clone())
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_restored_claude_session_continued_elsewhere_resumes_the_newest_one() {
+        const OLD: &str = "62766cda-e2c3-4fc3-bb20-0a9094158ef2";
+        const NEW: &str = "8ac93ea8-c090-43aa-a1e4-58a2abbee34c";
+        let project = crate::agent_session_chain::test_support::Project::new("restore-fork");
+        project.session_file(OLD, Some(NEW));
+        project.session_file(NEW, None);
+        let (argv, session) = restored_claude_pane(&project, OLD);
+        assert_eq!(argv, ["claude", "--resume", NEW]);
+        assert_eq!(session, Some(project.session(NEW)));
+
+        // No chain: unchanged.
+        let (argv, session) = restored_claude_pane(&project, NEW);
+        assert_eq!(argv, ["claude", "--resume", NEW]);
+        assert_eq!(session, Some(project.session(NEW)));
     }
 }

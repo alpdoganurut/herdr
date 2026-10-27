@@ -14,6 +14,7 @@ const NESTED_HERDR_MESSAGES: [&str; 6] = [
 mod agent_context;
 mod agent_handoff;
 mod agent_resume;
+mod agent_session_chain;
 mod agent_view_eval;
 mod agent_wrap;
 mod agents_model;
