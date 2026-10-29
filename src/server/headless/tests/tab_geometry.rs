@@ -2,7 +2,11 @@
 //! tab. The info dock is per tab, so the client's surface width changes on a
 //! dock toggle and on a switch between tabs with and without it; sizing every
 //! tab of every workspace on each of those reflowed and SIGWINCHed every
-//! agent of the session. Hidden tabs are sized when shown.
+//! agent of the session. Hidden tabs keep their last size until shown and are
+//! sized then (on a switch the server sizes the shown tab at the client's last
+//! reported size, then the client reports the shown tab's own size: at most
+//! two reflows of that one tab). A pending agent resume in a hidden tab spawns
+//! at `view.terminal_area` (the shown tab's size) and is sized when shown.
 
 use super::*;
 
@@ -113,36 +117,73 @@ async fn single_client_hidden_tab_is_sized_when_shown() {
     shutdown_test_runtimes(&mut server);
 }
 
-/// Fork: a dock-open tab and a dock-closed tab, switched back and forth, size
-/// only the tab being shown, and only on its first show at its width.
+/// A tab switch as the client shell sends it (`tab.focus` through the
+/// endpoint path).
+fn switch_tab(server: &mut HeadlessServer, client_id: u64, tab: usize) {
+    let tab_id = server.app.public_tab_id(0, tab).unwrap();
+    let (respond_to, _response_rx) = std::sync::mpsc::channel();
+    server.handle_client_shell_api_request(
+        client_id,
+        crate::api::ApiRequestMessage {
+            request: crate::api::schema::Request {
+                id: format!("switch-{tab}"),
+                method: crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
+                    tab_id,
+                }),
+            },
+            respond_to,
+            response_write_complete: None,
+            peer_pid: None,
+        },
+    );
+}
+
+fn changed_tabs(before: &[u64], after: &[u64]) -> Vec<usize> {
+    (0..before.len())
+        .filter(|&index| before[index] != after[index])
+        .collect()
+}
+
+/// Fork: a dock-open tab and a dock-closed tab, switched back and forth
+/// through the real `tab.focus` path, size only the tab being shown. The
+/// server sizes the newly shown tab at the client's last reported size (the
+/// width of the tab it left: it keeps a client that does not report again
+/// right), then the client reports the shown tab's width: the shown tab
+/// reflows at most twice per switch, no hidden tab ever.
 #[tokio::test]
 async fn fork_smoke_switching_dock_and_plain_tabs_reflows_one_tab_at_most() {
     let mut server = server_with_tabs(6, b"");
     let (control, _) = connect_test_shell(&mut server, 1, 100, 30);
     let _ = control.recv().expect("snapshot");
+    let attached = tab_size(&server, 2);
     // Tab 0 has the dock open (70 cols); tab 1 has not (100 cols).
     assert!(resize(&mut server, 1, 70, 30));
-    let mut resized = Vec::new();
+    let narrow = tab_size(&server, 0);
+    let sizes = [narrow, attached];
     for round in 0..3 {
         for (tab, cols) in [(1, 100), (0, 70)] {
-            focus_tab(&mut server, 1, tab);
             let before = content_seqs(&server);
+            switch_tab(&mut server, 1, tab);
+            let switched = content_seqs(&server);
             resize(&mut server, 1, cols, 30);
-            let after = content_seqs(&server);
-            let changed = (0..before.len())
-                .filter(|&index| before[index] != after[index])
-                .collect::<Vec<_>>();
-            resized.push((round, tab, changed));
+            let reported = content_seqs(&server);
+            let on_switch = changed_tabs(&before, &switched);
+            let on_report = changed_tabs(&switched, &reported);
+            assert_eq!(
+                on_switch,
+                vec![tab],
+                "round {round}, tab {tab}: the switch sizes the shown tab at the stale width"
+            );
+            assert_eq!(
+                on_report,
+                vec![tab],
+                "round {round}, tab {tab}: the report sizes it at its own width"
+            );
+            assert_eq!(tab_size(&server, tab), sizes[tab]);
         }
     }
-    for (round, tab, changed) in resized {
-        assert!(
-            changed.iter().all(|&index| index == tab),
-            "round {round}, tab {tab}: resized {changed:?}"
-        );
-    }
     for tab in 2..6 {
-        assert_eq!(tab_size(&server, tab).1, tab_size(&server, 1).1);
+        assert_eq!(tab_size(&server, tab), attached, "never shown, never sized");
     }
     shutdown_test_runtimes(&mut server);
 }

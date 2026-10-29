@@ -196,6 +196,10 @@ struct QueueFile {
     /// ignore the field).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     delivered: Vec<DeliveredMessage>,
+    /// Fork: recreated-directory notices not queued yet
+    /// (src/app/missing_cwd.rs; older builds ignore the field).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    missing_cwd: Vec<super::missing_cwd::SavedMissingCwdNotice>,
 }
 
 /// A target that waits on its user while messages are queued for it
@@ -258,7 +262,8 @@ pub(crate) struct MessageQueue {
     /// Targets an urgent message interrupted (Esc), and when.
     interrupted_at: HashMap<String, Instant>,
     /// Agent panes whose missing directory herdr recreated, waiting to be
-    /// told so once their agent is up (src/app/missing_cwd.rs; runtime only).
+    /// told so once their agent is up (src/app/missing_cwd.rs; saved in the
+    /// queue file by public pane id).
     pub(crate) missing_cwd: super::missing_cwd::MissingCwdNotices,
     /// `message_queue.json`; `None` = not persisted (tests, unpersisted sessions).
     pub(super) store: Option<PathBuf>,
@@ -315,6 +320,7 @@ impl MessageQueue {
             .unwrap_or_default();
         self.entries = file.messages;
         self.delivered = file.delivered;
+        self.missing_cwd.load_saved_notices(file.missing_cwd);
         super::message_pointer::prune_delivered(
             &mut self.delivered,
             crate::coordinator::now_unix(),
@@ -326,6 +332,13 @@ impl MessageQueue {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Tests: save to `path`, write no log lines.
+    #[cfg(test)]
+    pub(crate) fn persist_for_test(&mut self, path: PathBuf) {
+        self.store = Some(path);
+        self.log_dir = None;
     }
 
     /// An agent event that may make a target deliverable (or gone).
@@ -351,6 +364,7 @@ impl MessageQueue {
             version: FILE_VERSION,
             messages: self.entries.clone(),
             delivered: self.delivered.clone(),
+            missing_cwd: self.missing_cwd.saved(),
         };
         match serde_json::to_vec_pretty(&file) {
             Ok(bytes) => self.submit(IoJob::Save(path, bytes)),

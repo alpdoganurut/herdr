@@ -12,7 +12,9 @@
 //! waits here until the agent runs (no resume pending, not suspended, its
 //! runtime up, its agent detected), then goes into the queue, which types it
 //! in once the agent is free. A plain shell gets no message. Pending notices
-//! are runtime only and dropped when their pane is gone or after
+//! are saved with the queue (`message_queue.json`, keyed by the stable public
+//! pane id: a restore allocates new terminal ids) and re-armed after a restart
+//! or a live handoff; they are dropped when their pane is gone or after
 //! [`GIVE_UP`] (counted from the activation of a suspended agent). Once
 //! queued, a herdr notice whose agent is not detected (a slow resume) waits
 //! in the queue while its pane is there, up to the user-blocked hold
@@ -22,6 +24,8 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
 
 use super::App;
 use crate::terminal::TerminalId;
@@ -44,11 +48,31 @@ pub(crate) fn missing_cwd_message(path: &Path) -> String {
 pub(crate) struct MissingCwdNotices {
     pending: HashMap<TerminalId, Pending>,
     poll_at: Option<Instant>,
+    /// Loaded from `message_queue.json`, not yet matched to a pane
+    /// ([`App::rearm_missing_cwd_notices`]); saved again until then.
+    saved: Vec<SavedMissingCwdNotice>,
 }
 
 struct Pending {
     path: PathBuf,
     since: Instant,
+    /// `since` as a Unix time, for the saved queue.
+    since_unix: u64,
+    /// The pane's public id when the notice was armed (what is saved).
+    pane: Option<String>,
+    /// Its agent was suspended at the last pass: the [`GIVE_UP`] clock
+    /// restarts on the first pass after its activation.
+    parked: bool,
+}
+
+/// A pending notice in `message_queue.json` (`missing_cwd`; older builds
+/// ignore the field).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SavedMissingCwdNotice {
+    /// The pane's public id (`w1:p2`), stable across a restore.
+    pub(crate) pane: String,
+    pub(crate) path: PathBuf,
+    pub(crate) since_unix: u64,
 }
 
 impl MissingCwdNotices {
@@ -67,6 +91,31 @@ impl MissingCwdNotices {
         }
     }
 
+    /// What `message_queue.json` keeps: every pending notice with a pane id,
+    /// and the loaded ones not re-armed yet.
+    pub(crate) fn saved(&self) -> Vec<SavedMissingCwdNotice> {
+        let mut saved: Vec<SavedMissingCwdNotice> = self
+            .pending
+            .values()
+            .filter_map(|pending| {
+                Some(SavedMissingCwdNotice {
+                    pane: pending.pane.clone()?,
+                    path: pending.path.clone(),
+                    since_unix: pending.since_unix,
+                })
+            })
+            .collect();
+        saved.sort_by(|left, right| left.pane.cmp(&right.pane));
+        saved.extend(self.saved.iter().cloned());
+        saved
+    }
+
+    /// The notices `message_queue.json` kept (re-armed by
+    /// [`App::rearm_missing_cwd_notices`]).
+    pub(crate) fn load_saved_notices(&mut self, saved: Vec<SavedMissingCwdNotice>) {
+        self.saved = saved;
+    }
+
     #[cfg(test)]
     pub(crate) fn pending_len(&self) -> usize {
         self.pending.len()
@@ -74,7 +123,9 @@ impl MissingCwdNotices {
 }
 
 /// Recreate the missing directory `cwd` when it is an absolute path strictly
-/// under the user's home. Returns whether it is a directory now.
+/// under the user's home (a home with a named component; resolved through
+/// symlinks, the existing part of `cwd` stays under it). Returns whether it
+/// is a directory now.
 pub(crate) fn recreate_missing_cwd(cwd: &Path) -> bool {
     match creation_root() {
         Some(home) => recreate_missing_cwd_under(cwd, &home),
@@ -90,7 +141,29 @@ pub(crate) fn recreate_missing_cwd_under(cwd: &Path, home: &Path) -> bool {
                 .components()
                 .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
     };
-    if !plain(cwd) || !plain(home) || cwd == home || !cwd.starts_with(home) {
+    if !plain(cwd)
+        || !plain(home)
+        || !home_is_creation_root(home)
+        || cwd == home
+        || !cwd.starts_with(home)
+    {
+        return false;
+    }
+    // A symlinked directory under the home must not lead the creation out of
+    // it: the nearest existing ancestor, resolved, stays under the resolved
+    // home.
+    let Ok(real_home) = home.canonicalize() else {
+        return false;
+    };
+    let Some(real_ancestor) = cwd
+        .ancestors()
+        .find(|ancestor| ancestor.exists())
+        .and_then(|ancestor| ancestor.canonicalize().ok())
+    else {
+        return false;
+    };
+    if !real_ancestor.starts_with(&real_home) {
+        tracing::warn!(cwd = %cwd.display(), resolved = %real_ancestor.display(), "a missing pane directory resolves outside the home; not recreated");
         return false;
     }
     match std::fs::create_dir_all(cwd) {
@@ -100,6 +173,13 @@ pub(crate) fn recreate_missing_cwd_under(cwd: &Path, home: &Path) -> bool {
             false
         }
     }
+}
+
+/// A home that can hold recreated directories: at least one named component
+/// (`/root` is one, `HOME=/` is none and would let every path in).
+fn home_is_creation_root(home: &Path) -> bool {
+    home.components()
+        .any(|part| matches!(part, Component::Normal(_)))
 }
 
 #[cfg(not(test))]
@@ -176,13 +256,69 @@ impl App {
         self.show_recreated_cwd_card(terminal_id, &path);
         if agent {
             let now = Instant::now();
+            let pane = self
+                .resolve_terminal_target(&terminal_id.to_string())
+                .ok()
+                .and_then(|target| self.public_pane_id(target.ws_idx, target.pane_id));
             let notices = &mut self.message_queue.missing_cwd;
             notices
                 .pending
                 .entry(terminal_id.clone())
-                .or_insert(Pending { path, since: now });
+                .or_insert(Pending {
+                    path,
+                    since: now,
+                    since_unix: crate::coordinator::now_unix(),
+                    pane,
+                    parked: false,
+                });
             notices.poll_at = Some(now);
+            self.message_queue.save();
         }
+    }
+
+    /// After a restart or a live handoff: the notices `message_queue.json`
+    /// kept wait again for the pane with the same public id (a suspended
+    /// agent's parked, so its age does not count). A notice whose pane is
+    /// gone, or past [`GIVE_UP`] for a running pane, is dropped.
+    pub(crate) fn rearm_missing_cwd_notices(&mut self, now: Instant, now_unix: u64) {
+        let saved = std::mem::take(&mut self.message_queue.missing_cwd.saved);
+        if saved.is_empty() {
+            return;
+        }
+        let mut armed = 0usize;
+        for notice in saved {
+            let Some(target) = self.resolve_terminal_target(&notice.pane).ok() else {
+                continue;
+            };
+            let Some(terminal) = self.state.terminals.get(target.terminal_id.as_str()) else {
+                continue;
+            };
+            let terminal_id = terminal.id.clone();
+            let parked = terminal.suspended_agent.is_some();
+            let age = now_unix.saturating_sub(notice.since_unix);
+            if !parked && age > GIVE_UP.as_secs() {
+                continue;
+            }
+            let pane = self.public_pane_id(target.ws_idx, target.pane_id);
+            let since = now.checked_sub(Duration::from_secs(age)).unwrap_or(now);
+            self.message_queue
+                .missing_cwd
+                .pending
+                .entry(terminal_id)
+                .or_insert(Pending {
+                    path: notice.path,
+                    since,
+                    since_unix: notice.since_unix,
+                    pane,
+                    parked,
+                });
+            armed += 1;
+        }
+        if armed > 0 {
+            self.message_queue.missing_cwd.poll_at = Some(now);
+            tracing::info!(armed, "re-armed saved recreated-directory notices");
+        }
+        self.message_queue.save();
     }
 
     /// Queue the notice of every pending agent pane whose agent is up. Runs
@@ -197,18 +333,36 @@ impl App {
         let ids: Vec<TerminalId> = notices.pending.keys().cloned().collect();
         let mut queued = false;
         let mut polled = false;
+        let mut changed = false;
         for terminal_id in ids {
+            // Activated since the last pass: the GIVE_UP clock starts now,
+            // however long it was parked.
+            let suspended = self
+                .state
+                .terminals
+                .get(&terminal_id)
+                .is_some_and(|terminal| terminal.suspended_agent.is_some());
+            if let Some(pending) = self.message_queue.missing_cwd.pending.get_mut(&terminal_id) {
+                if pending.parked && !suspended {
+                    pending.parked = false;
+                    pending.since = now;
+                    pending.since_unix = now_unix;
+                    changed = true;
+                }
+            }
             match self.missing_cwd_gate(&terminal_id, now) {
                 Gate::Wait => polled = true,
                 Gate::Parked => {
                     if let Some(pending) =
                         self.message_queue.missing_cwd.pending.get_mut(&terminal_id)
                     {
+                        pending.parked = true;
                         pending.since = now;
                     }
                 }
                 Gate::Gone => {
                     self.message_queue.missing_cwd.pending.remove(&terminal_id);
+                    changed = true;
                 }
                 Gate::Ready(target) => {
                     let Some(pending) = self.message_queue.missing_cwd.pending.remove(&terminal_id)
@@ -232,6 +386,10 @@ impl App {
         }
         if !polled {
             self.message_queue.missing_cwd.poll_at = None;
+        }
+        if changed && !queued {
+            // (queueing a notice saves the queue already)
+            self.message_queue.save();
         }
         queued
     }

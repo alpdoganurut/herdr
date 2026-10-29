@@ -813,7 +813,56 @@ fn profile_delete_refuses_starting_in_use_live_lock_and_busy() {
     drop(listener);
     let _ = std::fs::remove_file(&socket);
     std::fs::remove_file(store.dir("scratch").join("SingletonLock")).unwrap();
-    // a stale run record with a live pid
+    // a run record with a live pid whose DevTools answers: the browser
+    // herdr launched
+    let devtools = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let devtools_port = devtools.local_addr().unwrap().port();
+    let answering = std::thread::spawn(move || {
+        let (mut stream, _) = devtools.accept().unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = std::io::Read::read(&mut stream, &mut buf);
+        let body = r#"{"Browser":"Chrome/154.0.8037.93"}"#;
+        let _ = std::io::Write::write_all(
+            &mut stream,
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        );
+    });
+    super::launch::write_run_record(
+        hub_home(&hub),
+        "scratch",
+        &super::launch::RunRecord {
+            pid: std::process::id(),
+            port: devtools_port,
+            exe: String::new(),
+            launched_at: 0,
+            server_pid: 0,
+            argv: vec![],
+            browser: String::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        hub.profile_delete("scratch").unwrap_err().code,
+        "profile_running"
+    );
+    answering.join().unwrap();
+    super::launch::clear_run_record(hub_home(&hub), "scratch");
+    // the profile lock held by a lifecycle op: busy, never a blocking wait
+    let lock = hub.profile_lock_for_test("scratch");
+    let guard = lock.lock().unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(
+        hub.profile_delete("scratch").unwrap_err().code,
+        "profile_busy"
+    );
+    assert!(started.elapsed() < Duration::from_millis(200));
+    drop(guard);
+    // a stale run record: its pid alive (reused) but no DevTools answers,
+    // and no lock: not a holder, the delete goes through
     super::launch::write_run_record(
         hub_home(&hub),
         "scratch",
@@ -828,21 +877,6 @@ fn profile_delete_refuses_starting_in_use_live_lock_and_busy() {
         },
     )
     .unwrap();
-    assert_eq!(
-        hub.profile_delete("scratch").unwrap_err().code,
-        "profile_running"
-    );
-    super::launch::clear_run_record(hub_home(&hub), "scratch");
-    // the profile lock held by a lifecycle op: busy, never a blocking wait
-    let lock = hub.profile_lock_for_test("scratch");
-    let guard = lock.lock().unwrap();
-    let started = std::time::Instant::now();
-    assert_eq!(
-        hub.profile_delete("scratch").unwrap_err().code,
-        "profile_busy"
-    );
-    assert!(started.elapsed() < Duration::from_millis(200));
-    drop(guard);
     hub.profile_delete("scratch").unwrap();
     assert!(!store.exists("scratch"));
     let _ = std::fs::remove_dir_all(&home);

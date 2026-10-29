@@ -745,6 +745,12 @@ pub(super) fn process_name_and_parent(pid: u32) -> Option<(String, u32)> {
     Some((name, parent))
 }
 
+/// Fork (browser): the short name of process `pid` (`comm`; `None` when it
+/// is gone), for the browser's `SingletonLock` check (src/browser/launch.rs).
+pub(crate) fn process_comm_name(pid: u32) -> Option<String> {
+    process_name_and_parent(pid).map(|(name, _)| name)
+}
+
 fn process_pgrp_comm_and_state(pid: u32) -> Option<(i32, String, char)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     process_pgrp_comm_and_state_from_stat(&stat)

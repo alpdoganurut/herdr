@@ -823,6 +823,11 @@ impl App {
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
         app.install_browser_hub(&config.browser);
+        // Fork: saved recreated-directory notices wait again (a handoff
+        // re-arms them in new_from_handoff, once its panes are there).
+        if app.policy.restore_session {
+            app.rearm_missing_cwd_notices(Instant::now(), crate::coordinator::now_unix());
+        }
         // Fork: restored panes whose missing directory was recreated.
         app.note_recreated_cwds();
         // Fork: queued messages follow sessions restore advanced.
@@ -882,6 +887,8 @@ impl App {
         app.state.restore_public_aliases_from_meta();
         app.state.adopt_member_roles_into_meta();
         app.terminal_runtimes = runtimes.into();
+        // Fork: saved recreated-directory notices wait again (src/app/missing_cwd.rs).
+        app.rearm_missing_cwd_notices(Instant::now(), crate::coordinator::now_unix());
         app.state.active = snapshot
             .active
             .filter(|&idx| idx < app.state.workspaces.len());

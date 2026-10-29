@@ -229,12 +229,51 @@ pub fn singleton_lock_pid(profile_dir: &Path) -> Option<u32> {
 }
 
 /// The pid of a live Chromium holding `profile_dir`: its `SingletonLock` pid
-/// is alive and its `SingletonSocket` accepts a connection. A lock whose
-/// browser died and whose pid the OS gave to another process has no
-/// listening socket, so it is stale (Chromium takes such a lock over itself).
-pub fn singleton_lock_holder(profile_dir: &Path, alive: &dyn Fn(u32) -> bool) -> Option<u32> {
+/// is alive and its `SingletonSocket` accepts a connection, or the socket
+/// does not answer but the pid is a Chromium process (`is_browser`, Chromium's
+/// own `IsChromeProcess` test: a busy or wedged browser still holds it). A
+/// lock whose browser died and whose pid the OS gave to another process has
+/// no listening socket and no browser behind the pid, so it is stale
+/// (Chromium takes such a lock over itself).
+pub fn singleton_lock_holder(
+    profile_dir: &Path,
+    alive: &dyn Fn(u32) -> bool,
+    is_browser: &dyn Fn(u32) -> bool,
+) -> Option<u32> {
     let pid = singleton_lock_pid(profile_dir).filter(|pid| alive(*pid))?;
-    singleton_socket_answers(profile_dir).then_some(pid)
+    (singleton_socket_answers(profile_dir) || is_browser(pid)).then_some(pid)
+}
+
+/// Whether process `pid` is a Chromium (the configured `binary`, Chromium,
+/// Chrome or the branded app); `false` when its name cannot be read (Windows
+/// and other platforms: the socket alone decides, as before).
+pub fn is_browser_process(pid: u32, binary: Option<&Path>) -> bool {
+    crate::platform::process_comm_name(pid)
+        .is_some_and(|name| is_browser_process_name(&name, binary))
+}
+
+/// [`is_browser_process`] on a process name. The name may be cut short
+/// (`comm`: 15 bytes on Linux, 16 on macOS), so a configured binary also
+/// matches by a long enough prefix.
+pub fn is_browser_process_name(name: &str, binary: Option<&Path>) -> bool {
+    const COMM_PREFIX_MIN: usize = 15;
+    let name = name.trim();
+    if name.is_empty() {
+        return false;
+    }
+    let lower = name.to_lowercase();
+    if lower.contains("chromium")
+        || lower.contains("chrome")
+        || lower == super::brand::DEFAULT_APP_NAME.to_lowercase()
+    {
+        return true;
+    }
+    binary
+        .and_then(Path::file_name)
+        .map(|file| file.to_string_lossy())
+        .is_some_and(|file| {
+            file == name || (name.len() >= COMM_PREFIX_MIN && file.starts_with(name))
+        })
 }
 
 /// Whether the profile's `SingletonSocket` (Chromium's single-instance
@@ -323,6 +362,7 @@ pub fn attach_decision(
     profile_dir: &Path,
     alive: &dyn Fn(u32) -> bool,
     devtools_answers: &dyn Fn(u16) -> bool,
+    is_browser: &dyn Fn(u32) -> bool,
 ) -> AttachDecision {
     if let Some(record) = read_run_record(home, name) {
         if alive(record.pid) && devtools_answers(record.port) {
@@ -330,7 +370,7 @@ pub fn attach_decision(
         }
         clear_run_record(home, name);
     }
-    if let Some(pid) = singleton_lock_holder(profile_dir, alive) {
+    if let Some(pid) = singleton_lock_holder(profile_dir, alive, is_browser) {
         return AttachDecision::InUse { pid };
     }
     AttachDecision::Launch
@@ -476,6 +516,9 @@ pub fn launch(
             options.extension_dir.as_deref(),
         );
         let _ = fs::remove_file(profile_dir.join("DevToolsActivePort"));
+        // A lock left from before this spawn is not this launch's browser
+        // (attach_decision found it stale: dead, or a reused pid).
+        let pre_spawn_lock_pid = singleton_lock_pid(profile_dir);
         let spawned_pid = spawn_chromium(exe, &argv, log_path)?;
         let deadline = Instant::now() + options.timeout;
         match wait_for_devtools(port, deadline) {
@@ -506,16 +549,17 @@ pub fn launch(
             }
             None => {
                 // The port was taken, or the browser did not come up: a live
-                // browser on this profile that we cannot reach is ours to stop.
-                if let Some(pid) = singleton_lock_pid(profile_dir).or(spawned_pid) {
-                    if crate::platform::process_exists(pid) {
-                        terminate(pid);
-                        let gone_by = Instant::now() + Duration::from_secs(5);
-                        while crate::platform::process_exists(pid) && Instant::now() < gone_by {
-                            std::thread::sleep(Duration::from_millis(100));
-                        }
-                    }
-                }
+                // browser this launch started that we cannot reach is ours to stop.
+                stop_unreachable_launch(
+                    timed_out_launch_pid(
+                        pre_spawn_lock_pid,
+                        singleton_lock_pid(profile_dir),
+                        spawned_pid,
+                    ),
+                    &crate::platform::process_exists,
+                    &terminate,
+                    Duration::from_secs(5),
+                );
                 last_error = Some(BrowserError::new(
                     "browser_launch_timeout",
                     format!(
@@ -528,6 +572,38 @@ pub fn launch(
         }
     }
     Err(last_error.unwrap_or_else(|| BrowserError::new("browser_start_failed", "launch failed")))
+}
+
+/// The pid a timed-out launch stops: the `SingletonLock` pid when this
+/// launch wrote it (it differs from `pre_spawn`), else the spawned child.
+/// The pre-spawn lock pid is never chosen: it belongs to no browser of this
+/// launch, and after a pid reuse it is an unrelated process.
+fn timed_out_launch_pid(
+    pre_spawn: Option<u32>,
+    lock_now: Option<u32>,
+    spawned: Option<u32>,
+) -> Option<u32> {
+    lock_now
+        .filter(|pid| Some(*pid) != pre_spawn)
+        .or(spawned)
+        .filter(|pid| Some(*pid) != pre_spawn)
+}
+
+/// SIGTERM `pid` when it is alive and wait up to `grace` for it to go.
+fn stop_unreachable_launch(
+    pid: Option<u32>,
+    exists: &dyn Fn(u32) -> bool,
+    stop: &dyn Fn(u32),
+    grace: Duration,
+) {
+    let Some(pid) = pid.filter(|pid| exists(*pid)) else {
+        return;
+    };
+    stop(pid);
+    let gone_by = Instant::now() + grace;
+    while exists(pid) && Instant::now() < gone_by {
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Chromium is not a herdr pane: no `HERDR_*` variable reaches it (the
@@ -756,8 +832,16 @@ mod tests {
         };
         write_run_record(&root, "main", &record).unwrap();
         let alive = |pid: u32| pid == me;
+        let not_browser = |_: u32| false;
         assert_eq!(
-            attach_decision(&root, "main", &profile, &alive, &|port| port == 1234),
+            attach_decision(
+                &root,
+                "main",
+                &profile,
+                &alive,
+                &|port| port == 1234,
+                &not_browser
+            ),
             AttachDecision::Attach(record.clone())
         );
         // dead pid in the record: stale, cleared, launch
@@ -767,7 +851,7 @@ mod tests {
         };
         write_run_record(&root, "main", &dead).unwrap();
         assert_eq!(
-            attach_decision(&root, "main", &profile, &alive, &|_| true),
+            attach_decision(&root, "main", &profile, &alive, &|_| true, &not_browser),
             AttachDecision::Launch
         );
         assert!(
@@ -777,7 +861,7 @@ mod tests {
         // alive pid but the port does not answer: stale too
         write_run_record(&root, "main", &record).unwrap();
         assert_eq!(
-            attach_decision(&root, "main", &profile, &alive, &|_| false),
+            attach_decision(&root, "main", &profile, &alive, &|_| false, &not_browser),
             AttachDecision::Launch
         );
         #[cfg(unix)]
@@ -787,27 +871,106 @@ mod tests {
             // A live pid without a listening SingletonSocket: the browser
             // died and the OS reused its pid, so the lock is stale.
             assert_eq!(
-                attach_decision(&root, "main", &profile, &alive, &|_| false),
+                attach_decision(&root, "main", &profile, &alive, &|_| false, &not_browser),
                 AttachDecision::Launch,
                 "a reused pid without the socket is not a holder"
+            );
+            // The same pid read as a Chromium process: a browser whose
+            // socket does not answer still holds the profile.
+            assert_eq!(
+                attach_decision(&root, "main", &profile, &alive, &|_| false, &|pid| pid
+                    == me),
+                AttachDecision::InUse { pid: me },
+                "a live Chromium pid holds the lock without its socket"
             );
             let socket = std::env::temp_dir().join(format!("herdr-sl-{me}.sock"));
             let _ = fs::remove_file(&socket);
             let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
             std::os::unix::fs::symlink(&socket, profile.join("SingletonSocket")).unwrap();
             assert_eq!(
-                attach_decision(&root, "main", &profile, &alive, &|_| false),
+                attach_decision(&root, "main", &profile, &alive, &|_| false, &not_browser),
                 AttachDecision::InUse { pid: me }
             );
             fs::remove_file(profile.join("SingletonLock")).unwrap();
             std::os::unix::fs::symlink("host-4000000", profile.join("SingletonLock")).unwrap();
             assert_eq!(
-                attach_decision(&root, "main", &profile, &alive, &|_| false),
+                attach_decision(&root, "main", &profile, &alive, &|_| false, &not_browser),
                 AttachDecision::Launch,
                 "a dead SingletonLock pid is ignored"
             );
             let _ = fs::remove_file(&socket);
         }
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn browser_process_names_match_chromium_chrome_the_brand_and_the_binary() {
+        for name in [
+            "Chromium",
+            "chromium-browse",
+            "chrome",
+            "Google Chrome",
+            "herdr+ Browser",
+        ] {
+            assert!(is_browser_process_name(name, None), "{name}");
+        }
+        for name in ["", "zsh", "node", "Safari"] {
+            assert!(!is_browser_process_name(name, None), "{name}");
+        }
+        let binary = Path::new("/opt/custom/my-browser-build-2026");
+        assert!(is_browser_process_name(
+            "my-browser-build-2026",
+            Some(binary)
+        ));
+        assert!(
+            is_browser_process_name("my-browser-buil", Some(binary)),
+            "a comm cut to 15 bytes"
+        );
+        assert!(
+            !is_browser_process_name("my", Some(binary)),
+            "too short a prefix"
+        );
+        assert!(!is_browser_process_name("zsh", Some(binary)));
+    }
+
+    #[test]
+    fn a_timed_out_launch_never_stops_the_pre_spawn_lock_pid() {
+        // The lock still names the pre-spawn pid (a reused pid): the spawned
+        // child, never that pid.
+        assert_eq!(timed_out_launch_pid(Some(10), Some(10), Some(20)), Some(20));
+        // macOS (pid unknown) and an unchanged lock: nothing.
+        assert_eq!(timed_out_launch_pid(Some(10), Some(10), None), None);
+        // This launch wrote the lock: its pid.
+        assert_eq!(timed_out_launch_pid(Some(10), Some(30), Some(20)), Some(30));
+        assert_eq!(timed_out_launch_pid(None, Some(30), None), Some(30));
+        assert_eq!(timed_out_launch_pid(None, None, Some(20)), Some(20));
+        assert_eq!(timed_out_launch_pid(Some(20), None, Some(20)), None);
+
+        let stopped = std::cell::RefCell::new(Vec::new());
+        let alive = std::cell::RefCell::new(vec![10u32, 30]);
+        let exists = |pid: u32| alive.borrow().contains(&pid);
+        let stop = |pid: u32| {
+            stopped.borrow_mut().push(pid);
+            alive.borrow_mut().retain(|live| *live != pid);
+        };
+        stop_unreachable_launch(
+            timed_out_launch_pid(Some(10), Some(10), None),
+            &exists,
+            &stop,
+            Duration::from_millis(200),
+        );
+        assert!(
+            stopped.borrow().is_empty(),
+            "the pre-spawn pid is not signalled"
+        );
+        stop_unreachable_launch(
+            timed_out_launch_pid(Some(10), Some(30), None),
+            &exists,
+            &stop,
+            Duration::from_millis(200),
+        );
+        assert_eq!(*stopped.borrow(), vec![30]);
+        stop_unreachable_launch(Some(40), &exists, &stop, Duration::from_millis(200));
+        assert_eq!(*stopped.borrow(), vec![30], "a dead pid is not signalled");
     }
 }

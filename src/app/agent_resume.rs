@@ -291,6 +291,11 @@ impl App {
             }
             return true;
         }
+        // Noted at once: a retry after a failed send below finds the
+        // directory there and would never note it.
+        if cwd_recreated {
+            self.note_recreated_cwd(&terminal_id, true);
+        }
 
         let runtime = match crate::terminal::TerminalRuntime::spawn(
             pane_id,
@@ -353,9 +358,6 @@ impl App {
         if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
             terminal.pending_agent_resume_plan = None;
             terminal.respawn_shell_on_exit = false;
-        }
-        if cwd_recreated {
-            self.note_recreated_cwd(&terminal_id, true);
         }
         true
     }

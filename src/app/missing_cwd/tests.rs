@@ -5,7 +5,9 @@ use std::time::Instant;
 
 use tokio::sync::Notify;
 
-use super::{missing_cwd_message, recreate_missing_cwd_under, set_test_home};
+use super::{
+    home_is_creation_root, missing_cwd_message, recreate_missing_cwd_under, set_test_home,
+};
 use crate::app::App;
 use crate::detect::{Agent, AgentState};
 use crate::persist::SessionSnapshot;
@@ -428,4 +430,269 @@ async fn a_deferred_resume_whose_directory_cannot_be_recreated_keeps_the_card() 
     assert!(app.terminal_runtimes.get(&terminal_id).is_none());
     assert!(app.state.terminals[&terminal_id].restore_error.is_some());
     assert_eq!(app.message_queue.missing_cwd.pending_len(), 0);
+}
+
+#[test]
+fn a_home_without_a_named_component_is_no_creation_root() {
+    assert!(!home_is_creation_root(Path::new("/")));
+    assert!(
+        home_is_creation_root(Path::new("/root")),
+        "a one-component home"
+    );
+    assert!(home_is_creation_root(Path::new("/home/u")));
+    // HOME=/ would let every absolute path in.
+    let anywhere = std::env::temp_dir().join(format!(
+        "herdr-missing-cwd-root-home-{}",
+        std::process::id()
+    ));
+    assert!(!recreate_missing_cwd_under(&anywhere, Path::new("/")));
+    assert!(!anywhere.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_under_the_home_does_not_lead_the_creation_out_of_it() {
+    let home = TestHome::new("symlink-escape");
+    let outside = std::env::temp_dir().join(format!(
+        "herdr-missing-cwd-symlink-target-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, home.0.join("link")).unwrap();
+    let through = home.0.join("link/worktrees/gone");
+    assert!(!recreate_missing_cwd_under(&through, &home.0));
+    assert!(
+        !outside.join("worktrees").exists(),
+        "nothing created outside"
+    );
+
+    // A symlink that stays under the home is fine.
+    std::fs::create_dir_all(home.0.join("real")).unwrap();
+    std::os::unix::fs::symlink(home.0.join("real"), home.0.join("inside")).unwrap();
+    assert!(recreate_missing_cwd_under(
+        &home.0.join("inside/worktrees/gone"),
+        &home.0
+    ));
+    assert!(home.0.join("real/worktrees/gone").is_dir());
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+/// The terminal's agent runs and is detected: its notice can be queued.
+fn agent_up(app: &mut App, terminal_id: &TerminalId) {
+    app.terminal_runtimes.insert(
+        terminal_id.clone(),
+        crate::terminal::TerminalRuntime::test_with_scrollback_bytes(80, 24, 1024, b""),
+    );
+    app.state
+        .terminals
+        .get_mut(terminal_id)
+        .unwrap()
+        .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    app.note_message_queue_event(&crate::api::schema::EventKind::PaneAgentDetected);
+}
+
+#[tokio::test]
+async fn an_agent_parked_past_give_up_still_gets_its_notice_after_activation() {
+    let home = TestHome::new("parked-long");
+    let (mut app, terminal_id) = app_in(&home.0.join("parked"));
+    let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+    terminal.restore_suspended_agent(
+        "claude".into(),
+        Some("parked".into()),
+        crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("parked-long").unwrap(),
+            transcript_path: None,
+        },
+    );
+    terminal.cwd_recreated = true;
+    app.note_recreated_cwds();
+    let start = Instant::now();
+    let now_unix = crate::coordinator::now_unix();
+    // One pass while suspended, then nothing for longer than GIVE_UP.
+    assert!(!app.deliver_missing_cwd_notices(start, now_unix));
+    assert_eq!(app.message_queue.missing_cwd.next_deadline(), None);
+
+    let later = start + super::GIVE_UP + std::time::Duration::from_secs(60);
+    app.state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .suspended_agent = None;
+    agent_up(&mut app, &terminal_id);
+    assert!(
+        app.deliver_missing_cwd_notices(later, now_unix),
+        "the parked time does not count toward GIVE_UP"
+    );
+    assert_eq!(app.message_queue.entries.len(), 1);
+    assert_eq!(app.message_queue.missing_cwd.pending_len(), 0);
+    app.terminal_runtimes.remove(&terminal_id);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_resume_retried_after_a_failed_send_still_gives_one_card_and_one_notice() {
+    let home = TestHome::new("retry");
+    let missing = home.0.join("worktrees/retry");
+    let (mut app, terminal_id) = app_in(&missing);
+    let plan = crate::agent_resume::AgentResumePlan {
+        agent: "claude".into(),
+        argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+        dedupe_key: "missing-cwd-retry".into(),
+    };
+    app.state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .pending_agent_resume_plan = Some(plan.clone());
+    assert!(app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80, true));
+    assert!(missing.is_dir());
+    // What a failed send leaves: no runtime, the plan still pending, the
+    // directory there now.
+    if let Some(runtime) = app.terminal_runtimes.remove(&terminal_id) {
+        runtime.shutdown();
+    }
+    app.state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .pending_agent_resume_plan = Some(plan);
+    assert!(app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80, true));
+    assert_eq!(app.agent_notices.list().len(), 1, "one card");
+    assert_eq!(app.message_queue.missing_cwd.pending_len(), 1);
+
+    app.state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    app.note_message_queue_event(&crate::api::schema::EventKind::PaneAgentDetected);
+    let now_unix = crate::coordinator::now_unix();
+    assert!(app.deliver_missing_cwd_notices(Instant::now(), now_unix));
+    app.note_message_queue_event(&crate::api::schema::EventKind::PaneAgentStatusChanged);
+    assert!(!app.deliver_missing_cwd_notices(Instant::now() + super::POLL, now_unix));
+    assert_eq!(app.message_queue.entries.len(), 1, "one notice");
+}
+
+/// `snapshot` restored into a test app (as a restart does).
+fn restored_app(snapshot: &SessionSnapshot) -> App {
+    let (workspaces, terminals, runtimes) = restore(snapshot, true);
+    let mut app = test_app();
+    app.state.workspaces = workspaces;
+    app.state.terminals = terminals;
+    app.terminal_runtimes = runtimes.into();
+    app.state.active = Some(0);
+    app
+}
+
+fn root_terminal(app: &App) -> TerminalId {
+    let tab = &app.state.workspaces[0].tabs[0];
+    tab.terminal_id(tab.root_pane).unwrap().clone()
+}
+
+fn shutdown_runtimes(app: &mut App) {
+    let ids: Vec<TerminalId> = app.state.terminals.keys().cloned().collect();
+    for id in ids {
+        if let Some(runtime) = app.terminal_runtimes.remove(&id) {
+            runtime.shutdown();
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pending_notice_survives_a_restart_and_is_delivered_once() {
+    let home = TestHome::new("survives");
+    let missing = home.0.join("worktrees/survives");
+    let snapshot = snapshot_with(&home.0, &missing, true);
+    let store = home.0.join("state/message_queue.json");
+
+    let mut first = restored_app(&snapshot);
+    first.message_queue.persist_for_test(store.clone());
+    first.note_recreated_cwds();
+    assert_eq!(first.message_queue.missing_cwd.pending_len(), 1);
+    let saved = (0..300).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::read_to_string(&store).is_ok_and(|text| text.contains("\"missing_cwd\""))
+    });
+    assert!(saved, "the pending notice is saved with the queue");
+    let old_terminal = root_terminal(&first);
+    shutdown_runtimes(&mut first);
+    drop(first);
+
+    // The restart: the directory is there now (no recreation, no card), and
+    // the pane has a new terminal id under the same public pane id.
+    let mut second = restored_app(&snapshot);
+    let terminal_id = root_terminal(&second);
+    assert_ne!(terminal_id, old_terminal);
+    assert!(!second.state.terminals[&terminal_id].cwd_recreated);
+    second.message_queue.persist_for_test(store.clone());
+    second.message_queue.load(store.clone());
+    second.rearm_missing_cwd_notices(Instant::now(), crate::coordinator::now_unix());
+    second.note_recreated_cwds();
+    assert_eq!(second.message_queue.missing_cwd.pending_len(), 1);
+    assert!(second.agent_notices.list().is_empty(), "no second card");
+
+    // Its resume starts (here: a test runtime) and its agent shows up.
+    second
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .pending_agent_resume_plan = None;
+    agent_up(&mut second, &terminal_id);
+    let now_unix = crate::coordinator::now_unix();
+    assert!(second.deliver_missing_cwd_notices(Instant::now(), now_unix));
+    assert_eq!(second.message_queue.entries.len(), 1);
+    assert_eq!(
+        second.message_queue.entries[0].message.text,
+        missing_cwd_message(&missing)
+    );
+    second.note_message_queue_event(&crate::api::schema::EventKind::PaneAgentStatusChanged);
+    assert!(!second.deliver_missing_cwd_notices(Instant::now() + super::POLL, now_unix));
+    assert_eq!(second.message_queue.entries.len(), 1, "delivered once");
+    assert!(second.message_queue.missing_cwd.saved().is_empty());
+    shutdown_runtimes(&mut second);
+}
+
+#[test]
+fn the_queue_file_keeps_its_format_with_or_without_saved_notices() {
+    let home = TestHome::new("format");
+    // A file from before the field: loads, nothing to re-arm.
+    let old = home.0.join("old.json");
+    std::fs::write(&old, br#"{"version":1,"messages":[]}"#).unwrap();
+    let mut queue = crate::app::message_queue::MessageQueue::default();
+    queue.persist_for_test(home.0.join("unused.json"));
+    queue.load(old);
+    assert!(queue.entries.is_empty());
+    assert!(queue.missing_cwd.saved().is_empty());
+
+    // A file with the field: it is read back as written.
+    let new = home.0.join("new.json");
+    std::fs::write(
+        &new,
+        br#"{"version":1,"messages":[],"missing_cwd":[{"pane":"w1:p1","path":"/home/u/wt","since_unix":7}]}"#,
+    )
+    .unwrap();
+    queue.load(new);
+    assert_eq!(
+        queue.missing_cwd.saved(),
+        vec![super::SavedMissingCwdNotice {
+            pane: "w1:p1".into(),
+            path: PathBuf::from("/home/u/wt"),
+            since_unix: 7,
+        }]
+    );
+    let entry = serde_json::to_value(super::SavedMissingCwdNotice {
+        pane: "w1:p1".into(),
+        path: PathBuf::from("/x"),
+        since_unix: 1,
+    })
+    .unwrap();
+    assert_eq!(
+        entry.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["pane", "path", "since_unix"]
+    );
 }

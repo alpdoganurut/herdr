@@ -5478,3 +5478,9 @@ pub(crate) fn local_stream_peer_pid(stream: &crate::ipc::LocalStream) -> Option<
 pub(crate) fn parent_pid(_pid: u32) -> Option<u32> {
     None
 }
+
+/// Fork (browser): process names are not read here; the browser's
+/// `SingletonLock` check keeps its socket-only rule (src/browser/launch.rs).
+pub(crate) fn process_comm_name(_pid: u32) -> Option<String> {
+    None
+}

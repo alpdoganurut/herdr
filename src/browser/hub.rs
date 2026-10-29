@@ -931,13 +931,27 @@ impl BrowserHub {
             ));
         }
         let profile_dir = self.inner.profiles.dir(name);
+        // A run record counts as ensure_running's attach does: its pid alive
+        // AND its DevTools answering (a reused pid is not the browser). A
+        // short timeout: this runs on the App thread, and a loopback port
+        // nobody listens on refuses at once.
         let live_pid = launch::read_run_record(&self.inner.home, name)
+            .filter(|record| {
+                crate::platform::process_exists(record.pid)
+                    && launch::json_version(record.port, Duration::from_millis(300)).is_some()
+            })
             .map(|record| record.pid)
-            .filter(|pid| crate::platform::process_exists(*pid))
             .or_else(|| {
-                launch::singleton_lock_holder(&profile_dir, &|pid| {
-                    crate::platform::process_exists(pid)
-                })
+                launch::singleton_lock_holder(
+                    &profile_dir,
+                    &|pid| crate::platform::process_exists(pid),
+                    &|pid| {
+                        launch::is_browser_process(
+                            pid,
+                            configured_browser_binary(&config).as_deref(),
+                        )
+                    },
+                )
             });
         if let Some(pid) = live_pid {
             return Err(BrowserError::new(
@@ -2388,7 +2402,17 @@ impl BrowserHub {
                 _ => AttachDecision::Launch,
             }
         } else {
-            launch::attach_decision(&self.inner.home, name, &profile_dir, &alive, &answers)
+            let is_browser = |pid: u32| {
+                launch::is_browser_process(pid, configured_browser_binary(&config).as_deref())
+            };
+            launch::attach_decision(
+                &self.inner.home,
+                name,
+                &profile_dir,
+                &alive,
+                &answers,
+                &is_browser,
+            )
         };
         let record = match decision {
             AttachDecision::Attach(record) => record,
@@ -3226,6 +3250,15 @@ impl BrowserHub {
     pub fn has_host(&self) -> bool {
         self.inner.host.lock().unwrap().is_some()
     }
+}
+
+/// The binary `[browser] executable` resolves to, for the `SingletonLock`
+/// browser-process check (`None` when it does not resolve).
+fn configured_browser_binary(config: &BrowserConfig) -> Option<PathBuf> {
+    let home_env = std::env::var_os("HOME").map(PathBuf::from);
+    launch::resolve_executable(&config.executable, home_env.as_deref())
+        .ok()
+        .map(|exe| exe.binary)
 }
 
 /// The sidecar arguments of an act op: `(kind, ref, selector, args, typed_len)`.

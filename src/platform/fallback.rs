@@ -291,3 +291,9 @@ pub fn show_desktop_notification(_title: &str, _body: Option<&str>) -> std::io::
 pub(crate) fn parent_pid(_pid: u32) -> Option<u32> {
     None
 }
+
+/// Fork (browser): process names are not read here; the browser's
+/// `SingletonLock` check keeps its socket-only rule (src/browser/launch.rs).
+pub(crate) fn process_comm_name(_pid: u32) -> Option<String> {
+    None
+}

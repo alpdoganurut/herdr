@@ -956,6 +956,12 @@ pub(super) fn process_name_and_parent(pid: u32) -> Option<(String, u32)> {
     Some((comm_from_bsdinfo(&info)?, info.pbi_ppid))
 }
 
+/// Fork (browser): the short name of process `pid` (`comm`; `None` when it
+/// is gone), for the browser's `SingletonLock` check (src/browser/launch.rs).
+pub(crate) fn process_comm_name(pid: u32) -> Option<String> {
+    process_name_and_parent(pid).map(|(name, _)| name)
+}
+
 /// The parent of `pid` (`None` when it is gone).
 pub(crate) fn parent_pid(pid: u32) -> Option<u32> {
     process_bsdinfo(pid)
