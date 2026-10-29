@@ -652,7 +652,8 @@ pub(super) fn install_client_shell_snapshot(
             || (endpoints.active_id() == endpoint_id
                 && !project_snapshot
                 && shell.has_presented_surface());
-        let previous_size = shell.surface_size(state.reported_size.0, state.reported_size.1);
+        // Fork: also reported when another tab is shown (info_dock.rs).
+        let previous = shell.surface_report_basis(state.reported_size.0, state.reported_size.1);
         if !waits_for_selected_surface {
             shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Online);
         }
@@ -666,10 +667,11 @@ pub(super) fn install_client_shell_snapshot(
             );
         }
         let graphics_cleanup = shell.take_pending_graphics_cleanup();
-        let next_size = shell.surface_size(state.reported_size.0, state.reported_size.1);
+        let report =
+            shell.surface_report_required(&previous, state.reported_size.0, state.reported_size.1);
         (
             shell.compose(state.reported_size.0, state.reported_size.1),
-            (previous_size != next_size).then(|| {
+            report.then(|| {
                 client_shell_resize_message(
                     shell,
                     state.reported_size.0,

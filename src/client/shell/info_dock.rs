@@ -25,6 +25,13 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use super::info_dock_model::{self as model, InfoDockTarget, InfoView, Row};
+
+/// See `ClientShellState::surface_report_basis`.
+#[derive(Debug)]
+pub(crate) struct SurfaceReportBasis {
+    pub(super) size: crate::protocol::ClientSurfaceSize,
+    tab_id: Option<String>,
+}
 use super::info_dock_render::{self, DockFrame, CHROME_ROWS};
 use super::*;
 use crate::api::schema::notes::{
@@ -892,6 +899,30 @@ impl ClientInfoDockState {
 
 impl ClientShellState {
     // ------------------------------------------------------------ queries
+
+    /// The tab the pane surface shows and its size, before a snapshot lands
+    /// (`surface_report_required` compares it with the state after).
+    pub(crate) fn surface_report_basis(&self, cols: u16, rows: u16) -> SurfaceReportBasis {
+        SurfaceReportBasis {
+            size: self.surface_size(cols, rows),
+            tab_id: self.info_dock_focused_tab().map(str::to_owned),
+        }
+    }
+
+    /// Whether the client reports its surface size after a snapshot: the
+    /// size changed, or the surface now shows another tab. The server sizes
+    /// only the tab shown (`ShellTabSizing`), so a newly shown tab gets the
+    /// size even when it is unchanged (a no-op server side when the tab
+    /// already has it).
+    pub(crate) fn surface_report_required(
+        &self,
+        before: &SurfaceReportBasis,
+        cols: u16,
+        rows: u16,
+    ) -> bool {
+        before.size != self.surface_size(cols, rows)
+            || (before.tab_id.is_some() && before.tab_id.as_deref() != self.info_dock_focused_tab())
+    }
 
     fn info_dock_focused_tab(&self) -> Option<&str> {
         self.snapshot

@@ -19,6 +19,9 @@ mod agents_model_smoke;
 mod fork_smoke;
 #[path = "surface_scroll.rs"]
 mod surface_scroll_tests;
+// fork: a shell client sizes the tab it shows (FORK.md section 7).
+#[path = "tab_geometry.rs"]
+mod tab_geometry_tests;
 #[path = "teams_smoke.rs"]
 mod teams_smoke;
 

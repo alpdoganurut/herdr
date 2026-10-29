@@ -1540,3 +1540,38 @@ fn the_dock_deadline_is_never_in_the_past() {
     assert!(deadline.is_none_or(|at| at > later), "{deadline:?}");
     assert!(state.timer_delay(later) > std::time::Duration::ZERO);
 }
+
+/// The server sizes only the tab shown, so the client reports its surface
+/// size when it shows another tab, even at an unchanged size; a snapshot that
+/// keeps the tab and the size reports nothing.
+#[test]
+fn showing_another_tab_reports_the_surface_size_once() {
+    let mut state = dock_state();
+    let before = state.surface_report_basis(COLS, ROWS);
+    state.set_snapshot(Box::new(two_tab_snapshot("tab_1")));
+    assert!(!state.surface_report_required(&before, COLS, ROWS));
+
+    let before = state.surface_report_basis(COLS, ROWS);
+    state.set_snapshot(Box::new(two_tab_snapshot("tab_2")));
+    assert!(state.surface_report_required(&before, COLS, ROWS));
+    assert_eq!(
+        state.surface_report_basis(COLS, ROWS).size,
+        before.size,
+        "same surface size, another tab"
+    );
+
+    let before = state.surface_report_basis(COLS, ROWS);
+    state.set_snapshot(Box::new(two_tab_snapshot("tab_2")));
+    assert!(!state.surface_report_required(&before, COLS, ROWS));
+}
+
+#[test]
+fn the_first_snapshot_reports_only_a_size_change() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let before = state.surface_report_basis(COLS, ROWS);
+    state.set_snapshot(Box::new(two_tab_snapshot("tab_1")));
+    assert_eq!(
+        state.surface_report_required(&before, COLS, ROWS),
+        before.size != state.surface_size(COLS, ROWS)
+    );
+}

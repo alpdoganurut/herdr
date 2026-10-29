@@ -1043,7 +1043,7 @@ impl HeadlessServer {
         if let Some((controller_id, target)) = restore_shell_controller {
             self.restore_shell_tab_geometry(controller_id, target);
         } else {
-            self.resize_tabs_for_only_shell_client(true);
+            self.resize_tabs_for_only_shell_client(true, client_views::ShellTabSizing::EveryTab);
         }
     }
 

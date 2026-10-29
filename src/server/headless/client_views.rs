@@ -50,6 +50,18 @@ pub(super) fn forward_proxied_api_response(
     result
 }
 
+/// Fork: which tabs one shell client's size reaches. The info dock is per
+/// tab, so the client's surface width changes on a dock toggle and on a switch
+/// between tabs with and without one; sizing every tab on each change reflowed
+/// and SIGWINCHed every agent of the session. A change sizes the tab shown
+/// (the client reports its size again when it shows another tab); only an
+/// attach or a detach sizes every tab, as upstream does on every change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ShellTabSizing {
+    ShownTab,
+    EveryTab,
+}
+
 impl HeadlessServer {
     pub(super) fn default_shell_target(&self) -> Option<crate::ui::TabSurfaceTarget> {
         let workspace_index = self.app.state.active?;
@@ -562,10 +574,28 @@ impl HeadlessServer {
         client_id: u64,
         start_pending_agent_resumes: bool,
     ) -> bool {
+        self.apply_shell_tab_geometry_sized(
+            client_id,
+            start_pending_agent_resumes,
+            ShellTabSizing::ShownTab,
+        )
+    }
+
+    fn apply_shell_tab_geometry_sized(
+        &mut self,
+        client_id: u64,
+        start_pending_agent_resumes: bool,
+        sizing: ShellTabSizing,
+    ) -> bool {
         let Some(target) = self.shell_target_for_client(client_id) else {
             return false;
         };
-        self.apply_shell_tab_geometry_to_target(client_id, target, start_pending_agent_resumes)
+        self.apply_shell_tab_geometry_to_target(
+            client_id,
+            target,
+            start_pending_agent_resumes,
+            sizing,
+        )
     }
 
     fn apply_shell_tab_geometry_to_target(
@@ -573,8 +603,9 @@ impl HeadlessServer {
         client_id: u64,
         target: crate::ui::TabSurfaceTarget,
         start_pending_agent_resumes: bool,
+        sizing: ShellTabSizing,
     ) -> bool {
-        if !self.resize_shell_tab_geometry_to_target(client_id, target) {
+        if !self.resize_shell_tab_geometry_to_target(client_id, target, sizing) {
             return false;
         }
         self.finish_shell_tab_geometry_change(start_pending_agent_resumes);
@@ -585,6 +616,7 @@ impl HeadlessServer {
         &mut self,
         client_id: u64,
         target: crate::ui::TabSurfaceTarget,
+        sizing: ShellTabSizing,
     ) -> bool {
         let Some(client) = self.clients.get(&client_id) else {
             return false;
@@ -596,7 +628,8 @@ impl HeadlessServer {
             crate::kitty_graphics::HostCellSize::default()
         };
         let area = Rect::new(0, 0, cols, rows);
-        if self.app_client_count() == 1 {
+        // Fork: only an attach or a detach sizes every tab (ShellTabSizing).
+        if sizing == ShellTabSizing::EveryTab && self.app_client_count() == 1 {
             for (workspace_index, workspace) in self.app.state.workspaces.iter().enumerate() {
                 for tab_index in 0..workspace.tabs.len() {
                     crate::ui::resize_tab_surface(
@@ -632,6 +665,7 @@ impl HeadlessServer {
     pub(super) fn resize_tabs_for_only_shell_client(
         &mut self,
         start_pending_agent_resumes: bool,
+        sizing: ShellTabSizing,
     ) -> bool {
         let active_shell_count = self
             .clients
@@ -646,7 +680,7 @@ impl HeadlessServer {
         }) else {
             return false;
         };
-        self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
+        self.apply_shell_tab_geometry_sized(client_id, start_pending_agent_resumes, sizing)
     }
 
     pub(super) fn reapply_controlled_shell_tab_geometry(
@@ -676,7 +710,10 @@ impl HeadlessServer {
             }
         }
 
-        if self.resize_tabs_for_only_shell_client(start_pending_agent_resumes) {
+        if self.resize_tabs_for_only_shell_client(
+            start_pending_agent_resumes,
+            ShellTabSizing::ShownTab,
+        ) {
             return true;
         }
 
@@ -701,7 +738,11 @@ impl HeadlessServer {
         controlled_tabs.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         let mut reapplied = false;
         for (_, client_id, target) in controlled_tabs {
-            reapplied |= self.resize_shell_tab_geometry_to_target(client_id, target);
+            reapplied |= self.resize_shell_tab_geometry_to_target(
+                client_id,
+                target,
+                ShellTabSizing::ShownTab,
+            );
         }
         if reapplied {
             self.finish_shell_tab_geometry_change(start_pending_agent_resumes);
@@ -749,7 +790,11 @@ impl HeadlessServer {
             return false;
         }
         self.tab_geometry_controllers.insert(tab_id, client_id);
-        self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
+        self.apply_shell_tab_geometry_sized(
+            client_id,
+            start_pending_agent_resumes,
+            ShellTabSizing::EveryTab,
+        )
     }
 
     pub(super) fn resize_shell_tab_if_controller(
@@ -822,7 +867,7 @@ impl HeadlessServer {
         client_id: u64,
         target: crate::ui::TabSurfaceTarget,
     ) -> bool {
-        self.apply_shell_tab_geometry_to_target(client_id, target, true)
+        self.apply_shell_tab_geometry_to_target(client_id, target, true, ShellTabSizing::EveryTab)
     }
 
     /// Applies a public socket request, including its session-wide focus projection.
