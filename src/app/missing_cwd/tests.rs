@@ -683,16 +683,237 @@ fn the_queue_file_keeps_its_format_with_or_without_saved_notices() {
             pane: "w1:p1".into(),
             path: PathBuf::from("/home/u/wt"),
             since_unix: 7,
+            parked: false,
         }]
     );
     let entry = serde_json::to_value(super::SavedMissingCwdNotice {
         pane: "w1:p1".into(),
         path: PathBuf::from("/x"),
         since_unix: 1,
+        parked: false,
     })
     .unwrap();
     assert_eq!(
         entry.as_object().unwrap().keys().collect::<Vec<_>>(),
         ["pane", "path", "since_unix"]
     );
+    // A parked notice says so; it reads back parked.
+    let parked = super::SavedMissingCwdNotice {
+        pane: "w1:p1".into(),
+        path: PathBuf::from("/x"),
+        since_unix: 1,
+        parked: true,
+    };
+    let text = serde_json::to_string(&parked).unwrap();
+    assert!(text.contains("\"parked\":true"));
+    assert_eq!(
+        serde_json::from_str::<super::SavedMissingCwdNotice>(&text).unwrap(),
+        parked
+    );
+}
+
+/// Poll `store` until its saved queue satisfies `ok`.
+fn saved_queue_until(store: &Path, ok: impl Fn(&serde_json::Value) -> bool) -> bool {
+    (0..300).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::read(store)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_some_and(|value| ok(&value))
+    })
+}
+
+#[tokio::test]
+async fn a_notice_dropped_after_one_was_queued_in_the_same_pass_is_saved_gone() {
+    let home = TestHome::new("queued-then-gone");
+    let store = home.0.join("state/message_queue.json");
+    let mut app = test_app();
+    let mut workspace = crate::workspace::Workspace::test_new("two");
+    let first_pane = workspace.tabs[0].root_pane;
+    let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+    let ready = workspace.terminal_id(first_pane).unwrap().clone();
+    let gone = workspace.terminal_id(second_pane).unwrap().clone();
+    app.state.workspaces = vec![workspace];
+    app.state.active = Some(0);
+    app.state.ensure_test_terminals();
+    for id in [&ready, &gone] {
+        app.state.terminals.get_mut(id).unwrap().cwd = home.0.join("wt");
+    }
+    app.message_queue.persist_for_test(store.clone());
+    app.note_recreated_cwd(&ready, true);
+    app.note_recreated_cwd(&gone, true);
+    assert_eq!(app.message_queue.missing_cwd.pending_len(), 2);
+    agent_up(&mut app, &ready);
+    app.state.terminals.get_mut(&gone).unwrap().restore_error = Some("gone".into());
+    // One pass: one notice is queued and the other dropped, in either order.
+    assert!(app.deliver_missing_cwd_notices(Instant::now(), crate::coordinator::now_unix()));
+    assert_eq!(app.message_queue.missing_cwd.pending_len(), 0);
+    assert!(
+        saved_queue_until(&store, |queue| {
+            queue["messages"].as_array().is_some_and(|m| m.len() == 1)
+                && queue.get("missing_cwd").is_none()
+        }),
+        "the saved queue has the queued notice and no pending one"
+    );
+    app.terminal_runtimes.remove(&ready);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pending_notice_follows_its_pane_to_another_space_across_a_restart() {
+    use crate::api::schema::{Method, PaneMoveDestination, PaneMoveParams, Request};
+    let home = TestHome::new("moved");
+    let missing = home.0.join("worktrees/moved");
+    let store = home.0.join("state/message_queue.json");
+    let mut first = restored_app(&snapshot_with(&home.0, &missing, true));
+    first.message_queue.persist_for_test(store.clone());
+    first.note_recreated_cwds();
+    let terminal = root_terminal(&first);
+    let before = first.message_queue.missing_cwd.saved()[0].pane.clone();
+
+    let destination = first.public_workspace_id(1);
+    let response = first.handle_api_request(Request {
+        id: "move".into(),
+        method: Method::PaneMove(PaneMoveParams {
+            pane_id: before.clone(),
+            destination: PaneMoveDestination::NewTab {
+                workspace_id: Some(destination.clone()),
+                label: None,
+            },
+            focus: false,
+        }),
+    });
+    let success: crate::api::schema::SuccessResponse =
+        serde_json::from_str(&response).unwrap_or_else(|_| panic!("{response}"));
+    let crate::api::schema::ResponseResult::PaneMove { move_result } = success.result else {
+        panic!("expected a pane move: {response}");
+    };
+    assert!(move_result.changed);
+    let target = first
+        .resolve_terminal_target(&terminal.to_string())
+        .unwrap();
+    let after = first.public_pane_id(target.ws_idx, target.pane_id).unwrap();
+    assert!(after.starts_with(&destination), "{after}");
+    assert_ne!(after, before);
+    assert_eq!(first.message_queue.missing_cwd.saved()[0].pane, after);
+    assert!(
+        saved_queue_until(&store, |queue| queue["missing_cwd"][0]["pane"]
+            == after.as_str()),
+        "the move is saved"
+    );
+    let snapshot = crate::persist::capture(
+        &first.state.workspaces,
+        &first.state.terminals,
+        &first.terminal_runtimes,
+        first.state.active,
+        first.state.selected,
+    );
+    shutdown_runtimes(&mut first);
+    drop(first);
+
+    let mut second = restored_app(&snapshot);
+    second.message_queue.persist_for_test(store.clone());
+    second.message_queue.load(store.clone());
+    second.rearm_missing_cwd_notices(Instant::now(), crate::coordinator::now_unix());
+    assert_eq!(second.message_queue.missing_cwd.pending_len(), 1);
+    let moved = second.resolve_terminal_target(&after).unwrap().terminal_id;
+    let moved: TerminalId = second.state.terminals[moved.as_str()].id.clone();
+    second
+        .state
+        .terminals
+        .get_mut(&moved)
+        .unwrap()
+        .pending_agent_resume_plan = None;
+    agent_up(&mut second, &moved);
+    let now_unix = crate::coordinator::now_unix();
+    assert!(second.deliver_missing_cwd_notices(Instant::now(), now_unix));
+    assert_eq!(second.message_queue.entries.len(), 1);
+    assert_eq!(
+        second.message_queue.entries[0].terminal_id,
+        moved.to_string()
+    );
+    second.note_message_queue_event(&crate::api::schema::EventKind::PaneAgentStatusChanged);
+    assert!(!second.deliver_missing_cwd_notices(Instant::now() + super::POLL, now_unix));
+    assert_eq!(second.message_queue.entries.len(), 1, "delivered once");
+    shutdown_runtimes(&mut second);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_notice_parked_past_give_up_and_activated_survives_a_restart_before_detection() {
+    let home = TestHome::new("parked-restart");
+    let missing = home.0.join("worktrees/parked");
+    let snapshot = snapshot_with(&home.0, &missing, true);
+    let store = home.0.join("state/message_queue.json");
+    let mut first = restored_app(&snapshot);
+    first.message_queue.persist_for_test(store.clone());
+    let terminal_id = root_terminal(&first);
+    let terminal = first.state.terminals.get_mut(&terminal_id).unwrap();
+    terminal.pending_agent_resume_plan = None;
+    terminal.restore_suspended_agent(
+        "claude".into(),
+        Some("parked".into()),
+        crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("parked-restart").unwrap(),
+            transcript_path: None,
+        },
+    );
+    first.note_recreated_cwds();
+    let now_unix = crate::coordinator::now_unix();
+    // Armed long ago and parked since: passes while suspended do not move
+    // its saved time.
+    let long_ago = now_unix - super::GIVE_UP.as_secs() - 3600;
+    first
+        .message_queue
+        .missing_cwd
+        .pending
+        .get_mut(&terminal_id)
+        .unwrap()
+        .since_unix = long_ago;
+    assert!(!first.deliver_missing_cwd_notices(Instant::now(), now_unix));
+    assert_eq!(
+        first.message_queue.missing_cwd.saved()[0].since_unix,
+        long_ago
+    );
+    // Activated, and the queue is saved, but no pass runs before the restart.
+    first
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .suspended_agent = None;
+    first.message_queue.save();
+    assert!(
+        saved_queue_until(&store, |queue| {
+            queue["missing_cwd"][0]["parked"] == true
+                && queue["missing_cwd"][0]["since_unix"] == long_ago
+        }),
+        "saved parked"
+    );
+    shutdown_runtimes(&mut first);
+    drop(first);
+
+    // The restart resumes the agent (not suspended); it is detected later.
+    let mut second = restored_app(&snapshot);
+    second.message_queue.persist_for_test(store.clone());
+    second.message_queue.load(store.clone());
+    second.rearm_missing_cwd_notices(Instant::now(), now_unix);
+    assert_eq!(
+        second.message_queue.missing_cwd.pending_len(),
+        1,
+        "its parked time does not count toward GIVE_UP"
+    );
+    let terminal_id = root_terminal(&second);
+    second
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .pending_agent_resume_plan = None;
+    agent_up(&mut second, &terminal_id);
+    assert!(second.deliver_missing_cwd_notices(Instant::now(), now_unix));
+    assert_eq!(second.message_queue.entries.len(), 1);
+    shutdown_runtimes(&mut second);
 }

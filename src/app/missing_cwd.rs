@@ -50,7 +50,7 @@ pub(crate) struct MissingCwdNotices {
     poll_at: Option<Instant>,
     /// Loaded from `message_queue.json`, not yet matched to a pane
     /// ([`App::rearm_missing_cwd_notices`]); saved again until then.
-    saved: Vec<SavedMissingCwdNotice>,
+    loaded: Vec<SavedMissingCwdNotice>,
 }
 
 struct Pending {
@@ -58,10 +58,12 @@ struct Pending {
     since: Instant,
     /// `since` as a Unix time, for the saved queue.
     since_unix: u64,
-    /// The pane's public id when the notice was armed (what is saved).
+    /// The pane's public id (what is saved): taken when the notice is armed,
+    /// followed when the pane moves ([`App::follow_missing_cwd_panes`]).
     pane: Option<String>,
     /// Its agent was suspended at the last pass: the [`GIVE_UP`] clock
-    /// restarts on the first pass after its activation.
+    /// restarts on the first pass after its activation (saved, so a restart
+    /// in between does not count the parked time).
     parked: bool,
 }
 
@@ -73,6 +75,10 @@ pub(crate) struct SavedMissingCwdNotice {
     pub(crate) pane: String,
     pub(crate) path: PathBuf,
     pub(crate) since_unix: u64,
+    /// Its agent was suspended: `since_unix` waits for the activation, so
+    /// the notice's age does not count (older files: not parked).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) parked: bool,
 }
 
 impl MissingCwdNotices {
@@ -102,18 +108,19 @@ impl MissingCwdNotices {
                     pane: pending.pane.clone()?,
                     path: pending.path.clone(),
                     since_unix: pending.since_unix,
+                    parked: pending.parked,
                 })
             })
             .collect();
         saved.sort_by(|left, right| left.pane.cmp(&right.pane));
-        saved.extend(self.saved.iter().cloned());
+        saved.extend(self.loaded.iter().cloned());
         saved
     }
 
     /// The notices `message_queue.json` kept (re-armed by
     /// [`App::rearm_missing_cwd_notices`]).
     pub(crate) fn load_saved_notices(&mut self, saved: Vec<SavedMissingCwdNotice>) {
-        self.saved = saved;
+        self.loaded = saved;
     }
 
     #[cfg(test)]
@@ -238,11 +245,11 @@ impl App {
     /// `terminal_id`'s directory was recreated: log it, show one card, and
     /// for an agent pane wait to tell its agent.
     pub(crate) fn note_recreated_cwd(&mut self, terminal_id: &TerminalId, agent: bool) {
-        let Some(path) = self
+        let Some((path, parked)) = self
             .state
             .terminals
             .get(terminal_id)
-            .map(|terminal| terminal.cwd.clone())
+            .map(|terminal| (terminal.cwd.clone(), terminal.suspended_agent.is_some()))
         else {
             return;
         };
@@ -269,7 +276,7 @@ impl App {
                     since: now,
                     since_unix: crate::coordinator::now_unix(),
                     pane,
-                    parked: false,
+                    parked,
                 });
             notices.poll_at = Some(now);
             self.message_queue.save();
@@ -277,11 +284,12 @@ impl App {
     }
 
     /// After a restart or a live handoff: the notices `message_queue.json`
-    /// kept wait again for the pane with the same public id (a suspended
-    /// agent's parked, so its age does not count). A notice whose pane is
-    /// gone, or past [`GIVE_UP`] for a running pane, is dropped.
+    /// kept wait again for the pane with the same public id (one saved parked,
+    /// or whose agent is suspended, stays parked, so its age does not count).
+    /// A notice whose pane is gone, or past [`GIVE_UP`] for a running pane,
+    /// is dropped.
     pub(crate) fn rearm_missing_cwd_notices(&mut self, now: Instant, now_unix: u64) {
-        let saved = std::mem::take(&mut self.message_queue.missing_cwd.saved);
+        let saved = std::mem::take(&mut self.message_queue.missing_cwd.loaded);
         if saved.is_empty() {
             return;
         }
@@ -294,7 +302,7 @@ impl App {
                 continue;
             };
             let terminal_id = terminal.id.clone();
-            let parked = terminal.suspended_agent.is_some();
+            let parked = notice.parked || terminal.suspended_agent.is_some();
             let age = now_unix.saturating_sub(notice.since_unix);
             if !parked && age > GIVE_UP.as_secs() {
                 continue;
@@ -356,7 +364,11 @@ impl App {
                     if let Some(pending) =
                         self.message_queue.missing_cwd.pending.get_mut(&terminal_id)
                     {
-                        pending.parked = true;
+                        // Saved once, when it parks (`since_unix` stays).
+                        if !pending.parked {
+                            pending.parked = true;
+                            changed = true;
+                        }
                         pending.since = now;
                     }
                 }
@@ -387,11 +399,50 @@ impl App {
         if !polled {
             self.message_queue.missing_cwd.poll_at = None;
         }
-        if changed && !queued {
-            // (queueing a notice saves the queue already)
+        if changed {
+            // (queueing a notice saved the queue, but maybe before a later
+            // change of this pass)
             self.message_queue.save();
         }
         queued
+    }
+
+    /// A pane moved (to another tab or space): a pending notice saves its
+    /// pane's new public id, so a restart re-arms it on that pane. O(pending
+    /// notices), nothing without one.
+    pub(crate) fn follow_missing_cwd_panes(&mut self) {
+        if self.message_queue.missing_cwd.pending.is_empty() {
+            return;
+        }
+        let ids: Vec<TerminalId> = self
+            .message_queue
+            .missing_cwd
+            .pending
+            .keys()
+            .cloned()
+            .collect();
+        let mut changed = false;
+        for terminal_id in ids {
+            let id = terminal_id.to_string();
+            // A pane that is gone keeps its id: the next pass drops it.
+            let Some(pane) = self
+                .resolve_terminal_target(&id)
+                .ok()
+                .filter(|target| target.terminal_id == id)
+                .and_then(|target| self.public_pane_id(target.ws_idx, target.pane_id))
+            else {
+                continue;
+            };
+            if let Some(pending) = self.message_queue.missing_cwd.pending.get_mut(&terminal_id) {
+                if pending.pane.as_deref() != Some(pane.as_str()) {
+                    pending.pane = Some(pane);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.message_queue.save();
+        }
     }
 
     fn missing_cwd_gate(&self, terminal_id: &TerminalId, now: Instant) -> Gate {

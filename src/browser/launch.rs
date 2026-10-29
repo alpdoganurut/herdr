@@ -230,8 +230,9 @@ pub fn singleton_lock_pid(profile_dir: &Path) -> Option<u32> {
 
 /// The pid of a live Chromium holding `profile_dir`: its `SingletonLock` pid
 /// is alive and its `SingletonSocket` accepts a connection, or the socket
-/// does not answer but the pid is a Chromium process (`is_browser`, Chromium's
-/// own `IsChromeProcess` test: a busy or wedged browser still holds it). A
+/// does not answer but the pid is the browser (`is_browser`, by executable
+/// name like Chromium's own `IsChromeProcess`: a busy or wedged browser still
+/// holds it). A
 /// lock whose browser died and whose pid the OS gave to another process has
 /// no listening socket and no browser behind the pid, so it is stale
 /// (Chromium takes such a lock over itself).
@@ -244,36 +245,42 @@ pub fn singleton_lock_holder(
     (singleton_socket_answers(profile_dir) || is_browser(pid)).then_some(pid)
 }
 
-/// Whether process `pid` is a Chromium (the configured `binary`, Chromium,
-/// Chrome or the branded app); `false` when its name cannot be read (Windows
-/// and other platforms: the socket alone decides, as before).
+/// Whether process `pid` is the browser: the configured `binary` (by its
+/// exact file name) or the branded app; Chromium or Chrome by name only when
+/// no binary resolves. `false` when its name cannot be read (Windows and
+/// other platforms: the socket alone decides, as before).
 pub fn is_browser_process(pid: u32, binary: Option<&Path>) -> bool {
     crate::platform::process_comm_name(pid)
         .is_some_and(|name| is_browser_process_name(&name, binary))
 }
 
-/// [`is_browser_process`] on a process name. The name may be cut short
-/// (`comm`: 15 bytes on Linux, 16 on macOS), so a configured binary also
-/// matches by a long enough prefix.
+/// [`is_browser_process`] on a process name, like Chromium's own
+/// `IsChromeProcess` (the exact executable name): the resolved `binary`'s
+/// file name, or [`super::brand::DEFAULT_APP_NAME`]. The name may be cut
+/// short (`comm`: 15 bytes on Linux, 16 on macOS), so the binary also matches
+/// by a long enough prefix. A helper, crash handler or driver
+/// (`Google Chrome He`, `chrome_crashpad_handler`, `chromedriver`) is not the
+/// browser. Only without a resolved binary does any `chromium`/`chrome` name
+/// count.
 pub fn is_browser_process_name(name: &str, binary: Option<&Path>) -> bool {
     const COMM_PREFIX_MIN: usize = 15;
     let name = name.trim();
     if name.is_empty() {
         return false;
     }
-    let lower = name.to_lowercase();
-    if lower.contains("chromium")
-        || lower.contains("chrome")
-        || lower == super::brand::DEFAULT_APP_NAME.to_lowercase()
-    {
+    if name.to_lowercase() == super::brand::DEFAULT_APP_NAME.to_lowercase() {
         return true;
     }
-    binary
-        .and_then(Path::file_name)
-        .map(|file| file.to_string_lossy())
-        .is_some_and(|file| {
+    match binary.and_then(Path::file_name) {
+        Some(file) => {
+            let file = file.to_string_lossy();
             file == name || (name.len() >= COMM_PREFIX_MIN && file.starts_with(name))
-        })
+        }
+        None => {
+            let lower = name.to_lowercase();
+            lower.contains("chromium") || lower.contains("chrome")
+        }
+    }
 }
 
 /// Whether the profile's `SingletonSocket` (Chromium's single-instance
@@ -505,6 +512,10 @@ pub fn launch(
     options: &LaunchOptions,
 ) -> Result<RunRecord, BrowserError> {
     let mut last_error = None;
+    // A lock left from before this launch is not its browser (attach_decision
+    // found it stale: dead, or a reused pid). Read once: a browser an earlier
+    // attempt started and could not stop is still this launch's to stop.
+    let pre_spawn_lock_pid = singleton_lock_pid(profile_dir);
     for attempt in 1..=LAUNCH_ATTEMPTS {
         let port = pick_port()?;
         let argv = argv(
@@ -516,9 +527,6 @@ pub fn launch(
             options.extension_dir.as_deref(),
         );
         let _ = fs::remove_file(profile_dir.join("DevToolsActivePort"));
-        // A lock left from before this spawn is not this launch's browser
-        // (attach_decision found it stale: dead, or a reused pid).
-        let pre_spawn_lock_pid = singleton_lock_pid(profile_dir);
         let spawned_pid = spawn_chromium(exe, &argv, log_path)?;
         let deadline = Instant::now() + options.timeout;
         match wait_for_devtools(port, deadline) {
@@ -574,9 +582,10 @@ pub fn launch(
     Err(last_error.unwrap_or_else(|| BrowserError::new("browser_start_failed", "launch failed")))
 }
 
-/// The pid a timed-out launch stops: the `SingletonLock` pid when this
-/// launch wrote it (it differs from `pre_spawn`), else the spawned child.
-/// The pre-spawn lock pid is never chosen: it belongs to no browser of this
+/// The pid a timed-out attempt stops: the `SingletonLock` pid when any
+/// attempt of this launch wrote it (it differs from `pre_spawn`, the lock pid
+/// read once before the first attempt), else the spawned child. The
+/// pre-spawn lock pid is never chosen: it belongs to no browser of this
 /// launch, and after a pid reuse it is an unrelated process.
 fn timed_out_launch_pid(
     pre_spawn: Option<u32>,
@@ -905,6 +914,7 @@ mod tests {
 
     #[test]
     fn browser_process_names_match_chromium_chrome_the_brand_and_the_binary() {
+        // No binary resolves: any Chromium or Chrome name, and the brand.
         for name in [
             "Chromium",
             "chromium-browse",
@@ -931,6 +941,34 @@ mod tests {
             "too short a prefix"
         );
         assert!(!is_browser_process_name("zsh", Some(binary)));
+        assert!(
+            is_browser_process_name("herdr+ Browser", Some(binary)),
+            "the brand always"
+        );
+    }
+
+    #[test]
+    fn a_configured_binary_matches_only_its_own_name_not_other_chrome_processes() {
+        for binary in [
+            Path::new("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+            Path::new("/Users/u/Applications/herdr+ Browser.app/Contents/MacOS/Chromium"),
+        ] {
+            assert!(is_browser_process_name("Chromium", Some(binary)));
+            assert!(is_browser_process_name("herdr+ Browser", Some(binary)));
+            for name in [
+                // A macOS helper's comm, cut to 16 bytes.
+                "Google Chrome He",
+                "Google Chrome",
+                "chrome_crashpad_handler",
+                "chromedriver",
+                "Chromium Helper",
+            ] {
+                assert!(
+                    !is_browser_process_name(name, Some(binary)),
+                    "{name} is not the configured browser"
+                );
+            }
+        }
     }
 
     #[test]
@@ -972,5 +1010,29 @@ mod tests {
         assert_eq!(*stopped.borrow(), vec![30]);
         stop_unreachable_launch(Some(40), &exists, &stop, Duration::from_millis(200));
         assert_eq!(*stopped.borrow(), vec![30], "a dead pid is not signalled");
+    }
+
+    #[test]
+    fn a_browser_that_survives_attempt_one_is_still_stopped_by_attempt_two() {
+        // The stale lock pid 10 is read once, before the first attempt.
+        // Attempt 1's browser (30) writes the lock and ignores the SIGTERM;
+        // attempt 2's child hands off to it, so the lock still names 30.
+        let pre_spawn = Some(10);
+        let stopped = std::cell::RefCell::new(Vec::new());
+        let exists = |pid: u32| pid == 10 || pid == 30;
+        let stop = |pid: u32| stopped.borrow_mut().push(pid);
+        for spawned in [Some(31), Some(32)] {
+            stop_unreachable_launch(
+                timed_out_launch_pid(pre_spawn, Some(30), spawned),
+                &exists,
+                &stop,
+                Duration::from_millis(50),
+            );
+        }
+        assert_eq!(
+            *stopped.borrow(),
+            vec![30, 30],
+            "attempt 2 still stops attempt 1's browser, never the stale pid"
+        );
     }
 }

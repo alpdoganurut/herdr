@@ -932,13 +932,13 @@ impl BrowserHub {
         }
         let profile_dir = self.inner.profiles.dir(name);
         // A run record counts as ensure_running's attach does: its pid alive
-        // AND its DevTools answering (a reused pid is not the browser). A
-        // short timeout: this runs on the App thread, and a loopback port
-        // nobody listens on refuses at once.
+        // AND its DevTools answering within the attach's own timeout (a
+        // reused pid is not the browser; a busy browser is still live). A
+        // loopback port nobody listens on refuses at once.
         let live_pid = launch::read_run_record(&self.inner.home, name)
             .filter(|record| {
                 crate::platform::process_exists(record.pid)
-                    && launch::json_version(record.port, Duration::from_millis(300)).is_some()
+                    && launch::json_version(record.port, DEVTOOLS_PROBE_TIMEOUT).is_some()
             })
             .map(|record| record.pid)
             .or_else(|| {
@@ -2385,7 +2385,7 @@ impl BrowserHub {
         self.auto_repair_once();
 
         let alive = |pid: u32| crate::platform::process_exists(pid);
-        let answers = |port: u16| launch::json_version(port, Duration::from_millis(1500)).is_some();
+        let answers = |port: u16| launch::json_version(port, DEVTOOLS_PROBE_TIMEOUT).is_some();
         let decision = if self.inner.test_mode.load(Ordering::Relaxed) {
             match self.inner.state.lock().unwrap().profile(name) {
                 ProfileStatus::Running { pid, port, exe, .. } => {
@@ -3254,6 +3254,10 @@ impl BrowserHub {
 
 /// The binary `[browser] executable` resolves to, for the `SingletonLock`
 /// browser-process check (`None` when it does not resolve).
+/// How long a live-browser check waits for a run record's DevTools to answer
+/// (the attach and `profile delete` alike).
+const DEVTOOLS_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+
 fn configured_browser_binary(config: &BrowserConfig) -> Option<PathBuf> {
     let home_env = std::env::var_os("HOME").map(PathBuf::from);
     launch::resolve_executable(&config.executable, home_env.as_deref())

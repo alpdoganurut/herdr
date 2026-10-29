@@ -1618,6 +1618,11 @@ impl App {
         ) {
             self.message_queue.missing_cwd.mark_due(Instant::now());
         }
+        // Fork (missing directories): a moved pane's pending notice saves
+        // its new public id (O(pending notices)).
+        if matches!(event, EventKind::PaneMoved) {
+            self.follow_missing_cwd_panes();
+        }
         if self.message_queue.is_empty() {
             return;
         }
