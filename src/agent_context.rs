@@ -11,7 +11,10 @@
 //! is inferred: an explicit `[agents] context_window` value first, then a
 //! `[1m]` / `-1m` model id (1M), then 200k unless the usage already exceeds
 //! it (1M). Usage over 1M with no configured window has no known window and
-//! yields nothing.
+//! yields nothing. A response that ran server-side multi-step tools (the
+//! advisor) carries `usage.iterations` and a top-level usage that sums every
+//! step; its context is the last `type: "message"` iteration's input, cache
+//! read, cache creation and output (advisor steps are ignored).
 //!
 //! Codex rollouts (`event_msg` lines with `payload.type == "token_count"`)
 //! carry `payload.info.last_token_usage` (`input_tokens` already includes
@@ -159,10 +162,12 @@ pub fn parse_claude_line(line: &str) -> Option<TranscriptUsage> {
     let usage = message.get("usage")?;
     let field = |name: &str| usage.get(name).and_then(serde_json::Value::as_u64);
     let input = field("input_tokens")?;
-    let used = input
-        .saturating_add(field("cache_creation_input_tokens").unwrap_or(0))
-        .saturating_add(field("cache_read_input_tokens").unwrap_or(0))
-        .saturating_add(field("output_tokens").unwrap_or(0));
+    let used = last_message_iteration_used(usage).unwrap_or_else(|| {
+        input
+            .saturating_add(field("cache_creation_input_tokens").unwrap_or(0))
+            .saturating_add(field("cache_read_input_tokens").unwrap_or(0))
+            .saturating_add(field("output_tokens").unwrap_or(0))
+    });
     if used == 0 {
         return None;
     }
@@ -171,6 +176,30 @@ pub fn parse_claude_line(line: &str) -> Option<TranscriptUsage> {
         model: model.map(str::to_owned),
         window: None,
     })
+}
+
+/// A multi-step response's context: the last `type: "message"` entry of
+/// `usage.iterations` (input + cache read + cache creation + output). The top-level
+/// usage of such a response sums every step, advisor steps included, so it
+/// overstates the context. `None` without a `message` iteration.
+fn last_message_iteration_used(usage: &serde_json::Value) -> Option<u64> {
+    let step = usage
+        .get("iterations")?
+        .as_array()?
+        .iter()
+        .rev()
+        .find(|step| step.get("type").and_then(serde_json::Value::as_str) == Some("message"))?;
+    let field = |name: &str| {
+        step.get(name)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    };
+    Some(
+        field("input_tokens")
+            .saturating_add(field("cache_read_input_tokens"))
+            .saturating_add(field("cache_creation_input_tokens"))
+            .saturating_add(field("output_tokens")),
+    )
 }
 
 /// One Codex rollout line: a `token_count` event with usage info.
@@ -387,6 +416,28 @@ mod tests {
         assert_eq!(usage.used, 151_502);
         assert_eq!(usage.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(usage.window, None);
+    }
+
+    #[test]
+    fn a_multi_step_response_uses_its_last_message_iteration() {
+        // A real line (2026-10-29, claude-opus-5-5, one advisor call): the
+        // top level sums all three steps (about 1.24M).
+        let line = r#"{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":4,"cache_creation_input_tokens":2781,"cache_read_input_tokens":1237568,"output_tokens":393,"iterations":[{"type":"message","input_tokens":2,"cache_read_input_tokens":618171,"cache_creation_input_tokens":1226,"output_tokens":154},{"type":"advisor_message","model":"claude-fable-5-1","input_tokens":624290,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":6670},{"type":"message","input_tokens":2,"cache_read_input_tokens":619397,"cache_creation_input_tokens":1555,"output_tokens":239}]}}}"#;
+        let usage = parse_tail(ContextAgent::Claude, line, true).unwrap();
+        assert_eq!(usage.used, 621_193);
+        assert_eq!(usage.model.as_deref(), Some("claude-opus-5-5"));
+        let configured = BTreeMap::from([("claude".to_string(), 1_000_000)]);
+        let resolved = resolve_usage(ContextAgent::Claude, &usage, &configured).unwrap();
+        assert_eq!(resolved.window, 1_000_000);
+        assert_eq!(resolved.percent(), 62);
+
+        // No iterations: the top-level sum, unchanged.
+        let plain = claude_line("claude-opus-5-5", 2, 1_000, 150_000, 500);
+        assert_eq!(parse_claude_line(&plain).unwrap().used, 151_502);
+
+        // Iterations without a `message` step: the top-level sum.
+        let advisor_only = r#"{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":4,"cache_creation_input_tokens":20,"cache_read_input_tokens":300,"output_tokens":6,"iterations":[{"type":"advisor_message","model":"claude-fable-5-1","input_tokens":9000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":70}]}}}"#;
+        assert_eq!(parse_claude_line(advisor_only).unwrap().used, 330);
     }
 
     #[test]
