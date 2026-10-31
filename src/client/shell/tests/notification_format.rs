@@ -1,5 +1,6 @@
 //! Agent notification text in the `tabs` sidebar layout
-//! (`notification_format.rs`): "<tab> finished", body "<agent> · <directory>".
+//! (`notification_format.rs`): "<tab> finished", body "<agent> · <directory>",
+//! or "<group> · <role>" for a tab in a group.
 
 use super::*;
 use crate::config::{Config, SidebarLayoutConfig};
@@ -208,4 +209,128 @@ fn mobile_banner_shows_the_rewritten_title() {
         .collect::<String>();
     assert!(text.contains("level plan waiting"), "{text}");
     assert!(text.contains("claude · leap-bi-4"), "{text}");
+}
+
+/// Fork: `background_snapshot` with tab_2 (and pane_2) moved into a second
+/// space, the group "Marla".
+fn grouped_snapshot() -> ClientShellSnapshot {
+    let mut snapshot = background_snapshot();
+    let mut group = snapshot.workspaces[0].clone();
+    group.workspace_id = "ws_2".into();
+    group.label = "Marla".into();
+    group.number = 2;
+    group.focused = false;
+    snapshot.workspaces.push(group);
+    snapshot.tabs[1].workspace_id = "ws_2".into();
+    snapshot.panes[1].workspace_id = "ws_2".into();
+    snapshot.agents[0].workspace_id = "ws_2".into();
+    snapshot
+}
+
+fn team(purpose: Option<&str>, role: Option<&str>) -> crate::api::schema::team::TeamInfo {
+    crate::api::schema::team::TeamInfo {
+        workspace_id: "ws_2".into(),
+        workspace_label: "Marla".into(),
+        purpose: purpose.map(str::to_owned),
+        purpose_by: None,
+        created_unix: 0,
+        revision: 1,
+        members: vec![crate::api::schema::team::TeamMemberInfo {
+            pane_id: "pane_2".into(),
+            tab_id: Some("tab_2".into()),
+            name: None,
+            agent: Some("claude".into()),
+            role: role.map(str::to_owned),
+            status: None,
+            status_since_unix: None,
+            joined_unix: 0,
+        }],
+        excluded: Vec::new(),
+    }
+}
+
+fn teams_state(
+    boot_id: &str,
+    team: crate::api::schema::team::TeamInfo,
+) -> super::super::teams::ClientTeamsState {
+    super::super::teams::ClientTeamsState::from_payload(
+        crate::server::headless::teams::TeamsPayload {
+            boot_id: boot_id.into(),
+            revision: 1,
+            teams: vec![team],
+        },
+    )
+}
+
+fn grouped_state(team: Option<crate::api::schema::team::TeamInfo>) -> ClientShellState {
+    let mut state = state(
+        SidebarLayoutConfig::Tabs,
+        crate::config::ToastDelivery::Herdr,
+    );
+    let snapshot = grouped_snapshot();
+    let boot_id = snapshot.boot_id.clone();
+    state.set_snapshot(Box::new(snapshot));
+    if let Some(team) = team {
+        state
+            .teams
+            .insert(ClientEndpointId::Local, teams_state(&boot_id, team));
+    }
+    state
+}
+
+fn grouped_event() -> SemanticNotification {
+    let mut event = server_event(Some("pane_2"), Some("tab_2"));
+    event.workspace_id = Some("ws_2".into());
+    event
+}
+
+#[test]
+fn fork_smoke_grouped_tab_names_the_group_and_role() {
+    let mut state = grouped_state(Some(team(None, Some("lead"))));
+    assert_eq!(
+        delivered(&mut state, grouped_event()),
+        (
+            "level plan needs attention".to_string(),
+            Some("Marla · lead".to_string())
+        )
+    );
+}
+
+#[test]
+fn grouped_tab_without_a_role_names_only_the_group() {
+    // A team member without a role.
+    let mut state = grouped_state(Some(team(None, None)));
+    assert_eq!(
+        delivered(&mut state, grouped_event()).1,
+        Some("Marla".to_string())
+    );
+    // A group that is not a team.
+    let mut state = grouped_state(None);
+    assert_eq!(
+        delivered(&mut state, grouped_event()).1,
+        Some("Marla".to_string())
+    );
+}
+
+#[test]
+fn grouped_tab_names_the_team_as_agent_cards_do() {
+    // The team's purpose names it, as on agent cards.
+    let mut state = grouped_state(Some(team(Some("ship v3"), Some("lead"))));
+    assert_eq!(
+        delivered(&mut state, grouped_event()).1,
+        Some("ship v3 · lead".to_string())
+    );
+}
+
+#[test]
+fn teams_of_another_boot_are_ignored() {
+    let mut state = grouped_state(None);
+    state.teams.insert(
+        ClientEndpointId::Local,
+        teams_state("old-boot", team(None, Some("lead"))),
+    );
+    assert_eq!(
+        delivered(&mut state, grouped_event()).1,
+        Some("Marla".to_string())
+    );
 }

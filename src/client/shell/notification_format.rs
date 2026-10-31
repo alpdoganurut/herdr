@@ -8,6 +8,11 @@
 //! terminal and system notifications) then shows the same text. The `spaces`
 //! layout keeps the server's text. Idle reminders build the same body with
 //! `agent_notification_body`.
+//!
+//! Fork: a tab in a group names its team instead: body "<group> · <role>"
+//! (the group as agent cards name the team: the team's purpose, else the
+//! group label), or just "<group>" while the agent has no team role. Only a
+//! tab in no group (the first, ungrouped space) keeps "<agent> · <directory>".
 
 use super::*;
 
@@ -22,16 +27,64 @@ fn directory_name(path: &str) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
-/// "<agent> · <directory>" for `pane_id` (directory: the basename of the
-/// pane's cwd, else the label of the tab's space); missing parts are left out.
+/// Fork: "<group> · <role>" (or "<group>") when the tab's space is a group
+/// (not the first, ungrouped space); `None` otherwise. The group is named as
+/// agent cards name the team: its purpose, else the group label; the role is
+/// the pane's team role, when set.
+fn group_notification_body(
+    snapshot: &ClientShellSnapshot,
+    teams: Option<&super::teams::ClientTeamsState>,
+    pane_id: Option<&str>,
+    workspace_id: &str,
+) -> Option<String> {
+    let (index, workspace) = snapshot
+        .workspaces
+        .iter()
+        .enumerate()
+        .find(|(_, workspace)| workspace.workspace_id == workspace_id)?;
+    if !super::tab_sidebar::is_group_index(index) {
+        return None;
+    }
+    let team = teams.and_then(|teams| teams.team(workspace_id));
+    let group = match team {
+        Some(team) => super::teams::header_label(team, &workspace.label).0,
+        None => workspace.label.as_str(),
+    }
+    .trim();
+    if group.is_empty() {
+        return None;
+    }
+    let role = team
+        .zip(pane_id)
+        .and_then(|(team, pane_id)| team.members.iter().find(|member| member.pane_id == pane_id))
+        .and_then(|member| member.role.as_deref())
+        .map(str::trim)
+        .filter(|role| !role.is_empty());
+    Some(match role {
+        Some(role) => format!("{group} · {role}"),
+        None => group.to_owned(),
+    })
+}
+
+/// The notification body for `pane_id`: "<group> · <role>" when its tab is
+/// in a group (see `group_notification_body`), else "<agent> · <directory>"
+/// (directory: the basename of the pane's cwd, else the label of the tab's
+/// space); missing parts are left out.
 pub(super) fn agent_notification_body(
     snapshot: &ClientShellSnapshot,
+    teams: Option<&super::teams::ClientTeamsState>,
     agent: Option<&str>,
     pane_id: Option<&str>,
     workspace_id: Option<&str>,
 ) -> Option<String> {
     let pane =
         pane_id.and_then(|pane_id| snapshot.panes.iter().find(|pane| pane.pane_id == pane_id));
+    if let Some(body) = workspace_id
+        .or(pane.map(|pane| pane.workspace_id.as_str()))
+        .and_then(|workspace_id| group_notification_body(snapshot, teams, pane_id, workspace_id))
+    {
+        return Some(body);
+    }
     let directory = pane
         .and_then(|pane| pane.cwd.as_deref())
         .and_then(directory_name)
@@ -101,8 +154,10 @@ impl ClientShellState {
             .filter(|agent| !agent.is_empty())
             .map(str::to_owned)
             .or_else(|| event.agent.clone());
+        let teams = super::teams::active_teams_of(&self.teams, endpoint_id, Some(snapshot));
         let body = agent_notification_body(
             snapshot,
+            teams,
             agent.as_deref(),
             event.pane_id.as_deref(),
             Some(tab.workspace_id.as_str()),
