@@ -169,6 +169,7 @@ impl App {
             self.next_agent_manifest_update_check,
             self.agent_metadata_deadline,
             self.pending_agent_resume_deadline,
+            self.pending_host_appearance_deadline,
             self.session_save_deadline,
             self.agent_transcript_backup_deadline,
             self.next_codex_session_probe_deadline(),

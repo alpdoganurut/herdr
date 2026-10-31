@@ -1884,3 +1884,83 @@ fn pane_link_resolve_round_trips() {
         result
     );
 }
+
+#[test]
+fn read_choices_cover_every_api_value() {
+    crate::cli::projection::assert_choices_cover_api_enum(READ_SOURCES);
+    crate::cli::projection::assert_choices_cover_api_enum(READ_FORMATS);
+}
+
+/// Fork: the method-name constants of the fork's schema modules are the wire
+/// names in the define_operations! table (the old api_method_name arms named
+/// them directly).
+#[test]
+fn fork_method_constants_match_the_operations_table() {
+    for name in [
+        super::agent_messages::method::MESSAGE_SEND,
+        super::agent_messages::method::MESSAGE_CLAIM,
+        super::agent_notices::method::NOTIFY,
+        super::agent_notices::method::NOTICES,
+        super::agent_notices::method::NOTICE_DISMISS,
+        super::agent_wrap::method::SETTINGS,
+        super::agent_wrap::method::SETTINGS_SET,
+        super::agent_wrap::method::FIX,
+        super::agents_model::method::ACTOR,
+        super::agents_model::method::DIRECTORY,
+        super::agents_model::method::READ,
+        super::agents_model::method::OPEN_TAB,
+        super::agents_model::method::SEND_MESSAGE,
+        super::agents_model::method::RENAME_TAB,
+        super::agents_model::method::MOVE_TAB,
+        super::agents_model::method::SET_META,
+        super::agents_model::method::CLOSE_TAB,
+        super::agents_model::method::REOPEN_TAB,
+        super::agents_model::method::NOTES_APPEND,
+        super::agents_model::method::CHECKPOINT,
+        super::agents_model::method::ACTIONS,
+        super::agents_model::method::CHECK,
+        super::agents_model::method::SUSPEND,
+        super::agents_model::method::ACTIVATE,
+        super::agents_model::method::RESTART,
+        super::agents_model::method::READ_MESSAGES,
+        super::agents_model::method::REORDER_GROUP,
+        super::agents_model::method::REORDER_TAB,
+        super::agents_model::method::QUEUED,
+        super::agents_model::method::INBOX,
+        super::agents_model::method::HANDOFF,
+        super::agents_model::method::REPORT_WAIT,
+        super::coordinator::method::GET,
+        super::coordinator::method::OPEN,
+        super::coordinator::method::OPEN_DASHBOARD,
+        super::coordinator::method::WAKE,
+        super::coordinator::method::START,
+        super::coordinator::method::SET_ENABLED,
+        super::coordinator::method::SET_WAKE_CAPS,
+        super::coordinator::method::SET_MODEL,
+        super::coordinator::method::SET_NOTIFY,
+        super::notes::method::GET,
+        super::notes::method::SET,
+        super::notes::method::APPEND,
+        super::notes::method::CP_LIST,
+        super::notes::method::CP_ADD,
+        super::notes::method::CP_UPDATE,
+        super::notes::method::CP_REMOVE,
+        super::notes::method::CP_CONTEXT,
+        super::team::method::LIST,
+        super::team::method::GET,
+        super::team::method::MAKE,
+        super::team::method::DISBAND,
+        super::team::method::SET_PURPOSE,
+        super::team::method::SET_ROLE,
+        super::team::method::JOIN,
+        super::team::method::LEAVE,
+        super::team::method::CONTEXT,
+    ] {
+        assert!(
+            super::Method::OPERATIONS
+                .iter()
+                .any(|operation| operation.name == name),
+            "{name} is not in the operations table"
+        );
+    }
+}

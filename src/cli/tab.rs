@@ -1,205 +1,81 @@
-use std::collections::HashMap;
+#[path = "tab_bindings.rs"]
+mod bindings;
+
+pub(crate) use bindings::command;
 
 use crate::api::schema::agents_model::{
     AgentsCheckAction, AgentsCloseTabParams, AgentsOpenTabParams, AgentsRenameTabParams,
 };
-use crate::api::schema::{Method, TabCreateParams, TabListParams, TabRenameParams};
+use crate::api::schema::{Method, Request};
 
 use super::agent_route as route;
 
 pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
-        print_tab_help();
-        return Ok(2);
+    // Fork: these subcommands parse their own arguments (their help comes
+    // from spec.rs, which adds them to the upstream `tab` command).
+    match args.first().map(String::as_str) {
+        Some("color") => return tab_color(&args[1..]),
+        Some("important") => return tab_important(&args[1..]),
+        Some("remind") => return tab_remind(&args[1..]),
+        Some("closed") => return super::tab_closed::tab_closed(&args[1..]),
+        Some("reopen") => return super::tab_closed::tab_reopen(&args[1..]),
+        _ => {}
+    }
+    let request = bindings::request(args);
+    // Fork (agents v2): an agent creates, renames and closes tabs through
+    // the agents model (checked, graceful, resumable).
+    if let Ok(request) = &request {
+        if let Some(code) = route_agent_request(request)? {
+            return Ok(code);
+        }
+    }
+    super::run_json_request(request)
+}
+
+/// Fork (agents v2): the agent route for a parsed `tab` request; `None`
+/// keeps the upstream path (the user, an old server, or an unrouted method).
+fn route_agent_request(request: &Request) -> std::io::Result<Option<i32>> {
+    if !matches!(
+        request.method,
+        Method::TabCreate(_) | Method::TabRename(_) | Method::TabClose(_)
+    ) {
+        return Ok(None);
+    }
+    let pane = match route::route()? {
+        Err(code) => return Ok(Some(code)),
+        Ok(route::Route::Agent(pane)) => pane,
+        Ok(route::Route::User | route::Route::OldServer) => return Ok(None),
     };
-
-    match subcommand {
-        "list" => tab_list(&args[1..]),
-        "create" => tab_create(&args[1..]),
-        "get" => tab_get(&args[1..]),
-        "focus" => tab_focus(&args[1..]),
-        "rename" => tab_rename(&args[1..]),
-        "color" => tab_color(&args[1..]),
-        "important" => tab_important(&args[1..]),
-        "remind" => tab_remind(&args[1..]),
-        "closed" => super::tab_closed::tab_closed(&args[1..]),
-        "reopen" => super::tab_closed::tab_reopen(&args[1..]),
-        "close" => tab_close(&args[1..]),
-        "help" | "--help" | "-h" => {
-            print_tab_help();
-            Ok(0)
-        }
-        _ => {
-            print_tab_help();
-            Ok(2)
-        }
-    }
-}
-
-fn tab_list(args: &[String]) -> std::io::Result<i32> {
-    let mut workspace_id = None;
-
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--workspace" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --workspace");
-                    return Ok(2);
-                };
-                workspace_id = Some(super::normalize_workspace_id(value));
-                index += 2;
-            }
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
-    }
-
-    super::runtime::tab_list(TabListParams { workspace_id })
-}
-
-fn tab_create(args: &[String]) -> std::io::Result<i32> {
-    let mut workspace_id = None;
-    let mut cwd = None;
-    let mut focus = false;
-    let mut label = None;
-    let mut env = HashMap::new();
-
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--workspace" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --workspace");
-                    return Ok(2);
-                };
-                workspace_id = Some(super::normalize_workspace_id(value));
-                index += 2;
-            }
-            "--cwd" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --cwd");
-                    return Ok(2);
-                };
-                cwd = Some(value.clone());
-                index += 2;
-            }
-            "--label" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --label");
-                    return Ok(2);
-                };
-                label = Some(value.clone());
-                index += 2;
-            }
-            "--focus" => {
-                focus = true;
-                index += 1;
-            }
-            "--no-focus" => {
-                focus = false;
-                index += 1;
-            }
-            "--env" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --env");
-                    return Ok(2);
-                };
-                let (key, value) = match super::parse_env_assignment(value) {
-                    Ok(pair) => pair,
-                    Err(err) => {
-                        eprintln!("{err}");
-                        return Ok(2);
-                    }
-                };
-                env.insert(key, value);
-                index += 2;
-            }
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
-    }
-
-    // Fork (agents v2): an agent opens a shell tab through the check.
-    match route::route()? {
-        Err(code) => return Ok(code),
-        Ok(route::Route::Agent(pane)) => {
-            return route::call(
-                "cli:agents.open_tab",
-                Method::AgentsOpenTab(AgentsOpenTabParams {
-                    caller_pane: pane,
-                    group: workspace_id,
-                    cwd,
-                    label,
-                    ..AgentsOpenTabParams::default()
-                }),
-            )
-        }
-        Ok(route::Route::User | route::Route::OldServer) => {}
-    }
-    super::runtime::tab_create(TabCreateParams {
-        workspace_id,
-        cwd,
-        focus,
-        label,
-        env,
-    })
-}
-
-fn tab_get(args: &[String]) -> std::io::Result<i32> {
-    let Some(raw_tab_id) = args.first() else {
-        eprintln!("usage: herdr tab get <tab_id>");
-        return Ok(2);
+    let code = match &request.method {
+        Method::TabCreate(params) => route::call(
+            "cli:agents.open_tab",
+            Method::AgentsOpenTab(AgentsOpenTabParams {
+                caller_pane: pane,
+                group: params.workspace_id.clone(),
+                cwd: params.cwd.clone(),
+                label: params.label.clone(),
+                ..AgentsOpenTabParams::default()
+            }),
+        )?,
+        Method::TabRename(params) => route::call(
+            "cli:agents.rename_tab",
+            Method::AgentsRenameTab(AgentsRenameTabParams {
+                caller_pane: pane,
+                target: params.tab_id.clone(),
+                name: params.label.clone(),
+            }),
+        )?,
+        Method::TabClose(params) => route::call(
+            "cli:agents.close_tab",
+            Method::AgentsCloseTab(AgentsCloseTabParams {
+                caller_pane: pane,
+                target: params.tab_id.clone(),
+                ..AgentsCloseTabParams::default()
+            }),
+        )?,
+        _ => return Ok(None),
     };
-    if args.len() != 1 {
-        eprintln!("usage: herdr tab get <tab_id>");
-        return Ok(2);
-    }
-
-    super::runtime::tab_get(super::normalize_tab_id(raw_tab_id))
-}
-
-fn tab_focus(args: &[String]) -> std::io::Result<i32> {
-    let Some(raw_tab_id) = args.first() else {
-        eprintln!("usage: herdr tab focus <tab_id>");
-        return Ok(2);
-    };
-    if args.len() != 1 {
-        eprintln!("usage: herdr tab focus <tab_id>");
-        return Ok(2);
-    }
-
-    super::runtime::tab_focus(super::normalize_tab_id(raw_tab_id))
-}
-
-fn tab_rename(args: &[String]) -> std::io::Result<i32> {
-    if args.len() < 2 {
-        eprintln!("usage: herdr tab rename <tab_id> <label>");
-        return Ok(2);
-    }
-
-    let tab_id = super::normalize_tab_id(&args[0]);
-    let label = args[1..].join(" ");
-    // Fork (agents v2): an agent renames through the check.
-    match route::route()? {
-        Err(code) => return Ok(code),
-        Ok(route::Route::Agent(pane)) => {
-            return route::call(
-                "cli:agents.rename_tab",
-                Method::AgentsRenameTab(AgentsRenameTabParams {
-                    caller_pane: pane,
-                    target: tab_id,
-                    name: label,
-                }),
-            )
-        }
-        Ok(route::Route::User | route::Route::OldServer) => {}
-    }
-    super::runtime::tab_rename(TabRenameParams { tab_id, label })
+    Ok(Some(code))
 }
 
 fn tab_color(args: &[String]) -> std::io::Result<i32> {
@@ -282,55 +158,70 @@ fn send_reminder(
     })
 }
 
-fn tab_close(args: &[String]) -> std::io::Result<i32> {
-    let Some(raw_tab_id) = args.first() else {
-        eprintln!("usage: herdr tab close <tab_id>");
-        return Ok(2);
-    };
-    if args.len() != 1 {
-        eprintln!("usage: herdr tab close <tab_id>");
-        return Ok(2);
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use crate::api::schema::{TabCreateParams, TabListParams};
+
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
     }
 
-    let tab_id = super::normalize_tab_id(raw_tab_id);
-    // Fork (agents v2): an agent closes through the check (graceful exits,
-    // resumable, only on its user's request).
-    match route::route()? {
-        Err(code) => return Ok(code),
-        Ok(route::Route::Agent(pane)) => {
-            return route::call(
-                "cli:agents.close_tab",
-                Method::AgentsCloseTab(AgentsCloseTabParams {
-                    caller_pane: pane,
-                    target: tab_id,
-                    ..AgentsCloseTabParams::default()
-                }),
-            )
+    #[test]
+    fn simple_families_tab_rejects_invalid_grammar_before_transport() {
+        for values in [
+            vec![],
+            vec!["unknown"],
+            vec!["list", "--workspace"],
+            vec!["create", "--cwd"],
+            vec!["create", "--label"],
+            vec!["create", "--env"],
+            vec!["create", "--env", "NO_EQUALS"],
+            vec!["create", "--focus=true"],
+            vec!["get"],
+            vec!["get", "2", "extra"],
+            vec!["focus"],
+            vec!["focus", "2", "extra"],
+            vec!["rename", "2"],
+            vec!["close"],
+            vec!["close", "2", "extra"],
+        ] {
+            assert!(
+                bindings::request(&args(&values)).is_err(),
+                "argv: {values:?}"
+            );
         }
-        Ok(route::Route::User | route::Route::OldServer) => {}
     }
-    super::runtime::tab_close(tab_id)
-}
 
-fn print_tab_help() {
-    eprintln!("herdr tab commands:");
-    eprintln!("  herdr tab list [--workspace <workspace_id>]");
-    eprintln!(
-        "  herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]"
-    );
-    eprintln!("  herdr tab get <tab_id>");
-    eprintln!("  herdr tab focus <tab_id>");
-    eprintln!("  herdr tab rename <tab_id> <label>");
-    eprintln!("  herdr tab color <tab_id> <red|orange|yellow|green|cyan|blue|purple|none>");
-    eprintln!("  herdr tab important <tab_id> <on|off>");
-    eprintln!("  herdr tab remind <tab_id> <off|5m|10m|30m|1h|6h|daily>");
-    eprintln!("  herdr tab closed [--json]");
-    eprintln!("  herdr tab reopen <n|id|session-id-prefix>");
-    eprintln!("  herdr tab close <tab_id>");
+    #[test]
+    fn simple_families_tab_dto_literal_defaults() {
+        let create: TabCreateParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(
+            create,
+            TabCreateParams {
+                workspace_id: None,
+                cwd: None,
+                focus: false,
+                label: None,
+                env: HashMap::new(),
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(create).unwrap(),
+            serde_json::json!({"focus": false})
+        );
+        assert_eq!(
+            serde_json::to_value(TabListParams::default()).unwrap(),
+            serde_json::json!({})
+        );
+    }
 }
 
 #[cfg(test)]
-mod tests {
+mod fork_tests {
     use crate::api::schema::TabRemindEvery;
 
     #[test]

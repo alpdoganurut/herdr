@@ -11,6 +11,11 @@
 use serde::{Deserialize, Serialize};
 
 /// The method names.
+// Fork: the wire names. Since upstream's define_operations! table in
+// src/api/schema.rs (241b99cd) spells each name as a literal, production
+// code reads only some of these; fork_method_constants_match_the_operations_table
+// checks every one against the table.
+#[allow(dead_code)]
 pub mod method {
     pub const MESSAGE_SEND: &str = "agent.message_send";
     pub const MESSAGE_CLAIM: &str = "agent.message_claim";

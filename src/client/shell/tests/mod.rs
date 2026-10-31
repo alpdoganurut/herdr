@@ -256,6 +256,7 @@ mod agents_worktrees_notifications;
 mod breathe;
 mod browser;
 mod chrome_context;
+mod close_pane;
 mod close_tab;
 mod context_menu_session;
 mod coordinator;

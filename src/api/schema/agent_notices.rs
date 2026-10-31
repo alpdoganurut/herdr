@@ -10,6 +10,11 @@
 use serde::{Deserialize, Serialize};
 
 /// The `agent.notify` / `agent.notices` / `agent.notice_dismiss` method names.
+// Fork: the wire names. Since upstream's define_operations! table in
+// src/api/schema.rs (241b99cd) spells each name as a literal, production
+// code reads only some of these; fork_method_constants_match_the_operations_table
+// checks every one against the table.
+#[allow(dead_code)]
 pub mod method {
     pub const NOTIFY: &str = "agent.notify";
     pub const NOTICES: &str = "agent.notices";

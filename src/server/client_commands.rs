@@ -12,116 +12,16 @@ pub(crate) const MAX_ENDPOINT_BOOT_ID_BYTES: usize = 128;
 pub(crate) const MAX_ENDPOINT_REQUEST_ID_BYTES: usize = 128;
 const ENDPOINT_RESPONSE_CHUNK_BYTES: usize = 512 * 1024;
 
-const CLIENT_SHELL_METHODS: &[&str] = &[
-    "agent.activate",
-    "agent.notice_dismiss",
-    "agent.restart",
-    "agent.suspend",
-    "agent.transcripts",
-    "agents.fix",
-    "agents.handoff",
-    "agents.set_meta",
-    "agents.settings",
-    "agents.settings.set",
-    "browser.fix",
-    "browser.focus",
-    "browser.get",
-    "browser.settings",
-    "browser.settings.set",
-    "browser.start",
-    "browser.stop",
-    "checkpoints.add",
-    "checkpoints.context",
-    "checkpoints.list",
-    "checkpoints.remove",
-    "checkpoints.update",
-    "client_shell.surface.set",
-    "command.invoke",
-    "coordinator.get",
-    "coordinator.open",
-    "coordinator.open_dashboard",
-    "coordinator.set_enabled",
-    "coordinator.set_model",
-    "coordinator.set_notify",
-    "coordinator.set_wake_caps",
-    "coordinator.start",
-    "coordinator.wake",
-    "integration.install",
-    "integration.list",
-    "layout.set_split_ratio",
-    "news.get",
-    "news.open",
-    "news.run",
-    "news.set_enabled",
-    "news.set_quiet_hours",
-    "news.set_times",
-    "notes.append",
-    "notes.get",
-    "notes.set",
-    "pane.clear",
-    "pane.close",
-    "pane.copy_motion",
-    "pane.copy_search",
-    "pane.edit_scrollback",
-    "pane.focus",
-    "pane.focus_direction",
-    "pane.get",
-    "pane.input.set",
-    "pane.link.activate",
-    "pane.link.resolve",
-    "pane.move",
-    "pane.rename",
-    "pane.resize",
-    "pane.scroll",
-    "pane.selection.read",
-    "pane.split",
-    "pane.swap",
-    "pane.zoom",
-    "product_announcement.dismiss",
-    "release_notes.dismiss",
-    "server.reload_config",
-    "session.closed_list",
-    "session.closed_remove",
-    "session.closed_reopen",
-    "tab.close",
-    "tab.create",
-    "tab.focus",
-    "tab.move",
-    "tab.rename",
-    "tab.set_color",
-    "tab.set_muted",
-    "tab.set_pinned",
-    "tab.set_remind",
-    "tab.set_reminder",
-    "team.disband",
-    "team.get",
-    "team.join",
-    "team.leave",
-    "team.make",
-    "team.set_purpose",
-    "team.set_role",
-    "workspace.close",
-    "workspace.create",
-    "workspace.focus",
-    "workspace.move",
-    "workspace.move_block",
-    "workspace.rename",
-    "worktree.create",
-    "worktree.list",
-    "worktree.open",
-    "worktree.remove",
-];
-
 pub(crate) fn supported_client_shell_method_names() -> &'static [&'static str] {
-    CLIENT_SHELL_METHODS
+    crate::api::schema::operations::client_shell_method_names()
 }
 
 pub(crate) fn supports_client_shell_method_name(method: &str) -> bool {
-    CLIENT_SHELL_METHODS.contains(&method)
+    supported_client_shell_method_names().contains(&method)
 }
 
 pub(crate) fn supports_client_shell_method(method: &Method) -> bool {
-    supports_client_shell_method_name(crate::api::api_method_name(method))
+    method.operation().client_shell
 }
 
 pub(crate) fn error_response(id: String, code: &str, message: impl Into<String>) -> String {
@@ -302,7 +202,7 @@ mod tests {
             .expect("request method branches");
         let mut digests = BTreeMap::new();
 
-        for method in CLIENT_SHELL_METHODS {
+        for method in supported_client_shell_method_names() {
             let branch = branches
                 .iter()
                 .find(|branch| {
@@ -618,7 +518,7 @@ mod tests {
         assert!(!supports_client_shell_method_name(
             crate::api::schema::team::method::CONTEXT
         ));
-        assert_eq!(CLIENT_SHELL_METHODS.len(), 97);
+        assert_eq!(supported_client_shell_method_names().len(), 97);
     }
 
     #[test]
@@ -730,7 +630,7 @@ mod tests {
 
     #[test]
     fn advertised_client_shell_methods_are_sorted_unique_and_in_schema() {
-        assert!(CLIENT_SHELL_METHODS
+        assert!(supported_client_shell_method_names()
             .windows(2)
             .all(|pair| pair[0] < pair[1]));
 
@@ -761,7 +661,7 @@ mod tests {
             .expect("request schema");
         let mut schema_methods = Vec::new();
         collect_method_constants(&schema, &mut schema_methods);
-        for method in CLIENT_SHELL_METHODS {
+        for method in supported_client_shell_method_names() {
             assert!(
                 schema_methods.iter().any(|candidate| candidate == method),
                 "advertised endpoint method {method:?} is absent from the request schema"

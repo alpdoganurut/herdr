@@ -18,6 +18,11 @@ use serde::{Deserialize, Serialize};
 use super::common::AgentStatus;
 
 /// The `team.*` method names on the wire.
+// Fork: the wire names. Since upstream's define_operations! table in
+// src/api/schema.rs (241b99cd) spells each name as a literal, production
+// code reads only some of these; fork_method_constants_match_the_operations_table
+// checks every one against the table.
+#[allow(dead_code)]
 pub mod method {
     pub const LIST: &str = "team.list";
     pub const GET: &str = "team.get";
