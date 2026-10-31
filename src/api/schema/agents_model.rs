@@ -411,6 +411,19 @@ pub struct AgentsDirectoryParams {
     /// Also the recently closed tabs (reads the closed-sessions store).
     #[serde(default)]
     pub include_closed: bool,
+    /// Fork: only panes in this state (`idle`, `working`, `blocked`, `done`,
+    /// `suspended`, `unknown` or `shell`, case-insensitive; see
+    /// `AgentsPaneInfo::state_word`); tabs without one are left out and not
+    /// counted in `truncated`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Fork: only panes with this role (case-insensitive), like `status`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Fork: matching tabs skipped before the first row (paging with
+    /// `limit`); `truncated` counts the matching tabs after the page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
 }
 
 /// `agents.read`: a pane's screen, as `pane.read` reads it; shell screens only
@@ -805,6 +818,25 @@ pub struct AgentsPaneInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     pub screen: AgentsScreenAccess,
+}
+
+impl AgentsPaneInfo {
+    /// Fork: the pane's state word: `shell` for a shell, `suspended` for a
+    /// suspended agent, else its status (`unknown` without one). What the
+    /// directory's `status` filter matches.
+    pub fn state_word(&self) -> String {
+        if self.kind == AgentPaneKind::Shell {
+            return "shell".into();
+        }
+        if self.suspended {
+            return "suspended".into();
+        }
+        self.status
+            .as_ref()
+            .and_then(|status| serde_json::to_value(status).ok())
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "unknown".into())
+    }
 }
 
 /// One tab of the directory.

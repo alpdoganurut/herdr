@@ -2209,6 +2209,29 @@
                 "null"
               ]
             },
+            "offset": {
+              "description": "Fork: matching tabs skipped before the first row (paging with\n`limit`); `truncated` counts the matching tabs after the page.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "role": {
+              "description": "Fork: only panes with this role (case-insensitive), like `status`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "description": "Fork: only panes in this state (`idle`, `working`, `blocked`, `done`,\n`suspended`, `unknown` or `shell`, case-insensitive; see\n`AgentsPaneInfo::state_word`); tabs without one are left out and not\ncounted in `truncated`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "team": {
               "description": "A team's group id or label.",
               "type": [

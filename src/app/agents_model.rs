@@ -1422,6 +1422,8 @@ impl App {
         let mut groups = Vec::new();
         let mut tabs = Vec::new();
         let mut truncated = 0u32;
+        let filtered = params.status.is_some() || params.role.is_some();
+        let mut skip = params.offset.unwrap_or(0);
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
             let mut agent_count = 0u32;
             for (tab_idx, tab) in ws.tabs.iter().enumerate() {
@@ -1436,7 +1438,7 @@ impl App {
                         .count() as u32;
                     continue;
                 }
-                let panes: Vec<AgentsPaneInfo> = tab
+                let mut panes: Vec<AgentsPaneInfo> = tab
                     .layout
                     .pane_ids()
                     .into_iter()
@@ -1448,6 +1450,18 @@ impl App {
                     .count() as u32;
                 agent_count += agents;
                 if params.agents_only && agents == 0 {
+                    continue;
+                }
+                // Fork: the status / role filter, before paging, so the
+                // page and `truncated` count matching tabs only.
+                if filtered {
+                    panes.retain(|pane| directory_pane_matches(pane, params));
+                    if panes.is_empty() {
+                        continue;
+                    }
+                }
+                if skip > 0 {
+                    skip -= 1;
                     continue;
                 }
                 if tabs.len() >= limit {
@@ -3266,6 +3280,21 @@ impl AgentLifecycle {
 }
 
 /// `[a-z][a-z0-9_-]{0,31}`.
+/// Fork: whether a directory pane passes `agents.directory`'s `status` and
+/// `role` filters (both case-insensitive; an absent filter passes).
+fn directory_pane_matches(pane: &AgentsPaneInfo, params: &AgentsDirectoryParams) -> bool {
+    params
+        .status
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(|want| pane.state_word().eq_ignore_ascii_case(want))
+        && params.role.as_deref().map(str::trim).is_none_or(|want| {
+            pane.role
+                .as_deref()
+                .is_some_and(|role| role.eq_ignore_ascii_case(want))
+        })
+}
+
 pub(crate) fn valid_agent_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_ascii_lowercase())
@@ -3596,6 +3625,106 @@ pub(crate) mod tests {
             }),
         );
         assert_eq!(result["result"]["directory"]["truncated"], 3);
+    }
+
+    /// Fork: `status` and `role` filter before `offset` / `limit` page, so
+    /// `truncated` counts matching tabs only.
+    #[test]
+    fn fork_smoke_the_directory_filters_status_and_role_before_paging() {
+        let mut app = model_app();
+        let lead = public(&app, 1, 0);
+        let working = pane(&app, 2, 0);
+        terminal_mut(&mut app, working)
+            .set_detected_state(Some(Agent::Claude), AgentState::Working);
+        let directory = |app: &mut App, params: AgentsDirectoryParams| {
+            let result = call(
+                app,
+                Method::AgentsDirectory(AgentsDirectoryParams {
+                    caller_pane: Some(lead.clone()),
+                    all: true,
+                    ..params
+                }),
+            );
+            let directory = result["result"]["directory"].clone();
+            let ids: Vec<String> = directory["tabs"]
+                .as_array()
+                .expect("tabs")
+                .iter()
+                .flat_map(|tab| tab["panes"].as_array().cloned().unwrap_or_default())
+                .map(|pane| pane["pane_id"].as_str().unwrap_or_default().to_owned())
+                .collect();
+            (ids, directory["truncated"].as_u64().unwrap_or(u64::MAX))
+        };
+        let status = |word: &str| AgentsDirectoryParams {
+            status: Some(word.into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            directory(&mut app, status("idle")),
+            (vec![public(&app, 1, 0), public(&app, 1, 1)], 0)
+        );
+        assert_eq!(
+            directory(&mut app, status("WORKING")),
+            (vec![public(&app, 2, 0)], 0)
+        );
+        assert_eq!(
+            directory(&mut app, status("shell")),
+            (vec![public(&app, 0, 0), public(&app, 2, 1)], 0)
+        );
+        // A page of the matching tabs: the rest counts as truncated.
+        assert_eq!(
+            directory(
+                &mut app,
+                AgentsDirectoryParams {
+                    offset: Some(1),
+                    limit: Some(1),
+                    ..status("shell")
+                }
+            ),
+            (vec![public(&app, 2, 1)], 0)
+        );
+        assert_eq!(
+            directory(
+                &mut app,
+                AgentsDirectoryParams {
+                    limit: Some(1),
+                    ..status("idle")
+                }
+            ),
+            (vec![public(&app, 1, 0)], 1)
+        );
+        // Paging without a filter: every tab counts.
+        assert_eq!(
+            directory(
+                &mut app,
+                AgentsDirectoryParams {
+                    offset: Some(4),
+                    ..Default::default()
+                }
+            ),
+            (vec![public(&app, 2, 1)], 0)
+        );
+        // role=: only the pane with that role.
+        let reviewer = public(&app, 1, 1);
+        call(
+            &mut app,
+            Method::AgentsSetMeta(AgentsSetMetaParams {
+                caller_pane: None,
+                target: reviewer.clone(),
+                role: Some("reviewer".into()),
+                note: None,
+            }),
+        );
+        assert_eq!(
+            directory(
+                &mut app,
+                AgentsDirectoryParams {
+                    role: Some("Reviewer".into()),
+                    ..Default::default()
+                }
+            ),
+            (vec![reviewer], 0)
+        );
     }
 
     #[test]
