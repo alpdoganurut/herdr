@@ -2744,7 +2744,7 @@
           "type": "object"
         },
         "AgentsSettingsSetParams": {
-          "description": "`agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,\n`tools`, `instructions`, `notices` and `team_roster`; a string for `instructions_file`\n(`\"\"` or `\"default\"` = built-in, `\"file\"` = `<config dir>/agents.md`,\nseeded with the built-in text when missing, anything else = that path).",
+          "description": "`agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,\n`tools`, `instructions`, `notices`, `team_roster`, `program_status` and\n`handoff.enabled`; an integer 0 to 100 for `handoff.at_percent`; a string for `instructions_file`\n(`\"\"` or `\"default\"` = built-in, `\"file\"` = `<config dir>/agents.md`,\nseeded with the built-in text when missing, anything else = that path).",
           "properties": {
             "key": {
               "type": "string"
@@ -12932,6 +12932,31 @@
           },
           "type": "object"
         },
+        "AgentsHandoffInfo": {
+          "description": "Fork: `[agents.handoff]` as `agents.settings` reports it.",
+          "properties": {
+            "at_percent": {
+              "default": 0,
+              "description": "0 = no automatic trigger.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "command": {
+              "default": "",
+              "description": "The custom prompt line (read-only here); empty = herdr's own.",
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "type": "object"
+        },
         "AgentsHandoffOutcome": {
           "description": "What `agents.handoff` did.",
           "oneOf": [
@@ -13518,6 +13543,26 @@
               },
               "type": "array"
             },
+            "context_window": {
+              "additionalProperties": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "description": "Fork: `[agents] context_window`, tokens per agent (read-only here;\na missing agent uses the window its session implies).",
+              "type": "object"
+            },
+            "handoff": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentsHandoffInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fork: `[agents.handoff]`. Absent from older servers: `None` hides\nthe handoff rows."
+            },
             "hook_preview": {
               "description": "The exact `.zshrc` line the shell-hook fix adds, and the file it edits.",
               "type": [
@@ -13543,6 +13588,13 @@
               "default": true,
               "description": "Accept `agent.notify` cards (`[agents] notices`).",
               "type": "boolean"
+            },
+            "program_status": {
+              "description": "Fork: `[agents] program_status` (answer the OSC 7501 probe). Absent\nfrom older servers, which cannot set it: `None` hides the row.",
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "steer_browser": {
               "default": false,

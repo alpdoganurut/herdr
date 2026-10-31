@@ -69,6 +69,12 @@ pub(crate) enum ConfigEdit<'a> {
     SidebarPinnedAgents(bool),
     /// Fork (sidebar v3): `ui.sidebar_scheduled_agents` (the Scheduled block).
     SidebarScheduledAgents(bool),
+    /// Fork: `ui.sidebar_collapse_suspended` (fold runs of suspended tabs).
+    SidebarCollapseSuspended(bool),
+    /// Fork: `[agents.handoff] enabled` (`agents.settings.set`).
+    AgentsHandoffEnabled(bool),
+    /// Fork: `[agents.handoff] at_percent` (`agents.settings.set`).
+    AgentsHandoffAtPercent(u8),
 }
 
 /// Fork: minutes past midnight as a 24-hour "HH:MM".
@@ -94,14 +100,17 @@ impl ConfigEdit<'_> {
             Self::SidebarLayoutTabs
             | Self::SidebarActiveAgents(_)
             | Self::SidebarPinnedAgents(_)
-            | Self::SidebarScheduledAgents(_) => "sidebar setting",
+            | Self::SidebarScheduledAgents(_)
+            | Self::SidebarCollapseSuspended(_) => "sidebar setting",
             Self::BrowserBool { .. } | Self::BrowserString { .. } | Self::BrowserList { .. } => {
                 "browser setting"
             }
             Self::AgentsBool { .. }
             | Self::AgentsWrap(_)
             | Self::AgentsWrapWithBrowser { .. }
-            | Self::AgentsInstructionsFile(_) => "agents setting",
+            | Self::AgentsInstructionsFile(_)
+            | Self::AgentsHandoffEnabled(_)
+            | Self::AgentsHandoffAtPercent(_) => "agents setting",
         }
     }
 
@@ -254,6 +263,18 @@ impl ConfigEdit<'_> {
             Self::SidebarScheduledAgents(enabled) => {
                 super::upsert_section_bool(content, "ui", "sidebar_scheduled_agents", enabled)
             }
+            Self::SidebarCollapseSuspended(enabled) => {
+                super::upsert_section_bool(content, "ui", "sidebar_collapse_suspended", enabled)
+            }
+            Self::AgentsHandoffEnabled(enabled) => {
+                super::upsert_section_bool(content, "agents.handoff", "enabled", enabled)
+            }
+            Self::AgentsHandoffAtPercent(percent) => super::upsert_section_value(
+                content,
+                "agents.handoff",
+                "at_percent",
+                &percent.min(100).to_string(),
+            ),
         }
     }
 }
@@ -570,6 +591,58 @@ mod tests {
         ] {
             assert_eq!(edit.description(), "sidebar setting");
         }
+    }
+
+    #[test]
+    fn sidebar_collapse_suspended_edit_writes_its_ui_key_and_parses_back() {
+        let content = "[ui]\nsidebar_width = 30\n";
+        assert!(
+            crate::config::Config::default()
+                .ui
+                .sidebar_collapse_suspended
+        );
+        let edited = ConfigEdit::SidebarCollapseSuspended(false).apply(content);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(!config.ui.sidebar_collapse_suspended);
+        assert_eq!(config.ui.sidebar_width, 30);
+        let edited = ConfigEdit::SidebarCollapseSuspended(true).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(config.ui.sidebar_collapse_suspended);
+        assert_eq!(edited.matches("sidebar_collapse_suspended").count(), 1);
+        assert_eq!(
+            ConfigEdit::SidebarCollapseSuspended(true).description(),
+            "sidebar setting"
+        );
+    }
+
+    #[test]
+    fn agents_handoff_edits_write_the_handoff_table_and_parse_back() {
+        let content =
+            "[agents]\nwrap = true\n\n[agents.handoff]\ncommand = \"/my:handoff {path}\" # mine\n";
+        let edited = ConfigEdit::AgentsHandoffEnabled(false).apply(content);
+        let edited = ConfigEdit::AgentsHandoffAtPercent(70).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(!config.agents.handoff.enabled);
+        assert_eq!(config.agents.handoff.at_percent, 70);
+        assert_eq!(
+            config.agents.handoff.command, "/my:handoff {path}",
+            "untouched"
+        );
+        assert_eq!(config.agents.wrap, Some(true), "untouched");
+        assert!(edited.contains("# mine"), "{edited}");
+        let edited = ConfigEdit::AgentsHandoffAtPercent(250).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.agents.handoff.at_percent, 100, "capped");
+        assert_eq!(edited.matches("at_percent").count(), 1, "{edited}");
+        // A config without the table gets one.
+        let edited = ConfigEdit::AgentsHandoffAtPercent(0).apply("");
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.agents.handoff.at_percent, 0);
+        assert!(config.agents.handoff.enabled, "the default");
+        assert_eq!(
+            ConfigEdit::AgentsHandoffEnabled(true).description(),
+            "agents setting"
+        );
     }
 
     #[test]

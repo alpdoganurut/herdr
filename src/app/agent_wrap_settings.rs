@@ -14,7 +14,7 @@ use super::App;
 use crate::agent_wrap::{self, WrapCheck, WrapSnapshot};
 use crate::api::schema::agent_wrap::{check, error_code, key};
 use crate::api::schema::{
-    AgentsCheckInfo, AgentsCheckState, AgentsFixParams, AgentsSettingsInfo,
+    AgentsCheckInfo, AgentsCheckState, AgentsFixParams, AgentsHandoffInfo, AgentsSettingsInfo,
     AgentsSettingsSetParams, AgentsWrapSource, ResponseResult,
 };
 use crate::browser::setup::SetupEnv;
@@ -45,13 +45,30 @@ impl App {
         agent_wrap::settings_snapshot(&self.agents_config_view(), env)
     }
 
+    /// The section's record: the wrap snapshot, plus (fork) the program
+    /// status switch, `[agents.handoff]` and the context windows from the
+    /// applied `[agents]` config.
+    fn agents_settings_info(&self, env: &SetupEnv) -> AgentsSettingsInfo {
+        let agents = &self.agents_config;
+        AgentsSettingsInfo {
+            program_status: Some(agents.program_status),
+            handoff: Some(AgentsHandoffInfo {
+                enabled: agents.handoff.enabled,
+                at_percent: agents.handoff.at_percent.min(100),
+                command: agents.handoff.command.trim().to_string(),
+            }),
+            context_window: agents.context_window.clone(),
+            ..settings_info(self.agents_snapshot(env))
+        }
+    }
+
     /// `agents.settings`.
     pub(super) fn handle_agents_settings(&mut self, id: String) -> String {
         let env = self.agents_setup_env();
         encode_success(
             id,
             ResponseResult::AgentsSettings {
-                info: settings_info(self.agents_snapshot(&env)),
+                info: self.agents_settings_info(&env),
             },
         )
     }
@@ -69,7 +86,7 @@ impl App {
                 encode_success(
                     id,
                     ResponseResult::AgentsSettings {
-                        info: settings_info(self.agents_snapshot(&env)),
+                        info: self.agents_settings_info(&env),
                     },
                 )
             }
@@ -105,6 +122,23 @@ impl App {
                 key: key::TEAM_ROSTER,
                 value: as_bool()?,
             },
+            key::PROGRAM_STATUS => ConfigEdit::AgentsBool {
+                key: key::PROGRAM_STATUS,
+                value: as_bool()?,
+            },
+            key::HANDOFF_ENABLED => ConfigEdit::AgentsHandoffEnabled(as_bool()?),
+            key::HANDOFF_AT_PERCENT => {
+                let percent = value
+                    .as_u64()
+                    .filter(|percent| *percent <= 100)
+                    .and_then(|percent| u8::try_from(percent).ok())
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "agents.settings.set {name}: value must be an integer from 0 to 100"
+                        ))
+                    })?;
+                ConfigEdit::AgentsHandoffAtPercent(percent)
+            }
             key::INSTRUCTIONS_FILE => {
                 let text = value.as_str().map(str::trim).ok_or_else(|| {
                     invalid(format!(
@@ -138,14 +172,17 @@ impl App {
             }
             other => {
                 return Err(invalid(format!(
-                    "agents.settings.set: unknown key {other:?} (wrap, tools, instructions, instructions_file, notices, team_roster)"
+                    "agents.settings.set: unknown key {other:?} (wrap, tools, instructions, instructions_file, notices, team_roster, program_status, handoff.enabled, handoff.at_percent)"
                 )))
             }
         };
         // What the running config must say afterwards.
         let requested = match &edit {
             ConfigEdit::AgentsWrap(wrap) => serde_json::Value::Bool(*wrap),
-            ConfigEdit::AgentsBool { value, .. } => serde_json::Value::Bool(*value),
+            ConfigEdit::AgentsBool { value, .. } | ConfigEdit::AgentsHandoffEnabled(value) => {
+                serde_json::Value::Bool(*value)
+            }
+            ConfigEdit::AgentsHandoffAtPercent(percent) => serde_json::Value::from(*percent),
             ConfigEdit::AgentsInstructionsFile(path) => {
                 serde_json::Value::String(path.unwrap_or_default().trim().to_string())
             }
@@ -198,6 +235,9 @@ impl App {
             key::INSTRUCTIONS => agents.instructions.into(),
             key::NOTICES => agents.notices.into(),
             key::TEAM_ROSTER => agents.team_roster.into(),
+            key::PROGRAM_STATUS => agents.program_status.into(),
+            key::HANDOFF_ENABLED => agents.handoff.enabled.into(),
+            key::HANDOFF_AT_PERCENT => agents.handoff.at_percent.into(),
             key::INSTRUCTIONS_FILE => agents.instructions_file.trim().into(),
             _ => serde_json::Value::Null,
         }
@@ -304,6 +344,9 @@ fn settings_info(snapshot: WrapSnapshot) -> AgentsSettingsInfo {
         checks: snapshot.checks.into_iter().map(check_info).collect(),
         hook_preview: snapshot.hook_preview,
         team_roster: snapshot.team_roster,
+        program_status: None,
+        handoff: None,
+        context_window: std::collections::BTreeMap::new(),
     }
 }
 

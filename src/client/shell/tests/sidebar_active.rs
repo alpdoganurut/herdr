@@ -904,7 +904,7 @@ fn settings_indicators_toggle_writes_sidebar_active_agents() {
     let choices = state.hits.settings_choices.clone();
     assert_eq!(
         choices.iter().map(|(_, index)| *index).collect::<Vec<_>>(),
-        [0, 1, 2, 3, 4]
+        [0, 1, 2, 3, 4, 5]
     );
     assert_eq!(
         choices[1].0.y,
@@ -918,6 +918,29 @@ fn settings_indicators_toggle_writes_sidebar_active_agents() {
     assert!(row_text(&frame, choices[3].0).contains("pinned agents block: on"));
     assert_eq!(choices[4].0.y, choices[0].0.y + 7);
     assert!(row_text(&frame, choices[4].0).contains("scheduled agents block: on"));
+    // Fork: the fold-suspended-runs toggle last.
+    assert_eq!(choices[5].0.y, choices[0].0.y + 9);
+    assert!(row_text(&frame, choices[5].0).contains("fold suspended runs: on"));
+    let (rect, _) = choices[5];
+    mouse(
+        &mut state,
+        MouseEventKind::Down(MouseButton::Left),
+        rect.x + 4,
+        rect.y,
+    );
+    let written = std::fs::read_to_string(&path).unwrap();
+    let parsed: Config = toml::from_str(&written).unwrap();
+    assert!(!parsed.ui.sidebar_collapse_suspended, "{written}");
+    assert!(!state.config.sidebar_collapse_suspended, "live reload");
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Settings(ClientSettingsOverlay {
+            selected: 5,
+            ..
+        }))
+    ));
+    let frame = state.compose(108, 30).expect("settings frame");
+    assert!(row_text(&frame, choices[5].0).contains("fold suspended runs: off"));
     let (rect, _) = choices[2];
     mouse(
         &mut state,
@@ -956,18 +979,22 @@ fn a_short_settings_popup_still_draws_every_indicators_row() {
     for _ in 0..index {
         state.handle_input_bytes(b"\t");
     }
-    // 20..=22 rows: too short for the dim lines, the toggles stack; 23:
+    // 20..=23 rows: too short for the dim lines, the toggles stack; 24:
     // spaced again. (Under 20 rows the upstream radio rows clip as well.)
-    for rows in 20..=23 {
+    for rows in 20..=24 {
         let frame = state.compose(108, rows).expect("settings frame");
         let choices = state.hits.settings_choices.clone();
         assert_eq!(
             choices.iter().map(|(_, index)| *index).collect::<Vec<_>>(),
-            [0, 1, 2, 3, 4],
+            [0, 1, 2, 3, 4, 5],
             "every selectable row is drawn at {rows} rows"
         );
         assert!(
             row_text(&frame, choices[4].0).contains("scheduled agents block"),
+            "at {rows} rows"
+        );
+        assert!(
+            row_text(&frame, choices[5].0).contains("fold suspended runs"),
             "at {rows} rows"
         );
     }

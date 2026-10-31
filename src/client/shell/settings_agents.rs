@@ -11,6 +11,14 @@
 //! independent of the master switch, so never dimmed). The status row shows
 //! the shell hook and whether `claude` / `codex` are on the server's PATH.
 //!
+//! Fork: a server that reports them (`program_status` and `handoff` in the
+//! record; older servers do not, and their rows stay hidden) adds three rows
+//! after the status row: `[agents] program_status`, `[agents.handoff]
+//! enabled` and `at_percent` (↵ steps through 60 · 70 · 80 · 90 · off;
+//! dimmed and inert while the handoff is off). `[agents.handoff] command`
+//! and `[agents] context_window` are shown under them, read-only, with the
+//! config key to edit: `agents.settings.set` has no text or map value.
+//!
 //! The shell hook's `[fix]` edits `~/.zshrc`, so it is the one two-step row
 //! in Settings: ↵ (or a click) on `▸ fix` only *arms* it — the section then
 //! shows the exact line it adds and two buttons, `↵ edit ~/.zshrc` and
@@ -34,6 +42,13 @@ pub(super) const ROW_FILE: usize = 3;
 pub(super) const ROW_TEAM_ROSTER: usize = 4;
 pub(super) const ROW_STATUS: usize = 5;
 pub(super) const ROWS: usize = 6;
+/// Fork: the rows a server reporting `program_status` and `handoff` adds.
+pub(super) const ROW_PROGRAM_STATUS: usize = 6;
+pub(super) const ROW_HANDOFF: usize = 7;
+pub(super) const ROW_HANDOFF_AT: usize = 8;
+pub(super) const ROWS_EXTENDED: usize = 9;
+/// The `at_percent` steps ↵ goes through, after `0` (off) comes the first.
+pub(super) const HANDOFF_AT_CHOICES: [u8; 4] = [60, 70, 80, 90];
 /// The dim line under the team roster row (not a row: no hit, no selection).
 pub(super) const TEAM_ROSTER_SUBLINE: &str =
     "claude/codex launched in a team group get the roster, purpose and team tools (needs the shell hook)";
@@ -64,6 +79,77 @@ pub(super) struct ClientAgentsSettings {
     pub(super) fixing: bool,
     /// A one-line note under the hints (a refusal, the fix's outcome).
     pub(super) note: Option<String>,
+}
+
+/// Fork: the server reports the program status and handoff settings (so
+/// it can set them).
+pub(super) fn extended(info: &AgentsSettingsInfo) -> bool {
+    info.program_status.is_some() && info.handoff.is_some()
+}
+
+/// The section's selectable rows for `info`.
+pub(super) fn row_count(info: &AgentsSettingsInfo) -> usize {
+    if extended(info) {
+        ROWS_EXTENDED
+    } else {
+        ROWS
+    }
+}
+
+/// The `at_percent` after `current`: the next step up, off past the last.
+pub(super) fn next_handoff_at(current: u8) -> u8 {
+    HANDOFF_AT_CHOICES
+        .into_iter()
+        .find(|step| *step > current)
+        .unwrap_or(0)
+}
+
+/// `200000` → `200k`, `1000000` → `1M`.
+fn tokens_label(tokens: u64) -> String {
+    if tokens >= 1_000_000 && tokens.is_multiple_of(1_000_000) {
+        format!("{}M", tokens / 1_000_000)
+    } else if tokens >= 1_000 && tokens.is_multiple_of(1_000) {
+        format!("{}k", tokens / 1_000)
+    } else {
+        tokens.to_string()
+    }
+}
+
+/// Fork: the read-only lines under the extended rows (the handoff command
+/// and the context windows), each naming the key to edit; empty without
+/// the extended record.
+pub(super) fn fact_lines(info: &AgentsSettingsInfo) -> Vec<String> {
+    let Some(handoff) = info.handoff.as_ref().filter(|_| extended(info)) else {
+        return Vec::new();
+    };
+    let command = if handoff.command.trim().is_empty() {
+        "herdr's own prompt".to_string()
+    } else {
+        handoff.command.trim().to_string()
+    };
+    let mut agents: Vec<&str> = vec!["claude", "codex"];
+    for agent in info.context_window.keys() {
+        if !agents.contains(&agent.as_str()) {
+            agents.push(agent);
+        }
+    }
+    let windows = agents
+        .iter()
+        .map(|agent| {
+            let window = info
+                .context_window
+                .get(*agent)
+                .copied()
+                .filter(|tokens| *tokens > 0)
+                .map_or_else(|| "auto".to_string(), tokens_label);
+            format!("{agent} {window}")
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    vec![
+        format!("handoff command: {command}   (edit [agents.handoff] command in config.toml)"),
+        format!("context window: {windows}   (edit [agents] context_window in config.toml)"),
+    ]
 }
 
 fn check<'a>(info: &'a AgentsSettingsInfo, id: &str) -> Option<&'a AgentsCheckInfo> {
@@ -140,7 +226,7 @@ pub(super) fn row_labels(
     if let Some(fix) = fix_label(settings, info) {
         status = format!("{status}      {fix}");
     }
-    vec![
+    let mut labels = vec![
         format!(
             "wrap claude / codex in herdr+ panes: {}{source}",
             on(info.wrap)
@@ -153,7 +239,30 @@ pub(super) fn row_labels(
         format!("  instructions file: {file}   {file_hint}"),
         format!("team roster in team groups: {}", on(info.team_roster)),
         status,
-    ]
+    ];
+    if let (true, Some(program_status), Some(handoff)) =
+        (extended(info), info.program_status, info.handoff.as_ref())
+    {
+        labels.push(format!(
+            "program status reports (OSC 7501, claude): {}",
+            on(program_status)
+        ));
+        labels.push(format!(
+            "handoff & compact (claude): {}",
+            on(handoff.enabled)
+        ));
+        let steps = HANDOFF_AT_CHOICES
+            .iter()
+            .map(u8::to_string)
+            .chain(std::iter::once("off".to_string()))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        labels.push(match handoff.at_percent {
+            0 => format!("  handoff at: off (no automatic trigger)   (↵ {steps})"),
+            percent => format!("  handoff at: {percent}% context   (↵ {steps})"),
+        });
+    }
+    labels
 }
 
 /// The hint lines under the checks.
@@ -197,7 +306,9 @@ impl ClientShellState {
     /// Rows in the agents section: the six rows once a record is there.
     pub(super) fn agents_section_rows(&self) -> usize {
         match self.agents_settings() {
-            Some(ClientAgentsSettings { info: Some(_), .. }) => ROWS,
+            Some(ClientAgentsSettings {
+                info: Some(info), ..
+            }) => row_count(info),
             _ => 0,
         }
     }
@@ -291,6 +402,28 @@ impl ClientShellState {
                 (!info.team_roster).into(),
                 outcome,
             ),
+            // Fork: the extended rows, only on a server that reports them.
+            ROW_PROGRAM_STATUS if extended(&info) => self.set_agents_setting(
+                crate::api::schema::agent_wrap::key::PROGRAM_STATUS,
+                (!info.program_status.unwrap_or(true)).into(),
+                outcome,
+            ),
+            ROW_HANDOFF if extended(&info) => self.set_agents_setting(
+                crate::api::schema::agent_wrap::key::HANDOFF_ENABLED,
+                (!info.handoff.as_ref().is_some_and(|h| h.enabled)).into(),
+                outcome,
+            ),
+            // inert while the handoff is off
+            ROW_HANDOFF_AT
+                if extended(&info) && info.handoff.as_ref().is_some_and(|h| h.enabled) =>
+            {
+                let current = info.handoff.as_ref().map_or(0, |h| h.at_percent);
+                self.set_agents_setting(
+                    crate::api::schema::agent_wrap::key::HANDOFF_AT_PERCENT,
+                    next_handoff_at(current).into(),
+                    outcome,
+                )
+            }
             ROW_STATUS if !fixing && hook_fixable(&info) => {
                 if let Some(agents) = self.agents_settings_mut() {
                     agents.armed = true;
@@ -469,7 +602,8 @@ impl ClientShellState {
         }
         if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
             if settings.section == ClientSettingsSection::Agents {
-                settings.selected = settings.selected.min(ROWS - 1);
+                let rows = settings.agents.info.as_ref().map_or(ROWS, row_count);
+                settings.selected = settings.selected.min(rows - 1);
             }
         }
         let mut deferred = ClientShellInput::default();
@@ -589,8 +723,11 @@ pub(super) fn render_agents_section(
         return;
     };
     let labels = row_labels(agents, info);
+    let handoff_on = info.handoff.as_ref().is_some_and(|handoff| handoff.enabled);
     let mut y = area.y + 3;
-    for (index, label) in labels.iter().enumerate() {
+    // The rows through the status row; the extended ones come after the
+    // armed fix, which belongs to the status row.
+    for (index, label) in labels.iter().enumerate().take(ROWS) {
         if y >= area.bottom() {
             return;
         }
@@ -677,6 +814,32 @@ pub(super) fn render_agents_section(
             hits.push((cancel, HIT_CANCEL));
             y += 1;
         }
+    }
+    // Fork: the extended rows, then their read-only facts.
+    for (index, label) in labels.iter().enumerate().skip(ROWS) {
+        if y >= area.bottom() {
+            return;
+        }
+        let rect = Rect::new(area.x, y, area.width, 1);
+        let dimmed = index == ROW_HANDOFF_AT && !handoff_on;
+        draw_row(
+            buffer,
+            rect,
+            label,
+            index == settings.selected,
+            dimmed,
+            None,
+            palette,
+        );
+        hits.push((rect, index));
+        y += 1;
+    }
+    for fact in fact_lines(info) {
+        if y >= area.bottom() {
+            return;
+        }
+        put_text(buffer, area.x, y, area.width, &format!("     {fact}"), dim);
+        y += 1;
     }
     if y >= area.bottom() {
         return;
