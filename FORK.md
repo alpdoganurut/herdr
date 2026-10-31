@@ -275,6 +275,7 @@ src/agent_session_chain.rs
 | TerminalState | active_subagents | std::collections::HashSet::new() |
 | TerminalState | subagent_snapshot_seen | false |
 | TerminalState | subagent_session | None |
+| TerminalState | subagents_since | None |
 | PaneReportSubagentParams | subagent_ids | Vec::new() |
 | AgentInfo | subagents | 0 |
 | ClientShellAgent | subagents | 0 |
@@ -1665,6 +1666,9 @@ shows_subagents
 SUBAGENT_HOOKS
 report_subagents_with_mutation
 subagent_session
+subagents_since
+active_subagents_since
+target_subagents
 breathe_phase
 breathe_epoch
 breathe_clock
@@ -2351,6 +2355,7 @@ server::headless::tests::agents_model_smoke::fork_smoke_agents_backgrounded_clau
 client::shell::tests::notification_format::grouped_tab_names_the_group_and_role
 app::agents_model::tests::the_directory_filters_status_and_role_before_paging
 coordinator::mcp::tests::agents_list_pages_and_filters_status_with_all
+app::message_queue::tests::a_working_target_running_a_subagent_says_so_in_the_stuck_notice
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 A user-facing feature or fix that changes what herdr+ offers also updates the showcase page `docs/fork/herdr-plus.html` (self-contained, no network resources, no personal data; mockups follow the current code), in the same change.
@@ -2470,6 +2475,7 @@ A user-facing feature or fix that changes what herdr+ offers also updates the sh
 - `agent.suspend` (and so `herdr agent suspend`, the "Suspend agent" menu item and `keys.toggle_agent_suspend`) refuses a `working` agent with `agent_working`, the same guard `agent.restart` uses, and sends it no input.
 - Agent cards take their accent from the theme (done green, info blue, question and warning red; the glyph tells question `?` from warning `!`) and their chrome from the theme's panel colors (was the fixed Dusk palette), and show the sender's team (`◆ team · role`) inset in the card's top border and before the sender in the narrow banner. The server supplies it: `agent.notices` and the `endpoint.agent-notices.v1` push carry optional `team` (the team's purpose, else the group label) and `role`; a team change re-sends the card list while cards are up. Finished toasts are green to match (were blue). No wire change.
 - herdr's own notification toasts for a tab in a group (finished, needs attention, important and scheduled reminders; the `tabs` layout's rewritten body, so every delivery path) show `group · role` as the second line instead of `agent · folder`: the group named as agent cards name the team (the team's purpose, else the group label), then the pane's team role; just `group` without a role or for a group that is not a team. A tab in the first, ungrouped space keeps `agent · folder`. Client-only (the `endpoint.teams.v1` push already carries roles); teams of another server boot are ignored.
+- Stuck-message notice for a working agent that runs subagents: when a queued message has waited 10 minutes on a target that reads `working` while it has Claude Code subagents running (the `pane.report_subagent` set), its sender's notice says `<target> is running a subagent (Nm); it will read your message when that turn ends` (`N subagents` for several; the time since the set became non-empty, `TerminalState::active_subagents_since`). New trigger: this notice does not wait for the frozen-screen test (a subagent's progress keeps the screen moving, so it would never fire); it still goes once per message and at most once per target every 10 minutes.
 
 ### Added
 - herdr browser, v1b (visible, act, batch): the `tabs` sidebar gains a pinned Browser row directly above the News row (a state glyph — `◎` running, lit accent while an agent uses a tab, `◐` starting, `◉` dialog open, `×` crashed, `◌` stopped — `Browser` and a short status such as `3 tabs · 2 agents`; hidden while the feature is disabled and no profile has run; left click opens the overlay, right-click offers Focus window, Start / Stop profile and Open overlay), tab rows whose pane used the browser within `browser.active_glyph_secs` (default 120) wear `◎` first in the marker slot, and a Browser overlay (`keys.open_browser`, unset by default; the row; the menu) lists each profile with its tabs, newest activity first — short id, who opened it, who last did what and when, title, URL, a dialog flag — with Enter = `browser.focus` on the tab, `s` = start / stop the profile, Esc closes; on a remote server the list is read-only. The client pulls `browser.get {since_seq}` on the first snapshot of a connection, after every `browser.*` reply, every 2 s while a profile runs or starts or the overlay is open, else every 15 s, and never from a server without the method; pane cursors now carry the pane's herdr tab so the marker survives restarts. The act family arrives: `herdr browser click|type|press|select|fill|hover` (MCP `browser_click` …), targets by aria ref or CSS selector, `force` on background tabs (never an implicit raise), `stale_ref` when a ref is gone, a password field (`input[type=password]`, autocomplete current-/new-password, the focused element for a bare press) refused with `password_field_refused` unless `[browser] type_into_password_fields = true`, the whole family off with `[browser] allow_act = false` (`act_disabled`); the ledger records `act:<kind>` with the element's role and name and a text length, never the text. `herdr browser batch` (MCP `browser_batch`) runs up to 20 steps on the current tab under one deadline, each checked and logged like a single call plus one `batch` entry, stopping at the first error unless told otherwise, optionally ending with a snapshot or screenshot. Leftovers: `[browser] stop_with_server` now closes the browsers at server exit (never on a live handoff), and `open` reports the first document's HTTP status.

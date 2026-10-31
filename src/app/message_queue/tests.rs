@@ -717,6 +717,62 @@ async fn a_screen_frozen_above_its_prompt_box_is_stuck_but_a_live_turn_is_not() 
     }));
 }
 
+/// Fork: a working target running a subagent tells the sender so, even
+/// though its screen moves with the subagent's progress; without one the
+/// moving screen is a live turn and no notice goes out.
+#[tokio::test]
+async fn fork_smoke_a_working_target_running_a_subagent_says_so_in_the_stuck_notice() {
+    for subagents in [0usize, 1, 2] {
+        let mut app = app();
+        let _rx = rev(&mut app, AgentState::Working);
+        for index in 0..subagents {
+            terminal(&mut app).record_subagent(true, &format!("sub{index}"));
+        }
+        let t0 = Instant::now();
+        let reply = send(&mut app, "ms2", "status?");
+        assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+        app.message_queue.entries[0].message.unix -= 11 * 60;
+        app.message_queue.entries[0].message.from_pane = app.public_pane_id(0, pane(&app));
+        let now = now_unix();
+        app.message_queue.mark_due();
+        app.message_queue_pass(t0, now);
+        for minute in 1..=12u32 {
+            if let Some(runtime) = app.lookup_runtime_sender(0, pane(&app)) {
+                runtime.test_process_pty_bytes(
+                    format!("\x1b[1;1H\u{273b} Hashing\u{2026} ({minute}m)").as_bytes(),
+                );
+            }
+            app.message_queue_pass(t0 + STUCK_SAMPLE * minute, now);
+        }
+        let notices: Vec<&str> = app
+            .message_queue
+            .written
+            .iter()
+            .filter(|line| !line.is_update() && line.text.contains("herdr: your message ms2"))
+            .map(|line| line.text.as_str())
+            .collect();
+        match subagents {
+            0 => assert!(notices.is_empty(), "{notices:?}"),
+            count => {
+                assert_eq!(notices.len(), 1, "{notices:?}");
+                let running = if count == 1 {
+                    "is running a subagent (1m);".to_string()
+                } else {
+                    format!("is running {count} subagents (1m);")
+                };
+                // Sent on the first pass (the message already waited 11
+                // minutes); the subagents started just before it.
+                assert!(notices[0].contains(running.as_str()), "{}", notices[0]);
+                assert!(
+                    notices[0].contains("it will read your message when that turn ends"),
+                    "{}",
+                    notices[0]
+                );
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn an_idle_target_whose_hooks_report_a_live_turn_waits_for_its_stop() {
     let mut app = app();
