@@ -280,6 +280,7 @@ mod settings_backups;
 mod settings_browser;
 mod settings_closed;
 mod sidebar_active;
+mod sidebar_filter;
 mod sidebar_perf;
 /// Fork (sidebar v3): the Pinned and Scheduled blocks, the detail strip on top.
 mod sidebar_sections;

@@ -1967,6 +1967,10 @@ impl ClientShellState {
                 if !self.config.mouse_capture {
                     return;
                 }
+                // Fork (sidebar filters): the recency chip steps back.
+                if self.sidebar_filter_right_press(point, outcome) {
+                    return;
+                }
                 // Fork (sidebar v2): an Active agents entry gets its tab's
                 // menu; sidebar v3: a Pinned or Scheduled entry likewise.
                 if let Some(tab_id) = self.sidebar_active_entry_at(point) {
@@ -2132,6 +2136,9 @@ impl ClientShellState {
                 self.workspace_press = None;
                 self.tab_press = None;
                 self.chrome_drag = None;
+                // Fork (sidebar filters): a press away from the search field
+                // lets go of the keyboard.
+                self.sidebar_search_pressed_elsewhere(point, outcome);
                 // Fork: the info dock, before any pane hit, so a dock press
                 // never starts a pane gesture or a selection.
                 if self.info_dock_press(point, outcome) {
@@ -2293,6 +2300,11 @@ impl ClientShellState {
                     self.toggle_collapsed_group(&endpoint_id, key);
                     outcome.repaint = true;
                     self.persist_chrome_preferences(outcome);
+                    return;
+                }
+                // Fork (sidebar filters): the search field, the recency chip
+                // and the `~ N filtered` row.
+                if self.sidebar_filter_press(point, mouse.modifiers, outcome) {
                     return;
                 }
                 if super::contains(self.hits.group_toggle_all, point) {

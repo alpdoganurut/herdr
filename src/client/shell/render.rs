@@ -294,6 +294,9 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) tab_pins: Option<&'a super::tab_pins::ClientTabPinsState>,
     /// Fork: the active endpoint's muted tabs (the one-off model's input).
     pub(super) tab_mutes: Option<&'a super::tab_mutes::ClientTabMutesState>,
+    /// Fork (sidebar filters): the search and recency filters (toolbar
+    /// controls, the one-off model's input).
+    pub(super) sidebar_filter: Option<&'a super::sidebar_filter::SidebarFilter>,
 }
 
 /// The sidebar column for the configured `sidebar_layout`, collapse state,

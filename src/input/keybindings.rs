@@ -70,6 +70,9 @@ pub(crate) enum KeybindAction {
     TabHistoryBack,
     /// Fork (sidebar v3): focus the next tab again after going back.
     TabHistoryForward,
+    /// Fork (sidebar filters): focus the `tabs` sidebar's search field, or
+    /// let go of it (client-only).
+    SidebarSearch,
     CopyMode,
     Zoom,
     EnterResizeMode,
@@ -164,6 +167,7 @@ pub(crate) fn resolve_non_indexed_action(
             &keybinds.tab_history_forward,
             KeybindAction::TabHistoryForward,
         ),
+        (&keybinds.sidebar_search, KeybindAction::SidebarSearch),
         (&keybinds.copy_mode, KeybindAction::CopyMode),
         (&keybinds.focus_pane_left, KeybindAction::FocusPaneLeft),
         (&keybinds.focus_pane_down, KeybindAction::FocusPaneDown),

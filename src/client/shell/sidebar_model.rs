@@ -62,6 +62,12 @@ pub(crate) struct TabFacts {
     /// Fork (agent handoff): the newest handoff saved by the tab's agents
     /// before a compaction (unix seconds), from the same push.
     pub(crate) handoff_unix: Option<u64>,
+    /// Fork (sidebar filters): the tab passes the filters (always while
+    /// none is set; never for a fixed tab).
+    pub(crate) filter_match: bool,
+    /// Fork (sidebar filters): left out of the list by the filters (a
+    /// non-matching list tab other than the focused one).
+    pub(crate) hidden: bool,
 }
 
 impl Default for TabFacts {
@@ -81,6 +87,8 @@ impl Default for TabFacts {
             muted: false,
             context: None,
             handoff_unix: None,
+            filter_match: true,
+            hidden: false,
         }
     }
 }
@@ -113,6 +121,18 @@ pub(crate) enum Row {
         len: u16,
         expanded: bool,
     },
+    /// Fork (sidebar filters): the last row while the filters hide `hidden`
+    /// list tabs (`~ N filtered`; a click clears the filters).
+    Filtered { hidden: u16 },
+}
+
+/// Fork (sidebar filters): a tab's last activity for the recency filter.
+#[derive(Debug, Clone, Copy, Default)]
+struct Activity {
+    /// Some agent works, waits on you or runs subagents: active now.
+    live: bool,
+    /// The newest time one of its agents entered its current state.
+    newest: Option<Instant>,
 }
 
 /// Fork: the fewest suspended tabs in a row that fold into a run.
@@ -174,6 +194,12 @@ pub(crate) struct ModelInputs<'a> {
     pub(crate) expanded_runs: Option<&'a HashSet<String>>,
     /// Fork: the agents' context use (`agent_context.rs`).
     pub(crate) context: Option<&'a super::agent_context::ClientAgentContextState>,
+    /// Fork (sidebar filters): the search and recency filters
+    /// (`sidebar_filter.rs`); `None` or inactive lists every tab.
+    pub(crate) filter: Option<&'a super::sidebar_filter::SidebarFilter>,
+    /// Fork (sidebar filters): the clock the recency window is measured
+    /// against (`None`: read when needed).
+    pub(crate) now: Option<Instant>,
 }
 
 impl<'a> ModelInputs<'a> {
@@ -194,6 +220,8 @@ impl<'a> ModelInputs<'a> {
             sections: Sections::default(),
             expanded_runs: None,
             context: None,
+            filter: None,
+            now: None,
         }
     }
 }
@@ -245,6 +273,11 @@ pub(crate) enum SidebarHover {
     ScheduledMore,
     /// Fork: a suspended run's row, by its first tab's id.
     Run(String),
+    /// Fork (sidebar filters): the toolbar row (reveals the filter
+    /// controls).
+    Toolbar,
+    /// Fork (sidebar filters): the `~ N filtered` row.
+    Filtered,
 }
 
 /// The selected row of a frame: the hovered row, else the focused tab.
@@ -308,6 +341,20 @@ pub(crate) struct SidebarModel {
     pub(crate) scheduled: Vec<u32>,
     /// Bitset of the interval kinds present over `scheduled` (`KIND_*`).
     pub(crate) scheduled_kinds: u8,
+    /// Fork (sidebar filters): list tabs the filters hide (the
+    /// `Row::Filtered` count; 0 while no filter is set).
+    pub(crate) filtered: u16,
+    /// Fork (sidebar filters): the first list row's tab that passes the
+    /// filters (Enter in the search field); `None` while none is set.
+    pub(crate) first_match: Option<u32>,
+    /// Fork (sidebar filters): when the recency window next drops a tab
+    /// that passes it now (`ensure` rebuilds from then on; the render folds
+    /// it into the minute clock).
+    pub(crate) filter_deadline: Option<Instant>,
+    /// Fork (sidebar filters): per-tab search term masks (scratch, reused).
+    term_masks: Vec<u64>,
+    /// Fork (sidebar filters): per-tab activity (scratch, reused).
+    activity: Vec<Activity>,
     /// Rebuild count (architecture tests).
     #[cfg(test)]
     pub(crate) builds: u32,
@@ -339,6 +386,11 @@ impl SidebarModel {
             pins_classes: 0,
             scheduled: Vec::new(),
             scheduled_kinds: 0,
+            filtered: 0,
+            first_match: None,
+            filter_deadline: None,
+            term_masks: Vec::new(),
+            activity: Vec::new(),
             #[cfg(test)]
             builds: 0,
         }
@@ -356,12 +408,15 @@ impl SidebarModel {
         self.dirty = true;
     }
 
-    /// Rebuild when data changed since the last build or the fixed-row tab
-    /// ids differ; otherwise nothing.
+    /// Rebuild when data changed since the last build, the fixed-row tab
+    /// ids differ or the recency window dropped a tab; otherwise nothing.
     pub(crate) fn ensure(&mut self, inputs: ModelInputs<'_>) {
         if !self.dirty
             && self.fixed_ids.0.as_deref() == inputs.fixed_ids.0
             && self.fixed_ids.1.as_deref() == inputs.fixed_ids.1
+            && self
+                .filter_deadline
+                .is_none_or(|deadline| inputs.now.unwrap_or_else(Instant::now) < deadline)
         {
             return;
         }
@@ -380,6 +435,8 @@ impl SidebarModel {
             sections,
             expanded_runs,
             context,
+            filter,
+            now,
         } = inputs;
         self.dirty = false;
         if self.fixed_ids.0.as_deref() != fixed_ids.0 {
@@ -489,12 +546,33 @@ impl SidebarModel {
                 members[index].push(tab_index as u32);
             }
         }
+        // Fork (sidebar filters): mark the tabs the filters hide. While a
+        // filter is set, a group without a listed tab has no header, every
+        // other group is drawn open with its listed tabs only (`members`
+        // counts them), suspended runs do not fold, and a `~ N filtered`
+        // row ends the list while something is hidden.
+        let filter = filter.filter(|filter| filter.active());
+        self.filtered = 0;
+        self.first_match = None;
+        self.filter_deadline = None;
+        if let Some(filter) = filter {
+            self.apply_filter(snapshot, &index, filter, times, now);
+        }
+        let filtering = filter.is_some();
         self.rows.clear();
         self.run_tabs.clear();
-        for (index, (workspace, tabs)) in snapshot.workspaces.iter().zip(members).enumerate() {
+        for (index, (workspace, mut tabs)) in snapshot.workspaces.iter().zip(members).enumerate() {
+            if filtering {
+                let facts = &self.tabs;
+                tabs.retain(|tab| facts.get(*tab as usize).is_some_and(|facts| !facts.hidden));
+                if tabs.is_empty() && super::tab_sidebar::is_group_index(index) {
+                    continue;
+                }
+            }
             let mut folded = false;
             if super::tab_sidebar::is_group_index(index) {
-                folded = focused != Some(workspace.workspace_id.as_str())
+                folded = !filtering
+                    && focused != Some(workspace.workspace_id.as_str())
                     && collapsed_groups.contains(&group_key(&workspace.workspace_id));
                 self.rows.push(Row::Header {
                     workspace: index as u32,
@@ -503,13 +581,31 @@ impl SidebarModel {
                 });
             }
             if !folded {
-                if sections.suspended_runs {
+                if sections.suspended_runs && !filtering {
                     self.push_tab_rows(snapshot, &tabs, expanded_runs);
                 } else {
                     self.rows
                         .extend(tabs.into_iter().map(|tab| Row::Tab { tab }));
                 }
             }
+        }
+        if filtering {
+            if self.filtered > 0 {
+                self.rows.push(Row::Filtered {
+                    hidden: self.filtered,
+                });
+            }
+            let facts = &self.tabs;
+            self.first_match = self.rows.iter().find_map(|row| match *row {
+                Row::Tab { tab }
+                    if facts
+                        .get(tab as usize)
+                        .is_some_and(|facts| facts.filter_match) =>
+                {
+                    Some(tab)
+                }
+                _ => None,
+            });
         }
         let rows = self.rows.len();
         self.row_heights.clear();
@@ -593,6 +689,96 @@ impl SidebarModel {
                     .map_or(u8::MAX, |(_, rank)| rank);
                 (rank, *index)
             });
+        }
+    }
+
+    /// Fork (sidebar filters): set every tab's `filter_match` and `hidden`,
+    /// the hidden count and the recency deadline. One pass over the agents
+    /// (agent kinds, activity times) and one over the tabs; the search terms
+    /// are matched without allocating.
+    fn apply_filter(
+        &mut self,
+        snapshot: &ClientShellSnapshot,
+        index: &HashMap<&str, u32>,
+        filter: &super::sidebar_filter::SidebarFilter,
+        times: Option<&super::agent_times::ClientAgentTimesState>,
+        now: Option<Instant>,
+    ) {
+        use super::sidebar_filter::{full_mask, term_mask};
+        let terms = filter.terms();
+        let full = full_mask(terms);
+        let window = filter.recency.window();
+        let now = window.map(|_| now.unwrap_or_else(Instant::now));
+        let tabs = snapshot.tabs.len();
+        self.term_masks.clear();
+        self.term_masks.resize(tabs, 0);
+        self.activity.clear();
+        self.activity.resize(tabs, Activity::default());
+        if full != 0 || now.is_some() {
+            for agent in &snapshot.agents {
+                let Some(&tab) = index.get(agent.tab_id.as_str()) else {
+                    continue;
+                };
+                let tab = tab as usize;
+                if full != 0 {
+                    for kind in [agent.agent.as_deref(), agent.display_agent.as_deref()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        self.term_masks[tab] |= term_mask(kind, terms);
+                    }
+                }
+                if now.is_some() {
+                    let activity = &mut self.activity[tab];
+                    // Working, waiting on you or running subagents: active now.
+                    activity.live |= matches!(
+                        agent.agent_status,
+                        AgentStatus::Working | AgentStatus::Blocked
+                    ) || agent.subagents > 0;
+                    if let Some(at) = times
+                        .and_then(|times| times.since_of(&agent.pane_id, agent.state_change_seq))
+                    {
+                        activity.newest = Some(activity.newest.map_or(at, |newest| newest.max(at)));
+                    }
+                }
+            }
+        }
+        for (tab_index, (tab, facts)) in snapshot.tabs.iter().zip(&mut self.tabs).enumerate() {
+            if facts.fixed {
+                facts.filter_match = false;
+                continue;
+            }
+            let mut pass = true;
+            if full != 0 {
+                let mut mask = self.term_masks[tab_index] | term_mask(&tab.label, terms);
+                if let Some(workspace) = facts
+                    .workspace
+                    .filter(|workspace| super::tab_sidebar::is_group_index(*workspace as usize))
+                    .and_then(|workspace| snapshot.workspaces.get(workspace as usize))
+                {
+                    mask |= term_mask(&workspace.label, terms);
+                }
+                pass = mask == full;
+            }
+            if let (true, Some(now), Some(window)) = (pass, now, window) {
+                let activity = self.activity[tab_index];
+                if !activity.live {
+                    // No known time counts as old; a time a window old is out.
+                    match activity.newest {
+                        Some(at) if now.saturating_duration_since(at) < window => {
+                            let deadline = at + window;
+                            self.filter_deadline = Some(
+                                self.filter_deadline
+                                    .map_or(deadline, |current| current.min(deadline)),
+                            );
+                        }
+                        _ => pass = false,
+                    }
+                }
+            }
+            facts.filter_match = pass;
+            facts.hidden = !pass && !tab.focused;
+            self.filtered = self.filtered.saturating_add(u16::from(facts.hidden));
         }
     }
 
@@ -776,7 +962,7 @@ pub(crate) fn resolve_selected(
             }
             _ => None,
         }),
-        None => None,
+        Some(SidebarHover::Toolbar | SidebarHover::Filtered) | None => None,
     };
     hovered.unwrap_or_else(|| model.focused_tab.map_or(Selected::None, Selected::Tab))
 }

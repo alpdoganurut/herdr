@@ -560,6 +560,9 @@ pub struct KeysConfig {
     pub tab_history_back: BindingConfig,
     /// Focus the next tab again after going back. Default: "cmd+]".
     pub tab_history_forward: BindingConfig,
+    /// Focus the `tabs` sidebar's search field, or let go of it. Default:
+    /// "prefix+f".
+    pub sidebar_search: BindingConfig,
     /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
     pub copy_mode: BindingConfig,
     /// Focus the pane to the left. Default: "prefix+h".
@@ -723,6 +726,7 @@ pub(crate) struct KeysConfigOverlay {
     tab_history_back: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tab_history_forward: Option<BindingConfig>,
+    sidebar_search: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     copy_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -870,6 +874,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(toggle_info_pane);
         apply_field!(tab_history_back);
         apply_field!(tab_history_forward);
+        apply_field!(sidebar_search);
         apply_field!(copy_mode);
         apply_field!(focus_pane_left);
         apply_field!(focus_pane_down);
@@ -988,6 +993,7 @@ impl KeysConfig {
         copy_effective_action_field!(toggle_info_pane, keybinds.toggle_info_pane);
         copy_effective_action_field!(tab_history_back, keybinds.tab_history_back);
         copy_effective_action_field!(tab_history_forward, keybinds.tab_history_forward);
+        copy_effective_action_field!(sidebar_search, keybinds.sidebar_search);
         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
         copy_effective_action_field!(focus_pane_left, keybinds.focus_pane_left);
         copy_effective_action_field!(focus_pane_down, keybinds.focus_pane_down);
@@ -1411,6 +1417,7 @@ impl Default for KeysConfig {
             toggle_info_pane: BindingConfig::default(),
             tab_history_back: BindingConfig::one("cmd+["),
             tab_history_forward: BindingConfig::one("cmd+]"),
+            sidebar_search: BindingConfig::one("prefix+f"),
             copy_mode: BindingConfig::one("prefix+["),
             focus_pane_left: BindingConfig::one("prefix+h"),
             focus_pane_down: BindingConfig::one("prefix+j"),

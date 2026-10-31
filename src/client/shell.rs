@@ -55,6 +55,8 @@ mod settings_coordinator;
 mod settings_daily_time;
 mod settings_news;
 mod settings_sounds;
+/// Fork (sidebar filters): the tabs sidebar's search and recency filters.
+mod sidebar_filter;
 /// Fork (sidebar v2): the tabs sidebar's derived state.
 mod sidebar_model;
 mod state;

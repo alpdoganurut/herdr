@@ -684,6 +684,9 @@ enum HoverAt<'a> {
     ScheduledHeader,
     ScheduledEntry(&'a str),
     ScheduledMore,
+    /// Fork (sidebar filters).
+    Toolbar,
+    Filtered,
 }
 
 impl HoverAt<'_> {
@@ -700,7 +703,9 @@ impl HoverAt<'_> {
             | (Self::PinsHeader, SidebarHover::PinsHeader)
             | (Self::PinsMore, SidebarHover::PinsMore)
             | (Self::ScheduledHeader, SidebarHover::ScheduledHeader)
-            | (Self::ScheduledMore, SidebarHover::ScheduledMore) => true,
+            | (Self::ScheduledMore, SidebarHover::ScheduledMore)
+            | (Self::Toolbar, SidebarHover::Toolbar)
+            | (Self::Filtered, SidebarHover::Filtered) => true,
             (Self::Fixed(kind), SidebarHover::Fixed(current)) => kind == *current,
             _ => false,
         }
@@ -721,6 +726,8 @@ impl HoverAt<'_> {
             Self::ScheduledHeader => SidebarHover::ScheduledHeader,
             Self::ScheduledEntry(id) => SidebarHover::ScheduledEntry(id.to_owned()),
             Self::ScheduledMore => SidebarHover::ScheduledMore,
+            Self::Toolbar => SidebarHover::Toolbar,
+            Self::Filtered => SidebarHover::Filtered,
         }
     }
 }
@@ -751,6 +758,12 @@ impl ClientShellState {
         }
         if let Some(id) = id_at(&hits.sidebar_runs, point) {
             return Some(HoverAt::Run(id));
+        }
+        if super::contains(hits.sidebar_filtered, point) {
+            return Some(HoverAt::Filtered);
+        }
+        if super::contains(hits.sidebar_toolbar, point) {
+            return Some(HoverAt::Toolbar);
         }
         if super::contains(hits.sidebar_active_header, point) {
             return Some(HoverAt::ActiveHeader);

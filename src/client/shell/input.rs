@@ -264,6 +264,10 @@ impl ClientShellState {
                     } else if !self.popup_pending {
                         if self.insert_overlay_text(&text) {
                             outcome.repaint = true;
+                        } else if self.overlay.is_none() && self.sidebar_search_focused() {
+                            // Fork: the sidebar's search field has the
+                            // keyboard; text never reaches the pane.
+                            self.sidebar_search_insert_text(&text, &mut outcome);
                         } else if self.overlay.is_none() && self.info_dock_focused() {
                             // Fork: the dock has the keyboard; text never
                             // reaches the pane.
@@ -302,6 +306,10 @@ impl ClientShellState {
                     } else if !self.popup_pending {
                         if self.insert_overlay_text(&text) {
                             outcome.repaint = true;
+                        } else if self.overlay.is_none() && self.sidebar_search_focused() {
+                            // Fork: the sidebar's search field has the
+                            // keyboard; a paste never reaches the pane.
+                            self.sidebar_search_insert_text(&text, &mut outcome);
                         } else if self.overlay.is_none() && self.info_dock_focused() {
                             // Fork: the dock has the keyboard; a paste never
                             // reaches the pane.
@@ -682,6 +690,11 @@ impl ClientShellState {
                 if self.config.keybinds.matches_prefix(key) {
                     self.mode = ClientShellMode::Prefix;
                     outcome.repaint = true;
+                    return None;
+                }
+                // Fork (sidebar filters): the search field has the keyboard.
+                if self.sidebar_search_focused() {
+                    self.handle_sidebar_search_key(key, outcome);
                     return None;
                 }
                 // Fork: the info dock has the keyboard.
@@ -1091,6 +1104,7 @@ impl ClientShellState {
                 .as_ref()
                 .is_some_and(crate::selection::Selection::is_visible),
             info_dock_focused: self.info_dock_focused(),
+            sidebar_search_focused: self.sidebar_search_focused(),
         }
     }
 

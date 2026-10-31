@@ -209,6 +209,7 @@ pub(crate) fn keybind_help_groups(
                     binding_label(&keybinds.tab_history_forward),
                     "forward (tab history)",
                 ),
+                entry(binding_label(&keybinds.sidebar_search), "search tabs"),
                 entry(binding_label(&keybinds.copy_mode), "copy mode"),
                 entry(binding_label(&keybinds.zoom), "zoom pane"),
                 entry(binding_label(&keybinds.resize_mode), "resize mode"),

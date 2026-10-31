@@ -224,6 +224,8 @@ pub(super) fn render_tab_sidebar_with(
                 fixed_ids: fixed_tab_ids,
                 sections: sidebar_sections(config),
                 expanded_runs: Some(state.expanded_runs),
+                filter: state.sidebar_filter,
+                now: Some(state.now),
                 ..super::sidebar_model::ModelInputs::new(snapshot, state.collapsed_groups)
             });
             &one_off
@@ -281,8 +283,32 @@ pub(super) fn render_tab_sidebar_with(
         config,
         hits,
     );
-
     let hover = state.sidebar_hover;
+    // Fork (sidebar filters): the search field and the recency chip, shown
+    // while the toolbar is hovered or a filter is engaged; a recency window
+    // that will drop a tab wakes the minute clock then.
+    if let Some(filter) = state.sidebar_filter {
+        super::sidebar_filter::render_filter_controls(
+            buffer,
+            Rect::new(
+                content.x,
+                plan.toolbar.y,
+                content.width,
+                plan.toolbar.height,
+            ),
+            filter,
+            matches!(hover, Some(SidebarHover::Toolbar)),
+            config,
+            hits,
+        );
+    }
+    if let Some(deadline) = model.filter_deadline {
+        hits.sidebar_clock_deadline = Some(
+            hits.sidebar_clock_deadline
+                .map_or(deadline, |current| current.min(deadline)),
+        );
+    }
+
     let selected = resolve_selected(snapshot, model, hover);
     let pinned = fixed_rows_that_fit(pinned, plan.fixed.height);
     // Top-down from the list's bottom edge: Browser, News, coordinator.
@@ -362,7 +388,7 @@ pub(super) fn render_tab_sidebar_with(
     };
     let list_tab = |row: &Row| match row {
         Row::Tab { tab } => snapshot.tabs.get(*tab as usize),
-        Row::Header { .. } | Row::Run { .. } => None,
+        Row::Header { .. } | Row::Run { .. } | Row::Filtered { .. } => None,
     };
     let mut metrics =
         super::scroll::list_scroll_metrics(row_heights, gaps, body.height, *state.agent_scroll);
@@ -545,6 +571,11 @@ pub(super) fn render_tab_sidebar_with(
                 let hovered = hovered_run == Some(first.tab_id.as_str());
                 render_run_row(buffer, rect, len, expanded, hovered, config);
                 hits.sidebar_runs.push((rect, first.tab_id.clone()));
+            }
+            Row::Filtered { hidden } => {
+                let hovered = matches!(hover, Some(SidebarHover::Filtered));
+                super::sidebar_filter::render_filtered_row(buffer, rect, hidden, hovered, config);
+                hits.sidebar_filtered = rect;
             }
         }
     }

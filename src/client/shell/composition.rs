@@ -51,7 +51,7 @@ impl ClientShellState {
     /// machine, `sidebar_layout = "tabs"`, not collapsed), ensuring its
     /// derived model when it does. Shared by `compose` and the healthy-Local
     /// pane-surface gap in `compose_unavailable`.
-    fn ensure_tabs_sidebar_model(
+    pub(super) fn ensure_tabs_sidebar_model(
         &mut self,
         news_row: Option<&super::news::NewsRow>,
         coordinator_row: Option<&super::coordinator::CoordinatorRow>,
@@ -100,6 +100,8 @@ impl ClientShellState {
                     &self.active_endpoint_id,
                     Some(snapshot),
                 ),
+                filter: Some(&self.sidebar_filter),
+                now: self.sidebar_clock,
             });
         true
     }
@@ -208,6 +210,7 @@ impl ClientShellState {
                 &self.active_endpoint_id,
                 self.snapshot.as_deref(),
             ),
+            sidebar_filter: Some(&self.sidebar_filter),
         };
         if let Some(snapshot) = local_snapshot {
             if layout.mobile_header.height > 0 {
@@ -431,6 +434,7 @@ impl ClientShellState {
                     &self.active_endpoint_id,
                     Some(snapshot),
                 ),
+                sidebar_filter: Some(&self.sidebar_filter),
             },
         );
         // Fork: the info dock, into the chrome buffer; the pane surface blit
@@ -565,8 +569,9 @@ impl ClientShellState {
             frame.cells[start..start + usize::from(bar.width)].to_vec()
         });
         blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
-        if self.info_dock_focused() {
-            // Fork: the keyboard is in the info dock, not the pane.
+        if self.info_dock_focused() || self.sidebar_search_focused() {
+            // Fork: the keyboard is in the info dock or the sidebar's
+            // search field, not the pane.
             frame.cursor = None;
         }
         let suspended_cards = self.paint_suspended_panes(&mut frame, snapshot);
