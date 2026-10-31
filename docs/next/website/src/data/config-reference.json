@@ -791,7 +791,7 @@
           "key": "keys.toggle_info_pane",
           "type": "keybinding",
           "default": "unset",
-          "description": "Show or hide the focused tab's info pane: a dock on the right with the tab's agent-session notes (click to edit, tick task markers) and its history of checkpoints (decisions, milestones, failures, notes and bookmarks, each expandable to the prompt and reply around it). Open state is per tab; drag the divider or press < and > in the pane to resize. Unset by default; for example, toggle_info_pane = \"alt+n\"."
+          "description": "Show or hide the focused tab's info pane: a dock on the right with the tab's agent-session notes page (click to edit, tick task markers). Open state is per tab; drag the divider or press < and > in the pane to resize. Unset by default; for example, toggle_info_pane = \"alt+n\"."
         },
         {
           "key": "keys.tab_history_back",
@@ -1996,13 +1996,7 @@
           "key": "notes.enabled",
           "type": "boolean",
           "default": "true",
-          "description": "Per-session notes and checkpoints: the info pane, `herdr notes` / `herdr checkpoint`, the notes.* and checkpoints.* API methods and the agents' notes tools. Notes are markdown files under `<config dir>/notes/` keyed by the agent session (`<agent>-<session id>.md`), or by the tab when it runs no agent; checkpoints are an append-only `<key>.checkpoints.jsonl` beside them. With false every notes method answers `notes_disabled`; the files stay on disk. Independent of the coordinator. Wrapped and team launches get their notes and recent checkpoints back: Claude through a SessionStart hook (`herdr notes hook`: start, resume, /clear, compaction; herdr-started Claude agents too), wrapped Codex launches in their developer instructions at launch (not `codex exec`)."
-        },
-        {
-          "key": "notes.auto_checkpoints",
-          "type": "boolean",
-          "default": "true",
-          "description": "herdr adds checkpoints on its own, tagged `auto` and shown dimmed in the info pane: a bookmark for each prompt you send an agent, a milestone for commits made in the pane's repository during a turn (HEAD compared at turn start and end), and a failure when an agent stays blocked 10 minutes or more or exits mid-turn (not when herdr suspends or restarts it). They have their own hourly cap and never use the agent's. Needs `enabled`."
+          "description": "The per-session notes page: the info pane, the notes.* API methods and the agents' notes tools. The page is the user's: agents create or change it only when the user asks (for example with /plus:notes or /plus:notify). Notes are markdown files under `<config dir>/notes/` keyed by the agent session (`<agent>-<session id>.md`), or by the tab when it runs no agent. With false every notes method answers `notes_disabled`; the files stay on disk. Independent of the coordinator. Wrapped and team launches get the page back (the first 3 KB): Claude through a SessionStart hook (`herdr notes hook`: start, resume, /clear, compaction; herdr-started Claude agents too), wrapped Codex launches in their developer instructions at launch (not `codex exec`)."
         }
       ]
     },

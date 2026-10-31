@@ -198,11 +198,6 @@ impl App {
             return Vec::new();
         }
 
-        if let AppEvent::NotesWorkerFinished(result) = ev {
-            self.handle_notes_worker_finished(*result);
-            return Vec::new();
-        }
-
         if let AppEvent::WorktreeReadFinished(result) = ev {
             self.handle_api_worktree_read_finished(*result);
             return Vec::new();
@@ -747,10 +742,8 @@ impl App {
     }
 
     pub(crate) fn emit_pane_state_update(&mut self, update: &crate::app::actions::PaneStateUpdate) {
-        // Fork (agents v2): the turn origin's status edge, O(1), and the
-        // automatic checkpoints it may add (`[notes] auto_checkpoints`).
-        let turn_edge = self.note_turn_edge(update);
-        self.note_auto_checkpoints(update, turn_edge);
+        // Fork (agents v2): the turn origin's status edge, O(1).
+        self.note_turn_edge(update);
         let Some(pane_id) = self.public_pane_id(update.ws_idx, update.pane_id) else {
             return;
         };
@@ -1402,21 +1395,14 @@ impl App {
             Method::NotesGet(params) => return self.handle_notes_get(request.id, params),
             Method::NotesSet(params) => return self.handle_notes_set(request.id, params),
             Method::NotesAppend(params) => return self.handle_notes_append(request.id, params),
-            Method::CheckpointsList(params) => {
-                return self.handle_checkpoints_list(request.id, params)
-            }
-            Method::CheckpointsAdd(params) => {
-                return self.handle_checkpoints_add(request.id, params)
-            }
-            Method::CheckpointsUpdate(params) => {
-                return self.handle_checkpoints_update(request.id, params)
-            }
-            Method::CheckpointsRemove(params) => {
-                return self.handle_checkpoints_remove(request.id, params)
-            }
-            Method::CheckpointsContext(params) => {
-                return self.handle_checkpoints_context(request.id, params)
-            }
+            // Fork: checkpoints were removed; the names stay and refuse.
+            Method::CheckpointsList(_)
+            | Method::CheckpointsAdd(_)
+            | Method::CheckpointsUpdate(_)
+            | Method::CheckpointsRemove(_)
+            | Method::CheckpointsContext(_)
+            | Method::AgentsCheckpoint(_)
+            | Method::AgentsNotesAppend(_) => return Self::handle_checkpoints_removed(request.id),
             // Fork: the agents model (agents v2).
             Method::AgentsActor(params) => return self.handle_agents_actor(request.id, params),
             Method::AgentsDirectory(params) => {
@@ -1443,12 +1429,6 @@ impl App {
             }
             Method::AgentsReopenTab(params) => {
                 return self.handle_agents_reopen_tab(request.id, params)
-            }
-            Method::AgentsNotesAppend(params) => {
-                return self.handle_agents_notes_append(request.id, params)
-            }
-            Method::AgentsCheckpoint(params) => {
-                return self.handle_agents_checkpoint(request.id, params)
             }
             Method::AgentsActions(params) => return self.handle_agents_actions(request.id, params),
             Method::AgentsCheck(params) => return self.handle_agents_check(request.id, params),

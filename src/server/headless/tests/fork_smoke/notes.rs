@@ -1,6 +1,6 @@
 //! Info pane fork smoke test, server side (a child of `fork_smoke`, so the
-//! gate's `-E 'test(fork_smoke)'` filter runs it). It drives the notes and
-//! checkpoints methods the client dock sends through the client-shell
+//! gate's `-E 'test(fork_smoke)'` filter runs it). It drives the notes
+//! methods the client dock sends (and the refused checkpoints names) through the client-shell
 //! endpoint path (one request in flight per client, the reply as a response
 //! chunk), so an upstream change to that path or to the advertised method
 //! list breaks it. The notes directory is the per-test temp dir `App::new`
@@ -9,12 +9,9 @@
 use super::*;
 use crate::agent_resume::PersistedAgentSession;
 use crate::api::schema::notes::{
-    CheckpointKind, CheckpointsAddParams, CheckpointsContextParams, CheckpointsListParams,
-    NotesAuthor, NotesGetParams, NotesSetParams, NotesTarget,
+    CheckpointKind, CheckpointsAddParams, CheckpointsListParams, NotesAuthor, NotesGetParams,
+    NotesSetParams, NotesTarget,
 };
-
-/// How long the test waits for the notes worker's context read.
-const WORKER_WAIT: Duration = Duration::from_secs(10);
 
 /// Removes the test server's notes directory.
 struct NotesDirGuard(std::path::PathBuf);
@@ -168,86 +165,33 @@ async fn dock_methods_round_trip_over_the_client_shell() {
     assert_eq!(polled["result"]["notes"]["unchanged"], true, "{polled}");
     assert!(polled["result"]["notes"]["text"].is_null());
 
-    // checkpoints.add (the dock's `b`) anchors on the transcript.
-    let added = endpoint(
-        &mut server,
-        &control,
-        61,
-        "info:add",
-        Method::CheckpointsAdd(CheckpointsAddParams {
-            target: tab_target(&tab_id),
-            kind: CheckpointKind::Bookmark,
-            title: "picked jiff".into(),
-            detail: None,
-            tags: Vec::new(),
-            author: NotesAuthor::User,
-        }),
-    )
-    .await;
-    assert_eq!(added["result"]["type"], "checkpoint_write", "{added}");
-    let checkpoint = &added["result"]["checkpoint"]["checkpoint"];
-    assert_eq!(checkpoint["has_context"], true, "{added}");
-    let id = checkpoint["id"]
-        .as_str()
-        .expect("the checkpoint id")
-        .to_owned();
-
-    // checkpoints.list returns it.
-    let listed = endpoint(
-        &mut server,
-        &control,
-        61,
-        "info:list",
-        Method::CheckpointsList(CheckpointsListParams {
-            target: tab_target(&tab_id),
-            kinds: Vec::new(),
-            since_seq: None,
-            limit: None,
-        }),
-    )
-    .await;
-    assert_eq!(listed["result"]["type"], "checkpoints_list", "{listed}");
-    let rows = listed["result"]["checkpoints"]["checkpoints"]
-        .as_array()
-        .expect("the checkpoint rows");
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["id"], id.as_str());
-
-    // checkpoints.context: pending while the worker reads, then the prompt
-    // and reply around the anchor.
-    let context = |n: usize| {
+    // The checkpoints.* names stay advertised and refuse: checkpoints
+    // were removed.
+    for (request_id, method) in [
         (
-            format!("info:ctx:{n}"),
-            Method::CheckpointsContext(CheckpointsContextParams {
+            "info:add",
+            Method::CheckpointsAdd(CheckpointsAddParams {
                 target: tab_target(&tab_id),
-                id: id.clone(),
-                chars: None,
+                kind: CheckpointKind::Bookmark,
+                title: "picked jiff".into(),
+                detail: None,
+                tags: Vec::new(),
+                author: NotesAuthor::User,
             }),
-        )
-    };
-    let (request_id, method) = context(0);
-    let first = endpoint(&mut server, &control, 61, &request_id, method).await;
-    assert_eq!(first["result"]["type"], "checkpoint_context", "{first}");
-    // The worker's result is applied only by the event drain below.
-    assert_eq!(first["result"]["context"]["source"], "pending", "{first}");
-    let deadline = std::time::Instant::now() + WORKER_WAIT;
-    let mut attempt = 1;
-    let mut answer = first;
-    while answer["result"]["context"]["source"] == "pending" {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the context never left pending: {answer}"
-        );
-        std::thread::sleep(Duration::from_millis(25));
-        server.drain_internal_events_with_forwarding();
-        let (request_id, method) = context(attempt);
-        attempt += 1;
-        answer = endpoint(&mut server, &control, 61, &request_id, method).await;
+        ),
+        (
+            "info:list",
+            Method::CheckpointsList(CheckpointsListParams {
+                target: tab_target(&tab_id),
+                kinds: Vec::new(),
+                since_seq: None,
+                limit: None,
+            }),
+        ),
+    ] {
+        let refused = endpoint(&mut server, &control, 61, request_id, method).await;
+        assert_eq!(refused["error"]["code"], "checkpoints_removed", "{refused}");
     }
-    let context = &answer["result"]["context"];
-    assert_eq!(context["source"], "native", "{answer}");
-    assert_eq!(context["prompt"], "pick a time crate");
-    assert_eq!(context["reply"], "jiff, it handles zones");
 
     shutdown_test_runtimes(&mut server);
 }

@@ -1,12 +1,11 @@
 //! The info dock (fork): a per-tab side pane, docked right and drawn by the
-//! client, with the tab's agent session notes (Notes) and its checkpoint
-//! timeline (History). The visual and interaction spec is the picked stub
-//! `c-almanac.py`; the plan is `.local/prd/info-pane-design.md` §1.
+//! client, with the tab's agent session notes page. The visual and
+//! interaction spec is the picked stub `c-almanac.py`; the plan is
+//! `.local/prd/info-pane-design.md` §1.
 //!
-//! Notes and checkpoints are server facts (`notes.*`, `checkpoints.*`);
-//! everything here is client presentation state: which tabs have the dock
-//! open, its width, view, focus, scroll, selection, expansion, filter, the
-//! editor buffer and its dirty / conflict state.
+//! Notes are server facts (`notes.*`); everything here is client
+//! presentation state: which tabs have the dock open, its width, focus,
+//! scroll, the editor buffer and its dirty / conflict state.
 //!
 //! Lazy: `ClientShellState.info_dock` stays `None` until the first toggle,
 //! and while the focused tab's dock is closed the tick returns at once, with
@@ -24,7 +23,7 @@ use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
-use super::info_dock_model::{self as model, InfoDockTarget, InfoView, Row};
+use super::info_dock_model::{self as model, InfoDockTarget, Row};
 
 /// See `ClientShellState::surface_report_basis`.
 #[derive(Debug)]
@@ -35,8 +34,6 @@ pub(crate) struct SurfaceReportBasis {
 use super::info_dock_render::{self, DockFrame, CHROME_ROWS};
 use super::*;
 use crate::api::schema::notes::{
-    CheckpointContextInfo, CheckpointContextSource, CheckpointKind, CheckpointTarget,
-    CheckpointsAddParams, CheckpointsContextParams, CheckpointsListInfo, CheckpointsListParams,
     NotesAuthor, NotesGetParams, NotesInfo, NotesSetParams, NotesTarget, NotesWriteOutcome,
 };
 use crate::api::schema::{Method, ResponseResult};
@@ -52,15 +49,11 @@ const DOCK_STEP: u16 = 4;
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Retry delay after `endpoint_busy`.
 const BUSY_RETRY: Duration = Duration::from_millis(250);
-/// Retry delay while a checkpoint's context is still being read.
-const CONTEXT_RETRY: Duration = Duration::from_millis(500);
-const CONTEXT_TRIES: u8 = 10;
 /// A dirty editor saves after this long without a keystroke.
 const IDLE_SAVE: Duration = Duration::from_secs(2);
 const FLASH_FOR: Duration = Duration::from_secs(3);
 const DIVIDER_DOUBLE_CLICK: Duration = Duration::from_millis(350);
 const UI_CAP: usize = 32;
-const CONTEXT_CAP: usize = 64;
 
 /// The dock's hit map: its area, the divider column, the scrolling body
 /// (for the wheel) and every click target, last registered wins.
@@ -86,13 +79,8 @@ impl InfoDockHits {
 /// Per-session presentation state (keyed by session key).
 #[derive(Debug, Default)]
 pub(crate) struct DockUi {
-    pub(crate) selected: Option<String>,
-    pub(crate) expanded: HashSet<String>,
-    pub(crate) ctx_full: HashSet<String>,
-    pub(crate) filter: Option<CheckpointKind>,
-    pub(crate) hist_scroll: usize,
     pub(crate) notes_scroll: usize,
-    /// Keep the selection (or the editor's cursor) visible on the next
+    /// Keep the editor's cursor visible on the next
     /// `compute_view`.
     pub(crate) follow: bool,
 }
@@ -101,7 +89,6 @@ pub(crate) struct DockUi {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InfoRequest {
     NotesGet,
-    CheckpointsList,
     NotesSet {
         key: String,
         text: String,
@@ -109,34 +96,20 @@ pub(crate) enum InfoRequest {
         /// A task tick from the read view (a conflict asks to tick again).
         tick: bool,
     },
-    /// `b`: bookmark now.
-    BookmarkAdd,
-    CheckpointRemove {
-        key: String,
-        id: String,
-    },
-    Context {
-        id: String,
-        tries: u8,
-    },
 }
 
 impl InfoRequest {
     fn same_slot(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::NotesGet, Self::NotesGet)
-            | (Self::CheckpointsList, Self::CheckpointsList)
-            | (Self::NotesSet { .. }, Self::NotesSet { .. })
-            | (Self::BookmarkAdd, Self::BookmarkAdd) => true,
-            (Self::Context { id: left, .. }, Self::Context { id: right, .. }) => left == right,
-            _ => false,
-        }
+        matches!(
+            (self, other),
+            (Self::NotesGet, Self::NotesGet) | (Self::NotesSet { .. }, Self::NotesSet { .. })
+        )
     }
 
     /// Requests that only mean something while the focused tab's dock is
-    /// shown; a save and a removal by key do not.
+    /// shown; a save by key does not.
     fn needs_open_dock(&self) -> bool {
-        !matches!(self, Self::NotesSet { .. } | Self::CheckpointRemove { .. })
+        !matches!(self, Self::NotesSet { .. })
     }
 }
 
@@ -162,7 +135,7 @@ pub(crate) struct DockSignature {
 }
 
 /// What the server last said, for the focused tab.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct DockData {
     /// The last `notes.get`; `text` is always filled (cleaned) once known.
     pub(crate) notes: Option<NotesInfo>,
@@ -170,10 +143,6 @@ pub(crate) struct DockData {
     pub(crate) notes_missing: bool,
     /// A body message instead of the notes (`too_large`).
     pub(crate) notes_error: Option<String>,
-    pub(crate) checkpoints: Option<CheckpointsListInfo>,
-    pub(crate) contexts: BoundedMap<String, CheckpointContextInfo>,
-    /// Context ids asked for at least once.
-    pub(crate) context_asked: HashSet<String>,
     pub(crate) in_flight: Option<InFlightRequest>,
     pub(crate) queue: VecDeque<QueuedRequest>,
     pub(crate) next_poll: Option<Instant>,
@@ -186,26 +155,6 @@ pub(crate) struct DockData {
     pub(crate) generation: u64,
 }
 
-impl Default for DockData {
-    fn default() -> Self {
-        Self {
-            notes: None,
-            notes_missing: false,
-            notes_error: None,
-            checkpoints: None,
-            contexts: BoundedMap::new(CONTEXT_CAP),
-            context_asked: HashSet::new(),
-            in_flight: None,
-            queue: VecDeque::new(),
-            next_poll: None,
-            pulled_for: None,
-            unsupported: false,
-            disabled: false,
-            generation: 0,
-        }
-    }
-}
-
 impl DockData {
     /// Forget what was shown (another tab, pane or server); queued saves
     /// survive, the rest of the queue does not.
@@ -213,9 +162,6 @@ impl DockData {
         self.notes = None;
         self.notes_missing = false;
         self.notes_error = None;
-        self.checkpoints = None;
-        self.contexts.clear();
-        self.context_asked.clear();
         self.unsupported = false;
         self.disabled = false;
         self.queue
@@ -225,10 +171,7 @@ impl DockData {
 
     /// The session key the shown data belongs to.
     fn key(&self) -> Option<&str> {
-        self.notes
-            .as_ref()
-            .map(|notes| notes.key.as_str())
-            .or_else(|| self.checkpoints.as_ref().map(|list| list.key.as_str()))
+        self.notes.as_ref().map(|notes| notes.key.as_str())
     }
 }
 
@@ -377,30 +320,21 @@ enum EditorKey {
     Text(String),
 }
 
-/// What `render` draws from the memo: pinned rows, scrolling rows, the
-/// scroll and a marker (body row, symbol).
-type ViewSlices<'a> = (&'a [Row], &'a [Row], usize, Option<(usize, &'static str)>);
+/// What `render` draws from the memo: the scrolling rows, the scroll and a
+/// marker (body row, symbol).
+type ViewSlices<'a> = (&'a [Row], usize, Option<(usize, &'static str)>);
 
-/// The memoised rows of the active view.
+/// The memoised rows of the view.
 #[derive(Debug)]
 enum CachedRows {
-    History {
-        pinned: Vec<Row>,
-        rows: Vec<Row>,
-        selected: Option<(usize, usize)>,
-    },
     Notes(Vec<Row>),
-    Editor {
-        rows: Vec<Row>,
-        cursor_row: usize,
-    },
+    Editor { rows: Vec<Row>, cursor_row: usize },
     Message(Vec<Row>),
 }
 
 /// When the memoised rows must be rebuilt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RowsStamp {
-    view: InfoView,
     width: u16,
     data: u64,
     ui: u64,
@@ -420,7 +354,6 @@ struct RowsCache {
 pub(crate) struct ClientInfoDockState {
     pub(crate) open_tabs: HashSet<(ClientEndpointId, String)>,
     pub(crate) focused: bool,
-    pub(crate) view: InfoView,
     pub(crate) ui: BoundedMap<String, DockUi>,
     pub(crate) data: DockData,
     pub(crate) editor: Option<NotesEditor>,
@@ -441,7 +374,6 @@ impl Default for ClientInfoDockState {
         Self {
             open_tabs: HashSet::new(),
             focused: false,
-            view: InfoView::History,
             ui: BoundedMap::new(UI_CAP),
             data: DockData::default(),
             editor: None,
@@ -459,7 +391,6 @@ impl Default for ClientInfoDockState {
 /// What `compose` needs from the shell besides the dock state.
 pub(super) struct DockComposeInput<'a> {
     pub(super) tab_label: &'a str,
-    pub(super) agent: &'a str,
     pub(super) sized_elsewhere: bool,
 }
 
@@ -481,10 +412,9 @@ fn local_utc_offset() -> i64 {
         .unwrap_or(0)
 }
 
-fn label_hash(label: &str, agent: &str) -> u64 {
+fn label_hash(label: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     label.hash(&mut hasher);
-    agent.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -516,9 +446,9 @@ impl ClientInfoDockState {
         }
     }
 
-    /// The editor is shown (Notes view, not on its way out).
+    /// The editor is shown (not on its way out).
     pub(crate) fn editing(&self) -> bool {
-        self.view == InfoView::Notes && self.editor.as_ref().is_some_and(|editor| !editor.leaving)
+        self.editor.as_ref().is_some_and(|editor| !editor.leaving)
     }
 
     fn bump_ui(&mut self) {
@@ -556,11 +486,9 @@ impl ClientInfoDockState {
     }
 
     fn queue_view_pull(&mut self) {
-        match self.view {
-            // While editing the save's conflict is the only source of truth.
-            InfoView::Notes if self.editor.is_some() => {}
-            InfoView::Notes => self.queue(InfoRequest::NotesGet, None),
-            InfoView::History => self.queue(InfoRequest::CheckpointsList, None),
+        // While editing the save's conflict is the only source of truth.
+        if self.editor.is_none() {
+            self.queue(InfoRequest::NotesGet, None);
         }
     }
 
@@ -659,41 +587,31 @@ impl ClientInfoDockState {
         let width = area.width.saturating_sub(2);
         let now_unix = unix_now();
         let stamp = RowsStamp {
-            view: self.view,
             width,
             data: self.data.generation,
             ui: self.ui_generation,
             editor: self.editor_generation,
-            labels: label_hash(input.tab_label, input.agent),
+            labels: label_hash(input.tab_label),
             minute: now_unix / 60,
         };
         let key = self.ui_key();
         if self.rows.as_ref().is_none_or(|cache| cache.stamp != stamp) {
-            let rows = self.build_rows(usize::from(width), input, &key, now_unix);
+            let rows = self.build_rows(usize::from(width), input);
             self.rows = Some(RowsCache { stamp, rows });
         }
         let avail = usize::from(area.height.saturating_sub(CHROME_ROWS));
         let Some(cache) = self.rows.as_ref() else {
             return;
         };
-        let (count, span, pinned, history) = match &cache.rows {
-            CachedRows::History {
-                pinned,
-                rows,
-                selected,
-            } => (rows.len(), *selected, pinned.len(), true),
-            CachedRows::Notes(rows) | CachedRows::Message(rows) => (rows.len(), None, 0, false),
+        let (count, span) = match &cache.rows {
+            CachedRows::Notes(rows) | CachedRows::Message(rows) => (rows.len(), None),
             CachedRows::Editor { rows, cursor_row } => {
-                (rows.len(), Some((*cursor_row, *cursor_row)), 0, false)
+                (rows.len(), Some((*cursor_row, *cursor_row)))
             }
         };
-        let avail = avail.saturating_sub(pinned).max(1);
+        let avail = avail.max(1);
         let ui = self.ui_for(&key);
-        let scroll = if history {
-            &mut ui.hist_scroll
-        } else {
-            &mut ui.notes_scroll
-        };
+        let scroll = &mut ui.notes_scroll;
         let mut next = *scroll;
         if ui.follow {
             if let Some((first, last)) = span {
@@ -716,13 +634,7 @@ impl ClientInfoDockState {
         ui.follow = false;
     }
 
-    fn build_rows(
-        &mut self,
-        width: usize,
-        input: &DockComposeInput<'_>,
-        key: &str,
-        now_unix: u64,
-    ) -> CachedRows {
+    fn build_rows(&mut self, width: usize, input: &DockComposeInput<'_>) -> CachedRows {
         let message =
             |text: &str, retry: bool| CachedRows::Message(model::message_rows(text, retry, width));
         if self.data.unsupported {
@@ -738,73 +650,33 @@ impl ClientInfoDockState {
             );
         }
         let utc_offset = local_utc_offset();
-        match self.view {
-            InfoView::Notes => {
-                if let Some(editor) = self.editor.as_ref().filter(|editor| !editor.leaving) {
-                    let (rows, cursor_row) =
-                        model::editor_rows(&editor.lines, editor.cursor, width);
-                    return CachedRows::Editor { rows, cursor_row };
-                }
-                if let Some(error) = self.data.notes_error.as_deref() {
-                    return message(error, true);
-                }
-                let Some(notes) = self.data.notes.as_ref() else {
-                    return message(
-                        if self.data.notes_missing {
-                            "no notes here"
-                        } else {
-                            "loading…"
-                        },
-                        false,
-                    );
-                };
-                CachedRows::Notes(model::notes_rows(&model::NotesInput {
-                    text: notes.text.as_deref().unwrap_or_default(),
-                    exists: notes.exists,
-                    tab_label: input.tab_label,
-                    revision: &notes.revision,
-                    updated_by: notes.updated_by,
-                    updated_at: notes.updated_at,
-                    utc_offset,
-                    width,
-                }))
-            }
-            InfoView::History => {
-                let Some(list) = self.data.checkpoints.as_ref() else {
-                    return message("loading…", false);
-                };
-                let empty = DockUi::default();
-                let ui = self.ui.peek(key).unwrap_or(&empty);
-                let contexts = &self.data.contexts;
-                let built = model::history_rows(
-                    &model::HistoryInput {
-                        checkpoints: &list.checkpoints,
-                        filter: ui.filter,
-                        selected: ui.selected.as_deref(),
-                        expanded: &ui.expanded,
-                        ctx_full: &ui.ctx_full,
-                        agent: input.agent,
-                        now: now_unix,
-                        utc_offset,
-                        width,
-                    },
-                    |checkpoint| {
-                        if !checkpoint.has_context {
-                            return model::ContextView::None;
-                        }
-                        match contexts.peek(&checkpoint.id) {
-                            Some(context) => model::ContextView::Loaded(context),
-                            None => model::ContextView::Loading,
-                        }
-                    },
-                );
-                CachedRows::History {
-                    pinned: built.pinned,
-                    rows: built.rows,
-                    selected: built.selected,
-                }
-            }
+        if let Some(editor) = self.editor.as_ref().filter(|editor| !editor.leaving) {
+            let (rows, cursor_row) = model::editor_rows(&editor.lines, editor.cursor, width);
+            return CachedRows::Editor { rows, cursor_row };
         }
+        if let Some(error) = self.data.notes_error.as_deref() {
+            return message(error, true);
+        }
+        let Some(notes) = self.data.notes.as_ref() else {
+            return message(
+                if self.data.notes_missing {
+                    "no notes here"
+                } else {
+                    "loading…"
+                },
+                false,
+            );
+        };
+        CachedRows::Notes(model::notes_rows(&model::NotesInput {
+            text: notes.text.as_deref().unwrap_or_default(),
+            exists: notes.exists,
+            tab_label: input.tab_label,
+            revision: &notes.revision,
+            updated_by: notes.updated_by,
+            updated_at: notes.updated_at,
+            utc_offset,
+            width,
+        }))
     }
 
     /// Draw the dock into `buffer` at `area` (after `compute_view`).
@@ -816,7 +688,7 @@ impl ClientInfoDockState {
         key: &str,
     ) -> InfoDockHits {
         let width = usize::from(area.width.saturating_sub(2));
-        let strip = model::tab_strip(self.view, width);
+        let strip = model::tab_strip(width);
         let conflict = self.editor.as_ref().and_then(|editor| {
             editor.conflict.as_ref().map(|theirs| {
                 model::theirs_added(
@@ -828,11 +700,10 @@ impl ClientInfoDockState {
         });
         let footer = model::footer(
             &model::FooterInput {
-                view: self.view,
                 editing: self.editing(),
                 dragging: self.dragging,
                 flash: self.flash.as_ref().map(|(text, _)| text.as_str()),
-                conflict: conflict.filter(|_| self.view == InfoView::Notes),
+                conflict,
                 sized_elsewhere: input.sized_elsewhere,
             },
             width,
@@ -844,25 +715,13 @@ impl ClientInfoDockState {
         let Some(cache) = self.rows.as_ref() else {
             return hits;
         };
-        let (pinned, rows, scroll, mark): ViewSlices<'_> = match &cache.rows {
-            CachedRows::History {
-                pinned,
-                rows,
-                selected,
-            } => (
-                pinned,
-                rows,
-                ui.hist_scroll,
-                selected.map(|(first, _)| (first, "›")),
-            ),
+        let (rows, scroll, mark): ViewSlices<'_> = match &cache.rows {
             CachedRows::Editor { rows, cursor_row } => {
-                (&[], rows, ui.notes_scroll, Some((*cursor_row, "▸")))
+                (rows, ui.notes_scroll, Some((*cursor_row, "▸")))
             }
-            CachedRows::Notes(rows) | CachedRows::Message(rows) => {
-                (&[], rows, ui.notes_scroll, None)
-            }
+            CachedRows::Notes(rows) | CachedRows::Message(rows) => (rows, ui.notes_scroll, None),
         };
-        let body_avail = avail.saturating_sub(pinned.len());
+        let body_avail = avail;
         let start = scroll.min(rows.len());
         let end = (start + body_avail).min(rows.len());
         let mark = mark
@@ -873,7 +732,6 @@ impl ClientInfoDockState {
             area,
             &DockFrame {
                 strip: &strip,
-                pinned,
                 body: &rows[start..end],
                 mark,
                 footer: &footer,
@@ -983,27 +841,6 @@ impl ClientShellState {
             tab_id: snapshot.focused_tab_id.clone()?,
             focused_pane_id: snapshot.focused_pane_id.clone(),
         })
-    }
-
-    /// The agent name rows say "by <agent>" with.
-    pub(super) fn info_dock_agent_label(&self) -> String {
-        let tab_id = self.info_dock_focused_tab();
-        let from_snapshot = self.snapshot.as_deref().and_then(|snapshot| {
-            snapshot
-                .agents
-                .iter()
-                .filter(|agent| Some(agent.tab_id.as_str()) == tab_id)
-                .max_by_key(|agent| agent.focused)
-                .and_then(|agent| agent.display_agent.clone().or_else(|| agent.agent.clone()))
-        });
-        from_snapshot
-            .or_else(|| {
-                self.info_dock
-                    .as_deref()
-                    .and_then(|dock| dock.data.notes.as_ref())
-                    .and_then(|notes| notes.agent.clone())
-            })
-            .unwrap_or_else(|| "agent".to_owned())
     }
 
     /// The widest dock the current window allows (`None` before a frame).
@@ -1226,13 +1063,8 @@ impl ClientShellState {
         let lines = self.config.mouse_scroll_lines.max(1);
         if let Some(dock) = self.info_dock.as_deref_mut() {
             let key = dock.ui_key();
-            let history = dock.view == InfoView::History;
             let ui = dock.ui_for(&key);
-            let scroll = if history {
-                &mut ui.hist_scroll
-            } else {
-                &mut ui.notes_scroll
-            };
+            let scroll = &mut ui.notes_scroll;
             *scroll = if down {
                 scroll.saturating_add(lines)
             } else {
@@ -1270,44 +1102,7 @@ impl ClientShellState {
         let Some(dock) = self.info_dock.as_deref_mut() else {
             return;
         };
-        let key = dock.ui_key();
         match target {
-            InfoDockTarget::View(view) => dock_switch_view(dock, view, &key),
-            InfoDockTarget::Row(id) => {
-                let ui = dock.ui_for(&key);
-                if ui.selected.as_deref() == Some(id.as_str()) {
-                    dock_toggle_expand(dock, &key, &id);
-                } else {
-                    ui.selected = Some(id);
-                    ui.follow = true;
-                    dock.bump_ui();
-                }
-            }
-            InfoDockTarget::Toggle(id) => {
-                dock.ui_for(&key).selected = Some(id.clone());
-                dock_toggle_expand(dock, &key, &id);
-            }
-            InfoDockTarget::Body(id) => {
-                dock.ui_for(&key).selected = Some(id);
-                dock.bump_ui();
-            }
-            InfoDockTarget::Filter(kind) => {
-                let current = dock.ui_for(&key).filter;
-                dock_set_filter(dock, &key, if current == kind { None } else { kind });
-            }
-            InfoDockTarget::ExpandAll => {
-                let on = !dock_all_expanded(dock, &key);
-                dock_expand_all(dock, &key, on);
-            }
-            InfoDockTarget::ContextMore(id) => {
-                // No follow: the text under the pointer stays put.
-                let ui = dock.ui_for(&key);
-                ui.selected = Some(id.clone());
-                if !ui.ctx_full.remove(&id) {
-                    ui.ctx_full.insert(id);
-                }
-                dock.bump_ui();
-            }
             InfoDockTarget::Task { line, revision } => dock_tick_task(dock, line, &revision, now),
             InfoDockTarget::EditAt {
                 line,
@@ -1429,54 +1224,6 @@ impl ClientShellState {
         dock.flash = None;
         let key_name = dock.ui_key();
         match code {
-            KeyCode::Tab | KeyCode::BackTab => {
-                let next = match dock.view {
-                    InfoView::Notes => InfoView::History,
-                    InfoView::History => InfoView::Notes,
-                };
-                dock_switch_view(dock, next, &key_name);
-            }
-            KeyCode::Char('1') => {
-                dock_switch_view(dock, InfoView::Notes, &key_name);
-                dock.ui_for(&key_name).follow = false;
-            }
-            KeyCode::Char('2') => dock_switch_view(dock, InfoView::History, &key_name),
-            _ if dock.view == InfoView::History => match code {
-                KeyCode::Up | KeyCode::Char('k') => dock_move(dock, &key_name, -1),
-                KeyCode::Down | KeyCode::Char('j') => dock_move(dock, &key_name, 1),
-                KeyCode::Enter | KeyCode::Char(' ') => {
-                    if let Some(id) = dock.ui_for(&key_name).selected.clone() {
-                        dock_toggle_expand(dock, &key_name, &id);
-                    }
-                }
-                KeyCode::Char('e' | '+') => dock_expand_all(dock, &key_name, true),
-                KeyCode::Char('E' | '-') => dock_expand_all(dock, &key_name, false),
-                KeyCode::Char('m') => {
-                    let ui = dock.ui_for(&key_name);
-                    if let Some(id) = ui.selected.clone() {
-                        if !ui.ctx_full.remove(&id) {
-                            ui.ctx_full.insert(id);
-                        }
-                        ui.follow = true;
-                        dock.bump_ui();
-                    }
-                }
-                KeyCode::Char('f') => {
-                    let current = dock.ui_for(&key_name).filter;
-                    let index = model::FILTERS
-                        .iter()
-                        .position(|filter| *filter == current)
-                        .unwrap_or(0);
-                    let next = model::FILTERS[(index + 1) % model::FILTERS.len()];
-                    dock_set_filter(dock, &key_name, next);
-                }
-                KeyCode::Char('b') => dock_bookmark(dock, &key_name, now),
-                KeyCode::Char('[') => dock_jump_same_kind(dock, &key_name, -1),
-                KeyCode::Char(']') => dock_jump_same_kind(dock, &key_name, 1),
-                KeyCode::PageUp => dock_scroll(dock, &key_name, false, 10),
-                KeyCode::PageDown => dock_scroll(dock, &key_name, true, 10),
-                _ => {}
-            },
             KeyCode::Char('e') => {
                 dock.start_edit(None, now);
                 dock.ui_for(&key_name).follow = true;
@@ -1714,7 +1461,7 @@ impl ClientShellState {
     /// Every `Info*` reply; never raises a notice.
     pub(super) fn handle_info_dock_endpoint_result(
         &mut self,
-        pending: PendingEndpointRequest,
+        _pending: PendingEndpointRequest,
         result: Result<ResponseResult, ClientShellEndpointError>,
     ) -> (bool, Vec<ClientShellAction>) {
         let now = Instant::now();
@@ -1726,20 +1473,9 @@ impl ClientShellState {
             // A reply for a request the dock already gave up on.
             None => return (false, Vec::new()),
         };
-        if let (
-            PendingEndpointKind::InfoCheckpointContext { id },
-            InfoRequest::Context { id: asked, .. },
-        ) = (&pending.kind, &request)
-        {
-            if id != asked {
-                tracing::debug!(%id, %asked, "info dock: context reply for another checkpoint");
-                return (false, Vec::new());
-            }
-        }
-        let key = dock.ui_key();
         match result {
             Err(error) => dock_reply_error(dock, request, error, now),
-            Ok(result) => dock_reply(dock, request, result, &key, now),
+            Ok(result) => dock_reply(dock, request, result, now),
         }
         let mut outcome = ClientShellInput::default();
         self.pump_info_dock(now, &mut outcome);
@@ -1785,197 +1521,15 @@ fn dock_edit_at(dock: &mut ClientInfoDockState, line: usize, byte: usize, now: I
     dock.ui_for_current_follow();
 }
 
-fn dock_switch_view(dock: &mut ClientInfoDockState, view: InfoView, key: &str) {
-    if dock.view == view {
-        return;
-    }
-    if dock.editing() {
-        dock.commit_editor(true);
-    }
-    dock.view = view;
-    dock.ui_for(key).follow = true;
-    dock.bump_ui();
-    dock.queue_view_pull();
-}
-
-fn dock_visible_ids(dock: &mut ClientInfoDockState, key: &str) -> Vec<String> {
-    let filter = dock.ui_for(key).filter;
-    dock.data
-        .checkpoints
-        .as_ref()
-        .map(|list| {
-            model::visible(&list.checkpoints, filter)
-                .map(|checkpoint| checkpoint.id.clone())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn dock_all_expanded(dock: &mut ClientInfoDockState, key: &str) -> bool {
-    let ids = dock_visible_ids(dock, key);
-    let ui = dock.ui_for(key);
-    !ids.is_empty() && ids.iter().all(|id| ui.expanded.contains(id))
-}
-
-/// Ask for a checkpoint's context the first time it opens.
-fn dock_want_context(dock: &mut ClientInfoDockState, id: &str) {
-    let has_context = dock
-        .data
-        .checkpoints
-        .as_ref()
-        .and_then(|list| {
-            list.checkpoints
-                .iter()
-                .find(|checkpoint| checkpoint.id == id)
-        })
-        .is_some_and(|checkpoint| checkpoint.has_context);
-    if !has_context || dock.data.contexts.contains_key(id) || dock.data.context_asked.contains(id) {
-        return;
-    }
-    dock.data.context_asked.insert(id.to_owned());
-    dock.queue(
-        InfoRequest::Context {
-            id: id.to_owned(),
-            tries: 0,
-        },
-        None,
-    );
-}
-
-fn dock_toggle_expand(dock: &mut ClientInfoDockState, key: &str, id: &str) {
-    let ui = dock.ui_for(key);
-    ui.follow = true;
-    let opened = if ui.expanded.remove(id) {
-        false
-    } else {
-        ui.expanded.insert(id.to_owned());
-        true
-    };
-    dock.bump_ui();
-    if opened {
-        dock_want_context(dock, id);
-    }
-}
-
-/// Expand every visible (filtered) checkpoint, or collapse everything.
-fn dock_expand_all(dock: &mut ClientInfoDockState, key: &str, on: bool) {
-    let ids = if on {
-        dock_visible_ids(dock, key)
-    } else {
-        Vec::new()
-    };
-    let ui = dock.ui_for(key);
-    ui.follow = true;
-    if on {
-        ui.expanded.extend(ids.iter().cloned());
-    } else {
-        ui.expanded.clear();
-    }
-    dock.bump_ui();
-    for id in ids {
-        dock_want_context(dock, &id);
-    }
-}
-
-fn dock_set_filter(dock: &mut ClientInfoDockState, key: &str, filter: Option<CheckpointKind>) {
-    dock.ui_for(key).filter = filter;
-    let ids = dock_visible_ids(dock, key);
-    let ui = dock.ui_for(key);
-    if !ids.is_empty() && !ui.selected.as_ref().is_some_and(|id| ids.contains(id)) {
-        ui.selected = ids.last().cloned();
-    }
-    ui.follow = true;
-    dock.bump_ui();
-}
-
-fn dock_move(dock: &mut ClientInfoDockState, key: &str, delta: isize) {
-    let ids = dock_visible_ids(dock, key);
-    if ids.is_empty() {
-        return;
-    }
-    let ui = dock.ui_for(key);
-    let index = ui
-        .selected
-        .as_ref()
-        .and_then(|selected| ids.iter().position(|id| id == selected))
-        .unwrap_or(ids.len() - 1);
-    let next = index.saturating_add_signed(delta).min(ids.len() - 1);
-    ui.selected = Some(ids[next].clone());
-    ui.follow = true;
-    dock.bump_ui();
-}
-
-/// `[` / `]`: the previous / next checkpoint of the selected one's kind.
-fn dock_jump_same_kind(dock: &mut ClientInfoDockState, key: &str, delta: isize) {
-    let filter = dock.ui_for(key).filter;
-    let selected = dock.ui_for(key).selected.clone();
-    let Some(list) = dock.data.checkpoints.as_ref() else {
-        return;
-    };
-    let visible: Vec<_> = model::visible(&list.checkpoints, filter).collect();
-    let Some(index) = selected
-        .as_ref()
-        .and_then(|selected| visible.iter().position(|cp| &cp.id == selected))
-    else {
-        return;
-    };
-    let kind = visible[index].kind;
-    let found = if delta < 0 {
-        visible[..index].iter().rev().find(|cp| cp.kind == kind)
-    } else {
-        visible[index + 1..].iter().find(|cp| cp.kind == kind)
-    }
-    .map(|cp| cp.id.clone());
-    if let Some(id) = found {
-        let ui = dock.ui_for(key);
-        ui.selected = Some(id);
-        ui.follow = true;
-        dock.bump_ui();
-    }
-}
-
 fn dock_scroll(dock: &mut ClientInfoDockState, key: &str, down: bool, lines: usize) {
-    let history = dock.view == InfoView::History;
     let ui = dock.ui_for(key);
-    let scroll = if history {
-        &mut ui.hist_scroll
-    } else {
-        &mut ui.notes_scroll
-    };
+    let scroll = &mut ui.notes_scroll;
     *scroll = if down {
         scroll.saturating_add(lines)
     } else {
         scroll.saturating_sub(lines)
     };
     ui.follow = false;
-}
-
-/// `b`: bookmark now, or remove the selected bookmark of the user.
-fn dock_bookmark(dock: &mut ClientInfoDockState, key: &str, now: Instant) {
-    let selected = dock.ui_for(key).selected.clone();
-    let user_bookmark = dock.data.checkpoints.as_ref().and_then(|list| {
-        list.checkpoints.iter().find(|checkpoint| {
-            Some(&checkpoint.id) == selected.as_ref()
-                && checkpoint.kind == CheckpointKind::Bookmark
-                && checkpoint.author == NotesAuthor::User
-        })
-    });
-    if let (Some(checkpoint), Some(list)) = (user_bookmark, dock.data.checkpoints.as_ref()) {
-        let request = InfoRequest::CheckpointRemove {
-            key: list.key.clone(),
-            id: checkpoint.id.clone(),
-        };
-        dock.queue(request, None);
-        dock.set_flash("removing bookmark…", now);
-        return;
-    }
-    dock.queue(InfoRequest::BookmarkAdd, None);
-    let ui = dock.ui_for(key);
-    if !matches!(ui.filter, None | Some(CheckpointKind::Bookmark)) {
-        ui.filter = None;
-        dock.bump_ui();
-    }
-    dock.set_flash("bookmarked now (b again removes)", now);
 }
 
 /// A task marker in the read view: a compare-and-swap save of the toggled
@@ -2073,15 +1627,6 @@ fn info_request_method(
             }),
             PendingEndpointKind::InfoNotesGet,
         ),
-        InfoRequest::CheckpointsList => (
-            Method::CheckpointsList(CheckpointsListParams {
-                target: tab_target()?,
-                kinds: Vec::new(),
-                since_seq: dock.data.checkpoints.as_ref().map(|list| list.seq),
-                limit: None,
-            }),
-            PendingEndpointKind::InfoCheckpointsList,
-        ),
         InfoRequest::NotesSet {
             key,
             text,
@@ -2096,41 +1641,6 @@ fn info_request_method(
             }),
             PendingEndpointKind::InfoNotesWrite,
         ),
-        InfoRequest::BookmarkAdd => {
-            let stamp = model::hhmm(unix_now(), local_utc_offset());
-            (
-                Method::CheckpointsAdd(CheckpointsAddParams {
-                    target: tab_target()?,
-                    kind: CheckpointKind::Bookmark,
-                    title: "Pinned from the pane".into(),
-                    detail: Some(format!("Bookmarked at {stamp} by you.")),
-                    tags: vec!["pin".into()],
-                    author: NotesAuthor::User,
-                }),
-                PendingEndpointKind::InfoCheckpointWrite,
-            )
-        }
-        InfoRequest::CheckpointRemove { key, id } => (
-            Method::CheckpointsRemove(CheckpointTarget {
-                target: key_target(key),
-                id: id.clone(),
-            }),
-            PendingEndpointKind::InfoCheckpointWrite,
-        ),
-        InfoRequest::Context { id, .. } => {
-            let target = match dock.data.checkpoints.as_ref() {
-                Some(list) => key_target(&list.key),
-                None => tab_target()?,
-            };
-            (
-                Method::CheckpointsContext(CheckpointsContextParams {
-                    target,
-                    id: id.clone(),
-                    chars: None,
-                }),
-                PendingEndpointKind::InfoCheckpointContext { id: id.clone() },
-            )
-        }
     })
 }
 
@@ -2161,38 +1671,17 @@ fn dock_reply_error(
                 dock.data.notes_missing = true;
                 dock.bump_data();
             }
-            InfoRequest::CheckpointsList => {
-                dock.data.checkpoints = Some(CheckpointsListInfo::default());
-                dock.bump_data();
-            }
-            InfoRequest::Context { id, .. } => {
-                dock.data.contexts.insert(
-                    id.clone(),
-                    CheckpointContextInfo {
-                        id,
-                        source: CheckpointContextSource::Missing,
-                        prompt: None,
-                        reply: None,
-                        prompt_ts: None,
-                        reply_ts: None,
-                        continued: false,
-                        truncated: false,
-                    },
-                );
-                dock.bump_data();
-            }
             _ => dock.set_flash("not found", now),
         },
         "too_large" => {
             if matches!(request, InfoRequest::NotesGet) {
                 dock.data.notes_error =
-                    Some("notes too large to show (see herdr notes path)".into());
+                    Some("notes too large to show (the file is under <config dir>/notes)".into());
                 dock.bump_data();
             } else {
                 dock.set_flash("notes too large", now);
             }
         }
-        "rate_limited" => dock.set_flash("too many checkpoints this hour", now),
         // The request is gone (timeout, cancelled, server away): a save
         // stays dirty and re-arms on the idle timer.
         "endpoint_timeout" | "endpoint_cancelled" | "server_unavailable" => {}
@@ -2212,7 +1701,6 @@ fn dock_reply(
     dock: &mut ClientInfoDockState,
     request: InfoRequest,
     result: ResponseResult,
-    key: &str,
     now: Instant,
 ) {
     match (request, result) {
@@ -2249,46 +1737,6 @@ fn dock_reply(
                 dock.bump_ui();
             }
             dock.bump_data();
-        }
-        (InfoRequest::CheckpointsList, ResponseResult::CheckpointsList { checkpoints }) => {
-            if checkpoints.unchanged
-                && dock
-                    .data
-                    .checkpoints
-                    .as_ref()
-                    .is_some_and(|current| current.key == checkpoints.key)
-            {
-                return;
-            }
-            let mut list = checkpoints;
-            list.checkpoints.sort_by_key(|checkpoint| checkpoint.ts);
-            let key_changed = dock.data.key() != Some(list.key.as_str());
-            let ui_key = list.key.clone();
-            let last = list
-                .checkpoints
-                .last()
-                .map(|checkpoint| checkpoint.id.clone());
-            let ids: HashSet<String> = list
-                .checkpoints
-                .iter()
-                .map(|checkpoint| checkpoint.id.clone())
-                .collect();
-            dock.data.checkpoints = Some(list);
-            dock.bump_data();
-            if key_changed {
-                dock.bump_ui();
-            }
-            let ui = dock.ui_for(&ui_key);
-            if !ui.selected.as_ref().is_some_and(|id| ids.contains(id)) {
-                ui.selected = last;
-                ui.follow = true;
-            }
-            // Opened rows whose context is unknown ask now (a reload).
-            let expanded: Vec<String> = dock.ui_for(&ui_key).expanded.iter().cloned().collect();
-            for id in expanded {
-                dock_want_context(dock, &id);
-            }
-            dock.bump_ui();
         }
         (
             InfoRequest::NotesSet {
@@ -2341,18 +1789,14 @@ fn dock_reply(
                         return;
                     }
                     let need_text = notes.text.is_none();
-                    let view = dock.view;
                     let Some(editor) = dock.editor.as_mut().filter(|e| e.key == notes_key) else {
                         dock.queue(InfoRequest::NotesGet, None);
                         return;
                     };
                     editor.save_pending = false;
                     editor.sent_text = None;
-                    let left = std::mem::take(&mut editor.leaving);
+                    editor.leaving = false;
                     editor.conflict = Some(notes);
-                    if left && view != InfoView::Notes {
-                        dock.set_flash("notes changed elsewhere: open Notes to resolve", now);
-                    }
                     dock.bump_editor();
                     if need_text {
                         // Without their text a merge has nothing to keep.
@@ -2360,56 +1804,6 @@ fn dock_reply(
                     }
                 }
             }
-        }
-        (InfoRequest::BookmarkAdd, ResponseResult::CheckpointWrite { checkpoint }) => {
-            if let Some(added) = checkpoint.checkpoint {
-                let ui_key = checkpoint.key.clone();
-                let ui = dock.ui_for(&ui_key);
-                ui.selected = Some(added.id.clone());
-                ui.expanded.insert(added.id.clone());
-                ui.follow = true;
-                dock.bump_ui();
-            }
-            dock.queue(InfoRequest::CheckpointsList, None);
-        }
-        (InfoRequest::CheckpointRemove { id, .. }, ResponseResult::CheckpointWrite { .. }) => {
-            let ui_key = dock
-                .data
-                .key()
-                .map(str::to_owned)
-                .unwrap_or_else(|| key.to_owned());
-            let ui = dock.ui_for(&ui_key);
-            ui.expanded.remove(&id);
-            if ui.selected.as_deref() == Some(id.as_str()) {
-                ui.selected = None;
-            }
-            dock.bump_ui();
-            dock.set_flash("bookmark removed", now);
-            dock.queue(InfoRequest::CheckpointsList, None);
-        }
-        (InfoRequest::Context { id, tries }, ResponseResult::CheckpointContext { context }) => {
-            if context.source == CheckpointContextSource::Pending {
-                if tries + 1 < CONTEXT_TRIES {
-                    dock.queue(
-                        InfoRequest::Context {
-                            id,
-                            tries: tries + 1,
-                        },
-                        Some(now + CONTEXT_RETRY),
-                    );
-                    return;
-                }
-                dock.data.contexts.insert(
-                    id.clone(),
-                    CheckpointContextInfo {
-                        source: CheckpointContextSource::Missing,
-                        ..context
-                    },
-                );
-            } else {
-                dock.data.contexts.insert(id, context);
-            }
-            dock.bump_data();
         }
         (request, _) => {
             tracing::debug!(?request, "info dock: unexpected reply shape");
@@ -2421,13 +1815,6 @@ fn dock_reply(
 impl PendingEndpointKind {
     /// A request of the info dock (its replies never raise a notice).
     pub(super) fn is_info_dock(&self) -> bool {
-        matches!(
-            self,
-            Self::InfoNotesGet
-                | Self::InfoNotesWrite
-                | Self::InfoCheckpointsList
-                | Self::InfoCheckpointWrite
-                | Self::InfoCheckpointContext { .. }
-        )
+        matches!(self, Self::InfoNotesGet | Self::InfoNotesWrite)
     }
 }

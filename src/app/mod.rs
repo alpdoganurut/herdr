@@ -32,7 +32,6 @@ pub(crate) mod message_queue;
 pub(crate) mod missing_cwd;
 pub(crate) mod news;
 mod notes;
-mod notes_auto;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
 #[cfg(test)]
@@ -220,7 +219,7 @@ pub struct App {
     /// Tests: how often `follow_teams` ran (the zero-team perf guard).
     #[cfg(test)]
     pub(crate) team_follow_calls: usize,
-    /// Notes and checkpoints (fork): stores, caches and the notes worker.
+    /// Notes (fork): the store and the pane → key memory.
     pub(crate) notes: crate::notes::NotesRuntime,
     /// The agents model (fork, agents v2): limits, reply index, closes in
     /// flight, migration.
@@ -1103,7 +1102,6 @@ impl App {
 
         if !invalid_section("notes") {
             self.notes.enabled = config.notes.enabled;
-            self.notes.auto = config.notes.auto_checkpoints;
         }
 
         if !invalid_section("browser") {

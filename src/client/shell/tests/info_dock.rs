@@ -1,16 +1,12 @@
 //! The info dock (fork): layout carve, toggles, the single-slot request
-//! queue, replies without notices, keys, text, mouse and the editor.
-//! Notes and checkpoints are built from the design fixture (embedded: the
-//! stub directory is not part of the repository).
+//! queue, replies without notices, keys, text, mouse, the editor and the
+//! notes page's markdown rows (the picked design,
+//! `.local/prd/notes-format/sonnet-directed.html`).
 
 use super::*;
-use crate::api::schema::notes::{
-    CheckpointContextInfo, CheckpointContextSource, CheckpointInfo, CheckpointKind,
-    CheckpointWriteInfo, CheckpointsListInfo, NotesAuthor, NotesInfo, NotesWriteInfo,
-    NotesWriteOutcome,
-};
+use crate::api::schema::notes::{NotesAuthor, NotesInfo, NotesWriteInfo, NotesWriteOutcome};
 use crate::api::schema::{Method, ResponseResult};
-use crate::client::shell::info_dock_model::{self as model, InfoDockTarget, InfoView};
+use crate::client::shell::info_dock_model::{self as model, InfoDockTarget};
 use crate::config::Config;
 use crate::input::TerminalKey;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
@@ -21,7 +17,6 @@ const ROWS: u16 = 45;
 const NOTES: &str = "# calendar-fix\n\nGoal: daily reminders fire at the wrong local time after a DST change.\nIssue: refs #412\n\n## Plan\n- [x] Reproduce with a fixed clock across the Oct 26 transition\n- [x] Find where `daily_time` is converted to an Instant\n- [x] Store the next fire as wall-clock + tz, not a monotonic offset\n- [ ] Migrate persisted `remind_every: daily` tabs\n- [ ] Settings preview shows next fire in local time\n\n## Decisions\n- Use `jiff` zoned arithmetic already in the tree; no new dependency.\n- Missed fires during sleep collapse into one reminder, not a burst.\n\n## Findings\n- `idle_reminders.rs` recomputes from `Instant::now()` on every tick; drift is cumulative.\n- Snapshot round-trip drops the tz name; only the offset survives.\n\n## Open questions\n- Should a skipped 02:30 (spring forward) fire at 03:00 or be skipped? (asked user)\n\n## Agent log\n- 11:52 tests green on macOS; Windows lint pending\n- 12:03 migration draft in `persist/restore.rs`, needs review\n";
 
 const KEY: &str = "claude-6f1c2a9e-4b7d-4e21-9c3a-8d05b2e7f413";
-const NOW: u64 = 1_790_943_120;
 
 fn notes_info(text: &str, revision: &str) -> NotesInfo {
     NotesInfo {
@@ -39,152 +34,6 @@ fn notes_info(text: &str, revision: &str) -> NotesInfo {
         tab_id: Some("tab_1".into()),
         pane_id: Some("pane_1".into()),
         previous: None,
-    }
-}
-
-fn cp(
-    id: &str,
-    ts: u64,
-    kind: CheckpointKind,
-    author: NotesAuthor,
-    title: &str,
-    detail: Option<&str>,
-) -> CheckpointInfo {
-    CheckpointInfo {
-        id: id.into(),
-        ts,
-        kind,
-        author,
-        title: title.into(),
-        detail: detail.map(str::to_owned),
-        tags: Vec::new(),
-        has_context: true,
-    }
-}
-
-fn fixture_checkpoints() -> Vec<CheckpointInfo> {
-    use CheckpointKind::*;
-    use NotesAuthor::*;
-    vec![
-        cp(
-            "cp_01JB2K0A1",
-            1_790_934_185,
-            Note,
-            Agent,
-            "Session start: reproduce DST reminder drift",
-            Some("Scoped to daily reminders; interval reminders are monotonic and unaffected."),
-        ),
-        cp(
-            "cp_01JB2K0A2",
-            1_790_935_121,
-            Milestone,
-            Agent,
-            "Reproduced with fixed clock",
-            Some("New test `daily_reminder_across_dst` fails: fires 1h early."),
-        ),
-        cp(
-            "cp_01JB2K0A3",
-            1_790_935_579,
-            Bookmark,
-            User,
-            "Root cause explanation",
-            None,
-        ),
-        cp(
-            "cp_01JB2K0A4",
-            1_790_936_043,
-            Decision,
-            Agent,
-            "Store next fire as zoned wall-clock",
-            None,
-        ),
-        cp(
-            "cp_01JB2K0A5",
-            1_790_937_110,
-            Failure,
-            Agent,
-            "Snapshot round-trip loses tz name",
-            Some("session.json keeps only the offset; restored tabs compute in UTC+offset."),
-        ),
-        cp(
-            "cp_01JB2K0A6",
-            1_790_937_612,
-            Decision,
-            Agent,
-            "Persist IANA tz name, optional field",
-            None,
-        ),
-        cp(
-            "cp_01JB2K0A7",
-            1_790_938_653,
-            Bookmark,
-            Agent,
-            "Spring-forward edge case question",
-            None,
-        ),
-        cp(
-            "cp_01JB2K0A8",
-            1_790_939_528,
-            Milestone,
-            Agent,
-            "DST tests green",
-            None,
-        ),
-        cp(
-            "cp_01JB2K0A9",
-            1_790_940_404,
-            Failure,
-            Agent,
-            "Windows lint: unused import under cfg(windows)",
-            None,
-        ),
-        cp(
-            "cp_01JB2K0AA",
-            1_790_941_290,
-            Bookmark,
-            User,
-            "Good summary of the migration options",
-            None,
-        ),
-        cp(
-            "cp_01JB2K0AB",
-            1_790_941_937,
-            Milestone,
-            Agent,
-            "Tests green on macOS after lint fix",
-            None,
-        ),
-        cp(
-            "cp_01JB2K0AC",
-            1_790_942_627,
-            Decision,
-            Agent,
-            "Migrate on load (option a)",
-            None,
-        ),
-    ]
-}
-
-fn checkpoints_info() -> CheckpointsListInfo {
-    CheckpointsListInfo {
-        key: KEY.into(),
-        seq: 4096,
-        unchanged: false,
-        checkpoints: fixture_checkpoints(),
-        started_at: Some(1_790_934_185),
-    }
-}
-
-fn context(id: &str, prompt: &str, reply: &str) -> CheckpointContextInfo {
-    CheckpointContextInfo {
-        id: id.into(),
-        source: CheckpointContextSource::Native,
-        prompt: Some(prompt.into()),
-        reply: Some(reply.into()),
-        prompt_ts: None,
-        reply_ts: None,
-        continued: false,
-        truncated: false,
     }
 }
 
@@ -307,22 +156,13 @@ fn answer_in_flight(
     method.clone()
 }
 
-/// Open the dock with History and Notes loaded.
+/// Open the dock with the notes loaded.
 fn open_loaded(state: &mut ClientShellState) {
     let outcome = toggle(state);
-    let method = answer_in_flight(state, &outcome, |_| ResponseResult::CheckpointsList {
-        checkpoints: checkpoints_info(),
+    let method = answer_in_flight(state, &outcome, |_| ResponseResult::NotesGet {
+        notes: notes_info(NOTES, "sha256:4e9b1c07a2f3"),
     });
-    assert!(matches!(method, Method::CheckpointsList(_)), "{method:?}");
-    state.info_dock.as_deref_mut().expect("dock").view = InfoView::Notes;
-    state.info_dock.as_deref_mut().expect("dock").data.notes =
-        Some(notes_info(NOTES, "sha256:4e9b1c07a2f3"));
-    state
-        .info_dock
-        .as_deref_mut()
-        .expect("dock")
-        .data
-        .generation += 1;
+    assert!(matches!(method, Method::NotesGet(_)), "{method:?}");
     recompose(state);
 }
 
@@ -461,168 +301,6 @@ fn task_rows_carry_the_revision_they_were_built_from() {
 }
 
 #[test]
-fn history_rows_show_chips_spine_and_the_now_row() {
-    let checkpoints = fixture_checkpoints();
-    let expanded = std::collections::HashSet::from(["cp_01JB2K0A5".to_owned()]);
-    let ctx_full = std::collections::HashSet::new();
-    let failure_context = context(
-        "cp_01JB2K0A5",
-        "(continuing)",
-        "The fix works live but fails after restore: the persisted remind block only has `offset_minutes`. Restored tabs still drift.",
-    );
-    let built = model::history_rows(
-        &model::HistoryInput {
-            checkpoints: &checkpoints,
-            filter: None,
-            selected: Some("cp_01JB2K0A5"),
-            expanded: &expanded,
-            ctx_full: &ctx_full,
-            agent: "claude",
-            now: NOW,
-            utc_offset: 0,
-            width: 42,
-        },
-        |checkpoint| {
-            if checkpoint.id == "cp_01JB2K0A5" {
-                model::ContextView::Loaded(&failure_context)
-            } else {
-                model::ContextView::Loading
-            }
-        },
-    );
-    let chips = built.pinned[0].text();
-    assert!(chips.starts_with("◇ 3  ○ 3  × 2  ⚐ 3  · 1"), "{chips:?}");
-    assert!(chips.ends_with("all"), "{chips:?}");
-    assert!(built.pinned[1].text().ends_with("expand all ▾"));
-    let rows: Vec<String> = built.rows.iter().map(model::Row::text).collect();
-    assert!(rows[0].starts_with("09:43 · Session start"), "{rows:?}");
-    assert!(
-        rows.iter().any(|row| row.contains("10:06 ⚑ Root cause")),
-        "user bookmarks are filled"
-    );
-    assert!(rows
-        .iter()
-        .any(|row| row.contains("(continued from previous turn)")));
-    assert!(rows
-        .iter()
-        .any(|row| row.contains("by claude  #") || row.contains("by claude")));
-    assert!(rows.last().expect("now row").contains("12:12 · now"));
-    let (first, last) = built.selected.expect("selected span");
-    assert!(rows[first].contains("Snapshot round-trip"));
-    assert!(last > first + 3, "the open checkpoint spans its body");
-}
-
-#[test]
-fn automatic_checkpoints_are_dim_and_say_auto() {
-    let mut auto = cp(
-        "cp_auto",
-        NOW,
-        CheckpointKind::Bookmark,
-        NotesAuthor::Agent,
-        "you: 12:12",
-        None,
-    );
-    auto.tags = vec!["auto".into()];
-    let own = cp(
-        "cp_own",
-        NOW,
-        CheckpointKind::Bookmark,
-        NotesAuthor::Agent,
-        "chose sqlite",
-        None,
-    );
-    let checkpoints = vec![auto, own];
-    let expanded = std::collections::HashSet::from(["cp_auto".to_owned()]);
-    let built = model::history_rows(
-        &model::HistoryInput {
-            checkpoints: &checkpoints,
-            filter: None,
-            selected: None,
-            expanded: &std::collections::HashSet::new(),
-            ctx_full: &std::collections::HashSet::new(),
-            agent: "claude",
-            now: NOW,
-            utc_offset: 0,
-            width: 42,
-        },
-        |_| model::ContextView::Loading,
-    );
-    let title_fg = |title: &str| {
-        built
-            .rows
-            .iter()
-            .flat_map(|row| row.segs.iter())
-            .find(|seg| seg.text.contains(title))
-            .and_then(|seg| seg.style.fg)
-    };
-    assert_eq!(title_fg("you: 12:12"), Some(model::DUSK.dim));
-    assert_ne!(title_fg("chose sqlite"), Some(model::DUSK.dim));
-    let opened = model::history_rows(
-        &model::HistoryInput {
-            checkpoints: &checkpoints,
-            filter: None,
-            selected: None,
-            expanded: &expanded,
-            ctx_full: &std::collections::HashSet::new(),
-            agent: "claude",
-            now: NOW,
-            utc_offset: 0,
-            width: 42,
-        },
-        |_| model::ContextView::Loading,
-    );
-    let rows: Vec<String> = opened.rows.iter().map(model::Row::text).collect();
-    assert!(
-        rows.iter().any(|row| row.contains("auto · by herdr")),
-        "{rows:?}"
-    );
-    assert!(!rows.iter().any(|row| row.contains("#auto")), "{rows:?}");
-}
-
-#[test]
-fn long_context_collapses_behind_show_more() {
-    let checkpoints = vec![cp(
-        "cp_1",
-        NOW,
-        CheckpointKind::Note,
-        NotesAuthor::Agent,
-        "t",
-        None,
-    )];
-    let expanded = std::collections::HashSet::from(["cp_1".to_owned()]);
-    let long = "word ".repeat(200);
-    let ctx = context("cp_1", "prompt", &long);
-    let build = |ctx_full: &std::collections::HashSet<String>| {
-        model::history_rows(
-            &model::HistoryInput {
-                checkpoints: &checkpoints,
-                filter: None,
-                selected: Some("cp_1"),
-                expanded: &expanded,
-                ctx_full,
-                agent: "claude",
-                now: NOW,
-                utc_offset: 0,
-                width: 42,
-            },
-            |_| model::ContextView::Loaded(&ctx),
-        )
-        .rows
-        .iter()
-        .map(model::Row::text)
-        .collect::<Vec<_>>()
-    };
-    let short = build(&std::collections::HashSet::new());
-    assert!(
-        short.iter().any(|row| row.contains("show more ▾")),
-        "{short:?}"
-    );
-    let full = build(&std::collections::HashSet::from(["cp_1".to_owned()]));
-    assert!(full.iter().any(|row| row.contains("show less ▴")));
-    assert!(full.len() > short.len());
-}
-
-#[test]
 fn keep_mine_re_adds_their_new_lines_after_their_anchor() {
     let base = "# t\n## Plan\n- a\n- b";
     let mine: Vec<String> = "# t\n## Plan\n- a\n- b\n- mine"
@@ -665,6 +343,368 @@ fn click_offsets_map_through_spaced_headings_and_code_spans() {
     assert_eq!(model::edit_offset(code, at, 2, false), at + 2);
     let wide = "日本語 text";
     assert_eq!(model::edit_offset(wide, 0, 3, false), "日".len());
+}
+
+// ---------------------------------------------------------------- markdown
+
+/// The design brief's stub (`.local/prd/notes-format/brief.md`): every
+/// element the pane renders.
+const BRIEF_STUB: &str = "# Backup S3 watch\n\nOwner: infra monitor (w12:p1), daily since 2026-10-31.\nFlags go to the owner in **Turkish**, see [the /tr skill](https://example.com/tr).\n\n## Daily checklist\n\n### Cost\n- [ ] Run `check.sh`, compare with *yesterday's* line\n- [x] S3 cost under $1.30/day\n\n### Buckets\n1. New bucket: flag one day above +15 GB\n2. Old bucket: flag growth above 5 GB/day\n   - report its size once on 11-07\n   - then stop\n\n#### Known failed jobs\n- 29853085\n- 29864525\n\n> Nightly full passes must succeed within 48 h.\n\n```bash\nssh -p 10041 root@master 'kubectl get jobs -n backup'\n```\n\n---\n\n## Reference\n| Bucket | Purpose | Expiry |\n|---|---|---|\n| `leap-bi4-backups` | new | none |\n| `leap-bi4-s3-access-logs` | logs | 14 d |\n\n## Log\n- 10:30 egress fix live (`167fdd49`)\n- 11:05 handed to infra monitor\n";
+
+fn md_rows(text: &str, width: usize) -> Vec<model::Row> {
+    model::notes_rows(&model::NotesInput {
+        text,
+        exists: true,
+        tab_label: "",
+        revision: "sha256:abc",
+        updated_by: None,
+        updated_at: None,
+        utc_offset: 0,
+        width,
+    })
+}
+
+fn md_text(text: &str, width: usize) -> Vec<String> {
+    md_rows(text, width).iter().map(model::Row::text).collect()
+}
+
+/// The segment drawing `text` in the first row that has one.
+fn seg_of<'a>(rows: &'a [model::Row], text: &str) -> &'a model::Seg {
+    rows.iter()
+        .flat_map(|row| row.segs.iter())
+        .find(|seg| seg.text == text)
+        .unwrap_or_else(|| panic!("no segment {text:?}"))
+}
+
+fn has(style: ratatui::style::Style, modifier: ratatui::style::Modifier) -> bool {
+    style.add_modifier.contains(modifier)
+}
+
+fn rule_row(label: &str, width: usize) -> String {
+    let head = format!("── ✦ {label} ✦ ");
+    let used = unicode_width::UnicodeWidthStr::width(head.as_str());
+    format!("{head}{}", "─".repeat(width - used))
+}
+
+#[test]
+fn the_brief_stub_renders_as_the_picked_design() {
+    use ratatui::style::Modifier;
+    let pad = |text: &str| format!("{text}{}", " ".repeat(56 - text.chars().count()));
+    let rows = md_rows(BRIEF_STUB, 56);
+    let text: Vec<String> = rows.iter().map(model::Row::text).collect();
+    let expected = [
+        "❦ B A C K U P   S 3   W A T C H".to_owned(),
+        String::new(),
+        "Owner: infra monitor (w12:p1), daily since 2026-10-31.".to_owned(),
+        "Flags go to the owner in Turkish, see the /tr skill.".to_owned(),
+        String::new(),
+        rule_row("Daily checklist", 56),
+        String::new(),
+        "Cost".to_owned(),
+        "○ Run check.sh, compare with yesterday's line".to_owned(),
+        "● S3 cost under $1.30/day".to_owned(),
+        String::new(),
+        "Buckets".to_owned(),
+        "1. New bucket: flag one day above +15 GB".to_owned(),
+        "2. Old bucket: flag growth above 5 GB/day".to_owned(),
+        "   · report its size once on 11-07".to_owned(),
+        "   · then stop".to_owned(),
+        String::new(),
+        "  Known failed jobs".to_owned(),
+        "· 29853085".to_owned(),
+        "· 29864525".to_owned(),
+        String::new(),
+        "  ▎ Nightly full passes must succeed within 48 h.".to_owned(),
+        String::new(),
+        pad("  ▎ ssh -p 10041 root@master 'kubectl get jobs -n"),
+        pad("  ▎   backup'"),
+        String::new(),
+        "─".repeat(56),
+        String::new(),
+        rule_row("Reference", 56),
+        String::new(),
+        "Bucket                  │ Purpose │ Expiry".to_owned(),
+        "────────────────────────┼─────────┼───────".to_owned(),
+        "leap-bi4-backups        │ new     │ none".to_owned(),
+        "leap-bi4-s3-access-logs │ logs    │ 14 d".to_owned(),
+        String::new(),
+        rule_row("Log", 56),
+        String::new(),
+        "10:30 · egress fix live (167fdd49)".to_owned(),
+        "11:05 · handed to infra monitor".to_owned(),
+        String::new(),
+        String::new(),
+        "❧ rev abc".to_owned(),
+    ];
+    assert_eq!(text, expected, "{text:#?}");
+    // Styles, by element.
+    let d = model::DUSK;
+    assert_eq!(seg_of(&rows, "Cost").style.fg, Some(d.gold));
+    assert!(has(seg_of(&rows, "Cost").style, Modifier::BOLD));
+    let jobs = seg_of(&rows, "Known failed jobs").style;
+    assert!(jobs.fg == Some(d.gold) && has(jobs, Modifier::ITALIC));
+    let turkish = seg_of(&rows, "Turkish").style;
+    assert!(turkish.fg == Some(d.ink) && has(turkish, Modifier::BOLD));
+    let yesterday = seg_of(&rows, "yesterday's").style;
+    assert!(yesterday.fg == Some(d.body) && has(yesterday, Modifier::ITALIC));
+    let link = seg_of(&rows, "the /tr skill").style;
+    assert!(link.fg == Some(d.accent) && has(link, Modifier::UNDERLINED));
+    assert!(!text.iter().any(|row| row.contains("example.com")));
+    assert_eq!(seg_of(&rows, "check.sh").style.fg, Some(d.gold));
+    assert_eq!(seg_of(&rows, "1.").style.fg, Some(d.rust));
+    assert_eq!(seg_of(&rows, "▎").style.fg, Some(d.rule));
+    let quote = seg_of(&rows, "Nightly full passes must succeed within 48 h.").style;
+    assert!(has(quote, Modifier::ITALIC));
+    let code_row = &rows[23];
+    assert!(code_row.segs[1..]
+        .iter()
+        .all(|seg| seg.style.bg == Some(d.sel)));
+    assert_eq!(seg_of(&rows, "Bucket").style.fg, Some(d.ink));
+    assert!(has(seg_of(&rows, "Bucket").style, Modifier::BOLD));
+    assert_eq!(seg_of(&rows, " │ ").style.fg, Some(d.rule));
+    assert_eq!(seg_of(&rows, "leap-bi4-backups").style.fg, Some(d.gold));
+    assert_eq!(seg_of(&rows, &"─".repeat(56)).style.fg, Some(d.rule));
+}
+
+#[test]
+fn every_markdown_row_fits_its_width_and_targets_a_char_boundary() {
+    let lines: Vec<&str> = BRIEF_STUB.split('\n').collect();
+    for width in [12, 20, 28, 41, 56, 80] {
+        for row in md_rows(BRIEF_STUB, width) {
+            let text = row.text();
+            assert!(
+                unicode_width::UnicodeWidthStr::width(text.as_str()) <= width,
+                "{width}: {text:?}"
+            );
+            let targets = row
+                .segs
+                .iter()
+                .filter_map(|seg| seg.target.as_ref())
+                .chain(row.target.as_ref());
+            for target in targets {
+                let (line, byte) = match target {
+                    InfoDockTarget::EditAt {
+                        line, byte_start, ..
+                    } => (*line, *byte_start),
+                    InfoDockTarget::EditEnd { line, byte } => (*line, *byte),
+                    _ => continue,
+                };
+                let source = lines[line].trim_end();
+                assert!(byte <= source.len(), "{width}: {target:?}");
+                assert!(source.is_char_boundary(byte), "{width}: {target:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn hidden_markers_keep_clicks_on_their_source_bytes() {
+    let line = "Flags go to the owner in **Turkish**, see [the /tr skill](https://example.com/tr).";
+    let rows = md_rows(line, 56);
+    let link = seg_of(&rows, "the /tr skill");
+    let at = line.find("the /tr").expect("link text");
+    assert_eq!(
+        link.target,
+        Some(InfoDockTarget::EditAt {
+            line: 0,
+            byte_start: at,
+            spaced: false,
+        })
+    );
+    // Column 4 of the link text is its fifth char in the source.
+    assert_eq!(model::edit_offset(line, at, 4, false), at + 4);
+    let bold = seg_of(&rows, "Turkish");
+    let at = line.find("Turkish").expect("bold text");
+    assert_eq!(
+        bold.target,
+        Some(InfoDockTarget::EditAt {
+            line: 0,
+            byte_start: at,
+            spaced: false,
+        })
+    );
+    let after = seg_of(&rows, ".");
+    assert_eq!(
+        after.target,
+        Some(InfoDockTarget::EditAt {
+            line: 0,
+            byte_start: line.len() - 1,
+            spaced: false,
+        })
+    );
+    // Past the text: the end of the source line, closing markers included.
+    assert_eq!(
+        rows[0].target,
+        Some(InfoDockTarget::EditEnd {
+            line: 0,
+            byte: line.len(),
+        })
+    );
+}
+
+#[test]
+fn unclosed_or_spaced_markers_stay_literal() {
+    assert_eq!(
+        md_text("2 * 3 * 4 and **open", 40)[0],
+        "2 * 3 * 4 and **open"
+    );
+    assert_eq!(md_text("a `tick and [x](", 40)[0], "a `tick and [x](");
+    assert_eq!(md_text("[](empty) **", 40)[0], "[](empty) **");
+}
+
+#[test]
+fn headings_three_and_four_are_gold_and_wrap() {
+    let text = md_text(
+        "### A heading long enough to wrap\n#### And a smaller one too",
+        16,
+    );
+    assert_eq!(
+        text[..5],
+        [
+            "A heading long",
+            "enough to wrap",
+            "  And a smaller",
+            "  one too",
+            ""
+        ]
+    );
+}
+
+#[test]
+fn numbered_items_align_their_wrapped_text_and_nest_bullets() {
+    let text = md_text(
+        "1. first item that wraps here\n10. tenth\n   - nested under\n   - [ ] a nested task\n2) paren",
+        20,
+    );
+    assert_eq!(
+        text[..6],
+        [
+            "1. first item that",
+            "   wraps here",
+            "10. tenth",
+            "   · nested under",
+            "   ○ a nested task",
+            "2) paren",
+        ]
+    );
+    // A nested item's wrap stays under its own text.
+    let text = md_text("  - nested bullet text that wraps", 16);
+    assert_eq!(
+        text[..3],
+        ["  · nested", "    bullet text", "    that wraps"]
+    );
+}
+
+#[test]
+fn quotes_and_rules_draw_their_bars() {
+    let text = md_text("> a quote that wraps around\n---\n- --- not a rule", 16);
+    assert_eq!(
+        text[..5],
+        [
+            "  ▎ a quote that",
+            "    wraps around",
+            &"─".repeat(16),
+            "· --- not a rule",
+            ""
+        ]
+    );
+}
+
+#[test]
+fn code_blocks_hide_their_fences_keep_lines_and_wrap() {
+    let source = "```\nlet x = 1;\n    indented();\n```\nafter";
+    let rows = md_rows(source, 20);
+    let text: Vec<String> = rows.iter().map(model::Row::text).collect();
+    assert_eq!(
+        text[..3],
+        [
+            format!("  ▎ let x = 1;{}", " ".repeat(6)),
+            "  ▎     indented(); ".to_owned(),
+            "after".to_owned(),
+        ]
+    );
+    // Clicks land on the code's own source line, never on a fence.
+    assert_eq!(
+        rows[1].target,
+        Some(InfoDockTarget::EditEnd {
+            line: 2,
+            byte: "    indented();".len(),
+        })
+    );
+    // An unclosed fence runs to the end; markdown inside is not parsed.
+    let text = md_text("```\n# not a title\n- not a bullet", 30);
+    assert!(text[0].starts_with("  ▎ # not a title"), "{text:?}");
+    assert!(text[1].starts_with("  ▎ - not a bullet"), "{text:?}");
+}
+
+#[test]
+fn tables_align_and_truncate_to_the_width() {
+    let table =
+        "| Name | Value |\n|---|:-:|\n| alpha | 1 |\n| a much longer name | 22 |\n| short |";
+    let text = md_text(table, 40);
+    assert_eq!(
+        text[..5],
+        [
+            "Name               │ Value",
+            "───────────────────┼──────",
+            "alpha              │ 1",
+            "a much longer name │ 22",
+            "short              │ ",
+        ]
+    );
+    let narrow = md_text(table, 14);
+    assert_eq!(narrow[3], "a muc… │ 22");
+    for row in &narrow[..5] {
+        assert!(
+            unicode_width::UnicodeWidthStr::width(row.as_str()) <= 14,
+            "{row:?}"
+        );
+    }
+    // Without a separator row there is no header.
+    let rows = md_rows("| a | b |\n| c | d |", 20);
+    assert_eq!(seg_of(&rows, "a").style.fg, Some(model::DUSK.body));
+}
+
+#[test]
+fn the_plus_notes_stub_page_renders() {
+    let stub = include_str!("golden/notes_stub.md");
+    let text = md_text(stub, 56);
+    let expected = [
+        "❦ H E R D R +   N E X T   R O U N D".to_owned(),
+        String::new(),
+        "Planning the next batch of herdr+ features. The list is".to_owned(),
+        "settled; notes cleanup goes first.".to_owned(),
+        String::new(),
+        rule_row("In flight", 56),
+        String::new(),
+        "○ Draft the /plus:notes skill".to_owned(),
+        "● Pick the notes formatting (Sonnet directed)".to_owned(),
+        String::new(),
+        rule_row("Waiting on you", 56),
+        String::new(),
+        "· Agents keep their page current on their own, or only".to_owned(),
+        "  on request?".to_owned(),
+        String::new(),
+        rule_row("Plan", 56),
+        String::new(),
+        "1. Notes: remove log, checkpoints and History".to_owned(),
+        "2. Notes pane formatting".to_owned(),
+        "3. Quiet messages, then do-not-disturb".to_owned(),
+        "4. Sidebar: search, time filter, sink suspended".to_owned(),
+        String::new(),
+        rule_row("Reference", 56),
+        String::new(),
+        "· .local/prd/planned-features.md".to_owned(),
+        "· .local/prd/notes-format/gallery.html".to_owned(),
+        String::new(),
+        rule_row("Notify", 56),
+        String::new(),
+        "Only when a build or audit finishes.".to_owned(),
+        String::new(),
+        String::new(),
+        "❧ rev abc".to_owned(),
+    ];
+    assert_eq!(text, expected, "{text:#?}");
 }
 
 // ---------------------------------------------------------------- layout
@@ -719,10 +759,7 @@ mod fork_smoke {
         assert_eq!(state.surface_size(COLS, ROWS), open);
         let frame = recompose(&mut state).expect("frame");
         let rows = frame_rows(&frame);
-        assert!(
-            rows.iter().any(|row| row.contains("✦ History ✦")),
-            "{rows:?}"
-        );
+        assert!(rows.iter().any(|row| row.contains("✦ Notes ✦")), "{rows:?}");
         toggle(&mut state);
         assert_eq!(state.surface_size(COLS, ROWS), before);
     }
@@ -849,7 +886,6 @@ fn a_dock_click_never_starts_a_pane_gesture_and_the_wheel_is_the_docks() {
     assert!(state.selection.is_none());
     assert_eq!(pane_requests(&outcome), 0);
     assert!(state.info_dock.as_deref().expect("dock").focused);
-    state.info_dock.as_deref_mut().expect("dock").view = InfoView::Notes;
     recompose(&mut state);
     let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
         kind: MouseEventKind::ScrollDown,
@@ -867,16 +903,14 @@ fn a_dock_click_never_starts_a_pane_gesture_and_the_wheel_is_the_docks() {
 fn keys_go_to_the_dock_only_while_it_has_focus() {
     let mut state = dock_state();
     open_loaded(&mut state);
-    state.info_dock.as_deref_mut().expect("dock").view = InfoView::History;
-    recompose(&mut state);
     state.info_dock.as_deref_mut().expect("dock").focused = true;
-    let outcome = state.handle_raw_events(vec![key(KeyCode::Char('k'))]);
-    assert_eq!(pane_requests(&outcome), 0, "k moves the selection");
-    let selected = state
+    let outcome = state.handle_raw_events(vec![key(KeyCode::Char('j'))]);
+    assert_eq!(pane_requests(&outcome), 0, "j scrolls the notes");
+    let scroll = state
         .info_dock
         .as_deref_mut()
-        .and_then(|dock| dock.ui.get(KEY).and_then(|ui| ui.selected.clone()));
-    assert_eq!(selected.as_deref(), Some("cp_01JB2K0AB"));
+        .and_then(|dock| dock.ui.get(KEY).map(|ui| ui.notes_scroll));
+    assert_eq!(scroll, Some(1));
     // Esc hands the keys back to the pane; the dock stays open.
     state.handle_raw_events(vec![key(KeyCode::Esc)]);
     assert!(!state.info_dock_focused());
@@ -902,10 +936,6 @@ fn while_editing_tab_digits_and_angles_are_text_and_paste_stays_in_the_dock() {
     assert_eq!(state.info_dock_width, 44, "< is text while editing");
     let text = editor_text(&state);
     assert!(text.contains("needs review    1<pasted"), "{text:?}");
-    assert_eq!(
-        state.info_dock.as_deref().expect("dock").view,
-        InfoView::Notes
-    );
 }
 
 #[test]
@@ -954,11 +984,10 @@ fn sent_save(
 }
 
 #[test]
-fn the_editor_saves_on_a_view_click() {
+fn the_editor_saves_on_esc() {
     let mut state = dock_state();
     start_dirty_edit(&mut state);
-    let (x, y) = find_target(&state, &InfoDockTarget::View(InfoView::History));
-    let outcome = state.handle_raw_events(click(x, y));
+    let outcome = state.handle_raw_events(vec![key(KeyCode::Esc)]);
     let (_, params) = sent_save(&outcome).expect("a save");
     assert!(params.text.ends_with("needs review!\n") || params.text.contains("review!"));
     assert_eq!(params.base_revision.as_deref(), Some("sha256:4e9b1c07a2f3"));
@@ -1106,7 +1135,7 @@ fn busy_replies_raise_no_notice_retry_and_keep_a_dirty_save() {
     let mut state = dock_state();
     let outcome = toggle(&mut state);
     let requests = info_requests(&outcome);
-    let [(id, Method::CheckpointsList(_))] = &requests[..] else {
+    let [(id, Method::NotesGet(_))] = &requests[..] else {
         panic!("{requests:?}");
     };
     let (repaint, actions) = answer(&mut state, id, Err(busy()));
@@ -1127,7 +1156,7 @@ fn busy_replies_raise_no_notice_retry_and_keep_a_dirty_save() {
     );
     assert!(matches!(
         &info_requests(&later)[..],
-        [(_, Method::CheckpointsList(_))]
+        [(_, Method::NotesGet(_))]
     ));
 
     let mut state = dock_state();
@@ -1186,7 +1215,15 @@ fn only_one_dock_request_is_ever_in_flight() {
     assert_eq!(info_requests(&outcome).len(), 1);
     let dock = state.info_dock.as_deref_mut().expect("dock");
     dock.queue(super::super::info_dock::InfoRequest::NotesGet, None);
-    dock.queue(super::super::info_dock::InfoRequest::BookmarkAdd, None);
+    dock.queue(
+        super::super::info_dock::InfoRequest::NotesSet {
+            key: KEY.into(),
+            text: "x".into(),
+            base_revision: None,
+            tick: false,
+        },
+        None,
+    );
     for _ in 0..5 {
         let outcome = tick(&mut state);
         assert!(info_requests(&outcome).is_empty());
@@ -1257,57 +1294,6 @@ fn an_unsupported_server_says_so_in_the_body() {
         .any(|row| row.contains("not available on this server")));
 }
 
-// ---------------------------------------------------------------- stub semantics
-
-#[test]
-fn stub_semantics_hold() {
-    let mut state = dock_state();
-    open_loaded(&mut state);
-    let mut outcome = ClientShellInput::default();
-    // 2 follows, 1 does not.
-    state.info_dock.as_deref_mut().expect("dock").focused = true;
-    state.handle_raw_events(vec![key(KeyCode::Char('2'))]);
-    {
-        let dock = state.info_dock.as_deref_mut().expect("dock");
-        assert_eq!(dock.view, InfoView::History);
-        assert!(dock.ui.get(KEY).is_some_and(|ui| ui.follow));
-    }
-    recompose(&mut state);
-    // Expand all covers only the filtered set.
-    state.info_dock_activate_for_test(
-        InfoDockTarget::Filter(Some(CheckpointKind::Failure)),
-        &mut outcome,
-    );
-    state.info_dock_activate_for_test(InfoDockTarget::ExpandAll, &mut outcome);
-    {
-        let dock = state.info_dock.as_deref_mut().expect("dock");
-        let ui = dock.ui.get(KEY).expect("ui");
-        assert_eq!(ui.expanded.len(), 2);
-        assert!(ui.expanded.contains("cp_01JB2K0A5"));
-    }
-    // A bookmark resets a non-bookmark filter.
-    state.handle_raw_events(vec![key(KeyCode::Char('b'))]);
-    {
-        let dock = state.info_dock.as_deref_mut().expect("dock");
-        assert_eq!(dock.ui.get(KEY).expect("ui").filter, None);
-        assert!(dock.flash.is_some());
-    }
-    recompose(&mut state);
-    // A dock press clears the flash; show more keeps follow off.
-    let body = state.hits.info_dock.body;
-    state.handle_raw_events(click(body.x + 4, body.y + 1));
-    assert!(state.info_dock.as_deref().expect("dock").flash.is_none());
-    recompose(&mut state);
-    state.info_dock_activate_for_test(
-        InfoDockTarget::ContextMore("cp_01JB2K0A5".into()),
-        &mut outcome,
-    );
-    let dock = state.info_dock.as_deref_mut().expect("dock");
-    let ui = dock.ui.get(KEY).expect("ui");
-    assert!(ui.ctx_full.contains("cp_01JB2K0A5"));
-    assert!(!ui.follow);
-}
-
 #[test]
 fn a_closed_dock_costs_nothing() {
     let mut state = dock_state();
@@ -1323,8 +1309,8 @@ fn a_closed_dock_costs_nothing() {
         answer(
             &mut state,
             &id,
-            Ok(ResponseResult::CheckpointsList {
-                checkpoints: checkpoints_info(),
+            Ok(ResponseResult::NotesGet {
+                notes: notes_info(NOTES, "sha256:4e9b1c07a2f3"),
             }),
         );
     }
@@ -1341,108 +1327,6 @@ fn a_closed_dock_costs_nothing() {
         assert!(info_requests(&outcome).is_empty());
     }
     assert_eq!(info_pending(&state), 0);
-}
-
-#[test]
-fn contexts_are_fetched_once_when_a_row_opens() {
-    let mut state = dock_state();
-    open_loaded(&mut state);
-    state.info_dock.as_deref_mut().expect("dock").view = InfoView::History;
-    let mut outcome = ClientShellInput::default();
-    state.info_dock_activate_for_test(InfoDockTarget::Toggle("cp_01JB2K0A2".into()), &mut outcome);
-    let requests = info_requests(&outcome);
-    let [(id, Method::CheckpointsContext(params))] = &requests[..] else {
-        panic!("{requests:?}");
-    };
-    assert_eq!(params.id, "cp_01JB2K0A2");
-    assert_eq!(params.target.key.as_deref(), Some(KEY));
-    // Pending: asked again shortly.
-    let mut pending = context("cp_01JB2K0A2", "", "");
-    pending.source = CheckpointContextSource::Pending;
-    answer(
-        &mut state,
-        id,
-        Ok(ResponseResult::CheckpointContext { context: pending }),
-    );
-    let mut later = ClientShellInput::default();
-    state.tick_info_dock(
-        std::time::Instant::now() + std::time::Duration::from_millis(600),
-        &mut later,
-    );
-    let requests = info_requests(&later);
-    let [(id, Method::CheckpointsContext(_))] = &requests[..] else {
-        panic!("{requests:?}");
-    };
-    answer(
-        &mut state,
-        id,
-        Ok(ResponseResult::CheckpointContext {
-            context: context("cp_01JB2K0A2", "ok go ahead", "Reproduced."),
-        }),
-    );
-    // Closing and reopening the row asks nothing more.
-    let mut outcome = ClientShellInput::default();
-    state.info_dock_activate_for_test(InfoDockTarget::Toggle("cp_01JB2K0A2".into()), &mut outcome);
-    state.info_dock_activate_for_test(InfoDockTarget::Toggle("cp_01JB2K0A2".into()), &mut outcome);
-    assert!(info_requests(&outcome).is_empty());
-    let frame = recompose(&mut state).expect("frame");
-    assert!(frame_rows(&frame)
-        .iter()
-        .any(|row| row.contains("ok go ahead")));
-}
-
-#[test]
-fn bookmark_written_selects_the_new_checkpoint() {
-    let mut state = dock_state();
-    open_loaded(&mut state);
-    let dock = state.info_dock.as_deref_mut().expect("dock");
-    dock.view = InfoView::History;
-    dock.focused = true;
-    recompose(&mut state);
-    let outcome = state.handle_raw_events(vec![key(KeyCode::Char('b'))]);
-    let requests = info_requests(&outcome);
-    let [(id, Method::CheckpointsAdd(params))] = &requests[..] else {
-        panic!("{requests:?}");
-    };
-    assert_eq!(params.kind, CheckpointKind::Bookmark);
-    assert_eq!(params.author, NotesAuthor::User);
-    let added = cp(
-        "cp_new",
-        NOW,
-        CheckpointKind::Bookmark,
-        NotesAuthor::User,
-        "Pinned from the pane",
-        None,
-    );
-    let (_, actions) = answer(
-        &mut state,
-        id,
-        Ok(ResponseResult::CheckpointWrite {
-            checkpoint: CheckpointWriteInfo {
-                key: KEY.into(),
-                seq: 5000,
-                checkpoint: Some(added),
-                folded: false,
-                removed: false,
-            },
-        }),
-    );
-    let dock = state.info_dock.as_deref_mut().expect("dock");
-    assert_eq!(
-        dock.ui
-            .get(KEY)
-            .and_then(|ui| ui.selected.clone())
-            .as_deref(),
-        Some("cp_new")
-    );
-    let next = ClientShellInput {
-        actions,
-        ..ClientShellInput::default()
-    };
-    assert!(matches!(
-        &info_requests(&next)[..],
-        [(_, Method::CheckpointsList(_))]
-    ));
 }
 
 #[test]

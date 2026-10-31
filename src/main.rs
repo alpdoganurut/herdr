@@ -197,7 +197,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # open_news = ""                    # unbound; focuses the News tab, creating it with the page viewer when gone
 # open_browser = ""                 # unbound; opens the Browser overlay (the herdr browser's tabs and who uses them)
 # open_coordinator = ""             # unbound; focuses the coordinator tab, creating it when gone
-# toggle_info_pane = ""             # unbound; shows or hides the focused tab's info pane (notes, history)
+# toggle_info_pane = ""             # unbound; shows or hides the focused tab's info pane (notes)
 # tab_history_back = "cmd+["        # previously focused tab, browser-style (Ghostty: keybind = super+[=csi:91;9u)
 # tab_history_forward = "cmd+]"     # forward again (Ghostty: keybind = super+]=csi:93;9u); no Cmd? e.g. "alt+," / "alt+."
 # focus_pane_left = "prefix+h"
@@ -614,14 +614,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # resume = true
 
 [notes]
-# Per-session notes and checkpoints behind the info pane, `herdr notes`,
-# `herdr checkpoint` and the agents' notes tools (stored under <config dir>/notes).
-# Wrapped and team agents get their notes back after /clear and compaction.
+# Per-session notes page behind the info pane and the agents' notes tools
+# (stored under <config dir>/notes). The page is yours: agents write it only
+# when you ask. Wrapped and team agents get it back after /clear and compaction.
 # enabled = true
-# herdr's own checkpoints, tagged `auto`: a bookmark per prompt you send an agent,
-# a milestone for commits made in the pane's repo during a turn, a failure when an
-# agent stays blocked 10+ minutes or exits mid-turn.
-# auto_checkpoints = true
 
 [remote]
 # Whether herdr manages the ssh config used for `herdr --remote`.

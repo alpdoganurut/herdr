@@ -1473,12 +1473,10 @@ mod tests {
                 Method::NotesGet(_) => Ok(json!({ "type": "notes_get", "notes": {
                     "key": "tab-w2-t1", "path": "/notes/tab-w2-t1.md", "revision": "none",
                     "exists": false, "bytes": 0 } })),
-                Method::CheckpointsAdd(params) => {
-                    Ok(json!({ "type": "checkpoint_write", "checkpoint": {
-                    "key": "tab-w2-t1", "seq": 120, "checkpoint": {
-                        "id": "cp_1", "ts": 1, "kind": params.kind, "author": params.author,
-                        "title": params.title } } }))
-                }
+                Method::NotesSet(params) => Ok(json!({ "type": "notes_write", "write": {
+                    "outcome": "written", "notes": {
+                    "key": "tab-w2-t1", "path": "/notes/tab-w2-t1.md", "revision": "r1",
+                    "exists": true, "bytes": params.text.len() } } })),
                 _ => Err(ApiError::new("unexpected", name)),
             }
         };
@@ -1508,15 +1506,12 @@ mod tests {
         };
         let read = tool(1, "agents_notes_read", json!({}));
         assert!(read.contains("rev none  key tab-w2-t1"), "{read}");
-        let mark = tool(
+        let write = tool(
             2,
-            "agents_checkpoint",
-            json!({ "kind": "milestone", "title": "MCP works" }),
+            "agents_notes_write",
+            json!({ "text": "# MCP works", "base_revision": "none" }),
         );
-        assert!(
-            mark.contains("checkpoint cp_1 milestone \"MCP works\""),
-            "{mark}"
-        );
+        assert!(write.contains("rev r1  written: tab-w2-t1"), "{write}");
         let who = tool(3, "agents_whoami", json!({}));
         assert!(
             who.contains("notes: tab-w2-t1 (/notes/tab-w2-t1.md)"),
@@ -1528,7 +1523,7 @@ mod tests {
         let list = session
             .handle(&json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/list" }))
             .expect("a reply");
-        assert_eq!(list["result"]["tools"].as_array().map(Vec::len), Some(30));
+        assert_eq!(list["result"]["tools"].as_array().map(Vec::len), Some(27));
         assert!(
             calls
                 .borrow()

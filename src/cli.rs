@@ -373,7 +373,6 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "coordinator" => coordinator::run_coordinator_command(&args[2..])?,
         "team" => team::run_team_command(&args[2..])?,
         "notes" => notes::run_notes_command(&args[2..])?,
-        "checkpoint" => notes::run_checkpoint_command(&args[2..])?,
         _ => return Ok(CommandOutcome::NotCli),
     };
 

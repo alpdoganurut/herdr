@@ -3,9 +3,8 @@
 //! (`info_dock_model`) and the scroll from `compute_view`.
 //!
 //! Column 0 is the divider (`│`, a gold `┃` while dragged), column 1 the
-//! marker column (`›` beside the selected checkpoint, `▸` beside the
-//! editor's line). Row 0 is the Notes / History strip; the last two rows
-//! are a `┄` rule and the footer.
+//! marker column (`▸` beside the editor's line). Row 0 is the Notes strip;
+//! the last two rows are a `┄` rule and the footer.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -21,8 +20,6 @@ pub(crate) const CHROME_ROWS: u16 = 3;
 /// What one frame of the dock shows.
 pub(crate) struct DockFrame<'a> {
     pub(crate) strip: &'a Row,
-    /// Rows under the strip that do not scroll (the history chips).
-    pub(crate) pinned: &'a [Row],
     /// The visible slice of the scrolling rows.
     pub(crate) body: &'a [Row],
     /// A marker beside one body row (an index into `body`).
@@ -79,13 +76,6 @@ pub(crate) fn render(
     let mut y = area.y;
     draw_row(buffer, content_x, y, content_width, frame.strip, hits);
     y += 1;
-    for row in frame.pinned {
-        if y >= last_body_y {
-            break;
-        }
-        draw_row(buffer, content_x, y, content_width, row, hits);
-        y += 1;
-    }
     for (index, row) in frame.body.iter().enumerate() {
         if y >= last_body_y {
             break;
@@ -93,7 +83,7 @@ pub(crate) fn render(
         if let Some((_, symbol)) = frame.mark.filter(|(at, _)| *at == index) {
             let style = Style::default()
                 .fg(DUSK.rust)
-                .bg(if symbol == "›" { DUSK.sel } else { DUSK.page })
+                .bg(DUSK.page)
                 .add_modifier(Modifier::BOLD);
             buffer.set_string(area.x + 1, y, symbol, style);
         }

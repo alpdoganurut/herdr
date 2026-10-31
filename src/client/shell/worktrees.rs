@@ -557,9 +557,6 @@ impl ClientShellState {
                 | PendingEndpointKind::Team(_)
                 | PendingEndpointKind::InfoNotesGet
                 | PendingEndpointKind::InfoNotesWrite
-                | PendingEndpointKind::InfoCheckpointsList
-                | PendingEndpointKind::InfoCheckpointWrite
-                | PendingEndpointKind::InfoCheckpointContext { .. }
                 | PendingEndpointKind::ContextMenuSession { .. }
                 | PendingEndpointKind::SelectionCopy
                 | PendingEndpointKind::PaneScroll { .. }

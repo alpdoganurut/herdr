@@ -436,7 +436,6 @@ impl ClientShellState {
         // Fork: the info dock, into the chrome buffer; the pane surface blit
         // is clipped to `layout.pane_surface`, which excludes the dock.
         if !layout.info_dock.is_empty() {
-            let agent = self.info_dock_agent_label();
             let tab_label = snapshot
                 .focused_tab_id
                 .as_deref()
@@ -450,7 +449,6 @@ impl ClientShellState {
                     layout.info_dock,
                     &super::info_dock::DockComposeInput {
                         tab_label,
-                        agent: &agent,
                         sized_elsewhere: surface.frame.width != layout.pane_surface.width,
                     },
                 );

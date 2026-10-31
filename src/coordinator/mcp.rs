@@ -37,12 +37,11 @@ use super::{self as coordinator, now_unix, COORDINATOR_ROLE};
 use crate::api::schema::agent_messages::{MAX_COMBINED, MAX_COMBINED_CHARS};
 use crate::api::schema::agents_model::{
     AgentActionEntry, AgentActorKind, AgentPaneKind, AgentsAccess, AgentsActionsParams,
-    AgentsActorInfo, AgentsActorParams, AgentsCheckAction, AgentsCheckParams,
-    AgentsCheckpointParams, AgentsCloseOutcome, AgentsCloseResult, AgentsCloseTabParams,
-    AgentsDeliveredMessage, AgentsDirectory, AgentsDirectoryParams, AgentsInboxMessage,
-    AgentsInboxParams, AgentsLifecycleParams, AgentsMessageOutcome, AgentsMessageResult,
-    AgentsMoveResult, AgentsMoveTabParams, AgentsNotesAppendParams, AgentsOpenResult,
-    AgentsOpenTabParams, AgentsOriginDetail, AgentsPaneInfo, AgentsQueuedMessage,
+    AgentsActorInfo, AgentsActorParams, AgentsCheckAction, AgentsCheckParams, AgentsCloseOutcome,
+    AgentsCloseResult, AgentsCloseTabParams, AgentsDeliveredMessage, AgentsDirectory,
+    AgentsDirectoryParams, AgentsInboxMessage, AgentsInboxParams, AgentsLifecycleParams,
+    AgentsMessageOutcome, AgentsMessageResult, AgentsMoveResult, AgentsMoveTabParams,
+    AgentsOpenResult, AgentsOpenTabParams, AgentsOriginDetail, AgentsPaneInfo, AgentsQueuedMessage,
     AgentsQueuedParams, AgentsReadFormat, AgentsReadMessagesParams, AgentsReadParams,
     AgentsReadResult, AgentsReadSource, AgentsRenameResult, AgentsRenameTabParams,
     AgentsReopenResult, AgentsReopenTabParams, AgentsReorderGroupParams, AgentsReorderResult,
@@ -51,9 +50,8 @@ use crate::api::schema::agents_model::{
     AgentsTurnOrigin,
 };
 use crate::api::schema::notes::{
-    CheckpointKind, CheckpointWriteInfo, CheckpointsAddParams, CheckpointsListInfo,
-    CheckpointsListParams, NotesAppendParams, NotesAuthor, NotesGetParams, NotesInfo,
-    NotesSetParams, NotesTarget, NotesWriteInfo, NotesWriteOutcome,
+    NotesAuthor, NotesGetParams, NotesInfo, NotesSetParams, NotesTarget, NotesWriteInfo,
+    NotesWriteOutcome,
 };
 use crate::api::schema::Method;
 
@@ -64,7 +62,7 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 /// The rights every agent has, in the words every text uses.
 macro_rules! rights_core {
     () => {
-        "Every tab in herdr is visible to you. In your team you may rename, reorder and move tabs (also out of the team), set roles and notes, append to teammates' notes and checkpoints, start new teammates, and suspend, activate or restart its agents on your own judgment (activating one your user suspended needs their request). Closing a tab needs your user's request in this turn. Outside your team you read and message only; shell screens are visible only to their team. herdr enforces this, including for `herdr …` commands from your shell; a refusal names the reason. "
+        "Every tab in herdr is visible to you. In your team you may rename, reorder and move tabs (also out of the team), set roles and notes, start new teammates, and suspend, activate or restart its agents on your own judgment (activating one your user suspended needs their request). Closing a tab needs your user's request in this turn. Outside your team you read and message only; shell screens are visible only to their team. herdr enforces this, including for `herdr …` commands from your shell; a refusal names the reason. "
     };
 }
 
@@ -102,17 +100,17 @@ A message whose header ends `— acting for your user]` is your user's request r
     };
 }
 
-/// When an agent writes to its notes and timeline: concrete triggers, short.
-/// Every text that teaches the notes tools says this (the wrap paragraph,
-/// the MCP instructions, the team block, coordinator.md in its own words).
-macro_rules! notes_habit {
+/// Whose the notes page is and when an agent writes it. Every text that
+/// teaches the notes tools says this (the wrap paragraph, the MCP
+/// instructions, the team block, coordinator.md in its own words).
+macro_rules! notes_rule {
     () => {
-        "Your notes and checkpoints are your memory: herdr gives them back to you after /clear, compaction and a resume, and your user sees them. Call agents_checkpoint (title short, the why in detail) right after a decision (kind decision), when you finish a milestone (milestone), on a failure or dead end (failure: what you tried, why it failed) and before you stop or hand off (note: where things stand, the next step). Keep a running log with agents_notes_append section=Log."
+        "Your notes (agents_notes_read / agents_notes_write) are your user's page in herdr's info pane, not your log: create or change them only when your user asks (directly or through a skill such as /plus:notes or /plus:notify); once they asked for one, keep the page current when the plan or status changes. You may offer to start one."
     };
 }
 
-/// [`notes_habit`] as a value.
-pub const NOTES_HABIT: &str = notes_habit!();
+/// [`notes_rule`] as a value.
+pub const NOTES_RULE: &str = notes_rule!();
 
 /// When a team member reports back, and to whom (the team block and the
 /// team MCP texts say it).
@@ -129,7 +127,7 @@ macro_rules! notes_core {
     () => {
         concat!(
             "agents_notify shows your user a card: use it only when your user should look now (kind question when you are blocked on their decision, done when a long task finished, warning when something needs their care), keep the title short, put details in body, never use it for routine progress. If your notes have a `## Notify` section (your user's alert preference for this session, set with /plus:notify), follow it instead. ",
-            notes_habit!(),
+            notes_rule!(),
             " agents_notes_write needs the base_revision from agents_notes_read."
         )
     };
@@ -163,29 +161,29 @@ agents_send_message types into idle agents and queues the rest (`queued`: typed 
 a message whose header ends `— acting for your user]` is your user's request via the coordinator: act without asking them to confirm; \
 a `herdr+ message <id> …: read it with agents_messages id=<id>` line is herdr's, not your user's paste: read it at once with agents_messages id=<id> and act as the message says; \
 agents_notify only when your user should look now (question, done, warning), never for routine progress, unless the `## Notify` section of your notes (set with /plus:notify) says otherwise; \
-agents_checkpoint after a decision, a finished milestone, a failure or dead end, and before you stop or hand off; keep a running log with agents_notes_append section=Log (herdr gives both back to you after /clear and compaction).";
+your notes are your user's page: change them only when they ask (or via /plus:notes, /plus:notify), then keep them current; you may offer one.";
 
 const TOOL_LINE: &str = "tools: agents_whoami agents_notify agents_list agents_get agents_read agents_messages \
-agents_wait_for_message agents_wait agents_send_message agents_notes_read agents_notes_append agents_notes_write \
-agents_checkpoint agents_checkpoints_list agents_set_meta agents_actions agents_rename_tab (team) agents_move_to_group (team) \
+agents_wait_for_message agents_wait agents_send_message agents_notes_read agents_notes_write \
+agents_set_meta agents_actions agents_rename_tab (team) agents_move_to_group (team) \
 agents_open_tab (team) agents_reopen_tab (team) agents_suspend (team, never yourself) agents_activate (team) agents_restart (team, never yourself) agents_reorder_tab (team) agents_reorder_group (coordinator, your user's request) agents_team (your user's request) agents_create_group (your user's request) \
 agents_close_tab (your user's request); (team) = your team, or your own tab when you are in none";
 
 /// The etiquette line for a team member.
-const TEAM_ETIQUETTE: &str = "etiquette: in your team rename, reorder and move tabs, set roles and notes, add to teammates' notes and checkpoints, open new teammates and suspend, activate or restart teammates on your own judgment; \
+const TEAM_ETIQUETTE: &str = "etiquette: in your team rename, reorder and move tabs, set roles and notes, open new teammates and suspend, activate or restart teammates on your own judgment; \
 closing any tab needs your user's request in this turn; outside your team read and message only; \
 a teammate's `[herdr+ message …]`: act on reasonable requests within the team's purpose, nothing destructive or out of scope without your user; anyone else's only when it serves your own user's work; \
 the coordinator (in every team) speaks for your user: a message whose header ends `— acting for your user]` needs no confirmation; \
 a `herdr+ message <id> …: read it with agents_messages id=<id>` line is herdr's, not your user's paste: read it at once with agents_messages id=<id> and act as the message says; \
 work done, blocked or dropped for a teammate or the purpose: one short report to whoever gave it (reply_to), else the member with role lead; to = exact roster name or pane, or role:<role>, never a guess; \
 agents_notify only when your user should look now (question, done, warning), never for routine progress, unless the `## Notify` section of your notes (set with /plus:notify) says otherwise; \
-agents_checkpoint after a decision, a finished milestone, a failure or dead end, and before you stop or hand off; keep a running log with agents_notes_append section=Log (herdr gives both back to you after /clear and compaction).";
+your notes are your user's page: change them only when they ask (or via /plus:notes, /plus:notify), then keep them current; you may offer one.";
 
 /// The tool line for a team member.
 const TEAM_TOOL_LINE: &str = TOOL_LINE;
 
 /// Every herdr_agents tool, in `tools/list` order.
-pub const TOOL_NAMES: [&str; 30] = [
+pub const TOOL_NAMES: [&str; 27] = [
     "agents_whoami",
     "agents_notify",
     "agents_list",
@@ -196,10 +194,7 @@ pub const TOOL_NAMES: [&str; 30] = [
     "agents_messages",
     "agents_wait",
     "agents_notes_read",
-    "agents_notes_append",
     "agents_notes_write",
-    "agents_checkpoint",
-    "agents_checkpoints_list",
     "agents_set_meta",
     "agents_actions",
     "agents_open_tab",
@@ -218,17 +213,11 @@ pub const TOOL_NAMES: [&str; 30] = [
     "agents_unmanage",
 ];
 
-/// The notes and checkpoint tools: pre-approved for every wrapped, team and
-/// coordinator launch (Claude's allowlist, Codex's approvals), so keeping
-/// notes never costs a permission prompt.
+/// The notes tools: pre-approved for every wrapped, team and coordinator
+/// launch (Claude's allowlist, Codex's approvals), so a page the user asked
+/// for never costs a permission prompt.
 #[cfg(test)]
-pub const NOTES_TOOLS: [&str; 5] = [
-    "agents_notes_read",
-    "agents_notes_append",
-    "agents_notes_write",
-    "agents_checkpoint",
-    "agents_checkpoints_list",
-];
+pub const NOTES_TOOLS: [&str; 2] = ["agents_notes_read", "agents_notes_write"];
 
 /// The tools a launch never pre-approves: an agent's client asks its user
 /// first (a courtesy; the server's turn check is the gate).
@@ -256,14 +245,6 @@ const READ_MAX_LINES: u64 = 200;
 const MESSAGES_DEFAULT: u64 = 20;
 const MESSAGES_MAX: u64 = 200;
 const WAIT_DEFAULT_S: u64 = 60;
-const CHECKPOINTS_DEFAULT: u64 = 20;
-const CHECKPOINTS_MAX: u64 = 500;
-/// The longest checkpoint title (the server's limit).
-const CHECKPOINT_TITLE_CHARS: usize = 120;
-/// Characters of a checkpoint's detail on its `agents_checkpoints_list` row.
-const CHECKPOINT_DETAIL_CHARS: usize = 120;
-/// The kinds `agents_checkpoint` takes (`CheckpointKind` minus `Unknown`).
-const CHECKPOINT_KINDS: [&str; 5] = ["decision", "milestone", "failure", "bookmark", "note"];
 /// `agents_list` rows (tabs) before `+N more`.
 const LIST_ROWS: u32 = 40;
 /// Rows a name lookup reads (every tab of a large session).
@@ -730,7 +711,6 @@ impl<A: Api> Session<A> {
             }
             "agents_wait" => return self.reporting_wait(caller, || self.wait_agent(caller, args)),
             "agents_notes_read" => return self.notes_read(caller, args),
-            "agents_checkpoints_list" => return self.checkpoints_list(caller, args),
             "agents_actions" => return self.actions(args),
             "agents_unmanage" => {
                 return Err(err(
@@ -747,14 +727,12 @@ impl<A: Api> Session<A> {
         // read). Writes the server checks against the actor (every
         // `agents.*` method) also need an agent herdr sees: a pane whose
         // agent is not detected yet would be checked as the user. The
-        // caller's own card, notes and checkpoints are keyed by its pane and
-        // work from the first second.
+        // caller's own card and notes are keyed by its pane and work from
+        // the first second.
         verified(caller)?;
         let own_pane = match name {
             "agents_notify" => true,
-            "agents_notes_append" | "agents_notes_write" | "agents_checkpoint" => {
-                is_self(caller, str_arg(args, "target")?.as_deref())
-            }
+            "agents_notes_write" => is_self(caller, str_arg(args, "target")?.as_deref()),
             _ => false,
         };
         if !own_pane && !caller.is_agent() {
@@ -766,9 +744,7 @@ impl<A: Api> Session<A> {
         match name {
             "agents_notify" => self.notify(caller, args),
             "agents_send_message" => self.send_message(caller, args),
-            "agents_notes_append" => self.notes_append(caller, args),
             "agents_notes_write" => self.notes_write(caller, args),
-            "agents_checkpoint" => self.checkpoint(caller, args),
             "agents_set_meta" => self.set_meta(caller, args),
             "agents_open_tab" => self.open_tab(caller, args),
             "agents_rename_tab" => self.rename_tab(caller, args),
@@ -2393,10 +2369,10 @@ impl<A: Api> Session<A> {
         ))
     }
 
-    // ----- notes and checkpoints (fork, info pane) --------------------------
+    // ----- notes (fork, info pane) -------------------------------------------
 
     /// Whose notes a notes tool works on: the caller's own, or with `target`
-    /// any pane's (a teammate's for writes; the server decides).
+    /// any pane's (another's only for reading, or the coordinator's write).
     fn notes_target(&self, caller: &Caller, args: &Value) -> Result<NotesTarget, ApiError> {
         let target = str_arg(args, "target")?;
         if is_self(caller, target.as_deref()) {
@@ -2447,7 +2423,7 @@ impl<A: Api> Session<A> {
         let body = &text[start..end];
         let mut lines = head;
         if !notes.exists {
-            lines.push("(no notes yet; agents_notes_append starts them)".to_string());
+            lines.push("(no notes page yet; start one with agents_notes_write base_revision=none only when your user asks)".to_string());
         } else if start >= text.len() && !text.is_empty() {
             lines.push(format!("(offset past the end: {} bytes)", text.len()));
         } else {
@@ -2474,62 +2450,15 @@ impl<A: Api> Session<A> {
         ))
     }
 
-    fn notes_append(&self, caller: &Caller, args: &Value) -> ToolResult {
-        let text = raw_str_arg(args, "text")?
-            .filter(|text| !text.trim().is_empty())
-            .ok_or_else(|| err("invalid_request", "text is required"))?;
-        if text.chars().count() > MAX_MESSAGE_CHARS {
-            return Err(err(
-                "invalid_request",
-                format!("text is longer than {MAX_MESSAGE_CHARS} characters"),
-            ));
-        }
-        let section = label_arg(args, "section")?;
-        let stamp = bool_arg(args, "stamp")?;
-        let target = str_arg(args, "target")?;
-        let result = if is_self(caller, target.as_deref()) {
-            self.api.call(Method::NotesAppend(NotesAppendParams {
-                target: own_notes(caller),
-                text,
-                section: section.clone(),
-                stamp,
-                author: NotesAuthor::Agent,
-            }))?
-        } else {
-            // Another pane's notes: a teammate's (the server decides and
-            // marks the text as from the caller).
-            self.api
-                .call(Method::AgentsNotesAppend(AgentsNotesAppendParams {
-                    caller_pane: caller.pane_id.clone(),
-                    target: target.unwrap_or_default(),
-                    text,
-                    section: section.clone(),
-                    stamp,
-                }))?
-        };
-        let write: NotesWriteInfo = typed(result, "write")?;
-        let notes = &write.notes;
-        let place = section
-            .map(|section| format!(" under ## {section}"))
-            .unwrap_or_default();
-        Ok(Reply::new(
-            format!(
-                "rev {}  appended{place} to {} ({} bytes)",
-                notes.revision, notes.key, notes.bytes
-            ),
-            write_data(&write),
-        ))
-    }
-
     fn notes_write(&self, caller: &Caller, args: &Value) -> ToolResult {
         let target_arg = str_arg(args, "target")?;
         if !is_self(caller, target_arg.as_deref()) {
-            // Replacing notes is the owner's: another agent appends. The
-            // coordinator may, in its user's turn.
+            // Writing notes is the owner's; the coordinator may, in its
+            // user's turn.
             if !caller.is_coordinator {
                 return Err(err(
                     "own_only",
-                    "agents_notes_write replaces your own notes only; add to a teammate's with agents_notes_append target=…",
+                    "agents_notes_write writes your own notes only",
                 ));
             }
             if !caller.turn.user_turn {
@@ -2561,7 +2490,7 @@ impl<A: Api> Session<A> {
                 return Err(err(
                     "conflict",
                     format!(
-                        "the notes changed since rev {base} (now rev {}); nothing was written. Read them again with agents_notes_read and redo your edit, or use agents_notes_append",
+                        "the notes changed since rev {base} (now rev {}); nothing was written. Read them again with agents_notes_read and redo your edit",
                         notes.revision
                     ),
                 ))
@@ -2575,102 +2504,6 @@ impl<A: Api> Session<A> {
             ),
             write_data(&write),
         ))
-    }
-
-    fn checkpoint(&self, caller: &Caller, args: &Value) -> ToolResult {
-        let kind =
-            kind_arg(args, "kind")?.ok_or_else(|| err("invalid_request", "kind is required"))?;
-        let title = req_str(args, "title")?;
-        if title.chars().count() > CHECKPOINT_TITLE_CHARS {
-            return Err(err(
-                "invalid_request",
-                format!(
-                    "title is longer than {CHECKPOINT_TITLE_CHARS} characters; put the rest in detail"
-                ),
-            ));
-        }
-        let title = coordinator::one_line(&title, CHECKPOINT_TITLE_CHARS);
-        let detail = str_arg(args, "detail")?;
-        let tags = tags_arg(args, "tags")?;
-        let target = str_arg(args, "target")?;
-        let result = if is_self(caller, target.as_deref()) {
-            self.api.call(Method::CheckpointsAdd(CheckpointsAddParams {
-                target: own_notes(caller),
-                kind,
-                title,
-                detail,
-                tags,
-                author: NotesAuthor::Agent,
-            }))?
-        } else {
-            self.api
-                .call(Method::AgentsCheckpoint(AgentsCheckpointParams {
-                    caller_pane: caller.pane_id.clone(),
-                    target: target.unwrap_or_default(),
-                    kind: kind_text(kind).to_string(),
-                    title,
-                    detail,
-                    tags,
-                }))?
-        };
-        let write: CheckpointWriteInfo = typed(result, "checkpoint")?;
-        let row = write
-            .checkpoint
-            .as_ref()
-            .map(|cp| {
-                format!(
-                    "checkpoint {} {} \"{}\"",
-                    cp.id,
-                    kind_text(cp.kind),
-                    cp.title
-                )
-            })
-            .unwrap_or_else(|| "checkpoint recorded".to_string());
-        let folded = if write.folded {
-            " (same as a recent one: updated it)"
-        } else {
-            ""
-        };
-        Ok(Reply::new(
-            format!("{row}{folded} in {}", write.key),
-            serde_json::to_value(&write).unwrap_or_else(|_| json!({})),
-        ))
-    }
-
-    fn checkpoints_list(&self, caller: &Caller, args: &Value) -> ToolResult {
-        let kind = kind_arg(args, "kind")?;
-        let limit = u64_arg(args, "limit")?
-            .unwrap_or(CHECKPOINTS_DEFAULT)
-            .clamp(1, CHECKPOINTS_MAX);
-        let target = self.notes_target(caller, args)?;
-        let result = self
-            .api
-            .call(Method::CheckpointsList(CheckpointsListParams {
-                target,
-                kinds: kind.into_iter().collect(),
-                since_seq: None,
-                limit: u32::try_from(limit).ok(),
-            }))?;
-        let list: CheckpointsListInfo = typed(result, "checkpoints")?;
-        // Newest first, so the output cap folds the oldest.
-        let mut rows: Vec<String> = list.checkpoints.iter().rev().map(checkpoint_row).collect();
-        if rows.is_empty() {
-            rows.push("no checkpoints yet".to_string());
-        }
-        let footer = format!(
-            "{} checkpoint{} in {} (newest first)",
-            list.checkpoints.len(),
-            if list.checkpoints.len() == 1 { "" } else { "s" },
-            list.key
-        );
-        // The structured copy (what Claude Code shows the model) is newest
-        // first as well.
-        let mut data = serde_json::to_value(&list).unwrap_or_else(|_| json!({}));
-        if let Some(Value::Array(checkpoints)) = data.get_mut("checkpoints") {
-            checkpoints.reverse();
-        }
-        data["order"] = json!("newest_first");
-        Ok(Reply::new(cap_head(rows, Some(&footer)), data))
     }
 }
 
@@ -2805,45 +2638,12 @@ fn no_pane_error(session: Option<&str>, why: Option<&str>) -> ApiError {
     err("no_pane", message)
 }
 
-fn kind_text(kind: CheckpointKind) -> &'static str {
-    match kind {
-        CheckpointKind::Decision => "decision",
-        CheckpointKind::Milestone => "milestone",
-        CheckpointKind::Failure => "failure",
-        CheckpointKind::Bookmark => "bookmark",
-        CheckpointKind::Note => "note",
-        CheckpointKind::Unknown => "other",
-    }
-}
-
 fn author_text(author: NotesAuthor) -> &'static str {
     match author {
         NotesAuthor::Agent => "agent",
         NotesAuthor::User => "user",
         NotesAuthor::Unknown => "someone",
     }
-}
-
-/// `hh:mm  kind  id  title — detail` (`[user]` marks the user's own).
-fn checkpoint_row(cp: &crate::api::schema::notes::CheckpointInfo) -> String {
-    let mut row = format!(
-        "{}  {:<9}  {}  {}",
-        clock(cp.ts),
-        kind_text(cp.kind),
-        cp.id,
-        coordinator::one_line(&cp.title, ROW_TEXT_CHARS)
-    );
-    if cp.author == NotesAuthor::User {
-        row.push_str("  [user]");
-    }
-    if let Some(detail) = cp.detail.as_deref().filter(|d| !d.trim().is_empty()) {
-        row.push_str(" — ");
-        row.push_str(&coordinator::one_line(detail, CHECKPOINT_DETAIL_CHARS));
-    }
-    if !cp.tags.is_empty() {
-        row.push_str(&format!("  #{}", cp.tags.join(" #")));
-    }
-    row
 }
 
 // ----- guards ---------------------------------------------------------------
@@ -3477,44 +3277,6 @@ fn u64_arg(args: &Value, key: &str) -> Result<Option<u64>, ApiError> {
     }
 }
 
-/// A checkpoint kind; an unknown name is refused (the wire enum would
-/// silently read it as `Unknown`).
-fn kind_arg(args: &Value, key: &str) -> Result<Option<CheckpointKind>, ApiError> {
-    let Some(kind) = str_arg(args, key)? else {
-        return Ok(None);
-    };
-    let kind = kind.to_ascii_lowercase();
-    if !CHECKPOINT_KINDS.contains(&kind.as_str()) {
-        return Err(err(
-            "invalid_request",
-            format!("{key} must be one of {}", CHECKPOINT_KINDS.join(", ")),
-        ));
-    }
-    serde_json::from_value(Value::String(kind))
-        .map(Some)
-        .map_err(|error| err("invalid_request", format!("{key}: {error}")))
-}
-
-/// A list of non-empty strings (absent = empty).
-fn tags_arg(args: &Value, key: &str) -> Result<Vec<String>, ApiError> {
-    match args.get(key) {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|item| {
-                item.as_str()
-                    .map(|tag| tag.trim().to_string())
-                    .ok_or_else(|| err("invalid_request", format!("{key} must be strings")))
-            })
-            .filter(|tag| !matches!(tag, Ok(tag) if tag.is_empty()))
-            .collect(),
-        Some(_) => Err(err(
-            "invalid_request",
-            format!("{key} must be a list of strings"),
-        )),
-    }
-}
-
 fn bool_arg(args: &Value, key: &str) -> Result<bool, ApiError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(false),
@@ -3540,10 +3302,8 @@ fn wait_seconds(description: &str) -> Value {
 /// The herdr_agents tools, in [`TOOL_NAMES`] order.
 pub fn tools() -> Vec<Value> {
     let target = string("Agent name, pane id (w2:p3), tab id (w2:t3), tab label or `coordinator`");
-    let notes_target = string(
-        "Another pane's notes (name or pane id): any for reading, a teammate's for adding. Default: your own",
-    );
-    let kind = |description: &str| json!({ "type": "string", "enum": CHECKPOINT_KINDS, "description": description });
+    let notes_target =
+        string("Another pane's notes (name or pane id), for reading. Default: your own");
     vec![
         json!({ "name": "agents_whoami", "description": "Who you are in herdr+ (pane, team, role, note, the turn and what you may do), the coordinator, the dashboard URL and the etiquette. Call it first.",
             "inputSchema": schema(json!({}), &[]) }),
@@ -3603,33 +3363,12 @@ pub fn tools() -> Vec<Value> {
                 "offset": { "type": "integer", "minimum": 0, "description": "Byte offset to read from (default 0)" },
                 "target": notes_target,
             }), &[]) }),
-        json!({ "name": "agents_notes_append", "description": "Add to your session's notes (or a teammate's, with target: marked as from you): at the end, or at the end of a `## section` (created when missing). Never conflicts; returns the new revision.",
-            "inputSchema": schema(json!({
-                "text": { "type": "string", "maxLength": MAX_MESSAGE_CHARS, "description": "Markdown to add" },
-                "section": string("Section heading to add under, without the ##"),
-                "stamp": { "type": "boolean", "description": "Prefix the text with `- HH:MM `" },
-                "target": notes_target,
-            }), &["text"]) }),
-        json!({ "name": "agents_notes_write", "description": "Replace your session's notes. base_revision is the rev agents_notes_read printed; if the notes changed since (your user edits them too) nothing is written and you get `conflict`: read them again and redo the edit.",
+        json!({ "name": "agents_notes_write", "description": "Write your session's notes page (your user's page; only when they asked, directly or through a skill such as /plus:notes or /plus:notify). Replaces the whole page. base_revision is the rev agents_notes_read printed; if the notes changed since (your user edits them too) nothing is written and you get `conflict`: read them again and redo the edit.",
             "inputSchema": schema(json!({
                 "text": string("The whole new notes (markdown)"),
                 "base_revision": string("The rev from agents_notes_read (`none` while there are no notes)"),
                 "target": string("Coordinator only, in your user's turn: another agent's notes"),
             }), &["text", "base_revision"]) }),
-        json!({ "name": "agents_checkpoint", "description": "Mark a moment on your session's timeline in herdr's info pane (or a teammate's, with target): a decision, a milestone, a failure, a bookmark or a note. herdr links it to the conversation at this point, so keep the title short and put the why in detail.",
-            "inputSchema": schema(json!({
-                "kind": kind("What kind of moment"),
-                "title": string("One line, at most 120 characters"),
-                "detail": string("Why, what was tried, what changed (at most 2000 characters)"),
-                "tags": { "type": "array", "items": { "type": "string" }, "maxItems": 8, "description": "Short tags" },
-                "target": notes_target,
-            }), &["kind", "title"]) }),
-        json!({ "name": "agents_checkpoints_list", "description": "A session's checkpoints, newest first: yours, or any pane's with target.",
-            "inputSchema": schema(json!({
-                "kind": kind("Only this kind"),
-                "limit": { "type": "integer", "minimum": 1, "maximum": CHECKPOINTS_MAX, "description": "Default 20" },
-                "target": notes_target,
-            }), &[]) }),
         json!({ "name": "agents_set_meta", "description": "Set the role and/or the one-line note of your own pane or a teammate's (an empty string clears it). A team member's role also names it (fixer, reviewer-2).",
             "inputSchema": schema(json!({
                 "target": string("Default: yourself"),
@@ -3767,7 +3506,6 @@ mod tests {
     use crate::api::schema::agents_model::{
         AgentsClosedInfo, AgentsGroupInfo, AgentsGroupTeam, AgentsResumableInfo,
     };
-    use crate::api::schema::notes::CheckpointInfo;
     use crate::api::schema::{AgentStatus, TeamMemberInfo};
     use std::collections::{HashMap, VecDeque};
     use std::path::Path;
@@ -3842,8 +3580,6 @@ mod tests {
         team_updates: RefCell<HashMap<String, String>>,
         /// Notes by pane: text and a revision counter (absent = no file).
         notes: RefCell<HashMap<String, (String, u64)>>,
-        /// Checkpoints added, by pane.
-        checkpoints: RefCell<Vec<(String, CheckpointsAddParams)>>,
         /// Message ids the server queued for a busy target (until claimed).
         message_queue: RefCell<Vec<String>>,
     }
@@ -4242,53 +3978,6 @@ mod tests {
                     self.notes_write(&pane, params.text);
                     Ok(written(NotesWriteOutcome::Written, self.notes_info(&pane)))
                 }
-                Method::CheckpointsAdd(params) => {
-                    let pane = pane(&params.target)?;
-                    let mut all = self.checkpoints.borrow_mut();
-                    all.push((pane.clone(), params.clone()));
-                    let checkpoint = CheckpointInfo {
-                        id: format!("cp_{}", all.len()),
-                        ts: NOW,
-                        kind: params.kind,
-                        author: params.author,
-                        title: params.title,
-                        detail: params.detail,
-                        tags: params.tags,
-                        has_context: true,
-                    };
-                    Ok(
-                        json!({ "type": "checkpoint_write", "checkpoint": CheckpointWriteInfo {
-                        key: self.notes_info(&pane).key, seq: all.len() as u64,
-                        checkpoint: Some(checkpoint), ..CheckpointWriteInfo::default() } }),
-                    )
-                }
-                Method::CheckpointsList(params) => {
-                    let pane = pane(&params.target)?;
-                    let checkpoints: Vec<CheckpointInfo> = self
-                        .checkpoints
-                        .borrow()
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, (p, cp))| {
-                            *p == pane
-                                && (params.kinds.is_empty() || params.kinds.contains(&cp.kind))
-                        })
-                        .map(|(index, (_, cp))| CheckpointInfo {
-                            id: format!("cp_{}", index + 1),
-                            ts: NOW,
-                            kind: cp.kind,
-                            author: cp.author,
-                            title: cp.title.clone(),
-                            detail: cp.detail.clone(),
-                            tags: cp.tags.clone(),
-                            has_context: true,
-                        })
-                        .collect();
-                    Ok(
-                        json!({ "type": "checkpoints_list", "checkpoints": CheckpointsListInfo {
-                        key: self.notes_info(&pane).key, seq: 1, checkpoints, ..CheckpointsListInfo::default() } }),
-                    )
-                }
                 // Nothing kept: every id unknown (tests queue real answers).
                 Method::AgentsReadMessages(params) => Ok(json!({
                     "type": "agents_read_messages",
@@ -4440,17 +4129,6 @@ mod tests {
                         code: Some("outside_team".into()), detail: None, closed_ids: vec![] }
                 ] })),
                 Method::AgentsCheck(_) => Ok(json!({ "type": "agents_check", "allowed": true })),
-                Method::AgentsNotesAppend(params) => {
-                    let pane = self.resolve(&params.target).ok_or_else(not_found)?.pane;
-                    let mut text = self.notes_info(&pane).text.unwrap_or_default();
-                    text.push_str(&params.text);
-                    self.notes_write(&pane, text);
-                    Ok(json!({ "type": "notes_write", "write": NotesWriteInfo {
-                        outcome: NotesWriteOutcome::Written, notes: self.notes_info(&pane) } }))
-                }
-                Method::AgentsCheckpoint(params) => Ok(json!({ "type": "checkpoint_write",
-                    "checkpoint": CheckpointWriteInfo { key: format!("claude-{}", params.target),
-                        ..CheckpointWriteInfo::default() } })),
                 Method::AgentGet(target) => {
                     let fake = self.pane(&target.target).ok_or_else(not_found)?;
                     Ok(json!({ "agent": { "pane_id": fake.pane, "agent_status": fake.status } }))
@@ -4481,11 +4159,9 @@ mod tests {
                 Method::TeamSetPurpose(params) => Ok(
                     json!({ "team": { "workspace_id": params.workspace_id, "purpose": params.purpose } }),
                 ),
-                notes @ (Method::NotesGet(_)
-                | Method::NotesAppend(_)
-                | Method::NotesSet(_)
-                | Method::CheckpointsAdd(_)
-                | Method::CheckpointsList(_)) => self.notes_answer(notes),
+                notes @ (Method::NotesGet(_) | Method::NotesAppend(_) | Method::NotesSet(_)) => {
+                    self.notes_answer(notes)
+                }
                 Method::AgentsQueued(_) => Ok(json!({ "type": "agents_queued", "messages": [] })),
                 Method::AgentsReportWait(_) => Ok(json!({ "type": "ok" })),
                 // The server queue: its ids, read through the log, to the caller.
@@ -4599,7 +4275,7 @@ mod tests {
     }
 
     #[test]
-    fn initialize_lists_thirty_tools_and_every_tool_parses_its_arguments() {
+    fn initialize_lists_every_tool_and_every_tool_parses_its_arguments() {
         let (dir, world) = world("mcp-tools");
         world.set("w2:p3", |lead| lead.user_turn = true);
         let mut s = session(&world, "w2:p3", Verdict::Verified);
@@ -4615,7 +4291,7 @@ mod tests {
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
             .unwrap();
         let tools = list["result"]["tools"].as_array().unwrap().clone();
-        assert_eq!(tools.len(), 30);
+        assert_eq!(tools.len(), 27);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(names, TOOL_NAMES, "listed in TOOL_NAMES order");
         for tool in &tools {
@@ -4640,22 +4316,10 @@ mod tests {
             ("agents_wait_for_message", json!({ "timeout_s": 1 })),
             ("agents_messages", json!({ "limit": 5, "all": true })),
             ("agents_wait", json!({ "target": "rev", "until": ["idle"] })),
-            (
-                "agents_notes_append",
-                json!({ "text": "- [ ] ship it", "section": "Plan" }),
-            ),
             ("agents_notes_read", json!({ "offset": 0 })),
             (
                 "agents_notes_write",
-                json!({ "text": "# Plan\n", "base_revision": "r1" }),
-            ),
-            (
-                "agents_checkpoint",
-                json!({ "kind": "decision", "title": "Use jiff", "tags": ["deps"] }),
-            ),
-            (
-                "agents_checkpoints_list",
-                json!({ "kind": "decision", "limit": 5 }),
+                json!({ "text": "# Plan\n", "base_revision": "none" }),
             ),
             ("agents_set_meta", json!({ "note": "busy with the API" })),
             ("agents_actions", json!({ "limit": 5 })),
@@ -4727,7 +4391,7 @@ mod tests {
     #[test]
     fn close_and_reopen_are_the_only_tools_not_preapproved() {
         let approved: Vec<&str> = preapproved_tools().collect();
-        assert_eq!(approved.len(), 28);
+        assert_eq!(approved.len(), 25);
         for tool in TOOL_NAMES {
             assert_eq!(
                 approved.contains(&tool),
@@ -4773,26 +4437,23 @@ mod tests {
         for text in [ETIQUETTE, TEAM_ETIQUETTE] {
             assert!(text.contains("agents_notify"));
             assert!(text.contains("closing any tab needs your user's request"));
-            assert_notes_triggers(text);
+            assert_notes_rule(text);
         }
         for text in [INSTRUCTIONS, TEAM_INSTRUCTIONS] {
-            assert!(text.contains(NOTES_HABIT), "{text}");
+            assert!(text.contains(NOTES_RULE), "{text}");
         }
-        assert_notes_triggers(NOTES_HABIT);
+        assert_notes_rule(NOTES_RULE);
     }
 
-    /// The concrete notes triggers every text names.
-    pub(crate) fn assert_notes_triggers(text: &str) {
+    /// The notes rule every text states: the page is the user's, written
+    /// only on their request, then kept current; no log, no checkpoints.
+    pub(crate) fn assert_notes_rule(text: &str) {
         let lower = text.to_lowercase();
-        for trigger in [
-            "after a decision",
-            "milestone",
-            "failure or dead end",
-            "before you stop or hand off",
-            "agents_checkpoint",
-            "agents_notes_append section=log",
-        ] {
-            assert!(lower.contains(trigger), "{trigger:?} in {text}");
+        for part in ["user's page", "only when", "/plus:notes", "keep", "offer"] {
+            assert!(lower.contains(part), "{part:?} in {text}");
+        }
+        for gone in ["agents_checkpoint", "agents_notes_append", "running log"] {
+            assert!(!lower.contains(gone), "{gone:?} in {text}");
         }
     }
 
@@ -4886,7 +4547,7 @@ mod tests {
         let list = s
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
             .unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 30);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 27);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4916,7 +4577,6 @@ mod tests {
                     | "agents_wait_for_message"
                     | "agents_wait"
                     | "agents_notes_read"
-                    | "agents_checkpoints_list"
                     | "agents_actions"
                     | "agents_unmanage"
             ) {
@@ -4948,8 +4608,8 @@ mod tests {
             ),
             ("agents_set_meta", json!({ "note": "x" })),
             (
-                "agents_notes_append",
-                json!({ "text": "x", "target": "fixer" }),
+                "agents_notes_write",
+                json!({ "text": "x", "base_revision": "none", "target": "fixer" }),
             ),
         ] {
             let out = call(&mut s, name, args);
@@ -4967,22 +4627,18 @@ mod tests {
         }
         assert!(world.writes().is_empty(), "{:?}", world.writes());
         assert!(!call(&mut s, "agents_list", json!({})).is_error);
-        // Its own card, notes and checkpoints work from the first second.
+        // Its own card and notes work from the first second.
         for (name, args) in [
             ("agents_notify", json!({ "title": "starting" })),
-            ("agents_notes_append", json!({ "text": "- plan" })),
             (
-                "agents_checkpoint",
-                json!({ "kind": "note", "title": "up" }),
+                "agents_notes_write",
+                json!({ "text": "- plan", "base_revision": "none" }),
             ),
         ] {
             let out = call(&mut s, name, args);
             assert!(!out.is_error, "{name}: {}", out.text);
         }
-        assert_eq!(
-            world.writes(),
-            ["agent.notify", "notes.append", "checkpoints.add"]
-        );
+        assert_eq!(world.writes(), ["agent.notify", "notes.set"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -6339,34 +5995,28 @@ mod tests {
     }
 
     #[test]
-    fn teammates_add_to_each_others_notes_and_only_the_owner_replaces_them() {
+    fn only_the_owner_writes_its_notes_and_the_removed_tools_are_unknown() {
         let (dir, world) = world("mcp-notes");
         let mut s = session(&world, "w3:p1", Verdict::Verified);
-        let out = call(&mut s, "agents_notes_append", json!({ "text": "- mine" }));
-        assert!(!out.is_error, "{}", out.text);
-        assert_eq!(world.calls_of("notes.append").len(), 1);
         let out = call(
             &mut s,
-            "agents_notes_append",
-            json!({ "text": "- from fixer", "target": "reviewer" }),
+            "agents_notes_write",
+            json!({ "text": "- mine", "base_revision": "none" }),
         );
         assert!(!out.is_error, "{}", out.text);
-        let Method::AgentsNotesAppend(params) = &world.calls_of("agents.notes_append")[0] else {
-            panic!("append");
-        };
-        assert_eq!(
-            (params.caller_pane.as_str(), params.target.as_str()),
-            ("w3:p1", "reviewer")
-        );
-        call(
-            &mut s,
+        assert_eq!(world.calls_of("notes.set").len(), 1);
+        for gone in [
+            "agents_notes_append",
             "agents_checkpoint",
-            json!({ "kind": "milestone", "title": "green", "target": "reviewer" }),
-        );
-        let Method::AgentsCheckpoint(params) = &world.calls_of("agents.checkpoint")[0] else {
-            panic!("checkpoint");
-        };
-        assert_eq!(params.kind, "milestone");
+            "agents_checkpoints_list",
+        ] {
+            let out = call(&mut s, gone, json!({ "text": "x" }));
+            assert!(
+                out.is_error && out.text.contains("unknown tool"),
+                "{gone}: {}",
+                out.text
+            );
+        }
         let out = call(
             &mut s,
             "agents_notes_write",
@@ -6395,7 +6045,7 @@ mod tests {
             json!({ "text": "x", "base_revision": "none", "target": "lead" }),
         );
         assert!(!out.is_error, "{}", out.text);
-        assert_eq!(world.calls_of("notes.set").len(), 1);
+        assert_eq!(world.calls_of("notes.set").len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

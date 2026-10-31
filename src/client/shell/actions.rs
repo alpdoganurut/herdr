@@ -599,9 +599,6 @@ impl ClientShellState {
             PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),
             PendingEndpointKind::InfoNotesGet
             | PendingEndpointKind::InfoNotesWrite
-            | PendingEndpointKind::InfoCheckpointsList
-            | PendingEndpointKind::InfoCheckpointWrite
-            | PendingEndpointKind::InfoCheckpointContext { .. }
             | PendingEndpointKind::ContextMenuSession { .. } => {
                 unreachable!("handled above")
             }
