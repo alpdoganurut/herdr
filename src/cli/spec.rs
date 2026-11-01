@@ -209,7 +209,7 @@ fn worktree_command() -> Command {
     super::worktree::command()
 }
 
-fn tab_command() -> Command {
+pub(super) fn tab_command() -> Command {
     // Fork: color, important, remind, closed and reopen (run by
     // src/cli/tab.rs before the upstream bindings parse).
     super::tab::command()
@@ -271,7 +271,7 @@ fn notification_command() -> Command {
     super::notification::command()
 }
 
-fn agent_command() -> Command {
+pub(super) fn agent_command() -> Command {
     // Fork: wrap, notify, suspend, activate, restart, handoff and transcripts
     // (run by src/cli/agent.rs before the upstream bindings parse).
     super::agent::command()

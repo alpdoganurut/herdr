@@ -49,8 +49,10 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         }
         _ => args,
     };
+    // Fork: the spec command (upstream's plus the fork's subcommands), so
+    // `herdr agent help` lists them too.
     let operation = match super::projection::parse(
-        command().bin_name("herdr agent"),
+        super::spec::agent_command().bin_name("herdr agent"),
         args,
         bindings::from_matches,
     ) {

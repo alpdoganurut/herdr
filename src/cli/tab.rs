@@ -19,6 +19,18 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         Some("remind") => return tab_remind(&args[1..]),
         Some("closed") => return super::tab_closed::tab_closed(&args[1..]),
         Some("reopen") => return super::tab_closed::tab_reopen(&args[1..]),
+        // clap's help subcommand over the spec command, so the listing
+        // includes the fork's subcommands.
+        Some("help") => {
+            return match super::spec::tab_command()
+                .bin_name("herdr tab")
+                .no_binary_name(true)
+                .try_get_matches_from(args)
+            {
+                Err(error) => super::print_clap_error(&error),
+                Ok(_) => Ok(2),
+            };
+        }
         _ => {}
     }
     let request = bindings::request(args);

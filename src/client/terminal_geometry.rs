@@ -266,8 +266,9 @@ pub(super) fn resize_poll_loop_with(
             {
                 break;
             }
+            // Fork: a held-back report keeps the signal for the next poll.
+            signalled = false;
         }
-        signalled = false;
     }
 }
 

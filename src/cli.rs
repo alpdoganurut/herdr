@@ -384,14 +384,66 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
     Ok(CommandOutcome::Handled(exit_code))
 }
 
+#[cfg(test)]
+mod fork_help_tests {
+    const AGENT: [&str; 7] = [
+        "suspend",
+        "activate",
+        "restart",
+        "handoff",
+        "transcripts",
+        "wrap",
+        "notify",
+    ];
+    const TAB: [&str; 5] = ["color", "important", "remind", "closed", "reopen"];
+
+    #[test]
+    fn bare_agent_and_tab_groups_list_the_fork_subcommands() {
+        for (group, names) in [("agent", &AGENT[..]), ("tab", &TAB[..])] {
+            let listing =
+                super::projection::group_commands(&super::api_group(group).expect("api group"));
+            for name in names {
+                assert!(
+                    listing.contains(&format!("herdr {group} {name}")),
+                    "herdr {group} is missing {name}: {listing}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn agent_and_tab_help_subcommands_list_the_fork_subcommands() {
+        for (command, names) in [
+            (super::spec::agent_command(), &AGENT[..]),
+            (super::spec::tab_command(), &TAB[..]),
+        ] {
+            let group = command.get_name().to_owned();
+            let error = command
+                .bin_name(format!("herdr {group}"))
+                .no_binary_name(true)
+                .try_get_matches_from(["help"])
+                .expect_err("help is printed through a clap error");
+            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+            let help = error.to_string();
+            for name in names {
+                assert!(
+                    help.contains(name),
+                    "herdr {group} help is missing {name}: {help}"
+                );
+            }
+        }
+    }
+}
+
 /// API-backed command groups, which list their commands when run without one.
 fn api_group(name: &str) -> Option<clap::Command> {
     Some(match name {
         "workspace" => workspace_bindings::command(),
         "worktree" => worktree::command(),
-        "tab" => tab::command(),
+        // Fork: the spec commands, which add the fork's subcommands.
+        "tab" => spec::tab_command(),
         "notification" => notification::command(),
-        "agent" => agent::command(),
+        "agent" => spec::agent_command(),
         "pane" => pane::command(),
         "plugin" => plugin::command(),
         _ => return None,

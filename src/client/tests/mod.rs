@@ -102,6 +102,46 @@ fn resize_poll_loop_keeps_polling_through_a_transient_zero_grid() {
     );
 }
 
+/// Fork: a report the coalescer holds back keeps its resize signal, so a drag
+/// that settles back on the last reported size still re-reports it.
+#[test]
+fn resize_poll_loop_keeps_a_held_back_signal_until_the_settled_report() {
+    let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel(8);
+    let should_quit = Arc::new(AtomicBool::new(false));
+    let quit = Arc::clone(&should_quit);
+    let size = |cols| Ok((cols, 24u16, 8u32, 16u32, true));
+    // First change (reported at once), a change inside the gap (held back),
+    // back on the reported size, then quiet.
+    let mut samples = vec![size(81), size(82), size(81), size(81)].into_iter();
+    let mut signals = vec![true, true, false, false].into_iter();
+
+    super::terminal_geometry::resize_poll_loop_with(
+        resize_tx,
+        (80, 24, 8, 16, true),
+        move |_| match samples.next() {
+            Some(sample) => sample,
+            None => {
+                quit.store(true, Ordering::Release);
+                Ok((81, 24, 8, 16, true))
+            }
+        },
+        move || signals.next().unwrap_or(false),
+        &should_quit,
+    );
+
+    let mut events = Vec::new();
+    while let Ok(event) = resize_rx.try_recv() {
+        events.push(event);
+    }
+    // Under load the held-back 82 may go out as well; either way the settled
+    // size is reported again after the first report.
+    assert!(events.len() >= 2, "the held-back signal was dropped");
+    assert!(matches!(
+        events.last(),
+        Some(super::ClientLoopEvent::Resize(81, 24, 8, 16, true))
+    ));
+}
+
 #[test]
 fn resize_poll_loop_detaches_once_on_a_real_terminal_failure() {
     let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel(8);
