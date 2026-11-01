@@ -1733,13 +1733,19 @@ impl PaneRuntimeIo {
                 let sender = sender.clone();
                 let (reply_tx, reply_rx) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
-                    let result = sender
-                        .try_send(text)
-                        .map_err(std::io::Error::other)
-                        .and_then(|()| {
-                            std::thread::sleep(delay);
-                            sender.try_send(enter).map_err(std::io::Error::other)
-                        });
+                    // An empty part (the fork's text-only or Enter-only
+                    // submissions) writes nothing, as the actors do.
+                    let send = |bytes: Bytes| {
+                        if bytes.is_empty() {
+                            Ok(())
+                        } else {
+                            sender.try_send(bytes).map_err(std::io::Error::other)
+                        }
+                    };
+                    let result = send(text).and_then(|()| {
+                        std::thread::sleep(delay);
+                        send(enter)
+                    });
                     let _ = reply_tx.send(result);
                 });
                 Ok(reply_rx)

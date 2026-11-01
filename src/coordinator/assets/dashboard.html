@@ -570,8 +570,10 @@ function renderMessages(live) {
     // "logged": a reply to a busy asker, delivered through the log (older
     // senders). "queued": waiting in herdr until the target is free (pending,
     // not bad); "delivered": a queued one typed in; "expired" / "dropped":
-    // a queued one that never got there.
-    const delivered = outcome === "sent" || outcome === "logged" || outcome === "delivered";
+    // a queued one that never got there. "confirmed": its target read it or
+    // started a turn on it; "unconfirmed": no proof it got there (bad).
+    const delivered = outcome === "sent" || outcome === "logged" || outcome === "delivered" ||
+      outcome === "confirmed";
     const pending = outcome === "queued";
     add(body, el("span", "outcome" + (delivered ? "" : pending ? " pending" : " bad"), "[" + outcome + "] "));
     if (str(m.reply_to)) add(body, el("span", "reply", "↩ " + str(m.reply_to) + " "));

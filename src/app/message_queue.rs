@@ -45,6 +45,11 @@
 //! reports a refusal nor resends. A user's own `herdr agent prompt` (`cli:…`)
 //! is untouched.
 //!
+//! Into Claude Code and Codex a message goes in as two writes, its text and
+//! then its Enter once the text shows in the input box; every delivered
+//! message waits for its target to take it in (`confirmed`, else
+//! `unconfirmed`): src/app/message_queue/submit.rs.
+//!
 //! Delivery is driven by agent events (`emit_event` marks the queue due, O(1)
 //! when it is empty) and the server loop's deadlines (settle, typing retry,
 //! expiry); nothing runs in render paths. File work (log lines and the queue
@@ -115,6 +120,18 @@ const SCREEN_BLOCKED_REASON: &str = "blocked on its user (a question or an appro
 /// The wait reason while a target's own status report (OSC 7501) reads
 /// blocked.
 const PROGRAM_STATUS_BLOCKED_REASON: &str = "blocked on its user (its own status report)";
+/// Fork (lost-message fix): the wait reason, and a direct send's queued
+/// reason, while a message's text is typed in and its Enter waits for the
+/// input box to show it (src/app/message_queue/submit.rs).
+pub(crate) const SUBMITTING_REASON: &str = "submitting";
+
+mod submit;
+pub(crate) use submit::DeliveryWatch;
+/// Tests elsewhere: how long the input box may take to show typed text.
+#[cfg(test)]
+pub(crate) fn submit_window_for_test() -> Duration {
+    submit::SUBMIT_WINDOW
+}
 
 /// Whether a wait reason means the target waits on its user: its screen or
 /// its own status report reads blocked, or its input box is not on screen.
@@ -167,6 +184,22 @@ pub(crate) struct QueuedMessage {
     /// gone grace while the pane still records the same session.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) herdr_notice: bool,
+    /// Fork (lost-message fix): typing attempts whose text never showed in
+    /// the target's empty input box (no Enter went in); held at
+    /// [`submit::MAX_SUBMIT_ATTEMPTS`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(crate) attempts: u32,
+    /// Fork (lost-message fix): when its text was typed in and its Enter
+    /// had not gone in yet. Saved, so a restart or a live handoff inside
+    /// that window looks at the input box before typing it again
+    /// ([`submit`]); cleared when it is typed again (it leaves the queue
+    /// once delivered).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) typed_unix: Option<u64>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl QueuedMessage {
@@ -261,6 +294,9 @@ pub(crate) struct MessageQueue {
     pub(crate) user_blocked: HashMap<String, UserBlocked>,
     /// Targets an urgent message interrupted (Esc), and when.
     interrupted_at: HashMap<String, Instant>,
+    /// Fork (lost-message fix): batches waiting for their Enter, late
+    /// renders and confirmations (runtime only; submit.rs).
+    pub(crate) delivery: DeliveryWatch,
     /// Agent panes whose missing directory herdr recreated, waiting to be
     /// told so once their agent is up (src/app/missing_cwd.rs; saved in the
     /// queue file by public pane id).
@@ -486,8 +522,9 @@ impl MessageQueue {
     /// When the server loop should run the next pass.
     pub(crate) fn next_deadline(&self, now: Instant, now_unix: u64) -> Option<Instant> {
         let missing_cwd = self.missing_cwd.next_deadline();
+        let delivery = self.delivery.next_deadline();
         if self.entries.is_empty() {
-            return missing_cwd;
+            return missing_cwd.into_iter().chain(delivery).min();
         }
         if let Some(at) = missing_cwd.filter(|at| *at <= now) {
             return Some(at);
@@ -500,7 +537,7 @@ impl MessageQueue {
             .iter()
             .map(|entry| now + Duration::from_secs(entry.expires_unix.saturating_sub(now_unix)))
             .min();
-        [self.retry_at, expiry, missing_cwd]
+        [self.retry_at, expiry, missing_cwd, delivery]
             .into_iter()
             .flatten()
             .min()
@@ -740,6 +777,11 @@ impl App {
         if terminal.effective_known_agent().is_none() {
             return Check::Missing;
         }
+        // Fork (lost-message fix): a message's text is in, its Enter waits
+        // for the input box to show it; nothing else goes in meanwhile.
+        if self.message_queue.delivery.submitting(&target.terminal_id) {
+            return Check::Wait(SUBMITTING_REASON.into());
+        }
         // Fork (OSC 7501): the agent's own status report says it waits on
         // its user. A veto before every ready arm (an idle screen, a working
         // screen its hooks ended, the hook hold); never a release.
@@ -914,6 +956,8 @@ impl App {
             pointer,
             stuck_notified: false,
             herdr_notice: false,
+            attempts: 0,
+            typed_unix: None,
         }
     }
 
@@ -1050,7 +1094,10 @@ impl App {
                     format!("{} is not running", message.to_pane),
                 ))
             }
-            _ if self.message_queue.queued_for(&target.terminal_id) => {
+            // Fork (lost-message fix): held messages do not block it.
+            _ if self.message_queue.queued_for(&target.terminal_id)
+                && !self.message_queue.submit_held(&target.terminal_id) =>
+            {
                 "earlier messages are waiting for it".to_string()
             }
             Check::Wait(reason) => reason,
@@ -1067,15 +1114,63 @@ impl App {
                     envelope: envelope.clone(),
                     pointer: pointer.clone(),
                 }];
-                match self.type_message(
-                    request_id.to_string(),
-                    &target.terminal_id,
-                    &pane,
-                    &items,
-                    coordinator,
-                    from.as_ref(),
-                ) {
-                    Ok(()) => return Ok(MessageDelivery::Sent),
+                // Fork (lost-message fix): into Claude Code and Codex the
+                // text goes in now and the queue presses Enter once it
+                // shows; the sender hears `queued` (submitting).
+                let submit = self.submit_agent(&target.terminal_id);
+                if submit.is_some() && self.message_queue.entries.len() >= MAX_QUEUED {
+                    return Err(MessageRefused::new(
+                        "queue_full",
+                        "too many queued agent messages",
+                    ));
+                }
+                let typed = match submit {
+                    Some(agent) => self.start_submit(
+                        request_id.to_string(),
+                        &target.terminal_id,
+                        &pane,
+                        &items,
+                        coordinator,
+                        from.as_ref(),
+                        agent,
+                        Instant::now(),
+                    ),
+                    None => self.type_message(
+                        request_id.to_string(),
+                        &target.terminal_id,
+                        &pane,
+                        &items,
+                        coordinator,
+                        from.as_ref(),
+                    ),
+                };
+                match typed {
+                    Ok(()) => {
+                        let mut entry = self.queued_message(
+                            target,
+                            message,
+                            envelope,
+                            Some(pointer),
+                            false,
+                            from,
+                            now_unix,
+                        );
+                        if submit.is_some() {
+                            entry.typed_unix = Some(now_unix);
+                            self.message_queue.push(entry);
+                            return Ok(MessageDelivery::Queued {
+                                reason: SUBMITTING_REASON.to_string(),
+                            });
+                        }
+                        let paste = !self.reads_messages(&target.terminal_id);
+                        self.watch_confirmation(
+                            &target.terminal_id,
+                            vec![entry],
+                            paste,
+                            Instant::now(),
+                        );
+                        return Ok(MessageDelivery::Sent);
+                    }
                     Err(response) => {
                         let code = error_code(&response);
                         if !retryable(&code) && code != "busy" {
@@ -1150,14 +1245,29 @@ impl App {
                     {
                         "an urgent message goes in ahead of it".to_string()
                     }
+                    _ if first
+                        .is_some_and(|first| first.attempts >= submit::MAX_SUBMIT_ATTEMPTS) =>
+                    {
+                        format!("an earlier message is {}", submit::SUBMIT_HELD_REASON)
+                    }
                     _ if first.is_some() => "earlier messages are waiting for it".to_string(),
+                    _ if entry.attempts >= submit::MAX_SUBMIT_ATTEMPTS => {
+                        submit::SUBMIT_HELD_REASON.to_string()
+                    }
                     Some(target) => {
                         // Its last typing attempt found no input box.
                         let blocked = self
                             .message_queue
                             .user_blocked
                             .get(&target.terminal_id)
-                            .map(|blocked| blocked.reason.clone());
+                            .map(|blocked| blocked.reason.clone())
+                            .or_else(|| {
+                                self.message_queue
+                                    .delivery
+                                    .typing_wait
+                                    .get(&target.terminal_id)
+                                    .cloned()
+                            });
                         match (self.message_check(&target), blocked) {
                             (
                                 Check::Ready {
@@ -1476,12 +1586,14 @@ impl App {
             .or_else(|_| self.resolve_terminal_target(&params.pane))
             .ok()
             .map(|target| target.terminal_id);
+        // Fork (lost-message fix): a message whose text is in and whose
+        // Enter waits is not taken (the waiter skips it; it goes in).
         let claimed = claimer.is_some_and(|terminal_id| {
             self.message_queue
                 .entries
                 .iter()
                 .any(|entry| entry.id() == params.id && entry.terminal_id == terminal_id)
-        });
+        }) && !self.message_queue.delivery.submitting_id(&params.id);
         if claimed {
             self.message_queue.finish(
                 std::slice::from_ref(&params.id),
@@ -1752,11 +1864,16 @@ impl App {
     }
 
     pub(crate) fn message_queue_pass(&mut self, now: Instant, now_unix: u64) -> bool {
-        if self.message_queue.is_empty() {
+        if self.message_queue.is_empty() && !self.message_queue.delivery.is_active() {
             return false;
         }
         let due = self.message_queue.due
             || self.message_queue.retry_at.is_some_and(|at| now >= at)
+            || self
+                .message_queue
+                .delivery
+                .next_deadline()
+                .is_some_and(|at| now >= at)
             || self
                 .message_queue
                 .entries
@@ -1768,6 +1885,9 @@ impl App {
         self.message_queue.due = false;
         self.message_queue.retry_at = None;
         let mut changed = false;
+        let mut next: Vec<Instant> = Vec::new();
+        // Fork (lost-message fix): batches waiting for their Enter first.
+        changed |= self.drive_delivery_watch(now, now_unix, &mut next);
 
         let expired: Vec<QueuedMessage> = self
             .message_queue
@@ -1797,7 +1917,6 @@ impl App {
                 targets.push((entry.terminal_id.clone(), entry.session.clone()));
             }
         }
-        let mut next: Vec<Instant> = Vec::new();
         for (terminal_id, session) in targets {
             changed |=
                 self.deliver_queued_to(&terminal_id, session.as_deref(), now, now_unix, &mut next);
@@ -1824,6 +1943,10 @@ impl App {
             .user_blocked
             .retain(|terminal, _| live.contains(terminal));
         self.message_queue
+            .delivery
+            .typing_wait
+            .retain(|terminal, _| live.contains(terminal));
+        self.message_queue
             .interrupted_at
             .retain(|terminal, at| live.contains(terminal) && now < *at + INTERRUPT_WAIT);
         self.message_queue.retry_at = next.into_iter().min();
@@ -1846,6 +1969,10 @@ impl App {
             for entry in &mut self.message_queue.entries {
                 if entry.terminal_id == terminal_id {
                     entry.terminal_id = target.terminal_id.clone();
+                    // Fork (lost-message fix): a new agent process, a new
+                    // input box: earlier typing attempts no longer count.
+                    entry.attempts = 0;
+                    entry.typed_unix = None;
                 }
             }
             self.message_queue.save();
@@ -1917,6 +2044,34 @@ impl App {
             next.push(since + SETTLE);
             return false;
         }
+        // Fork (lost-message fix): typed in twice into a box that stayed
+        // empty; it waits for its expiry or a claim.
+        if self.message_queue.submit_held(&terminal_id) {
+            return false;
+        }
+        // Fork (lost-message fix): its text went in before a restart or a
+        // live handoff and no Enter is known to have followed: look at the
+        // input box before typing it again (submit.rs).
+        match self.recover_typed_batch(&terminal_id, now, now_unix) {
+            submit::Recovery::Proceed => {}
+            submit::Recovery::Done(changed) => return changed,
+            submit::Recovery::Busy => {
+                next.push(now + RETRY);
+                return false;
+            }
+            submit::Recovery::Wait => {
+                // No input box (a dialog, a menu): look again, its text may
+                // still be in the box behind it.
+                next.push(now + RETRY);
+                return self.watch_user_blocked_target(
+                    &target,
+                    super::typing_guard::TypingBlock::InputBoxAbsent.reason(),
+                    now,
+                    now_unix,
+                    next,
+                );
+            }
+        }
         // One delivery: the oldest messages for this target, each with its
         // envelope (one paste, or one pointer line listing their ids).
         // The coordinator gets one message per turn: it may answer on its own
@@ -1930,6 +2085,11 @@ impl App {
             .entries
             .iter()
             .filter(|entry| entry.terminal_id == terminal_id)
+            // Fork (lost-message fix): held ones wait; typed ones are the
+            // recovery's (submit.rs).
+            .filter(|entry| {
+                entry.typed_unix.is_none() && entry.attempts < submit::MAX_SUBMIT_ATTEMPTS
+            })
         {
             if !items.is_empty()
                 && (items.len() >= max_combined
@@ -1949,15 +2109,40 @@ impl App {
             .iter()
             .find(|entry| entry.id() == first)
             .and_then(|entry| entry.from_terminal.clone());
-        match self.type_message(
-            format!("agent-message:{first}"),
-            &terminal_id,
-            &pane,
-            &items,
-            coordinator,
-            from.as_ref(),
-        ) {
+        // Fork (lost-message fix): Claude Code and Codex get the text now
+        // and the Enter once it shows (submit.rs).
+        let submit = self.submit_agent(&terminal_id);
+        let typed = match submit {
+            Some(agent) => self.start_submit(
+                format!("agent-message:{first}"),
+                &terminal_id,
+                &pane,
+                &items,
+                coordinator,
+                from.as_ref(),
+                agent,
+                now,
+            ),
+            None => self.type_message(
+                format!("agent-message:{first}"),
+                &terminal_id,
+                &pane,
+                &items,
+                coordinator,
+                from.as_ref(),
+            ),
+        };
+        let paste = submit.is_none() && !self.reads_messages(&terminal_id);
+        match typed {
+            Ok(()) if submit.is_some() => {
+                self.message_queue.delivery.typing_wait.remove(&terminal_id);
+                self.message_queue.ready_since.remove(&terminal_id);
+                self.message_queue.settle_screens.remove(&terminal_id);
+                self.message_queue.user_blocked.remove(&terminal_id);
+                true
+            }
             Ok(()) => {
+                self.message_queue.delivery.typing_wait.remove(&terminal_id);
                 if hook_ended {
                     // Typed into a screen that read working, on the Stop
                     // hook's word and a screen that stood still for SETTLE
@@ -1974,7 +2159,9 @@ impl App {
                 self.message_queue.settle_screens.remove(&terminal_id);
                 self.message_queue.interrupted_at.remove(&terminal_id);
                 self.message_queue.user_blocked.remove(&terminal_id);
+                let delivered = self.message_queue.entries_with(&ids);
                 self.message_queue.finish(&ids, OUTCOME_DELIVERED, now_unix);
+                self.watch_confirmation(&terminal_id, delivered, paste, now);
                 if self.message_queue.queued_for(&terminal_id) {
                     // The rest goes in once the target settled again.
                     self.message_queue.due = true;
@@ -1994,6 +2181,13 @@ impl App {
                     return self.watch_user_blocked_target(&target, reason, now, now_unix, next);
                 }
                 self.message_queue.user_blocked.remove(&terminal_id);
+                // Fork (lost-message fix): the user's typing or draft is
+                // why it waits (agents.queued), logged once per wait.
+                if code == "user_typing" {
+                    self.note_typing_wait(&terminal_id, &response);
+                } else {
+                    self.message_queue.delivery.typing_wait.remove(&terminal_id);
+                }
                 if !retryable(&code) && code != "busy" {
                     tracing::warn!(code, "message queue: delivery failed, retrying");
                 }
@@ -2014,10 +2208,15 @@ impl App {
                 .message_queue
                 .user_blocked
                 .get(&target.terminal_id)
-                .map_or_else(
-                    || "not typed in yet".to_string(),
-                    |blocked| blocked.reason.clone(),
-                ),
+                .map(|blocked| blocked.reason.clone())
+                .or_else(|| {
+                    self.message_queue
+                        .delivery
+                        .typing_wait
+                        .get(&target.terminal_id)
+                        .cloned()
+                })
+                .unwrap_or_else(|| "not typed in yet".to_string()),
             check => MessageCheck(check).status(),
         }
     }

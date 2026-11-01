@@ -999,7 +999,10 @@ fn preview(message: &AgentMessage) -> String {
     if short.len() < text.len() {
         short.push('\u{2026}');
     }
-    let outcome = if message.outcome == messages::OUTCOME_SENT {
+    // Fork (lost-message fix): a confirmed message went in like a sent one.
+    let outcome = if message.outcome == messages::OUTCOME_SENT
+        || message.outcome == messages::OUTCOME_CONFIRMED
+    {
         String::new()
     } else {
         format!(" [{}]", message.outcome)

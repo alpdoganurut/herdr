@@ -4147,6 +4147,76 @@ mod tests {
         assert!(app.coordinator.tab_id.is_none());
     }
 
+    /// Fork (lost-message fix): on the two-write path the coordinator's
+    /// turn marker is written with the text and cleared when no Enter goes
+    /// in (an empty box retried, other text unconfirmed).
+    #[tokio::test]
+    async fn the_coordinator_turn_marker_is_cleared_when_no_enter_goes_in() {
+        use crate::app::message_queue::submit_window_for_test as window;
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        app.message_queue.delivery.enabled_for_test = true;
+        let own = app.existing_coordinator_pane().expect("tab");
+        let target = app
+            .public_pane_id(own.ws_idx, own.pane_id)
+            .expect("pane id");
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, b"", 16,
+            );
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
+        app.state.insert_test_runtime(own.pane_id, runtime);
+        let marker = |app: &App| {
+            crate::coordinator::turn::read_live(
+                &app.coordinator.dir,
+                crate::coordinator::now_unix(),
+            )
+        };
+        let reply = app.handle_agent_message_send(
+            "req".into(),
+            crate::api::schema::AgentMessageSendParams {
+                target: target.clone(),
+                id: "mc1".into(),
+                envelope: "[herdr+ message mc1 from w9:p1]\nquestion".into(),
+                text: "question".into(),
+                from_pane: Some("w9:p1".into()),
+                ..Default::default()
+            },
+        );
+        assert!(reply.contains("submitting"), "{reply}");
+        assert_eq!(marker(&app).map(|turn| turn.id), Some("mc1".into()));
+        std::thread::sleep(Duration::from_millis(100));
+        while rx.try_recv().is_ok() {}
+
+        // The box stays empty through the window: retried, marker gone.
+        let t0 = Instant::now() + window() + Duration::from_millis(100);
+        app.message_queue_pass(t0, crate::coordinator::now_unix());
+        assert!(marker(&app).is_none(), "cleared with the retry");
+        assert_eq!(app.message_queue.entries.len(), 1);
+
+        // Typed again (marker again); other text at the deadline:
+        // unconfirmed, marker gone, no Enter.
+        let t1 = t0 + crate::app::message_queue::SETTLE;
+        app.message_queue_pass(t1, crate::coordinator::now_unix());
+        assert_eq!(marker(&app).map(|turn| turn.id), Some("mc1".into()));
+        let screen = "\x1b[2J\x1b[H\r\n─────\r\n❯ something else\r\n─────\r\n";
+        app.lookup_runtime_sender(own.ws_idx, own.pane_id)
+            .expect("runtime")
+            .test_process_pty_bytes(screen.as_bytes());
+        app.message_queue_pass(
+            Instant::now() + window() * 2 + crate::app::message_queue::SETTLE * 2,
+            crate::coordinator::now_unix(),
+        );
+        assert!(marker(&app).is_none(), "cleared when unconfirmed");
+        assert!(app.message_queue.entries.is_empty());
+        std::thread::sleep(Duration::from_millis(100));
+        let mut out = String::new();
+        while let Ok(bytes) = rx.try_recv() {
+            out.push_str(&String::from_utf8_lossy(&bytes));
+        }
+        assert!(!out.contains('\r'), "no Enter: {out:?}");
+    }
+
     /// The coordinator may answer on its own only the message that started
     /// its turn: queued messages go in one per turn, never batched.
     #[tokio::test]

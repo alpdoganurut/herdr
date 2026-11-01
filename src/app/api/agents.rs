@@ -331,6 +331,19 @@ impl App {
         if terminal.suspended_agent.is_some() {
             return Err(agent_suspended(id, &params.target));
         }
+        // Fork (lost-message fix, src/app/message_queue/submit.rs): an
+        // agent message's text is in and its Enter waits for the input box
+        // to show it; anything typed now would land in that text.
+        if self.message_queue.delivery.submitting(terminal_id.as_str()) {
+            return Err(encode_error(
+                id,
+                "busy",
+                format!(
+                    "agent {} is taking an agent message (its Enter is pending); try again in a moment",
+                    params.target
+                ),
+            ));
+        }
         if terminal.state == crate::detect::AgentState::Blocked {
             return Err(encode_error(
                 id,
@@ -437,6 +450,44 @@ impl App {
         ),
         String,
     > {
+        self.write_agent_prompt(validated, params, source, typed, false)
+            .map(|(id, agent, completion, _)| (id, agent, completion))
+    }
+
+    /// Fork (lost-message fix, src/app/message_queue.rs): validate and
+    /// write only the prompt's text, no Enter; the queue presses Enter once
+    /// the text shows in the agent's input box. Returns the Enter bytes.
+    pub(in crate::app) fn queue_agent_prompt_text(
+        &mut self,
+        id: String,
+        params: AgentPromptParams,
+        source: crate::agents_model::InputSource,
+        typed: bool,
+    ) -> Result<Vec<u8>, String> {
+        let validated = self.validate_agent_prompt(id, &params)?;
+        self.write_agent_prompt(validated, &params, source, typed, true)
+            .map(|(_, _, _, enter)| enter)
+    }
+
+    /// [`Self::submit_agent_prompt`]; `hold_enter` writes the text alone
+    /// (an empty Enter) and returns the Enter bytes for a later write.
+    #[allow(clippy::type_complexity)] // submit_agent_prompt's tuple plus the Enter bytes.
+    fn write_agent_prompt(
+        &mut self,
+        validated: ValidatedAgentPrompt,
+        params: &AgentPromptParams,
+        source: crate::agents_model::InputSource,
+        typed: bool,
+        hold_enter: bool,
+    ) -> Result<
+        (
+            String,
+            crate::api::schema::AgentInfo,
+            std::sync::mpsc::Receiver<std::io::Result<()>>,
+            Vec<u8>,
+        ),
+        String,
+    > {
         let ValidatedAgentPrompt {
             id,
             ws_idx,
@@ -482,16 +533,21 @@ impl App {
         } else {
             text
         };
+        let (enter, held, delay) = if hold_enter {
+            (Vec::new(), enter, Duration::ZERO)
+        } else {
+            (enter, Vec::new(), AGENT_PROMPT_SUBMIT_DELAY)
+        };
         let completion = runtime
             .queue_user_input_submission(
                 Bytes::from(text),
                 Bytes::from(enter),
-                AGENT_PROMPT_SUBMIT_DELAY,
+                delay,
                 submit_deadline,
             )
             .map_err(|err| encode_error(id.clone(), "agent_prompt_failed", err.to_string()))?;
         self.note_input(&terminal_id, source);
-        Ok((id, agent, completion))
+        Ok((id, agent, completion, held))
     }
 
     /// The transcript backup store and schedule. Reads the store on demand;
