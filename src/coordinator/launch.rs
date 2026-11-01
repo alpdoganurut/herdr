@@ -558,6 +558,8 @@ mod tests {
             "agents_restart",
             "agents_reorder_tab",
             "agents_reorder_group",
+            "agents_mute",
+            "agents_dnd",
         ] {
             assert!(
                 agent.contains(&format!("mcp__herdr_agents__{tool}")),

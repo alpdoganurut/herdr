@@ -2770,6 +2770,37 @@
           ],
           "type": "object"
         },
+        "AgentsSetQuietParams": {
+          "description": "`agents.set_quiet` (fork, src/app/agents_quiet.rs): mute a tab's\nnotifications (`tab.set_muted`) and/or turn its do-not-disturb on or off\n(`tab.set_dnd`), checked like a soft edit (free in the caller's team,\nthe coordinator in its user's turn) and logged with who did it. Without\n`caller_pane` the caller is the user (`herdr tab mute` from a shell). At\nleast one of `muted` and `dnd`. Answers `tab_info`.",
+          "properties": {
+            "caller_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "dnd": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "muted": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "target": {
+              "description": "A tab id, a pane id or an agent name (its tab).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
         "AgentsSettingsSetParams": {
           "description": "`agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,\n`tools`, `instructions`, `notices`, `team_roster`, `program_status` and\n`handoff.enabled`; an integer 0 to 100 for `handoff.at_percent`; a string\n(`\"off\"` or `<N>m`, `<N>h`, `<N>d`) for `autosuspend.after`; a string for `instructions_file`\n(`\"\"` or `\"default\"` = built-in, `\"file\"` = `<config dir>/agents.md`,\nseeded with the built-in text when missing, anything else = that path).",
           "properties": {
@@ -10764,6 +10795,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentsAckQuietParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork: mute and do-not-disturb on an agent's tab, checked as the\ncaller (the herdr_agents agents_mute / agents_dnd tools, `herdr tab\nmute|unmute|dnd`).",
+          "properties": {
+            "method": {
+              "const": "agents.set_quiet",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsSetQuietParams"
             }
           },
           "required": [

@@ -50,6 +50,7 @@ pub mod method {
     pub const REPORT_WAIT: &str = "agents.report_wait";
     pub const TAKE_QUIET: &str = "agents.take_quiet";
     pub const ACK_QUIET: &str = "agents.ack_quiet";
+    pub const SET_QUIET: &str = "agents.set_quiet";
 
     /// The methods advertised to client shells (the TUI's "Set role…" and
     /// "Handoff & compact").
@@ -58,7 +59,7 @@ pub mod method {
 
     /// Every method.
     #[cfg(test)]
-    pub const ALL: [&str; 26] = [
+    pub const ALL: [&str; 27] = [
         ACTOR,
         DIRECTORY,
         READ,
@@ -85,6 +86,7 @@ pub mod method {
         REPORT_WAIT,
         TAKE_QUIET,
         ACK_QUIET,
+        SET_QUIET,
     ];
 }
 
@@ -1028,6 +1030,24 @@ pub struct AgentsAckQuietParams {
     pub ids: Vec<String>,
 }
 
+/// `agents.set_quiet` (fork, src/app/agents_quiet.rs): mute a tab's
+/// notifications (`tab.set_muted`) and/or turn its do-not-disturb on or off
+/// (`tab.set_dnd`), checked like a soft edit (free in the caller's team,
+/// the coordinator in its user's turn) and logged with who did it. Without
+/// `caller_pane` the caller is the user (`herdr tab mute` from a shell). At
+/// least one of `muted` and `dnd`. Answers `tab_info`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsSetQuietParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane: Option<String>,
+    /// A tab id, a pane id or an agent name (its tab).
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dnd: Option<bool>,
+}
+
 /// `agents.handoff` (fork): handoff, then compact, for a Claude agent
 /// (src/agent_handoff.rs). Without `caller_pane` the caller is the user
 /// (the tab menu, the keybinding, `herdr agent handoff` outside an agent);
@@ -1235,7 +1255,7 @@ pub struct AgentActionEntry {
 
 /// The type names the params structs may reference (digest hygiene).
 #[cfg(test)]
-pub const PARAM_TYPES: [&str; 27] = [
+pub const PARAM_TYPES: [&str; 28] = [
     "AgentsActorParams",
     "AgentsDirectoryParams",
     "AgentsReadParams",
@@ -1263,6 +1283,7 @@ pub const PARAM_TYPES: [&str; 27] = [
     "AgentsReportWaitParams",
     "AgentsTakeQuietParams",
     "AgentsAckQuietParams",
+    "AgentsSetQuietParams",
 ];
 
 #[cfg(test)]

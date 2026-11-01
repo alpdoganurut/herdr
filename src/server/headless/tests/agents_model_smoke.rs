@@ -152,6 +152,83 @@ async fn fork_smoke_agents_set_meta_from_a_client_reaches_the_team_push() {
     shutdown_test_runtimes(&mut server);
 }
 
+/// Fork (agent mute): a team member mutes a teammate's tab through the
+/// agents path (`agents.set_quiet`, as the herdr_agents agents_mute tool
+/// sends it); every client gets the `endpoint.tab-mutes.v1` push naming the
+/// tab, the action log names the member, and an outsider is refused.
+#[tokio::test]
+async fn fork_smoke_agents_mute_of_a_teammate_tab_reaches_the_mutes_push() {
+    use crate::api::schema::agents_model::AgentsSetQuietParams;
+    use crate::server::headless::tab_mutes::{TabMutesPayload, TAB_MUTES_KIND};
+    let (mut server, _input, panes) = crew_server();
+    let dir = temp_dir("mute");
+    server.app.agents_model.dir = Some(dir.clone());
+    let (control, _render) = connect_test_shell(&mut server, 63, 80, 23);
+    server.render_and_stream();
+    while control.try_recv().is_ok() {}
+    let (lead, fixer) = (public(&server, panes[0]), public(&server, panes[1]));
+    let fixer_tab = server.app.public_tab_id(1, 1).unwrap();
+    let result = public_api(
+        &mut server,
+        Method::AgentsSetQuiet(AgentsSetQuietParams {
+            caller_pane: Some(lead.clone()),
+            target: fixer,
+            muted: Some(true),
+            dnd: Some(true),
+        }),
+    );
+    assert_eq!(result["result"]["tab"]["muted"], true, "{result}");
+    assert_eq!(result["result"]["tab"]["dnd"], true, "{result}");
+    server.render_and_stream();
+    let mut pushed = Vec::new();
+    while let Ok(bytes) = control.try_recv() {
+        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+            if kind == TAB_MUTES_KIND {
+                pushed.push(TabMutesPayload::decode(&data).unwrap().tab_ids);
+            }
+        }
+    }
+    assert_eq!(pushed, [vec![fixer_tab.clone()]], "one push naming the tab");
+    let log = crate::agents_model::actions_log::read_tail(&dir, 1);
+    assert_eq!(log[0].action, "set_quiet");
+    assert_eq!(log[0].outcome, AgentsActionOutcome::Ok);
+    assert_eq!(log[0].actor_pane.as_deref(), Some(lead.as_str()));
+    assert_eq!(log[0].target_tab.as_deref(), Some(fixer_tab.as_str()));
+    // A pane outside the team (the bucket's shell is the user; a plain
+    // group's agent is not a teammate).
+    let mut plain = crate::workspace::Workspace::test_new("plain");
+    plain.test_add_tab(Some("other"));
+    server.app.state.workspaces.push(plain);
+    server.app.state.ensure_test_terminals();
+    let outsider = server.app.state.workspaces[2].tabs[0].root_pane;
+    let outsider_id = server.app.state.workspaces[2]
+        .pane_state(outsider)
+        .unwrap()
+        .attached_terminal_id
+        .clone();
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&outsider_id)
+        .unwrap()
+        .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    let outsider = server.app.public_pane_id(2, outsider).unwrap();
+    let refused = public_api(
+        &mut server,
+        Method::AgentsSetQuiet(AgentsSetQuietParams {
+            caller_pane: Some(outsider),
+            target: fixer_tab,
+            muted: Some(false),
+            dnd: None,
+        }),
+    );
+    assert_eq!(refused["error"]["code"], "outside_team", "{refused}");
+    assert!(server.app.state.workspaces[1].tabs[1].muted);
+    let _ = std::fs::remove_dir_all(dir);
+    shutdown_test_runtimes(&mut server);
+}
+
 #[tokio::test]
 async fn fork_smoke_agents_close_of_a_teammate_tab_needs_the_users_turn_and_is_logged() {
     let (mut server, _input, panes) = crew_server();

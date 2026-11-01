@@ -12,6 +12,7 @@
 //! | Message | invalid_target | ✓ | ✓ | UT or reply | ✓ |
 //! | SoftEdit | ✓ | ✓ | outside_team | UT | protected_tab |
 //! | SuspendRestart, Activate (the coordinator too) | ✓ | ✓ | outside_team | UT | protected_tab |
+//! | Quiet (mute, do-not-disturb) | ✓ | ✓ | outside_team | UT | protected_tab |
 //! | Handoff (handoff, then compact) | ✓ | UT | outside_team | ✓ | protected_tab |
 //! | Reopen/Activate of a user's entry (D4) | UT | UT | outside_team | UT | - |
 //! | MoveTab (not into another team) | ✓ | ✓ | outside_team | UT | protected_tab |
@@ -90,6 +91,9 @@ pub enum SoftEdit {
     /// Handoff, then compact (fork, `agents.handoff`): free for the
     /// caller's own agent; another's context is its team's user's call.
     Handoff,
+    /// Muting a tab's notifications or turning its do-not-disturb on or off
+    /// (fork, `agents.set_quiet`): a plain soft edit, like suspend.
+    Quiet,
 }
 
 /// Writes only the owner may make.
@@ -417,6 +421,7 @@ mod tests {
             SoftEdit::Activate { by_agent: true },
             SoftEdit::Activate { by_agent: false },
             SoftEdit::Handoff,
+            SoftEdit::Quiet,
         ] {
             out.push(Action::SoftEdit(soft));
         }
@@ -727,6 +732,41 @@ mod tests {
         assert_eq!(agent(Relation::Teammate, lifecycle, false), "allow");
         assert_eq!(agent(Relation::Other, lifecycle, true), "outside_team");
         assert_eq!(agent(Relation::Protected, lifecycle, true), "protected_tab");
+    }
+
+    #[test]
+    fn mute_and_dnd_are_free_in_the_team_and_the_coordinators_in_its_users_turn() {
+        let quiet = Action::SoftEdit(SoftEdit::Quiet);
+        assert_eq!(agent(Relation::SelfPane, quiet, false), "allow");
+        assert_eq!(agent(Relation::Teammate, quiet, false), "allow");
+        assert_eq!(agent(Relation::Other, quiet, true), "outside_team");
+        assert_eq!(agent(Relation::Protected, quiet, true), "protected_tab");
+        // Without a team, only its own tab.
+        let loner = |relation| {
+            code(authorize(
+                Actor::Agent { team: false },
+                relation,
+                quiet,
+                &facts(true),
+            ))
+        };
+        assert_eq!(loner(Relation::SelfPane), "allow");
+        assert_eq!(loner(Relation::Teammate), "outside_team");
+        for relation in [Relation::Teammate, Relation::Other] {
+            assert_eq!(
+                code(authorize(
+                    Actor::Coordinator,
+                    relation,
+                    quiet,
+                    &facts(false)
+                )),
+                "non_user_turn"
+            );
+            assert!(authorize(Actor::Coordinator, relation, quiet, &facts(true)).is_allowed());
+        }
+        for relation in RELATIONS {
+            assert!(authorize(Actor::User, relation, quiet, &facts(false)).is_allowed());
+        }
     }
 
     #[test]

@@ -1487,6 +1487,9 @@ impl App {
             Method::AgentsAckQuiet(params) => {
                 return self.handle_agents_ack_quiet(request.id, params)
             }
+            Method::AgentsSetQuiet(params) => {
+                return self.handle_agents_set_quiet(request.id, params)
+            }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,

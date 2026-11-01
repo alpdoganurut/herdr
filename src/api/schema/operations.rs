@@ -244,6 +244,7 @@ mod tests {
             "agents.restart",
             "agents.reorder_group",
             "agents.reorder_tab",
+            "agents.set_quiet",
         ]
         .into_iter()
         .collect::<BTreeSet<_>>();
