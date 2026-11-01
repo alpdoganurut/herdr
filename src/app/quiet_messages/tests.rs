@@ -435,7 +435,7 @@ async fn a_waiter_claims_a_quiet_message_so_it_is_not_injected_again() {
 
 #[tokio::test]
 async fn restored_dnd_tabs_and_stored_messages_reach_clients() {
-    let (mut app, _lead, fixer, _rx) = fixture();
+    let (mut app, _lead, _fixer, _rx) = fixture();
     assert_eq!(app.quiet.view_rev, 0);
     app.state.workspaces[1].tabs[1].dnd = true;
     app.note_restored_quiet();
