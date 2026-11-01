@@ -15,12 +15,21 @@
 //! since the text was written. Only then is the message `delivered` (and a
 //! pointer line's envelope kept for `agents.read_messages`). At the deadline
 //! a box proven empty (the marker and at most a dim suggestion) means the
-//! text never landed: no Enter, the batch stays at the front of its queue
-//! with the same ids and one more attempt, and after
-//! [`MAX_SUBMIT_ATTEMPTS`] it is held (no more typing) and its senders are
-//! told. Anything else at the deadline (other text in the box, no box, the
-//! user typing) is `unconfirmed`: no Enter, no retry, its senders and the
-//! user are told. A late render (the box shows exactly the text herdr typed
+//! text has not landed: no Enter, the batch stays queued with the same ids
+//! and its `typed_unix`, and after a fresh SETTLE the recovery look
+//! ([`App::recover_typed_batch`], before the typing guard) gives a late
+//! copy the Enter alone or counts one attempt and types it again; after
+//! [`MAX_SUBMIT_ATTEMPTS`] it is held (no more typing, its senders told;
+//! it does not keep later messages out). Anything else at the deadline
+//! (other text in the box, no box) is `unconfirmed`: no Enter, no retry,
+//! its senders and the user are told (a pointer line's envelope is kept,
+//! so a read by id still confirms it). When the user typed into the pane
+//! after herdr's text it is `unconfirmed` without an Enter as well, but
+//! its sender is told only if no read by id or turn follows within the
+//! confirmation window: the user may have sent it, and an immediate notice
+//! would invite a resend (a deliberate departure from decision.md). While
+//! a batch is in flight `agent.prompt` is refused `busy`, and the Enter is
+//! never written while the agent's own status report reads blocked. A late render (the box shows exactly the text herdr typed
 //! within [`LATE_RENDER_WINDOW`] of an unconfirmed batch, nothing typed by
 //! the user) gets the Enter alone and is `delivered` after all. A message
 //! is never typed in twice for one delivery.
@@ -118,6 +127,38 @@ struct ConfirmWatch {
     entries: Vec<QueuedMessage>,
     paste: bool,
     deadline: Instant,
+    /// Logged `unconfirmed` already (its user typed before herdr's Enter):
+    /// its expiry only tells the sender.
+    logged_unconfirmed: bool,
+}
+
+/// What [`App::recover_typed_batch`] decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Recovery {
+    /// No typed batch, or its text is not in the empty box: type as usual.
+    Proceed,
+    /// Handled (Enter alone, delivered, unconfirmed or held); `true` when
+    /// anything moved.
+    Done(bool),
+    /// No input box on screen: look again later.
+    Wait,
+    /// The coordinator's turn marker could not be written: look again later.
+    Busy,
+}
+
+/// Why herdr's Enter did not go in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnterRefused {
+    /// The target or its runtime is gone, or its input closed.
+    Gone,
+    /// Its own status report (OSC 7501) reads blocked now.
+    Blocked,
+}
+
+/// A monotonic instant as a Unix time (seconds).
+fn instant_unix(at: Instant) -> u64 {
+    crate::coordinator::now_unix()
+        .saturating_sub(Instant::now().saturating_duration_since(at).as_secs())
 }
 
 /// The queue's delivery checks (runtime only; on [`MessageQueue`]).
@@ -130,6 +171,9 @@ pub(crate) struct DeliveryWatch {
     confirm: Vec<ConfirmWatch>,
     /// Pointer messages marked unconfirmed (their log lines), newest last.
     unconfirmed: Vec<AgentMessage>,
+    /// Targets whose user's typing or draft holds their messages, and why
+    /// (`agents.queued`; no user-blocked hold).
+    pub(super) typing_wait: HashMap<String, String>,
     /// Tests: the checks run (off by default, so the older tests keep their
     /// one-write deliveries).
     #[cfg(test)]
@@ -154,7 +198,7 @@ impl DeliveryWatch {
     }
 
     /// Whether a batch is in flight into `terminal_id`.
-    pub(super) fn submitting(&self, terminal_id: &str) -> bool {
+    pub(crate) fn submitting(&self, terminal_id: &str) -> bool {
         self.pending.contains_key(terminal_id)
     }
 
@@ -190,13 +234,16 @@ impl DeliveryWatch {
 }
 
 impl MessageQueue {
-    /// Whether the first message queued for `terminal_id` is held after
-    /// [`MAX_SUBMIT_ATTEMPTS`] typing attempts into an empty box.
+    /// Whether every message queued for `terminal_id` is held after
+    /// [`MAX_SUBMIT_ATTEMPTS`] typing attempts into an empty box (held ones
+    /// do not keep the others from going in).
     pub(super) fn submit_held(&self, terminal_id: &str) -> bool {
-        self.entries
+        let mut queued = self
+            .entries
             .iter()
-            .find(|entry| entry.terminal_id == terminal_id)
-            .is_some_and(|entry| entry.attempts >= MAX_SUBMIT_ATTEMPTS)
+            .filter(|entry| entry.terminal_id == terminal_id)
+            .peekable();
+        queued.peek().is_some() && queued.all(|entry| entry.attempts >= MAX_SUBMIT_ATTEMPTS)
     }
 
     pub(super) fn entries_with(&self, ids: &[String]) -> Vec<QueuedMessage> {
@@ -251,6 +298,33 @@ impl App {
             .find(|terminal| terminal.id.as_str() == terminal_id)?
             .effective_known_agent()?;
         typing_guard::prompt_box_supported(agent).then_some(agent)
+    }
+
+    /// A guarded typing attempt into `terminal_id` was refused `user_typing`
+    /// (`response`): that is why its messages wait (no user-blocked hold);
+    /// logged once per reason.
+    pub(super) fn note_typing_wait(&mut self, terminal_id: &str, response: &str) {
+        let message = serde_json::from_str::<serde_json::Value>(response)
+            .ok()
+            .and_then(|value| value["error"]["message"].as_str().map(str::to_string))
+            .unwrap_or_default();
+        let reason = message
+            .split_once(": ")
+            .map(|(_, rest)| rest.trim_end_matches("; retry later").to_string())
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or_else(|| "its user is typing in it".to_string());
+        let previous = self
+            .message_queue
+            .delivery
+            .typing_wait
+            .insert(terminal_id.to_string(), reason.clone());
+        if previous.as_deref() != Some(reason.as_str()) {
+            tracing::info!(
+                target = %terminal_id,
+                reason = %reason,
+                "message queue: its user's typing holds the target's messages"
+            );
+        }
     }
 
     /// Whether delivered messages wait for their confirmation.
@@ -425,13 +499,7 @@ impl App {
                 if typing_guard::draft_shows(typed, &submit.expected, submit.paste)
         );
         if look.user_typed {
-            self.submit_unconfirmed(
-                terminal_id,
-                submit,
-                "its user typed in it before herdr pressed Enter",
-                now,
-                now_unix,
-            );
+            self.submit_unconfirmed_after_user_input(terminal_id, submit, now, now_unix);
             return true;
         }
         if shows {
@@ -447,7 +515,7 @@ impl App {
         }
         match look.prompt {
             Some(PromptBox::Empty | PromptBox::Suggestion(_)) => {
-                self.submit_retry(terminal_id, submit, now, now_unix, next)
+                self.submit_retry(terminal_id, submit, now, next)
             }
             Some(PromptBox::Draft { .. }) => {
                 self.submit_unconfirmed(
@@ -500,15 +568,22 @@ impl App {
         }
     }
 
-    /// Write the Enter alone into `terminal_id`. `false` when it could not
-    /// be written (the target or its runtime is gone, its input closed).
-    fn write_submit_enter(&mut self, terminal_id: &str, submit: &PendingSubmit) -> bool {
+    /// Write the Enter alone into `terminal_id`, unless its own status
+    /// report reads blocked now (a dialog drawn since the look).
+    fn write_submit_enter(
+        &mut self,
+        terminal_id: &str,
+        submit: &PendingSubmit,
+    ) -> Result<(), EnterRefused> {
         let Some(target) = self.message_target(terminal_id, None) else {
-            return false;
+            return Err(EnterRefused::Gone);
         };
         let Some(runtime) = self.lookup_runtime_sender(target.ws_idx, target.pane_id) else {
-            return false;
+            return Err(EnterRefused::Gone);
         };
+        if runtime.program_status_blocked() {
+            return Err(EnterRefused::Blocked);
+        }
         if let Err(err) = runtime.queue_user_input_submission(
             Bytes::new(),
             Bytes::from(submit.enter.clone()),
@@ -516,7 +591,7 @@ impl App {
             None,
         ) {
             tracing::warn!(error = %err, "message queue: the Enter could not be written");
-            return false;
+            return Err(EnterRefused::Gone);
         }
         let first = submit.ids.first().map(String::as_str).unwrap_or("");
         self.note_pane_input(
@@ -524,7 +599,7 @@ impl App {
             target.pane_id,
             message_source(submit.from.as_ref(), first),
         );
-        true
+        Ok(())
     }
 
     /// The box shows the text: press Enter, and the batch is delivered.
@@ -535,14 +610,14 @@ impl App {
         now: Instant,
         now_unix: u64,
     ) -> bool {
-        if !self.write_submit_enter(terminal_id, &submit) {
-            self.submit_unconfirmed(
-                terminal_id,
-                submit,
-                "herdr could not press Enter in it",
-                now,
-                now_unix,
-            );
+        if let Err(refused) = self.write_submit_enter(terminal_id, &submit) {
+            let why = match refused {
+                EnterRefused::Blocked => {
+                    "it turned blocked on its user (its own status report) before herdr's Enter"
+                }
+                EnterRefused::Gone => "herdr could not press Enter in it",
+            };
+            self.submit_unconfirmed(terminal_id, submit, why, now, now_unix);
             return true;
         }
         self.message_queue.delivery.pending.remove(terminal_id);
@@ -569,30 +644,20 @@ impl App {
         true
     }
 
-    /// The box stayed empty: nothing landed. The batch stays at the front
-    /// of its queue (same ids) with one more attempt, typed again after a
-    /// fresh SETTLE, or held after [`MAX_SUBMIT_ATTEMPTS`].
+    /// The box stayed empty: nothing showed (yet). The batch stays where it
+    /// is in its queue (same ids, its `typed_unix` kept) and is looked at
+    /// again after a fresh SETTLE by [`App::recover_typed_batch`]: a late
+    /// copy gets the Enter alone, a box still empty counts one attempt and
+    /// the text is typed again, or the batch is held after
+    /// [`MAX_SUBMIT_ATTEMPTS`].
     fn submit_retry(
         &mut self,
         terminal_id: &str,
         submit: PendingSubmit,
         now: Instant,
-        now_unix: u64,
         next: &mut Vec<Instant>,
     ) -> bool {
         self.end_submit(terminal_id, &submit);
-        let mut held: Vec<QueuedMessage> = Vec::new();
-        for entry in &mut self.message_queue.entries {
-            if !submit.ids.iter().any(|id| id == entry.id()) {
-                continue;
-            }
-            entry.attempts = entry.attempts.saturating_add(1);
-            entry.typed_unix = None;
-            if entry.attempts == MAX_SUBMIT_ATTEMPTS {
-                held.push(entry.clone());
-            }
-        }
-        self.message_queue.save();
         self.message_queue
             .ready_since
             .insert(terminal_id.to_string(), now);
@@ -600,13 +665,31 @@ impl App {
         tracing::info!(
             target = %terminal_id,
             messages = submit.ids.len(),
-            held = !held.is_empty(),
-            "message queue: typed text never showed in an empty input box; no Enter"
+            "message queue: typed text has not shown in an empty input box; no Enter, looking again"
         );
-        for entry in held {
-            self.send_held_notice(&entry, now_unix);
-        }
         true
+    }
+
+    /// One more typing attempt for `ids` (their text never showed): their
+    /// `typed_unix` cleared, their senders told once they are held. Returns
+    /// whether any is held now.
+    fn bump_attempts(&mut self, ids: &[String], now_unix: u64) -> bool {
+        let mut held: Vec<QueuedMessage> = Vec::new();
+        for entry in &mut self.message_queue.entries {
+            if !ids.iter().any(|id| id == entry.id()) {
+                continue;
+            }
+            entry.typed_unix = None;
+            entry.attempts = entry.attempts.saturating_add(1);
+            if entry.attempts == MAX_SUBMIT_ATTEMPTS {
+                held.push(entry.clone());
+            }
+        }
+        self.message_queue.save();
+        for entry in &held {
+            self.send_held_notice(entry, now_unix);
+        }
+        !held.is_empty()
     }
 
     /// Tell `entry`'s sender it is held after [`MAX_SUBMIT_ATTEMPTS`].
@@ -621,46 +704,21 @@ impl App {
         self.send_stuck_notice(entry, text, now_unix);
     }
 
-    /// The messages at the front of `terminal_id`'s queue whose text went
-    /// in without a known Enter (`typed_unix`), as one typed batch.
+    /// The messages queued for `terminal_id` whose text went in without a
+    /// known Enter (`typed_unix`), in queue order: one typed batch (an
+    /// urgent message queued ahead of it since is not part of it).
     fn typed_batch(&self, terminal_id: &str) -> Vec<QueuedMessage> {
         self.message_queue
             .entries
             .iter()
-            .filter(|entry| entry.terminal_id == terminal_id)
-            .take_while(|entry| entry.typed_unix.is_some())
+            .filter(|entry| entry.terminal_id == terminal_id && entry.typed_unix.is_some())
             .cloned()
             .collect()
     }
 
-    /// A batch whose text went in before a restart or a live handoff (its
-    /// `typed_unix` saved, nothing in flight now): read the input box once
-    /// before typing it again. Its text in the box gets the Enter alone; an
-    /// empty box is one more attempt and the usual typing (`None`), or the
-    /// hold; anything else (other text, no box) is `unconfirmed`, no Enter.
-    /// `None` also when there is no such batch. (Its user's own Enter shows
-    /// as a read by id or a turn start: [`App::adopt_typed_message`],
-    /// [`App::note_submitted_turn`].)
-    pub(super) fn recover_typed_batch(
-        &mut self,
-        terminal_id: &str,
-        now: Instant,
-        now_unix: u64,
-    ) -> Option<bool> {
-        if self.message_queue.delivery.submitting(terminal_id) {
-            return None;
-        }
-        let batch = self.typed_batch(terminal_id);
-        if batch.is_empty() {
-            return None;
-        }
-        let ids: Vec<String> = batch.iter().map(|entry| entry.id().to_string()).collect();
-        let Some(agent) = self.submit_agent(terminal_id) else {
-            self.clear_typed(&ids);
-            return None;
-        };
-        let target = self.message_target(terminal_id, None)?;
-        let runtime = self.lookup_runtime_sender(target.ws_idx, target.pane_id)?;
+    /// A typed batch's parts and the two texts it went in as: its pointer
+    /// line and its paste.
+    fn batch_texts(batch: &[QueuedMessage]) -> (Vec<Outgoing>, String, String) {
         let items: Vec<Outgoing> = batch.iter().map(QueuedMessage::outgoing).collect();
         let pointers: Vec<crate::agents_model::envelope::PointerFrom> =
             items.iter().map(|item| item.pointer.clone()).collect();
@@ -670,14 +728,87 @@ impl App {
             .map(|item| item.envelope.as_str())
             .collect::<Vec<_>>()
             .join("\n\n");
+        (items, pointer_text, paste_text)
+    }
+
+    /// Whether `terminal_id`'s box still shows its typed batch's text (not
+    /// sent yet). `true` when the box cannot be read (no evidence it went).
+    fn typed_text_still_shows(&self, terminal_id: &str, batch: &[QueuedMessage]) -> bool {
+        let Some(agent) = self.submit_agent(terminal_id) else {
+            return true;
+        };
+        let Some(runtime) = self
+            .message_target(terminal_id, None)
+            .and_then(|target| self.lookup_runtime_sender(target.ws_idx, target.pane_id))
+        else {
+            return true;
+        };
+        let (_, pointer_text, paste_text) = Self::batch_texts(batch);
+        let rows = usize::from(runtime.current_size().0.max(1));
+        match typing_guard::input_box(agent, &runtime.recent_ansi_snapshot(rows).text) {
+            Some(PromptBox::Draft { typed, .. }) => {
+                typing_guard::draft_shows(&typed, &pointer_text, false)
+                    || typing_guard::draft_shows(&typed, &paste_text, true)
+            }
+            Some(_) => false,
+            None => true,
+        }
+    }
+
+    /// A batch whose text went in without a known Enter and with nothing in
+    /// flight now: after a retry (the box stayed empty), a restart or a live
+    /// handoff. Read the input box once, before the typing guard, ahead of
+    /// typing it again:
+    /// - exactly its text, nothing typed by the user since: the Enter alone;
+    /// - no box (a dialog, a menu): wait and look again ([`Recovery::Wait`]);
+    /// - an empty box after a turn this server saw end since: its user sent
+    ///   it (delivered, never typed again);
+    /// - the user typed since (or its text with the user's): `unconfirmed`,
+    ///   on a confirm watch ([`App::submit_unconfirmed_after_user_input`]);
+    /// - other text: `unconfirmed`, no Enter;
+    /// - an empty box otherwise: one more attempt and the usual typing
+    ///   ([`Recovery::Proceed`]), or the hold.
+    pub(super) fn recover_typed_batch(
+        &mut self,
+        terminal_id: &str,
+        now: Instant,
+        now_unix: u64,
+    ) -> Recovery {
+        if self.message_queue.delivery.submitting(terminal_id) {
+            return Recovery::Proceed;
+        }
+        let batch = self.typed_batch(terminal_id);
+        if batch.is_empty() {
+            return Recovery::Proceed;
+        }
+        let ids: Vec<String> = batch.iter().map(|entry| entry.id().to_string()).collect();
+        let Some(agent) = self.submit_agent(terminal_id) else {
+            self.clear_typed(&ids);
+            return Recovery::Proceed;
+        };
+        let Some(target) = self.message_target(terminal_id, None) else {
+            return Recovery::Proceed;
+        };
+        let Some(runtime) = self.lookup_runtime_sender(target.ws_idx, target.pane_id) else {
+            return Recovery::Proceed;
+        };
+        let typed_since = batch
+            .iter()
+            .filter_map(|entry| entry.typed_unix)
+            .min()
+            .unwrap_or(0);
+        let user_typed = runtime
+            .last_user_input()
+            .is_some_and(|at| instant_unix(at) >= typed_since);
+        let (items, pointer_text, paste_text) = Self::batch_texts(&batch);
         let rows = usize::from(runtime.current_size().0.max(1));
         let prompt = typing_guard::input_box(agent, &runtime.recent_ansi_snapshot(rows).text);
         let (_, enter) = crate::app::api_helpers::encode_api_submission_parts(runtime, "");
-        let shown = match &prompt {
+        let exact = match &prompt {
             Some(PromptBox::Draft { typed, .. }) => {
-                if typing_guard::draft_shows(typed, &pointer_text, false) {
+                if typing_guard::draft_is(typed, &pointer_text, false) {
                     Some(false)
-                } else if typing_guard::draft_shows(typed, &paste_text, true) {
+                } else if typing_guard::draft_is(typed, &paste_text, true) {
                     Some(true)
                 } else {
                     None
@@ -685,7 +816,10 @@ impl App {
             }
             _ => None,
         };
-        let submit = |paste: bool| PendingSubmit {
+        let coordinator = self.is_coordinator_pane(target.ws_idx, target.pane_id);
+        let pane = self.public_pane_id(target.ws_idx, target.pane_id);
+        let paste_mode = !self.reads_messages(terminal_id);
+        let submit = |paste: bool, marker: Option<crate::coordinator::turn::Turn>| PendingSubmit {
             ids: ids.clone(),
             items: items.clone(),
             expected: if paste {
@@ -700,67 +834,81 @@ impl App {
             deadline: now,
             enter: enter.clone(),
             from: batch.first().and_then(|entry| entry.from_terminal.clone()),
-            marker: None,
+            marker,
         };
-        match (shown, &prompt) {
-            (Some(paste), _) => {
-                tracing::info!(
-                    target = %terminal_id,
-                    messages = ids.len(),
-                    "message queue: text typed before a restart still shows; Enter only"
-                );
-                Some(self.press_submit_enter(terminal_id, submit(paste), now, now_unix))
-            }
-            (None, Some(PromptBox::Empty | PromptBox::Suggestion(_)))
-                if self.turn_ended_since(
-                    terminal_id,
-                    batch
-                        .iter()
-                        .filter_map(|entry| entry.typed_unix)
-                        .min()
-                        .unwrap_or(0),
-                ) =>
-            {
-                // An empty box after a turn this server saw end: its user
-                // pressed Enter on it. Delivered, never typed again.
-                self.deliver_typed_batch(terminal_id, !self.reads_messages(terminal_id));
-                Some(true)
-            }
-            (None, Some(PromptBox::Empty | PromptBox::Suggestion(_))) => {
-                let mut held: Vec<QueuedMessage> = Vec::new();
-                for entry in &mut self.message_queue.entries {
-                    if ids.iter().any(|id| id == entry.id()) {
-                        entry.typed_unix = None;
-                        entry.attempts = entry.attempts.saturating_add(1);
-                        if entry.attempts == MAX_SUBMIT_ATTEMPTS {
-                            held.push(entry.clone());
-                        }
+        match (&prompt, exact) {
+            (None, _) => Recovery::Wait,
+            (Some(PromptBox::Draft { .. }), Some(paste)) if !user_typed => {
+                // The coordinator's turn marker again before its Enter.
+                let marker = if coordinator {
+                    let first = ids.first().map(String::as_str).unwrap_or("");
+                    match pane
+                        .as_deref()
+                        .map(|pane| self.write_coordinator_message_turn(pane, first))
+                    {
+                        Some(Ok(marker)) => Some(marker),
+                        _ => return Recovery::Busy,
                     }
-                }
-                self.message_queue.save();
+                } else {
+                    None
+                };
                 tracing::info!(
                     target = %terminal_id,
                     messages = ids.len(),
-                    "message queue: text typed before a restart is not in the empty box; typing it again"
+                    "message queue: earlier typed text still shows in the input box; Enter only"
                 );
-                for entry in &held {
-                    self.send_held_notice(entry, now_unix);
-                }
-                if held.is_empty() {
-                    None
-                } else {
-                    Some(true)
-                }
-            }
-            (None, _) => {
-                self.submit_unconfirmed(
+                Recovery::Done(self.press_submit_enter(
                     terminal_id,
-                    submit(false),
-                    "after a restart its input box shows other text or is not on screen",
+                    submit(paste, marker),
+                    now,
+                    now_unix,
+                ))
+            }
+            (Some(PromptBox::Draft { .. }), _) if user_typed => {
+                self.submit_unconfirmed_after_user_input(
+                    terminal_id,
+                    submit(exact.unwrap_or(paste_mode), None),
                     now,
                     now_unix,
                 );
-                Some(true)
+                Recovery::Done(true)
+            }
+            (Some(PromptBox::Draft { .. }), _) => {
+                self.submit_unconfirmed(
+                    terminal_id,
+                    submit(paste_mode, None),
+                    "its input box shows other text",
+                    now,
+                    now_unix,
+                );
+                Recovery::Done(true)
+            }
+            (Some(_), _) if self.turn_ended_since(terminal_id, typed_since) => {
+                // An empty box after a turn this server saw end: its user
+                // pressed Enter on it. Delivered, never typed again.
+                self.deliver_typed_batch(terminal_id, paste_mode);
+                Recovery::Done(true)
+            }
+            (Some(_), _) if user_typed => {
+                self.submit_unconfirmed_after_user_input(
+                    terminal_id,
+                    submit(paste_mode, None),
+                    now,
+                    now_unix,
+                );
+                Recovery::Done(true)
+            }
+            (Some(_), _) => {
+                tracing::info!(
+                    target = %terminal_id,
+                    messages = ids.len(),
+                    "message queue: earlier typed text is not in the empty input box; typing it again"
+                );
+                if self.bump_attempts(&ids, now_unix) {
+                    Recovery::Done(true)
+                } else {
+                    Recovery::Proceed
+                }
             }
         }
     }
@@ -824,10 +972,10 @@ impl App {
     /// Deliver `terminal_id`'s typed batch without an Enter from herdr (its
     /// user pressed it): `delivered`, its envelopes kept for
     /// `agents.read_messages`, waiting for its confirmation.
-    fn deliver_typed_batch(&mut self, terminal_id: &str, paste: bool) -> Vec<String> {
+    fn deliver_typed_batch(&mut self, terminal_id: &str, paste: bool) {
         let batch = self.typed_batch(terminal_id);
         if batch.is_empty() {
-            return Vec::new();
+            return;
         }
         // In flight: herdr's own look ends here (the marker stays: the
         // turn it marks is the one its user started).
@@ -848,7 +996,6 @@ impl App {
         if self.message_queue.queued_for(terminal_id) {
             self.message_queue.due = true;
         }
-        ids
     }
 
     /// No proof the text landed: no Enter, `unconfirmed`, never retried;
@@ -872,6 +1019,14 @@ impl App {
             why,
             "message queue: typed text not confirmed in the input box; no Enter"
         );
+        // A pointer line its user sends anyway is read by id: keep the
+        // envelopes, and the read confirms it.
+        if !submit.paste {
+            self.remember_delivered(terminal_id, &submit.items);
+            for entry in &entries {
+                self.keep_unconfirmed(entry.message.clone());
+            }
+        }
         for entry in entries.iter().filter(|entry| has_sender(entry)) {
             let target_name = notice_target_name(entry);
             let text = format!(
@@ -895,6 +1050,46 @@ impl App {
                 next_poll: now + LATE_RENDER_POLL,
             },
         );
+    }
+
+    /// A pointer message marked unconfirmed whose late read confirms it.
+    fn keep_unconfirmed(&mut self, message: AgentMessage) {
+        let unconfirmed = &mut self.message_queue.delivery.unconfirmed;
+        unconfirmed.retain(|kept| kept.id != message.id);
+        unconfirmed.push(message);
+        if unconfirmed.len() > UNCONFIRMED_KEEP {
+            unconfirmed.remove(0);
+        }
+    }
+
+    /// The user typed into the target after herdr's text and before its
+    /// Enter: no Enter (it may be the user's text now), `unconfirmed`. The
+    /// user may send it themselves, so it waits on a confirm watch (a
+    /// pointer line's envelope kept for its read by id) and its sender
+    /// hears only when that watch ends without a read or a turn: telling
+    /// the sender at once would invite a resend of a message that went in.
+    /// (A departure from decision.md's "sender notified at once".)
+    fn submit_unconfirmed_after_user_input(
+        &mut self,
+        terminal_id: &str,
+        submit: PendingSubmit,
+        now: Instant,
+        now_unix: u64,
+    ) {
+        self.end_submit(terminal_id, &submit);
+        let entries = self.message_queue.entries_with(&submit.ids);
+        self.message_queue
+            .finish(&submit.ids, OUTCOME_UNCONFIRMED, now_unix);
+        self.message_queue.ready_since.remove(terminal_id);
+        tracing::info!(
+            target = %terminal_id,
+            messages = submit.ids.len(),
+            "message queue: its user typed after herdr's text; no Enter, waiting for a read or a turn"
+        );
+        if !submit.paste {
+            self.remember_delivered(terminal_id, &submit.items);
+        }
+        self.push_confirm_watch(terminal_id, entries, submit.paste, now, true);
     }
 
     /// An unconfirmed batch: its box showing exactly what herdr typed (and
@@ -934,18 +1129,61 @@ impl App {
             }) => typing_guard::draft_is(&typed, &late.submit.expected, late.submit.paste),
             Some(_) => false,
         };
-        if !ours {
+        let rearm = |app: &mut App, next: &mut Vec<Instant>| {
             let poll = now + LATE_RENDER_POLL;
-            if let Some(late) = self.message_queue.delivery.late.get_mut(terminal_id) {
+            if let Some(late) = app.message_queue.delivery.late.get_mut(terminal_id) {
                 late.next_poll = poll;
             }
             next.push(poll);
+        };
+        if !ours {
+            rearm(self, next);
             return false;
+        }
+        // The coordinator's turn marker again before its Enter (cleared
+        // when the batch went unconfirmed); a live marker keeps it waiting.
+        let marker = if late.submit.marker.is_some() {
+            let first = late.submit.ids.first().map(String::as_str).unwrap_or("");
+            let written = self
+                .message_target(terminal_id, None)
+                .and_then(|target| self.public_pane_id(target.ws_idx, target.pane_id))
+                .map(|pane| self.write_coordinator_message_turn(&pane, first));
+            match written {
+                Some(Ok(marker)) => Some(marker),
+                _ => {
+                    rearm(self, next);
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
+        match self.write_submit_enter(terminal_id, &late.submit) {
+            Ok(()) => {}
+            Err(refused) => {
+                if let Some(marker) = &marker {
+                    crate::coordinator::turn::clear_if(&self.coordinator.dir, marker);
+                }
+                match refused {
+                    // A dialog drawn since: look again.
+                    EnterRefused::Blocked => rearm(self, next),
+                    EnterRefused::Gone => {
+                        self.message_queue.delivery.late.remove(terminal_id);
+                    }
+                }
+                return false;
+            }
         }
         self.message_queue.delivery.late.remove(terminal_id);
-        if !self.write_submit_enter(terminal_id, &late.submit) {
-            return false;
-        }
+        // Delivered after all: its earlier `unconfirmed` gives way to the
+        // confirmation watch (no second `confirmed` on a read).
+        self.message_queue.delivery.unconfirmed.retain(|message| {
+            !late
+                .submit
+                .ids
+                .iter()
+                .any(|id| message.id.as_deref() == Some(id))
+        });
         if !late.submit.paste {
             self.remember_delivered(terminal_id, &late.submit.items);
         }
@@ -973,6 +1211,17 @@ impl App {
         paste: bool,
         now: Instant,
     ) {
+        self.push_confirm_watch(terminal_id, entries, paste, now, false);
+    }
+
+    fn push_confirm_watch(
+        &mut self,
+        terminal_id: &str,
+        entries: Vec<QueuedMessage>,
+        paste: bool,
+        now: Instant,
+        logged_unconfirmed: bool,
+    ) {
         if entries.is_empty() || !self.confirms_delivery() {
             return;
         }
@@ -987,6 +1236,7 @@ impl App {
             entries,
             paste,
             deadline: now + within,
+            logged_unconfirmed,
         });
         if watches.len() > CONFIRM_KEEP {
             let excess = watches.len() - CONFIRM_KEEP;
@@ -1026,18 +1276,18 @@ impl App {
 
     /// The agent in `terminal_id` started a turn (its hooks' turn start, or
     /// a working edge): a paste's confirmation.
-    pub(crate) fn note_submitted_turn(&mut self, terminal_id: &str) {
-        // Text typed before a restart (nothing in flight now) and a turn
-        // started: its user pressed Enter on it. Delivered, never retyped;
-        // the turn confirms it below.
-        if !self.message_queue.delivery.submitting(terminal_id)
-            && self
-                .message_queue
-                .entries
-                .iter()
-                .any(|entry| entry.terminal_id == terminal_id && entry.typed_unix.is_some())
-        {
-            self.deliver_typed_batch(terminal_id, true);
+    /// `adopt`: the turn may be evidence its user sent typed text (not a
+    /// first sighting from unknown).
+    pub(crate) fn note_submitted_turn(&mut self, terminal_id: &str, adopt: bool) {
+        // Text typed without herdr's Enter (nothing in flight now), no
+        // longer in the box, and a turn started: its user pressed Enter on
+        // it. Delivered, never retyped; a paste's turn confirms it below.
+        if adopt && !self.message_queue.delivery.submitting(terminal_id) {
+            let batch = self.typed_batch(terminal_id);
+            if !batch.is_empty() && !self.typed_text_still_shows(terminal_id, &batch) {
+                let paste = !self.reads_messages(terminal_id);
+                self.deliver_typed_batch(terminal_id, paste);
+            }
         }
         if self.message_queue.delivery.confirm.is_empty() {
             return;
@@ -1092,17 +1342,15 @@ impl App {
                 )
             };
             for entry in &watch.entries {
-                self.message_queue.log(AgentMessage::update(
-                    &entry.message,
-                    OUTCOME_UNCONFIRMED,
-                    now_unix,
-                ));
+                if !watch.logged_unconfirmed {
+                    self.message_queue.log(AgentMessage::update(
+                        &entry.message,
+                        OUTCOME_UNCONFIRMED,
+                        now_unix,
+                    ));
+                }
                 if !watch.paste {
-                    let unconfirmed = &mut self.message_queue.delivery.unconfirmed;
-                    unconfirmed.push(entry.message.clone());
-                    if unconfirmed.len() > UNCONFIRMED_KEEP {
-                        unconfirmed.remove(0);
-                    }
+                    self.keep_unconfirmed(entry.message.clone());
                 }
                 if has_sender(entry) {
                     let target_name = notice_target_name(entry);

@@ -84,7 +84,7 @@ impl App {
         // Fork (lost-message fix): a turn start confirms a pasted message
         // (src/app/message_queue/submit.rs).
         if !ended {
-            self.note_submitted_turn(terminal_id.as_str());
+            self.note_submitted_turn(terminal_id.as_str(), true);
         }
         encode_success(id, ResponseResult::Ok {})
     }

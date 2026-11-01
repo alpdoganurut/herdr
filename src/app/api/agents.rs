@@ -331,6 +331,19 @@ impl App {
         if terminal.suspended_agent.is_some() {
             return Err(agent_suspended(id, &params.target));
         }
+        // Fork (lost-message fix, src/app/message_queue/submit.rs): an
+        // agent message's text is in and its Enter waits for the input box
+        // to show it; anything typed now would land in that text.
+        if self.message_queue.delivery.submitting(terminal_id.as_str()) {
+            return Err(encode_error(
+                id,
+                "busy",
+                format!(
+                    "agent {} is taking an agent message (its Enter is pending); try again in a moment",
+                    params.target
+                ),
+            ));
+        }
         if terminal.state == crate::detect::AgentState::Blocked {
             return Err(encode_error(
                 id,

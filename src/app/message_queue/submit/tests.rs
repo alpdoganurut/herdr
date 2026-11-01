@@ -221,7 +221,11 @@ async fn an_empty_box_at_the_deadline_requeues_the_same_id_then_holds() {
     assert_eq!(written(&mut rx), "");
     assert_eq!(app.message_queue.entries.len(), 1);
     assert_eq!(app.message_queue.entries[0].id(), "ma1");
-    assert_eq!(app.message_queue.entries[0].attempts, 1);
+    assert_eq!(
+        app.message_queue.entries[0].attempts, 0,
+        "counted when the next look finds the box still empty"
+    );
+    assert!(app.message_queue.entries[0].typed_unix.is_some());
     assert_eq!(count(&app, "ma1", OUTCOME_UNCONFIRMED), 0);
 
     // Typed again after a fresh SETTLE; this time it shows: delivered once.
@@ -241,13 +245,14 @@ async fn an_empty_box_at_the_deadline_requeues_the_same_id_then_holds() {
     send(&mut app, "ma2", "lost twice");
     written(&mut rx);
     pass(&mut app, t + SUBMIT_WINDOW + Duration::from_secs(1));
-    assert_eq!(app.message_queue.entries[0].attempts, 1);
+    assert_eq!(app.message_queue.entries[0].attempts, 0);
     let t = t + SUBMIT_WINDOW + Duration::from_secs(1) + SETTLE;
     pass(&mut app, t);
     assert!(written(&mut rx).contains("ma2"), "the second attempt");
     pass(&mut app, t + SUBMIT_WINDOW + Duration::from_millis(100));
-    assert_eq!(app.message_queue.entries[0].attempts, MAX_SUBMIT_ATTEMPTS);
+    assert_eq!(app.message_queue.entries[0].attempts, 1);
     pass(&mut app, t + SUBMIT_WINDOW + SETTLE * 3);
+    assert_eq!(app.message_queue.entries[0].attempts, MAX_SUBMIT_ATTEMPTS);
     assert_eq!(written(&mut rx), "", "held: not typed a third time");
     assert_eq!(count(&app, "ma2", OUTCOME_DELIVERED), 0);
     assert_eq!(app.message_queue.entries.len(), 1, "still queued");
@@ -430,9 +435,9 @@ async fn a_turn_start_confirms_a_paste() {
     // A pointer read does not confirm a paste; its turn does.
     app.note_message_read("ma1");
     assert_eq!(count(&app, "ma1", OUTCOME_CONFIRMED), 0);
-    app.note_submitted_turn(terminal_id(&app).as_str());
+    app.note_submitted_turn(terminal_id(&app).as_str(), true);
     assert_eq!(count(&app, "ma1", OUTCOME_CONFIRMED), 1);
-    app.note_submitted_turn(terminal_id(&app).as_str());
+    app.note_submitted_turn(terminal_id(&app).as_str(), true);
     app.message_queue_pass(at + CONFIRM_TURN_WITHIN * 2, now_unix());
     assert_eq!(count(&app, "ma1", OUTCOME_CONFIRMED), 1);
     assert_eq!(count(&app, "ma1", OUTCOME_UNCONFIRMED), 0);
@@ -451,7 +456,7 @@ async fn a_paste_without_a_turn_is_unconfirmed_after_its_window() {
     assert!(app.message_queue_pass(at + CONFIRM_TURN_WITHIN, now_unix()));
     assert_eq!(count(&app, "ma1", OUTCOME_UNCONFIRMED), 1);
     // A turn after the window confirms nothing.
-    app.note_submitted_turn(terminal_id(&app).as_str());
+    app.note_submitted_turn(terminal_id(&app).as_str(), true);
     assert_eq!(count(&app, "ma1", OUTCOME_CONFIRMED), 0);
 }
 
@@ -564,7 +569,7 @@ async fn after_a_restart_a_turn_start_means_its_user_sent_it_and_it_is_not_retyp
     let mut rx = rev(&mut app, AgentState::Idle);
     typed_then_restarted(&mut app, &mut rx, "ma1");
     draw_empty_box(&app);
-    app.note_submitted_turn(terminal_id(&app).as_str());
+    app.note_submitted_turn(terminal_id(&app).as_str(), true);
     assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
     assert_eq!(count(&app, "ma1", OUTCOME_CONFIRMED), 1);
     settle(&mut app);
@@ -601,4 +606,184 @@ async fn after_a_restart_other_text_in_the_box_is_unconfirmed_without_an_enter()
     assert_eq!(written(&mut rx), "", "no Enter, no retype");
     assert_eq!(count(&app, "ma1", OUTCOME_UNCONFIRMED), 1);
     assert!(app.message_queue.entries.is_empty());
+}
+
+#[tokio::test]
+async fn a_read_by_id_after_the_user_typed_over_it_confirms_and_the_sender_is_not_told() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    send(&mut app, "ma1", "hello");
+    let line = written(&mut rx);
+    draw_box(&app, &format!("{line} and more"));
+    runtime(&app).note_user_input(Instant::now());
+    pass(&mut app, Duration::from_millis(200));
+    assert_eq!(written(&mut rx), "", "no Enter");
+    assert_eq!(count(&app, "ma1", OUTCOME_UNCONFIRMED), 1);
+    assert!(app.message_queue.delivery.awaiting_confirmation("ma1"));
+    // The user sent it; the agent reads it by id.
+    read(&mut app, &["ma1"]);
+    assert_eq!(count(&app, "ma1", OUTCOME_CONFIRMED), 1);
+    pass(&mut app, CONFIRM_READ_WITHIN * 2);
+    assert_eq!(count(&app, "ma1", OUTCOME_UNCONFIRMED), 1, "no second line");
+}
+
+#[tokio::test]
+async fn a_late_first_copy_after_a_retry_gets_the_enter_alone() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    send(&mut app, "ma1", "hello");
+    let line = written(&mut rx);
+    let deadline = SUBMIT_WINDOW + Duration::from_millis(100);
+    pass(&mut app, deadline);
+    assert_eq!(written(&mut rx), "", "the box stayed empty: no Enter");
+    // The first copy renders late.
+    draw_box(&app, &line);
+    pass(&mut app, deadline + SETTLE);
+    assert_eq!(written(&mut rx), "\r", "the Enter alone, no second copy");
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
+    assert!(app.message_queue.entries.is_empty());
+}
+
+/// Queue an urgent message for `rev` ahead of the others.
+fn queue_urgent(app: &mut App, id: &str) {
+    let target = app.message_target(terminal_id(app).as_str(), None).unwrap();
+    let mut pointer = crate::agents_model::envelope::PointerFrom::from_envelope(
+        id,
+        &format!("[herdr+ message {id} from lead (w9:p1)]\nurgent"),
+    );
+    pointer.urgent = true;
+    let message = AgentMessage {
+        unix: now_unix(),
+        id: Some(id.into()),
+        to_pane: "w1:p1".into(),
+        from_pane: Some("w9:p1".into()),
+        ..AgentMessage::default()
+    };
+    let entry = app.queued_message(
+        &target,
+        message,
+        format!("[herdr+ URGENT message {id} from lead (w9:p1)]\nurgent"),
+        Some(pointer),
+        false,
+        None,
+        now_unix(),
+    );
+    app.message_queue.push_at(entry, true);
+}
+
+#[tokio::test]
+async fn an_urgent_message_goes_ahead_of_a_held_one_and_alongside_a_typed_one() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    // A typed batch whose box stayed empty, then an urgent one ahead of it.
+    send(&mut app, "ma1", "hello");
+    written(&mut rx);
+    let deadline = SUBMIT_WINDOW + Duration::from_millis(100);
+    pass(&mut app, deadline);
+    queue_urgent(&mut app, "mu1");
+    assert_eq!(app.message_queue.entries[0].id(), "mu1");
+    pass(&mut app, deadline + SETTLE);
+    let line = written(&mut rx);
+    assert!(
+        line.contains("mu1") && line.contains("ma1"),
+        "typed once, together: {line:?}"
+    );
+    assert_eq!(line.matches("ma1").count(), 2, "one pointer naming ma1");
+    // Held: the urgent one is not kept out by it.
+    let mut app = self::app();
+    let mut rx = rev(&mut app, AgentState::Working);
+    reader(&mut app);
+    send(&mut app, "ma1", "hello");
+    app.message_queue.entries[0].attempts = MAX_SUBMIT_ATTEMPTS;
+    queue_urgent(&mut app, "mu1");
+    terminal_state(&mut app).set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    app.message_queue.mark_due();
+    settle(&mut app);
+    let line = written(&mut rx);
+    assert!(line.contains("mu1") && !line.contains("ma1"), "{line:?}");
+}
+
+fn terminal_state(app: &mut App) -> &mut crate::terminal::TerminalState {
+    let id = terminal_id(app);
+    app.state.terminals.get_mut(&id).unwrap()
+}
+
+#[tokio::test]
+async fn after_a_restart_no_input_box_waits_and_looks_again() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    let line = typed_then_restarted(&mut app, &mut rx, "ma1");
+    runtime(&app).test_process_pty_bytes(b"\x1b[2J\x1b[H  Do you prefer tea or coffee?");
+    settle(&mut app);
+    assert_eq!(written(&mut rx), "", "nothing typed into a dialog");
+    assert_eq!(count(&app, "ma1", OUTCOME_UNCONFIRMED), 0);
+    assert!(
+        app.message_queue.entries[0].typed_unix.is_some(),
+        "still typed"
+    );
+    // The dialog closes, the text is still there: the Enter alone.
+    draw_box(&app, &line);
+    let t = Instant::now() + SETTLE + RETRY_FOR_TEST;
+    app.message_queue_pass(t, now_unix());
+    assert_eq!(written(&mut rx), "\r");
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
+}
+
+const RETRY_FOR_TEST: Duration = crate::app::message_queue::RETRY;
+
+#[tokio::test]
+async fn after_a_restart_user_input_since_the_text_means_no_enter() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    let line = typed_then_restarted(&mut app, &mut rx, "ma1");
+    draw_box(&app, &line);
+    runtime(&app).note_user_input(Instant::now());
+    settle(&mut app);
+    assert_eq!(written(&mut rx), "", "no Enter after the user typed");
+    assert_eq!(count(&app, "ma1", OUTCOME_UNCONFIRMED), 1);
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 0);
+}
+
+#[tokio::test]
+async fn an_agent_prompt_while_a_message_waits_for_its_enter_is_refused_busy() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    send(&mut app, "ma1", "hello");
+    written(&mut rx);
+    let refused = app
+        .validate_agent_prompt(
+            "x".into(),
+            &crate::api::schema::AgentPromptParams {
+                target: "rev".into(),
+                text: "hi".into(),
+                wait: None,
+                guard_user_typing: false,
+            },
+        )
+        .err()
+        .unwrap_or_default();
+    assert!(refused.contains("\"busy\""), "{refused}");
+}
+
+#[tokio::test]
+async fn a_first_sighting_or_a_box_still_showing_the_text_does_not_adopt_it() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    let line = typed_then_restarted(&mut app, &mut rx, "ma1");
+    // Unknown → working after a restart: no evidence.
+    draw_empty_box(&app);
+    app.note_submitted_turn(terminal_id(&app).as_str(), false);
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 0);
+    // A real turn while the box still shows the text: not sent.
+    draw_box(&app, "[Pasted text #1 +2 lines]");
+    app.note_submitted_turn(terminal_id(&app).as_str(), true);
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 0);
+    assert!(app.message_queue.entries[0].typed_unix.is_some());
+    let _ = line;
 }

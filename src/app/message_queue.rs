@@ -1094,7 +1094,10 @@ impl App {
                     format!("{} is not running", message.to_pane),
                 ))
             }
-            _ if self.message_queue.queued_for(&target.terminal_id) => {
+            // Fork (lost-message fix): held messages do not block it.
+            _ if self.message_queue.queued_for(&target.terminal_id)
+                && !self.message_queue.submit_held(&target.terminal_id) =>
+            {
                 "earlier messages are waiting for it".to_string()
             }
             Check::Wait(reason) => reason,
@@ -1142,7 +1145,7 @@ impl App {
                     ),
                 };
                 match typed {
-                    Ok(()) if submit.is_some() => {
+                    Ok(()) => {
                         let mut entry = self.queued_message(
                             target,
                             message,
@@ -1152,23 +1155,14 @@ impl App {
                             from,
                             now_unix,
                         );
-                        entry.typed_unix = Some(now_unix);
-                        self.message_queue.push(entry);
-                        return Ok(MessageDelivery::Queued {
-                            reason: SUBMITTING_REASON.to_string(),
-                        });
-                    }
-                    Ok(()) => {
+                        if submit.is_some() {
+                            entry.typed_unix = Some(now_unix);
+                            self.message_queue.push(entry);
+                            return Ok(MessageDelivery::Queued {
+                                reason: SUBMITTING_REASON.to_string(),
+                            });
+                        }
                         let paste = !self.reads_messages(&target.terminal_id);
-                        let entry = self.queued_message(
-                            target,
-                            message,
-                            envelope,
-                            Some(pointer),
-                            false,
-                            from,
-                            now_unix,
-                        );
                         self.watch_confirmation(
                             &target.terminal_id,
                             vec![entry],
@@ -1251,6 +1245,11 @@ impl App {
                     {
                         "an urgent message goes in ahead of it".to_string()
                     }
+                    _ if first
+                        .is_some_and(|first| first.attempts >= submit::MAX_SUBMIT_ATTEMPTS) =>
+                    {
+                        format!("an earlier message is {}", submit::SUBMIT_HELD_REASON)
+                    }
                     _ if first.is_some() => "earlier messages are waiting for it".to_string(),
                     _ if entry.attempts >= submit::MAX_SUBMIT_ATTEMPTS => {
                         submit::SUBMIT_HELD_REASON.to_string()
@@ -1261,7 +1260,14 @@ impl App {
                             .message_queue
                             .user_blocked
                             .get(&target.terminal_id)
-                            .map(|blocked| blocked.reason.clone());
+                            .map(|blocked| blocked.reason.clone())
+                            .or_else(|| {
+                                self.message_queue
+                                    .delivery
+                                    .typing_wait
+                                    .get(&target.terminal_id)
+                                    .cloned()
+                            });
                         match (self.message_check(&target), blocked) {
                             (
                                 Check::Ready {
@@ -1937,6 +1943,10 @@ impl App {
             .user_blocked
             .retain(|terminal, _| live.contains(terminal));
         self.message_queue
+            .delivery
+            .typing_wait
+            .retain(|terminal, _| live.contains(terminal));
+        self.message_queue
             .interrupted_at
             .retain(|terminal, at| live.contains(terminal) && now < *at + INTERRUPT_WAIT);
         self.message_queue.retry_at = next.into_iter().min();
@@ -1959,6 +1969,10 @@ impl App {
             for entry in &mut self.message_queue.entries {
                 if entry.terminal_id == terminal_id {
                     entry.terminal_id = target.terminal_id.clone();
+                    // Fork (lost-message fix): a new agent process, a new
+                    // input box: earlier typing attempts no longer count.
+                    entry.attempts = 0;
+                    entry.typed_unix = None;
                 }
             }
             self.message_queue.save();
@@ -2038,8 +2052,25 @@ impl App {
         // Fork (lost-message fix): its text went in before a restart or a
         // live handoff and no Enter is known to have followed: look at the
         // input box before typing it again (submit.rs).
-        if let Some(changed) = self.recover_typed_batch(&terminal_id, now, now_unix) {
-            return changed;
+        match self.recover_typed_batch(&terminal_id, now, now_unix) {
+            submit::Recovery::Proceed => {}
+            submit::Recovery::Done(changed) => return changed,
+            submit::Recovery::Busy => {
+                next.push(now + RETRY);
+                return false;
+            }
+            submit::Recovery::Wait => {
+                // No input box (a dialog, a menu): look again, its text may
+                // still be in the box behind it.
+                next.push(now + RETRY);
+                return self.watch_user_blocked_target(
+                    &target,
+                    super::typing_guard::TypingBlock::InputBoxAbsent.reason(),
+                    now,
+                    now_unix,
+                    next,
+                );
+            }
         }
         // One delivery: the oldest messages for this target, each with its
         // envelope (one paste, or one pointer line listing their ids).
@@ -2054,6 +2085,11 @@ impl App {
             .entries
             .iter()
             .filter(|entry| entry.terminal_id == terminal_id)
+            // Fork (lost-message fix): held ones wait; typed ones are the
+            // recovery's (submit.rs).
+            .filter(|entry| {
+                entry.typed_unix.is_none() && entry.attempts < submit::MAX_SUBMIT_ATTEMPTS
+            })
         {
             if !items.is_empty()
                 && (items.len() >= max_combined
@@ -2099,12 +2135,14 @@ impl App {
         let paste = submit.is_none() && !self.reads_messages(&terminal_id);
         match typed {
             Ok(()) if submit.is_some() => {
+                self.message_queue.delivery.typing_wait.remove(&terminal_id);
                 self.message_queue.ready_since.remove(&terminal_id);
                 self.message_queue.settle_screens.remove(&terminal_id);
                 self.message_queue.user_blocked.remove(&terminal_id);
                 true
             }
             Ok(()) => {
+                self.message_queue.delivery.typing_wait.remove(&terminal_id);
                 if hook_ended {
                     // Typed into a screen that read working, on the Stop
                     // hook's word and a screen that stood still for SETTLE
@@ -2143,6 +2181,13 @@ impl App {
                     return self.watch_user_blocked_target(&target, reason, now, now_unix, next);
                 }
                 self.message_queue.user_blocked.remove(&terminal_id);
+                // Fork (lost-message fix): the user's typing or draft is
+                // why it waits (agents.queued), logged once per wait.
+                if code == "user_typing" {
+                    self.note_typing_wait(&terminal_id, &response);
+                } else {
+                    self.message_queue.delivery.typing_wait.remove(&terminal_id);
+                }
                 if !retryable(&code) && code != "busy" {
                     tracing::warn!(code, "message queue: delivery failed, retrying");
                 }
@@ -2163,10 +2208,15 @@ impl App {
                 .message_queue
                 .user_blocked
                 .get(&target.terminal_id)
-                .map_or_else(
-                    || "not typed in yet".to_string(),
-                    |blocked| blocked.reason.clone(),
-                ),
+                .map(|blocked| blocked.reason.clone())
+                .or_else(|| {
+                    self.message_queue
+                        .delivery
+                        .typing_wait
+                        .get(&target.terminal_id)
+                        .cloned()
+                })
+                .unwrap_or_else(|| "not typed in yet".to_string()),
             check => MessageCheck(check).status(),
         }
     }

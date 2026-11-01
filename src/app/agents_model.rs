@@ -237,7 +237,10 @@ impl App {
         // (src/app/message_queue/submit.rs).
         if update.state == crate::detect::AgentState::Working {
             let terminal_id = terminal.id.to_string();
-            self.note_submitted_turn(&terminal_id);
+            // A first sighting (from unknown, a restart) is no evidence the
+            // user sent typed text.
+            let adopt = update.previous_state != crate::detect::AgentState::Unknown;
+            self.note_submitted_turn(&terminal_id, adopt);
         }
     }
 
