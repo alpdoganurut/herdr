@@ -137,6 +137,12 @@ pub(crate) const WAKING_REASON: &str =
 /// for idling is still exiting (its wake is retried).
 pub(crate) const WAKE_PENDING_REASON: &str =
     "herdr had suspended it while idle; waking it once its process has exited, the message goes in once it is ready";
+/// Fork (autosuspend): the sender's reason while the pane of the agent
+/// herdr suspended for idling is not at a shell prompt (its wake is retried).
+pub(crate) const WAKE_NO_SHELL_REASON: &str =
+    "herdr had suspended it while idle; its pane is not at a shell prompt, so it is relaunched once it is; it stays queued and herdr tries again";
+/// Fork (autosuspend): why a wake waits while the user types in the pane.
+pub(crate) const USER_TYPING_WAKE_REASON: &str = "its user is typing in it";
 /// Fork (autosuspend): how often the queue retries a wake that failed.
 pub(crate) const WAKE_RETRY: Duration = Duration::from_secs(10);
 /// Fork (autosuspend): after a wake failed this long, the senders of the
@@ -162,7 +168,7 @@ fn is_user_blocked(reason: &str) -> bool {
 // agents_wait_for_message all=true).
 use crate::api::schema::agent_messages::{MAX_COMBINED, MAX_COMBINED_CHARS};
 /// The whole queue's cap; past it `agent.message_send` answers `queue_full`.
-const MAX_QUEUED: usize = 256;
+pub(crate) const MAX_QUEUED: usize = 256;
 const FILE_NAME: &str = "message_queue.json";
 const FILE_VERSION: u32 = 1;
 /// Request id prefixes of the `herdr coordinator mcp` / POC `plus mcp` socket
@@ -1150,6 +1156,16 @@ impl App {
         now_unix: u64,
     ) -> Result<MessageDelivery, MessageRefused> {
         let message_id = message.id.clone().unwrap_or_default();
+        // Fork (autosuspend): a full queue refuses before a wake, never
+        // after it (the woken agent would get nothing).
+        if self.message_queue.entries.len() >= MAX_QUEUED
+            && self.auto_suspended(&target.terminal_id)
+        {
+            return Err(MessageRefused::new(
+                "queue_full",
+                "too many queued agent messages",
+            ));
+        }
         // Fork (autosuspend): a message wakes an agent herdr parked for
         // idling; it waits in the queue until the agent is up.
         let wake = self.wake_auto_suspended(target, Instant::now());
@@ -1958,7 +1974,33 @@ impl App {
             return None;
         }
         let pane = self.public_pane_id(target.ws_idx, target.pane_id)?;
-        match self.activate_agent(&pane) {
+        // The relaunch types into the pane's shell: like a restart, it waits
+        // while the user types there (the typing guard).
+        let typing = self
+            .lookup_runtime_sender(target.ws_idx, target.pane_id)
+            .is_some_and(|runtime| {
+                super::typing_guard::runtime_typing_block(None, runtime, now).is_some()
+            });
+        let outcome = if typing {
+            Err((false, false, USER_TYPING_WAKE_REASON.to_string()))
+        } else {
+            self.activate_agent(&pane).map_err(|err| {
+                let exiting = matches!(
+                    err,
+                    super::agent_suspend::AgentActivateError::ExitPending(_)
+                );
+                let no_shell = matches!(
+                    err,
+                    super::agent_suspend::AgentActivateError::PaneNotAvailable(_)
+                );
+                (
+                    exiting,
+                    no_shell,
+                    self.agent_activate_error_body(err).message,
+                )
+            })
+        };
+        match outcome {
             Ok(_) => {
                 self.message_queue.wake_failed.remove(&target.terminal_id);
                 self.message_queue.mark_due();
@@ -1969,18 +2011,26 @@ impl App {
                 );
                 Some(WAKING_REASON.to_string())
             }
-            Err(err) => {
-                let body = self.agent_activate_error_body(err);
-                // Right after the suspend its process is still exiting (or
-                // its shell not back yet): the normal wait, not a failure.
-                let exiting = body.code == "pane_not_available";
-                let reason = body.message;
-                tracing::info!(
-                    event = "agent.autosuspend.wake_failed",
-                    pane = %pane,
-                    reason = %reason,
-                    "could not wake an auto-suspended agent for a message yet; it stays queued"
-                );
+            Err((exiting, no_shell, reason)) => {
+                let first = !self
+                    .message_queue
+                    .wake_failed
+                    .contains_key(&target.terminal_id);
+                if first {
+                    tracing::info!(
+                        event = "agent.autosuspend.wake_failed",
+                        pane = %pane,
+                        reason = %reason,
+                        "could not wake an auto-suspended agent for a message yet; it stays queued"
+                    );
+                } else {
+                    tracing::debug!(
+                        event = "agent.autosuspend.wake_failed",
+                        pane = %pane,
+                        reason = %reason,
+                        "could not wake an auto-suspended agent for a message yet; it stays queued"
+                    );
+                }
                 let failure = self
                     .message_queue
                     .wake_failed
@@ -1994,7 +2044,11 @@ impl App {
                 failure.last_attempt = now;
                 failure.reason.clone_from(&reason);
                 Some(if exiting {
+                    // Right after the suspend its process is still exiting:
+                    // the normal wait, not a failure.
                     WAKE_PENDING_REASON.to_string()
+                } else if no_shell {
+                    WAKE_NO_SHELL_REASON.to_string()
                 } else {
                     format!(
                         "herdr had suspended it while idle and could not wake it ({reason}); it stays queued and herdr tries again"

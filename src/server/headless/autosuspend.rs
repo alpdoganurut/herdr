@@ -17,7 +17,12 @@ impl HeadlessServer {
         if !self.app.agent_autosuspend_due(now) {
             return false;
         }
-        let shown = self.autosuspend_shown_terminals();
+        // Off (only a quiet wake retries): no shown panes needed.
+        let shown = if self.app.agent_autosuspend_needs_shown() {
+            self.autosuspend_shown_terminals()
+        } else {
+            HashSet::new()
+        };
         self.app.run_agent_autosuspend(now, &shown)
     }
 

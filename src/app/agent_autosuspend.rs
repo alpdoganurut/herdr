@@ -59,9 +59,35 @@ pub(crate) struct AutosuspendState {
 }
 
 impl App {
-    /// The next scan's deadline; `None` while autosuspend is off.
+    /// Whether the scan has work: autosuspend is on, or (also while it is
+    /// off) an auto-suspended agent has quiet messages whose wake failed.
+    fn agent_autosuspend_active(&self) -> bool {
+        self.agents_config.autosuspend.after().is_some() || self.quiet_wake_pending()
+    }
+
+    /// An auto-suspended agent has quiet messages stored for it.
+    fn quiet_wake_pending(&self) -> bool {
+        !self.quiet.is_empty()
+            && self.state.terminals.values().any(|terminal| {
+                terminal
+                    .suspended_agent
+                    .as_ref()
+                    .is_some_and(|record| record.auto)
+                    && self.quiet.count_for(terminal.id.as_str()) > 0
+            })
+    }
+
+    /// Whether the scan needs the panes clients show (autosuspend is on).
+    pub(crate) fn agent_autosuspend_needs_shown(&self) -> bool {
+        self.agents_config.autosuspend.after().is_some()
+    }
+
+    /// The next scan's deadline; `None` while autosuspend is off and no
+    /// quiet wake waits.
     pub(crate) fn next_agent_autosuspend_deadline(&self) -> Option<Instant> {
-        self.agents_config.autosuspend.after()?;
+        if !self.agent_autosuspend_active() {
+            return None;
+        }
         Some(
             self.agent_autosuspend
                 .next_scan
@@ -71,7 +97,7 @@ impl App {
 
     /// Whether a scan is due now (the server then gathers the shown panes).
     pub(crate) fn agent_autosuspend_due(&self, now: Instant) -> bool {
-        self.agents_config.autosuspend.after().is_some()
+        self.agent_autosuspend_active()
             && self
                 .agent_autosuspend
                 .next_scan
@@ -85,16 +111,18 @@ impl App {
         now: Instant,
         shown: &HashSet<TerminalId>,
     ) -> bool {
-        let Some(after) = self.agents_config.autosuspend.after() else {
-            self.agent_autosuspend.next_scan = None;
-            self.agent_autosuspend.last_shown_ms.clear();
-            return false;
-        };
         if self.agent_autosuspend.next_scan.is_some_and(|at| now < at) {
             return false;
         }
         self.agent_autosuspend.next_scan = Some(now + SCAN_EVERY);
+        // Quiet wakes retry whether or not autosuspend is still on.
         let mut changed = self.retry_quiet_wakes(now);
+        let Some(after) = self.agents_config.autosuspend.after() else {
+            // Off: nothing is suspended; the next scan (if any quiet wake
+            // still waits) is a minute away, so this never spins.
+            self.agent_autosuspend.last_shown_ms.clear();
+            return changed;
+        };
         let now_ms = crate::codex_sessions::now_unix_ms();
         self.note_shown_terminals(shown, now_ms);
         let candidates = self.autosuspend_candidates(after, now_ms, now, shown);
@@ -805,6 +833,114 @@ mod tests {
         assert!(scan(&mut app), "the wake is a change");
         assert!(!parked(&mut app), "woken for its quiet message");
         assert!(typed(&mut rx).contains(SESSION));
+    }
+
+    #[tokio::test]
+    async fn a_wake_waits_while_the_user_types_in_the_pane() {
+        let (mut app, mut rx) = parked_auto().await;
+        typed(&mut rx);
+        let terminal_id = root_terminal_id(&app);
+        let typed_at = Instant::now();
+        app.terminal_runtimes
+            .get(&terminal_id)
+            .expect("runtime")
+            .note_user_input(typed_at);
+        let reply = send(&mut app, "ma1", "please review");
+        assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+        let reason = reply["result"]["reason"].as_str().unwrap_or_default();
+        assert!(reason.contains("its user is typing in it"), "{reply}");
+        assert!(auto_suspended(&mut app), "not relaunched over the typing");
+        assert!(!typed(&mut rx).contains(SESSION));
+        let failure = &app.message_queue.wake_failed[terminal_id.as_str()];
+        assert_eq!(
+            failure.reason,
+            crate::app::message_queue::USER_TYPING_WAKE_REASON
+        );
+        // Quiet again, the queue's retry wakes it.
+        app.message_queue.mark_due();
+        app.message_queue_pass(
+            typed_at + crate::app::typing_guard::USER_INPUT_QUIET + Duration::from_secs(1),
+            crate::coordinator::now_unix(),
+        );
+        assert!(!parked(&mut app), "woken on the retry");
+        assert!(typed(&mut rx).contains(SESSION));
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_refuses_without_waking() {
+        let (mut app, mut rx) = parked_auto().await;
+        typed(&mut rx);
+        let terminal_id = root_terminal_id(&app).to_string();
+        let target = app.message_target(&terminal_id, None).expect("target");
+        let now_unix = crate::coordinator::now_unix();
+        while app.message_queue.entries.len() < crate::app::message_queue::MAX_QUEUED {
+            app.queue_herdr_notice(&target, "filler".into(), "a test", now_unix);
+        }
+        let reply = send(&mut app, "ma1", "please review");
+        assert_eq!(reply["error"]["code"], "queue_full", "{reply}");
+        assert!(auto_suspended(&mut app), "not woken for a refused message");
+        assert!(!typed(&mut rx).contains(SESSION));
+    }
+
+    #[tokio::test]
+    async fn a_wake_that_cannot_find_a_shell_says_so() {
+        let (mut app, mut rx) = parked_auto().await;
+        typed(&mut rx);
+        // The pane runs something else now (no available shell).
+        let terminal_id = root_terminal_id(&app);
+        app.terminal_runtimes
+            .get(&terminal_id)
+            .expect("runtime")
+            .test_set_child_pid(u32::MAX);
+        let reply = send(&mut app, "ma1", "please review");
+        assert_eq!(
+            reply["result"]["reason"],
+            crate::app::message_queue::WAKE_NO_SHELL_REASON,
+            "{reply}"
+        );
+        assert!(auto_suspended(&mut app));
+    }
+
+    #[tokio::test]
+    async fn quiet_wakes_keep_retrying_after_autosuspend_is_turned_off() {
+        let (mut app, mut rx) = parked_auto().await;
+        typed(&mut rx);
+        app.agents_config.autosuspend = Default::default();
+        assert_eq!(app.next_agent_autosuspend_deadline(), None, "nothing waits");
+        let terminal_id = root_terminal_id(&app).to_string();
+        let now_unix = crate::coordinator::now_unix();
+        app.quiet.push(
+            crate::app::quiet_messages::QuietMessage {
+                message: crate::coordinator::messages::AgentMessage {
+                    unix: now_unix,
+                    text: "fyi".into(),
+                    id: Some(crate::coordinator::messages::new_id()),
+                    ..Default::default()
+                },
+                terminal_id,
+                session: None,
+                expires_unix: now_unix + 3600,
+                dnd: false,
+                offered_unix: None,
+                offers: 0,
+                release: None,
+            },
+            false,
+        );
+        assert!(
+            app.next_agent_autosuspend_deadline().is_some(),
+            "a quiet wake waits"
+        );
+        // The minute since the scan that suspended it has passed.
+        app.agent_autosuspend.next_scan = None;
+        assert!(app.agent_autosuspend_due(Instant::now()));
+        let now = Instant::now();
+        assert!(app.run_agent_autosuspend(now, &HashSet::new()), "woken");
+        assert!(!parked(&mut app));
+        assert!(typed(&mut rx).contains(SESSION));
+        // Off and nothing waiting: no deadline, and a due scan cannot spin.
+        assert_eq!(app.next_agent_autosuspend_deadline(), None);
+        assert_eq!(app.agent_autosuspend.next_scan, Some(now + SCAN_EVERY));
     }
 
     #[tokio::test]
