@@ -109,6 +109,7 @@ fn info(wrap: bool, hook_state: AgentsCheckState) -> AgentsSettingsInfo {
         program_status: None,
         handoff: None,
         context_window: std::collections::BTreeMap::new(),
+        autosuspend_after: None,
     }
 }
 
@@ -721,4 +722,63 @@ fn handoff_steps_go_up_then_off() {
     assert_eq!(next_handoff_at(85), 90);
     assert_eq!(next_handoff_at(90), 0);
     assert_eq!(next_handoff_at(100), 0);
+}
+
+#[test]
+fn the_autosuspend_row_steps_after_and_writes_the_key() {
+    use crate::client::shell::settings_agents::{
+        next_autosuspend_after, ROWS_AUTOSUSPEND, ROWS_EXTENDED, ROW_AUTOSUSPEND,
+    };
+    // A server without the field: no row.
+    let mut state = agents_state();
+    entered(&mut state, extended_info(true, 80));
+    let text = frame_text(&mut state);
+    assert!(!text.contains("suspend idle claude"), "{text}");
+    assert_eq!(state.hits.settings_choices.len(), ROWS_EXTENDED);
+
+    let with_after = |after: &str| {
+        let mut info = extended_info(true, 80);
+        info.autosuspend_after = Some(after.to_string());
+        info
+    };
+    let mut state = agents_state();
+    entered(&mut state, with_after("off"));
+    let text = frame_text(&mut state);
+    assert!(
+        text.contains("suspend idle claude after: off   (↵ 1h · 4h · 1d · 3d · off)"),
+        "{text}"
+    );
+    let choices: Vec<usize> = state
+        .hits
+        .settings_choices
+        .iter()
+        .map(|(_, index)| *index)
+        .collect();
+    assert_eq!(choices, (0..ROWS_AUTOSUSPEND).collect::<Vec<_>>());
+    // ↵ on the row, then clicks, step off → 1h → 4h → 1d → 3d → off.
+    down_to(&mut state, ROW_AUTOSUSPEND);
+    let (id, key, value) = set_request(&state.handle_input_bytes(b"\r"));
+    assert_eq!((key.as_str(), value), ("autosuspend.after", "1h".into()));
+    reply(&mut state, &id, with_after("1h"));
+    assert!(frame_text(&mut state).contains("suspend idle claude after: 1h"));
+    for (current, next) in [("1h", "4h"), ("4h", "1d"), ("1d", "3d"), ("3d", "off")] {
+        let (id, key, value) = set_request(&{
+            let rect = choice_rect(&state, ROW_AUTOSUSPEND);
+            click(&mut state, rect)
+        });
+        assert_eq!(key, "autosuspend.after");
+        assert_eq!(value, serde_json::Value::from(next), "after {current}");
+        reply(&mut state, &id, with_after(next));
+    }
+    // A custom value steps to the next longer choice; an invalid one says so.
+    assert_eq!(next_autosuspend_after("90m"), "4h");
+    assert_eq!(next_autosuspend_after("2d"), "3d");
+    assert_eq!(next_autosuspend_after("7d"), "off");
+    assert_eq!(next_autosuspend_after("1w"), "1h");
+    let mut state = agents_state();
+    entered(&mut state, with_after("1w"));
+    assert!(
+        frame_text(&mut state).contains("suspend idle claude after: \"1w\" (invalid: off)"),
+        "invalid"
+    );
 }

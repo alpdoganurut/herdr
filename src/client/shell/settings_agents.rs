@@ -18,6 +18,8 @@
 //! dimmed and inert while the handoff is off). `[agents.handoff] command`
 //! and `[agents] context_window` are shown under them, read-only, with the
 //! config key to edit: `agents.settings.set` has no text or map value.
+//! A server that also reports `autosuspend_after` adds one more row after
+//! them: `[agents.autosuspend] after` (↵ steps 1h · 4h · 1d · 3d · off).
 //!
 //! The shell hook's `[fix]` edits `~/.zshrc`, so it is the one two-step row
 //! in Settings: ↵ (or a click) on `▸ fix` only *arms* it — the section then
@@ -47,6 +49,13 @@ pub(super) const ROW_PROGRAM_STATUS: usize = 6;
 pub(super) const ROW_HANDOFF: usize = 7;
 pub(super) const ROW_HANDOFF_AT: usize = 8;
 pub(super) const ROWS_EXTENDED: usize = 9;
+/// Fork (autosuspend): the row a server reporting `autosuspend_after` adds
+/// after the extended ones.
+pub(super) const ROW_AUTOSUSPEND: usize = 9;
+pub(super) const ROWS_AUTOSUSPEND: usize = 10;
+/// The `autosuspend.after` steps ↵ goes through; after the last comes off,
+/// after off the first.
+pub(super) const AUTOSUSPEND_CHOICES: [&str; 4] = ["1h", "4h", "1d", "3d"];
 /// The `at_percent` steps ↵ goes through, after `0` (off) comes the first.
 pub(super) const HANDOFF_AT_CHOICES: [u8; 4] = [60, 70, 80, 90];
 /// The dim line under the team roster row (not a row: no hit, no selection).
@@ -87,13 +96,40 @@ pub(super) fn extended(info: &AgentsSettingsInfo) -> bool {
     info.program_status.is_some() && info.handoff.is_some()
 }
 
+/// Fork (autosuspend): the server reports (so can set) `[agents.autosuspend]`.
+pub(super) fn autosuspend_row(info: &AgentsSettingsInfo) -> bool {
+    extended(info) && info.autosuspend_after.is_some()
+}
+
 /// The section's selectable rows for `info`.
 pub(super) fn row_count(info: &AgentsSettingsInfo) -> usize {
-    if extended(info) {
+    if autosuspend_row(info) {
+        ROWS_AUTOSUSPEND
+    } else if extended(info) {
         ROWS_EXTENDED
     } else {
         ROWS
     }
+}
+
+/// The `autosuspend.after` after `current`: the next longer step, off past
+/// the last (a custom value goes to the next longer step too).
+pub(super) fn next_autosuspend_after(current: &str) -> &'static str {
+    let current = crate::config::parse_autosuspend_after(current)
+        .ok()
+        .flatten();
+    let Some(current) = current else {
+        return AUTOSUSPEND_CHOICES[0];
+    };
+    AUTOSUSPEND_CHOICES
+        .into_iter()
+        .find(|step| {
+            crate::config::parse_autosuspend_after(step)
+                .ok()
+                .flatten()
+                .is_some_and(|step| step > current)
+        })
+        .unwrap_or(crate::config::AUTOSUSPEND_OFF)
 }
 
 /// The `at_percent` after `current`: the next step up, off past the last.
@@ -262,6 +298,24 @@ pub(super) fn row_labels(
             percent => format!("  handoff at: {percent}% context   (↵ {steps})"),
         });
     }
+    if let Some(after) = info
+        .autosuspend_after
+        .as_deref()
+        .filter(|_| autosuspend_row(info))
+    {
+        let steps = AUTOSUSPEND_CHOICES
+            .iter()
+            .chain(std::iter::once(&crate::config::AUTOSUSPEND_OFF))
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let after = after.trim();
+        labels.push(match crate::config::parse_autosuspend_after(after) {
+            Ok(Some(_)) => format!("suspend idle claude after: {after}   (↵ {steps})"),
+            Ok(None) => format!("suspend idle claude after: off   (↵ {steps})"),
+            Err(_) => format!("suspend idle claude after: {after:?} (invalid: off)   (↵ {steps})"),
+        });
+    }
     labels
 }
 
@@ -424,6 +478,12 @@ impl ClientShellState {
                     outcome,
                 )
             }
+            // Fork (autosuspend): ↵ steps 1h · 4h · 1d · 3d · off.
+            ROW_AUTOSUSPEND if autosuspend_row(&info) => self.set_agents_setting(
+                crate::api::schema::agent_wrap::key::AUTOSUSPEND_AFTER,
+                next_autosuspend_after(info.autosuspend_after.as_deref().unwrap_or("off")).into(),
+                outcome,
+            ),
             ROW_STATUS if !fixing && hook_fixable(&info) => {
                 if let Some(agents) = self.agents_settings_mut() {
                     agents.armed = true;

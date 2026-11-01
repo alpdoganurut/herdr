@@ -16,7 +16,7 @@ mod window_title;
 mod write;
 
 pub use self::{
-    agents::{AgentsConfig, WrapSource},
+    agents::{parse_autosuspend_after, AgentsConfig, WrapSource, AUTOSUSPEND_OFF},
     browser::{
         is_forbidden_switch, valid_profile_name, BrowserConfig, AUTO_EXECUTABLE, MCP_AGENTS,
     },
@@ -147,6 +147,7 @@ impl Config {
             .chain(self.coordinator.diagnostics())
             .chain(self.ui.info_pane_width_diagnostic())
             .chain(self.browser.diagnostics())
+            .chain(self.agents.autosuspend.diagnostics())
             .collect()
     }
 

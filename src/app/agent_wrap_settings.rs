@@ -58,6 +58,7 @@ impl App {
                 command: agents.handoff.command.trim().to_string(),
             }),
             context_window: agents.context_window.clone(),
+            autosuspend_after: Some(agents.autosuspend.after.trim().to_string()),
             ..settings_info(self.agents_snapshot(env))
         }
     }
@@ -104,6 +105,7 @@ impl App {
             })
         };
         let file: Option<String>;
+        let after: String;
         let edit = match name {
             key::WRAP => ConfigEdit::AgentsWrap(as_bool()?),
             key::TOOLS => ConfigEdit::AgentsBool {
@@ -139,6 +141,24 @@ impl App {
                     })?;
                 ConfigEdit::AgentsHandoffAtPercent(percent)
             }
+            key::AUTOSUSPEND_AFTER => {
+                let text = value.as_str().map(str::trim).ok_or_else(|| {
+                    invalid(format!(
+                        "agents.settings.set {name}: value must be a string (\"off\", \"90m\", \"2h\", \"1d\")"
+                    ))
+                })?;
+                crate::config::parse_autosuspend_after(text).map_err(|err| {
+                    invalid(format!(
+                        "agents.settings.set {name}: {text:?} is invalid ({err}); expected \"off\" or <N>m, <N>h, <N>d"
+                    ))
+                })?;
+                after = if text.is_empty() {
+                    crate::config::AUTOSUSPEND_OFF.to_string()
+                } else {
+                    text.to_ascii_lowercase()
+                };
+                ConfigEdit::AgentsAutosuspendAfter(&after)
+            }
             key::INSTRUCTIONS_FILE => {
                 let text = value.as_str().map(str::trim).ok_or_else(|| {
                     invalid(format!(
@@ -172,7 +192,7 @@ impl App {
             }
             other => {
                 return Err(invalid(format!(
-                    "agents.settings.set: unknown key {other:?} (wrap, tools, instructions, instructions_file, notices, team_roster, program_status, handoff.enabled, handoff.at_percent)"
+                    "agents.settings.set: unknown key {other:?} (wrap, tools, instructions, instructions_file, notices, team_roster, program_status, handoff.enabled, handoff.at_percent, autosuspend.after)"
                 )))
             }
         };
@@ -183,6 +203,7 @@ impl App {
                 serde_json::Value::Bool(*value)
             }
             ConfigEdit::AgentsHandoffAtPercent(percent) => serde_json::Value::from(*percent),
+            ConfigEdit::AgentsAutosuspendAfter(after) => serde_json::Value::from(*after),
             ConfigEdit::AgentsInstructionsFile(path) => {
                 serde_json::Value::String(path.unwrap_or_default().trim().to_string())
             }
@@ -238,6 +259,7 @@ impl App {
             key::PROGRAM_STATUS => agents.program_status.into(),
             key::HANDOFF_ENABLED => agents.handoff.enabled.into(),
             key::HANDOFF_AT_PERCENT => agents.handoff.at_percent.into(),
+            key::AUTOSUSPEND_AFTER => agents.autosuspend.after.trim().into(),
             key::INSTRUCTIONS_FILE => agents.instructions_file.trim().into(),
             _ => serde_json::Value::Null,
         }
@@ -347,6 +369,7 @@ fn settings_info(snapshot: WrapSnapshot) -> AgentsSettingsInfo {
         program_status: None,
         handoff: None,
         context_window: std::collections::BTreeMap::new(),
+        autosuspend_after: None,
     }
 }
 

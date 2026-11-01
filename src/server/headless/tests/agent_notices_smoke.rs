@@ -540,6 +540,66 @@ async fn fork_smoke_agents_settings_write_program_status_and_handoff() {
     shutdown_test_runtimes(&mut server);
 }
 
+/// Fork (autosuspend): `agents.settings` reports `[agents.autosuspend]
+/// after` (off by default); `agents.settings.set autosuspend.after` writes it
+/// into the (temp) config, the reload applies it, and a bad value writes
+/// nothing.
+#[tokio::test]
+async fn fork_smoke_agents_settings_write_autosuspend_after() {
+    use crate::api::schema::AgentsSettingsSetParams;
+    let temp = crate::agent_wrap::test_support::TempHome::new("agents-autosuspend-smoke");
+    assert!(temp.contains(&temp.config_path));
+    temp.write_config("[agents.handoff]\nat_percent = 70 # mine\n");
+    let (mut server, _pane) = notices_server();
+    server.app.agents_setup_env = Some(temp.env.clone());
+    server.app.reload_config();
+
+    let settings = public_api(&mut server, Method::AgentsSettings(EmptyParams::default()));
+    assert_eq!(
+        settings["result"]["info"]["autosuspend_after"], "off",
+        "{settings}"
+    );
+    assert_eq!(server.app.agents_config.autosuspend.after(), None);
+
+    let set = |server: &mut HeadlessServer, value: serde_json::Value| {
+        public_api(
+            server,
+            Method::AgentsSettingsSet(AgentsSettingsSetParams {
+                key: "autosuspend.after".into(),
+                value,
+            }),
+        )
+    };
+    let on = set(&mut server, serde_json::json!("1d"));
+    assert_eq!(on["result"]["info"]["autosuspend_after"], "1d", "{on}");
+    assert_eq!(
+        server.app.agents_config.autosuspend.after(),
+        Some(std::time::Duration::from_secs(86_400)),
+        "applied live"
+    );
+    let text = std::fs::read_to_string(&temp.config_path).unwrap();
+    assert!(
+        text.contains("[agents.autosuspend]\nafter = \"1d\""),
+        "{text}"
+    );
+    assert!(text.contains("at_percent = 70 # mine"), "{text}");
+    let before = std::fs::read_to_string(&temp.config_path).unwrap();
+    for value in [
+        serde_json::json!("1w"),
+        serde_json::json!("0m"),
+        serde_json::json!(90),
+        serde_json::json!(true),
+    ] {
+        let bad = set(&mut server, value);
+        assert_eq!(bad["error"]["code"], "invalid_request", "{bad}");
+    }
+    assert_eq!(std::fs::read_to_string(&temp.config_path).unwrap(), before);
+    let off = set(&mut server, serde_json::json!("off"));
+    assert_eq!(off["result"]["info"]["autosuspend_after"], "off", "{off}");
+    assert_eq!(server.app.agents_config.autosuspend.after(), None);
+    shutdown_test_runtimes(&mut server);
+}
+
 #[tokio::test]
 async fn fork_smoke_agent_notice_goes_when_its_pane_process_exits() {
     let (mut server, pane) = notices_server();

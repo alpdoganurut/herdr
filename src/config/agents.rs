@@ -45,6 +45,79 @@ pub struct AgentsConfig {
     pub program_status: bool,
     /// `[agents.handoff]`: handoff, then compact, for Claude agents.
     pub handoff: AgentHandoffConfig,
+    /// `[agents.autosuspend]`: park Claude agents left idle (fork).
+    pub autosuspend: AgentAutosuspendConfig,
+}
+
+/// `[agents.autosuspend]` (fork): suspend a Claude agent that has been idle
+/// and seen this long with nothing running (src/app/agent_autosuspend.rs);
+/// a message to it wakes it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct AgentAutosuspendConfig {
+    /// `"off"`, or the idle time as `<N>m`, `<N>h` or `<N>d` (for example
+    /// `"90m"`, `"1d"`). Default: `"off"`.
+    pub after: String,
+}
+
+impl Default for AgentAutosuspendConfig {
+    fn default() -> Self {
+        Self {
+            after: AUTOSUSPEND_OFF.to_string(),
+        }
+    }
+}
+
+/// `[agents.autosuspend] after` when it is off.
+pub const AUTOSUSPEND_OFF: &str = "off";
+
+/// Parse an `after` value: `Ok(None)` for off (`"off"` or empty), else the
+/// idle time; `<N>` is a whole number from 1, at most 365 days in all.
+pub fn parse_autosuspend_after(value: &str) -> Result<Option<std::time::Duration>, String> {
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case(AUTOSUSPEND_OFF) {
+        return Ok(None);
+    }
+    let split = value.len().saturating_sub(1);
+    let (number, unit) = (
+        value.get(..split).unwrap_or(""),
+        value.get(split..).unwrap_or(""),
+    );
+    let seconds_per = match unit {
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
+        _ => return Err("the unit must be m, h or d".to_string()),
+    };
+    let number: u64 = number
+        .parse()
+        .map_err(|_| "expected a whole number before the unit".to_string())?;
+    if number == 0 {
+        return Err("the time must be at least 1".to_string());
+    }
+    let seconds = number
+        .checked_mul(seconds_per)
+        .filter(|seconds| *seconds <= 365 * 86_400)
+        .ok_or_else(|| "at most 365 days".to_string())?;
+    Ok(Some(std::time::Duration::from_secs(seconds)))
+}
+
+impl AgentAutosuspendConfig {
+    /// The idle time after which an agent is suspended; `None` when off or
+    /// invalid (an invalid value is a config diagnostic).
+    pub fn after(&self) -> Option<std::time::Duration> {
+        parse_autosuspend_after(&self.after).ok().flatten()
+    }
+
+    pub fn diagnostics(&self) -> Vec<String> {
+        match parse_autosuspend_after(&self.after) {
+            Ok(_) => Vec::new(),
+            Err(err) => vec![format!(
+                "agents.autosuspend.after = {:?} is invalid ({err}); expected \"off\" or <N>m, <N>h, <N>d; autosuspend is off",
+                self.after
+            )],
+        }
+    }
 }
 
 /// `[agents.handoff]` (fork): before a Claude agent's context is compacted,
@@ -107,6 +180,7 @@ impl Default for AgentsConfig {
             context_window: std::collections::BTreeMap::new(),
             program_status: true,
             handoff: AgentHandoffConfig::default(),
+            autosuspend: AgentAutosuspendConfig::default(),
         }
     }
 }
@@ -221,6 +295,52 @@ mod tests {
         assert_eq!(config.agents.handoff.auto_percent(), None);
         let config: Config = toml::from_str("[agents.handoff]\nat_percent = 250\n").unwrap();
         assert_eq!(config.agents.handoff.auto_percent(), Some(100));
+    }
+
+    #[test]
+    fn the_autosuspend_section_parses_off_minutes_hours_and_days() {
+        let config = Config::default();
+        assert_eq!(config.agents.autosuspend.after, "off");
+        assert_eq!(config.agents.autosuspend.after(), None, "off by default");
+        for (text, seconds) in [
+            ("off", None),
+            ("", None),
+            ("OFF", None),
+            ("90m", Some(90 * 60)),
+            ("2h", Some(2 * 3600)),
+            ("1d", Some(86_400)),
+            (" 1d ", Some(86_400)),
+            ("365d", Some(365 * 86_400)),
+        ] {
+            let config: Config =
+                toml::from_str(&format!("[agents.autosuspend]\nafter = \"{text}\"\n")).unwrap();
+            assert_eq!(
+                config
+                    .agents
+                    .autosuspend
+                    .after()
+                    .map(|after| after.as_secs()),
+                seconds,
+                "{text:?}"
+            );
+            assert!(
+                config.agents.autosuspend.diagnostics().is_empty(),
+                "{text:?}"
+            );
+        }
+        for bad in ["1", "0m", "1w", "1.5h", "-1d", "366d", "d", "1 d", "1dd"] {
+            let config: Config =
+                toml::from_str(&format!("[agents.autosuspend]\nafter = \"{bad}\"\n")).unwrap();
+            assert_eq!(config.agents.autosuspend.after(), None, "{bad:?}");
+            assert_eq!(config.agents.autosuspend.diagnostics().len(), 1, "{bad:?}");
+            assert!(
+                config
+                    .collect_diagnostics()
+                    .iter()
+                    .any(|d| d.contains("agents.autosuspend.after")),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

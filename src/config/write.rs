@@ -75,6 +75,9 @@ pub(crate) enum ConfigEdit<'a> {
     AgentsHandoffEnabled(bool),
     /// Fork: `[agents.handoff] at_percent` (`agents.settings.set`).
     AgentsHandoffAtPercent(u8),
+    /// Fork: `[agents.autosuspend] after` (`agents.settings.set`; the caller
+    /// validates it).
+    AgentsAutosuspendAfter(&'a str),
 }
 
 /// Fork: minutes past midnight as a 24-hour "HH:MM".
@@ -110,7 +113,8 @@ impl ConfigEdit<'_> {
             | Self::AgentsWrapWithBrowser { .. }
             | Self::AgentsInstructionsFile(_)
             | Self::AgentsHandoffEnabled(_)
-            | Self::AgentsHandoffAtPercent(_) => "agents setting",
+            | Self::AgentsHandoffAtPercent(_)
+            | Self::AgentsAutosuspendAfter(_) => "agents setting",
         }
     }
 
@@ -270,14 +274,18 @@ impl ConfigEdit<'_> {
             // an inline `handoff = { … }` and dotted `handoff.enabled = …`
             // under `[agents]` are all edited in place.
             Self::AgentsHandoffEnabled(enabled) => document_edit(content, |doc| {
-                set_handoff_item(doc, "enabled", toml_edit::value(enabled));
+                set_agents_table_item(doc, "handoff", "enabled", toml_edit::value(enabled));
             }),
             Self::AgentsHandoffAtPercent(percent) => document_edit(content, |doc| {
-                set_handoff_item(
+                set_agents_table_item(
                     doc,
+                    "handoff",
                     "at_percent",
                     toml_edit::value(i64::from(percent.min(100))),
                 );
+            }),
+            Self::AgentsAutosuspendAfter(after) => document_edit(content, |doc| {
+                set_agents_table_item(doc, "autosuspend", "after", toml_edit::value(after.trim()));
             }),
         }
     }
@@ -298,6 +306,7 @@ impl ConfigEdit<'_> {
                 | Self::AgentsInstructionsFile(_)
                 | Self::AgentsHandoffEnabled(_)
                 | Self::AgentsHandoffAtPercent(_)
+                | Self::AgentsAutosuspendAfter(_)
         )
     }
 }
@@ -338,12 +347,18 @@ fn set_section_item(
     }
 }
 
-/// Fork: set `key` in the `agents.handoff` table, wherever it is written
-/// (`[agents.handoff]`, `handoff = { … }` or dotted `handoff.x = …` under
-/// `[agents]`), keeping an existing value's decor. A missing `agents` is
-/// created implicit (no empty `[agents]` header); a missing `handoff` is
-/// added as `[agents.handoff]`. Anything that is not a table is left alone.
-fn set_handoff_item(doc: &mut toml_edit::DocumentMut, key: &str, item: toml_edit::Item) {
+/// Fork: set `key` in the `agents.<table>` table (`handoff`,
+/// `autosuspend`), wherever it is written (`[agents.<table>]`, `<table> =
+/// { … }` or dotted `<table>.x = …` under `[agents]`), keeping an existing
+/// value's decor. A missing `agents` is created implicit (no empty
+/// `[agents]` header); a missing `<table>` is added as `[agents.<table>]`.
+/// Anything that is not a table is left alone.
+fn set_agents_table_item(
+    doc: &mut toml_edit::DocumentMut,
+    table: &str,
+    key: &str,
+    item: toml_edit::Item,
+) {
     use toml_edit::{Item, Table};
     if doc.get("agents").is_none() {
         let mut agents = Table::new();
@@ -353,11 +368,11 @@ fn set_handoff_item(doc: &mut toml_edit::DocumentMut, key: &str, item: toml_edit
     let Some(agents) = doc.get_mut("agents").and_then(Item::as_table_like_mut) else {
         return;
     };
-    if agents.get("handoff").is_none() {
-        agents.insert("handoff", Item::Table(Table::new()));
+    if agents.get(table).is_none() {
+        agents.insert(table, Item::Table(Table::new()));
     }
-    if let Some(handoff) = agents.get_mut("handoff").and_then(Item::as_table_like_mut) {
-        set_browser_item(handoff, key, item);
+    if let Some(sub) = agents.get_mut(table).and_then(Item::as_table_like_mut) {
+        set_browser_item(sub, key, item);
     }
 }
 
@@ -738,6 +753,39 @@ mod tests {
             "stays dotted: {edited}"
         );
         assert!(!edited.contains("[agents.handoff]"), "{edited}");
+    }
+
+    #[test]
+    fn agents_autosuspend_edit_writes_its_table_and_parses_back() {
+        let content = "[agents]\nwrap = true\n\n[agents.handoff]\nat_percent = 70 # mine\n";
+        let edited = ConfigEdit::AgentsAutosuspendAfter("1d").apply(content);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.agents.autosuspend.after, "1d");
+        assert_eq!(
+            config.agents.autosuspend.after(),
+            Some(std::time::Duration::from_secs(86_400))
+        );
+        assert_eq!(config.agents.handoff.at_percent, 70, "untouched");
+        assert_eq!(config.agents.wrap, Some(true), "untouched");
+        assert!(edited.contains("# mine"), "{edited}");
+        assert!(edited.contains("[agents.autosuspend]"), "{edited}");
+        let edited = ConfigEdit::AgentsAutosuspendAfter("off").apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.agents.autosuspend.after(), None);
+        assert_eq!(edited.matches("after =").count(), 1, "{edited}");
+        // An inline table is edited in place; a config without one gets it.
+        let edited = ConfigEdit::AgentsAutosuspendAfter("90m")
+            .apply("[agents]\nautosuspend = { after = \"off\" }\n");
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.agents.autosuspend.after, "90m");
+        assert!(!edited.contains("[agents.autosuspend]"), "{edited}");
+        let edited = ConfigEdit::AgentsAutosuspendAfter("2h").apply("");
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.agents.autosuspend.after, "2h");
+        assert_eq!(
+            ConfigEdit::AgentsAutosuspendAfter("2h").description(),
+            "agents setting"
+        );
     }
 
     #[test]

@@ -614,6 +614,12 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Type one line after the compaction asking the agent to read the handoff and continue.
 # resume = true
 
+# [agents.autosuspend]
+# Suspend a Claude agent left idle (and seen) this long; a message to it wakes it.
+# "off", or <N>m, <N>h, <N>d. Never: blocked, unseen, on screen, the coordinator,
+# subagents or background tasks running, messages waiting for it.
+# after = "1d"
+
 [notes]
 # Per-session notes page behind the info pane and the agents' notes tools
 # (stored under <config dir>/notes). The page is yours: agents write it only

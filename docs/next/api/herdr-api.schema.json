@@ -2771,7 +2771,7 @@
           "type": "object"
         },
         "AgentsSettingsSetParams": {
-          "description": "`agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,\n`tools`, `instructions`, `notices`, `team_roster`, `program_status` and\n`handoff.enabled`; an integer 0 to 100 for `handoff.at_percent`; a string for `instructions_file`\n(`\"\"` or `\"default\"` = built-in, `\"file\"` = `<config dir>/agents.md`,\nseeded with the built-in text when missing, anything else = that path).",
+          "description": "`agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,\n`tools`, `instructions`, `notices`, `team_roster`, `program_status` and\n`handoff.enabled`; an integer 0 to 100 for `handoff.at_percent`; a string\n(`\"off\"` or `<N>m`, `<N>h`, `<N>d`) for `autosuspend.after`; a string for `instructions_file`\n(`\"\"` or `\"default\"` = built-in, `\"file\"` = `<config dir>/agents.md`,\nseeded with the built-in text when missing, anything else = that path).",
           "properties": {
             "key": {
               "type": "string"
@@ -13659,6 +13659,13 @@
         "AgentsSettingsInfo": {
           "description": "`agents.settings`: the section's picture.",
           "properties": {
+            "autosuspend_after": {
+              "description": "Fork: `[agents.autosuspend] after` as written (`\"off\"`, `\"1d\"`, …).\nAbsent from older servers, which cannot set it: `None` hides the row.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "checks": {
               "default": [],
               "items": {
