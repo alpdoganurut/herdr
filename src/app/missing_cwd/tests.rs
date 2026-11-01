@@ -451,7 +451,7 @@ fn a_home_without_a_named_component_is_no_creation_root() {
 
 #[cfg(unix)]
 #[test]
-fn a_symlink_under_the_home_does_not_lead_the_creation_out_of_it() {
+fn fork_smoke_a_symlink_under_the_home_does_not_lead_the_creation_out_of_it() {
     let home = TestHome::new("symlink-escape");
     let outside = std::env::temp_dir().join(format!(
         "herdr-missing-cwd-symlink-target-{}",
@@ -603,7 +603,7 @@ fn shutdown_runtimes(app: &mut App) {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_pending_notice_survives_a_restart_and_is_delivered_once() {
+async fn fork_smoke_a_pending_notice_survives_a_restart_and_is_delivered_once() {
     let home = TestHome::new("survives");
     let missing = home.0.join("worktrees/survives");
     let snapshot = snapshot_with(&home.0, &missing, true);
@@ -760,7 +760,7 @@ async fn a_notice_dropped_after_one_was_queued_in_the_same_pass_is_saved_gone() 
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_pending_notice_follows_its_pane_to_another_space_across_a_restart() {
+async fn fork_smoke_a_pending_notice_follows_its_pane_to_another_space_across_a_restart() {
     use crate::api::schema::{Method, PaneMoveDestination, PaneMoveParams, Request};
     let home = TestHome::new("moved");
     let missing = home.0.join("worktrees/moved");

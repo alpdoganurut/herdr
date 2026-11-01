@@ -948,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn a_configured_binary_matches_only_its_own_name_not_other_chrome_processes() {
+    fn fork_smoke_a_configured_binary_matches_only_its_own_name_not_other_chrome_processes() {
         for binary in [
             Path::new("/Applications/Chromium.app/Contents/MacOS/Chromium"),
             Path::new("/Users/u/Applications/herdr+ Browser.app/Contents/MacOS/Chromium"),
@@ -972,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn a_timed_out_launch_never_stops_the_pre_spawn_lock_pid() {
+    fn fork_smoke_a_timed_out_launch_never_stops_the_pre_spawn_lock_pid() {
         // The lock still names the pre-spawn pid (a reused pid): the spawned
         // child, never that pid.
         assert_eq!(timed_out_launch_pid(Some(10), Some(10), Some(20)), Some(20));

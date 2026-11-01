@@ -2314,11 +2314,11 @@ sidebar_toolbar
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::tab_geometry_tests::fork_smoke_single_client_resize_reflows_only_the_shown_tab
 server::headless::tests::tab_geometry_tests::fork_smoke_switching_dock_and_plain_tabs_reflows_one_tab_at_most
-app::missing_cwd::tests::a_pending_notice_survives_a_restart_and_is_delivered_once
-app::missing_cwd::tests::a_symlink_under_the_home_does_not_lead_the_creation_out_of_it
-browser::launch::tests::a_timed_out_launch_never_stops_the_pre_spawn_lock_pid
-browser::launch::tests::a_configured_binary_matches_only_its_own_name_not_other_chrome_processes
-app::missing_cwd::tests::a_pending_notice_follows_its_pane_to_another_space_across_a_restart
+app::missing_cwd::tests::fork_smoke_a_pending_notice_survives_a_restart_and_is_delivered_once
+app::missing_cwd::tests::fork_smoke_a_symlink_under_the_home_does_not_lead_the_creation_out_of_it
+browser::launch::tests::fork_smoke_a_timed_out_launch_never_stops_the_pre_spawn_lock_pid
+browser::launch::tests::fork_smoke_a_configured_binary_matches_only_its_own_name_not_other_chrome_processes
+app::missing_cwd::tests::fork_smoke_a_pending_notice_follows_its_pane_to_another_space_across_a_restart
 server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot
 server::headless::tests::fork_smoke::session_restore_keeps_a_suspended_pane_parked
 server::headless::tests::fork_smoke::claude_hook_asset_reports_the_transcript_path_the_backup_store_uses
