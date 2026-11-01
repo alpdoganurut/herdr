@@ -1530,6 +1530,18 @@ impl ClientShellState {
                         outcome.repaint = true;
                     }
                 }
+                // Fork (menu design): the wheel moves the highlight, which
+                // scrolls a menu taller than the screen.
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    if super::contains(self.hits.context_menu_area, point) =>
+                {
+                    self.move_context_menu_selection(if mouse.kind == MouseEventKind::ScrollUp {
+                        -1
+                    } else {
+                        1
+                    });
+                    outcome.repaint = true;
+                }
                 _ => {}
             }
             return;

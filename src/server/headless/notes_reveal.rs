@@ -50,54 +50,65 @@ impl NotesRevealPayload {
     }
 }
 
-/// The framed payload of one render pass, built on first use.
+/// The framed payloads of one render pass (one per reveal), built on first
+/// use, with the revision they were built after.
 #[derive(Default)]
 pub(super) struct PassFrame {
-    framed: Option<Vec<u8>>,
+    framed: Option<(u64, Vec<Vec<u8>>)>,
 }
 
-/// Send `client` the latest reveal when it has not had it. A client's first
-/// pass records the current revision without sending (no replay of a reveal
-/// from before it attached). `Err` when the client's writer is gone or
-/// framing failed (the caller drops the client).
+/// Send `client` every kept reveal newer than the last it had, oldest first.
+/// A client's first pass records the current revision without sending (no
+/// replay of a reveal from before it attached). `Err` when the client's
+/// writer is gone or framing failed (the caller drops the client).
 pub(super) fn sync_client(
     app: &crate::app::App,
     boot_id: &str,
     client: &mut ClientConnection,
     frame: &mut PassFrame,
 ) -> Result<(), String> {
-    let revision = app
-        .notes
-        .reveal
-        .as_ref()
-        .map_or(0, |reveal| reveal.revision);
+    let reveals = &app.notes.reveals;
+    let revision = reveals.back().map_or(0, |reveal| reveal.revision);
     let Some(sent) = client.shell_notes_reveal_sent else {
         client.shell_notes_reveal_sent = Some(revision);
         return Ok(());
     };
-    let Some(reveal) = app.notes.reveal.as_ref().filter(|_| revision > sent) else {
+    if revision <= sent {
         return Ok(());
-    };
-    if frame.framed.is_none() {
-        let payload = NotesRevealPayload {
-            boot_id: boot_id.to_owned(),
-            revision,
-            tab_id: reveal.tab_id.clone(),
-        };
-        let message = payload.message().map_err(|err| err.to_string())?;
-        frame.framed =
-            Some(HeadlessServer::frame_server_message(&message).map_err(|err| err.to_string())?);
     }
-    let Some(framed) = frame.framed.as_ref() else {
-        return Err("notes reveal frame missing".into());
-    };
+    let mut framed = Vec::new();
+    let cached = frame
+        .framed
+        .as_ref()
+        .filter(|(after, _)| *after == sent)
+        .map(|(_, frames)| frames.clone());
+    match cached {
+        Some(frames) => framed = frames,
+        None => {
+            for reveal in reveals.iter().filter(|reveal| reveal.revision > sent) {
+                let payload = NotesRevealPayload {
+                    boot_id: boot_id.to_owned(),
+                    revision: reveal.revision,
+                    tab_id: reveal.tab_id.clone(),
+                };
+                let message = payload.message().map_err(|err| err.to_string())?;
+                framed.push(
+                    HeadlessServer::frame_server_message(&message)
+                        .map_err(|err| err.to_string())?,
+                );
+            }
+            frame.framed = Some((sent, framed.clone()));
+        }
+    }
     let Some(writer) = client.writer.as_ref() else {
         return Err("client writer gone".into());
     };
-    writer
-        .control
-        .send(framed.clone())
-        .map_err(|_| "client control channel closed".to_string())?;
+    for bytes in framed {
+        writer
+            .control
+            .send(bytes)
+            .map_err(|_| "client control channel closed".to_string())?;
+    }
     client.shell_notes_reveal_sent = Some(revision);
     Ok(())
 }

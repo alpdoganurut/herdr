@@ -9,7 +9,7 @@ use super::sidebar_active::{
     active_state_with, cell, endpoint_methods, mouse, row_text, tabs_config, COLS, ROWS,
 };
 use super::*;
-use crate::client::shell::context_menu_look::{compact_binding, MenuKind};
+use crate::client::shell::context_menu_look::{compact_trigger, MenuKind};
 use crate::config::BindingConfig;
 use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 
@@ -177,23 +177,20 @@ fn key_hints_follow_the_effective_keybindings_and_unbound_items_show_none() {
 }
 
 #[test]
-fn compact_bindings_use_the_primary_prefix() {
+fn compact_triggers_use_the_primary_prefix() {
     let ctrl_b = Some((KeyCode::Char('b'), crossterm::event::KeyModifiers::CONTROL));
     let ctrl_a = Some((KeyCode::Char('a'), crossterm::event::KeyModifiers::CONTROL));
+    let combo = |label: &str| crate::config::parse_key_combo(label).expect("combo");
+    assert_eq!(compact_trigger(false, combo("alt+t"), ctrl_b), "\u{2325}t");
+    assert_eq!(compact_trigger(true, combo("shift+x"), ctrl_b), "^b X");
+    assert_eq!(compact_trigger(true, combo("v"), ctrl_a), "^a v");
+    assert_eq!(compact_trigger(true, combo("minus"), ctrl_b), "^b -");
     assert_eq!(
-        compact_binding("alt+t", ctrl_b).as_deref(),
-        Some("\u{2325}t")
+        compact_trigger(false, combo("ctrl+alt+y"), ctrl_b),
+        "^\u{2325}y"
     );
-    assert_eq!(
-        compact_binding("prefix+shift+x", ctrl_b).as_deref(),
-        Some("^b X")
-    );
-    assert_eq!(compact_binding("prefix+v", ctrl_a).as_deref(), Some("^a v"));
-    assert_eq!(
-        compact_binding("prefix+minus", ctrl_b).as_deref(),
-        Some("^b -")
-    );
-    assert_eq!(compact_binding("not a key", ctrl_b), None);
+    // The default prefix when none is configured.
+    assert_eq!(compact_trigger(true, combo("z"), None), "^b z");
 }
 
 #[test]
@@ -352,4 +349,87 @@ fn a_toggles_state_never_changes_the_menu_width() {
     );
     assert_eq!(on_width, off_width, "the dot carries the state");
     assert!(on_width <= 34);
+}
+
+#[test]
+fn a_short_screen_drops_the_rules_and_scrolls_to_the_highlighted_item() {
+    let mut state = active_state_with(ClientShellConfig::from_config(&tabs_config()));
+    state.overlay = None;
+    state.open_tab_context_menu("t_work".into(), 40, 0);
+    let items = menu_items(&state);
+    let rows = 12;
+    let frame = state.compose(COLS, rows).expect("menu frame");
+    let visible = usize::from(rows) - 2;
+    assert!(items.len() > visible, "the menu is taller than the screen");
+    let hits: Vec<usize> = state
+        .hits
+        .context_menu_rows
+        .iter()
+        .map(|(_, i)| *i)
+        .collect();
+    assert_eq!(
+        hits,
+        (0..visible).collect::<Vec<_>>(),
+        "no rule rows, top first"
+    );
+    let first = state.hits.context_menu_rows[0].0;
+    assert!(row_text(&frame, first).starts_with(" + New tab"));
+
+    // The keyboard reaches the last item; the menu scrolls to draw it.
+    for _ in 0..items.len() {
+        state.handle_raw_events(vec![key(KeyCode::Down)]);
+    }
+    let last = items.len() - 1;
+    assert_eq!(highlighted(&state), last);
+    let frame = state.compose(COLS, rows).expect("menu frame");
+    let hits: Vec<usize> = state
+        .hits
+        .context_menu_rows
+        .iter()
+        .map(|(_, i)| *i)
+        .collect();
+    assert_eq!(
+        hits,
+        (items.len() - visible..items.len()).collect::<Vec<_>>()
+    );
+    let (bottom, index) = *state.hits.context_menu_rows.last().expect("rows");
+    assert_eq!(index, last);
+    assert!(
+        row_text(&frame, bottom).contains("colour"),
+        "{:?}",
+        row_text(&frame, bottom)
+    );
+
+    // A click maps to the item drawn there, not to its unscrolled row.
+    let pin = index_of(&state, ClientContextMenuAction::Pin);
+    let (pin_row, _) = *state
+        .hits
+        .context_menu_rows
+        .iter()
+        .find(|(_, index)| *index == pin)
+        .expect("Pin is drawn");
+    let clicked = mouse(
+        &mut state,
+        MouseEventKind::Down(MouseButton::Left),
+        pin_row.x + 3,
+        pin_row.y,
+    );
+    assert!(matches!(
+        endpoint_methods(&clicked)[..],
+        [crate::api::schema::Method::TabSetPinned(_)]
+    ));
+
+    // The wheel moves the highlight too.
+    state.open_tab_context_menu("t_work".into(), 40, 0);
+    state.compose(COLS, rows).expect("menu frame");
+    let area = state.hits.context_menu_area;
+    mouse(
+        &mut state,
+        MouseEventKind::ScrollDown,
+        area.x + 3,
+        area.y + 2,
+    );
+    assert_eq!(highlighted(&state), 1);
+    mouse(&mut state, MouseEventKind::ScrollUp, area.x + 3, area.y + 2);
+    assert_eq!(highlighted(&state), 0);
 }

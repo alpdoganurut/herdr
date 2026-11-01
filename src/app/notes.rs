@@ -656,7 +656,7 @@ mod tests {
     #[test]
     fn a_reveal_records_the_targets_tab_under_a_new_revision() {
         let (mut app, tab_id, _, split_id, _guard) = app_with_two_panes();
-        assert_eq!(app.notes.reveal, None, "nothing before a reveal");
+        assert!(app.notes.reveals.is_empty(), "nothing before a reveal");
         let reveal = |app: &mut App, target: NotesTarget| -> serde_json::Value {
             let reply = app.handle_api_request(Request {
                 id: "r".into(),
@@ -667,15 +667,17 @@ mod tests {
         let reply = reveal(&mut app, pane(&split_id));
         assert_eq!(reply["result"]["type"], "ok", "{reply}");
         assert_eq!(
-            app.notes.reveal,
-            Some(crate::notes::NotesReveal {
+            app.notes.reveals.back(),
+            Some(&crate::notes::NotesReveal {
                 revision: 1,
                 tab_id: tab_id.clone(),
             }),
             "a pane names its tab"
         );
         reveal(&mut app, tab(&tab_id));
-        assert_eq!(app.notes.reveal.as_ref().map(|r| r.revision), Some(2));
+        let revisions =
+            |app: &App| -> Vec<u64> { app.notes.reveals.iter().map(|r| r.revision).collect() };
+        assert_eq!(revisions(&app), [1, 2], "both kept, oldest first");
         // UI only: the method is marked so a render pass follows.
         assert!(crate::api::request_changes_ui(&Request {
             id: "r".into(),
@@ -699,7 +701,17 @@ mod tests {
         app.notes.enabled = false;
         let reply = reveal(&mut app, tab(&tab_id));
         assert_eq!(reply["error"]["code"], "notes_disabled", "{reply}");
-        assert_eq!(app.notes.reveal.as_ref().map(|r| r.revision), Some(2));
+        assert_eq!(revisions(&app), [1, 2]);
+
+        // Bounded: only the newest REVEAL_CAP stay.
+        app.notes.enabled = true;
+        for _ in 0..crate::notes::REVEAL_CAP {
+            reveal(&mut app, tab(&tab_id));
+        }
+        let kept = revisions(&app);
+        assert_eq!(kept.len(), crate::notes::REVEAL_CAP);
+        assert_eq!(kept.last(), Some(&(crate::notes::REVEAL_CAP as u64 + 2)));
+        assert_eq!(kept.first(), Some(&3));
     }
 
     #[test]

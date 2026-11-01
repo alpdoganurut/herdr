@@ -1624,3 +1624,58 @@ fn a_notes_reveal_opens_the_tabs_pane_once_without_taking_the_keyboard() {
     recompose(&mut state);
     assert!(!state.info_dock_focused());
 }
+
+/// Tab A's dock has the keyboard (a click), then tab B is focused with the
+/// `next_tab` key (the server's answer is the new snapshot).
+fn focused_dock_then_tab_b() -> ClientShellState {
+    let mut config = Config::default();
+    config.keys.toggle_info_pane = crate::config::BindingConfig::one("alt+n");
+    config.keys.next_tab = crate::config::BindingConfig::one("alt+l");
+    let mut state = state_with(config);
+    open_loaded(&mut state);
+    let body = state.hits.info_dock.body;
+    state.handle_raw_events(click(body.x + 5, body.y + 3));
+    assert!(state.info_dock_focused(), "tab A's dock has the keyboard");
+    let switched = state.handle_raw_events(vec![RawInputEvent::Key(TerminalKey::new(
+        KeyCode::Char('l'),
+        KeyModifiers::ALT,
+    ))]);
+    assert!(
+        !info_requests(&switched).is_empty(),
+        "the key asks the server to focus the next tab"
+    );
+    state.set_snapshot(Box::new(two_tab_snapshot("tab_2")));
+    recompose(&mut state);
+    state
+}
+
+#[test]
+fn opening_another_tabs_pane_drops_a_focus_left_from_the_first() {
+    let mut state = focused_dock_then_tab_b();
+    state.handle_raw_events(vec![RawInputEvent::Key(TerminalKey::new(
+        KeyCode::Char('n'),
+        KeyModifiers::ALT,
+    ))]);
+    recompose(&mut state);
+    assert!(state.info_dock_open_for_focused_tab());
+    assert!(!state.info_dock_focused());
+    let typed = state.handle_raw_events(vec![key(KeyCode::Char('j'))]);
+    assert_eq!(pane_requests(&typed), 1, "keys go to tab B's pane");
+}
+
+#[test]
+fn a_reveal_of_another_tab_drops_a_focus_left_from_the_first() {
+    use crate::server::headless::notes_reveal::NotesRevealPayload;
+    let mut state = focused_dock_then_tab_b();
+    state.receive_notes_reveal(
+        &ClientEndpointId::Local,
+        NotesRevealPayload {
+            boot_id: "boot-1".into(),
+            revision: 1,
+            tab_id: "tab_2".into(),
+        },
+    );
+    recompose(&mut state);
+    assert!(state.info_dock_open_for_focused_tab());
+    assert!(!state.info_dock_focused());
+}

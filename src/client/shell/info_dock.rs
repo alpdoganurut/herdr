@@ -895,9 +895,12 @@ impl ClientShellState {
             false
         } else {
             dock.open_tabs.insert(key);
+            // Opening never takes the keyboard, and drops a focus left from
+            // another tab's dock: the session keeps it (a click into the
+            // dock focuses it).
+            dock.focused = false;
+            dock.dragging = false;
             if focused {
-                // Opening never takes the keyboard: the session keeps it
-                // (a click into the dock focuses it).
                 dock.flash = None;
                 dock.data.pulled_for = None;
             }
@@ -961,6 +964,8 @@ impl ClientShellState {
             self.toggle_info_pane(payload.tab_id, &mut outcome);
         } else {
             dock.open_tabs.insert(key);
+            dock.focused = false;
+            dock.dragging = false;
         }
         outcome
     }

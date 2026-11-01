@@ -270,6 +270,31 @@ async fn fork_smoke_a_notes_reveal_reaches_every_client_once() {
         assert_eq!(payloads[0].revision, 2);
     }
 
+    // Two reveals before one render pass: both reach every client, in
+    // order (another tab's first).
+    let other = crate::workspace::Workspace::test_new("other");
+    server.app.state.workspaces.push(other);
+    server.app.state.ensure_test_terminals();
+    let other_tab = server.app.public_tab_id(1, 0).expect("other tab id");
+    for tab in [&other_tab, &tab_id] {
+        let reply = api(
+            &mut server,
+            Method::NotesReveal(crate::api::schema::notes::NotesRevealParams {
+                target: tab_target(tab),
+            }),
+        );
+        assert_eq!(reply["result"]["type"], "ok", "{reply}");
+    }
+    server.render_and_stream();
+    for control in [&first, &second, &late] {
+        let payloads = notes_reveal_payloads(control);
+        let got: Vec<(u64, &str)> = payloads
+            .iter()
+            .map(|payload| (payload.revision, payload.tab_id.as_str()))
+            .collect();
+        assert_eq!(got, [(3, other_tab.as_str()), (4, tab_id.as_str())]);
+    }
+
     // The client shell takes it: the tab's info pane opens without focus.
     let mut shell = crate::client::ClientShellState::new(
         crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),

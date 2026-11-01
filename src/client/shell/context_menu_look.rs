@@ -169,9 +169,15 @@ pub(super) fn key_hint(
     if matches!(item.look.kind, MenuKind::Selector | MenuKind::Disabled) {
         return None;
     }
-    let binding = item_binding(target, item.action, &keybinds.keybinds)?;
-    let label = binding.labels().into_iter().next()?;
-    compact_binding(&label, keybinds.primary_prefix())
+    let trigger = item_binding(target, item.action, &keybinds.keybinds)?
+        .bindings
+        .first()?
+        .trigger;
+    Some(compact_trigger(
+        trigger.is_prefix(),
+        trigger.combo(),
+        keybinds.primary_prefix(),
+    ))
 }
 
 /// What the hint column shows: `on` for a toggle that is on, else the key
@@ -189,19 +195,18 @@ fn shown_hint(item: &ClientContextMenuItem, key: Option<String>) -> Option<Strin
     }
 }
 
-/// `alt+t` → `⌥t`, `prefix+shift+x` → `^b X` (the primary prefix compact).
-pub(super) fn compact_binding(label: &str, prefix: Option<KeyCombo>) -> Option<String> {
-    match label.strip_prefix("prefix+") {
-        Some(rest) => {
-            let combo = crate::config::parse_key_combo(rest)?;
-            let prefix = prefix.unwrap_or((KeyCode::Char('b'), KeyModifiers::CONTROL));
-            Some(format!(
-                "{} {}",
-                compact_combo(prefix),
-                compact_combo(combo)
-            ))
-        }
-        None => crate::config::parse_key_combo(label).map(compact_combo),
+/// A binding's trigger in a few cells: `alt+t` → `⌥t`, a prefix binding
+/// `shift+x` → `^b X` (the primary prefix, compact).
+pub(super) fn compact_trigger(
+    is_prefix: bool,
+    combo: KeyCombo,
+    prefix: Option<KeyCombo>,
+) -> String {
+    if is_prefix {
+        let prefix = prefix.unwrap_or((KeyCode::Char('b'), KeyModifiers::CONTROL));
+        format!("{} {}", compact_combo(prefix), compact_combo(combo))
+    } else {
+        compact_combo(combo)
     }
 }
 
@@ -310,12 +315,16 @@ pub(super) fn render_menu(
     keybinds: &LiveKeybindConfig,
 ) -> Option<RenderedMenu> {
     let items = menu.items();
-    let rows = menu_rows(&items);
+    let mut rows = menu_rows(&items);
+    let screen = buffer.area;
+    // A short screen drops the rule rows first, then scrolls (below).
+    if rows.len().saturating_add(2) > usize::from(screen.height) {
+        rows.retain(|row| matches!(row, MenuRow::Item(_)));
+    }
     let keys: Vec<Option<String>> = items
         .iter()
         .map(|item| key_hint(&menu.target, item, keybinds))
         .collect();
-    let screen = buffer.area;
     let inner_width = rows
         .iter()
         .map(|row| match row {
@@ -350,7 +359,8 @@ pub(super) fn render_menu(
         area,
         ..RenderedMenu::default()
     };
-    for (row_index, row) in rows.iter().enumerate() {
+    let offset = scroll_offset(&rows, menu.highlighted, usize::from(inner.height));
+    for (row_index, row) in rows.iter().skip(offset).enumerate() {
         let row_y = inner.y.saturating_add(row_index as u16);
         if row_y >= inner.bottom() {
             break;
@@ -376,6 +386,20 @@ pub(super) fn render_menu(
         }
     }
     Some(rendered)
+}
+
+/// The first drawn row when only `visible` rows fit: the fewest skipped
+/// rows that still draw the highlighted item (render-only; the keyboard
+/// and the wheel move `highlighted`, so every item is reachable).
+pub(super) fn scroll_offset(rows: &[MenuRow], highlighted: usize, visible: usize) -> usize {
+    if rows.len() <= visible || visible == 0 {
+        return 0;
+    }
+    let at = rows
+        .iter()
+        .position(|row| *row == MenuRow::Item(highlighted))
+        .unwrap_or(0);
+    (at + 1).saturating_sub(visible).min(rows.len() - visible)
 }
 
 /// The menu's box: rounded corners in accent over panel_bg.
