@@ -2480,11 +2480,13 @@ impl<A: Api> Session<A> {
                 }
             }
         }
-        if let (1, Some(error)) = (targets.len(), last_error) {
+        // Nothing applied: the (last) refusal is the tool's error.
+        let applied = results.iter().any(|result| result["ok"] == true);
+        if let (false, Some(error)) = (applied, last_error) {
             return Err(error);
         }
         let mut text = lines.join("\n");
-        if on && quiet == Quiet::Dnd {
+        if on && quiet == Quiet::Dnd && applied {
             text.push_str("\n(messages to them are stored quietly until do not disturb ends; urgent ones are refused `dnd`)");
         }
         Ok(Reply::new(
@@ -5384,6 +5386,18 @@ mod tests {
             "{}",
             out.text
         );
+        // Several, every one refused: the tool fails, no DND hint.
+        let out = call(
+            &mut s,
+            "agents_dnd",
+            json!({ "target": "coordinator, ghost" }),
+        );
+        assert!(
+            out.is_error && out.text.contains("not_found"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("stored quietly"), "{}", out.text);
         let out = call(&mut s, "agents_mute", json!({ "target": " , " }));
         assert!(
             out.is_error && out.text.contains("target is required"),

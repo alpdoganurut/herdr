@@ -2792,7 +2792,7 @@
               ]
             },
             "target": {
-              "description": "A tab id, a pane id or an agent name (its tab).",
+              "description": "A tab id, a pane id, an agent name (its tab) or a unique tab label.",
               "type": "string"
             }
           },
