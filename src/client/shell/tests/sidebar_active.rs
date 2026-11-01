@@ -853,9 +853,10 @@ fn hover_repaints_only_on_target_change() {
     let (tab_row, _) = state.hits.sidebar_tabs[0];
     assert!(mouse(&mut state, MouseEventKind::Moved, tab_row.x + 4, tab_row.y).repaint);
     assert!(matches!(state.sidebar_hover, Some(SidebarHover::Tab(_))));
-    // The toolbar is no row: the hover clears, once.
+    // Fork (sidebar filters): the toolbar is one target of its own (it
+    // reveals the filter controls): the hover moves there, once.
     assert!(mouse(&mut state, MouseEventKind::Moved, 2, 0).repaint);
-    assert_eq!(state.sidebar_hover, None);
+    assert_eq!(state.sidebar_hover, Some(SidebarHover::Toolbar));
     assert!(!mouse(&mut state, MouseEventKind::Moved, 3, 0).repaint);
 }
 

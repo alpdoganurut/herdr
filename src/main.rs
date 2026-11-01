@@ -200,6 +200,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # toggle_info_pane = ""             # unbound; shows or hides the focused tab's info pane (notes, history)
 # tab_history_back = "cmd+["        # previously focused tab, browser-style (Ghostty: keybind = super+[=csi:91;9u)
 # tab_history_forward = "cmd+]"     # forward again (Ghostty: keybind = super+]=csi:93;9u); no Cmd? e.g. "alt+," / "alt+."
+# sidebar_search = "prefix+f"       # "tabs" layout: type to filter the tab list (Esc clears, Enter focuses the first match)
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"

@@ -394,6 +394,7 @@ pub struct Keybinds {
     pub toggle_info_pane: ActionKeybinds,
     pub tab_history_back: ActionKeybinds,
     pub tab_history_forward: ActionKeybinds,
+    pub sidebar_search: ActionKeybinds,
     pub copy_mode: ActionKeybinds,
     pub focus_pane_left: ActionKeybinds,
     pub focus_pane_down: ActionKeybinds,
@@ -590,6 +591,7 @@ impl Config {
             toggle_info_pane: empty_action!(),
             tab_history_back: empty_action!(),
             tab_history_forward: empty_action!(),
+            sidebar_search: empty_action!(),
             copy_mode: empty_action!(),
             focus_pane_left: empty_action!(),
             focus_pane_down: empty_action!(),
@@ -751,6 +753,7 @@ impl Config {
             apply_action!(keybinds.toggle_info_pane, toggle_info_pane, source);
             apply_action!(keybinds.tab_history_back, tab_history_back, source);
             apply_action!(keybinds.tab_history_forward, tab_history_forward, source);
+            apply_action!(keybinds.sidebar_search, sidebar_search, source);
             apply_action!(keybinds.copy_mode, copy_mode, source);
             apply_action!(keybinds.focus_pane_left, focus_pane_left, source);
             apply_action!(keybinds.focus_pane_down, focus_pane_down, source);
@@ -2655,5 +2658,29 @@ tab_history_forward = "alt+."
                 KeyModifiers::ALT
             ))]
         );
+    }
+
+    #[test]
+    fn default_sidebar_search_key_is_prefix_f_and_a_custom_command_keeps_it() {
+        let kb = Config::default().keybinds();
+        assert_eq!(
+            binding_triggers(&kb.sidebar_search),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('f'),
+                KeyModifiers::empty()
+            ))]
+        );
+        let config: Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "prefix+f"
+command = "echo hi"
+"#,
+        )
+        .unwrap();
+        assert!(config.collect_diagnostics().is_empty());
+        let kb = config.keybinds();
+        assert_eq!(kb.custom_commands.len(), 1, "the user's command wins");
+        assert!(binding_triggers(&kb.sidebar_search).is_empty());
     }
 }

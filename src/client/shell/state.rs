@@ -129,6 +129,13 @@ pub(super) struct ShellHitMap {
     pub(super) sidebar_tabs: Vec<(Rect, String)>,
     /// Fork: the suspended run rows (rect, the run's first tab id).
     pub(super) sidebar_runs: Vec<(Rect, String)>,
+    /// Fork (sidebar filters): the toolbar row (hover reveals the filter
+    /// controls), the search field, the recency chip and the
+    /// `~ N filtered` row.
+    pub(super) sidebar_toolbar: Rect,
+    pub(super) sidebar_search: Rect,
+    pub(super) sidebar_recency: Rect,
+    pub(super) sidebar_filtered: Rect,
     /// Fork: the frame drew a breathing agent glyph (`breathe.rs`), so the
     /// client loop schedules the next animation frame.
     pub(super) breathing: bool,
@@ -1176,6 +1183,8 @@ pub(super) struct ClientInputContext {
     pub(super) retained_selection: bool,
     /// Fork: the info dock has the keyboard.
     pub(super) info_dock_focused: bool,
+    /// Fork (sidebar filters): the sidebar's search field has the keyboard.
+    pub(super) sidebar_search_focused: bool,
 }
 
 type ClientInputLeases = crate::input::InputLeaseTable<u8, ClientInputContext, ClientInputTarget>;
@@ -1448,6 +1457,9 @@ pub(crate) struct ClientShellState {
     /// Fork: the suspended runs expanded by a click, by their first tab's id
     /// (persisted).
     pub(super) expanded_runs: HashSet<String>,
+    /// Fork (sidebar filters): the tabs sidebar's search and recency
+    /// filters (`sidebar_filter.rs`; client-only, never persisted).
+    pub(super) sidebar_filter: super::sidebar_filter::SidebarFilter,
     /// Fork (sidebar v3): the Pinned block shows past its cap (client-only).
     pub(super) pins_expanded: bool,
     /// Fork (sidebar v3): the Scheduled block shows past its cap (client-only).
@@ -1667,6 +1679,7 @@ impl ClientShellState {
             pinned_agents_folded,
             scheduled_agents_folded,
             expanded_runs,
+            sidebar_filter: super::sidebar_filter::SidebarFilter::default(),
             pins_expanded: false,
             scheduled_expanded: false,
             tab_history: super::tab_history::TabHistory::default(),

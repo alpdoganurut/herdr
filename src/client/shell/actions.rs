@@ -13,6 +13,10 @@ impl ClientShellState {
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleInfoPane) => {
                 self.toggle_info_pane_for_focused_tab(outcome);
             }
+            // Fork (sidebar filters): the tabs sidebar's search field.
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::SidebarSearch) => {
+                self.toggle_sidebar_search(outcome);
+            }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleSidebar) => {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
                 self.sidebar_collapsed_manual = true;

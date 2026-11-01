@@ -214,6 +214,8 @@ src/client/shell/tests/voice.rs
 src/app/launch_gate.rs
 src/app/launch_gate/tests.rs
 src/client/shell/sidebar_model.rs
+src/client/shell/sidebar_filter.rs
+src/client/shell/tests/sidebar_filter.rs
 src/client/shell/tab_sidebar_active.rs
 src/client/shell/tab_sidebar_detail.rs
 src/client/shell/agent_times.rs
@@ -569,6 +571,16 @@ src/agent_session_chain.rs
 | TerminalState | cwd_recreated | false |
 | TerminalState | session_advanced_from | None |
 | RestoreRuntimeContext | saved_agent_sessions | std::sync::Arc::default() |
+| KeysConfig | sidebar_search | crate::config::BindingConfig::one("prefix+f") |
+| KeysConfigOverlay | sidebar_search | None |
+| Keybinds | sidebar_search | crate::config::ActionKeybinds::default() |
+| ClientShellState | sidebar_filter | super::sidebar_filter::SidebarFilter::default() |
+| ShellHitMap | sidebar_toolbar | Rect::default() |
+| ShellHitMap | sidebar_search | Rect::default() |
+| ShellHitMap | sidebar_recency | Rect::default() |
+| ShellHitMap | sidebar_filtered | Rect::default() |
+| ShellRenderState | sidebar_filter | None |
+| ClientInputContext | sidebar_search_focused | false |
 
 
 ## 3. Removed or re-signatured upstream symbols (E0425/E0061 at a new upstream call site = deny)
@@ -817,7 +829,7 @@ EndpointControlMessage::TabMutes   [src/client/endpoint/control.rs, directly aft
 ClientContextMenuAction::Mute   [src/client/shell/state.rs, last after Pin; tab menu Mute notifications / Unmute notifications (`tab.set_muted`); internal]
 SidebarHover::PinsHeader / PinsEntry / PinsMore / ScheduledHeader / ScheduledEntry / ScheduledMore   [src/client/shell/sidebar_model.rs, fork-owned enum, in that order after Fixed; internal]
 Selected::PinsHeader / PinsEntry / ScheduledHeader / ScheduledEntry   [src/client/shell/sidebar_model.rs, fork-owned enum, in that order after Fixed; internal]
-Row::Run / SidebarHover::Run / Selected::Run   [src/client/shell/sidebar_model.rs, fork-owned enums, each last; suspended runs; internal]
+Row::Run / SidebarHover::Run / Selected::Run   [src/client/shell/sidebar_model.rs, fork-owned enums, each after the sidebar v3 variants (Selected::Run last); suspended runs; internal]
 KeybindAction::TabHistoryBack   [src/input/keybindings.rs, after ToggleInfoPane; keys.tab_history_back; internal, handled by the client only]
 KeybindAction::TabHistoryForward   [src/input/keybindings.rs, after TabHistoryBack; keys.tab_history_forward; internal, handled by the client only]
 Method::AgentsHandoff   [src/api/schema.rs, directly after AgentsInbox; wire "agents.handoff"]
@@ -832,6 +844,8 @@ AgentsHandoffOutcome, CompactEvent, agent_handoff::{HandoffAgent, Trigger, Kind,
 agent_handoff::{Run, RunSettings, RunPaths, Facts, Mechanical}, app::agent_handoff::{AgentHandoffRuntime, SavedHandoff, StartRefusal}   [src/agent_handoff.rs, src/app/agent_handoff.rs; fork-owned module internals (structs, not upstream enums): their fields (Run.missing_since / reminded / blocked_since / blocked_noted / check_since, SavedHandoff.session_id, AgentHandoffRuntime.auto_retry_at / last_finished included) need no merge rule and are not listed one by one]
 OrderedColorOrC1Event::ProgramStatusProbe   [src/pane/terminal.rs, last after C1; private, no wire (the OSC 7501 probe reply's end offset)]
 OscStreamEvent   [src/pane/osc.rs, fork-owned enum (Body { body, end_offset } | Ris) in an upstream file; private, no wire; OscStreamCollector::observe is a wrapper over observe_events that drops Ris and the offset]
+KeybindAction::SidebarSearch   [src/input/keybindings.rs, directly after TabHistoryForward; keys.sidebar_search; internal, handled by the client only (record_binding)]
+Row::Filtered / SidebarHover::Toolbar / SidebarHover::Filtered   [src/client/shell/sidebar_model.rs, fork-owned enums, each last after Run; sidebar filters (the `~ N filtered` row, the toolbar and that row's hover); HoverAt::Toolbar / Filtered likewise last in tab_sidebar_active.rs; internal]
 
 
 ## 5. Owned API methods and digests
@@ -964,8 +978,7 @@ keys.tab_history_back, keys.tab_history_forward (sidebar v3: config-reference.js
 ui.sidebar_context_usage (agent context: bool, default true; config-reference.json directly after ui.sidebar_collapse_suspended; DEFAULT_CONFIG directly after `# sidebar_collapse_suspended = true`), agents.context_window (agent context: table of agent key → window tokens, default empty; config-reference.json directly after agents.team_roster, the last agents.* entry; DEFAULT_CONFIG comment lines directly after `# team_roster = true`, the last lines of the `[agents]` block; read live by the server through App.agents_config at the next read; not in configuration.mdx).
 agents.handoff.enabled, agents.handoff.at_percent, agents.handoff.command, agents.handoff.resume (agent handoff: `[agents.handoff]`, AgentHandoffConfig in src/config/agents.rs; defaults true, 80 (0 = no automatic trigger), "" (herdr's own prompt; `{path}` is the handoff file), true; config-reference.json directly after agents.context_window, the last agents.* entries; DEFAULT_CONFIG a commented `# [agents.handoff]` block directly after the `context_window` comment lines; read live through App.agents_config; not in configuration.mdx), keys.handoff_compact (unset; config-reference.json directly after keys.toggle_agent_suspend; DEFAULT_CONFIG comment directly after `# toggle_agent_suspend`).
 agents.program_status (OSC 7501: bool, default true; AgentsConfig.program_status in the fork-owned src/config/agents.rs; config-reference.json directly after agents.context_window, before the agents.handoff.* entries; DEFAULT_CONFIG comment lines directly after the `context_window` comment lines, before `# [agents.handoff]`, so the key stays in the `[agents]` table; applied live through crate::pane::program_status::set_enabled in App::try_new and the `agents` block of apply_live_config; not in configuration.mdx). The name is neutral: the protocol is not Claude-specific (the brief's `claude_status_signal` was rejected for that reason). The variable name CLAUDE_CODE_DISABLE_TERMINAL_TITLE appears only in config-reference.json and docs/fork: `grep -rn DISABLE_TERMINAL_TITLE src scripts` stays empty and herdr never sets it.
-
-
+keys.sidebar_search (sidebar filters: default "prefix+f", a prefix binding that a user's own `prefix+f` command displaces silently; config-reference.json and the DEFAULT_CONFIG comment directly after keys.tab_history_forward; not in configuration.mdx). The search query and the recency window themselves are client-only state with no config key, never persisted (not in ClientChromePreferences).
 
 
 ## 7. Per-file merge rules
@@ -1195,6 +1208,18 @@ src/main.rs  additive: session chains: `mod agent_session_chain;` directly after
 src/persist/restore.rs  additive: session chains: RestoreRuntimeContext.saved_agent_sessions last in the struct and in its construction in restore_with_imports, built once before the workspace loop (`let saved_agent_sessions = Arc::new(saved_agent_session_values(snapshot));`); restore_tab's `resumes_agent`, `advanced_agent_session` and `session_advanced_from` lines (with their fork comments) directly after `let saved_agent_session = …`, then `let saved_agent_session = advanced_agent_session.as_ref().or(saved_agent_session);` shadowing it; `terminal.session_advanced_from = session_advanced_from.clone();` directly after both `terminal.set_persisted_agent_session(session);` in restore_tab; fns advanced_agent_session_snapshot and saved_agent_session_values directly before restored_terminal_agent_session; the test helpers claude_panes_snapshot, restored_claude_panes, restored_claude_pane and their tests last in the test module
 src/terminal/state.rs  additive: session chains: TerminalState.session_advanced_from (runtime only) directly after cwd_recreated, in the struct and in new()
 src/app/mod.rs  additive: session chains: `app.follow_restored_sessions();` (with its fork comment) directly after `app.note_recreated_cwds();` in App::new
+src/config/model.rs  additive: sidebar filters: KeysConfig/KeysConfigOverlay sidebar_search directly after tab_history_forward in every list (struct, overlay, apply_field!, copy_effective_action_field!, Default)
+src/config/keybinds.rs  additive: sidebar filters: sidebar_search directly after tab_history_forward in Keybinds, its default and apply_action; the default_sidebar_search_key_is_prefix_f_and_a_custom_command_keeps_it test last in mod tests
+src/input/keybindings.rs  additive: sidebar filters: KeybindAction::SidebarSearch and its binding pair directly after TabHistoryForward
+src/input/keybind_help.rs  additive: sidebar filters: the "search tabs" entry directly after "forward (tab history)"
+src/main.rs  additive: sidebar filters: the `# sidebar_search = "prefix+f"` comment line directly after `# tab_history_forward`
+docs/next/website/src/data/config-reference.json  additive: sidebar filters: keys.sidebar_search placed per section 6
+src/client/shell.rs  additive: sidebar filters: `mod sidebar_filter;` (with its doc line) directly before the sidebar_model doc line (rustfmt order)
+src/client/shell/state.rs  additive: sidebar filters: ShellHitMap.sidebar_toolbar, sidebar_search, sidebar_recency, sidebar_filtered directly after sidebar_runs; ClientInputContext.sidebar_search_focused last after info_dock_focused; ClientShellState.sidebar_filter directly after expanded_runs (struct and new())
+src/client/shell/render.rs  additive: sidebar filters: ShellRenderState.sidebar_filter last after tab_mutes
+src/client/shell/tests/coordinator.rs  additive: sidebar filters: the render_sidebar ShellRenderState literal gains sidebar_filter: None last
+src/client/shell/tests/mod.rs  additive: sidebar filters: `mod sidebar_filter;` directly after `mod sidebar_active;`
+src/client/shell/composition.rs  additive: sidebar filters: ensure_tabs_sidebar_model is pub(super) (Enter in the search field ensures the model); its ModelInputs literal's filter and now last after context; both ShellRenderState literals pass sidebar_filter last after tab_mutes
 
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
@@ -1465,6 +1490,10 @@ src/client/shell/tests/context_menu_session.rs  mid-logic: agent handoff: tab_me
 src/integration/assets/claude/herdr-agent-state.sh  depends: agent handoff: `precompact` (PreCompact) and the `session` action's SessionStart(compact) block send pane.report_compact; the post answer's `context` is printed as SessionStart additionalContext (call() reads the whole answer line within 3 s)
 src/pane/terminal.rs  mid-logic: OSC 7501: write_pty_bytes_with_ordered_responses orders the probe reply at the query's end offset (OrderedColorOrC1Event::ProgramStatusProbe, after libghostty's replies to the bytes before it), so it precedes a DA1 reply to later bytes; at most one reply per chunk (the first probe)
 src/pane.rs  mid-logic: OSC 7501: both detector loops (spawn_basic_detection_task and the PaneRuntime one) hold a program_status_log::DisagreementTracker (the detect_reset arm calls program_status_log::reset, which logs the open episode and a ticks-only session summary with end_reason `reset`; the tracker's Drop, run when the aborted detector task drops it on pane close or shutdown, writes the same pair synchronously with end_reason `dropped`, without the core lock), call program_status_log::end_agent_session directly before clear_osc_evidence_for_agent_transition, and call program_status_log::tick_detector directly after `let process_exited = ...;`, before the lifecycle/background skip, every tick (observe only: it never changes state or a publish decision)
+src/client/shell/input.rs  mid-logic: sidebar filters: route_key_press's Terminal arm hands keys to handle_sidebar_search_key while sidebar_search_focused (after the direct bindings and the prefix, directly before the info dock check); the TextCommit and Paste arms hand text to sidebar_search_insert_text directly before the info dock branch; input_context sets sidebar_search_focused
+src/client/shell/mouse.rs  mid-logic: sidebar filters: the left press calls sidebar_search_pressed_elsewhere (a press away from the field lets go of the keyboard) directly before info_dock_press, and sidebar_filter_press (field, recency chip with shift for back, `~ N filtered` row) directly before the group_toggle_all check; the right press calls sidebar_filter_right_press (chip back) first after the mouse_capture guard
+src/client/shell/composition.rs  mid-logic: sidebar filters: compose hides the frame cursor while sidebar_search_focused, in the info dock's check
+src/client/shell/actions.rs  mid-logic: sidebar filters: record_binding's SidebarSearch arm (toggle_sidebar_search) directly after ToggleInfoPane
 
 
 ## 9. Identifier watch-list (any hit in the incoming upstream diff = deny "upstream collision")
@@ -2273,6 +2302,13 @@ rearm_missing_cwd_notices
 load_saved_notices
 follow_missing_cwd_panes
 DEVTOOLS_PROBE_TIMEOUT
+sidebar_search
+SidebarSearch
+sidebar_filter
+SidebarFilter
+sidebar_recency
+sidebar_filtered
+sidebar_toolbar
 
 
 ## 10. Fork smoke tests (run by name in the gate)
@@ -2361,11 +2397,13 @@ coordinator::mcp::tests::fork_smoke_agents_list_pages_and_filters_status_with_al
 app::message_queue::tests::fork_smoke_a_working_target_running_a_subagent_says_so_in_the_stuck_notice
 server::headless::tests::agent_notices_smoke::fork_smoke_agents_settings_write_program_status_and_handoff
 client::shell::tests::settings_agents::fork_smoke_the_program_status_and_handoff_rows_round_trip
+client::shell::tests::sidebar_filter::fork_smoke::typing_in_the_search_field_narrows_the_list_and_the_filtered_row_clears_it
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 A user-facing feature or fix that changes what herdr+ offers also updates the showcase page `docs/fork/herdr-plus.html` (self-contained, no network resources, no personal data; mockups follow the current code), in the same change.
 ### Added
 - Settings: Indicators gains `fold suspended runs` (`[ui] sidebar_collapse_suspended`, after the Scheduled block toggle). Agents (on a server that reports them) gains three rows after the status row: `program status reports (OSC 7501, claude)` (`[agents] program_status`), `handoff & compact (claude)` (`[agents.handoff] enabled`) and `handoff at` (`at_percent`; ↵ or a click steps 60 · 70 · 80 · 90 · off, dimmed and inert while the handoff is off), written by the server through `agents.settings.set` (new keys `program_status`, `handoff.enabled`, `handoff.at_percent`; an older server refuses them with invalid_request). `[agents.handoff] command` and `[agents] context_window` show read-only under them with the config key to edit (`agents.settings.set` has no text or map value).
+- The `tabs` sidebar can filter its tab list from the toolbar. A search field (`keys.sidebar_search`, default `prefix+f`, or a click on the toolbar between the fold toggle and `+`) takes the keys while focused (direct bindings and the prefix still fire first), never the pane, and keeps the tabs whose label, group name or agent kind contains every space-separated term, case-insensitively; a group with a match keeps its header and is drawn open, a folded suspended run holding a match shows its matching tabs, Esc clears the search and Enter focuses the first match. The `◷` chip next to it cycles off → 15m → 30m → 1h → 6h → 1d (click; shift-click or right-click goes back) and hides tabs without activity in that window: a working or blocked tab, or one running subagents, is active now, otherwise its last activity is when its agents entered their current state (`endpoint.agent-times.v1`), and a tab without one counts as old; a tab ages out on its own when the window passes. Both filters compose by AND, the focused tab, the fixed rows and the Active, Pinned and Scheduled blocks are never filtered, and while anything is hidden a dim `~ N filtered` row ends the list (a click clears every filter). The controls show while the pointer is on the toolbar or a filter is set, so the unfiltered toolbar looks as before. Filters are client-only and not saved across restarts.
 - A pane whose saved working directory is gone (a removed git worktree, typically) starts again instead of showing "Saved directory is unavailable": on a server restart or a deferred agent resume herdr recreates the directory, empty, at the same path (only an absolute path inside your home; if it cannot, the old card stays) and starts the pane there, so Claude Code or Codex resumes its session as before. Each such pane logs it (`recreate_cwd` in `actions.jsonl`) and shows one warning card. An agent pane is also told once, through the normal message queue (so the usual gates hold: nothing is typed into a dialog, a busy agent or past your draft): `herdr+: your working directory <path> was missing (a removed worktree?) and herdr recreated it empty so this session could resume. …`, asking it to tell you with `agents_notify` first. Plain shell panes just start. Reopening a closed session (`session.closed_reopen`) still refuses a missing directory. A suspended agent is told after its activation.
 - Tabs sidebar: a pinned tab's row shows a dim pin mark (Nerd Font U+F0403; `ui.tab_agent_glyphs.pinned` replaces it) in its left gutter at x=1, left of the muted mark, so pinned tabs that break a folded suspended run are visible as pinned.
 - Claude Code's OSC 7501 Program Status, observe only (`[agents] program_status`, on by default): herdr answers the status probe Claude Code 2.1.295+ sends at startup (before the DA1 reply, so Claude turns its reports on) and keeps each pane's status records: the root record (working, blocked with its kind and message, done, idle, error) and one per background subagent. `herdr agent explain` shows them as `program_status`, with whether they agree with screen detection. When the root record disagrees with screen detection for more than 2 seconds, herdr writes one line to `program-status-disagreements.jsonl` in its state dir (lengths only, never the message text; rotated at 1 MiB, at most 600 lines an hour), and a summary line when an agent session ends: the agent changes, detection resets, or the pane closes while the agent still runs. Screen detection still decides every state. `program_status = false` turns the reply, the records and the log off. Claude Code sends nothing while `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` is set, and an agent started before this build stays silent until it restarts.
