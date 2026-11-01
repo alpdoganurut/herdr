@@ -51,8 +51,10 @@ use super::*;
 pub(crate) const MAX_TERMS: usize = 64;
 /// The longest query, in characters; more typed or pasted text is dropped.
 pub(crate) const MAX_QUERY_CHARS: usize = 256;
-/// Cells of the recency chip (`◷15m`), right-aligned before `+`.
-const CHIP_CELLS: u16 = 4;
+/// Cells of the recency chip (`◷ 15m`), right-aligned before `+`: the
+/// glyph, a space (terminals that draw `◷` wide would otherwise run it into
+/// the label) and up to three label cells.
+const CHIP_CELLS: u16 = 5;
 /// The field's fewest cells; a narrower toolbar draws no controls.
 const MIN_FIELD_CELLS: u16 = 4;
 /// The field's glyph.
@@ -256,8 +258,9 @@ pub(crate) fn full_mask(terms: &[String]) -> u64 {
 /// blank cell on each side. `None` when the toolbar is too narrow.
 pub(super) fn control_rects(content: Rect) -> Option<(Rect, Rect)> {
     let y = content.y;
-    // `+` sits at `right - 2` (render_toolbar).
-    let chip_x = content.right().checked_sub(3 + CHIP_CELLS)?;
+    // `+` sits at `right - 2` (render_toolbar); the chip ends two cells
+    // before it.
+    let chip_x = content.right().checked_sub(4 + CHIP_CELLS)?;
     let field_x = content.x.saturating_add(3);
     let field_width = chip_x.checked_sub(1)?.checked_sub(field_x)?;
     if field_width < MIN_FIELD_CELLS || content.height == 0 {
@@ -352,9 +355,13 @@ pub(super) fn render_filter_controls(
         );
     }
 
-    // The chip: `◷` dim while off, `◷1h` in accent while on, right-aligned.
+    // The chip: `◷` dim while off, `◷ 1h` in accent while on, right-aligned.
     let label = filter.recency.label();
-    let width = 1 + display_width(label);
+    let width = if label.is_empty() {
+        1
+    } else {
+        2 + display_width(label)
+    };
     let chip_x = chip.right().saturating_sub(width);
     let on = filter.recency != Recency::Off;
     let glyph_style = Style::default().fg(if on { palette.accent } else { palette.overlay0 });
@@ -362,9 +369,9 @@ pub(super) fn render_filter_controls(
     if on {
         put_text(
             buffer,
-            chip_x.saturating_add(1),
+            chip_x.saturating_add(2),
             y,
-            width.saturating_sub(1),
+            width.saturating_sub(2),
             label,
             Style::default().fg(palette.accent),
         );
@@ -728,8 +735,8 @@ mod tests {
     #[test]
     fn control_rects_sit_between_the_toggle_and_plus() {
         let (field, chip) = control_rects(Rect::new(0, 0, 30, 20)).expect("fits");
-        assert_eq!((field.x, field.width), (3, 19));
-        assert_eq!((chip.x, chip.width), (23, CHIP_CELLS));
+        assert_eq!((field.x, field.width), (3, 17));
+        assert_eq!((chip.x, chip.width), (21, CHIP_CELLS));
         assert!(control_rects(Rect::new(0, 0, 12, 20)).is_none());
     }
 }

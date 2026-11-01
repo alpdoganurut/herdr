@@ -522,7 +522,7 @@ fn the_toolbar_shows_the_controls_only_on_hover_or_while_engaged() {
     state.sidebar_hover = None;
     state.sidebar_filter.recency = Recency::H1;
     let frame = state.compose(106, 30).expect("composed frame");
-    assert!(row_text(&frame, toolbar).contains("\u{25F7}1h"));
+    assert!(row_text(&frame, toolbar).contains("\u{25F7} 1h"));
 }
 
 #[test]
