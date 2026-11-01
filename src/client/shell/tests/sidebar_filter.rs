@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use super::super::agent_times::ClientAgentTimesState;
 use super::super::sidebar_filter::{Recency, SidebarFilter};
 use super::super::sidebar_model::{ModelInputs, Row, SidebarHover, SidebarModel};
+use super::super::tab_pins::ClientTabPinsState;
 use super::*;
 use crate::config::{Config, SidebarLayoutConfig};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
@@ -391,6 +392,50 @@ fn search_and_recency_compose_by_and() {
         ["T:tab_1", "H:infra(1)", "T:tab_8", "F:6"]
     );
     assert_eq!(model.first_match, Some(0), "the focused lead matches both");
+}
+
+#[test]
+fn a_pinned_tab_always_passes_the_recency_filter_but_not_the_search() {
+    let snapshot = fixture();
+    let now = Instant::now();
+    // reviewer and notes both idle 3h, older than the 15m window.
+    let times = times(now, &[None, Some(180), Some(180)]);
+    let pins = ClientTabPinsState {
+        boot_id: "boot-1".into(),
+        revision: 1,
+        tab_ids: HashSet::from(["tab_3".to_string()]),
+    };
+    let collapsed = HashSet::new();
+    let build_pinned = |filter: &SidebarFilter| {
+        SidebarModel::built(ModelInputs {
+            filter: Some(filter),
+            times: Some(&times),
+            pins: Some(&pins),
+            now: Some(now),
+            ..ModelInputs::new(&snapshot, &collapsed)
+        })
+    };
+    let mut filter = SidebarFilter::default();
+    filter.recency = Recency::M15;
+    let model = build_pinned(&filter);
+    assert_eq!(
+        rows(&snapshot, &model),
+        ["T:tab_1", "H:api(1)", "T:tab_3", "F:6"],
+        "the pinned notes tab stays, the unpinned reviewer of the same age is hidden"
+    );
+    assert!(model.tab(1).is_some_and(|facts| facts.hidden));
+    assert!(model
+        .tab(2)
+        .is_some_and(|facts| !facts.hidden && facts.filter_match));
+    assert_eq!(model.filter_deadline, None, "a pinned tab never ages out");
+    let mut filter = query("deploy");
+    filter.recency = Recency::M15;
+    let model = build_pinned(&filter);
+    assert!(
+        model.tab(2).is_some_and(|facts| facts.hidden),
+        "a non-matching search still hides the pinned tab"
+    );
+    assert_eq!(rows(&snapshot, &model), ["T:tab_1", "F:7"]);
 }
 
 #[test]
