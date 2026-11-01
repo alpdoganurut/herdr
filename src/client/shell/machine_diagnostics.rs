@@ -205,6 +205,7 @@ impl ClientShellState {
             title: format!("{}: {command}", self.endpoint_label(id)),
             body: error.clone(),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(15),
+            force: None,
         });
     }
 }

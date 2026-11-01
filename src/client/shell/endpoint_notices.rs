@@ -60,7 +60,20 @@ pub(super) fn render_notice(
     notice: &ClientVisibleEndpointNotice,
     top_offset: u16,
     palette: &Palette,
+    action: &mut Rect,
 ) -> Rect {
+    let dot_color = match notice.key.kind {
+        ClientEndpointNoticeKind::Unsupported | ClientEndpointNoticeKind::Rejected => palette.red,
+        ClientEndpointNoticeKind::Timeout | ClientEndpointNoticeKind::Unavailable => palette.yellow,
+    };
+    // Fork (force suspend): a refusal's force button on its own row.
+    if let Some(force) = notice.force.as_ref() {
+        let (card, button) = super::force_notice::render_card(
+            buffer, area, dock, notice, force, top_offset, dot_color, palette,
+        );
+        *action = button;
+        return card;
+    }
     super::notifications::render_notification_card(
         buffer,
         area,
@@ -69,14 +82,7 @@ pub(super) fn render_notice(
         &notice.body,
         crate::config::ToastHerdrPosition::TopRight,
         top_offset,
-        match notice.key.kind {
-            ClientEndpointNoticeKind::Unsupported | ClientEndpointNoticeKind::Rejected => {
-                palette.red
-            }
-            ClientEndpointNoticeKind::Timeout | ClientEndpointNoticeKind::Unavailable => {
-                palette.yellow
-            }
-        },
+        dot_color,
         palette,
     )
 }

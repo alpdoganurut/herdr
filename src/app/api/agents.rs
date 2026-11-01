@@ -139,6 +139,41 @@ impl App {
         encode_success(id, ResponseResult::AgentRestarted { pane_id })
     }
 
+    /// Fork (force suspend): `agent.suspend_force`, refused unless the
+    /// request came through the client shell lane (the user).
+    pub(super) fn handle_agent_suspend_force(
+        &mut self,
+        id: String,
+        params: AgentSuspendParams,
+    ) -> String {
+        if let Some(body) = self.force_user_only_refusal("suspend") {
+            return encode_error_body(id, body);
+        }
+        let pane_id = match self.force_suspend_agent(&params.target) {
+            Ok(pane_id) => pane_id,
+            Err(err) => return encode_error_body(id, self.agent_suspend_error_body(err)),
+        };
+
+        encode_success(id, ResponseResult::AgentSuspended { pane_id })
+    }
+
+    /// Fork (force suspend): `agent.restart_force`, as `agent.suspend_force`.
+    pub(super) fn handle_agent_restart_force(
+        &mut self,
+        id: String,
+        params: AgentRestartParams,
+    ) -> String {
+        if let Some(body) = self.force_user_only_refusal("restart") {
+            return encode_error_body(id, body);
+        }
+        let pane_id = match self.force_restart_agent(&params.target) {
+            Ok(pane_id) => pane_id,
+            Err(err) => return encode_error_body(id, self.agent_restart_error_body(err)),
+        };
+
+        encode_success(id, ResponseResult::AgentRestarted { pane_id })
+    }
+
     pub(crate) fn handle_deferred_agent_api_request(
         &mut self,
         request: crate::api::schema::Request,

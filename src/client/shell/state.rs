@@ -179,6 +179,8 @@ pub(super) struct ShellHitMap {
     pub(super) mobile_max_scroll: usize,
     pub(super) global_launcher: Rect,
     pub(super) notification_toast: Rect,
+    /// Fork (force suspend): the endpoint notice's force button.
+    pub(super) notification_toast_action: Rect,
     /// One hit per drawn notification card: the index into `visible_notifications`, or
     /// `None` for the sticky stack's "+N more" line.
     pub(super) notification_toasts: Vec<(Rect, Option<usize>)>,
@@ -1096,6 +1098,13 @@ pub(super) enum PendingEndpointKind {
         generation: u64,
         session_generation: u64,
     },
+    /// Fork (force suspend): a plain `agent.suspend` / `agent.restart` of
+    /// `target`; a refusal a forced exit overrides offers the force button
+    /// (`force_notice.rs`).
+    ForceableAgentStop {
+        target: String,
+        restart: bool,
+    },
 }
 
 pub(super) struct PendingEndpointRequest {
@@ -1125,6 +1134,8 @@ pub(super) struct ClientVisibleEndpointNotice {
     pub(super) title: String,
     pub(super) body: String,
     pub(super) deadline: std::time::Instant,
+    /// Fork (force suspend): the notice's force button (`force_notice.rs`).
+    pub(super) force: Option<super::force_notice::ClientNoticeForce>,
 }
 
 pub(crate) struct ClientShellEndpointError {

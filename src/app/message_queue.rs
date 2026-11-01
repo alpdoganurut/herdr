@@ -1632,6 +1632,32 @@ impl App {
         message_id: &str,
         from: Option<&crate::terminal::TerminalId>,
     ) -> bool {
+        let origin = crate::agents_model::InputSource::Programmatic(match from {
+            Some(from) => crate::agents_model::Programmatic::AgentMessage {
+                id: message_id.to_string(),
+                from: from.clone(),
+            },
+            None => crate::agents_model::Programmatic::Api,
+        });
+        if !self.send_interrupt_esc(target, origin) {
+            return false;
+        }
+        tracing::info!(
+            message = %message_id,
+            target = %target.terminal_id,
+            "message queue: an urgent message interrupted the target's turn"
+        );
+        true
+    }
+
+    /// One Esc into `target`, recorded as `origin`'s write and as an
+    /// interrupt (no urgent Esc follows within [`INTERRUPT_WAIT`]). Shared by
+    /// the urgent interrupt and a forced suspend (src/app/agent_suspend.rs).
+    pub(super) fn send_interrupt_esc(
+        &mut self,
+        target: &super::terminal_targets::TerminalTarget,
+        origin: crate::agents_model::InputSource,
+    ) -> bool {
         let Some(runtime) = self.lookup_runtime_sender(target.ws_idx, target.pane_id) else {
             return false;
         };
@@ -1640,28 +1666,13 @@ impl App {
             Err(_) => return false,
         };
         if let Err(err) = runtime.try_send_bytes(bytes::Bytes::from(bytes)) {
-            tracing::warn!(error = %err, "message queue: the urgent interrupt failed");
+            tracing::warn!(error = %err, "the interrupt (Esc) failed");
             return false;
         }
-        self.note_pane_input(
-            target.ws_idx,
-            target.pane_id,
-            crate::agents_model::InputSource::Programmatic(match from {
-                Some(from) => crate::agents_model::Programmatic::AgentMessage {
-                    id: message_id.to_string(),
-                    from: from.clone(),
-                },
-                None => crate::agents_model::Programmatic::Api,
-            }),
-        );
+        self.note_pane_input(target.ws_idx, target.pane_id, origin);
         self.message_queue
             .interrupted_at
             .insert(target.terminal_id.clone(), Instant::now());
-        tracing::info!(
-            message = %message_id,
-            target = %target.terminal_id,
-            "message queue: an urgent message interrupted the target's turn"
-        );
         true
     }
 

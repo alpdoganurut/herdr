@@ -2980,9 +2980,12 @@ impl HeadlessServer {
         // Fork (agents v2): the sending process, for the caller fallback
         // (`App::resolve_caller_pane`), only while this request runs.
         self.app.agents_model.caller_process = msg.peer_pid;
+        // Fork (force suspend): only the client shell lane may force.
+        self.app.request_from_client_shell = client_local;
         let changed =
             self.handle_api_request_dispatch(msg, skip_default_workspace_for_request, client_local);
         self.app.agents_model.caller_process = None;
+        self.app.request_from_client_shell = false;
         changed
     }
 

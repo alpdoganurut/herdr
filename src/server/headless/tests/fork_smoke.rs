@@ -162,6 +162,75 @@ async fn suspended_status_reaches_the_client_shell_snapshot() {
     shutdown_test_runtimes(&mut server);
 }
 
+/// Fork (force suspend): `agent.suspend_force` is the client shell's alone.
+/// The public socket path refuses it with `force_user_only` and writes
+/// nothing; the same request through the client shell lane parks the
+/// working agent at once and sends the Esc that ends its turn. Locks the
+/// `request_from_client_shell` hook in the server's request dispatch.
+#[tokio::test]
+async fn forced_suspend_is_the_client_shells_alone() {
+    let (mut server, mut rx) = server_with_claude(Some(SESSION_ID));
+    let terminal_id = root_terminal_id(&server);
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .set_detected_state(Some(Agent::Claude), AgentState::Working);
+    let force = || {
+        Method::AgentSuspendForce(AgentSuspendParams {
+            target: AGENT_NAME.into(),
+        })
+    };
+
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    server.handle_api_request_with_shutdown_check(crate::api::ApiRequestMessage {
+        request: Request {
+            id: "fork-smoke-public".into(),
+            method: force(),
+        },
+        respond_to,
+        response_write_complete: None,
+        peer_pid: None,
+    });
+    let public: serde_json::Value =
+        serde_json::from_str(&response_rx.recv().expect("public response")).unwrap();
+    assert_eq!(public["error"]["code"], "force_user_only", "{public}");
+    assert!(server.app.state.terminals[&terminal_id]
+        .suspended_agent
+        .is_none());
+    assert!(rx.try_recv().is_err(), "a refused force wrote nothing");
+
+    let (_shell, _render) = connect_test_shell(&mut server, 61, 80, 23);
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    server.handle_client_shell_api_request(
+        61,
+        crate::api::ApiRequestMessage {
+            request: Request {
+                id: "fork-smoke-client".into(),
+                method: force(),
+            },
+            respond_to,
+            response_write_complete: None,
+            peer_pid: None,
+        },
+    );
+    let client: serde_json::Value =
+        serde_json::from_str(&response_rx.recv().expect("client response")).unwrap();
+    assert_eq!(client["result"]["type"], "agent_suspended", "{client}");
+    let esc = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("the Esc arrives")
+        .expect("runtime channel open");
+    assert_eq!(&esc[..], b"\x1b");
+    assert!(
+        !server.app.request_from_client_shell,
+        "reset after the request"
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
 /// A suspended pane survives capture, the session.json round trip and a
 /// restore with `resume_agents_on_restore` on as a parked pane: no resume
 /// plan, the record and name kept, reported as suspended to clients, and

@@ -274,6 +274,16 @@ mod tests {
             actual.remove("agent.restart").as_deref(),
             Some("dc124dcfe9d7fc0fe3d9a85e00548a0263574d3de68ffd16370f2b6ba67ad062")
         );
+        // Fork (force suspend): AgentSuspendParams / AgentRestartParams under
+        // new method names (the plain shapes above stay frozen).
+        assert_eq!(
+            actual.remove("agent.suspend_force").as_deref(),
+            Some("57e7b9d5c30cd3d88a562aec8ef105d2b14318d45a556ca7005bf72e546663d0")
+        );
+        assert_eq!(
+            actual.remove("agent.restart_force").as_deref(),
+            Some("7a23fc5840425d1860599884dd00af8f6b8a87a04e6109c5fe66ec8039ba0b17")
+        );
         assert_eq!(
             actual.remove("tab.set_color").as_deref(),
             Some("47beb991c2a5f54fffc12c8bfc0a27c725487f94e3088474e80bc8526ced74c2")
@@ -523,7 +533,7 @@ mod tests {
         assert!(!supports_client_shell_method_name(
             crate::api::schema::team::method::CONTEXT
         ));
-        assert_eq!(supported_client_shell_method_names().len(), 98);
+        assert_eq!(supported_client_shell_method_names().len(), 100);
     }
 
     #[test]

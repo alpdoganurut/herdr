@@ -210,6 +210,10 @@ pub struct App {
     pub(crate) agent_handoff: agent_handoff::AgentHandoffRuntime,
     /// Fork: the autosuspend scan (`[agents.autosuspend]`; runtime only).
     pub(crate) agent_autosuspend: agent_autosuspend::AutosuspendState,
+    /// Fork (force suspend): the request being handled came through the
+    /// client shell lane (the user at herdr's interface); set by the server
+    /// only while it runs.
+    pub(crate) request_from_client_shell: bool,
     /// The AI news desk: schedule, tab and run in flight (`news.*`).
     pub(crate) news: news::NewsState,
     /// The coordinator (fork): lifecycle, tab, worker and read model.
@@ -820,6 +824,7 @@ impl App {
             agent_context: agent_context::AgentContextProbe::default(),
             agent_handoff: agent_handoff::AgentHandoffRuntime::default(),
             agent_autosuspend: agent_autosuspend::AutosuspendState::default(),
+            request_from_client_shell: false,
             #[cfg(not(test))]
             server_hangup_probe: crate::platform::server_hangup_is_recent,
             // Real SIGHUP evidence is process-global; tests opt in per App.

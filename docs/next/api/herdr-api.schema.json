@@ -9256,6 +9256,40 @@
           "type": "object"
         },
         {
+          "description": "Fork (force suspend): `agent.suspend` past the blocked, working,\nsubagents and background-task refusals; the user's own, from the\nclient shell only.",
+          "properties": {
+            "method": {
+              "const": "agent.suspend_force",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentSuspendParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork (force suspend): `agent.restart` as a forced suspend; the user's\nown, from the client shell only.",
+          "properties": {
+            "method": {
+              "const": "agent.restart_force",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentRestartParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "agent.transcripts",

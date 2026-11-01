@@ -122,6 +122,13 @@ operations::define_operations! {
     AgentSuspend(AgentSuspendParams) => "agent.suspend", true, true;
     AgentActivate(AgentActivateParams) => "agent.activate", true, true;
     AgentRestart(AgentRestartParams) => "agent.restart", true, true;
+    /// Fork (force suspend): `agent.suspend` past the blocked, working,
+    /// subagents and background-task refusals; the user's own, from the
+    /// client shell only.
+    AgentSuspendForce(AgentSuspendParams) => "agent.suspend_force", true, true;
+    /// Fork (force suspend): `agent.restart` as a forced suspend; the user's
+    /// own, from the client shell only.
+    AgentRestartForce(AgentRestartParams) => "agent.restart_force", true, true;
     AgentTranscripts(EmptyParams) => "agent.transcripts", false, true;
     AgentNotify(agent_notices::AgentNotifyParams) => "agent.notify", false, false;
     AgentNotices(EmptyParams) => "agent.notices", false, false;

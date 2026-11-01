@@ -1289,6 +1289,12 @@ impl App {
             Method::AgentRestart(params) => {
                 return self.handle_agent_restart(request.id, params);
             }
+            Method::AgentSuspendForce(params) => {
+                return self.handle_agent_suspend_force(request.id, params);
+            }
+            Method::AgentRestartForce(params) => {
+                return self.handle_agent_restart_force(request.id, params);
+            }
             Method::AgentTranscripts(_) => return self.handle_agent_transcripts(request.id),
             Method::AgentNotify(params) => return self.handle_agent_notify(request.id, params),
             Method::AgentMessageSend(params) => {

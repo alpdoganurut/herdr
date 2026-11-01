@@ -145,6 +145,18 @@ pub struct SuspendedAgent {
     /// soon as activation's preconditions hold. Never persisted, so a
     /// restored or handed-off record is always a plain parked agent.
     resume_pending: Option<AgentRestartResume>,
+    /// Fork (force suspend): the graceful exit input a forced suspend owes
+    /// once its Esc took effect; `exit_deadline` is the next look meanwhile.
+    /// Never persisted.
+    forced_exit: Option<ForcedExitInput>,
+}
+
+/// Fork (force suspend): the exit input a forced suspend types once the
+/// interrupted agent is back at its prompt, by `send_by` at the latest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForcedExitInput {
+    pub input: &'static str,
+    pub send_by: Instant,
 }
 
 /// The automatic relaunch an `agent.restart` owes a suspended agent.
@@ -175,6 +187,11 @@ impl SuspendedAgent {
 
     pub fn resume_pending(&self) -> Option<AgentRestartResume> {
         self.resume_pending
+    }
+
+    /// Fork (force suspend): the exit input still owed, if any.
+    pub fn forced_exit(&self) -> Option<ForcedExitInput> {
+        self.forced_exit
     }
 }
 
@@ -2821,8 +2838,48 @@ impl TerminalState {
             exit_observed: false,
             probe_retries: 0,
             resume_pending: None,
+            forced_exit: None,
         });
         self.revision = self.revision.saturating_add(1);
+    }
+
+    /// Fork (force suspend): [`Self::begin_agent_suspend`] for an agent that
+    /// was just interrupted (Esc): the exit input waits until it is back at
+    /// its prompt; `first_look` is when the wait first checks.
+    pub fn begin_forced_agent_suspend(
+        &mut self,
+        session: crate::agent_resume::PersistedAgentSession,
+        first_look: Instant,
+        forced_exit: ForcedExitInput,
+    ) {
+        self.begin_agent_suspend(session, first_look);
+        if let Some(record) = self.suspended_agent.as_mut() {
+            record.forced_exit = Some(forced_exit);
+        }
+    }
+
+    /// Fork (force suspend): end the forced exit wait; the exit escalation
+    /// goes on from `exit_deadline` (the graceful grace after the exit input,
+    /// or now when no input could be typed).
+    pub fn finish_forced_exit_wait(&mut self, exit_deadline: Option<Instant>) {
+        let Some(record) = self.suspended_agent.as_mut() else {
+            return;
+        };
+        record.forced_exit = None;
+        record.exit_deadline = exit_deadline;
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    /// Fork (force suspend): look again at `next_look` while the forced exit
+    /// input still waits.
+    pub fn defer_forced_exit(&mut self, next_look: Instant) {
+        if let Some(record) = self
+            .suspended_agent
+            .as_mut()
+            .filter(|record| record.forced_exit.is_some())
+        {
+            record.exit_deadline = Some(next_look);
+        }
     }
 
     /// Reinstate a parked agent from persisted state: no process is expected
@@ -2847,6 +2904,7 @@ impl TerminalState {
             exit_observed: true,
             probe_retries: 0,
             resume_pending: None,
+            forced_exit: None,
         });
     }
 

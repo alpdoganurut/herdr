@@ -264,6 +264,8 @@ mod coordinator;
 mod copy;
 mod endpoint_requests;
 mod endpoints;
+/// Fork (force suspend): the refusal notice's force button.
+mod force_notice;
 mod graphics;
 mod idle_reminders;
 mod info_dock;
