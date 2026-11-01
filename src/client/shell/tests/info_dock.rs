@@ -1454,11 +1454,14 @@ fn the_tab_menu_toggles_that_tabs_info_pane_without_focusing_it() {
         outcome
     }
 
-    // The focused tab: the dock opens and the surface narrows.
+    // The focused tab: the dock opens and the surface narrows; the session
+    // keeps the keyboard.
     let mut state = dock_state();
     let outcome = pick_info_pane(&mut state, "tab_1");
     assert!(state.info_dock_open_for_focused_tab());
     assert!(outcome.resize);
+    recompose(&mut state);
+    assert!(!state.info_dock_focused());
 
     // A background tab: state only, nothing focused or resized.
     let mut state = dock_state();
@@ -1529,4 +1532,47 @@ fn the_first_snapshot_reports_only_a_size_change() {
         state.surface_report_required(&before, COLS, ROWS),
         before.size != state.surface_size(COLS, ROWS)
     );
+}
+
+#[test]
+fn opening_the_info_pane_never_moves_the_keyboard_focus() {
+    let mut config = Config::default();
+    config.keys.toggle_info_pane = crate::config::BindingConfig::one("alt+n");
+    let mut state = state_with(config);
+    let alt_n = || {
+        vec![RawInputEvent::Key(TerminalKey::new(
+            KeyCode::Char('n'),
+            KeyModifiers::ALT,
+        ))]
+    };
+    // alt+n opens the focused tab's dock; keys still go to the session.
+    let opened = state.handle_raw_events(alt_n());
+    answer_in_flight(&mut state, &opened, |_| ResponseResult::NotesGet {
+        notes: notes_info(NOTES, "sha256:4e9b1c07a2f3"),
+    });
+    recompose(&mut state);
+    assert!(state.info_dock_open_for_focused_tab());
+    assert!(!state.info_dock_focused());
+    let typed = state.handle_raw_events(vec![key(KeyCode::Char('j'))]);
+    assert_eq!(pane_requests(&typed), 1, "j goes to the pane");
+
+    // A click into the dock focuses it.
+    let body = state.hits.info_dock.body;
+    state.handle_raw_events(click(body.x + 5, body.y + 3));
+    assert!(state.info_dock_focused());
+
+    // alt+n again closes it and drops its focus; keys go to the pane again.
+    state.handle_raw_events(alt_n());
+    recompose(&mut state);
+    assert!(!state.info_dock_open_for_focused_tab());
+    assert!(!state.info_dock.as_deref().expect("dock").focused);
+    let typed = state.handle_raw_events(vec![key(KeyCode::Char('k'))]);
+    assert_eq!(pane_requests(&typed), 1);
+
+    // Reopened: still not focused (the earlier click does not carry over).
+    let reopened = state.handle_raw_events(alt_n());
+    recompose(&mut state);
+    let _ = reopened;
+    assert!(state.info_dock_open_for_focused_tab());
+    assert!(!state.info_dock_focused());
 }

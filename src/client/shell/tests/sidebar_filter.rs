@@ -716,12 +716,14 @@ fn a_hidden_sidebar_lets_go_of_the_field_for_good() {
 }
 
 #[test]
-fn opening_the_info_pane_takes_the_keyboard_from_the_field() {
+fn opening_the_info_pane_leaves_the_field_its_keyboard() {
     let mut state = filter_state();
     state.handle_input_bytes(b"\x02f");
     let mut outcome = ClientShellInput::default();
     state.toggle_info_pane("tab_1".into(), &mut outcome);
-    assert!(!state.sidebar_filter.focused);
+    // The dock never takes the keyboard when it opens, so the field keeps it.
+    assert!(state.sidebar_filter.focused);
+    assert!(!state.info_dock_focused());
 }
 
 #[test]

@@ -872,8 +872,9 @@ impl ClientShellState {
 
     // ------------------------------------------------------------ toggle
 
-    /// Open or close the dock of `tab_id` on the active endpoint. A tab that
-    /// is not focused changes state only.
+    /// Open or close the dock of `tab_id` on the active endpoint, never
+    /// moving keyboard focus into it (closing commits the editor and drops
+    /// the dock's focus). A tab that is not focused changes state only.
     pub(super) fn toggle_info_pane(&mut self, tab_id: String, outcome: &mut ClientShellInput) {
         let size_before = self
             .last_composed_size
@@ -891,16 +892,13 @@ impl ClientShellState {
         } else {
             dock.open_tabs.insert(key);
             if focused {
-                dock.focused = true;
+                // Opening never takes the keyboard: the session keeps it
+                // (a click into the dock focuses it).
                 dock.flash = None;
                 dock.data.pulled_for = None;
             }
             true
         };
-        if opened && focused {
-            // Fork (sidebar filters): one keyboard owner at a time.
-            self.sidebar_filter.focused = false;
-        }
         if !focused {
             outcome.repaint = true;
             return;
