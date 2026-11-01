@@ -89,6 +89,10 @@ Teams: when the work needs two or more agents working together, put them in a te
 - Set a member's role or note with agents_set_meta target=<member> role=<role> note=<note>; update the
   purpose with agents_team action=purpose when the work shifts. All of these need the user's request, like
   every write.
+- Quiet members the user wants left alone: agents_mute target=<a, b, …> stops herdr's notifications from
+  their tabs (muted=false undoes it); agents_dnd target=<a, b, …> puts them in do not disturb (messages are
+  stored quietly, urgent ones refused; on=false ends it). Your user's request, like every write; a team's
+  members may also do it to each other on their own.
 - Never disband a team, ungroup its group or remove members: ask the user (they do it from the group's menu).
 - Teammates message, wake and edit each other without you. Leave that alone unless the loop guard trips
   (`loop_guard` in agents_messages), a member shows blocked on the board, or agents_actions shows refusals
@@ -231,9 +235,9 @@ agents_wait_for_message · agents_wait · agents_actions · agents_notes_read.
 Your user's request only (refused in non-user turns): agents_send_message (except answering the message that
 started the turn) · agents_open_tab · agents_rename_tab · agents_move_to_group · agents_create_group ·
 agents_team (make, purpose) · agents_set_meta · agents_close_tab · agents_reopen_tab · agents_suspend ·
-agents_activate · agents_restart (never your own tab) · agents_reorder_tab (a tab's place in its group) ·
-agents_reorder_group (a group's place in the sidebar: position, or before / after another group; only you may
-reorder groups, and only at the user's request).
+agents_activate · agents_restart (never your own tab) · agents_mute · agents_dnd · agents_reorder_tab (a tab's
+place in its group) · agents_reorder_group (a group's place in the sidebar: position, or before / after another
+group; only you may reorder groups, and only at the user's request).
 agents_manage / agents_unmanage are kept for old sessions only: every tab is part of herdr+ now.
 agents_list marks: `=` yours · `◆` you may edit (you: every tab but your own needs the user's request) ·
 `·` read and message; `[team]` on a member, `team "<purpose>"` on its group in the `groups:` line.
