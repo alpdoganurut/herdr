@@ -705,3 +705,88 @@ fn an_unreadable_store_starts_empty() {
     assert!(store.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Fork (autosuspend): a quiet message to an agent herdr suspended for
+/// idling is stored and wakes it (its session start takes the message); one
+/// to an agent its user suspended is refused as before.
+#[tokio::test]
+async fn a_quiet_message_wakes_an_auto_suspended_claude() {
+    for auto in [true, false] {
+        let (mut app, lead, fixer, _rx) = fixture();
+        let fixer_pane = pane(&app, 1, 1);
+        // Suspend and activate write through the app's runtime registry.
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
+        let fixer_terminal = terminal_mut(&mut app, fixer_pane).id.clone();
+        app.terminal_runtimes.insert(fixer_terminal, runtime);
+        {
+            let terminal = terminal_mut(&mut app, fixer_pane);
+            terminal
+                .set_agent_session_ref(
+                    "herdr:claude".into(),
+                    "claude".into(),
+                    crate::agent_resume::AgentSessionRef::id(
+                        "6f1c7a8e-0d1b-4c4e-9a52-3c1f0b2d4e5f",
+                    ),
+                    Some(1),
+                )
+                .expect("session ref accepted");
+            terminal.set_agent_name("parked-fixer".into());
+        }
+        let parked = if auto {
+            app.suspend_agent_auto("parked-fixer")
+        } else {
+            app.suspend_agent("parked-fixer")
+        };
+        if let Err(err) = parked {
+            panic!("{:?}", app.agent_suspend_error_body(err));
+        }
+        typed(&mut rx);
+        let observed_at = std::time::Instant::now();
+        for (agent, state, process_exited, at) in [
+            (Some(Agent::Claude), AgentState::Idle, true, observed_at),
+            (
+                None,
+                AgentState::Unknown,
+                false,
+                observed_at + std::time::Duration::from_millis(10),
+            ),
+        ] {
+            app.handle_internal_event(crate::events::AppEvent::StateChanged {
+                pane_id: fixer_pane,
+                agent,
+                state,
+                visible_blocker: false,
+                visible_working: false,
+                voice: crate::detect::AgentVoice::Off,
+                process_exited,
+                observed_at: at,
+            });
+        }
+        let reply = send(&mut app, &lead, &fixer, "fyi: merged", true, false);
+        if !auto {
+            assert_eq!(
+                reply["error"]["code"], QUIET_UNSUPPORTED_CODE,
+                "as before: {reply}"
+            );
+            assert!(terminal_mut(&mut app, fixer_pane).suspended_agent.is_some());
+            continue;
+        }
+        let result = &reply["result"]["message"];
+        assert_eq!(result["outcome"], "queued", "{reply}");
+        assert!(
+            result["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains(crate::app::message_queue::WAKING_REASON)),
+            "{reply}"
+        );
+        assert_eq!(app.quiet.entries.len(), 1, "stored for its session start");
+        assert!(
+            terminal_mut(&mut app, fixer_pane).suspended_agent.is_none(),
+            "woken"
+        );
+        let text = typed(&mut rx);
+        assert!(text.contains("6f1c7a8e"), "the resume command: {text:?}");
+        assert!(!text.contains("fyi: merged"), "never typed in");
+    }
+}

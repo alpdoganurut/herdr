@@ -24,8 +24,12 @@
 //! screen) and every check `agent.suspend` makes. Only candidates reaching
 //! the typing guard read anything beyond in-memory state.
 //!
-//! A message to an auto-suspended agent wakes it (src/app/message_queue.rs);
-//! activating it clears the mark. Nothing here runs in render paths.
+//! A message to an auto-suspended agent wakes it (src/app/message_queue.rs:
+//! `App::wake_auto_suspended`, from the queue's delivery, its pass, the
+//! urgent path and quiet messages; a quiet message whose wake failed is
+//! retried by the scan); activating it clears the mark. A message to an
+//! agent its user suspended waits as before. Nothing here runs in render
+//! paths.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -90,6 +94,7 @@ impl App {
             return false;
         }
         self.agent_autosuspend.next_scan = Some(now + SCAN_EVERY);
+        self.retry_quiet_wakes(now);
         let now_ms = crate::codex_sessions::now_unix_ms();
         self.note_shown_terminals(shown, now_ms);
         let candidates = self.autosuspend_candidates(after, now_ms, now, shown);
@@ -120,6 +125,33 @@ impl App {
             }
         }
         changed
+    }
+
+    /// Auto-suspended agents with quiet messages stored for them (their
+    /// wake failed when the message came): try again. Queued messages retry
+    /// in the queue pass instead.
+    fn retry_quiet_wakes(&mut self, now: Instant) {
+        if self.quiet.is_empty() {
+            return;
+        }
+        let waiting: Vec<String> = self
+            .state
+            .terminals
+            .values()
+            .filter(|terminal| {
+                terminal
+                    .suspended_agent
+                    .as_ref()
+                    .is_some_and(|record| record.auto)
+                    && self.quiet.count_for(terminal.id.as_str()) > 0
+            })
+            .map(|terminal| terminal.id.to_string())
+            .collect();
+        for terminal_id in waiting {
+            if let Some(target) = self.message_target(&terminal_id, None) {
+                self.wake_auto_suspended(&target, now);
+            }
+        }
     }
 
     /// Stamp `now_ms` on the shown terminals; forget terminals that are gone.
@@ -570,5 +602,199 @@ mod tests {
         assert!(app.suspend_agent(&public).is_ok());
         assert!(!scan(&mut app));
         assert!(parked(&mut app) && !auto_suspended(&mut app));
+    }
+
+    /// The parked agent's process leaves the pane (the exit report, then a
+    /// bare shell), so activation may relaunch it.
+    fn observe_exit(app: &mut App) {
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let observed_at = Instant::now();
+        for (agent, state, process_exited, at) in [
+            (Some(Agent::Claude), AgentState::Idle, true, observed_at),
+            (
+                None,
+                AgentState::Unknown,
+                false,
+                observed_at + Duration::from_millis(10),
+            ),
+        ] {
+            app.handle_internal_event(crate::events::AppEvent::StateChanged {
+                pane_id,
+                agent,
+                state,
+                visible_blocker: false,
+                visible_working: false,
+                voice: crate::detect::AgentVoice::Off,
+                process_exited,
+                observed_at: at,
+            });
+        }
+    }
+
+    fn typed(rx: &mut tokio::sync::mpsc::Receiver<bytes::Bytes>) -> String {
+        std::thread::sleep(Duration::from_millis(150));
+        let mut out = String::new();
+        while let Ok(bytes) = rx.try_recv() {
+            out.push_str(&String::from_utf8_lossy(&bytes));
+        }
+        out
+    }
+
+    fn message(id: &str, body: &str) -> crate::api::schema::AgentMessageSendParams {
+        crate::api::schema::AgentMessageSendParams {
+            target: "reviewer".into(),
+            id: id.into(),
+            envelope: format!(
+                "[herdr+ message {id} from lead (w9:p1) 10:00 — another agent]\n{body}"
+            ),
+            text: body.into(),
+            unix: 0,
+            from_pane: Some("w9:p1".into()),
+            from_name: Some("lead".into()),
+            ..Default::default()
+        }
+    }
+
+    fn send(app: &mut App, id: &str, body: &str) -> serde_json::Value {
+        let response = app.handle_agent_message_send("req".into(), message(id, body));
+        serde_json::from_str(&response).unwrap()
+    }
+
+    /// An agent herdr suspended for idling, its process gone.
+    async fn parked_auto() -> (App, tokio::sync::mpsc::Receiver<bytes::Bytes>) {
+        let (mut app, mut rx) = free();
+        assert!(scan(&mut app));
+        let input = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("the exit input arrives")
+            .expect("runtime channel open");
+        assert_eq!(input, bytes::Bytes::from_static(b"/exit"));
+        observe_exit(&mut app);
+        assert!(auto_suspended(&mut app));
+        (app, rx)
+    }
+
+    #[tokio::test]
+    async fn a_message_wakes_an_auto_suspended_agent_and_goes_in_once_it_is_ready() {
+        let (mut app, mut rx) = parked_auto().await;
+        let reply = send(&mut app, "ma1", "please review");
+        assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+        assert_eq!(
+            reply["result"]["reason"],
+            crate::app::message_queue::WAKING_REASON,
+            "{reply}"
+        );
+        assert!(
+            !parked(&mut app),
+            "activated: the mark went with the record"
+        );
+        let resume = typed(&mut rx);
+        assert!(resume.contains(SESSION), "the resume command: {resume:?}");
+        assert!(
+            !resume.contains("please review"),
+            "not typed into the shell"
+        );
+        assert_eq!(app.message_queue.entries.len(), 1, "it waits for the agent");
+
+        // The agent comes up: the queue types the message in as for any
+        // agent herdr started.
+        let now = Instant::now();
+        terminal(&mut app).set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        for step in 0..8 {
+            terminal(&mut app)
+                .reconcile_managed_agent_at(now + Duration::from_secs(5 * step), false);
+        }
+        assert!(
+            terminal(&mut app).managed_agent_interactive_ready()
+                || !terminal(&mut app).managed_agent_launch_pending()
+        );
+        for step in 0..4 {
+            app.message_queue.mark_due();
+            app.message_queue_pass(
+                now + crate::app::message_queue::SETTLE * step,
+                crate::coordinator::now_unix(),
+            );
+        }
+        let text = typed(&mut rx);
+        assert!(
+            text.contains("please review") || text.contains("ma1"),
+            "{text:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_wake_keeps_the_message_queued_and_tells_the_sender_once() {
+        // Suspended, its process not yet gone: activation must wait.
+        let (mut app, mut rx) = free();
+        assert!(scan(&mut app));
+        typed(&mut rx);
+        let reply = send(&mut app, "ma1", "please review");
+        assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+        assert_eq!(
+            reply["result"]["reason"],
+            crate::app::message_queue::WAKE_PENDING_REASON,
+            "still exiting: the normal wait, {reply}"
+        );
+        assert!(auto_suspended(&mut app), "still parked, still marked");
+        assert_eq!(app.message_queue.entries.len(), 1);
+        let terminal_id = root_terminal_id(&app).to_string();
+        assert!(app.message_queue.wake_failed.contains_key(&terminal_id));
+
+        // The queue keeps trying; past WAKE_NOTICE_AFTER its sender hears once.
+        let since = app.message_queue.wake_failed[&terminal_id].since;
+        let later = since + crate::app::message_queue::WAKE_NOTICE_AFTER;
+        app.message_queue.mark_due();
+        app.message_queue_pass(later, crate::coordinator::now_unix());
+        let notices = |app: &App| {
+            app.message_queue
+                .entries
+                .iter()
+                .filter(|entry| entry.herdr_notice)
+                .count()
+        };
+        // The sender (w9:p1) is not a live pane here, so its notice cannot be
+        // queued; the failure is still marked as told.
+        assert!(app.message_queue.wake_failed[&terminal_id].notified);
+        let told = notices(&app);
+        app.message_queue.mark_due();
+        app.message_queue_pass(
+            later + Duration::from_secs(30),
+            crate::coordinator::now_unix(),
+        );
+        assert_eq!(notices(&app), told, "once");
+        assert!(auto_suspended(&mut app));
+
+        // Once the exit is seen the next try wakes it.
+        observe_exit(&mut app);
+        app.message_queue.mark_due();
+        app.message_queue_pass(
+            later + crate::app::message_queue::WAKE_RETRY * 4,
+            crate::coordinator::now_unix(),
+        );
+        assert!(!parked(&mut app), "woken on a retry");
+        assert!(!app.message_queue.wake_failed.contains_key(&terminal_id));
+        assert!(typed(&mut rx).contains(SESSION));
+    }
+
+    #[tokio::test]
+    async fn a_manually_suspended_agent_is_not_woken_by_a_message() {
+        let (mut app, mut rx) = free();
+        let pane = app.state.workspaces[0].tabs[0].root_pane;
+        let public = app.public_pane_id(0, pane).unwrap();
+        assert!(app.suspend_agent(&public).is_ok());
+        typed(&mut rx);
+        observe_exit(&mut app);
+        let reply = send(&mut app, "ma1", "please review");
+        assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+        assert_eq!(reply["result"]["reason"], "suspended", "as before");
+        for step in 0..3 {
+            app.message_queue.mark_due();
+            app.message_queue_pass(
+                Instant::now() + crate::app::message_queue::WAKE_RETRY * step,
+                crate::coordinator::now_unix(),
+            );
+        }
+        assert!(parked(&mut app), "it waits for its user");
+        assert!(!typed(&mut rx).contains(SESSION), "no relaunch");
     }
 }

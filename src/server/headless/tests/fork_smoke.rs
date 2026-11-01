@@ -2728,3 +2728,101 @@ mod coordinator;
 
 #[path = "fork_smoke/notes.rs"]
 mod notes;
+
+/// Fork (autosuspend): through the server's scheduler tick, an idle, seen
+/// Claude agent is kept while an attached client shows its tab and is
+/// suspended once no client shows it and its idle time has passed; it reads
+/// `auto_suspended` in `agent.get` and in the agent times push; a message
+/// to it relaunches it with its native resume command and waits in the
+/// queue until it is up.
+#[cfg(unix)]
+#[tokio::test]
+async fn fork_smoke_an_idle_claude_off_screen_is_autosuspended_and_a_message_wakes_it() {
+    const SESSION: &str = "6f1c7a8e-0d1b-4c4e-9a52-3c1f0b2d4e5f";
+    let (mut server, mut rx) = server_with_claude(Some(SESSION));
+    server.app.agents_config.autosuspend.after = "1h".into();
+    let terminal_id = root_terminal_id(&server);
+    {
+        let terminal = server.app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.replace_subagents([]);
+        terminal.last_agent_state_change_seq = Some(1);
+        terminal.agent_state_since_unix_ms =
+            Some(crate::codex_sessions::now_unix_ms() - 2 * 3_600_000);
+    }
+    let root = root_pane(&server);
+    server.app.state.workspaces[0].tabs[0]
+        .panes
+        .get_mut(&root)
+        .unwrap()
+        .seen = true;
+    let parked = |server: &HeadlessServer| {
+        server.app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .map(|record| record.auto)
+    };
+
+    // A client shows its tab: kept.
+    let (_control, _render) = connect_test_shell(&mut server, 71, 80, 23);
+    assert!(!server.handle_agent_autosuspend(std::time::Instant::now()));
+    assert_eq!(parked(&server), None, "on screen");
+    assert!(
+        !server.app.agent_autosuspend_due(std::time::Instant::now()),
+        "the next scan is a minute away"
+    );
+
+    // No client shows it, and it was last seen long enough ago.
+    server.handle_server_event(ServerEvent::ClientDisconnected { client_id: 71 });
+    server.app.agent_autosuspend.next_scan = None;
+    server.app.agent_autosuspend.last_shown_ms.insert(
+        terminal_id.clone(),
+        crate::codex_sessions::now_unix_ms() - 2 * 3_600_000,
+    );
+    assert!(server.handle_agent_autosuspend(std::time::Instant::now()));
+    assert_eq!(parked(&server), Some(true), "auto-suspended");
+    let exit = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("the exit input arrives")
+        .expect("runtime channel open");
+    assert_eq!(exit, Bytes::from_static(b"/exit"));
+    let agent = api(
+        &mut server,
+        Method::AgentGet(crate::api::schema::AgentTarget {
+            target: AGENT_NAME.into(),
+        }),
+    );
+    assert_eq!(agent["result"]["agent"]["auto_suspended"], true, "{agent}");
+    assert!(server
+        .app
+        .agent_times()
+        .iter()
+        .any(|pane| pane.auto_suspended));
+    observe_agent_exit(&mut server);
+
+    // A message wakes it: the resume command goes into the shell, the
+    // message waits for the agent.
+    let response = server.app.handle_agent_message_send(
+        "fork-smoke".into(),
+        crate::api::schema::AgentMessageSendParams {
+            target: AGENT_NAME.into(),
+            id: "ma1".into(),
+            envelope: "[herdr+ message ma1 from lead (w9:p1) 10:00 — another agent]\nping".into(),
+            text: "ping".into(),
+            from_pane: Some("w9:p1".into()),
+            from_name: Some("lead".into()),
+            ..Default::default()
+        },
+    );
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["result"]["outcome"], "queued", "{response}");
+    assert_eq!(
+        response["result"]["reason"],
+        crate::app::message_queue::WAKING_REASON,
+        "{response}"
+    );
+    assert_eq!(parked(&server), None, "activated");
+    let resume = typed_so_far(&mut rx);
+    assert!(resume.contains(SESSION), "{resume:?}");
+    assert_eq!(server.app.message_queue.entries.len(), 1);
+    shutdown_test_runtimes(&mut server);
+}

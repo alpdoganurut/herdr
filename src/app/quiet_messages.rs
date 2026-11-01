@@ -2,7 +2,9 @@
 //!
 //! A quiet message (`agents.send_message quiet=true`, or any agent message
 //! to a tab in do-not-disturb, src/app/tab_dnd.rs) is stored for its target
-//! instead of being typed in: it never wakes the agent. Several pile up,
+//! instead of being typed in: it never wakes the agent (but one herdr
+//! suspended for idling is relaunched, src/app/agent_autosuspend.rs, and
+//! its session start takes the message). Several pile up,
 //! each kept [`QUIET_TTL_S`]. A Claude target's hook asks for them at its
 //! next prompt and when a session starts (`agents.take_quiet` from the
 //! UserPromptSubmit and SessionStart hooks) and adds them to its context as
@@ -627,7 +629,17 @@ impl App {
                 .terminals
                 .values()
                 .find(|terminal| terminal.id.to_string() == terminal_id)
-                .and_then(crate::terminal::TerminalState::effective_known_agent)
+                .and_then(|terminal| {
+                    // Fork (autosuspend): an agent herdr parked for idling
+                    // is woken by the message; its session start takes it.
+                    terminal.effective_known_agent().or_else(|| {
+                        terminal
+                            .suspended_agent
+                            .as_ref()
+                            .filter(|record| record.auto)
+                            .and_then(|record| crate::detect::parse_agent_label(&record.agent))
+                    })
+                })
                 == Some(crate::detect::Agent::Claude)
             && self.quiet.claude_hook_current()
     }
@@ -714,13 +726,18 @@ impl App {
                 text,
             ));
         }
+        // Fork (autosuspend): it wakes an agent herdr parked for idling.
+        let wake = self.wake_auto_suspended(target, std::time::Instant::now());
         Some(encode_success(
             request_id.to_string(),
             ResponseResult::AgentMessageSend {
                 id: message_id.to_string(),
                 outcome: crate::api::schema::AgentMessageOutcome::Queued,
                 status,
-                reason: Some(DND_REASON.into()),
+                reason: Some(match wake {
+                    Some(wake) => format!("{DND_REASON}; {wake}"),
+                    None => DND_REASON.into(),
+                }),
             },
         ))
     }

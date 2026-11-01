@@ -2664,6 +2664,9 @@ impl App {
         ) {
             return refuse(self, &code, message);
         }
+        // Fork (autosuspend): a quiet message wakes an agent herdr parked
+        // for idling too; its SessionStart hook takes the message.
+        let wake = self.wake_auto_suspended(queue_target, std::time::Instant::now());
         self.agents_model
             .limiter
             .record_message(&caller.terminal_id, &send.to_terminal, send.now);
@@ -2682,7 +2685,13 @@ impl App {
             status: send.status,
             team: send.team,
             cross_team: send.cross_team,
-            reason: Some(if send.dnd { DND_REASON } else { QUIET_REASON }.to_string()),
+            reason: Some(match wake {
+                Some(wake) => format!(
+                    "{}; {wake}",
+                    if send.dnd { DND_REASON } else { QUIET_REASON }
+                ),
+                None => if send.dnd { DND_REASON } else { QUIET_REASON }.to_string(),
+            }),
             queue_age_s: None,
             quiet: true,
         })
