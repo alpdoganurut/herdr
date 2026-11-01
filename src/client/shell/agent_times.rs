@@ -22,14 +22,23 @@ pub(crate) struct ClientAgentTimesState {
     pub(crate) revision: u64,
     /// Public pane id → (state change seq, when that state began).
     pub(crate) panes: HashMap<String, (u64, Instant)>,
+    /// Fork (autosuspend): the panes whose agent herdr parked for idling.
+    pub(crate) auto_suspended: std::collections::HashSet<String>,
 }
 
 impl ClientAgentTimesState {
     pub(crate) fn from_payload(payload: AgentTimesPayload, received: Instant) -> Self {
         let now_ms = payload.server_now_unix_ms;
+        let auto_suspended = payload
+            .panes
+            .iter()
+            .filter(|pane| pane.auto_suspended)
+            .map(|pane| pane.pane_id.clone())
+            .collect();
         Self {
             boot_id: payload.boot_id,
             revision: payload.revision,
+            auto_suspended,
             panes: payload
                 .panes
                 .into_iter()
@@ -40,6 +49,11 @@ impl ClientAgentTimesState {
                 })
                 .collect(),
         }
+    }
+
+    /// Fork (autosuspend): whether herdr parked `pane_id`'s agent for idling.
+    pub(crate) fn auto_suspended(&self, pane_id: &str) -> bool {
+        !self.auto_suspended.is_empty() && self.auto_suspended.contains(pane_id)
     }
 
     /// When `pane_id`'s agent entered its state, only while the push's seq
@@ -128,12 +142,14 @@ mod tests {
                         pane_id: "w1:p1".into(),
                         state_change_seq: 4,
                         since_unix_ms: 1_000_000 - 90_000,
+                        auto_suspended: false,
                     },
                     AgentTimePane {
                         pane_id: "w1:p2".into(),
                         state_change_seq: 5,
                         // A since after the server's now (clock stepped back).
                         since_unix_ms: 2_000_000,
+                        auto_suspended: false,
                     },
                 ],
             },

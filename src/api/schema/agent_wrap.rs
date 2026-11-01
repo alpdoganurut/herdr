@@ -48,6 +48,9 @@ pub mod key {
     /// Fork: `[agents.handoff] at_percent` (an integer 0 to 100; 0 = no
     /// automatic trigger).
     pub const HANDOFF_AT_PERCENT: &str = "handoff.at_percent";
+    /// Fork: `[agents.autosuspend] after` (a string: `"off"` or `<N>m`,
+    /// `<N>h`, `<N>d`).
+    pub const AUTOSUSPEND_AFTER: &str = "autosuspend.after";
 }
 
 /// The check ids in [`AgentsSettingsInfo::checks`].
@@ -155,6 +158,10 @@ pub struct AgentsSettingsInfo {
     /// a missing agent uses the window its session implies).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub context_window: std::collections::BTreeMap<String, u64>,
+    /// Fork: `[agents.autosuspend] after` as written (`"off"`, `"1d"`, …).
+    /// Absent from older servers, which cannot set it: `None` hides the row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autosuspend_after: Option<String>,
 }
 
 /// Fork: `[agents.handoff]` as `agents.settings` reports it.
@@ -175,7 +182,8 @@ fn default_true() -> bool {
 
 /// `agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,
 /// `tools`, `instructions`, `notices`, `team_roster`, `program_status` and
-/// `handoff.enabled`; an integer 0 to 100 for `handoff.at_percent`; a string for `instructions_file`
+/// `handoff.enabled`; an integer 0 to 100 for `handoff.at_percent`; a string
+/// (`"off"` or `<N>m`, `<N>h`, `<N>d`) for `autosuspend.after`; a string for `instructions_file`
 /// (`""` or `"default"` = built-in, `"file"` = `<config dir>/agents.md`,
 /// seeded with the built-in text when missing, anything else = that path).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]

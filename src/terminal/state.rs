@@ -129,6 +129,9 @@ pub struct SuspendedAgent {
     pub session: crate::agent_resume::PersistedAgentSession,
     /// Fork (agents v2): who suspended it; `None` counts as the user (D4).
     pub suspended_by: Option<crate::api::schema::agents_model::AgentsWho>,
+    /// Fork (autosuspend): herdr suspended it for idling
+    /// (`[agents.autosuspend]`); a message to it wakes it.
+    pub auto: bool,
     /// Set while the process is still expected to exit; escalation clears it.
     exit_deadline: Option<Instant>,
     escalation: SuspendExitEscalation,
@@ -310,6 +313,11 @@ pub struct TerminalState {
     /// released. A turn end does not clear it: the Stop hook's snapshot
     /// replaces it instead.
     active_subagents: std::collections::HashSet<String>,
+    /// Fork (autosuspend): the agent's other in-flight background tasks
+    /// (shells, monitors, workflows, session crons) from the Stop hook's
+    /// snapshot (Claude integration v16). Runtime only, with the same
+    /// lifecycle as `active_subagents`; suspend refuses while any is listed.
+    background_tasks: std::collections::HashSet<String>,
     /// Fork: the agent's voice mode as its screen shows it (detection
     /// signal `voice`). Runtime only, never persisted; set by the detector,
     /// `Off` when the pane has no agent. Holds automatic typing while on.
@@ -407,6 +415,7 @@ impl TerminalState {
             restore_error: None,
             agent_transcript_paths: HashMap::new(),
             active_subagents: std::collections::HashSet::new(),
+            background_tasks: std::collections::HashSet::new(),
             agent_voice: crate::detect::AgentVoice::Off,
             subagent_snapshot_seen: false,
             subagent_session: None,
@@ -2806,6 +2815,7 @@ impl TerminalState {
             name: self.agent_name.clone(),
             session,
             suspended_by: None,
+            auto: false,
             exit_deadline: Some(exit_deadline),
             escalation: SuspendExitEscalation::Pending,
             exit_observed: false,
@@ -2831,6 +2841,7 @@ impl TerminalState {
             name,
             session,
             suspended_by: None,
+            auto: false,
             exit_deadline: None,
             escalation: SuspendExitEscalation::Pending,
             exit_observed: true,
@@ -3139,10 +3150,13 @@ impl TerminalState {
     /// Apply a subagent report through the effective state (the set itself
     /// never changes the status): `start` / `stop` one (`Some(start)`), or
     /// replace the set with a snapshot (`None`).
+    /// Fork (autosuspend): a snapshot also replaces the background task set
+    /// with `tasks`.
     pub fn report_subagents_with_mutation<'a>(
         &mut self,
         event: Option<(bool, &str)>,
         snapshot: impl IntoIterator<Item = &'a str>,
+        tasks: impl IntoIterator<Item = &'a str>,
     ) -> Option<TerminalStateMutation> {
         let now = Instant::now();
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
@@ -3155,6 +3169,7 @@ impl TerminalState {
             }
             None => {
                 self.replace_subagents(snapshot);
+                self.replace_background_tasks(tasks);
             }
         }
         Some(TerminalStateMutation {
@@ -3230,6 +3245,40 @@ impl TerminalState {
         u32::try_from(self.active_subagents.len()).unwrap_or(u32::MAX)
     }
 
+    /// Fork (autosuspend): replace the background task set with a snapshot
+    /// (ids beyond `SUBAGENT_LIMIT` are dropped). Returns whether it changed.
+    pub fn replace_background_tasks<'a>(
+        &mut self,
+        task_ids: impl IntoIterator<Item = &'a str>,
+    ) -> bool {
+        let next: std::collections::HashSet<String> = task_ids
+            .into_iter()
+            .take(SUBAGENT_LIMIT)
+            .map(str::to_owned)
+            .collect();
+        if next == self.background_tasks {
+            return false;
+        }
+        self.background_tasks = next;
+        self.revision = self.revision.saturating_add(1);
+        true
+    }
+
+    /// Fork (autosuspend): whether the agent has sent a subagent snapshot
+    /// since herdr started watching it (so its background work is known).
+    pub fn subagent_snapshot_seen(&self) -> bool {
+        self.subagent_snapshot_seen
+    }
+
+    /// Fork (autosuspend): background tasks other than subagents in flight
+    /// under this agent; 0 while it is suspended.
+    pub fn active_background_task_count(&self) -> u32 {
+        if self.suspended_agent.is_some() {
+            return 0;
+        }
+        u32::try_from(self.background_tasks.len()).unwrap_or(u32::MAX)
+    }
+
     /// Fork: the running subagents and when the set became non-empty;
     /// `None` without any (or while suspended, like
     /// [`Self::active_subagent_count`]).
@@ -3271,6 +3320,10 @@ impl TerminalState {
         self.subagents_since = None;
         if !self.active_subagents.is_empty() {
             self.active_subagents.clear();
+            self.revision = self.revision.saturating_add(1);
+        }
+        if !self.background_tasks.is_empty() {
+            self.background_tasks.clear();
             self.revision = self.revision.saturating_add(1);
         }
     }

@@ -1589,6 +1589,10 @@ impl App {
             status: agent_pane
                 .then(|| crate::workspace::agent_status(terminal.state, pane.seen, suspended)),
             suspended,
+            auto_suspended: terminal
+                .suspended_agent
+                .as_ref()
+                .is_some_and(|record| record.auto),
             launch_pending: terminal.managed_agent_launch_pending(),
             session: agent_pane
                 .then(|| terminal.persistable_agent_session())
@@ -2660,6 +2664,9 @@ impl App {
         ) {
             return refuse(self, &code, message);
         }
+        // Fork (autosuspend): a quiet message wakes an agent herdr parked
+        // for idling too; its SessionStart hook takes the message.
+        let wake = self.wake_auto_suspended(queue_target, std::time::Instant::now());
         self.agents_model
             .limiter
             .record_message(&caller.terminal_id, &send.to_terminal, send.now);
@@ -2678,7 +2685,13 @@ impl App {
             status: send.status,
             team: send.team,
             cross_team: send.cross_team,
-            reason: Some(if send.dnd { DND_REASON } else { QUIET_REASON }.to_string()),
+            reason: Some(match wake {
+                Some(wake) => format!(
+                    "{}; {wake}",
+                    if send.dnd { DND_REASON } else { QUIET_REASON }
+                ),
+                None => if send.dnd { DND_REASON } else { QUIET_REASON }.to_string(),
+            }),
             queue_age_s: None,
             quiet: true,
         })

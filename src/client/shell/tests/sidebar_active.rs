@@ -208,6 +208,7 @@ pub(super) fn times_payload(
                     pane_id: (*pane_id).into(),
                     state_change_seq: *seq,
                     since_unix_ms: 10_000_000_000 - age_ms,
+                    auto_suspended: false,
                 },
             )
             .collect(),
@@ -1033,4 +1034,25 @@ pub(super) mod fork_smoke {
             "the list takes the block's rows"
         );
     }
+}
+
+/// Fork (autosuspend): an agent herdr parked for idling reads
+/// `suspended (auto)` in the detail strip; one its user parked does not.
+#[test]
+fn detail_strip_marks_an_auto_suspended_agent() {
+    let mut state = active_state();
+    state.compose(COLS, ROWS).expect("composed frame");
+    let row = list_row(&state, &state.hits.sidebar_tabs, "t_park");
+    mouse(&mut state, MouseEventKind::Moved, row.x + 8, row.y);
+    let frame = state.compose(COLS, ROWS).expect("composed frame");
+    let joined = detail_text(&state, &frame).join(" ");
+    assert!(joined.contains("suspended"), "{joined:?}");
+    assert!(!joined.contains("(auto)"), "{joined:?}");
+
+    let mut payload = times_payload(1, &[("p_park", 4, 60_000)]);
+    payload.panes[0].auto_suspended = true;
+    assert!(state.receive_agent_times(&ClientEndpointId::Local, payload));
+    let frame = state.compose(COLS, ROWS).expect("composed frame");
+    let joined = detail_text(&state, &frame).join(" ");
+    assert!(joined.contains("suspended (auto)"), "{joined:?}");
 }

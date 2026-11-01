@@ -352,6 +352,7 @@ mod tests {
                 pane_id: "w1:p1".into(),
                 state_change_seq: 2,
                 since_unix_ms: 4_000,
+                auto_suspended: false,
             }],
         };
         let crate::protocol::ServerMessage::EndpointControl { kind, data } =

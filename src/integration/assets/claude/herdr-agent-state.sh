@@ -3,7 +3,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=15
+# HERDR_INTEGRATION_VERSION=16
 
 set -eu
 
@@ -212,6 +212,10 @@ if action == "turn":
 # from Claude's background_tasks, background ones included, which replaces
 # the pane's set. A Claude Code without the field reports nothing. Never
 # from SubagentStop, where the subagent's own entry is still running.
+# Every other in-flight entry (a shell, a monitor, a workflow, any type)
+# and every session cron (CronCreate, ScheduleWakeup, /loop; `cron:<id>`)
+# goes in background_task_ids: exiting would stop them, so herdr does not
+# suspend the agent while any is listed.
 if action == "stop":
     if hook_event_name != "Stop" or hook_input.get("agent_id"):
         raise SystemExit(0)
@@ -220,24 +224,38 @@ if action == "stop":
     if not isinstance(background_tasks, list):
         raise SystemExit(0)
     subagent_ids = []
+    background_task_ids = []
     for task in background_tasks:
-        if not isinstance(task, dict) or task.get("type") != "subagent":
+        if not isinstance(task, dict):
             continue
         task_id = task.get("id")
+        if not isinstance(task_id, str) or not task_id:
+            continue
+        if task.get("type") != "subagent":
+            if len(background_task_ids) < 64:
+                background_task_ids.append(task_id[:128])
+            continue
         agent_type = task.get("agent_type")
-        if isinstance(task_id, str) and task_id and isinstance(agent_type, str) and agent_type:
+        if isinstance(agent_type, str) and agent_type and len(subagent_ids) < 64:
             subagent_ids.append(task_id)
-        if len(subagent_ids) >= 64:
-            break
+    session_crons = hook_input.get("session_crons")
+    if isinstance(session_crons, list):
+        for cron in session_crons:
+            cron_id = cron.get("id") if isinstance(cron, dict) else None
+            if isinstance(cron_id, str) and cron_id and len(background_task_ids) < 64:
+                background_task_ids.append(("cron:" + cron_id)[:128])
+    params = {
+        "pane_id": pane_id,
+        "agent": "claude",
+        "event": "snapshot",
+        "subagent_ids": subagent_ids,
+    }
+    if background_task_ids:
+        params["background_task_ids"] = background_task_ids
     send({
         "id": request_id,
         "method": "pane.report_subagent",
-        "params": {
-            "pane_id": pane_id,
-            "agent": "claude",
-            "event": "snapshot",
-            "subagent_ids": subagent_ids,
-        },
+        "params": params,
     })
     raise SystemExit(0)
 

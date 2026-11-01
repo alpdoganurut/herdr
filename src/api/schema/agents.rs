@@ -319,6 +319,16 @@ pub struct AgentInfo {
     /// while suspended.
     #[serde(default, skip_serializing_if = "super::is_zero")]
     pub subagents: u32,
+    /// Fork (autosuspend): the agent's other background tasks in flight
+    /// (shells, monitors, workflows, session crons), from its Stop hook's
+    /// last snapshot (Claude integration v16); absent when none or while
+    /// suspended. Suspend and restart refuse while it is not zero.
+    #[serde(default, skip_serializing_if = "super::is_zero")]
+    pub background_tasks: u32,
+    /// Fork (autosuspend): herdr suspended it for idling
+    /// (`[agents.autosuspend]`); a message to it wakes it. Absent when false.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub auto_suspended: bool,
     /// Fork: the agent's voice mode (`live`, `muted`), read from its screen;
     /// absent while voice mode is off. Automatic typing (agent messages,
     /// coordinator wake-ups) waits while it is present.

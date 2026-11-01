@@ -51,6 +51,12 @@ pub(super) enum AgentSuspendError {
         target: String,
         count: u32,
     },
+    /// Fork (autosuspend): background tasks (shells, monitors, workflows,
+    /// session crons) are in flight: the exit would stop them.
+    BackgroundTasksRunning {
+        target: String,
+        count: u32,
+    },
     AlreadySuspended(String),
     NotSuspendable {
         target: String,
@@ -299,6 +305,41 @@ impl App {
         Ok(suspended)
     }
 
+    /// Fork (autosuspend): [`Self::suspend_agent`] by herdr itself for an
+    /// agent left idle (src/app/agent_autosuspend.rs): every check is the
+    /// same, and the record is marked `auto` so a message wakes it.
+    pub(super) fn suspend_agent_auto(&mut self, target: &str) -> Result<String, AgentSuspendError> {
+        let resolved = self
+            .resolve_agent_target(target)
+            .map_err(AgentSuspendError::Target)?;
+        self.fill_resolved_process_agent_session(&resolved);
+        let suspended = self.suspend_resolved_agent(target, &resolved)?;
+        if let Some(record) = self
+            .state
+            .workspaces
+            .get(resolved.ws_idx)
+            .and_then(|ws| ws.terminal_id(resolved.pane_id))
+            .cloned()
+            .and_then(|terminal_id| self.state.terminals.get_mut(&terminal_id))
+            .and_then(|terminal| terminal.suspended_agent.as_mut())
+        {
+            record.auto = true;
+        }
+        // Clients show the mark with the agent's state time.
+        self.state.agent_times_view_rev = self.state.agent_times_view_rev.wrapping_add(1).max(1);
+        Ok(suspended)
+    }
+
+    /// Fork (autosuspend): whether the agent parked in `terminal_id` was
+    /// suspended by herdr for idling.
+    pub(crate) fn auto_suspended(&self, terminal_id: &str) -> bool {
+        self.state
+            .terminals
+            .get(terminal_id)
+            .and_then(|terminal| terminal.suspended_agent.as_ref())
+            .is_some_and(|record| record.auto)
+    }
+
     /// Fork: [`Self::fill_process_agent_session`] for a resolved target.
     fn fill_resolved_process_agent_session(&mut self, resolved: &TerminalTarget) {
         if let Some(terminal_id) = self
@@ -411,6 +452,15 @@ impl App {
             return Err(AgentSuspendError::SubagentsRunning {
                 target: target.to_string(),
                 count: subagents,
+            });
+        }
+        // Fork (autosuspend): likewise its background shells, monitors,
+        // workflows and session crons (the Stop hook's snapshot).
+        let tasks = terminal.active_background_task_count();
+        if tasks > 0 {
+            return Err(AgentSuspendError::BackgroundTasksRunning {
+                target: target.to_string(),
+                count: tasks,
             });
         }
         // A working agent would lose its turn; wait for it to go idle.
@@ -723,7 +773,14 @@ impl App {
                 if managed.is_some() {
                     terminal.clear_agent_name();
                 }
+                let (suspended_by, auto) = (record.suspended_by.clone(), record.auto);
                 terminal.restore_suspended_agent(record.agent, record.name, record.session);
+                // Fork: the record stays whoever's it was (a message's wake
+                // retries an auto-suspended one).
+                if let Some(restored) = terminal.suspended_agent.as_mut() {
+                    restored.suspended_by = suspended_by;
+                    restored.auto = auto;
+                }
                 return Err(AgentActivateError::InputFailed(err.to_string()));
             }
             // Fork (agents v2): a scripted write, for the turn origin.
@@ -1024,6 +1081,17 @@ impl App {
                     code: "agent_subagents_running".into(),
                     message: format!(
                         "agent {target} has {count} subagent{} running; suspending would stop {}. Wait for {} to finish",
+                        if count == 1 { "" } else { "s" },
+                        if count == 1 { "it" } else { "them" },
+                        if count == 1 { "it" } else { "them" },
+                    ),
+                }
+            }
+            AgentSuspendError::BackgroundTasksRunning { target, count } => {
+                crate::api::schema::ErrorBody {
+                    code: "background_tasks_running".into(),
+                    message: format!(
+                        "agent {target} has {count} background task{} running (a shell, a monitor, a loop); suspending would stop {}. Wait for {} to finish",
                         if count == 1 { "" } else { "s" },
                         if count == 1 { "it" } else { "them" },
                         if count == 1 { "it" } else { "them" },
@@ -2089,6 +2157,65 @@ mod tests {
             .get_mut(&terminal_id)
             .unwrap()
             .replace_subagents([]);
+        assert_eq!(
+            suspend(&mut app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        assert_eq!(
+            next_input(&mut rx).await,
+            bytes::Bytes::from_static(b"/exit")
+        );
+    }
+
+    #[tokio::test]
+    async fn suspend_and_restart_refuse_while_background_tasks_run_without_writing() {
+        let mut app = test_app();
+        host_live_agent(
+            &mut app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(&app);
+        {
+            let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+            terminal.replace_subagents([]);
+            terminal.replace_background_tasks(["shell-1", "cron:loop-1"]);
+        }
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+
+        let response = suspend(&mut app, "reviewer");
+        assert_eq!(
+            response["error"]["code"], "background_tasks_running",
+            "{response}"
+        );
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("has 2 background tasks running"));
+        let response = restart(&mut app, "reviewer");
+        assert_eq!(
+            response["error"]["code"], "background_tasks_running",
+            "{response}"
+        );
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
+        assert!(
+            tokio::time::timeout(
+                super::super::api::AGENT_PROMPT_SUBMIT_DELAY + Duration::from_millis(100),
+                rx.recv()
+            )
+            .await
+            .is_err(),
+            "a refused suspend or restart wrote or scheduled terminal input"
+        );
+
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .replace_background_tasks([]);
         assert_eq!(
             suspend(&mut app, "reviewer")["result"]["type"],
             "agent_suspended"

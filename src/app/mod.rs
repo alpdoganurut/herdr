@@ -40,6 +40,7 @@ mod api;
 pub(crate) use api::test_support::exiting_test_command;
 mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
+pub(crate) mod agent_autosuspend;
 /// Fork: how full each agent's context window is (`endpoint.agent-context.v1`).
 pub(crate) mod agent_context;
 /// Fork: handoff, then compact, for Claude agents (`agents.handoff`).
@@ -206,6 +207,8 @@ pub struct App {
     pub(crate) agent_context: agent_context::AgentContextProbe,
     /// Fork: handoff, then compact, runs per terminal (runtime only).
     pub(crate) agent_handoff: agent_handoff::AgentHandoffRuntime,
+    /// Fork: the autosuspend scan (`[agents.autosuspend]`; runtime only).
+    pub(crate) agent_autosuspend: agent_autosuspend::AutosuspendState,
     /// The AI news desk: schedule, tab and run in flight (`news.*`).
     pub(crate) news: news::NewsState,
     /// The coordinator (fork): lifecycle, tab, worker and read model.
@@ -815,6 +818,7 @@ impl App {
             codex_sessions: codex_sessions::CodexSessionProbe::default(),
             agent_context: agent_context::AgentContextProbe::default(),
             agent_handoff: agent_handoff::AgentHandoffRuntime::default(),
+            agent_autosuspend: agent_autosuspend::AutosuspendState::default(),
             #[cfg(not(test))]
             server_hangup_probe: crate::platform::server_hangup_is_recent,
             // Real SIGHUP evidence is process-global; tests opt in per App.

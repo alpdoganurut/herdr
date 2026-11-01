@@ -759,6 +759,11 @@ pub struct PaneReportSubagentParams {
     /// hook); replaces the pane's set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagent_ids: Vec<String>,
+    /// Fork: `snapshot`: every other in-flight background task (a shell, a
+    /// monitor, a workflow, a session cron as `cron:<id>`); replaces the
+    /// pane's set. Absent from hooks before Claude integration v16.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub background_task_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

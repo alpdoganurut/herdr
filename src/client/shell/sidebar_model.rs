@@ -49,6 +49,9 @@ pub(crate) struct TabFacts {
     pub(crate) workspace: Option<u32>,
     /// Some agent of the tab is parked (`Suspended`).
     pub(crate) parked: bool,
+    /// Fork (autosuspend): some parked agent of the tab was parked by herdr
+    /// for idling (the agent times push).
+    pub(crate) auto_parked: bool,
     /// Fork (sidebar v3): pinned (`tab.set_pinned`, the `endpoint.tab-pins.v1`
     /// push).
     pub(crate) pin: bool,
@@ -87,6 +90,7 @@ impl Default for TabFacts {
             fixed: false,
             workspace: None,
             parked: false,
+            auto_parked: false,
             pin: false,
             muted: false,
             dnd: false,
@@ -498,6 +502,8 @@ impl SidebarModel {
             facts.primary_agent = Some(agent_index as u32);
             facts.agents = facts.agents.saturating_add(1);
             facts.parked |= agent.agent_status == AgentStatus::Suspended;
+            facts.auto_parked |= agent.agent_status == AgentStatus::Suspended
+                && times.is_some_and(|times| times.auto_suspended(&agent.pane_id));
             if agent.subagents > 0 && shows_subagents(agent.agent_status) {
                 facts.subagents = facts.subagents.saturating_add(agent.subagents);
             }

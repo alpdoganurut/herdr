@@ -2771,7 +2771,7 @@
           "type": "object"
         },
         "AgentsSettingsSetParams": {
-          "description": "`agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,\n`tools`, `instructions`, `notices`, `team_roster`, `program_status` and\n`handoff.enabled`; an integer 0 to 100 for `handoff.at_percent`; a string for `instructions_file`\n(`\"\"` or `\"default\"` = built-in, `\"file\"` = `<config dir>/agents.md`,\nseeded with the built-in text when missing, anything else = that path).",
+          "description": "`agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,\n`tools`, `instructions`, `notices`, `team_roster`, `program_status` and\n`handoff.enabled`; an integer 0 to 100 for `handoff.at_percent`; a string\n(`\"off\"` or `<N>m`, `<N>h`, `<N>d`) for `autosuspend.after`; a string for `instructions_file`\n(`\"\"` or `\"default\"` = built-in, `\"file\"` = `<config dir>/agents.md`,\nseeded with the built-in text when missing, anything else = that path).",
           "properties": {
             "key": {
               "type": "string"
@@ -6440,6 +6440,13 @@
           "properties": {
             "agent": {
               "type": "string"
+            },
+            "background_task_ids": {
+              "description": "Fork: `snapshot`: every other in-flight background task (a shell, a\nmonitor, a workflow, a session cron as `cron:<id>`); replaces the\npane's set. Absent from hooks before Claude integration v16.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
             "event": {
               "$ref": "#/schemas/request/$defs/SubagentEvent"
@@ -12064,6 +12071,16 @@
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
             },
+            "auto_suspended": {
+              "description": "Fork (autosuspend): herdr suspended it for idling\n(`[agents.autosuspend]`); a message to it wakes it. Absent when false.",
+              "type": "boolean"
+            },
+            "background_tasks": {
+              "description": "Fork (autosuspend): the agent's other background tasks in flight\n(shells, monitors, workflows, session crons), from its Stop hook's\nlast snapshot (Claude integration v16); absent when none or while\nsuspended. Suspend and restart refuse while it is not zero.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
             "blocked_since": {
               "description": "Fork: since when (Unix seconds) the agent has been waiting on its\nuser: its screen reads blocked, or herdr holds agent messages for it\nbecause its own status report reads blocked or its input box is not\non screen. Absent otherwise.",
               "format": "uint64",
@@ -13336,6 +13353,10 @@
                 "null"
               ]
             },
+            "auto_suspended": {
+              "description": "Fork (autosuspend): herdr suspended it for idling; a message wakes\nit. Absent when false.",
+              "type": "boolean"
+            },
             "cwd": {
               "description": "Omitted for a shell outside the caller's team (U6).",
               "type": [
@@ -13646,6 +13667,13 @@
         "AgentsSettingsInfo": {
           "description": "`agents.settings`: the section's picture.",
           "properties": {
+            "autosuspend_after": {
+              "description": "Fork: `[agents.autosuspend] after` as written (`\"off\"`, `\"1d\"`, …).\nAbsent from older servers, which cannot set it: `None` hides the row.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "checks": {
               "default": [],
               "items": {
