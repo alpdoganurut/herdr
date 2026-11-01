@@ -3279,7 +3279,6 @@ impl AgentLifecycle {
     }
 }
 
-/// `[a-z][a-z0-9_-]{0,31}`.
 /// Fork: whether a directory pane passes `agents.directory`'s `status` and
 /// `role` filters (both case-insensitive; an absent filter passes).
 fn directory_pane_matches(pane: &AgentsPaneInfo, params: &AgentsDirectoryParams) -> bool {
@@ -3295,6 +3294,7 @@ fn directory_pane_matches(pane: &AgentsPaneInfo, params: &AgentsDirectoryParams)
         })
 }
 
+/// `[a-z][a-z0-9_-]{0,31}`.
 pub(crate) fn valid_agent_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_ascii_lowercase())

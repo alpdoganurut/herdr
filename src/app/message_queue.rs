@@ -2341,6 +2341,9 @@ impl App {
     /// message's sender (once per message, once per target per
     /// [`STUCK_NOTICE_EVERY`]). A live turn's spinner and streamed text
     /// change the region; a panel ticking under the prompt box does not.
+    /// Fork: a target with subagents running skips the frozen-screen test
+    /// (their progress keeps it moving) and its notice says it is running
+    /// a subagent; still once per message and per [`STUCK_NOTICE_EVERY`].
     /// Returns whether a notice went out.
     fn watch_stuck_target(
         &mut self,
@@ -2446,6 +2449,8 @@ impl App {
             message = %entry.id(),
             target = %entry.message.to_pane,
             unchanged_s = unchanged.as_secs(),
+            subagents = subagents.map_or(0, |(count, _)| count),
+            subagents_running_s = subagents.map_or(0, |(_, running)| running.as_secs()),
             "message queue: a queued message seems stuck; telling its sender"
         );
         if !self.send_stuck_notice(&entry, text, now_unix) {
