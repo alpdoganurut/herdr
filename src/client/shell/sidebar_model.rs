@@ -787,7 +787,8 @@ impl SidebarModel {
             }
             if let (true, Some(now), Some(window)) = (pass, now, window) {
                 let activity = self.activity[tab_index];
-                if !activity.live {
+                // A pinned tab always counts as recent, like a busy one.
+                if !activity.live && !facts.pin {
                     // No known time counts as old; a time a window old is out.
                     match activity.newest {
                         Some(at) if now.saturating_duration_since(at) < window => {
