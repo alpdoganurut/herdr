@@ -1005,6 +1005,10 @@ impl ClientShellState {
                 return;
             }
         }
+        // Fork (force suspend): the notice's force button, before the notice.
+        if self.handle_force_notice_mouse(&mouse, outcome) {
+            return;
+        }
         if self.visible_endpoint_notice.is_some()
             && mouse.kind == MouseEventKind::Down(MouseButton::Left)
             && super::contains(self.hits.notification_toast, point)

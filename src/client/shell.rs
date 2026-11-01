@@ -24,6 +24,7 @@ mod endpoint_navigation;
 mod endpoint_notices;
 mod endpoint_sidebar;
 mod endpoints;
+mod force_notice;
 mod info_dock;
 mod info_dock_model;
 mod info_dock_render;

@@ -229,6 +229,7 @@ fn endpoint_notice_and_multiline_diagnostic_cover_the_actual_rows() {
         title: "error".into(),
         body: "body".into(),
         deadline: std::time::Instant::now(),
+        force: None,
     });
     state.compose(106, 20).unwrap();
     let rect = state.hits.notification_toast;

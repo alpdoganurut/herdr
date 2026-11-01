@@ -10,7 +10,8 @@ pub use id::TerminalId;
 pub use runtime::TerminalRuntime;
 pub(crate) use runtime_registry::TerminalRuntimeRegistry;
 pub use state::{
-    AgentMetadataReport, EffectivePresentation, EffectiveStateChange, SuspendEscalationOutcome,
-    SuspendExitEscalation, SuspendProbe, TerminalState, TerminalStateMutation,
+    AgentMetadataReport, EffectivePresentation, EffectiveStateChange, ForcedExitInput,
+    SuspendEscalationOutcome, SuspendExitEscalation, SuspendProbe, TerminalState,
+    TerminalStateMutation,
 };
 pub(crate) use title::stripped_terminal_title;

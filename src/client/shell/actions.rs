@@ -379,6 +379,7 @@ impl ClientShellState {
             title: title.into(),
             body,
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(duration_seconds),
+            force: None,
         });
         true
     }
@@ -389,6 +390,8 @@ impl ClientShellState {
         kind: PendingEndpointKind,
         outcome: &mut ClientShellInput,
     ) -> bool {
+        // Fork (force suspend): a suspend or restart remembers its target.
+        let kind = super::force_notice::pending_kind(&method, kind);
         let changes_focus = match &method {
             crate::api::schema::Method::WorkspaceFocus(_)
             | crate::api::schema::Method::TabFocus(_)
@@ -605,11 +608,13 @@ impl ClientShellState {
                         error.message.clone(),
                     ),
                 };
-                self.push_endpoint_notice(kind, notice_code, title, body);
+                self.push_endpoint_notice(kind, notice_code.clone(), title, body);
+                // Fork (force suspend): offer to force an overridable refusal.
+                self.attach_force_action(&pending.kind, code, &notice_code);
             }
         }
         match pending.kind {
-            PendingEndpointKind::Generic => {}
+            PendingEndpointKind::Generic | PendingEndpointKind::ForceableAgentStop { .. } => {}
             PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),
             PendingEndpointKind::InfoNotesGet
             | PendingEndpointKind::InfoNotesWrite

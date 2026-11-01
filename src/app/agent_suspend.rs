@@ -39,6 +39,14 @@ pub(crate) const RESTART_RESUME_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often a pending restart probes for the shell prompt once the exit was
 /// observed.
 pub(crate) const RESTART_RESUME_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Fork (force suspend): how long after a forced suspend's Esc the exit
+/// input waits at least, so the agent never reads Esc and the input as one
+/// Alt chord.
+pub(crate) const FORCE_INTERRUPT_SETTLE: Duration = Duration::from_millis(500);
+/// Fork (force suspend): how long a forced suspend waits for the interrupted
+/// agent to come back to its prompt; past it the agent is terminated
+/// (`SIGTERM`, then `SIGKILL`) without the exit input.
+pub(crate) const FORCE_INTERRUPT_WAIT: Duration = Duration::from_secs(5);
 
 pub(super) enum AgentSuspendError {
     Target(TerminalTargetError),
@@ -288,7 +296,7 @@ impl App {
             .resolve_agent_target(target)
             .map_err(AgentSuspendError::Target)?;
         self.fill_resolved_process_agent_session(&resolved);
-        let suspended = self.suspend_resolved_agent(target, &resolved)?;
+        let suspended = self.suspend_resolved_agent(target, &resolved, false)?;
         if let Some(by) = by {
             if let Some(record) = self
                 .state
@@ -313,7 +321,7 @@ impl App {
             .resolve_agent_target(target)
             .map_err(AgentSuspendError::Target)?;
         self.fill_resolved_process_agent_session(&resolved);
-        let suspended = self.suspend_resolved_agent(target, &resolved)?;
+        let suspended = self.suspend_resolved_agent(target, &resolved, false)?;
         if let Some(record) = self
             .state
             .workspaces
@@ -356,51 +364,130 @@ impl App {
         let resolved = self
             .resolve_agent_target(target)
             .map_err(AgentSuspendError::Target)?;
-        self.suspend_checks(target, &resolved).map(|_| ())
+        self.suspend_checks(target, &resolved, false).map(|_| ())
+    }
+
+    /// Fork (force suspend): [`Self::suspend_agent`] past the refusals a
+    /// forced exit overrides (blocked, working, subagents or background
+    /// tasks running), the user's own choice from herdr's interface. A
+    /// working or blocked Claude Code or Codex gets an Esc first and the exit
+    /// input once it is back at its prompt; another agent that is busy is
+    /// terminated without it. Subagents and background tasks end with the
+    /// agent. Recorded as suspended by the user.
+    pub(super) fn force_suspend_agent(
+        &mut self,
+        target: &str,
+    ) -> Result<String, AgentSuspendError> {
+        let resolved = self
+            .resolve_agent_target(target)
+            .map_err(AgentSuspendError::Target)?;
+        self.fill_resolved_process_agent_session(&resolved);
+        self.suspend_resolved_agent(target, &resolved, true)
     }
 
     fn suspend_resolved_agent(
         &mut self,
         target: &str,
         resolved: &TerminalTarget,
+        force: bool,
     ) -> Result<String, AgentSuspendError> {
         let SuspendReady {
             terminal_id,
             session,
             exit_input,
-        } = self.suspend_checks(target, resolved)?;
+        } = self.suspend_checks(target, resolved, force)?;
         let not_found = || {
             AgentSuspendError::Target(TerminalTargetError::NotFound {
                 target: target.to_string(),
             })
         };
-        let runtime = self
-            .terminal_runtimes
-            .get(&terminal_id)
-            .ok_or_else(not_found)?;
-        let (text, enter) = super::api_helpers::encode_api_submission_parts(runtime, exit_input);
+        let (text, enter) = super::api_helpers::encode_api_submission_parts(
+            self.terminal_runtimes
+                .get(&terminal_id)
+                .ok_or_else(not_found)?,
+            exit_input,
+        );
 
         let now = Instant::now();
-        let terminal = self
-            .state
-            .terminals
-            .get_mut(&terminal_id)
-            .ok_or_else(not_found)?;
-        terminal.begin_agent_suspend(session.clone(), now + SUSPEND_GRACEFUL_EXIT_GRACE);
-        if let Err(err) = runtime.queue_user_input_submission(
-            Bytes::from(text),
-            Bytes::from(enter),
-            super::api::AGENT_PROMPT_SUBMIT_DELAY,
-            None,
-        ) {
-            terminal.take_suspended_agent();
-            return Err(AgentSuspendError::InputFailed(err.to_string()));
+        let busy = force
+            .then(|| self.state.terminals.get(&terminal_id))
+            .flatten()
+            .filter(|terminal| {
+                matches!(
+                    terminal.state,
+                    crate::detect::AgentState::Working | crate::detect::AgentState::Blocked
+                )
+            })
+            .map(|terminal| {
+                matches!(
+                    terminal.effective_known_agent(),
+                    Some(crate::detect::Agent::Claude | crate::detect::Agent::Codex)
+                )
+            });
+        match busy {
+            // Fork (force suspend): Esc ends the turn or the dialog of Claude
+            // Code and Codex; the exit input follows once the prompt is back.
+            Some(true)
+                if self.send_interrupt_esc(
+                    resolved,
+                    crate::agents_model::InputSource::Programmatic(
+                        crate::agents_model::Programmatic::Api,
+                    ),
+                ) =>
+            {
+                let terminal = self
+                    .state
+                    .terminals
+                    .get_mut(&terminal_id)
+                    .ok_or_else(not_found)?;
+                terminal.begin_forced_agent_suspend(
+                    session.clone(),
+                    now + FORCE_INTERRUPT_SETTLE,
+                    crate::terminal::ForcedExitInput {
+                        input: exit_input,
+                        send_by: now + FORCE_INTERRUPT_WAIT,
+                    },
+                );
+            }
+            // Fork (force suspend): typing into a busy agent without an
+            // interrupt could answer its dialog; terminate it instead.
+            Some(_) => {
+                let terminal = self
+                    .state
+                    .terminals
+                    .get_mut(&terminal_id)
+                    .ok_or_else(not_found)?;
+                terminal.begin_agent_suspend(session.clone(), now);
+            }
+            None => {
+                let runtime = self
+                    .terminal_runtimes
+                    .get(&terminal_id)
+                    .ok_or_else(not_found)?;
+                let terminal = self
+                    .state
+                    .terminals
+                    .get_mut(&terminal_id)
+                    .ok_or_else(not_found)?;
+                terminal.begin_agent_suspend(session.clone(), now + SUSPEND_GRACEFUL_EXIT_GRACE);
+                if let Err(err) = runtime.queue_user_input_submission(
+                    Bytes::from(text),
+                    Bytes::from(enter),
+                    super::api::AGENT_PROMPT_SUBMIT_DELAY,
+                    None,
+                ) {
+                    terminal.take_suspended_agent();
+                    return Err(AgentSuspendError::InputFailed(err.to_string()));
+                }
+                // Fork (agents v2): a scripted write, for the turn origin.
+                self.note_input(
+                    &terminal_id,
+                    crate::agents_model::InputSource::Programmatic(
+                        crate::agents_model::Programmatic::Api,
+                    ),
+                );
+            }
         }
-        // Fork (agents v2): a scripted write, for the turn origin.
-        self.note_input(
-            &terminal_id,
-            crate::agents_model::InputSource::Programmatic(crate::agents_model::Programmatic::Api),
-        );
         // The parked session must outlive the agent's own transcript
         // retention; queue it for the next backup pass rather than waiting
         // for the periodic interval.
@@ -413,11 +500,14 @@ impl App {
             .unwrap_or_else(|| target.to_string()))
     }
 
-    /// Every check a suspend makes, in order, without writing.
+    /// Every check a suspend makes, in order, without writing. Fork (force
+    /// suspend): `force` skips the four a forced exit overrides (blocked,
+    /// subagents, background tasks, working); the rest still refuse.
     fn suspend_checks(
         &self,
         target: &str,
         resolved: &TerminalTarget,
+        force: bool,
     ) -> Result<SuspendReady, AgentSuspendError> {
         let not_found = || {
             AgentSuspendError::Target(TerminalTargetError::NotFound {
@@ -441,14 +531,14 @@ impl App {
         }
         // The exit command is typed into the agent's prompt; a blocked
         // approval or question UI would swallow it, like `agent.prompt`.
-        if terminal.state == crate::detect::AgentState::Blocked {
+        if !force && terminal.state == crate::detect::AgentState::Blocked {
             return Err(AgentSuspendError::Blocked(target.to_string()));
         }
         // Exiting stops the agent's background subagents and loses their
         // work; wait until the count reaches zero (no override). Checked before
         // Working: an idle agent can still have background subagents.
         let subagents = terminal.active_subagent_count();
-        if subagents > 0 {
+        if !force && subagents > 0 {
             return Err(AgentSuspendError::SubagentsRunning {
                 target: target.to_string(),
                 count: subagents,
@@ -457,14 +547,14 @@ impl App {
         // Fork (autosuspend): likewise its background shells, monitors,
         // workflows and session crons (the Stop hook's snapshot).
         let tasks = terminal.active_background_task_count();
-        if tasks > 0 {
+        if !force && tasks > 0 {
             return Err(AgentSuspendError::BackgroundTasksRunning {
                 target: target.to_string(),
                 count: tasks,
             });
         }
         // A working agent would lose its turn; wait for it to go idle.
-        if terminal.state == crate::detect::AgentState::Working {
+        if !force && terminal.state == crate::detect::AgentState::Working {
             return Err(AgentSuspendError::Working(target.to_string()));
         }
         let Some(expected_agent) = terminal.effective_known_agent() else {
@@ -542,6 +632,24 @@ impl App {
         target: &str,
         by: Option<crate::api::schema::agents_model::AgentsWho>,
     ) -> Result<String, AgentRestartError> {
+        self.restart_agent_with(target, by, false)
+    }
+
+    /// Fork (force suspend): [`Self::restart_agent`] as a forced suspend
+    /// ([`Self::force_suspend_agent`]) plus the usual automatic relaunch.
+    pub(super) fn force_restart_agent(
+        &mut self,
+        target: &str,
+    ) -> Result<String, AgentRestartError> {
+        self.restart_agent_with(target, None, true)
+    }
+
+    fn restart_agent_with(
+        &mut self,
+        target: &str,
+        by: Option<crate::api::schema::agents_model::AgentsWho>,
+        force: bool,
+    ) -> Result<String, AgentRestartError> {
         let resolved = self
             .resolve_suspended_agent_target(target)
             .map_err(|err| match err {
@@ -567,12 +675,12 @@ impl App {
         }
         // Blocked keeps its restart-specific wording; the working guard is
         // the shared one in `suspend_resolved_agent`.
-        if terminal.state == crate::detect::AgentState::Blocked {
+        if !force && terminal.state == crate::detect::AgentState::Blocked {
             return Err(AgentRestartError::Blocked(target.to_string()));
         }
         self.fill_resolved_process_agent_session(&resolved);
         let pane_id = self
-            .suspend_resolved_agent(target, &resolved)
+            .suspend_resolved_agent(target, &resolved, force)
             .map_err(AgentRestartError::Suspend)?;
         let now = Instant::now();
         if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
@@ -907,6 +1015,7 @@ impl App {
         ) -> SuspendProbe,
         mut signal: impl FnMut(&[u32], crate::platform::Signal),
     ) -> bool {
+        let mut changed = self.send_forced_exit_inputs(now);
         let due: Vec<_> = self
             .state
             .terminals
@@ -918,7 +1027,6 @@ impl App {
             })
             .map(|terminal| terminal.id.clone())
             .collect();
-        let mut changed = false;
         for terminal_id in due {
             let Some(agent) = self
                 .state
@@ -990,6 +1098,92 @@ impl App {
                 }
             }
             changed = true;
+        }
+        changed
+    }
+
+    /// Fork (force suspend): type the exit input a forced suspend owes once
+    /// its interrupted agent is back at its prompt (neither working nor
+    /// blocked); past [`FORCE_INTERRUPT_WAIT`], or when the input cannot be
+    /// typed, the exit escalation starts now instead (`SIGTERM`). Never types
+    /// into a dialog.
+    fn send_forced_exit_inputs(&mut self, now: Instant) -> bool {
+        let due: Vec<_> = self
+            .state
+            .terminals
+            .values()
+            .filter_map(|terminal| {
+                let record = terminal.suspended_agent.as_ref()?;
+                let forced = record.forced_exit()?;
+                (record.exit_observed() || record.exit_deadline().is_some_and(|at| now >= at)).then(
+                    || {
+                        let back = !matches!(
+                            terminal.state,
+                            crate::detect::AgentState::Working | crate::detect::AgentState::Blocked
+                        );
+                        (terminal.id.clone(), forced, back, record.exit_observed())
+                    },
+                )
+            })
+            .collect();
+        let changed = !due.is_empty();
+        for (terminal_id, forced, back, exit_observed) in due {
+            if exit_observed {
+                if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                    terminal.finish_forced_exit_wait(None);
+                }
+                continue;
+            }
+            if !back && now < forced.send_by {
+                if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                    terminal.defer_forced_exit(
+                        (now + RESTART_RESUME_POLL_INTERVAL).min(forced.send_by),
+                    );
+                }
+                continue;
+            }
+            let typed = back
+                && self
+                    .terminal_runtimes
+                    .get(&terminal_id)
+                    .is_some_and(|runtime| {
+                        let (text, enter) =
+                            super::api_helpers::encode_api_submission_parts(runtime, forced.input);
+                        runtime
+                            .queue_user_input_submission(
+                                Bytes::from(text),
+                                Bytes::from(enter),
+                                super::api::AGENT_PROMPT_SUBMIT_DELAY,
+                                None,
+                            )
+                            .is_ok()
+                    });
+            if typed {
+                self.note_input(
+                    &terminal_id,
+                    crate::agents_model::InputSource::Programmatic(
+                        crate::agents_model::Programmatic::Api,
+                    ),
+                );
+            }
+            tracing::info!(
+                event = "agent.suspend.forced_exit",
+                terminal_id = %terminal_id,
+                typed,
+                "forced suspend: {}",
+                if typed {
+                    "typed the exit input after the interrupt"
+                } else {
+                    "the agent did not come back to its prompt; terminating it"
+                }
+            );
+            if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                terminal.finish_forced_exit_wait(Some(if typed {
+                    now + SUSPEND_GRACEFUL_EXIT_GRACE
+                } else {
+                    now
+                }));
+            }
         }
         changed
     }
@@ -1111,6 +1305,21 @@ impl App {
                 message,
             },
         }
+    }
+
+    /// Fork (force suspend): the refusal of a forced `action` that did not
+    /// come from the client shell lane: agents (their MCP tools, the CLI)
+    /// keep today's refusals.
+    pub(super) fn force_user_only_refusal(
+        &self,
+        action: &str,
+    ) -> Option<crate::api::schema::ErrorBody> {
+        (!self.request_from_client_shell).then(|| crate::api::schema::ErrorBody {
+            code: "force_user_only".into(),
+            message: format!(
+                "only the user can force a {action}, from herdr's interface; use agent.{action}"
+            ),
+        })
     }
 
     pub(super) fn agent_restart_error_body(
@@ -2767,5 +2976,309 @@ mod tests {
         let app = activate_parked(project.session(ID));
         let terminal = &app.state.terminals[&root_terminal_id(&app)];
         assert_eq!(terminal.persisted_agent_session, Some(project.session(ID)));
+    }
+
+    // ----- fork (force suspend) ---------------------------------------------
+
+    fn force_request(app: &mut App, method: Method) -> serde_json::Value {
+        app.request_from_client_shell = true;
+        let response = request(app, method);
+        app.request_from_client_shell = false;
+        response
+    }
+
+    fn force_suspend(app: &mut App, target: &str) -> serde_json::Value {
+        force_request(
+            app,
+            Method::AgentSuspendForce(AgentSuspendParams {
+                target: target.into(),
+            }),
+        )
+    }
+
+    fn force_restart(app: &mut App, target: &str) -> serde_json::Value {
+        force_request(
+            app,
+            Method::AgentRestartForce(AgentRestartParams {
+                target: target.into(),
+            }),
+        )
+    }
+
+    /// A live, named Claude in the root pane in `state`, with its runtime.
+    fn live_claude(
+        app: &mut App,
+        state: AgentState,
+    ) -> (
+        crate::terminal::TerminalId,
+        tokio::sync::mpsc::Receiver<bytes::Bytes>,
+    ) {
+        host_live_agent(
+            app,
+            Agent::Claude,
+            "reviewer",
+            Some(("herdr:claude", "claude-session")),
+        );
+        let terminal_id = root_terminal_id(app);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), state);
+        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        (terminal_id, rx)
+    }
+
+    async fn no_input(rx: &mut tokio::sync::mpsc::Receiver<bytes::Bytes>, what: &str) {
+        assert!(
+            tokio::time::timeout(
+                super::super::api::AGENT_PROMPT_SUBMIT_DELAY + Duration::from_millis(100),
+                rx.recv()
+            )
+            .await
+            .is_err(),
+            "{what}"
+        );
+    }
+
+    /// Run the exit escalation at `now` with a probe that still sees the
+    /// agent; returns the signals sent.
+    fn escalate(app: &mut App, now: Instant) -> Vec<crate::platform::Signal> {
+        let mut sent = Vec::new();
+        app.escalate_suspended_agent_exits_with(
+            now,
+            |_, _, _| SuspendProbe::Job {
+                agent_pids: vec![4242],
+            },
+            |_, signal| sent.push(signal),
+        );
+        sent
+    }
+
+    /// The graceful grace from `typed_at`, then `SIGTERM`, then `SIGKILL`.
+    fn escalation_reaches_kill(
+        app: &mut App,
+        terminal_id: &crate::terminal::TerminalId,
+        typed_at: Instant,
+    ) {
+        let term_at = app.state.terminals[terminal_id]
+            .suspended_agent_exit_deadline()
+            .expect("the exit wait runs");
+        assert!(term_at >= typed_at + SUSPEND_GRACEFUL_EXIT_GRACE);
+        assert!(escalate(app, term_at - Duration::from_millis(1)).is_empty());
+        assert_eq!(
+            escalate(app, term_at),
+            vec![crate::platform::Signal::Terminate]
+        );
+        assert_eq!(
+            escalate(app, term_at + SUSPEND_SIGNAL_ESCALATION_GRACE),
+            vec![crate::platform::Signal::Kill]
+        );
+    }
+
+    #[tokio::test]
+    async fn force_suspend_interrupts_a_working_agent_then_exits_it_at_its_prompt() {
+        let mut app = test_app();
+        let (terminal_id, mut rx) = live_claude(&mut app, AgentState::Working);
+        let asked = Instant::now();
+
+        let response = force_suspend(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_suspended", "{response}");
+        assert_eq!(&next_input(&mut rx).await[..], b"\x1b", "the Esc first");
+        no_input(&mut rx, "the exit input waits for the prompt").await;
+        let record = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .expect("parked at once");
+        assert!(record.forced_exit().is_some());
+        assert_eq!(record.suspended_by, None, "suspended by the user");
+        let settled = record.exit_deadline().expect("the first look");
+        assert!(settled >= asked + FORCE_INTERRUPT_SETTLE);
+        assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
+
+        // Still working after the settle: nothing typed, nothing signalled.
+        assert!(escalate(&mut app, settled).is_empty());
+        no_input(&mut rx, "never typed into a working agent").await;
+
+        // Back at its prompt: the exit input, then the usual escalation.
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        let idle_at = settled + RESTART_RESUME_POLL_INTERVAL;
+        assert!(escalate(&mut app, idle_at).is_empty());
+        assert_eq!(
+            next_input(&mut rx).await,
+            bytes::Bytes::from_static(b"/exit")
+        );
+        let record = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .unwrap();
+        assert!(record.forced_exit().is_none());
+        escalation_reaches_kill(&mut app, &terminal_id, idle_at);
+    }
+
+    #[tokio::test]
+    async fn force_suspend_dismisses_a_blocked_dialog_and_never_types_into_one() {
+        let mut app = test_app();
+        let (terminal_id, mut rx) = live_claude(&mut app, AgentState::Blocked);
+        let asked = Instant::now();
+
+        let response = force_suspend(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_suspended", "{response}");
+        assert_eq!(&next_input(&mut rx).await[..], b"\x1b");
+
+        // The dialog stayed up the whole wait: terminated without the input.
+        let send_by = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .and_then(|record| record.forced_exit())
+            .unwrap()
+            .send_by;
+        assert!(send_by <= asked + FORCE_INTERRUPT_WAIT + Duration::from_secs(1));
+        assert!(escalate(&mut app, send_by - Duration::from_millis(1)).is_empty());
+        assert_eq!(
+            escalate(&mut app, send_by),
+            vec![crate::platform::Signal::Terminate]
+        );
+        no_input(&mut rx, "nothing typed into the dialog").await;
+        assert_eq!(
+            escalate(&mut app, send_by + SUSPEND_SIGNAL_ESCALATION_GRACE),
+            vec![crate::platform::Signal::Kill]
+        );
+    }
+
+    #[tokio::test]
+    async fn force_suspend_exits_an_idle_agent_with_subagents_or_background_tasks() {
+        for tasks in [false, true] {
+            let mut app = test_app();
+            let (terminal_id, mut rx) = live_claude(&mut app, AgentState::Idle);
+            {
+                let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+                if tasks {
+                    terminal.replace_subagents([]);
+                    terminal.replace_background_tasks(["shell-1"]);
+                } else {
+                    terminal.replace_subagents(["bg-1"]);
+                }
+            }
+            let refused = suspend(&mut app, "reviewer");
+            assert_eq!(
+                refused["error"]["code"],
+                if tasks {
+                    "background_tasks_running"
+                } else {
+                    "agent_subagents_running"
+                },
+                "the plain suspend still refuses: {refused}"
+            );
+            let asked = Instant::now();
+            let response = force_suspend(&mut app, "reviewer");
+            assert_eq!(response["result"]["type"], "agent_suspended", "{response}");
+            assert_eq!(
+                next_input(&mut rx).await,
+                bytes::Bytes::from_static(b"/exit"),
+                "an idle agent needs no Esc"
+            );
+            assert!(app.state.terminals[&terminal_id]
+                .suspended_agent
+                .as_ref()
+                .unwrap()
+                .forced_exit()
+                .is_none());
+            escalation_reaches_kill(&mut app, &terminal_id, asked);
+        }
+    }
+
+    #[tokio::test]
+    async fn force_restart_interrupts_then_relaunches_as_a_restart() {
+        let mut app = test_app();
+        let (terminal_id, mut rx) = live_claude(&mut app, AgentState::Blocked);
+        assert_eq!(
+            restart(&mut app, "reviewer")["error"]["code"],
+            "agent_blocked"
+        );
+        let response = force_restart(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_restarted", "{response}");
+        assert_eq!(&next_input(&mut rx).await[..], b"\x1b");
+        let record = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .expect("parked");
+        assert!(record.resume_pending().is_some(), "owes the relaunch");
+        assert!(record.forced_exit().is_some());
+        assert_eq!(record.suspended_by, None);
+
+        // A suspended agent is activated, never force-restarted.
+        assert_eq!(
+            force_restart(&mut app, "reviewer")["error"]["code"],
+            "agent_suspended"
+        );
+    }
+
+    #[tokio::test]
+    async fn force_keeps_the_refusals_it_cannot_fix() {
+        // No native session reference: still not suspendable, no Esc.
+        let mut app = test_app();
+        host_live_agent(&mut app, Agent::Claude, "reviewer", None);
+        let terminal_id = root_terminal_id(&app);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Working);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        let response = force_suspend(&mut app, "reviewer");
+        assert_eq!(
+            response["error"]["code"], "agent_not_suspendable",
+            "{response}"
+        );
+        assert_eq!(
+            force_restart(&mut app, "reviewer")["error"]["code"],
+            "agent_not_suspendable"
+        );
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
+        no_input(&mut rx, "a refused force wrote nothing").await;
+
+        // Already suspended, and an unknown target.
+        let mut app = test_app();
+        let (_terminal_id, mut rx) = live_claude(&mut app, AgentState::Idle);
+        assert_eq!(
+            suspend(&mut app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        let _ = next_input(&mut rx).await;
+        assert_eq!(
+            force_suspend(&mut app, "reviewer")["error"]["code"],
+            "agent_already_suspended"
+        );
+        assert_eq!(
+            force_suspend(&mut app, "nobody")["error"]["code"],
+            "agent_not_found"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_client_shell_lane_may_force() {
+        let mut app = test_app();
+        let (terminal_id, mut rx) = live_claude(&mut app, AgentState::Working);
+        for method in [
+            Method::AgentSuspendForce(AgentSuspendParams {
+                target: "reviewer".into(),
+            }),
+            Method::AgentRestartForce(AgentRestartParams {
+                target: "reviewer".into(),
+            }),
+        ] {
+            let response = request(&mut app, method);
+            assert_eq!(response["error"]["code"], "force_user_only", "{response}");
+        }
+        assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
+        no_input(&mut rx, "a refused force wrote nothing").await;
+        assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Working);
     }
 }

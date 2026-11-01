@@ -291,6 +291,7 @@ impl ClientShellState {
             &self.config.keybinds,
             &self.config.palette,
         );
+        self.hits.notification_toast_action = Rect::default();
         if let Some(notice) = &self.visible_endpoint_notice {
             self.hits.notification_toast = endpoint_notices::render_notice(
                 &mut buffer,
@@ -299,6 +300,7 @@ impl ClientShellState {
                 notice,
                 1,
                 &self.config.palette,
+                &mut self.hits.notification_toast_action,
             );
         }
         FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
@@ -708,6 +710,7 @@ impl ClientShellState {
         }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         self.hits.notification_toast = Rect::default();
+        self.hits.notification_toast_action = Rect::default();
         self.hits.notification_toasts.clear();
         let mut notification_stack_bounds = Rect::default();
         let has_config_diagnostic = self.config_diagnostic.is_some();
@@ -758,6 +761,7 @@ impl ClientShellState {
                         notice,
                         u16::from(has_config_diagnostic) + lifecycle_offset,
                         &self.config.palette,
+                        &mut self.hits.notification_toast_action,
                     )
                 } else {
                     endpoint_notices::render_mobile_banner(

@@ -209,6 +209,8 @@ mod tests {
             "agent.suspend",
             "agent.activate",
             "agent.restart",
+            "agent.suspend_force",
+            "agent.restart_force",
             "agent.notice_dismiss",
             "agent.message_send",
             "agent.message_claim",

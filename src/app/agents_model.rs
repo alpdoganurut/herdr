@@ -4785,8 +4785,13 @@ pub(crate) mod tests {
                 "programmatic",
             ),
             ("src/app/news.rs", "news_pane_bytes", "internal"),
-            // An urgent message's Esc (the sender's write).
-            ("src/app/message_queue.rs", "interrupt_turn", "programmatic"),
+            // An urgent message's or a forced suspend's Esc (the sender's
+            // write).
+            (
+                "src/app/message_queue.rs",
+                "send_interrupt_esc",
+                "programmatic",
+            ),
             // Fork (lost-message fix): a message's Enter after its text showed.
             (
                 "src/app/message_queue/submit.rs",
@@ -4806,6 +4811,12 @@ pub(crate) mod tests {
             (
                 "src/app/agent_suspend.rs",
                 "activate_resolved_agent",
+                "programmatic",
+            ),
+            // Fork (force suspend): the exit input after the Esc.
+            (
+                "src/app/agent_suspend.rs",
+                "send_forced_exit_inputs",
                 "programmatic",
             ),
             ("src/app/api.rs", "send_pane_focus_event", "internal"),
