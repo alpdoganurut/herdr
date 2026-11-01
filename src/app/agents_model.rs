@@ -233,6 +233,12 @@ impl App {
             Instant::now(),
             now_unix(),
         );
+        // Fork (lost-message fix): a working edge confirms a pasted message
+        // (src/app/message_queue/submit.rs).
+        if update.state == crate::detect::AgentState::Working {
+            let terminal_id = terminal.id.to_string();
+            self.note_submitted_turn(&terminal_id);
+        }
     }
 
     /// The effective turn of a terminal now.
@@ -4586,6 +4592,10 @@ pub(crate) mod tests {
             ("src/app/launch_gate.rs", include_str!("launch_gate.rs")),
             ("src/app/message_queue.rs", include_str!("message_queue.rs")),
             (
+                "src/app/message_queue/submit.rs",
+                include_str!("message_queue/submit.rs"),
+            ),
+            (
                 "src/persist/snapshot.rs",
                 include_str!("../persist/snapshot.rs"),
             ),
@@ -4612,6 +4622,17 @@ pub(crate) mod tests {
             ("src/app/news.rs", "news_pane_bytes", "internal"),
             // An urgent message's Esc (the sender's write).
             ("src/app/message_queue.rs", "interrupt_turn", "programmatic"),
+            // Fork (lost-message fix): a message's Enter after its text showed.
+            (
+                "src/app/message_queue/submit.rs",
+                "write_submit_enter",
+                "programmatic",
+            ),
+            (
+                "src/app/api/agents.rs",
+                "write_agent_prompt",
+                "programmatic",
+            ),
             (
                 "src/app/agent_suspend.rs",
                 "suspend_resolved_agent",

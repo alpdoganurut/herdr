@@ -1856,12 +1856,23 @@ impl<A: Api> Session<A> {
                 }
                 _ => String::new(),
             };
-            return Ok(Reply::new(
+            // Fork (lost-message fix): `submitting` = its text is typed in
+            // now; the server presses Enter once their input box shows it.
+            let text = if reason == "submitting" {
+                format!(
+                    "typing {} -> {} ({}){cross} now: herdr presses Enter once it shows in their \
+                     input box, and tells you if it cannot. Do not resend it",
+                    message.id, message.to_name, message.to_pane
+                )
+            } else {
                 format!(
                     "queued {} -> {} ({}){cross}: {reason}{waiting}; herdr types it in when they are free \
                      (idle, nobody typing in it). Do not resend it",
                     message.id, message.to_name, message.to_pane
-                ),
+                )
+            };
+            return Ok(Reply::new(
+                text,
                 json!({
                     "id": message.id,
                     "to_pane": message.to_pane,
@@ -3095,7 +3106,10 @@ fn delivery_reply(found: &AgentMessage, claimed: bool, pending: usize, all: bool
         );
     } else if !matches!(
         found.outcome.as_str(),
-        messages::OUTCOME_SENT | messages::OUTCOME_DELIVERED
+        messages::OUTCOME_SENT
+            | messages::OUTCOME_DELIVERED
+            | messages::OUTCOME_CONFIRMED
+            | messages::OUTCOME_UNCONFIRMED
     ) {
         // An older log line: a reply to a busy asker was logged instead
         // of typed in. Not an error.

@@ -42,9 +42,20 @@ pub const OUTCOME_DELIVERED: &str = "delivered";
 pub const OUTCOME_EXPIRED: &str = "expired";
 /// A queued message's target pane or agent is gone.
 pub const OUTCOME_DROPPED: &str = "dropped";
+/// Fork (lost-message fix): a delivered message's target took it in: it
+/// read the message by id (a pointer line) or started a turn (a paste).
+/// Only on [`KIND_UPDATE`] lines, after `delivered` (or `sent`).
+pub const OUTCOME_CONFIRMED: &str = "confirmed";
+/// Fork (lost-message fix): no proof the target took the message in. Either
+/// its text was typed but never showed in the target's input box, so no
+/// Enter went in, or it went in and was neither read by id within 60 s nor
+/// followed by a turn within 30 s. Never redelivered automatically; the
+/// sender is told. Only on [`KIND_UPDATE`] lines.
+pub const OUTCOME_UNCONFIRMED: &str = "unconfirmed";
 
 /// `kind` of a line that only moves an earlier message (same `id`) to a new
-/// outcome (`queued`, `delivered`, `expired`, `dropped`). The log stays
+/// outcome (`queued`, `delivered`, `expired`, `dropped`, `confirmed`,
+/// `unconfirmed`). The log stays
 /// append-only; readers fold these lines into the message ([`fold`]).
 pub const KIND_UPDATE: &str = "update";
 

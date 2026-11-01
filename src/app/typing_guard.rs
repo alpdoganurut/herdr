@@ -140,6 +140,97 @@ pub(crate) fn composer(agent: Agent, ansi: &str) -> Composer {
     }
 }
 
+/// Fork (lost-message fix, src/app/message_queue.rs): what the input box
+/// holds now when it is on screen and led by its prompt marker; `None`
+/// otherwise (no box, a dialog, a menu, an unsupported agent). Read by the
+/// check that automatic typing landed in the box before its Enter, a few
+/// times per delivery, never per frame.
+pub(crate) fn input_box(agent: Agent, ansi: &str) -> Option<PromptBox> {
+    let lines: Vec<Vec<Cell>> = ansi.lines().map(parse_styled_line).collect();
+    let (body, marker) = locate_box(agent, &lines)?;
+    match classify(&lines[body], marker) {
+        (prompt, true) => Some(prompt),
+        (_, false) => None,
+    }
+}
+
+/// The shortest run of a long paste's text (whitespace removed) that counts
+/// as that paste when the box shows only part of it (it scrolled).
+const PARTIAL_PASTE_CHARS: usize = 24;
+
+/// `text` without any whitespace: a wrapped line, a joined box and the
+/// typed text compare equal.
+fn compact(text: &str) -> String {
+    text.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
+/// Whether `typed` (a draft's text, [`PromptBox::Draft`]) shows `expected`,
+/// the text herdr just typed: it contains all of it (whitespace ignored, so
+/// a wrapped pointer line matches); for a paste (`paste`) also the agent's
+/// placeholder for it (Claude Code `[Pasted text #N +K lines]`, Codex
+/// `[Pasted Content N chars]`) or a long enough part of it.
+pub(crate) fn draft_shows(typed: &str, expected: &str, paste: bool) -> bool {
+    let (typed, expected) = (compact(typed), compact(expected));
+    if expected.is_empty() {
+        return false;
+    }
+    if typed.contains(&expected) {
+        return true;
+    }
+    paste
+        && (has_paste_placeholder(&typed)
+            || (typed.chars().count() >= PARTIAL_PASTE_CHARS && expected.contains(&typed)))
+}
+
+/// Whether `typed` is exactly `expected` (whitespace ignored) or, for a
+/// paste, exactly one paste placeholder: a box that still holds what herdr
+/// typed and nothing else.
+pub(crate) fn draft_is(typed: &str, expected: &str, paste: bool) -> bool {
+    let (typed, expected) = (compact(typed), compact(expected));
+    if !expected.is_empty() && typed == expected {
+        return true;
+    }
+    paste
+        && typed.starts_with("[Pasted")
+        && typed.ends_with(']')
+        && typed.matches(']').count() == 1
+        && has_paste_placeholder(&typed)
+}
+
+/// Whether whitespace-free `typed` holds a paste placeholder:
+/// `[Pastedtext#N]`, `[Pastedtext#N+Klines]` or `[PastedContentNchars]`.
+fn has_paste_placeholder(typed: &str) -> bool {
+    let digits = |text: &str| !text.is_empty() && text.chars().all(|ch| ch.is_ascii_digit());
+    for prefix in ["[Pastedtext#", "[PastedContent"] {
+        let mut rest = typed;
+        while let Some(at) = rest.find(prefix) {
+            let after = &rest[at + prefix.len()..];
+            if let Some(end) = after.find(']') {
+                let inner = &after[..end];
+                let matched = if prefix == "[PastedContent" {
+                    inner.strip_suffix("chars").is_some_and(digits)
+                } else {
+                    let split = inner
+                        .find(|ch: char| !ch.is_ascii_digit())
+                        .unwrap_or(inner.len());
+                    let (number, more) = inner.split_at(split);
+                    digits(number)
+                        && (more.is_empty()
+                            || more
+                                .strip_prefix('+')
+                                .and_then(|lines| lines.strip_suffix("lines"))
+                                .is_some_and(digits))
+                };
+                if matched {
+                    return true;
+                }
+            }
+            rest = after;
+        }
+    }
+    false
+}
+
 /// The guard for a pane's terminal runtime: `agent` is its known agent
 /// (`None`: no agent, the recent-input check alone). The one typing guard:
 /// agent messages, coordinator wake-ups (through `agent.prompt` with

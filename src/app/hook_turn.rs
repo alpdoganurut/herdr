@@ -81,6 +81,11 @@ impl App {
             // the queue now, or a message waits for the next status edge.
             self.message_queue.mark_due();
         }
+        // Fork (lost-message fix): a turn start confirms a pasted message
+        // (src/app/message_queue/submit.rs).
+        if !ended {
+            self.note_submitted_turn(terminal_id.as_str());
+        }
         encode_success(id, ResponseResult::Ok {})
     }
 

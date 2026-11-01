@@ -225,6 +225,7 @@ impl App {
             .and_then(super::coordinator::terminal_session);
         let now = crate::coordinator::now_unix();
         let mut read_any = false;
+        let mut first_reads: Vec<String> = Vec::new();
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
             let found = self.message_queue.delivered.iter_mut().find(|message| {
@@ -238,6 +239,7 @@ impl App {
                     if first_read {
                         message.read_unix = Some(now);
                         read_any = true;
+                        first_reads.push(id.to_string());
                     }
                     AgentsDeliveredMessage {
                         id: id.to_string(),
@@ -255,6 +257,11 @@ impl App {
         }
         if read_any {
             self.message_queue.save();
+        }
+        // Fork (lost-message fix): a first read confirms a pointer line's
+        // message (src/app/message_queue/submit.rs).
+        for id in first_reads {
+            self.note_message_read(&id);
         }
         Ok(out)
     }
