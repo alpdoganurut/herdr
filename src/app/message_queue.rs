@@ -412,6 +412,20 @@ impl MessageQueue {
         self.push_at(entry, false);
     }
 
+    /// Fork: a quiet message released back to the queue (its tab left
+    /// do-not-disturb, src/app/quiet_messages.rs): logged as an update line
+    /// `queued` (its full line is in the log already), queued last.
+    pub(super) fn requeue(&mut self, entry: QueuedMessage) {
+        self.log(AgentMessage::update(
+            &entry.message,
+            OUTCOME_QUEUED,
+            crate::coordinator::now_unix(),
+        ));
+        self.entries.push(entry);
+        self.due = true;
+        self.save();
+    }
+
     /// Queue `entry`; `front`: ahead of every plain message queued for the
     /// same target, behind the urgent ones queued before it (an urgent
     /// message; urgent ones keep their sending order).
@@ -966,9 +980,15 @@ impl App {
         let status = check.status();
         // Fork: a tab in do-not-disturb stores it quietly
         // (src/app/quiet_messages.rs).
-        if let Some(reply) =
-            self.dnd_agent_message_send(&id, &target, &check, &message, &params.id, now_unix)
-        {
+        if let Some(reply) = self.dnd_agent_message_send(
+            &id,
+            &target,
+            &check,
+            &message,
+            &params.envelope,
+            &params.id,
+            now_unix,
+        ) {
             return reply;
         }
         // The pointer facts from the envelope's header, with the sender
@@ -1228,6 +1248,8 @@ impl App {
                 },
             )
             .collect();
+        // Fork: and the quiet messages stored for it (src/app/quiet_messages.rs).
+        messages.extend(self.quiet_inbox_messages(caller.terminal_id.as_str(), now_unix));
         // An urgent message sits at the front of its target's queue; the
         // inbox reads in sending order (stable for equal times).
         messages.sort_by_key(|message| message.queued_unix);

@@ -329,9 +329,10 @@ pub enum ResponseResult {
         context: Option<String>,
     },
     /// Fork: `agents.take_quiet`. `context` is the text the Claude hook adds
-    /// to the agent's context (absent when nothing was stored); `taken`
-    /// messages left the store (all marked delivered), `shown` of them are
-    /// in `context` in full (the rest are named by one overflow line).
+    /// to the agent's context (absent when nothing waits); the `shown`
+    /// messages in it (`ids`; `taken` is the same count) are offered, and
+    /// delivered once the hook acknowledges them (`agents.ack_quiet`); the
+    /// rest stay stored, named by one overflow line.
     AgentsTakeQuiet {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<String>,
@@ -339,6 +340,8 @@ pub enum ResponseResult {
         taken: u32,
         #[serde(default)]
         shown: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ids: Vec<String>,
     },
     AgentPrompted {
         agent: AgentInfo,

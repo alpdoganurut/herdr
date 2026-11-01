@@ -1483,6 +1483,9 @@ impl App {
             Method::AgentsTakeQuiet(params) => {
                 return self.handle_agents_take_quiet(request.id, params)
             }
+            Method::AgentsAckQuiet(params) => {
+                return self.handle_agents_ack_quiet(request.id, params)
+            }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(
                     request.id,
@@ -1580,6 +1583,8 @@ impl App {
                 return self.handle_integration_list(request.id);
             }
             Method::IntegrationInstall(params) => {
+                // Fork: the quiet messages' hook check looks again.
+                self.quiet.forget_claude_hook();
                 return self.handle_integration_install(request.id, params);
             }
             Method::IntegrationUninstall(params) => {

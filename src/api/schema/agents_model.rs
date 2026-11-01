@@ -49,6 +49,7 @@ pub mod method {
     pub const HANDOFF: &str = "agents.handoff";
     pub const REPORT_WAIT: &str = "agents.report_wait";
     pub const TAKE_QUIET: &str = "agents.take_quiet";
+    pub const ACK_QUIET: &str = "agents.ack_quiet";
 
     /// The methods advertised to client shells (the TUI's "Set role…" and
     /// "Handoff & compact").
@@ -57,7 +58,7 @@ pub mod method {
 
     /// Every method.
     #[cfg(test)]
-    pub const ALL: [&str; 25] = [
+    pub const ALL: [&str; 26] = [
         ACTOR,
         DIRECTORY,
         READ,
@@ -83,6 +84,7 @@ pub mod method {
         HANDOFF,
         REPORT_WAIT,
         TAKE_QUIET,
+        ACK_QUIET,
     ];
 }
 
@@ -1011,6 +1013,17 @@ pub struct AgentsTakeQuietParams {
     pub caller_pane: String,
 }
 
+/// `agents.ack_quiet` (fork, src/app/quiet_messages.rs): the Claude hook
+/// printed the text `agents.take_quiet` answered; the messages it offered
+/// (`ids`, at most 64) are delivered. Idempotent: ids no longer offered to
+/// the caller are ignored. Answers `ok`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsAckQuietParams {
+    pub caller_pane: String,
+    #[serde(default)]
+    pub ids: Vec<String>,
+}
+
 /// `agents.handoff` (fork): handoff, then compact, for a Claude agent
 /// (src/agent_handoff.rs). Without `caller_pane` the caller is the user
 /// (the tab menu, the keybinding, `herdr agent handoff` outside an agent);
@@ -1218,7 +1231,7 @@ pub struct AgentActionEntry {
 
 /// The type names the params structs may reference (digest hygiene).
 #[cfg(test)]
-pub const PARAM_TYPES: [&str; 26] = [
+pub const PARAM_TYPES: [&str; 27] = [
     "AgentsActorParams",
     "AgentsDirectoryParams",
     "AgentsReadParams",
@@ -1245,6 +1258,7 @@ pub const PARAM_TYPES: [&str; 26] = [
     "AgentsHandoffParams",
     "AgentsReportWaitParams",
     "AgentsTakeQuietParams",
+    "AgentsAckQuietParams",
 ];
 
 #[cfg(test)]

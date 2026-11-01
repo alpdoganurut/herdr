@@ -2481,6 +2481,11 @@ impl App {
                 &caller,
                 &queue_target,
                 QuietSend {
+                    release: crate::app::quiet_messages::QuietRelease {
+                        envelope: typed.clone(),
+                        pointer: Some(pointer.clone()),
+                        from_terminal: Some(caller.terminal_id.clone()),
+                    },
                     id,
                     line,
                     dnd,
@@ -2637,9 +2642,13 @@ impl App {
                 ),
             );
         }
-        if let Err((code, message)) =
-            self.store_quiet_message(queue_target, send.line.clone(), send.dnd, send.now)
-        {
+        if let Err((code, message)) = self.store_quiet_message(
+            queue_target,
+            send.line.clone(),
+            send.dnd,
+            Some(send.release.clone()),
+            send.now,
+        ) {
             return refuse(self, &code, message);
         }
         self.agents_model
@@ -3314,6 +3323,8 @@ fn created_ids(result: &ResponseResult) -> ModelResult<(String, String, String)>
 
 /// Fork: one quiet message's parts for [`App::send_quiet_message`].
 struct QuietSend {
+    /// The typing queue's parts, kept for a DND message released later.
+    release: crate::app::quiet_messages::QuietRelease,
     id: String,
     line: crate::coordinator::messages::AgentMessage,
     dnd: bool,

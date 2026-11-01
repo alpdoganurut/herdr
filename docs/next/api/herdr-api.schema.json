@@ -1972,6 +1972,25 @@
           ],
           "type": "object"
         },
+        "AgentsAckQuietParams": {
+          "description": "`agents.ack_quiet` (fork, src/app/quiet_messages.rs): the Claude hook\nprinted the text `agents.take_quiet` answered; the messages it offered\n(`ids`, at most 64) are delivered. Idempotent: ids no longer offered to\nthe caller are ignored. Answers `ok`.",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            },
+            "ids": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "caller_pane"
+          ],
+          "type": "object"
+        },
         "AgentsActionsParams": {
           "description": "`agents.actions`: the newest action-log entries.",
           "properties": {
@@ -10692,6 +10711,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentsTakeQuietParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork: the caller's hook printed the quiet messages it took.",
+          "properties": {
+            "method": {
+              "const": "agents.ack_quiet",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsAckQuietParams"
             }
           },
           "required": [
@@ -19811,13 +19847,19 @@
               "type": "object"
             },
             {
-              "description": "Fork: `agents.take_quiet`. `context` is the text the Claude hook adds\nto the agent's context (absent when nothing was stored); `taken`\nmessages left the store (all marked delivered), `shown` of them are\nin `context` in full (the rest are named by one overflow line).",
+              "description": "Fork: `agents.take_quiet`. `context` is the text the Claude hook adds\nto the agent's context (absent when nothing waits); the `shown`\nmessages in it (`ids`; `taken` is the same count) are offered, and\ndelivered once the hook acknowledges them (`agents.ack_quiet`); the\nrest stay stored, named by one overflow line.",
               "properties": {
                 "context": {
                   "type": [
                     "string",
                     "null"
                   ]
+                },
+                "ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
                 },
                 "shown": {
                   "default": 0,

@@ -51,7 +51,10 @@ impl App {
             if params.dnd {
                 self.move_queued_into_quiet(ws_idx, tab_idx);
             } else {
-                // Held queue entries (notices, older senders) may go now.
+                // What it stored for agents that do not take quiet messages
+                // goes back to the typing queue; held queue entries
+                // (notices, older senders) may go now.
+                self.release_dnd_quiet(ws_idx, tab_idx);
                 self.message_queue.mark_due();
             }
         }

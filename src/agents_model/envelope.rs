@@ -3,7 +3,7 @@
 //! and the server build the same envelope.
 
 /// The longest name, agent kind or role on an envelope header.
-const LABEL_CHARS: usize = 64;
+pub const LABEL_CHARS: usize = 64;
 
 /// The sender of a message, as the envelope names it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -328,7 +328,7 @@ fn defuse_framing_line(line: &str) -> std::borrow::Cow<'_, str> {
 
 /// One line of plain text, at most `max` characters (as
 /// `coordinator::one_line`).
-fn one_line(value: &str, max: usize) -> String {
+pub fn one_line(value: &str, max: usize) -> String {
     crate::coordinator::one_line(value, max)
 }
 

@@ -229,6 +229,8 @@ operations::define_operations! {
     AgentsReportWait(agents_model::AgentsReportWaitParams) => "agents.report_wait", false, false;
     /// Fork: take the caller's quiet messages (its Claude hook).
     AgentsTakeQuiet(agents_model::AgentsTakeQuietParams) => "agents.take_quiet", false, false;
+    /// Fork: the caller's hook printed the quiet messages it took.
+    AgentsAckQuiet(agents_model::AgentsAckQuietParams) => "agents.ack_quiet", false, false;
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;
