@@ -105,6 +105,10 @@ fn info(wrap: bool, hook_state: AgentsCheckState) -> AgentsSettingsInfo {
                 .into(),
         ),
         team_roster: true,
+        // An older server: no program status or handoff settings.
+        program_status: None,
+        handoff: None,
+        context_window: std::collections::BTreeMap::new(),
     }
 }
 
@@ -573,4 +577,148 @@ fn the_team_roster_row_toggles_by_key_and_click_with_the_wrap_off() {
         ("team_roster", &serde_json::Value::Bool(true))
     );
     assert!(!armed(&state), "the roster row never arms the fix");
+}
+
+/// Fork: a server that reports the program status and handoff settings.
+fn extended_info(handoff_enabled: bool, at_percent: u8) -> AgentsSettingsInfo {
+    let mut info = info(false, AgentsCheckState::Ok);
+    info.program_status = Some(true);
+    info.handoff = Some(crate::api::schema::AgentsHandoffInfo {
+        enabled: handoff_enabled,
+        at_percent,
+        command: String::new(),
+    });
+    info.context_window = [("claude".to_string(), 1_000_000)].into_iter().collect();
+    info
+}
+
+/// The one `agents.settings.set` an outcome sends.
+fn set_request(outcome: &ClientShellInput) -> (String, String, serde_json::Value) {
+    let [(id, Method::AgentsSettingsSet(params))] = &requests(outcome)[..] else {
+        panic!("one agents.settings.set, got {:?}", requests(outcome));
+    };
+    (id.clone(), params.key.clone(), params.value.clone())
+}
+
+#[test]
+fn an_older_server_shows_no_handoff_or_program_status_rows() {
+    let mut state = agents_state();
+    entered(&mut state, info(false, AgentsCheckState::Ok));
+    let text = frame_text(&mut state);
+    assert_eq!(state.hits.settings_choices.len(), ROWS);
+    assert!(!text.contains("handoff"), "{text}");
+    assert!(!text.contains("program status"), "{text}");
+    // ↓ stops at the status row.
+    down_to(&mut state, ROW_STATUS);
+    state.handle_input_bytes(b"\x1b[B");
+    let Some(ClientShellOverlay::Settings(settings)) = &state.overlay else {
+        panic!("settings overlay");
+    };
+    assert_eq!(settings.selected, ROW_STATUS);
+}
+
+#[test]
+fn fork_smoke_the_program_status_and_handoff_rows_round_trip() {
+    use crate::client::shell::settings_agents::{
+        ROWS_EXTENDED, ROW_HANDOFF, ROW_HANDOFF_AT, ROW_PROGRAM_STATUS,
+    };
+    let mut state = agents_state();
+    entered(&mut state, extended_info(true, 80));
+    let text = frame_text(&mut state);
+    assert!(
+        text.contains("program status reports (OSC 7501, claude): on"),
+        "{text}"
+    );
+    assert!(text.contains("handoff & compact (claude): on"), "{text}");
+    assert!(text.contains("handoff at: 80% context"), "{text}");
+    // The read-only facts name the config keys to edit.
+    assert!(
+        text.contains("handoff command: herdr's own prompt   (edit [agents.handoff] command"),
+        "{text}"
+    );
+    assert!(
+        text.contains("context window: claude 1M · codex auto   (edit [agents] context_window"),
+        "{text}"
+    );
+    let choices: Vec<usize> = state
+        .hits
+        .settings_choices
+        .iter()
+        .map(|(_, index)| *index)
+        .collect();
+    assert_eq!(choices, (0..ROWS_EXTENDED).collect::<Vec<_>>());
+
+    // program_status: ↵ turns it off; the reply shows it.
+    down_to(&mut state, ROW_PROGRAM_STATUS);
+    let (id, key, value) = set_request(&state.handle_input_bytes(b"\r"));
+    assert_eq!((key.as_str(), value), ("program_status", false.into()));
+    let mut off = extended_info(true, 80);
+    off.program_status = Some(false);
+    reply(&mut state, &id, off);
+    assert!(frame_text(&mut state).contains("program status reports (OSC 7501, claude): off"));
+
+    // handoff.enabled: a click acts at once.
+    let (id, key, value) = set_request(&{
+        let rect = choice_rect(&state, ROW_HANDOFF);
+        click(&mut state, rect)
+    });
+    assert_eq!((key.as_str(), value), ("handoff.enabled", false.into()));
+    reply(&mut state, &id, extended_info(false, 80));
+    let text = frame_text(&mut state);
+    assert!(text.contains("handoff & compact (claude): off"), "{text}");
+    // at_percent is dimmed and inert while the handoff is off.
+    let frame = state.compose(120, 40).expect("frame");
+    let buffer = frame.to_ratatui_buffer().expect("buffer");
+    let at = choice_rect(&state, ROW_HANDOFF_AT);
+    assert_eq!(buffer[(at.x + 6, at.y)].fg, state.config.palette.overlay0);
+    assert!(requests(&click(&mut state, at)).is_empty());
+
+    // On again (a click on the handoff row); then each click on at_percent
+    // steps 80 → 90 → off → 60, the reply showing the new value.
+    let (id, key, value) = set_request(&{
+        let rect = choice_rect(&state, ROW_HANDOFF);
+        click(&mut state, rect)
+    });
+    assert_eq!((key.as_str(), value), ("handoff.enabled", true.into()));
+    reply(&mut state, &id, extended_info(true, 80));
+    for (current, next) in [(80u8, 90u8), (90, 0), (0, 60)] {
+        let (id, key, value) = set_request(&{
+            let rect = choice_rect(&state, ROW_HANDOFF_AT);
+            click(&mut state, rect)
+        });
+        assert_eq!(key, "handoff.at_percent");
+        assert_eq!(value, serde_json::Value::from(next), "after {current}");
+        let mut stepped = extended_info(true, next);
+        if next == 0 {
+            stepped.handoff.as_mut().expect("handoff").command = "/my:handoff {path}".into();
+        }
+        reply(&mut state, &id, stepped);
+        let text = frame_text(&mut state);
+        if next == 0 {
+            assert!(
+                text.contains("handoff at: off (no automatic trigger)"),
+                "{text}"
+            );
+            assert!(
+                text.contains("handoff command: /my:handoff {path}"),
+                "{text}"
+            );
+        } else {
+            assert!(
+                text.contains(&format!("handoff at: {next}% context")),
+                "{text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn handoff_steps_go_up_then_off() {
+    use crate::client::shell::settings_agents::next_handoff_at;
+    assert_eq!(next_handoff_at(0), 60);
+    assert_eq!(next_handoff_at(60), 70);
+    assert_eq!(next_handoff_at(80), 90);
+    assert_eq!(next_handoff_at(85), 90);
+    assert_eq!(next_handoff_at(90), 0);
+    assert_eq!(next_handoff_at(100), 0);
 }

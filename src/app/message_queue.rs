@@ -2341,6 +2341,9 @@ impl App {
     /// message's sender (once per message, once per target per
     /// [`STUCK_NOTICE_EVERY`]). A live turn's spinner and streamed text
     /// change the region; a panel ticking under the prompt box does not.
+    /// Fork: a target with subagents running skips the frozen-screen test
+    /// (their progress keeps it moving) and its notice says it is running
+    /// a subagent; still once per message and per [`STUCK_NOTICE_EVERY`].
     /// Returns whether a notice went out.
     fn watch_stuck_target(
         &mut self,
@@ -2388,7 +2391,11 @@ impl App {
             .stuck_notice_at
             .get(&terminal_id)
             .is_none_or(|at| now >= *at + STUCK_NOTICE_EVERY);
-        if unchanged < STUCK_SCREEN || !cooled {
+        // Fork: a working agent with subagents running waits on them (a
+        // foreground subagent holds its turn); its screen moves with their
+        // progress, so the sender hears why without the frozen-screen test.
+        let subagents = self.target_subagents(target, now);
+        if (subagents.is_none() && unchanged < STUCK_SCREEN) || !cooled {
             return false;
         }
         // The oldest such message whose sender can still be reached (a
@@ -2416,19 +2423,34 @@ impl App {
             .message_status_name(target)
             .unwrap_or_else(|| reason.to_string());
         let target_name = notice_target_name(&entry);
-        let text = format!(
-            "herdr: your message {} to {target_name} ({}) has waited {}; {target_name} reads {status} but its screen has not changed for {} (queued: {reason}). It stays queued; check it with agents_messages.",
-            entry.id(),
-            entry.message.to_pane,
-            minutes(Duration::from_secs(
-                now_unix.saturating_sub(entry.message.unix)
-            )),
-            minutes(unchanged),
-        );
+        let waited = minutes(Duration::from_secs(
+            now_unix.saturating_sub(entry.message.unix),
+        ));
+        let text = match subagents {
+            Some((count, running)) => format!(
+                "herdr: your message {} to {target_name} ({}) has waited {waited}; {target_name} is running {} ({}); it will read your message when that turn ends. It stays queued; check it with agents_messages.",
+                entry.id(),
+                entry.message.to_pane,
+                if count == 1 {
+                    "a subagent".to_string()
+                } else {
+                    format!("{count} subagents")
+                },
+                minutes(running),
+            ),
+            None => format!(
+                "herdr: your message {} to {target_name} ({}) has waited {waited}; {target_name} reads {status} but its screen has not changed for {} (queued: {reason}). It stays queued; check it with agents_messages.",
+                entry.id(),
+                entry.message.to_pane,
+                minutes(unchanged),
+            ),
+        };
         tracing::info!(
             message = %entry.id(),
             target = %entry.message.to_pane,
             unchanged_s = unchanged.as_secs(),
+            subagents = subagents.map_or(0, |(count, _)| count),
+            subagents_running_s = subagents.map_or(0, |(_, running)| running.as_secs()),
             "message queue: a queued message seems stuck; telling its sender"
         );
         if !self.send_stuck_notice(&entry, text, now_unix) {
@@ -2447,6 +2469,26 @@ impl App {
         self.message_queue.stuck_notice_at.insert(terminal_id, now);
         self.message_queue.save();
         true
+    }
+
+    /// Fork: the target's running subagents and how long they have run
+    /// (`None` without any).
+    fn target_subagents(
+        &self,
+        target: &super::terminal_targets::TerminalTarget,
+        now: Instant,
+    ) -> Option<(u32, Duration)> {
+        let pane = self
+            .state
+            .workspaces
+            .get(target.ws_idx)?
+            .pane_state(target.pane_id)?;
+        let (count, since) = self
+            .state
+            .terminals
+            .get(&pane.attached_terminal_id)?
+            .active_subagents_since()?;
+        Some((count, now.saturating_duration_since(since)))
     }
 
     /// The target's displayed status word (`working`, `blocked`, ...).

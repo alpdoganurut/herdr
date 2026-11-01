@@ -20,6 +20,8 @@ pub(super) const INDICATORS_ACTIVE_AGENTS_ROW: usize = 2;
 /// `ui.sidebar_scheduled_agents`, under the Active toggle.
 pub(super) const INDICATORS_PINNED_AGENTS_ROW: usize = 3;
 pub(super) const INDICATORS_SCHEDULED_AGENTS_ROW: usize = 4;
+/// Fork: the row toggling `ui.sidebar_collapse_suspended`, under them.
+pub(super) const INDICATORS_COLLAPSE_SUSPENDED_ROW: usize = 5;
 
 fn indicator_index(style: crate::config::StatusIndicatorStyle) -> usize {
     usize::from(style == crate::config::StatusIndicatorStyle::Symbols)
@@ -168,8 +170,9 @@ impl ClientShellState {
             Some(ClientShellOverlay::Settings(settings)) => match settings.section {
                 ClientSettingsSection::Theme => crate::config::THEME_NAMES.len(),
                 // Fork (sidebar v2): the two styles, then the Active agents
-                // toggle; sidebar v3: the Pinned and Scheduled toggles.
-                ClientSettingsSection::Indicators => 5,
+                // toggle; sidebar v3: the Pinned and Scheduled toggles;
+                // then the fold-suspended-runs toggle.
+                ClientSettingsSection::Indicators => 6,
                 ClientSettingsSection::Sound => sound_rows,
                 ClientSettingsSection::Toast => 4,
                 ClientSettingsSection::ClosedSessions => {
@@ -311,6 +314,17 @@ impl ClientShellState {
                 );
                 if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
                     settings.selected = INDICATORS_SCHEDULED_AGENTS_ROW;
+                }
+            }
+            // Fork: row 5 toggles folding runs of suspended tabs.
+            ClientSettingsSection::Indicators if selected == INDICATORS_COLLAPSE_SUSPENDED_ROW => {
+                let enabled = !self.config.sidebar_collapse_suspended;
+                self.save_settings_edit(
+                    crate::config::ConfigEdit::SidebarCollapseSuspended(enabled),
+                    outcome,
+                );
+                if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+                    settings.selected = INDICATORS_COLLAPSE_SUSPENDED_ROW;
                 }
             }
             ClientSettingsSection::Indicators => {

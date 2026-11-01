@@ -474,6 +474,72 @@ async fn fork_smoke_agents_settings_write_the_config_and_the_hook_fix_waits_for_
     shutdown_test_runtimes(&mut server);
 }
 
+/// Fork: `agents.settings` reports `[agents] program_status`,
+/// `[agents.handoff]` and `[agents] context_window`; `agents.settings.set`
+/// writes `program_status`, `handoff.enabled` and `handoff.at_percent` into
+/// the (temp) config and the reload applies them.
+#[tokio::test]
+async fn fork_smoke_agents_settings_write_program_status_and_handoff() {
+    use crate::api::schema::AgentsSettingsSetParams;
+    let temp = crate::agent_wrap::test_support::TempHome::new("agents-handoff-smoke");
+    assert!(temp.contains(&temp.config_path));
+    temp.write_config(
+        "[agents]\ncontext_window = { claude = 1000000 }\n\n[agents.handoff]\ncommand = \"/my:handoff {path}\"\n",
+    );
+    let (mut server, _pane) = notices_server();
+    server.app.agents_setup_env = Some(temp.env.clone());
+    server.app.reload_config();
+
+    let settings = public_api(&mut server, Method::AgentsSettings(EmptyParams::default()));
+    let info = &settings["result"]["info"];
+    assert_eq!(info["program_status"], true, "{settings}");
+    assert_eq!(info["handoff"]["enabled"], true);
+    assert_eq!(info["handoff"]["at_percent"], 80);
+    assert_eq!(info["handoff"]["command"], "/my:handoff {path}");
+    assert_eq!(info["context_window"]["claude"], 1_000_000);
+
+    let set = |server: &mut HeadlessServer, key: &str, value: serde_json::Value| {
+        public_api(
+            server,
+            Method::AgentsSettingsSet(AgentsSettingsSetParams {
+                key: key.into(),
+                value,
+            }),
+        )
+    };
+    let off = set(&mut server, "program_status", serde_json::json!(false));
+    assert_eq!(off["result"]["info"]["program_status"], false, "{off}");
+    assert!(!server.app.agents_config.program_status, "applied live");
+    let off = set(&mut server, "handoff.enabled", serde_json::json!(false));
+    assert_eq!(off["result"]["info"]["handoff"]["enabled"], false, "{off}");
+    let at = set(&mut server, "handoff.at_percent", serde_json::json!(70));
+    assert_eq!(at["result"]["info"]["handoff"]["at_percent"], 70, "{at}");
+    assert_eq!(server.app.agents_config.handoff.at_percent, 70);
+    let text = std::fs::read_to_string(&temp.config_path).unwrap();
+    assert!(text.contains("program_status = false"), "{text}");
+    assert!(
+        text.contains(
+            "[agents.handoff]\ncommand = \"/my:handoff {path}\"\nenabled = false\nat_percent = 70"
+        ),
+        "{text}"
+    );
+    // Bad values write nothing.
+    let before = std::fs::read_to_string(&temp.config_path).unwrap();
+    for (key, value) in [
+        ("handoff.at_percent", serde_json::json!(101)),
+        ("handoff.at_percent", serde_json::json!("80")),
+        ("handoff.at_percent", serde_json::json!(-1)),
+        ("handoff.enabled", serde_json::json!(1)),
+        ("handoff.command", serde_json::json!("/x")),
+        ("context_window", serde_json::json!({ "claude": 1 })),
+    ] {
+        let bad = set(&mut server, key, value);
+        assert_eq!(bad["error"]["code"], "invalid_request", "{bad}");
+    }
+    assert_eq!(std::fs::read_to_string(&temp.config_path).unwrap(), before);
+    shutdown_test_runtimes(&mut server);
+}
+
 #[tokio::test]
 async fn fork_smoke_agent_notice_goes_when_its_pane_process_exits() {
     let (mut server, pane) = notices_server();

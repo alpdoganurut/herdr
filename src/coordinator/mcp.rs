@@ -266,6 +266,8 @@ const CHECKPOINT_DETAIL_CHARS: usize = 120;
 const CHECKPOINT_KINDS: [&str; 5] = ["decision", "milestone", "failure", "bookmark", "note"];
 /// `agents_list` rows (tabs) before `+N more`.
 const LIST_ROWS: u32 = 40;
+/// The largest `agents_list` page (`limit`).
+const LIST_ROWS_MAX: u32 = 200;
 /// Rows a name lookup reads (every tab of a large session).
 const LOOKUP_ROWS: u32 = 2_000;
 const ACTIONS_DEFAULT: u64 = 20;
@@ -991,16 +993,32 @@ impl<A: Api> Session<A> {
         let all = bool_arg(args, "all")?;
         let role = str_arg(args, "role")?;
         let status = str_arg(args, "status")?;
+        // Fork: paging. The server filters by status and role before it
+        // pages, so `all=true status=…` reaches every matching tab.
+        let offset = u64_arg(args, "offset")?
+            .unwrap_or(0)
+            .min(u64::from(u32::MAX)) as u32;
+        let limit = u64_arg(args, "limit")?.map_or(LIST_ROWS, |limit| {
+            limit.clamp(1, u64::from(LIST_ROWS_MAX)) as u32
+        });
         let default_view = group.is_none() && team.is_none() && !all;
         let directory = self.directory(
             caller,
             AgentsDirectoryParams {
-                group,
-                team,
+                group: group.clone(),
+                team: team.clone(),
                 all,
-                agents_only: role.is_some() || status.is_some(),
-                limit: Some(LIST_ROWS),
-                include_closed: default_view,
+                // A shell has no role: role= lists agents only. status=shell
+                // must keep shell-only tabs.
+                agents_only: role.is_some()
+                    || status
+                        .as_deref()
+                        .is_some_and(|status| !status.eq_ignore_ascii_case("shell")),
+                limit: Some(limit),
+                include_closed: default_view && offset == 0,
+                status: status.clone(),
+                role: role.clone(),
+                offset: (offset > 0).then_some(offset),
                 ..AgentsDirectoryParams::default()
             },
         )?;
@@ -1013,6 +1031,8 @@ impl<A: Api> Session<A> {
                 .as_deref()
                 .is_none_or(|want| pane_status(pane).eq_ignore_ascii_case(want))
         };
+        // The server already filtered; this keeps an older server (which
+        // ignores `status` / `role`) from listing everything.
         let filtered = role.is_some() || status.is_some();
         let mut rows = Vec::new();
         for tab in &directory.tabs {
@@ -1031,9 +1051,27 @@ impl<A: Api> Session<A> {
         }
         let mut footer = vec![groups_line(&directory, &caller.workspace_id)];
         if directory.truncated > 0 {
+            let mut next = vec![format!("offset={}", offset.saturating_add(limit))];
+            if limit != LIST_ROWS {
+                next.push(format!("limit={limit}"));
+            }
+            for (key, value) in [
+                ("group", &group),
+                ("team", &team),
+                ("role", &role),
+                ("status", &status),
+            ] {
+                if let Some(value) = value {
+                    next.push(format!("{key}={value}"));
+                }
+            }
+            if all {
+                next.push("all=true".into());
+            }
             footer.push(format!(
-                "+{} more tabs; filter by group (agents_list group=…)",
-                directory.truncated
+                "+{} more tabs; next page: agents_list {}",
+                directory.truncated,
+                next.join(" ")
             ));
         }
         if !directory.recently_closed.is_empty() {
@@ -2999,16 +3037,7 @@ fn status_name(status: &crate::api::schema::AgentStatus) -> String {
 
 /// A directory pane's status word (`shell` for shell panes).
 fn pane_status(pane: &AgentsPaneInfo) -> String {
-    if pane.kind == AgentPaneKind::Shell {
-        return "shell".into();
-    }
-    if pane.suspended {
-        return "suspended".into();
-    }
-    pane.status
-        .as_ref()
-        .map(status_name)
-        .unwrap_or_else(|| "unknown".into())
+    pane.state_word()
 }
 
 fn access_word(access: Option<AgentsAccess>) -> &'static str {
@@ -3553,13 +3582,15 @@ pub fn tools() -> Vec<Value> {
                 "body": { "type": "string", "maxLength": 280, "description": "Details, at most 3 lines" },
                 "kind": { "type": "string", "enum": ["info", "question", "done", "warning"], "description": "Default info" },
             }), &["title"]) }),
-        json!({ "name": "agents_list", "description": "The tabs of your group in full (agents and shells, with role, status, note; = you · ◆ you may edit · · read and message) plus one line per other group. group= or team= lists another group, all=true every group (40 rows, then +N more). Recently closed tabs are listed at the bottom.",
+        json!({ "name": "agents_list", "description": "The tabs of your group in full (agents and shells, with role, status, note; = you · ◆ you may edit · · read and message) plus one line per other group. group= or team= lists another group, all=true every group (40 rows a page, then +N more with the next page's offset). status= and role= filter every listed group before paging. Recently closed tabs are listed at the bottom of the first page.",
             "inputSchema": schema(json!({
                 "group": string("A group (label, id or number)"),
                 "team": string("A team's group (label, id or number)"),
                 "all": { "type": "boolean", "description": "Every group" },
                 "role": string("Only agents with this role"),
                 "status": { "type": "string", "enum": ["idle", "working", "blocked", "done", "suspended", "unknown", "shell"] },
+                "offset": { "type": "integer", "minimum": 0, "description": "Matching tabs to skip (the next page: what +N more names)" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Tabs a page (default 40)" },
             }), &[]) }),
         json!({ "name": "agents_get", "description": "One tab or agent in detail (any group), with its last 5 messages.",
             "inputSchema": schema(json!({ "target": target }), &["target"]) }),
@@ -5118,10 +5149,61 @@ mod tests {
         );
         let out = call(&mut s, "agents_list", json!({ "all": true }));
         assert!(
-            out.text.contains("+7 more tabs; filter by group"),
+            out.text
+                .contains("+7 more tabs; next page: agents_list offset=40 all=true"),
             "{}",
             out.text
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fork_smoke_agents_list_pages_and_filters_status_with_all() {
+        let (dir, world) = world("mcp-list-pages");
+        let mut s = session(&world, "w3:p1", Verdict::Verified);
+        // status= with all=true reaches the server's filter, with the page.
+        world.queue(
+            "agents.directory",
+            Ok(json!({ "type": "agents_directory", "directory": {
+                "generated_unix": 1, "groups": [], "tabs": [], "truncated": 12 } })),
+        );
+        let out = call(
+            &mut s,
+            "agents_list",
+            json!({ "all": true, "status": "suspended", "offset": 20, "limit": 10 }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        let Method::AgentsDirectory(params) = world.calls_of("agents.directory").pop().unwrap()
+        else {
+            panic!("a directory read");
+        };
+        assert!(params.all);
+        assert_eq!(params.status.as_deref(), Some("suspended"));
+        assert_eq!(params.offset, Some(20));
+        assert_eq!(params.limit, Some(10));
+        assert!(params.agents_only && !params.include_closed);
+        assert!(
+            out.text.contains(
+                "+12 more tabs; next page: agents_list offset=30 limit=10 status=suspended all=true"
+            ),
+            "{}",
+            out.text
+        );
+        // status=shell keeps shell-only tabs; limit is capped; no offset
+        // sends none.
+        let out = call(
+            &mut s,
+            "agents_list",
+            json!({ "all": true, "status": "shell", "limit": 5000 }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        let Method::AgentsDirectory(params) = world.calls_of("agents.directory").pop().unwrap()
+        else {
+            panic!("a directory read");
+        };
+        assert!(!params.agents_only);
+        assert_eq!(params.limit, Some(LIST_ROWS_MAX));
+        assert_eq!(params.offset, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

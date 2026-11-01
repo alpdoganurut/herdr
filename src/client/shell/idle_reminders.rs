@@ -221,6 +221,11 @@ impl ClientShellState {
                 };
                 let body = super::notification_format::agent_notification_body(
                     snapshot,
+                    super::teams::active_teams_of(
+                        &self.teams,
+                        &endpoint.endpoint_id,
+                        Some(snapshot),
+                    ),
                     agent.agent.as_deref(),
                     Some(agent.pane_id.as_str()),
                     Some(tab.workspace_id.as_str()),
@@ -286,6 +291,11 @@ impl ClientShellState {
                 let agent_name = agent.and_then(|agent| agent.agent.clone());
                 let body = super::notification_format::agent_notification_body(
                     snapshot,
+                    super::teams::active_teams_of(
+                        &self.teams,
+                        &endpoint.endpoint_id,
+                        Some(snapshot),
+                    ),
                     agent_name.as_deref(),
                     Some(pane_id.as_str()),
                     Some(tab.workspace_id.as_str()),

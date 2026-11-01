@@ -308,6 +308,10 @@ pub struct TerminalState {
         crate::agent_resume::AgentSessionRefKind,
         String,
     )>,
+    /// Fork: when the set last became non-empty (`None` while empty).
+    /// Runtime only; the stuck-message notice names how long a working
+    /// agent's subagents have run.
+    subagents_since: Option<Instant>,
     /// Fork (agents v2): the pane's role, note, opener and team exclusion.
     /// Persisted with the pane snapshot; carried through close and reopen.
     agent_meta: crate::agents_model::PaneAgentMeta,
@@ -385,6 +389,7 @@ impl TerminalState {
             agent_voice: crate::detect::AgentVoice::Off,
             subagent_snapshot_seen: false,
             subagent_session: None,
+            subagents_since: None,
             agent_meta: crate::agents_model::PaneAgentMeta::default(),
             turn: crate::agents_model::turn::TurnState::default(),
             created_unix: std::time::SystemTime::now()
@@ -3164,6 +3169,10 @@ impl TerminalState {
     fn note_subagent_session(&mut self, was_empty: bool) {
         if was_empty && !self.active_subagents.is_empty() {
             self.subagent_session = self.current_session_identity_for_persistence();
+            self.subagents_since = Some(Instant::now());
+        }
+        if self.active_subagents.is_empty() {
+            self.subagents_since = None;
         }
     }
 
@@ -3199,6 +3208,17 @@ impl TerminalState {
         u32::try_from(self.active_subagents.len()).unwrap_or(u32::MAX)
     }
 
+    /// Fork: the running subagents and when the set became non-empty;
+    /// `None` without any (or while suspended, like
+    /// [`Self::active_subagent_count`]).
+    pub fn active_subagents_since(&self) -> Option<(u32, Instant)> {
+        let count = self.active_subagent_count();
+        if count == 0 {
+            return None;
+        }
+        self.subagents_since.map(|since| (count, since))
+    }
+
     /// Fork: the agent's voice mode; `Off` without a known agent or while
     /// it is suspended.
     pub fn agent_voice(&self) -> crate::detect::AgentVoice {
@@ -3226,6 +3246,7 @@ impl TerminalState {
     }
 
     fn clear_subagents(&mut self) {
+        self.subagents_since = None;
         if !self.active_subagents.is_empty() {
             self.active_subagents.clear();
             self.revision = self.revision.saturating_add(1);

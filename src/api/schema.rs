@@ -32,7 +32,7 @@ pub use agent_notices::{
     AgentNotifyParams,
 };
 pub use agent_wrap::{
-    AgentsCheckInfo, AgentsCheckState, AgentsFixParams, AgentsSettingsInfo,
+    AgentsCheckInfo, AgentsCheckState, AgentsFixParams, AgentsHandoffInfo, AgentsSettingsInfo,
     AgentsSettingsSetParams, AgentsWrapSource,
 };
 pub use agents::*;

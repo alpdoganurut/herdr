@@ -47,7 +47,7 @@ pub(crate) enum ConfigEdit<'a> {
         values: &'a [String],
     },
     /// Fork: an `[agents]` toggle (`tools`, `instructions`, `notices`,
-    /// `team_roster`).
+    /// `team_roster`, `program_status`).
     AgentsBool {
         key: &'static str,
         value: bool,
@@ -69,6 +69,12 @@ pub(crate) enum ConfigEdit<'a> {
     SidebarPinnedAgents(bool),
     /// Fork (sidebar v3): `ui.sidebar_scheduled_agents` (the Scheduled block).
     SidebarScheduledAgents(bool),
+    /// Fork: `ui.sidebar_collapse_suspended` (fold runs of suspended tabs).
+    SidebarCollapseSuspended(bool),
+    /// Fork: `[agents.handoff] enabled` (`agents.settings.set`).
+    AgentsHandoffEnabled(bool),
+    /// Fork: `[agents.handoff] at_percent` (`agents.settings.set`).
+    AgentsHandoffAtPercent(u8),
 }
 
 /// Fork: minutes past midnight as a 24-hour "HH:MM".
@@ -94,14 +100,17 @@ impl ConfigEdit<'_> {
             Self::SidebarLayoutTabs
             | Self::SidebarActiveAgents(_)
             | Self::SidebarPinnedAgents(_)
-            | Self::SidebarScheduledAgents(_) => "sidebar setting",
+            | Self::SidebarScheduledAgents(_)
+            | Self::SidebarCollapseSuspended(_) => "sidebar setting",
             Self::BrowserBool { .. } | Self::BrowserString { .. } | Self::BrowserList { .. } => {
                 "browser setting"
             }
             Self::AgentsBool { .. }
             | Self::AgentsWrap(_)
             | Self::AgentsWrapWithBrowser { .. }
-            | Self::AgentsInstructionsFile(_) => "agents setting",
+            | Self::AgentsInstructionsFile(_)
+            | Self::AgentsHandoffEnabled(_)
+            | Self::AgentsHandoffAtPercent(_) => "agents setting",
         }
     }
 
@@ -254,6 +263,22 @@ impl ConfigEdit<'_> {
             Self::SidebarScheduledAgents(enabled) => {
                 super::upsert_section_bool(content, "ui", "sidebar_scheduled_agents", enabled)
             }
+            Self::SidebarCollapseSuspended(enabled) => {
+                super::upsert_section_bool(content, "ui", "sidebar_collapse_suspended", enabled)
+            }
+            // The nested table goes through toml_edit too: `[agents.handoff]`,
+            // an inline `handoff = { … }` and dotted `handoff.enabled = …`
+            // under `[agents]` are all edited in place.
+            Self::AgentsHandoffEnabled(enabled) => document_edit(content, |doc| {
+                set_handoff_item(doc, "enabled", toml_edit::value(enabled));
+            }),
+            Self::AgentsHandoffAtPercent(percent) => document_edit(content, |doc| {
+                set_handoff_item(
+                    doc,
+                    "at_percent",
+                    toml_edit::value(i64::from(percent.min(100))),
+                );
+            }),
         }
     }
 }
@@ -271,6 +296,8 @@ impl ConfigEdit<'_> {
                 | Self::AgentsWrap(_)
                 | Self::AgentsWrapWithBrowser { .. }
                 | Self::AgentsInstructionsFile(_)
+                | Self::AgentsHandoffEnabled(_)
+                | Self::AgentsHandoffAtPercent(_)
         )
     }
 }
@@ -308,6 +335,29 @@ fn set_section_item(
     }
     if let Some(table) = doc.get_mut(section).and_then(Item::as_table_like_mut) {
         set_browser_item(table, key, item);
+    }
+}
+
+/// Fork: set `key` in the `agents.handoff` table, wherever it is written
+/// (`[agents.handoff]`, `handoff = { … }` or dotted `handoff.x = …` under
+/// `[agents]`), keeping an existing value's decor. A missing `agents` is
+/// created implicit (no empty `[agents]` header); a missing `handoff` is
+/// added as `[agents.handoff]`. Anything that is not a table is left alone.
+fn set_handoff_item(doc: &mut toml_edit::DocumentMut, key: &str, item: toml_edit::Item) {
+    use toml_edit::{Item, Table};
+    if doc.get("agents").is_none() {
+        let mut agents = Table::new();
+        agents.set_implicit(true);
+        doc.insert("agents", Item::Table(agents));
+    }
+    let Some(agents) = doc.get_mut("agents").and_then(Item::as_table_like_mut) else {
+        return;
+    };
+    if agents.get("handoff").is_none() {
+        agents.insert("handoff", Item::Table(Table::new()));
+    }
+    if let Some(handoff) = agents.get_mut("handoff").and_then(Item::as_table_like_mut) {
+        set_browser_item(handoff, key, item);
     }
 }
 
@@ -570,6 +620,124 @@ mod tests {
         ] {
             assert_eq!(edit.description(), "sidebar setting");
         }
+    }
+
+    #[test]
+    fn sidebar_collapse_suspended_edit_writes_its_ui_key_and_parses_back() {
+        let content = "[ui]\nsidebar_width = 30\n";
+        assert!(
+            crate::config::Config::default()
+                .ui
+                .sidebar_collapse_suspended
+        );
+        let edited = ConfigEdit::SidebarCollapseSuspended(false).apply(content);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(!config.ui.sidebar_collapse_suspended);
+        assert_eq!(config.ui.sidebar_width, 30);
+        let edited = ConfigEdit::SidebarCollapseSuspended(true).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(config.ui.sidebar_collapse_suspended);
+        assert_eq!(edited.matches("sidebar_collapse_suspended").count(), 1);
+        assert_eq!(
+            ConfigEdit::SidebarCollapseSuspended(true).description(),
+            "sidebar setting"
+        );
+    }
+
+    #[test]
+    fn agents_handoff_edits_write_the_handoff_table_and_parse_back() {
+        let content =
+            "[agents]\nwrap = true\n\n[agents.handoff]\ncommand = \"/my:handoff {path}\" # mine\n";
+        let edited = ConfigEdit::AgentsHandoffEnabled(false).apply(content);
+        let edited = ConfigEdit::AgentsHandoffAtPercent(70).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert!(!config.agents.handoff.enabled);
+        assert_eq!(config.agents.handoff.at_percent, 70);
+        assert_eq!(
+            config.agents.handoff.command, "/my:handoff {path}",
+            "untouched"
+        );
+        assert_eq!(config.agents.wrap, Some(true), "untouched");
+        assert!(edited.contains("# mine"), "{edited}");
+        let edited = ConfigEdit::AgentsHandoffAtPercent(250).apply(&edited);
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.agents.handoff.at_percent, 100, "capped");
+        assert_eq!(edited.matches("at_percent").count(), 1, "{edited}");
+        // A config without the table gets one, and no empty [agents].
+        let edited = ConfigEdit::AgentsHandoffAtPercent(0).apply("");
+        let config: crate::config::Config = toml::from_str(&edited).unwrap();
+        assert_eq!(config.agents.handoff.at_percent, 0);
+        assert!(config.agents.handoff.enabled, "the default");
+        assert_eq!(edited, "[agents.handoff]\nat_percent = 0\n", "{edited}");
+        assert!(ConfigEdit::AgentsHandoffEnabled(true).atomic());
+        assert!(ConfigEdit::AgentsHandoffAtPercent(80).atomic());
+        assert_eq!(
+            ConfigEdit::AgentsHandoffEnabled(true).description(),
+            "agents setting"
+        );
+    }
+
+    #[test]
+    fn agents_handoff_edits_keep_every_spelling_of_the_table_in_place() {
+        let parse = |text: &str| {
+            toml::from_str::<crate::config::Config>(text)
+                .unwrap_or_else(|err| panic!("{err}: {text}"))
+                .agents
+                .handoff
+        };
+        let both = |text: &str| {
+            let text = ConfigEdit::AgentsHandoffEnabled(false).apply(text);
+            ConfigEdit::AgentsHandoffAtPercent(70).apply(&text)
+        };
+        for original in [
+            // a header with a trailing comment
+            "[agents]\nwrap = true\n\n[agents.handoff] # mine\nresume = false\n",
+            // a spaced header
+            "[ agents.handoff ]\nresume = false\n",
+            // an inline table
+            "[agents]\nhandoff = { resume = false }\n",
+            // dotted keys under [agents]
+            "[agents]\nhandoff.resume = false\n",
+            // a trailing comment on the enabled line itself
+            "[agents.handoff]\nenabled = true # keep me\nresume = false\n",
+        ] {
+            let edited = both(original);
+            let handoff = parse(&edited);
+            assert!(!handoff.enabled, "{edited}");
+            assert_eq!(handoff.at_percent, 70, "{edited}");
+            assert!(!handoff.resume, "untouched: {edited}");
+            // Never a second table, nor a second key.
+            let headers = edited.matches("agents.handoff ]").count()
+                + edited.matches("[agents.handoff]").count()
+                + edited.matches("handoff = {").count();
+            assert!(headers <= 1, "{edited}");
+            assert!(
+                !edited.contains("[agents]\n\n"),
+                "no empty [agents]: {edited}"
+            );
+            assert_eq!(edited.matches("enabled").count(), 1, "{edited}");
+            assert_eq!(edited.matches("at_percent").count(), 1, "{edited}");
+            let again = both(&edited);
+            assert_eq!(again, edited, "idempotent");
+            for comment in ["# mine", "# keep me"] {
+                if original.contains(comment) {
+                    assert!(edited.contains(comment), "{edited}");
+                }
+            }
+        }
+        let edited = both("[agents.handoff] # mine\nresume = false\n");
+        assert!(edited.starts_with("[agents.handoff] # mine\n"), "{edited}");
+        let edited = both("[agents.handoff]\nenabled = true # keep me\n");
+        assert!(edited.contains("enabled = false # keep me"), "{edited}");
+        let edited = both("[agents]\nhandoff = { resume = false }\n");
+        assert!(edited.contains("handoff = {"), "stays inline: {edited}");
+        assert!(!edited.contains("[agents.handoff]"), "{edited}");
+        let edited = both("[agents]\nhandoff.resume = false\n");
+        assert!(
+            edited.contains("handoff.enabled = false"),
+            "stays dotted: {edited}"
+        );
+        assert!(!edited.contains("[agents.handoff]"), "{edited}");
     }
 
     #[test]

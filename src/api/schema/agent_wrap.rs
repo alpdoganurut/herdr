@@ -41,6 +41,13 @@ pub mod key {
     pub const INSTRUCTIONS_FILE: &str = "instructions_file";
     pub const NOTICES: &str = "notices";
     pub const TEAM_ROSTER: &str = "team_roster";
+    /// Fork: `[agents] program_status` (a bool).
+    pub const PROGRAM_STATUS: &str = "program_status";
+    /// Fork: `[agents.handoff] enabled` (a bool).
+    pub const HANDOFF_ENABLED: &str = "handoff.enabled";
+    /// Fork: `[agents.handoff] at_percent` (an integer 0 to 100; 0 = no
+    /// automatic trigger).
+    pub const HANDOFF_AT_PERCENT: &str = "handoff.at_percent";
 }
 
 /// The check ids in [`AgentsSettingsInfo::checks`].
@@ -136,6 +143,30 @@ pub struct AgentsSettingsInfo {
     /// servers: on, the default.
     #[serde(default = "default_true")]
     pub team_roster: bool,
+    /// Fork: `[agents] program_status` (answer the OSC 7501 probe). Absent
+    /// from older servers, which cannot set it: `None` hides the row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_status: Option<bool>,
+    /// Fork: `[agents.handoff]`. Absent from older servers: `None` hides
+    /// the handoff rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<AgentsHandoffInfo>,
+    /// Fork: `[agents] context_window`, tokens per agent (read-only here;
+    /// a missing agent uses the window its session implies).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub context_window: std::collections::BTreeMap<String, u64>,
+}
+
+/// Fork: `[agents.handoff]` as `agents.settings` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct AgentsHandoffInfo {
+    pub enabled: bool,
+    /// 0 = no automatic trigger.
+    #[serde(default)]
+    pub at_percent: u8,
+    /// The custom prompt line (read-only here); empty = herdr's own.
+    #[serde(default)]
+    pub command: String,
 }
 
 fn default_true() -> bool {
@@ -143,7 +174,8 @@ fn default_true() -> bool {
 }
 
 /// `agents.settings.set`: one `[agents]` key. `value` is a bool for `wrap`,
-/// `tools`, `instructions`, `notices` and `team_roster`; a string for `instructions_file`
+/// `tools`, `instructions`, `notices`, `team_roster`, `program_status` and
+/// `handoff.enabled`; an integer 0 to 100 for `handoff.at_percent`; a string for `instructions_file`
 /// (`""` or `"default"` = built-in, `"file"` = `<config dir>/agents.md`,
 /// seeded with the built-in text when missing, anything else = that path).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]

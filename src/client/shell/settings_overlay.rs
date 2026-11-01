@@ -52,9 +52,10 @@ pub(super) fn render_settings_overlay(
         // up to nine rows and nine facts (clamped to the terminal)
         30
     } else if settings.section == ClientSettingsSection::Agents {
-        // five rows, the armed [fix] (preview and buttons), a rule, the
-        // checks and three hint lines (clamped to the terminal)
-        32
+        // six rows, the armed [fix] (preview and buttons), the fork's three
+        // handoff / program status rows and two facts, a rule, the checks
+        // and three hint lines (clamped to the terminal)
+        37
     } else {
         22
     };
@@ -212,12 +213,13 @@ pub(super) fn render_settings_overlay(
             // Fork (sidebar v2): the tabs sidebar's Active agents block;
             // sidebar v3: the Pinned and Scheduled blocks under it.
             use super::super::settings::{
-                INDICATORS_ACTIVE_AGENTS_ROW, INDICATORS_PINNED_AGENTS_ROW,
-                INDICATORS_SCHEDULED_AGENTS_ROW,
+                INDICATORS_ACTIVE_AGENTS_ROW, INDICATORS_COLLAPSE_SUSPENDED_ROW,
+                INDICATORS_PINNED_AGENTS_ROW, INDICATORS_SCHEDULED_AGENTS_ROW,
             };
             // On a popup too short for the dim lines the toggles stack one
-            // per row, so no selectable row is left undrawn.
-            let spaced = content.height >= 12;
+            // per row right under the radio rows, so no selectable row is
+            // left undrawn (spaced, the fourth toggle sits at offset 12).
+            let spaced = content.height >= 13;
             for (index, (row, enabled, label, about)) in [
                 (
                     INDICATORS_ACTIVE_AGENTS_ROW,
@@ -237,6 +239,12 @@ pub(super) fn render_settings_overlay(
                     "scheduled agents block",
                     "tabs with a scheduled reminder and the time to the next",
                 ),
+                (
+                    INDICATORS_COLLAPSE_SUSPENDED_ROW,
+                    config.sidebar_collapse_suspended,
+                    "fold suspended runs",
+                    "three or more suspended tabs in a row fold into one row",
+                ),
             ]
             .into_iter()
             .enumerate()
@@ -247,7 +255,7 @@ pub(super) fn render_settings_overlay(
                     content,
                     SectionToggle {
                         row,
-                        offset: if spaced { 6 + 2 * index } else { 6 + index },
+                        offset: if spaced { 6 + 2 * index } else { 5 + index },
                         enabled,
                         label,
                         about: spaced.then_some(about),
