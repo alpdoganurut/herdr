@@ -5,6 +5,7 @@ pub(crate) use bindings::command;
 
 use crate::api::schema::agents_model::{
     AgentsCheckAction, AgentsCloseTabParams, AgentsOpenTabParams, AgentsRenameTabParams,
+    AgentsSetQuietParams,
 };
 use crate::api::schema::{Method, Request};
 
@@ -17,6 +18,7 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         Some("color") => return tab_color(&args[1..]),
         Some("important") => return tab_important(&args[1..]),
         Some("remind") => return tab_remind(&args[1..]),
+        Some(verb @ ("mute" | "unmute" | "dnd")) => return tab_quiet(verb, &args[1..]),
         Some("closed") => return super::tab_closed::tab_closed(&args[1..]),
         Some("reopen") => return super::tab_closed::tab_reopen(&args[1..]),
         // clap's help subcommand over the spec command, so the listing
@@ -116,6 +118,77 @@ fn tab_color(args: &[String]) -> std::io::Result<i32> {
             ),
         })?)
     })
+}
+
+/// What `herdr tab mute|unmute|dnd` asks for: `(muted, dnd, targets)`.
+type QuietRequest = (Option<bool>, Option<bool>, Vec<String>);
+
+/// Parse `mute <TARGET>...`, `unmute <TARGET>...` and
+/// `dnd <on|off> <TARGET>...`; `Err` is the usage line.
+fn parse_quiet(verb: &str, args: &[String]) -> Result<QuietRequest, &'static str> {
+    const MUTE_USAGE: &str = "usage: herdr tab mute|unmute <TARGET>...";
+    const DND_USAGE: &str = "usage: herdr tab dnd <on|off> <TARGET>...";
+    let (muted, dnd, targets) = match verb {
+        "mute" | "unmute" => (Some(verb == "mute"), None, args),
+        _ => {
+            let Some((state, targets)) = args.split_first() else {
+                return Err(DND_USAGE);
+            };
+            let on = match state.to_ascii_lowercase().as_str() {
+                "on" => true,
+                "off" => false,
+                _ => return Err(DND_USAGE),
+            };
+            (None, Some(on), targets)
+        }
+    };
+    // A flag (`--help`) is no target.
+    if targets.is_empty()
+        || targets
+            .iter()
+            .any(|target| target.trim().is_empty() || target.starts_with('-'))
+    {
+        return Err(if dnd.is_some() { DND_USAGE } else { MUTE_USAGE });
+    }
+    Ok((muted, dnd, targets.to_vec()))
+}
+
+/// Fork: `herdr tab mute|unmute <TARGET>...` and `herdr tab dnd <on|off>
+/// <TARGET>...` through `agents.set_quiet` (a target is a tab id, a pane
+/// id, an agent name or a tab label). An agent calls as itself (its own
+/// team's tabs); the user without a caller.
+fn tab_quiet(verb: &str, args: &[String]) -> std::io::Result<i32> {
+    let (muted, dnd, targets) = match parse_quiet(verb, args) {
+        Ok(request) => request,
+        Err(usage) => {
+            eprintln!("{usage}");
+            return Ok(2);
+        }
+    };
+    let caller_pane = match route::route()? {
+        Err(code) => return Ok(code),
+        Ok(route::Route::Agent(pane)) => Some(pane),
+        Ok(route::Route::User | route::Route::OldServer) => None,
+    };
+    let mut worst = 0;
+    for target in targets {
+        let method = Method::AgentsSetQuiet(AgentsSetQuietParams {
+            caller_pane: caller_pane.clone(),
+            target,
+            muted,
+            dnd,
+        });
+        let code = if caller_pane.is_some() {
+            route::call("cli:agents.set_quiet", method)?
+        } else {
+            super::print_response(&super::send_request(&Request {
+                id: "cli:agents.set_quiet".into(),
+                method,
+            })?)?
+        };
+        worst = worst.max(code);
+    }
+    Ok(worst)
 }
 
 fn tab_important(args: &[String]) -> std::io::Result<i32> {
@@ -235,6 +308,44 @@ mod tests {
 #[cfg(test)]
 mod fork_tests {
     use crate::api::schema::TabRemindEvery;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn mute_unmute_and_dnd_parse_their_targets() {
+        assert_eq!(
+            super::parse_quiet("mute", &args(&["fixer", "w2:t3"])),
+            Ok((Some(true), None, args(&["fixer", "w2:t3"])))
+        );
+        assert_eq!(
+            super::parse_quiet("unmute", &args(&["fixer"])),
+            Ok((Some(false), None, args(&["fixer"])))
+        );
+        assert_eq!(
+            super::parse_quiet("dnd", &args(&["ON", "w1:p2"])),
+            Ok((None, Some(true), args(&["w1:p2"])))
+        );
+        assert_eq!(
+            super::parse_quiet("dnd", &args(&["off", "fixer", "rev"])),
+            Ok((None, Some(false), args(&["fixer", "rev"])))
+        );
+        for (verb, values) in [
+            ("mute", vec![]),
+            ("unmute", vec![" "]),
+            ("dnd", vec![]),
+            ("dnd", vec!["on"]),
+            ("dnd", vec!["maybe", "fixer"]),
+            ("dnd", vec!["fixer"]),
+            ("mute", vec!["--help"]),
+        ] {
+            assert!(
+                super::parse_quiet(verb, &args(&values)).is_err(),
+                "{verb} {values:?}"
+            );
+        }
+    }
 
     #[test]
     fn remind_intervals_parse_by_name() {

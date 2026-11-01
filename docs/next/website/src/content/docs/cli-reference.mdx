@@ -198,6 +198,9 @@ herdr tab rename <tab_id> <label>
 herdr tab color <tab_id> <red|orange|yellow|green|cyan|blue|purple|none>
 herdr tab important <tab_id> <on|off>
 herdr tab remind <tab_id> <off|5m|10m|30m|1h|6h|daily>
+herdr tab mute <target>...
+herdr tab unmute <target>...
+herdr tab dnd <on|off> <target>...
 herdr tab closed [--json]
 herdr tab reopen <n|id|session-id-prefix>
 herdr tab close <tab_id>
@@ -208,6 +211,8 @@ A tab is another terminal layout inside a workspace. Without `--workspace`, `tab
 `tab color` tags a tab with a named theme color (`tab.set_color`) and prints the tab; `none` clears the tag. The color is stored with the tab, survives server restarts, and follows the tab when it moves to another space. The `tabs` sidebar layout draws the tab's name in the color, and the `spaces` layout's tab bar tints unfocused tab names with it.
 
 `tab important` marks a tab important (`tab.set_reminder`) and prints the tab; `off` removes the mark. While an important tab's agent sits finished and unseen, or blocked, the Herdr client reminds you every `ui.idle_reminder_minutes` until you focus the tab. `tab remind` sets the tab's scheduled reminder: every 5, 10 or 30 minutes, every 1 or 6 hours, or daily at `ui.daily_reminder_time`, whatever its agent is doing; `off` clears it. Both are stored with the tab, survive server restarts, and follow the tab when it moves to another space.
+
+`tab mute` and `tab unmute` mute or unmute a tab's notifications, and `tab dnd` turns its do not disturb on or off, like the tab menu's **Mute notifications** and **Do not disturb** items (`agents.set_quiet`, which runs `tab.set_muted` / `tab.set_dnd`); each prints the tab. A target is a tab id, a pane id, an agent name or a tab label, and several can be given. A muted tab raises none of Herdr's own notifications (toasts, sounds, bells, reminders); agent cards still show. While a tab is in do not disturb, other agents' messages to its agents are stored quietly and urgent ones are refused. Run from an agent's pane, the command acts as that agent: only its own team's tabs (its own tab too), never the coordinator's; the coordinator needs its user's turn. Every change is recorded in the agents action log.
 
 `tab closed` lists the agent sessions of recently closed tabs, newest first (`session.closed_list`): a number, the tab label (else the agent), the group, the directory's name and how long ago it closed; `--json` prints the full records. `tab reopen` takes that number, a record id, or a unique prefix of the session id, and reopens the session (`session.closed_reopen`) in a new tab in its original group with the same label, color and reminders, running the agent's native resume command, then prints the new tab. See [Session state](/docs/session-state/) for what is recorded.
 
