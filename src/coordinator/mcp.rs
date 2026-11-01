@@ -46,8 +46,8 @@ use crate::api::schema::agents_model::{
     AgentsReadResult, AgentsReadSource, AgentsRenameResult, AgentsRenameTabParams,
     AgentsReopenResult, AgentsReopenTabParams, AgentsReorderGroupParams, AgentsReorderResult,
     AgentsReorderTabParams, AgentsReportWaitParams, AgentsScreenAccess, AgentsSendMessageParams,
-    AgentsSetMetaParams, AgentsSetMetaResult, AgentsTabInfo, AgentsTeamRef, AgentsTurnInfo,
-    AgentsTurnOrigin,
+    AgentsSetMetaParams, AgentsSetMetaResult, AgentsSetQuietParams, AgentsTabInfo, AgentsTeamRef,
+    AgentsTurnInfo, AgentsTurnOrigin,
 };
 use crate::api::schema::notes::{
     NotesAuthor, NotesGetParams, NotesInfo, NotesRevealParams, NotesSetParams, NotesTarget,
@@ -167,11 +167,11 @@ your notes are your user's page: change them only when they ask (or via /plus:no
 const TOOL_LINE: &str = "tools: agents_whoami agents_notify agents_list agents_get agents_read agents_messages \
 agents_wait_for_message agents_wait agents_send_message agents_notes_read agents_notes_write \
 agents_set_meta agents_actions agents_rename_tab (team) agents_move_to_group (team) \
-agents_open_tab (team) agents_reopen_tab (team) agents_suspend (team, never yourself) agents_activate (team) agents_restart (team, never yourself) agents_reorder_tab (team) agents_reorder_group (coordinator, your user's request) agents_team (your user's request) agents_create_group (your user's request) \
+agents_open_tab (team) agents_reopen_tab (team) agents_suspend (team, never yourself) agents_activate (team) agents_restart (team, never yourself) agents_mute (team) agents_dnd (team) agents_reorder_tab (team) agents_reorder_group (coordinator, your user's request) agents_team (your user's request) agents_create_group (your user's request) \
 agents_close_tab (your user's request); (team) = your team, or your own tab when you are in none";
 
 /// The etiquette line for a team member.
-const TEAM_ETIQUETTE: &str = "etiquette: in your team rename, reorder and move tabs, set roles and one-line notes, open new teammates and suspend, activate or restart teammates on your own judgment; \
+const TEAM_ETIQUETTE: &str = "etiquette: in your team rename, reorder and move tabs, set roles and one-line notes, open new teammates, suspend, activate or restart teammates and mute (agents_mute) or put them in do not disturb (agents_dnd) on your own judgment; \
 closing any tab needs your user's request in this turn; outside your team read and message only; \
 a teammate's `[herdr+ message …]`: act on reasonable requests within the team's purpose, nothing destructive or out of scope without your user; anyone else's only when it serves your own user's work; \
 the coordinator (in every team) speaks for your user: a message whose header ends `— acting for your user]` needs no confirmation; \
@@ -184,7 +184,7 @@ your notes are your user's page: change them only when they ask (or via /plus:no
 const TEAM_TOOL_LINE: &str = TOOL_LINE;
 
 /// Every herdr_agents tool, in `tools/list` order.
-pub const TOOL_NAMES: [&str; 27] = [
+pub const TOOL_NAMES: [&str; 29] = [
     "agents_whoami",
     "agents_notify",
     "agents_list",
@@ -210,6 +210,8 @@ pub const TOOL_NAMES: [&str; 27] = [
     "agents_restart",
     "agents_reorder_tab",
     "agents_reorder_group",
+    "agents_mute",
+    "agents_dnd",
     "agents_manage",
     "agents_unmanage",
 ];
@@ -237,6 +239,8 @@ const MAX_OUTPUT_BYTES: usize = 8 * 1024;
 /// Room left for the caller header line above the body.
 const HEADER_RESERVE: usize = 256;
 const MAX_MESSAGE_CHARS: usize = 4000;
+/// At most this many targets in one agents_mute / agents_dnd call.
+const MAX_QUIET_TARGETS: usize = 32;
 /// Message rows show this much text.
 const ROW_TEXT_CHARS: usize = 160;
 /// One line of a label, a role or a name inside herdr's framing.
@@ -761,6 +765,8 @@ impl<A: Api> Session<A> {
             "agents_restart" => self.lifecycle(caller, args, Lifecycle::Restart),
             "agents_reorder_tab" => self.reorder_tab(caller, args),
             "agents_reorder_group" => self.reorder_group(caller, args),
+            "agents_mute" => self.set_quiet(caller, args, Quiet::Mute),
+            "agents_dnd" => self.set_quiet(caller, args, Quiet::Dnd),
             _ => self.manage(caller, args),
         }
     }
@@ -2431,6 +2437,62 @@ impl<A: Api> Session<A> {
         ))
     }
 
+    /// `agents_mute {target, muted?}` and `agents_dnd {target, on?}`: one
+    /// `agents.set_quiet` per target (the server checks each: free in your
+    /// team, logged), one outcome line per target. A single target's
+    /// refusal is the tool's error; with several, every outcome is listed.
+    fn set_quiet(&self, caller: &Caller, args: &Value, quiet: Quiet) -> ToolResult {
+        let targets = targets_arg(args)?;
+        let on = match args.get(quiet.flag()) {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => {
+                return Err(err(
+                    "invalid_request",
+                    format!("{} must be a boolean", quiet.flag()),
+                ))
+            }
+        };
+        let mut lines = Vec::new();
+        let mut results = Vec::new();
+        let mut last_error = None;
+        for target in &targets {
+            let (muted, dnd) = match quiet {
+                Quiet::Mute => (Some(on), None),
+                Quiet::Dnd => (None, Some(on)),
+            };
+            let outcome = self.api.call(Method::AgentsSetQuiet(AgentsSetQuietParams {
+                caller_pane: Some(caller.pane_id.clone()),
+                target: target.clone(),
+                muted,
+                dnd,
+            }));
+            match outcome {
+                Ok(result) => {
+                    let tab_id = result["tab"]["tab_id"].as_str().unwrap_or("").to_string();
+                    lines.push(format!("{target} ({tab_id}): {}", quiet.done(on)));
+                    results.push(json!({ "target": target, "tab_id": tab_id, "ok": true }));
+                }
+                Err(error) => {
+                    lines.push(format!("{target}: {}: {}", error.code, error.message));
+                    results.push(json!({ "target": target, "ok": false, "code": error.code }));
+                    last_error = Some(error);
+                }
+            }
+        }
+        if let (1, Some(error)) = (targets.len(), last_error) {
+            return Err(error);
+        }
+        let mut text = lines.join("\n");
+        if on && quiet == Quiet::Dnd {
+            text.push_str("\n(messages to them are stored quietly until do not disturb ends; urgent ones are refused `dnd`)");
+        }
+        Ok(Reply::new(
+            text,
+            json!({ "action": quiet.name(), quiet.flag(): on, "results": results }),
+        ))
+    }
+
     fn actions(&self, args: &Value) -> ToolResult {
         let limit = u64_arg(args, "limit")?
             .unwrap_or(ACTIONS_DEFAULT)
@@ -2614,6 +2676,82 @@ impl<A: Api> Session<A> {
 struct Found {
     tab: AgentsTabInfo,
     pane: Option<AgentsPaneInfo>,
+}
+
+/// What `agents_mute` and `agents_dnd` change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Quiet {
+    Mute,
+    Dnd,
+}
+
+impl Quiet {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Mute => "mute",
+            Self::Dnd => "dnd",
+        }
+    }
+
+    /// The tool's on/off argument.
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Mute => "muted",
+            Self::Dnd => "on",
+        }
+    }
+
+    fn done(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Self::Mute, true) => "muted (herdr's notifications from it are off)",
+            (Self::Mute, false) => "unmuted",
+            (Self::Dnd, true) => "do not disturb on",
+            (Self::Dnd, false) => "do not disturb off (stored messages go in)",
+        }
+    }
+}
+
+/// The `target` of a tool that takes several: a string (comma-separated
+/// names allowed) or an array of strings; at most 32, no repeats.
+fn targets_arg(args: &Value) -> Result<Vec<String>, ApiError> {
+    let raw: Vec<String> = match args.get("target") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::String(value)) => value.split(',').map(str::to_string).collect(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value.as_str().map(str::to_string).ok_or_else(|| {
+                    err(
+                        "invalid_request",
+                        "target must be a string or a list of strings",
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => {
+            return Err(err(
+                "invalid_request",
+                "target must be a string or a list of strings",
+            ))
+        }
+    };
+    let mut targets: Vec<String> = Vec::new();
+    for target in raw {
+        let target = target.trim().to_string();
+        if !target.is_empty() && !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    if targets.is_empty() {
+        return Err(err("invalid_request", "target is required"));
+    }
+    if targets.len() > MAX_QUIET_TARGETS {
+        return Err(err(
+            "invalid_request",
+            format!("at most {MAX_QUIET_TARGETS} targets at once"),
+        ));
+    }
+    Ok(targets)
 }
 
 /// What `agents_suspend`, `agents_activate` and `agents_restart` do.
@@ -3399,6 +3537,11 @@ pub fn tools() -> Vec<Value> {
     let target = string("Agent name, pane id (w2:p3), tab id (w2:t3), tab label or `coordinator`");
     let notes_target =
         string("Another pane's notes (name or pane id), for reading. Default: your own");
+    // A plain string (some clients drop tools whose schema uses anyOf); an
+    // array is accepted too.
+    let quiet_targets = string(
+        "Agent name, pane id (w2:p3), tab id (w2:t3) or tab label; several comma-separated: fixer, reviewer-2",
+    );
     vec![
         json!({ "name": "agents_whoami", "description": "Who you are in herdr+ (pane, team, role, note, the turn and what you may do), the coordinator, the dashboard URL and the etiquette. Call it first.",
             "inputSchema": schema(json!({}), &[]) }),
@@ -3539,6 +3682,16 @@ pub fn tools() -> Vec<Value> {
                 "before": string("Put it directly before this group"),
                 "after": string("Put it directly after this group"),
             }), &["group"]) }),
+        json!({ "name": "agents_mute", "description": "Mute (or with muted=false unmute) herdr's own notifications from agents' tabs: no finished / needs-attention toasts, sounds, bells or reminders for them (their agents_notify cards still show). Several at once: comma-separated targets. Free in your team (any member, your own tab too); outside it needs its team, your user or the coordinator; never the coordinator's tab. The coordinator: in your user's turn. One outcome line per target.",
+            "inputSchema": schema(json!({
+                "target": quiet_targets.clone(),
+                "muted": { "type": "boolean", "description": "Default true; false unmutes" },
+            }), &["target"]) }),
+        json!({ "name": "agents_dnd", "description": "Turn do not disturb on (or with on=false off) for agents' tabs: other agents' messages to them are stored quietly (\"in DND, queued\"; a Claude agent gets them at its next prompt, the rest once it ends), messages already queued move there too, urgent messages are refused `dnd`, and herdr types nothing in; their user's typing is untouched. Several at once: comma-separated targets. Same rights as agents_mute. One outcome line per target.",
+            "inputSchema": schema(json!({
+                "target": quiet_targets,
+                "on": { "type": "boolean", "description": "Default true; false ends do not disturb" },
+            }), &["target"]) }),
         json!({ "name": "agents_manage", "description": "Kept for older sessions: every agent is part of herdr+ now. Sets role and note like agents_set_meta (a project goes into the note); use agents_set_meta.",
             "inputSchema": schema(json!({
                 "target": string("Default: yourself"),
@@ -4181,6 +4334,14 @@ mod tests {
                     };
                     Ok(json!({ "type": "agents_message", "message": message }))
                 }
+                Method::AgentsSetQuiet(params) => {
+                    let fake = self.resolve(&params.target).ok_or_else(not_found)?;
+                    if fake.coordinator {
+                        return Err(err("protected_tab", "the coordinator's tab is the user's"));
+                    }
+                    Ok(json!({ "type": "tab_info", "tab": { "tab_id": fake.tab,
+                        "muted": params.muted.unwrap_or(false), "dnd": params.dnd.unwrap_or(false) } }))
+                }
                 Method::AgentsSuspend(params) => {
                     let pane = self.canonical(&params.target).ok_or_else(not_found)?;
                     self.set(&pane, |fake| fake.status = "suspended".into());
@@ -4397,7 +4558,7 @@ mod tests {
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
             .unwrap();
         let tools = list["result"]["tools"].as_array().unwrap().clone();
-        assert_eq!(tools.len(), 27);
+        assert_eq!(tools.len(), 29);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(names, TOOL_NAMES, "listed in TOOL_NAMES order");
         for tool in &tools {
@@ -4453,6 +4614,8 @@ mod tests {
                 "agents_reorder_group",
                 json!({ "group": "demo", "position": 1 }),
             ),
+            ("agents_mute", json!({ "target": "rev" })),
+            ("agents_dnd", json!({ "target": "rev", "on": false })),
             ("agents_manage", json!({ "note": "busy with the API" })),
             ("agents_unmanage", json!({})),
         ];
@@ -4497,7 +4660,7 @@ mod tests {
     #[test]
     fn close_and_reopen_are_the_only_tools_not_preapproved() {
         let approved: Vec<&str> = preapproved_tools().collect();
-        assert_eq!(approved.len(), 25);
+        assert_eq!(approved.len(), 27);
         for tool in TOOL_NAMES {
             assert_eq!(
                 approved.contains(&tool),
@@ -4653,7 +4816,7 @@ mod tests {
         let list = s
             .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
             .unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 27);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 29);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5142,6 +5305,98 @@ mod tests {
         assert!(out.is_error && out.text.contains("no_pane"), "{}", out.text);
         assert!(
             out.text.contains("`claude --resume <session id>`"),
+            "{}",
+            out.text
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mute_and_dnd_take_several_targets_and_report_each() {
+        let (dir, world) = world("mcp-quiet");
+        let mut s = session(&world, "w3:p1", Verdict::Verified);
+        let out = call(&mut s, "agents_mute", json!({ "target": "reviewer" }));
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            body(&out).starts_with("reviewer (w3:t2): muted"),
+            "{}",
+            out.text
+        );
+        let Method::AgentsSetQuiet(params) = &world.calls_of("agents.set_quiet")[0] else {
+            panic!("a set_quiet");
+        };
+        assert_eq!(params.caller_pane.as_deref(), Some("w3:p1"));
+        assert_eq!((params.muted, params.dnd), (Some(true), None));
+
+        // Several, one refused: every outcome is listed, the tool succeeds.
+        let out = call(
+            &mut s,
+            "agents_dnd",
+            json!({ "target": "reviewer, coordinator,reviewer, ghost" }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        let lines: Vec<&str> = out.text.lines().skip(1).collect();
+        assert!(
+            lines[0].starts_with("reviewer (w3:t2): do not disturb on"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[1].starts_with("coordinator: protected_tab"),
+            "{lines:?}"
+        );
+        assert!(lines[2].starts_with("ghost: not_found"), "{lines:?}");
+        assert!(lines[3].contains("stored quietly"), "{lines:?}");
+        assert_eq!(
+            world.calls_of("agents.set_quiet").len(),
+            4,
+            "repeats dropped"
+        );
+        assert_eq!(out.data["results"].as_array().unwrap().len(), 3);
+        assert_eq!(out.data["results"][1]["code"], "protected_tab");
+
+        // A list works too; off and unmute pass false.
+        let out = call(
+            &mut s,
+            "agents_mute",
+            json!({ "target": ["reviewer"], "muted": false }),
+        );
+        assert!(
+            body(&out).starts_with("reviewer (w3:t2): unmuted"),
+            "{}",
+            out.text
+        );
+        let out = call(
+            &mut s,
+            "agents_dnd",
+            json!({ "target": "reviewer", "on": false }),
+        );
+        let calls = world.calls_of("agents.set_quiet");
+        let Method::AgentsSetQuiet(params) = calls.last().unwrap() else {
+            panic!("a set_quiet");
+        };
+        assert_eq!((params.muted, params.dnd), (None, Some(false)));
+        assert!(!out.text.contains("stored quietly"), "{}", out.text);
+
+        // One target: its refusal is the tool's error.
+        let out = call(&mut s, "agents_mute", json!({ "target": "coordinator" }));
+        assert!(
+            out.is_error && out.text.contains("protected_tab"),
+            "{}",
+            out.text
+        );
+        let out = call(&mut s, "agents_mute", json!({ "target": " , " }));
+        assert!(
+            out.is_error && out.text.contains("target is required"),
+            "{}",
+            out.text
+        );
+        let out = call(
+            &mut s,
+            "agents_mute",
+            json!({ "target": "rev", "muted": "yes" }),
+        );
+        assert!(
+            out.is_error && out.text.contains("must be a boolean"),
             "{}",
             out.text
         );

@@ -109,7 +109,7 @@ fn limits_sentence() -> String {
 
 /// What a member may do in its team (agents v2), the same rights the MCP
 /// texts and the server's check state.
-pub const TEAM_RIGHTS: &str = "In this team you may also rename, reorder (agents_reorder_tab) and move tabs, set roles and one-line notes, open new teammates (agents_open_tab group=<this group> role=…) and suspend, activate or restart teammates (agents_suspend / agents_activate / agents_restart, never yourself; activating one your user suspended needs their request); closing any tab needs your user's request. The coordinator is a member of every team and speaks for your user.";
+pub const TEAM_RIGHTS: &str = "In this team you may also rename, reorder (agents_reorder_tab) and move tabs, set roles and one-line notes, open new teammates (agents_open_tab group=<this group> role=…) and suspend, activate or restart teammates (agents_suspend / agents_activate / agents_restart, never yourself; activating one your user suspended needs their request), and mute or put teammates in do not disturb (agents_mute / agents_dnd, several at once; a lead can quiet everyone but the members still needed); closing any tab needs your user's request. The coordinator is a member of every team and speaks for your user.";
 
 /// The teammates part of a roster: at most [`ROSTER_MAX`], and how many more.
 fn capped<'a, 'b>(others: &'a [TeamTextMember<'b>]) -> (&'a [TeamTextMember<'b>], usize) {

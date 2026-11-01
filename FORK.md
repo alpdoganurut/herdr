@@ -25,6 +25,8 @@ src/app/agent_suspend.rs
 src/app/agent_transcripts.rs
 src/app/agents_reorder.rs
 src/app/agents_reorder/tests.rs
+src/app/agents_quiet.rs
+src/app/agents_quiet/tests.rs
 src/app/closed_sessions.rs
 src/app/message_pointer.rs
 src/app/message_pointer/tests.rs
@@ -893,6 +895,7 @@ ClientContextMenuAction::Dnd   [src/client/shell/state.rs, last after HandoffCom
 Method::NotesReveal   [src/api/schema.rs, directly after CheckpointsContext; wire "notes.reveal"; changes_ui = true, client_shell = false]
 EndpointControlMessage::NotesReveal   [src/client/endpoint/control.rs, directly after AgentContext; the decoded `endpoint.notes-reveal.v1` optional control (malformed data → Ignored); internal]
 MenuSection, MenuKind, MenuRow   [src/client/shell/context_menu_look.rs, fork-owned enums (menu design: an item's section, its kind, a drawn row); internal, never on the wire]
+Method::AgentsSetQuiet   [src/api/schema.rs, directly after AgentsAckQuiet; wire "agents.set_quiet"; changes_ui = true, client_shell = false]
 
 
 ## 5. Owned API methods and digests
@@ -1007,6 +1010,7 @@ endpoint.agent-context.v1 (agent handoff): AgentContextPane gains optional hando
 agent.explain (upstream method), OSC 7501: the explain JSON gains `program_status` (enabled, probe_answered, revision, root, children, mapped_state, agrees_with_screen, rejected_reports, last_reject, last_reject_age_ms) in both the screen branch and the full-lifecycle branch (agrees_with_screen null there); ResponseResult::AgentExplain carries a serde_json::Value, so no schema, digest, bincode or PROTOCOL_VERSION change (stays 25). AgentInfo is unchanged: reviewer R1 found agent_info on the client-shell render path (session_metadata_snapshot -> collect_agent_infos), so stage 1 exposes the records through explain only.
 notes.reveal: fork-defined (Method::NotesReveal(NotesRevealParams { target: NotesTarget }), wire name notes::method::REVEAL (not in method::ALL, the design's table), handler App::handle_notes_reveal in src/app/notes.rs). UI only: it appends to NotesRuntime.reveals (a VecDeque of at most notes::REVEAL_CAP = 16, oldest dropped: a revision from 1 and the target's public tab id; never persisted) and answers `ok`; `not_found` when the notes have no open tab, `notes_disabled` while notes are off. changes_ui = true so a render pass follows at once; client_shell = false: the TUI never calls it, so no digest and CLIENT_SHELL_METHODS keeps its count. The herdr_agents MCP's agents_notes_write calls it after a written or unchanged write when its optional `reveal` (boolean, default false; not a boolean = invalid_request before anything is written) is true; any error (an older server's unknown method) is ignored: the write stands and the reply only lacks ", shown in the info pane". notes.set and its frozen digest are unchanged: `reveal` is deliberately not a NotesSetParams field.
 endpoint.notes-reveal.v1: an optional JSON control, not a client-shell method shape (src/server/headless/notes_reveal.rs: NotesRevealPayload { boot_id, revision, tab_id }), one-shot: the render pass sends every kept reveal whose revision is above ClientConnection.shell_notes_reveal_sent, oldest first (two reveals in one pass reach the client as two messages); a client's first pass records the current revision without sending, so a client that attaches later gets no replay. The client (ClientShellState::receive_notes_reveal, src/client/shell/info_dock.rs) opens that tab's info pane without taking the keyboard unless it is open, at most once per boot and revision (ClientInfoDockState.reveal_seen, per endpoint); the pane's open state stays TUI-only. Old clients ignore the kind; no bincode type and no PROTOCOL_VERSION change.
+agents.set_quiet (agent mute): fork-defined (Method::AgentsSetQuiet, define_operations! row with changes_ui true and client_shell false, so not advertised to the client shell and no digest; method::SET_QUIET in method::ALL (27), AgentsSetQuietParams in PARAM_TYPES (28); handler App::handle_agents_set_quiet in src/app/agents_quiet.rs). Params AgentsSetQuietParams { caller_pane: Option<String> (absent = the user), target (a tab id, pane id, agent name or tab label, resolve_model_tab), muted: Option<bool>, dnd: Option<bool> } (every optional field serde default and skipped when None; neither muted nor dnd = invalid_params). Checked as policy::SoftEdit::Quiet, which takes the plain soft-edit arm exactly like SuspendRestart: an agent on its own tab and on any tab of its own team (any member, not only a role lead; mirrors agents.suspend), outside_team elsewhere and for a caller without a team, protected_tab on the coordinator's tab; the coordinator only in its user's turn (non_user_turn otherwise); the user always. One soft edit (take_soft_edit) per call. Then delegates to tab.set_muted and/or tab.set_dnd through call_method, so the mutes push, the DND quiet-store move and its release behave as from the tab menu (DND keeps its semantics: messages already queued move into the quiet store, an urgent message is refused `dnd`). Answers ResponseResult::TabInfo like tab.set_muted / tab.set_dnd; logs one `set_quiet` action line (detail "muted" / "unmuted" / "dnd on" / "dnd off", comma-joined; outcome ok, denied or failed with the code) naming the caller. Callers: the herdr_agents tools agents_mute { target, muted (default true) } and agents_dnd { target, on (default true) } (src/coordinator/mcp.rs, pre-approved like every tool but close and reopen; target one name or several comma-separated, or a JSON array, at most MAX_QUIET_TARGETS (32), repeats dropped; one agents.set_quiet per target and one outcome line per target; with one target its refusal is the tool error), and the CLI `herdr tab mute|unmute <TARGET>...` and `herdr tab dnd <on|off> <TARGET>...` (src/cli/tab.rs tab_quiet: a live agent's pane calls as itself through agent_route, the user and an old server without a caller; exit code the worst of the targets).
 
 
 ## 6. Config keys (cross-checked by scripts/config_reference_check.py)
@@ -1341,6 +1345,14 @@ src/api/schema.rs  additive: notes reveal: the NotesReveal row (changes_ui = tru
 src/api/schema/operations.rs  additive: notes reveal: "notes.reveal" in operation_ui_impact_preserves_existing_classification's fork list directly after coordinator.start (38 names)
 src/api/schema/tests.rs  additive: notes reveal: notes::method::REVEAL directly after CP_CONTEXT in fork_method_constants_match_the_operations_table
 src/app/api.rs  additive: notes reveal: the Method::NotesReveal dispatch directly after NotesAppend
+src/api/schema.rs  additive: agent mute: the AgentsSetQuiet row (changes_ui = true, client_shell = false, with its doc comment) directly after AgentsAckQuiet
+src/api/schema/operations.rs  additive: agent mute: "agents.set_quiet" in operation_ui_impact_preserves_existing_classification directly after "agents.reorder_tab"
+src/app/api.rs  additive: agent mute: the Method::AgentsSetQuiet dispatch directly after AgentsAckQuiet
+src/app/mod.rs  additive: agent mute: `mod agents_quiet;` directly before `mod agents_reorder;`
+src/cli/tab.rs  additive: agent mute: run_tab_command dispatches mute, unmute and dnd (tab_quiet) directly after remind; QuietRequest, parse_quiet and tab_quiet directly before tab_important; mute_unmute_and_dnd_parse_their_targets (with its args helper) first in fork_tests
+src/cli/spec.rs  additive: agent mute: QUIET_TARGET_HELP directly before tab_command(); the `tab mute`, `tab unmute` and `tab dnd` subcommands directly after `remind`
+docs/next/website/src/content/docs/cli-reference.mdx  additive: agent mute: `tab mute`, `tab unmute` and `tab dnd` in the Tabs block after `tab remind`; their paragraph directly before the `tab closed` one
+docs/next/website/src/content/docs/socket-api.mdx  additive: agent mute: the `agents.set_quiet` paragraph directly after the `tab.set_dnd` one
 src/server/headless.rs  additive: notes reveal: `pub mod notes_reveal;` (with its doc line) directly after `mod news_notify;`
 src/server/headless/render.rs  additive: notes reveal: notes_reveal_frame directly after agent_context_frame; the notes_reveal::sync_client call directly after the agent_context one
 src/server/clients.rs  additive: notes reveal: ClientConnection.shell_notes_reveal_sent directly after shell_agent_context_sent (struct and new())
@@ -2525,6 +2537,18 @@ receive_notes_reveal
 shell_notes_reveal_sent
 ensure_sidebar_filter_model
 retain_sidebar_filter_tabs
+agents_quiet
+agents.set_quiet
+AgentsSetQuiet
+AgentsSetQuietParams
+SET_QUIET
+agents_mute
+agents_dnd
+handle_agents_set_quiet
+tab_quiet
+parse_quiet
+QUIET_TARGET_HELP
+MAX_QUIET_TARGETS
 
 
 ## 10. Fork smoke tests (run by name in the gate)
@@ -2621,6 +2645,7 @@ server::headless::tests::agent_notices_smoke::fork_smoke_agents_settings_write_a
 server::headless::tests::fork_smoke::fork_smoke_an_idle_claude_off_screen_is_autosuspended_and_a_message_wakes_it
 client::shell::tests::sidebar_filter::fork_smoke::typing_in_the_search_field_narrows_the_list_and_the_filtered_row_clears_it
 server::headless::tests::fork_smoke::notes::fork_smoke_a_notes_reveal_reaches_every_client_once
+server::headless::tests::agents_model_smoke::fork_smoke_agents_mute_of_a_teammate_tab_reaches_the_mutes_push
 
 
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
@@ -2672,6 +2697,7 @@ A user-facing feature or fix that changes what herdr+ offers also updates the sh
 - herdr browser: `herdr browser setup --codex` registers the MCP server in Codex's `config.toml` (edited as a `toml_edit::DocumentMut` by `upsert_codex_block`: an existing entry in any shape — table, dotted keys, inline under `[mcp_servers]` — is replaced, every other table, comment and spacing survives, a file that does not parse is refused; `register_codex` writes through a symlink to the real file via temp + rename in its directory keeping the mode, after a one-time `config.toml.herdr-backup`; `[mcp_servers.herdr-browser]`, the same `sh -c 'exec "${HERDR_BIN_PATH:-…}" browser mcp'` line, plus `env_vars` forwarding the pane variables — Codex starts MCP servers with a minimal environment, so without the list the server cannot reach the pane's server or attribute the caller); an existing entry is replaced in place, the rest of the file is untouched; `--claude` keeps the Claude Code registration alone, neither flag does both; `doctor` reports the Codex registration. Tab group titles are `<symbol> <herdr tab label>` (`✻` claude, `◇` codex, `◌` default, `[browser] group_symbols` overrides) instead of provider names.
 - herdr browser: `[browser] activity_color = "#aa6eff"` (`#rrggbb`; invalid → default with a config diagnostic) colours the activity overlay — frame border and glow (alpha unchanged), cursor fill and ripple — and applies live after `herdr server reload-config` (the directive carries it; an overlay of another colour is re-injected); tab-group colours stay Chrome's per-pane palette.
 - herdr browser, activity overlay (`[browser] show_activity = true`): the tabs an agent pane opens or acts on sit in a Chrome tab group named `<agent> · <herdr tab>` in a stable colour per pane (a bundled MV3 companion extension loaded with `--load-extension`, driven over the DevTools port; expanded while the pane is active, collapsed after `active_glyph_secs`, dissolved when the pane is gone; tabs the user opened are never grouped and a tab the user pulls out stays out), and a purple glow frame with a macOS-style cursor is injected into the page (isolated world, closed shadow root, no pointer events) while an operation runs and for the `active_glyph_secs` window after (originally 3 s); the cursor glides to the element before click/type/fill/select/press/hover and ripples on click; batches take `animate: false` (`--no-animate`); screenshots hide the overlay; `browser status` / `doctor` report the companion (`ready`, `missing`).
+- Agents can mute and put each other in do not disturb: the herdr_agents tools `agents_mute` (`muted=false` unmutes) and `agents_dnd` (`on=false` ends it) take one target or several comma-separated (a team lead quiets every member but the ones it still needs in one call) and answer one outcome line per target; `herdr tab mute|unmute <target>...` and `herdr tab dnd <on|off> <target>...` do the same from the CLI (a tab id, pane id, agent name or tab label). Both go through the new `agents.set_quiet`, checked like suspend: free on the caller's own tab and its team's tabs, refused elsewhere (`outside_team`) and on the coordinator's tab, the coordinator in its user's turn, the user always; every change is in the agents action log as `set_quiet`. Mute and DND behave exactly as the tab menu's items.
 ### Fixed
 - Opening the info pane no longer moves the keyboard: `keys.toggle_info_pane` (alt+n), the menus' Info pane and the new toolbar button leave the focus on the session (and on the sidebar search field when it has it); a click into the pane still focuses it.
 - herdr's own toasts no longer cover the info (notes) pane: while the focused tab's dock is open, a right-anchored toast (`ui.toast.herdr.position` top-right or bottom-right, a per-event right position, the sticky stack and its `+N more` line, and machine notices) is laid out left of the dock with one blank column before it, same top or bottom anchor; a toast wider than that room keeps its old place, and left-anchored toasts are unchanged. Clicks follow the moved cards. Agent cards already sat left of the dock.

@@ -19,6 +19,7 @@ mod agents;
 mod agents_close;
 pub(crate) mod agents_migrate;
 pub(crate) mod agents_model;
+mod agents_quiet;
 mod agents_reorder;
 // fork: typed launches wait for the shell and stay short.
 mod browser;

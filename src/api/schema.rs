@@ -234,6 +234,10 @@ operations::define_operations! {
     AgentsTakeQuiet(agents_model::AgentsTakeQuietParams) => "agents.take_quiet", false, false;
     /// Fork: the caller's hook printed the quiet messages it took.
     AgentsAckQuiet(agents_model::AgentsAckQuietParams) => "agents.ack_quiet", false, false;
+    /// Fork: mute and do-not-disturb on an agent's tab, checked as the
+    /// caller (the herdr_agents agents_mute / agents_dnd tools, `herdr tab
+    /// mute|unmute|dnd`).
+    AgentsSetQuiet(agents_model::AgentsSetQuietParams) => "agents.set_quiet", true, false;
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;

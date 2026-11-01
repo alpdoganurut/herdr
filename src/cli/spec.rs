@@ -208,8 +208,11 @@ fn worktree_command() -> Command {
     super::worktree::command()
 }
 
+/// The help of `herdr tab mute|unmute|dnd`.
+const QUIET_TARGET_HELP: &str = "TARGET: a tab id, pane id, agent name or tab label (agents.set_quiet). A muted tab raises none of herdr's own notifications (toasts, sounds, bells, reminders; agent cards still show). In do not disturb, other agents' messages to the tab's agents are stored quietly and urgent ones are refused; your own typing is untouched. Run from an agent's pane, the agent acts as itself: only its own team's tabs (the coordinator in its user's turn), never the coordinator's tab.";
+
 pub(super) fn tab_command() -> Command {
-    // Fork: color, important, remind, closed and reopen (run by
+    // Fork: color, important, remind, mute, unmute, dnd, closed and reopen (run by
     // src/cli/tab.rs before the upstream bindings parse).
     super::tab::command()
         .subcommand(
@@ -245,6 +248,28 @@ pub(super) fn tab_command() -> Command {
                 .after_help(
                     "Sets the tab's scheduled reminder (tab.set_reminder); `off` clears it. The client reminds you about the tab every interval, whatever its agent is doing, or daily at ui.daily_reminder_time; a reminder due while the tab is focused is skipped. The interval is stored with the tab, persists across server restarts and follows the tab when it moves to another space.",
                 ),
+        )
+        .subcommand(
+            Command::new("mute")
+                .about("Mute herdr's notifications from tabs")
+                .override_usage("herdr tab mute <TARGET>...")
+                .arg(Arg::new("target").value_name("TARGET").num_args(1..).required(true))
+                .after_help(QUIET_TARGET_HELP),
+        )
+        .subcommand(
+            Command::new("unmute")
+                .about("Unmute herdr's notifications from tabs")
+                .override_usage("herdr tab unmute <TARGET>...")
+                .arg(Arg::new("target").value_name("TARGET").num_args(1..).required(true))
+                .after_help(QUIET_TARGET_HELP),
+        )
+        .subcommand(
+            Command::new("dnd")
+                .about("Turn tabs' do not disturb on or off")
+                .override_usage("herdr tab dnd <on|off> <TARGET>...")
+                .arg(required("state", "STATE").value_parser(["on", "off"]))
+                .arg(Arg::new("target").value_name("TARGET").num_args(1..).required(true))
+                .after_help(QUIET_TARGET_HELP),
         )
         .subcommand(
             Command::new("closed")
@@ -1402,6 +1427,12 @@ mod tests {
         );
         assert_eq!(values(&["tab", "remind"], "every"), expected);
         assert_eq!(values(&["tab", "important"], "state"), ["on", "off"]);
+        assert_eq!(values(&["tab", "dnd"], "state"), ["on", "off"]);
+        for verb in ["mute", "unmute", "dnd"] {
+            assert!(command_path(&cmd, &["tab", verb])
+                .get_arguments()
+                .any(|arg| arg.get_id() == "target"));
+        }
     }
 
     #[test]
