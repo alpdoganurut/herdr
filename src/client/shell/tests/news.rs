@@ -543,7 +543,7 @@ fn a_click_on_the_row_without_a_tab_opens_news_and_its_menu_works() {
         }
         other => panic!("expected the News menu, got {other:?}"),
     };
-    assert_eq!(labels, ["Run now", "Open", "Pause schedule"]);
+    assert_eq!(labels, ["Run now", "Open", "Run on schedule"]);
     let mut outcome = ClientShellInput::default();
     state.activate_context_menu_item(0, &mut outcome);
     assert!(matches!(
@@ -674,7 +674,7 @@ fn the_row_focuses_on_click_and_its_menu_runs_opens_and_pauses() {
         }
         other => panic!("expected the News menu, got {other:?}"),
     };
-    assert_eq!(labels, ["Run now", "Open", "Pause schedule"]);
+    assert_eq!(labels, ["Run now", "Open", "Run on schedule"]);
 
     let mut outcome = ClientShellInput::default();
     state.activate_context_menu_item(0, &mut outcome);
@@ -712,7 +712,12 @@ fn the_row_focuses_on_click_and_its_menu_runs_opens_and_pauses() {
     assert!(!state.news.info.as_ref().unwrap().enabled);
     state.open_news_context_menu(row.x, row.y);
     if let Some(ClientShellOverlay::ContextMenu(menu)) = &state.overlay {
-        assert_eq!(menu.items()[2].label, "Resume schedule");
+        // Fork (menu design): one label, the dot shows the schedule off.
+        assert_eq!(menu.items()[2].label, "Run on schedule");
+        assert_eq!(
+            menu.items()[2].look.kind,
+            super::super::context_menu_look::MenuKind::Toggle(false)
+        );
     }
     state.overlay = None;
     assert!(matches!(

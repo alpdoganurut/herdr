@@ -396,11 +396,13 @@ fn group_menu_items_are_gated_on_team_get() {
     assert_eq!(
         items,
         [
+            // Fork (menu design): the Team section, then the red Danger
+            // section last.
             ("Rename group".to_owned(), Action::Rename),
-            ("Ungroup (disbands team)".to_owned(), Action::Ungroup),
-            ("Close group".to_owned(), Action::CloseGroup),
             ("Team info".to_owned(), Action::TeamInfo),
             ("Edit purpose…".to_owned(), Action::EditPurpose),
+            ("Ungroup (disbands team)".to_owned(), Action::Ungroup),
+            ("Close group".to_owned(), Action::CloseGroup),
             ("Disband team".to_owned(), Action::DisbandTeam),
         ]
     );
@@ -413,8 +415,8 @@ fn group_menu_items_are_gated_on_team_get() {
         [
             Action::Rename,
             Action::Ungroup,
-            Action::CloseGroup,
-            Action::MakeTeam
+            Action::MakeTeam,
+            Action::CloseGroup
         ]
     );
     // The ungrouped bucket never is a team.
@@ -555,14 +557,15 @@ fn the_tab_menu_offers_role_leave_or_join_in_a_team_group() {
         .into_iter()
         .map(|(_, a)| a)
         .collect();
-    let close = actions
+    // Fork (menu design): the Team section, then the Alerts section.
+    let role = actions
         .iter()
-        .position(|a| *a == Action::Close)
-        .expect("close");
+        .position(|a| *a == Action::SetRole)
+        .expect("set role");
     assert_eq!(
-        &actions[close + 1..close + 4],
-        [Action::SetRole, Action::LeaveTeam, Action::ToggleInfoPane],
-        "right after Close, then the tab's Info pane"
+        &actions[role..role + 3],
+        [Action::SetRole, Action::LeaveTeam, Action::Important],
+        "the Team section, then Important"
     );
     assert!(!actions.contains(&Action::JoinTeam));
     assert!(
@@ -588,7 +591,7 @@ fn the_tab_menu_offers_role_leave_or_join_in_a_team_group() {
         .iter()
         .position(|a| *a == Action::Close)
         .expect("close");
-    assert_eq!(actions[close + 1], Action::ToggleInfoPane);
+    assert_eq!(actions[close - 1], Action::ToggleInfoPane);
 
     // An agent that is not a member can join, and still has a role.
     let mut removed = team(Some("ship it"));
@@ -601,13 +604,13 @@ fn the_tab_menu_offers_role_leave_or_join_in_a_team_group() {
         .into_iter()
         .map(|(_, a)| a)
         .collect();
-    let close = actions
+    let role = actions
         .iter()
-        .position(|a| *a == Action::Close)
-        .expect("close");
+        .position(|a| *a == Action::SetRole)
+        .expect("set role");
     assert_eq!(
-        &actions[close + 1..close + 4],
-        [Action::SetRole, Action::JoinTeam, Action::ToggleInfoPane]
+        &actions[role..role + 3],
+        [Action::SetRole, Action::JoinTeam, Action::Important]
     );
     let outcome = pick(&mut state, Action::JoinTeam);
     let requests = endpoint_requests(&outcome);
@@ -623,17 +626,13 @@ fn the_tab_menu_offers_role_leave_or_join_in_a_team_group() {
         .into_iter()
         .map(|(_, a)| a)
         .collect();
-    let close = actions
+    let role = actions
         .iter()
-        .position(|a| *a == Action::Close)
-        .expect("close");
+        .position(|a| *a == Action::SetTeamRole)
+        .expect("set team role");
     assert_eq!(
-        &actions[close + 1..close + 4],
-        [
-            Action::SetTeamRole,
-            Action::LeaveTeam,
-            Action::ToggleInfoPane
-        ]
+        &actions[role..role + 3],
+        [Action::SetTeamRole, Action::LeaveTeam, Action::Important]
     );
     let actions: Vec<_> = tab_menu(&mut state, "tab_3")
         .into_iter()

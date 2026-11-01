@@ -176,112 +176,16 @@ pub(crate) fn render_context_menu(
     buffer: &mut Buffer,
     menu: &ClientContextMenuOverlay,
     palette: &Palette,
+    keybinds: &LiveKeybindConfig,
 ) -> Option<OverlayRender> {
-    let items = menu.items();
-    let screen = buffer.area;
-    // The tab menu's swatch row (drawn in place of its label).
-    let swatch_row = match &menu.target {
-        ClientContextMenuTarget::Tab { color, .. } => items
-            .iter()
-            .position(|item| item.action == ClientContextMenuAction::Color)
-            .map(|row| (row, *color)),
-        _ => None,
-    };
-    // The reminder selector's two rows (drawn in place of their labels).
-    let remind_rows = match &menu.target {
-        ClientContextMenuTarget::Tab { remind, .. } => items
-            .iter()
-            .position(|item| item.action == ClientContextMenuAction::RemindTop)
-            .map(|row| (row, *remind)),
-        _ => None,
-    };
-    let mut swatches = Vec::new();
-    let mut remind_options = Vec::new();
-    let max_item_width = items
-        .iter()
-        .map(|item| display_width(item.label))
-        .max()
-        .unwrap_or(0)
-        .max(if swatch_row.is_some() {
-            super::super::tab_color::swatch_row_width()
-        } else {
-            0
-        })
-        .max(if remind_rows.is_some() {
-            super::super::tab_remind_menu::remind_row_width()
-        } else {
-            0
-        });
-    let width = max_item_width
-        .saturating_add(4)
-        .max(14)
-        .min(screen.width.max(1));
-    let height = (items.len() as u16)
-        .saturating_add(2)
-        .min(screen.height.max(1));
-    let x = menu
-        .x
-        .min(screen.x.saturating_add(screen.width.saturating_sub(width)));
-    let y = menu.y.min(
-        screen
-            .y
-            .saturating_add(screen.height.saturating_sub(height)),
-    );
-    let rect = Rect::new(x, y, width, height);
-    let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
-    let mut rows = Vec::new();
-    for (index, item) in items.iter().enumerate() {
-        let row_y = inner.y.saturating_add(index as u16);
-        if row_y >= inner.bottom() {
-            break;
-        }
-        let row = Rect::new(inner.x, row_y, inner.width, 1);
-        let highlighted = index == menu.highlighted;
-        if let Some((_, color)) = swatch_row.filter(|(row, _)| *row == index) {
-            // Only the swatch under the cursor wears the highlight.
-            buffer.set_style(row, Style::default().fg(palette.text).bg(palette.panel_bg));
-            swatches = super::super::tab_color::render_swatches(
-                buffer,
-                row,
-                color.current,
-                highlighted.then_some(color.cursor),
-                palette,
-            );
-            rows.push((row, index));
-            continue;
-        }
-        if let Some((top, remind)) =
-            remind_rows.filter(|(top, _)| index == *top || index == *top + 1)
-        {
-            // Only the option under the cursor wears the highlight.
-            remind_options.extend(super::super::tab_remind_menu::render_remind_row(
-                buffer,
-                row,
-                index - top,
-                remind,
-                highlighted.then_some(remind.cursor),
-                palette,
-            ));
-            rows.push((row, index));
-            continue;
-        }
-        let style = if highlighted {
-            Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(palette.text).bg(palette.panel_bg)
-        };
-        buffer.set_style(row, style);
-        put_text(buffer, row.x, row.y, row.width, item.label, style);
-        rows.push((row, index));
-    }
+    // Fork (menu design): sections, glyphs and key hints
+    // (context_menu_look.rs).
+    let rendered = super::super::context_menu_look::render_menu(buffer, menu, palette, keybinds)?;
     Some(OverlayRender {
-        area: rect,
-        menu_rows: rows,
-        menu_swatches: swatches,
-        menu_remind_options: remind_options,
+        area: rendered.area,
+        menu_rows: rendered.rows,
+        menu_swatches: rendered.swatches,
+        menu_remind_options: rendered.remind_options,
         ..OverlayRender::default()
     })
 }

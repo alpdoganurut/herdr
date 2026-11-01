@@ -489,7 +489,10 @@ fn pin_menu_item_toggles_through_tab_set_pinned_and_hides_without_server_support
     let items = open_menu_on(&mut state, "t_work");
     let index = items
         .iter()
-        .position(|item| item.label == "Pin")
+        .position(|item| {
+            item.label == "Pin"
+                && item.look.kind == super::super::context_menu_look::MenuKind::Toggle(false)
+        })
         .expect("a Pin item");
     let important = items
         .iter()
@@ -514,7 +517,10 @@ fn pin_menu_item_toggles_through_tab_set_pinned_and_hides_without_server_support
     let items = open_menu_on(&mut state, "t_work");
     let index = items
         .iter()
-        .position(|item| item.label == "Unpin")
+        .position(|item| {
+            item.label == "Pin"
+                && item.look.kind == super::super::context_menu_look::MenuKind::Toggle(true)
+        })
         .expect("an Unpin item");
     let mut outcome = ClientShellInput::default();
     state.activate_context_menu_item(index, &mut outcome);

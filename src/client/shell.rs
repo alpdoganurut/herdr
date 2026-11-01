@@ -13,6 +13,7 @@ mod breathe;
 mod composition;
 mod config;
 mod context_menu;
+mod context_menu_look;
 mod context_menu_session;
 mod coordinator;
 mod coordinator_shell;

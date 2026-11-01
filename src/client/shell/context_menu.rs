@@ -1,50 +1,80 @@
 use super::*;
 
 impl ClientContextMenuOverlay {
+    /// Fork (menu design): the items grouped into sections with a glyph and
+    /// a kind each (`context_menu_look.rs` draws them); positions are free.
     pub(super) fn items(&self) -> Vec<ClientContextMenuItem> {
+        use super::context_menu_look::{MenuKind as Kind, MenuLook, MenuSection as Section};
         use ClientContextMenuAction as Action;
 
-        let item = |label, action| ClientContextMenuItem { label, action };
+        let item = |label, action, glyph, section, kind| ClientContextMenuItem {
+            label,
+            action,
+            look: MenuLook::new(glyph, section, kind),
+        };
+        let lead = |label, action, glyph| item(label, action, glyph, Section::Lead, Kind::Action);
+        let worktree = Section::Titled("Worktree");
         match &self.target {
-            ClientContextMenuTarget::Workspace { is_git: false, .. } => {
-                vec![item("Rename", Action::Rename), item("Close", Action::Close)]
-            }
             ClientContextMenuTarget::Workspace {
-                is_linked_worktree: false,
-                has_worktree_children: false,
-                ..
-            } => vec![
-                item("Rename", Action::Rename),
-                item("Close", Action::Close),
-                item("New worktree", Action::NewWorktree),
-                item("Open worktree...", Action::OpenWorktree),
-            ],
-            ClientContextMenuTarget::Workspace {
-                is_linked_worktree: true,
-                ..
-            } => vec![
-                item("Rename", Action::Rename),
-                item("Close", Action::Close),
-                item("Delete worktree checkout...", Action::RemoveWorktree),
-            ],
-            ClientContextMenuTarget::Workspace {
-                has_worktree_children: true,
+                is_git,
+                is_linked_worktree,
+                has_worktree_children,
                 close_group,
                 collapsed,
                 ..
-            } => vec![
-                item("Rename", Action::Rename),
-                item(
-                    if *close_group { "Close group" } else { "Close" },
+            } => {
+                let mut items = vec![lead("Rename", Action::Rename, GLYPH_RENAME)];
+                if *is_git && !*is_linked_worktree {
+                    items.push(item(
+                        "New worktree",
+                        Action::NewWorktree,
+                        GLYPH_NEW,
+                        worktree,
+                        Kind::Action,
+                    ));
+                    items.push(item(
+                        "Open worktree...",
+                        Action::OpenWorktree,
+                        GLYPH_WORKTREE,
+                        worktree,
+                        Kind::Action,
+                    ));
+                    if *has_worktree_children {
+                        items.push(item(
+                            if *collapsed { "Expand" } else { "Collapse" },
+                            Action::ToggleGroup,
+                            if *collapsed {
+                                GLYPH_EXPAND
+                            } else {
+                                GLYPH_COLLAPSE
+                            },
+                            worktree,
+                            Kind::Action,
+                        ));
+                    }
+                }
+                items.push(item(
+                    if *has_worktree_children && *close_group {
+                        "Close group"
+                    } else {
+                        "Close"
+                    },
                     Action::Close,
-                ),
-                item("New worktree", Action::NewWorktree),
-                item("Open worktree...", Action::OpenWorktree),
-                item(
-                    if *collapsed { "Expand" } else { "Collapse" },
-                    Action::ToggleGroup,
-                ),
-            ],
+                    GLYPH_CLOSE,
+                    Section::Last,
+                    Kind::Danger,
+                ));
+                if *is_git && *is_linked_worktree {
+                    items.push(item(
+                        "Delete worktree checkout...",
+                        Action::RemoveWorktree,
+                        GLYPH_DELETE,
+                        Section::Last,
+                        Kind::Danger,
+                    ));
+                }
+                items
+            }
             ClientContextMenuTarget::Tab {
                 agent,
                 important,
@@ -58,141 +88,236 @@ impl ClientContextMenuOverlay {
                 dnd_supported,
                 ..
             } => {
+                let agent_section = Section::Titled("Agent");
+                let team_section = Section::Titled("Team");
+                let alerts = Section::Titled("Alerts");
+                let agent_item =
+                    |label, action, glyph| item(label, action, glyph, agent_section, Kind::Action);
+                // The everyday four lead; Close is red but away from the
+                // cursor's start.
                 let mut items = vec![
-                    item("New tab", Action::NewTab),
-                    item("Rename", Action::Rename),
+                    lead("New tab", Action::NewTab, GLYPH_NEW),
+                    lead("Rename", Action::Rename, GLYPH_RENAME),
+                    // Fork: the tab's info dock, as on the pane menu.
+                    lead("Info pane", Action::ToggleInfoPane, GLYPH_INFO),
+                    item(
+                        "Close",
+                        Action::Close,
+                        GLYPH_CLOSE,
+                        Section::Lead,
+                        Kind::Danger,
+                    ),
                 ];
                 match agent {
                     Some(ClientTabMenuAgent {
                         suspended: true, ..
-                    }) => items.push(item("Activate agent", Action::ActivateAgent)),
+                    }) => items.push(agent_item(
+                        "Activate agent",
+                        Action::ActivateAgent,
+                        GLYPH_ACTIVATE,
+                    )),
                     Some(ClientTabMenuAgent {
                         suspended: false,
                         handoff,
                         ..
                     }) => {
-                        items.push(item("Suspend agent", Action::SuspendAgent));
-                        items.push(item("Restart agent", Action::RestartAgent));
+                        items.push(agent_item(
+                            "Suspend agent",
+                            Action::SuspendAgent,
+                            GLYPH_SUSPEND,
+                        ));
+                        items.push(agent_item(
+                            "Restart agent",
+                            Action::RestartAgent,
+                            GLYPH_RESTART,
+                        ));
                         // Fork (agent handoff): a live Claude agent of a
                         // server with `agents.handoff`.
                         if *handoff {
-                            items.push(item("Handoff & compact", Action::HandoffCompact));
+                            items.push(agent_item(
+                                "Handoff & compact",
+                                Action::HandoffCompact,
+                                GLYPH_HANDOFF,
+                            ));
                         }
                     }
                     None => {}
                 }
-                // Fork: after the agent items, only once the agent's session
-                // id arrived (context_menu_session.rs).
+                // Fork: once the agent's session id arrived
+                // (context_menu_session.rs).
                 if session_id.is_some() {
-                    items.push(item("Copy session ID", Action::CopySessionId));
+                    items.push(agent_item(
+                        "Copy session ID",
+                        Action::CopySessionId,
+                        GLYPH_COPY,
+                    ));
                 }
-                items.push(item("Close", Action::Close));
-                // Fork: the role and team items, after Close so upstream's
-                // positions hold. "Set role…" is on any agent tab of a server
-                // with `agents.set_meta`; without it a member keeps "Set team
-                // role…" and a non-member gets no role item.
+                // Fork: the role and team items. "Set role…" is on any
+                // agent tab of a server with `agents.set_meta`; without it a
+                // member keeps "Set team role…" and a non-member gets no
+                // role item.
                 let set_role = agent.as_ref().is_some_and(|agent| agent.set_role);
                 if set_role {
-                    items.push(item("Set role…", Action::SetRole));
+                    items.push(item(
+                        "Set role…",
+                        Action::SetRole,
+                        GLYPH_ROLE,
+                        team_section,
+                        Kind::Action,
+                    ));
                 }
                 match team {
                     Some(team) if team.member => {
                         if !set_role {
-                            items.push(item("Set team role…", Action::SetTeamRole));
+                            items.push(item(
+                                "Set team role…",
+                                Action::SetTeamRole,
+                                GLYPH_ROLE,
+                                team_section,
+                                Kind::Action,
+                            ));
                         }
-                        items.push(item("Leave team", Action::LeaveTeam));
+                        items.push(item(
+                            "Leave team",
+                            Action::LeaveTeam,
+                            GLYPH_LEAVE,
+                            team_section,
+                            Kind::Danger,
+                        ));
                     }
-                    Some(_) => items.push(item("Join team", Action::JoinTeam)),
+                    Some(_) => items.push(item(
+                        "Join team",
+                        Action::JoinTeam,
+                        GLYPH_JOIN,
+                        team_section,
+                        Kind::Action,
+                    )),
                     None => {}
                 }
-                // Fork: the tab's info dock, as on the pane menu.
-                items.push(item("Info pane", Action::ToggleInfoPane));
-                // After Close, so upstream's item positions hold: the
-                // important toggle, then the two selector rows, whose labels
-                // only name them (render_context_menu draws the options).
+                // The toggles keep one label; the dot (the star) shows the
+                // state when the menu opened.
                 items.push(item(
-                    if *important {
-                        "Important \u{2713}"
-                    } else {
-                        "Important"
-                    },
+                    "Important",
                     Action::Important,
+                    if *important {
+                        GLYPH_STAR_ON
+                    } else {
+                        GLYPH_STAR_OFF
+                    },
+                    alerts,
+                    Kind::Star(*important),
                 ));
-                // Fork (sidebar v3): pin or unpin, when the server has
-                // `tab.set_pinned`.
+                let toggle = |label, action, on: bool| {
+                    item(
+                        label,
+                        action,
+                        if on { GLYPH_ON } else { GLYPH_OFF },
+                        alerts,
+                        Kind::Toggle(on),
+                    )
+                };
+                // Fork (sidebar v3): when the server has `tab.set_pinned`.
                 if *pin_supported {
-                    items.push(item(if *pinned { "Unpin" } else { "Pin" }, Action::Pin));
+                    items.push(toggle("Pin", Action::Pin, *pinned));
                 }
-                // Fork: mute or unmute, when the server has `tab.set_muted`.
+                // Fork: when the server has `tab.set_muted`.
                 if *mute_supported {
-                    items.push(item(
-                        if *muted {
-                            "Unmute notifications"
-                        } else {
-                            "Mute notifications"
-                        },
-                        Action::Mute,
-                    ));
+                    items.push(toggle("Mute notifications", Action::Mute, *muted));
                 }
-                // Fork: do-not-disturb on or off, when the server has
-                // `tab.set_dnd`.
+                // Fork: when the server has `tab.set_dnd`.
                 if *dnd_supported {
-                    items.push(item(
-                        if *dnd {
-                            "End do not disturb"
-                        } else {
-                            "Do not disturb"
-                        },
-                        Action::Dnd,
-                    ));
+                    items.push(toggle("Do not disturb", Action::Dnd, *dnd));
                 }
-                items.push(item("remind", Action::RemindTop));
-                items.push(item("", Action::RemindBottom));
-                // The swatch row, last so upstream's item positions (Close at
-                // 2 without an agent) stay put. The label only names the row;
-                // render_context_menu draws the swatches in its place.
-                items.push(item("Color", Action::Color));
+                // The two selector rows and the swatch row: their labels
+                // only name them (context_menu_look.rs draws the options).
+                items.push(item(
+                    "remind",
+                    Action::RemindTop,
+                    GLYPH_REMIND,
+                    alerts,
+                    Kind::Selector,
+                ));
+                items.push(item("", Action::RemindBottom, " ", alerts, Kind::Selector));
+                items.push(item(
+                    "Color",
+                    Action::Color,
+                    GLYPH_COLOR,
+                    alerts,
+                    Kind::Selector,
+                ));
                 items
             }
             ClientContextMenuTarget::Group { team, .. } => {
                 use super::teams::ClientGroupTeamMenu;
                 let team_group = *team == Some(ClientGroupTeamMenu::Team);
-                let mut items = vec![
-                    item("Rename group", Action::Rename),
-                    item(
-                        if team_group {
-                            "Ungroup (disbands team)"
-                        } else {
-                            "Ungroup"
-                        },
-                        Action::Ungroup,
-                    ),
-                    item("Close group", Action::CloseGroup),
-                ];
-                // Fork: the team items, after upstream's.
+                let team_section = Section::Titled("Team");
+                let mut items = vec![lead("Rename group", Action::Rename, GLYPH_RENAME)];
+                if !team_group {
+                    items.push(lead("Ungroup", Action::Ungroup, GLYPH_UNGROUP));
+                }
+                // Fork: the team items.
                 match team {
-                    Some(ClientGroupTeamMenu::NotTeam) => {
-                        items.push(item("Make team…", Action::MakeTeam));
-                    }
+                    Some(ClientGroupTeamMenu::NotTeam) => items.push(item(
+                        "Make team…",
+                        Action::MakeTeam,
+                        GLYPH_TEAM,
+                        team_section,
+                        Kind::Action,
+                    )),
                     Some(ClientGroupTeamMenu::Team) => items.extend([
-                        item("Team info", Action::TeamInfo),
-                        item("Edit purpose…", Action::EditPurpose),
-                        item("Disband team", Action::DisbandTeam),
+                        item(
+                            "Team info",
+                            Action::TeamInfo,
+                            GLYPH_INFO,
+                            team_section,
+                            Kind::Action,
+                        ),
+                        item(
+                            "Edit purpose…",
+                            Action::EditPurpose,
+                            GLYPH_RENAME,
+                            team_section,
+                            Kind::Action,
+                        ),
                     ]),
                     None => {}
+                }
+                if team_group {
+                    items.push(item(
+                        "Ungroup (disbands team)",
+                        Action::Ungroup,
+                        GLYPH_UNGROUP,
+                        Section::Danger,
+                        Kind::Danger,
+                    ));
+                }
+                items.push(item(
+                    "Close group",
+                    Action::CloseGroup,
+                    GLYPH_CLOSE,
+                    Section::Danger,
+                    Kind::Danger,
+                ));
+                if team_group {
+                    items.push(item(
+                        "Disband team",
+                        Action::DisbandTeam,
+                        GLYPH_DISBAND,
+                        Section::Danger,
+                        Kind::Danger,
+                    ));
                 }
                 items
             }
             ClientContextMenuTarget::News { enabled, .. } => vec![
-                item("Run now", Action::NewsRun),
-                item("Open", Action::NewsOpen),
+                lead("Run now", Action::NewsRun, GLYPH_ACTIVATE),
+                lead("Open", Action::NewsOpen, GLYPH_OPEN),
                 item(
-                    if *enabled {
-                        "Pause schedule"
-                    } else {
-                        "Resume schedule"
-                    },
+                    "Run on schedule",
                     Action::NewsToggleSchedule,
+                    if *enabled { GLYPH_ON } else { GLYPH_OFF },
+                    Section::Lead,
+                    Kind::Toggle(*enabled),
                 ),
             ],
             ClientContextMenuTarget::Coordinator { items } => {
@@ -202,13 +327,25 @@ impl ClientContextMenuOverlay {
                 let mut items = Vec::new();
                 if *local {
                     if *running {
-                        items.push(item("Focus window", Action::BrowserFocusWindow));
-                        items.push(item("Stop profile", Action::BrowserToggleProfile));
+                        items.push(lead(
+                            "Focus window",
+                            Action::BrowserFocusWindow,
+                            GLYPH_FOCUS,
+                        ));
+                        items.push(lead(
+                            "Stop profile",
+                            Action::BrowserToggleProfile,
+                            GLYPH_STOP,
+                        ));
                     } else {
-                        items.push(item("Start profile", Action::BrowserToggleProfile));
+                        items.push(lead(
+                            "Start profile",
+                            Action::BrowserToggleProfile,
+                            GLYPH_ACTIVATE,
+                        ));
                     }
                 }
-                items.push(item("Open overlay", Action::BrowserOpenOverlay));
+                items.push(lead("Open overlay", Action::BrowserOpenOverlay, GLYPH_OPEN));
                 items
             }
             ClientContextMenuTarget::Pane {
@@ -218,38 +355,128 @@ impl ClientContextMenuOverlay {
                 session_id,
                 ..
             } => {
-                let mut items = vec![item("Rename pane", Action::RenamePane)];
-                if *has_manual_label {
-                    items.push(item("Clear pane name", Action::ClearPaneName));
-                }
-                if source_pane_id.is_some() {
-                    items.push(item("Swap with focused pane", Action::SwapWithFocusedPane));
-                }
-                items.extend([
-                    item("Split right", Action::SplitRight),
-                    item("Split down", Action::SplitDown),
-                    item("Zoom", Action::Zoom),
+                let layout = Section::Titled("Layout");
+                let name = Section::Titled("Name");
+                let pane = Section::Titled("Pane");
+                let mut items = vec![
                     item(
-                        if *right_click_passthrough {
-                            "Use Herdr right-click menu"
-                        } else {
-                            "Send right-clicks to pane"
-                        },
-                        Action::ToggleRightClickPassthrough,
+                        "Split right",
+                        Action::SplitRight,
+                        GLYPH_SPLIT_RIGHT,
+                        layout,
+                        Kind::Action,
                     ),
-                    item("Close pane", Action::ClosePane),
-                ]);
+                    item(
+                        "Split down",
+                        Action::SplitDown,
+                        GLYPH_SPLIT_DOWN,
+                        layout,
+                        Kind::Action,
+                    ),
+                    item("Zoom", Action::Zoom, GLYPH_ZOOM, layout, Kind::Action),
+                ];
+                if source_pane_id.is_some() {
+                    items.push(item(
+                        "Swap with focused pane",
+                        Action::SwapWithFocusedPane,
+                        GLYPH_HANDOFF,
+                        layout,
+                        Kind::Action,
+                    ));
+                }
+                items.push(item(
+                    "Rename pane",
+                    Action::RenamePane,
+                    GLYPH_RENAME,
+                    name,
+                    Kind::Action,
+                ));
+                if *has_manual_label {
+                    items.push(item(
+                        "Clear pane name",
+                        Action::ClearPaneName,
+                        GLYPH_CLEAR,
+                        name,
+                        Kind::Action,
+                    ));
+                }
                 // Fork: the pane's tab's info dock.
-                items.push(item("Info pane", Action::ToggleInfoPane));
+                items.push(item(
+                    "Info pane",
+                    Action::ToggleInfoPane,
+                    GLYPH_INFO,
+                    pane,
+                    Kind::Action,
+                ));
                 // Fork: once the pane agent's session id arrived.
                 if session_id.is_some() {
-                    items.push(item("Copy session ID", Action::CopySessionId));
+                    items.push(item(
+                        "Copy session ID",
+                        Action::CopySessionId,
+                        GLYPH_COPY,
+                        pane,
+                        Kind::Action,
+                    ));
                 }
+                items.push(item(
+                    "Send right-clicks to pane",
+                    Action::ToggleRightClickPassthrough,
+                    if *right_click_passthrough {
+                        GLYPH_ON
+                    } else {
+                        GLYPH_OFF
+                    },
+                    pane,
+                    Kind::Toggle(*right_click_passthrough),
+                ));
+                items.push(item(
+                    "Close pane",
+                    Action::ClosePane,
+                    GLYPH_CLOSE,
+                    Section::Last,
+                    Kind::Danger,
+                ));
                 items
             }
         }
     }
 }
+
+// Fork (menu design): one glyph per item (the legend of the chosen mock).
+pub(super) const GLYPH_NEW: &str = "+";
+pub(super) const GLYPH_RENAME: &str = "\u{270E}"; // ✎
+pub(super) const GLYPH_INFO: &str = "\u{25E7}"; // ◧
+pub(super) const GLYPH_CLOSE: &str = "\u{2715}"; // ✕
+pub(super) const GLYPH_SUSPEND: &str = "\u{2016}"; // ‖
+pub(super) const GLYPH_ACTIVATE: &str = "\u{25B6}"; // ▶
+pub(super) const GLYPH_RESTART: &str = "\u{21BB}"; // ↻
+pub(super) const GLYPH_HANDOFF: &str = "\u{21C4}"; // ⇄
+pub(super) const GLYPH_COPY: &str = "\u{2398}"; // ⎘
+pub(super) const GLYPH_ROLE: &str = "\u{25C8}"; // ◈
+pub(super) const GLYPH_LEAVE: &str = "\u{2190}"; // ←
+pub(super) const GLYPH_JOIN: &str = "\u{2192}"; // →
+pub(super) const GLYPH_UNGROUP: &str = "\u{21F1}"; // ⇱
+pub(super) const GLYPH_DISBAND: &str = "\u{2298}"; // ⊘
+pub(super) const GLYPH_DELETE: &str = "\u{2298}"; // ⊘
+pub(super) const GLYPH_TEAM: &str = "\u{25C6}"; // ◆
+pub(super) const GLYPH_SPLIT_RIGHT: &str = "\u{25AE}"; // ▮
+pub(super) const GLYPH_SPLIT_DOWN: &str = "\u{25AC}"; // ▬
+pub(super) const GLYPH_ZOOM: &str = "\u{2922}"; // ⤢
+pub(super) const GLYPH_CLEAR: &str = "\u{2205}"; // ∅
+pub(super) const GLYPH_REMIND: &str = "\u{25F7}"; // ◷
+pub(super) const GLYPH_COLOR: &str = "\u{25D0}"; // ◐
+pub(super) const GLYPH_OFF: &str = "\u{25CB}"; // ○
+pub(super) const GLYPH_ON: &str = "\u{25CF}"; // ●
+pub(super) const GLYPH_STAR_OFF: &str = "\u{2606}"; // ☆
+pub(super) const GLYPH_STAR_ON: &str = "\u{2605}"; // ★
+pub(super) const GLYPH_WORKTREE: &str = "\u{2387}"; // ⎇
+pub(super) const GLYPH_COLLAPSE: &str = "\u{25BE}"; // ▾
+pub(super) const GLYPH_EXPAND: &str = "\u{25B8}"; // ▸
+pub(super) const GLYPH_OPEN: &str = "\u{25A4}"; // ▤
+pub(super) const GLYPH_FOCUS: &str = "\u{25CE}"; // ◎
+pub(super) const GLYPH_STOP: &str = "\u{25A0}"; // ■
+pub(super) const GLYPH_WAKE: &str = "\u{21AF}"; // ↯
+pub(super) const GLYPH_SETTINGS: &str = "\u{2261}"; // ≡
 
 impl ClientShellState {
     pub(super) fn open_workspace_context_menu(&mut self, workspace_id: String, x: u16, y: u16) {

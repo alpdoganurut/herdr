@@ -1522,6 +1522,9 @@ impl ClientShellState {
                 MouseEventKind::Down(MouseButton::Left) => {
                     if let Some((_, index)) = row_hit {
                         self.activate_context_menu_item(index, outcome);
+                    } else if super::contains(self.hits.context_menu_area, point) {
+                        // Fork (menu design): a rule row or the border
+                        // picks nothing and keeps the menu.
                     } else {
                         self.overlay = None;
                         outcome.repaint = true;

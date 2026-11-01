@@ -1322,10 +1322,11 @@ fn header_menu_renames_ungroups_and_closes_a_group_without_touching_worktree_sib
         [
             ClientContextMenuAction::Rename,
             ClientContextMenuAction::Ungroup,
-            ClientContextMenuAction::CloseGroup,
             // Fork: the endpoint advertises every method (no list), so the
-            // team item shows after upstream's (`tests/teams.rs`).
+            // team item shows (`tests/teams.rs`); Close group is last, in
+            // the Danger section (menu design).
             ClientContextMenuAction::MakeTeam,
+            ClientContextMenuAction::CloseGroup,
         ]
     );
 
@@ -1359,7 +1360,15 @@ fn header_menu_renames_ungroups_and_closes_a_group_without_touching_worktree_sib
         header.y,
     )]);
     state.compose(106, 24).expect("menu");
-    let row = state.hits.context_menu_rows[2].0;
+    let close = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .iter()
+            .position(|item| item.action == ClientContextMenuAction::CloseGroup)
+            .expect("close group"),
+        _ => panic!("group context menu"),
+    };
+    let row = state.hits.context_menu_rows[close].0;
     state.handle_raw_events(vec![mouse(
         MouseEventKind::Down(MouseButton::Left),
         row.x + 1,
@@ -2018,21 +2027,25 @@ fn tab_menu_ends_with_a_swatch_row_marking_the_current_color() {
     use crate::protocol::color_to_u32;
     use crossterm::event::KeyCode;
     let (mut state, _) = colored_tabs_state(&tabs_config());
-    // Without an agent Close stays the third item (upstream's close_tab tests).
+    // Fork (menu design): without an agent the menu is the lead block (New
+    // tab, Rename, Info pane, Close) and the Alerts section.
     let plain = tab_menu_items(&mut state, 2);
-    assert_eq!(plain[2].action, ClientContextMenuAction::Close);
-    // Fork: the tab's "Info pane" follows Close (no agent: no role item).
-    assert_eq!(plain[3].action, ClientContextMenuAction::ToggleInfoPane);
-    assert_eq!(plain[4].action, ClientContextMenuAction::Important);
-    // Fork (sidebar v3): Pin follows Important.
-    assert_eq!(plain[5].action, ClientContextMenuAction::Pin);
-    // Fork: Mute follows Pin.
-    assert_eq!(plain[6].action, ClientContextMenuAction::Mute);
-    // Fork: Do not disturb follows Mute.
-    assert_eq!(plain[7].action, ClientContextMenuAction::Dnd);
-    assert_eq!(plain[8].action, ClientContextMenuAction::RemindTop);
-    assert_eq!(plain[9].action, ClientContextMenuAction::RemindBottom);
-    assert_eq!(plain.len(), 11);
+    assert_eq!(
+        plain.iter().map(|item| item.action).collect::<Vec<_>>(),
+        [
+            ClientContextMenuAction::NewTab,
+            ClientContextMenuAction::Rename,
+            ClientContextMenuAction::ToggleInfoPane,
+            ClientContextMenuAction::Close,
+            ClientContextMenuAction::Important,
+            ClientContextMenuAction::Pin,
+            ClientContextMenuAction::Mute,
+            ClientContextMenuAction::Dnd,
+            ClientContextMenuAction::RemindTop,
+            ClientContextMenuAction::RemindBottom,
+            ClientContextMenuAction::Color,
+        ]
+    );
 
     // tab_2 is red, one of the offered colors.
     let row = open_menu_with_swatches(&mut state, 1);
@@ -2052,7 +2065,8 @@ fn tab_menu_ends_with_a_swatch_row_marking_the_current_color() {
         assert_eq!(*hit, index);
         assert_eq!((rect.width, rect.height), (3, 1));
         assert_eq!(rect.y, menu_row.y, "inside the last menu row");
-        assert_eq!(rect.x, menu_row.x + 3 * index as u16, "side by side");
+        // Fork (menu design): after the `◐ colour` label.
+        assert_eq!(rect.x, menu_row.x + 11 + 3 * index as u16, "side by side");
     }
     let text = |rect: ratatui::layout::Rect| row_text(&frame, rect);
     assert_eq!(text(swatches[0].0), " \u{2205} ");

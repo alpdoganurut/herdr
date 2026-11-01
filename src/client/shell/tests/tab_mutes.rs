@@ -175,7 +175,10 @@ fn mute_menu_item_toggles_through_tab_set_muted_and_hides_without_server_support
     let items = open_menu_on(&mut state, "t_work");
     let index = items
         .iter()
-        .position(|item| item.label == "Mute notifications")
+        .position(|item| {
+            item.label == "Mute notifications"
+                && item.look.kind == super::super::context_menu_look::MenuKind::Toggle(false)
+        })
         .expect("a Mute notifications item");
     let pin = items
         .iter()
@@ -203,7 +206,10 @@ fn mute_menu_item_toggles_through_tab_set_muted_and_hides_without_server_support
     let items = open_menu_on(&mut state, "t_work");
     let index = items
         .iter()
-        .position(|item| item.label == "Unmute notifications")
+        .position(|item| {
+            item.label == "Mute notifications"
+                && item.look.kind == super::super::context_menu_look::MenuKind::Toggle(true)
+        })
         .expect("an Unmute notifications item");
     let mut outcome = ClientShellInput::default();
     state.activate_context_menu_item(index, &mut outcome);

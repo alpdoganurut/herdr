@@ -194,6 +194,9 @@ pub(super) struct ShellHitMap {
     /// The tab menu's reminder selector: one hit per option, indexed like
     /// `TabRemindInterval::ALL`.
     pub(super) context_menu_remind_options: Vec<(Rect, usize)>,
+    /// Fork (menu design): the open context menu's box; a press on its
+    /// rule rows (no item) keeps the menu open.
+    pub(super) context_menu_area: Rect,
     pub(super) overlay_primary: Rect,
     pub(super) overlay_clear: Rect,
     pub(super) overlay_cancel: Rect,
@@ -931,6 +934,9 @@ pub(super) struct ClientContextMenuOverlay {
 pub(super) struct ClientContextMenuItem {
     pub(super) label: &'static str,
     pub(super) action: ClientContextMenuAction,
+    /// Fork (menu design): the item's glyph, section and kind
+    /// (`context_menu_look.rs`).
+    pub(super) look: super::context_menu_look::MenuLook,
 }
 
 #[derive(Debug)]

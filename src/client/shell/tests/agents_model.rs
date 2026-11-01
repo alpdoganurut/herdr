@@ -74,14 +74,14 @@ fn set_role_is_offered_on_an_agent_tab_outside_a_team() {
     use ClientContextMenuAction as Action;
     let mut state = plain_state();
     let actions = menu_actions(&mut state, "tab_2");
-    let close = actions
+    // Fork (menu design): the role item opens the Team section, after the
+    // agent items and before the Alerts toggles.
+    let role = actions
         .iter()
-        .position(|a| *a == Action::Close)
-        .expect("close");
-    assert_eq!(
-        &actions[close + 1..close + 4],
-        [Action::SetRole, Action::ToggleInfoPane, Action::Important]
-    );
+        .position(|a| *a == Action::SetRole)
+        .expect("set role");
+    assert_eq!(actions[role - 1], Action::HandoffCompact);
+    assert_eq!(actions[role + 1], Action::Important);
     assert!(!actions.iter().any(|a| matches!(
         a,
         Action::SetTeamRole | Action::LeaveTeam | Action::JoinTeam

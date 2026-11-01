@@ -303,9 +303,33 @@ impl ClientShellState {
 pub(super) fn coordinator_menu_items(items: &[CoordinatorMenuItem]) -> Vec<ClientContextMenuItem> {
     items
         .iter()
-        .map(|item| ClientContextMenuItem {
-            label: item.label,
-            action: ClientContextMenuAction::Coordinator(item.action),
+        .map(|item| {
+            use super::context_menu as glyphs;
+            use super::context_menu_look::{MenuKind, MenuLook, MenuSection};
+            use super::coordinator::CoordinatorMenuAction;
+            let glyph = match item.action {
+                CoordinatorMenuAction::OpenDashboard => glyphs::GLYPH_OPEN,
+                CoordinatorMenuAction::Focus => glyphs::GLYPH_FOCUS,
+                CoordinatorMenuAction::WakeNow => glyphs::GLYPH_WAKE,
+                CoordinatorMenuAction::Restart => glyphs::GLYPH_RESTART,
+                CoordinatorMenuAction::ToggleEnabled if item.label.starts_with("Pause") => {
+                    glyphs::GLYPH_SUSPEND
+                }
+                CoordinatorMenuAction::ToggleEnabled => glyphs::GLYPH_ACTIVATE,
+                CoordinatorMenuAction::Settings => glyphs::GLYPH_SETTINGS,
+            };
+            // Fork (menu design): a disabled item is dim; a click still
+            // names the reason.
+            let kind = if item.disabled_reason.is_some() {
+                MenuKind::Disabled
+            } else {
+                MenuKind::Action
+            };
+            ClientContextMenuItem {
+                label: item.label,
+                action: ClientContextMenuAction::Coordinator(item.action),
+                look: MenuLook::new(glyph, MenuSection::Lead, kind),
+            }
         })
         .collect()
 }

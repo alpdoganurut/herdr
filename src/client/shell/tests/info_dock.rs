@@ -1438,9 +1438,10 @@ fn the_tab_menu_toggles_that_tabs_info_pane_without_focusing_it() {
             .iter()
             .position(|item| item.action == ClientContextMenuAction::Important)
             .expect("important");
+        // Fork (menu design): Info pane leads with Close, before Important.
         assert!(
-            close < index && index < important,
-            "between Close and Important"
+            index < close && close < important,
+            "before Close and Important"
         );
         let mut outcome = ClientShellInput::default();
         state.activate_context_menu_item(index, &mut outcome);
