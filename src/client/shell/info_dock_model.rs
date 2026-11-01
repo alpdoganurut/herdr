@@ -457,8 +457,9 @@ fn inline_runs(line: &str, start: usize, end: usize, base: Style) -> Vec<Run> {
                     .filter(|close| !bytes[close - 1].is_ascii_whitespace())
                     .map(|close| (at + 1, close, close + 1, italic(base)))
             }
-            b'[' => find_in(line, at + 1, end, "](")
-                .filter(|mid| *mid > at + 1)
+            // The first `]` closes the text; a link needs `(` right after.
+            b'[' => find_in(line, at + 1, end, "]")
+                .filter(|mid| *mid > at + 1 && bytes.get(mid + 1) == Some(&b'('))
                 .and_then(|mid| {
                     find_in(line, mid + 2, end, ")").map(|close| {
                         (
@@ -534,7 +535,13 @@ fn wrap_cells(cells: &[Cell], first: usize, rest: usize) -> Vec<(usize, usize)> 
     if let Some(b) = begin {
         words.push((b, cells.len()));
     }
-    let span_width = |a: usize, b: usize| cells[a..b].iter().map(|c| c.width).sum::<usize>();
+    // Prefix sums: a span's width is O(1), so a long word stays linear.
+    let mut prefix = Vec::with_capacity(cells.len() + 1);
+    prefix.push(0usize);
+    for cell in cells {
+        prefix.push(prefix[prefix.len() - 1] + cell.width);
+    }
+    let span_width = |a: usize, b: usize| prefix[b] - prefix[a];
     let mut rows: Vec<(usize, usize)> = Vec::new();
     let mut current: Option<(usize, usize)> = None;
     let room = |rows: &Vec<(usize, usize)>| if rows.is_empty() { first } else { rest };
@@ -852,6 +859,37 @@ fn is_separator_row(line: &str) -> bool {
         })
 }
 
+/// Narrow `widths` until they and their ` │ ` separators fit `budget`: the
+/// widest columns give way first, all tied ones together, so the loop runs
+/// once per distinct width (never once per column of excess).
+fn shrink_columns(widths: &mut [usize], budget: usize) {
+    let total =
+        |widths: &[usize]| widths.iter().sum::<usize>() + 3 * widths.len().saturating_sub(1);
+    loop {
+        let over = total(widths).saturating_sub(budget);
+        let widest = widths.iter().copied().max().unwrap_or(0);
+        if over == 0 || widest <= 1 {
+            return;
+        }
+        let tied = widths.iter().filter(|w| **w == widest).count();
+        let next = widths
+            .iter()
+            .copied()
+            .filter(|w| *w < widest)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let target = widest.saturating_sub(over.div_ceil(tied)).max(next);
+        // Ties all drop to `target`; lower ones keep their width.
+        let mut left = over;
+        for w in widths.iter_mut().filter(|w| **w == widest) {
+            let cut = (widest - target).min(left);
+            *w -= cut;
+            left -= cut;
+        }
+    }
+}
+
 /// A table: aligned columns, `│` / `┼` separators in the rule colour, the
 /// header (the row above a `|---|` row) in bold ink; wider than `width`,
 /// the widest columns give way and their cells end in `…`.
@@ -894,28 +932,33 @@ fn table_rows(lines: &[(usize, &str)], width: usize) -> Vec<Row> {
             }
         })
         .collect();
-    let columns = parsed.iter().map(|p| p.cells.len()).max().unwrap_or(0);
-    if columns == 0 {
+    let all_columns = parsed.iter().map(|p| p.cells.len()).max().unwrap_or(0);
+    if all_columns == 0 {
         return Vec::new();
     }
+    // Each column needs a cell and ` │ `: at most (width + 3) / 4 fit. The
+    // ones past that are dropped behind a trailing ` │ …` (one more slot).
+    let fit = width.div_ceil(4);
+    let dropped = all_columns > fit.max(1);
+    let columns = if dropped {
+        fit.saturating_sub(1).max(1)
+    } else {
+        all_columns
+    };
+    let budget = if dropped {
+        width.saturating_sub(4)
+    } else {
+        width
+    };
     let mut widths = vec![0usize; columns];
     for p in &parsed {
-        for (index, cell) in p.cells.iter().enumerate() {
+        for (index, cell) in p.cells.iter().take(columns).enumerate() {
             widths[index] = widths[index].max(cell.2);
         }
     }
-    let total = |widths: &[usize]| widths.iter().sum::<usize>() + 3 * (widths.len() - 1);
-    while total(&widths) > width {
-        let Some((widest, _)) = widths
-            .iter()
-            .enumerate()
-            .filter(|(_, w)| **w > 1)
-            .max_by_key(|(index, w)| (**w, usize::MAX - index))
-        else {
-            break;
-        };
-        widths[widest] -= 1;
-    }
+    shrink_columns(&mut widths, budget);
+    // Pad the last kept column when the ` │ …` follows it.
+    let padded = |index: usize| index + 1 < columns || dropped;
     let rule = fg(DUSK.rule);
     parsed
         .iter()
@@ -931,8 +974,11 @@ fn table_rows(lines: &[(usize, &str)], width: usize) -> Vec<Row> {
                         text.push('┼');
                     }
                     let lead = usize::from(index > 0);
-                    let trail = usize::from(index + 1 < columns);
+                    let trail = usize::from(padded(index));
                     text.push_str(&"─".repeat(w + lead + trail));
+                }
+                if dropped {
+                    text.push_str("┼──");
                 }
                 return Row::new(vec![seg(text, rule)], target);
             }
@@ -942,7 +988,7 @@ fn table_rows(lines: &[(usize, &str)], width: usize) -> Vec<Row> {
                     segs.push(seg(" │ ", rule));
                 }
                 let Some((runs, cells, cell_w)) = p.cells.get(index) else {
-                    if index + 1 < columns {
+                    if padded(index) {
                         segs.push(seg(" ".repeat(*w), fg(DUSK.body)));
                     }
                     continue;
@@ -964,9 +1010,13 @@ fn table_rows(lines: &[(usize, &str)], width: usize) -> Vec<Row> {
                     segs.push(seg("…", fg(DUSK.dim)));
                     drawn += 1;
                 }
-                if index + 1 < columns {
+                if padded(index) {
                     segs.push(seg(" ".repeat(w.saturating_sub(drawn)), fg(DUSK.body)));
                 }
+            }
+            if dropped {
+                segs.push(seg(" │ ", rule));
+                segs.push(seg("…", fg(DUSK.dim)));
             }
             Row::new(segs, target)
         })

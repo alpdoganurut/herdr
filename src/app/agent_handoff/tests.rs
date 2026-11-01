@@ -1098,3 +1098,17 @@ async fn the_coordinator_may_not_hand_off_an_agent_again_within_ten_minutes() {
     assert_eq!(reply["result"]["handoff"]["outcome"], "started", "{reply}");
     wait_worker(&mut s.app);
 }
+
+#[test]
+fn the_handoff_page_says_how_much_of_a_long_page_was_left_out() {
+    assert_eq!(handoff_page("# Plan\n- [ ] ship"), "# Plan\n- [ ] ship");
+    let long: String = (0..2000).map(|i| format!("line {i}\n")).collect();
+    let page = handoff_page(&long);
+    assert!(page.starts_with("line 0\nline 1\n"), "{page}");
+    let (head, left_out) = crate::notes::recall::notes_head(&long);
+    assert!(left_out > 0);
+    assert_eq!(
+        page,
+        format!("{head}\n(the top; {left_out} more lines: agents_notes_read)")
+    );
+}

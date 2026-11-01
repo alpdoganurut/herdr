@@ -707,6 +707,76 @@ fn the_plus_notes_stub_page_renders() {
     assert_eq!(text, expected, "{text:#?}");
 }
 
+#[test]
+fn a_very_wide_table_keeps_only_the_columns_that_fit() {
+    let header: String = (0..5000).map(|i| format!("| c{i} ")).collect::<String>() + "|";
+    let sep: String = "|---".repeat(5000) + "|";
+    let row: String = (0..5000).map(|i| format!("| {i} ")).collect::<String>() + "|";
+    let table = format!("{header}\n{sep}\n{row}");
+    let started = std::time::Instant::now();
+    let rows = md_rows(&table, 40);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    for row in &rows[..3] {
+        let text = row.text();
+        assert!(
+            unicode_width::UnicodeWidthStr::width(text.as_str()) <= 40,
+            "{text:?}"
+        );
+        assert!(row.segs.len() < 64, "{}", row.segs.len());
+    }
+    assert!(rows[0].text().ends_with(" │ …"), "{:?}", rows[0].text());
+    assert!(rows[1].text().ends_with("┼──"), "{:?}", rows[1].text());
+    assert!(rows[2].text().starts_with("0 "), "{:?}", rows[2].text());
+}
+
+#[test]
+fn a_huge_unbroken_word_wraps_in_linear_time() {
+    let word = "x".repeat(256 * 1024);
+    let started = std::time::Instant::now();
+    let rows = md_rows(&word, 40);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    // 256 KiB in rows of 40, plus the blank and meta rows.
+    assert_eq!(rows.len(), 256 * 1024 / 40 + 1 + 2);
+}
+
+#[test]
+fn only_a_bracket_followed_by_a_paren_is_a_link() {
+    let rows = md_rows("[a] and [b](u)", 40);
+    assert_eq!(rows[0].text(), "[a] and b");
+    let link = seg_of(&rows, "b").style;
+    assert!(has(link, ratatui::style::Modifier::UNDERLINED));
+    assert_eq!(link.fg, Some(model::DUSK.accent));
+    assert!(!rows[0]
+        .segs
+        .iter()
+        .any(|seg| seg.text.contains('a') && has(seg.style, ratatui::style::Modifier::UNDERLINED)));
+}
+
+#[test]
+fn rows_rebuild_on_a_utc_offset_change_not_on_the_clock() {
+    let mut state = dock_state();
+    open_loaded(&mut state);
+    let area = state.info_dock_area();
+    let input = super::super::info_dock::DockComposeInput {
+        tab_label: "calendar-fix",
+        sized_elsewhere: false,
+    };
+    let dock = state.info_dock.as_deref_mut().expect("dock");
+    dock.compute_view(area, &input, 3600);
+    let built = dock.rows_built;
+    // The same inputs a minute (or an hour) later: the memo holds.
+    dock.compute_view(area, &input, 3600);
+    dock.compute_view(area, &input, 3600);
+    assert_eq!(dock.rows_built, built);
+    // A DST change moves the offset: the `updated` time is redrawn.
+    dock.compute_view(area, &input, 7200);
+    assert_eq!(dock.rows_built, built + 1);
+}
+
 // ---------------------------------------------------------------- layout
 
 #[test]

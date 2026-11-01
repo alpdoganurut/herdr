@@ -637,6 +637,40 @@ mod tests {
     }
 
     #[test]
+    fn the_dispatcher_refuses_the_removed_agents_methods() {
+        use crate::api::schema::agents_model::{AgentsCheckpointParams, AgentsNotesAppendParams};
+        use crate::api::schema::Method;
+        let (mut app, _, root, _, _guard) = app_with_two_panes();
+        for method in [
+            Method::AgentsCheckpoint(AgentsCheckpointParams {
+                caller_pane: root.clone(),
+                target: root.clone(),
+                kind: "milestone".into(),
+                title: "done".into(),
+                ..AgentsCheckpointParams::default()
+            }),
+            Method::AgentsNotesAppend(AgentsNotesAppendParams {
+                caller_pane: root.clone(),
+                target: root.clone(),
+                text: "- a log line".into(),
+                ..AgentsNotesAppendParams::default()
+            }),
+            Method::CheckpointsList(crate::api::schema::notes::CheckpointsListParams::default()),
+        ] {
+            let name = crate::api::api_method_name(&method);
+            let reply = app.handle_api_request(Request {
+                id: "r".into(),
+                method,
+            });
+            let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+            assert_eq!(
+                reply["error"]["code"], "checkpoints_removed",
+                "{name}: {reply}"
+            );
+        }
+    }
+
+    #[test]
     fn every_checkpoint_method_is_refused_as_removed() {
         let reply = App::handle_checkpoints_removed("t".into());
         let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();

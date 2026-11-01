@@ -872,9 +872,7 @@ impl App {
             },
             known_revision: None,
         })) {
-            Ok(ResponseResult::NotesGet { notes }) => notes
-                .text
-                .map(|text| crate::notes::recall::notes_head(&text).0),
+            Ok(ResponseResult::NotesGet { notes }) => notes.text.map(|text| handoff_page(&text)),
             Ok(_) => {
                 tracing::debug!(pane, "agent handoff: notes.get answered another result");
                 None
@@ -1686,4 +1684,14 @@ impl App {
             run.free_since = Some(Instant::now() - SETTLE - Duration::from_millis(1));
         }
     }
+}
+
+/// The top of a notes page for the mechanical handoff (the recall's cap),
+/// saying how much was left out.
+fn handoff_page(text: &str) -> String {
+    let (head, left_out) = crate::notes::recall::notes_head(text);
+    if left_out == 0 {
+        return head;
+    }
+    format!("{head}\n(the top; {left_out} more lines: agents_notes_read)")
 }

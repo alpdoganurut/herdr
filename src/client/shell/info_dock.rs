@@ -340,7 +340,9 @@ struct RowsStamp {
     ui: u64,
     editor: u64,
     labels: u64,
-    minute: u64,
+    /// The local UTC offset the `updated` time was drawn with (a DST
+    /// change rebuilds; the clock's minute does not).
+    utc_offset: i64,
 }
 
 #[derive(Debug)]
@@ -365,6 +367,9 @@ pub(crate) struct ClientInfoDockState {
     /// Bumps on every editor change.
     editor_generation: u64,
     rows: Option<RowsCache>,
+    /// How often the rows were rebuilt (tests).
+    #[cfg(test)]
+    pub(crate) rows_built: u64,
     /// `ui_for`'s unreachable fallback.
     scratch_ui: DockUi,
 }
@@ -383,6 +388,8 @@ impl Default for ClientInfoDockState {
             ui_generation: 0,
             editor_generation: 0,
             rows: None,
+            #[cfg(test)]
+            rows_built: 0,
             scratch_ui: DockUi::default(),
         }
     }
@@ -392,13 +399,6 @@ impl Default for ClientInfoDockState {
 pub(super) struct DockComposeInput<'a> {
     pub(super) tab_label: &'a str,
     pub(super) sized_elsewhere: bool,
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|age| age.as_secs())
-        .unwrap_or(0)
 }
 
 /// The local UTC offset in seconds (the one in effect now).
@@ -583,21 +583,29 @@ impl ClientInfoDockState {
     /// Rebuild the active view's rows when their stamp changed, then clamp
     /// or follow the scroll (`compute_view` in the stub: scroll is the only
     /// mutation besides the memo).
-    fn compute_view(&mut self, area: Rect, input: &DockComposeInput<'_>) {
+    pub(super) fn compute_view(
+        &mut self,
+        area: Rect,
+        input: &DockComposeInput<'_>,
+        utc_offset: i64,
+    ) {
         let width = area.width.saturating_sub(2);
-        let now_unix = unix_now();
         let stamp = RowsStamp {
             width,
             data: self.data.generation,
             ui: self.ui_generation,
             editor: self.editor_generation,
             labels: label_hash(input.tab_label),
-            minute: now_unix / 60,
+            utc_offset,
         };
         let key = self.ui_key();
         if self.rows.as_ref().is_none_or(|cache| cache.stamp != stamp) {
-            let rows = self.build_rows(usize::from(width), input);
+            let rows = self.build_rows(usize::from(width), input, utc_offset);
             self.rows = Some(RowsCache { stamp, rows });
+            #[cfg(test)]
+            {
+                self.rows_built += 1;
+            }
         }
         let avail = usize::from(area.height.saturating_sub(CHROME_ROWS));
         let Some(cache) = self.rows.as_ref() else {
@@ -634,7 +642,12 @@ impl ClientInfoDockState {
         ui.follow = false;
     }
 
-    fn build_rows(&mut self, width: usize, input: &DockComposeInput<'_>) -> CachedRows {
+    fn build_rows(
+        &mut self,
+        width: usize,
+        input: &DockComposeInput<'_>,
+        utc_offset: i64,
+    ) -> CachedRows {
         let message =
             |text: &str, retry: bool| CachedRows::Message(model::message_rows(text, retry, width));
         if self.data.unsupported {
@@ -649,7 +662,6 @@ impl ClientInfoDockState {
                 false,
             );
         }
-        let utc_offset = local_utc_offset();
         if let Some(editor) = self.editor.as_ref().filter(|editor| !editor.leaving) {
             let (rows, cursor_row) = model::editor_rows(&editor.lines, editor.cursor, width);
             return CachedRows::Editor { rows, cursor_row };
@@ -749,7 +761,7 @@ impl ClientInfoDockState {
         area: Rect,
         input: &DockComposeInput<'_>,
     ) -> InfoDockHits {
-        self.compute_view(area, input);
+        self.compute_view(area, input, local_utc_offset());
         let key = self.ui_key();
         self.render(buffer, area, input, &key)
     }
