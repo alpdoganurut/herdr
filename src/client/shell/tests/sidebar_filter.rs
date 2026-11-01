@@ -841,3 +841,89 @@ fn the_notes_button_toggles_the_focused_tabs_info_pane_without_focusing_it() {
         super::super::sidebar_filter::NOTES_GLYPH
     );
 }
+
+// ------------------------------------------------------- tab cycling keys
+
+/// `filter_state` with `tab_id` focused and the search set to `text`.
+fn cycle_state(tab_id: &str, text: &str) -> ClientShellState {
+    let mut state = filter_state();
+    let mut snapshot = fixture();
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == tab_id;
+    }
+    let workspace_id = snapshot
+        .tabs
+        .iter()
+        .find(|tab| tab.focused)
+        .map(|tab| tab.workspace_id.clone())
+        .expect("focused tab");
+    for workspace in &mut snapshot.workspaces {
+        workspace.focused = workspace.workspace_id == workspace_id;
+    }
+    snapshot.focused_workspace_id = Some(workspace_id);
+    snapshot.focused_tab_id = Some(tab_id.into());
+    state.set_snapshot(Box::new(snapshot));
+    state.sidebar_filter.set_query(text);
+    state.sidebar_model.mark_dirty();
+    state
+}
+
+fn cycled(state: &mut ClientShellState, action: crate::input::KeybindAction) -> Option<String> {
+    match state.endpoint_method_for_action(action)? {
+        crate::api::schema::Method::TabFocus(target) => Some(target.tab_id),
+        _ => None,
+    }
+}
+
+#[test]
+fn next_and_previous_tab_cycle_only_the_filtered_list_with_wrap() {
+    use crate::input::KeybindAction::{NextTab, PreviousTab};
+    // `o` matches reviewer (codex), notes and deploy.
+    let mut state = cycle_state("tab_2", "o");
+    assert_eq!(cycled(&mut state, NextTab).as_deref(), Some("tab_3"));
+    assert_eq!(
+        cycled(&mut state, PreviousTab).as_deref(),
+        Some("tab_8"),
+        "wraps back"
+    );
+    let mut state = cycle_state("tab_3", "o");
+    assert_eq!(
+        cycled(&mut state, NextTab).as_deref(),
+        Some("tab_8"),
+        "skips the run"
+    );
+    assert_eq!(cycled(&mut state, PreviousTab).as_deref(), Some("tab_2"));
+    let mut state = cycle_state("tab_8", "o");
+    assert_eq!(
+        cycled(&mut state, NextTab).as_deref(),
+        Some("tab_2"),
+        "wraps forward"
+    );
+}
+
+#[test]
+fn next_and_previous_tab_are_unchanged_without_a_filter() {
+    use crate::input::KeybindAction::{NextTab, PreviousTab};
+    let mut state = cycle_state("tab_3", "");
+    assert_eq!(cycled(&mut state, NextTab).as_deref(), Some("tab_4"));
+    assert_eq!(cycled(&mut state, PreviousTab).as_deref(), Some("tab_2"));
+    let mut state = cycle_state("tab_1", "");
+    assert_eq!(cycled(&mut state, PreviousTab).as_deref(), Some("tab_8"));
+}
+
+#[test]
+fn a_focused_tab_the_filter_rejects_steps_to_its_visible_neighbours() {
+    use crate::input::KeybindAction::{NextTab, PreviousTab};
+    // `parked 5` does not match `o` but stays listed while focused.
+    let mut state = cycle_state("tab_5", "o");
+    assert_eq!(cycled(&mut state, NextTab).as_deref(), Some("tab_8"));
+    assert_eq!(cycled(&mut state, PreviousTab).as_deref(), Some("tab_3"));
+}
+
+#[test]
+fn a_filter_that_hides_every_other_tab_leaves_next_and_previous_inert() {
+    use crate::input::KeybindAction::{NextTab, PreviousTab};
+    let mut state = cycle_state("tab_1", "zzz");
+    assert_eq!(cycled(&mut state, NextTab), None);
+    assert_eq!(cycled(&mut state, PreviousTab), None);
+}

@@ -952,6 +952,11 @@ impl ClientShellState {
         };
         use crate::input::KeybindAction;
 
+        // Fork (sidebar filters): next/previous cycle the tabs the filtered
+        // list shows; the model has to be current before the snapshot borrow.
+        let sidebar_filtered =
+            matches!(action, KeybindAction::PreviousTab | KeybindAction::NextTab)
+                && self.ensure_sidebar_filter_model();
         let snapshot = self.snapshot.as_deref()?;
         let focused_workspace = snapshot.focused_workspace_id.clone()?;
         let focused_tab = snapshot.focused_tab_id.clone();
@@ -1059,7 +1064,10 @@ impl ClientShellState {
                 // The tabs sidebar layout cycles the list as shown (every space,
                 // in sidebar order, the pinned News row left out); the spaces
                 // layout stays within the focused space.
-                let tabs = self.keyboard_tab_list(snapshot, &focused_workspace);
+                let mut tabs = self.keyboard_tab_list(snapshot, &focused_workspace);
+                if sidebar_filtered {
+                    self.retain_sidebar_filter_tabs(snapshot, &mut tabs);
+                }
                 if tabs.is_empty() {
                     return None;
                 }
@@ -1078,6 +1086,10 @@ impl ClientShellState {
                     None if delta > 0 => 0,
                     None => tabs.len() - 1,
                 };
+                // Fork: a filter that leaves only the focused tab moves nowhere.
+                if sidebar_filtered && tabs[next].tab_id == focused_tab {
+                    return None;
+                }
                 Some(Method::TabFocus(TabTarget {
                     tab_id: tabs[next].tab_id.clone(),
                 }))
@@ -1382,5 +1394,39 @@ impl ClientShellState {
             .filter(|tab| pinned.as_deref() != Some(tab.tab_id.as_str()))
             .filter(|tab| coordinator.as_deref() != Some(tab.tab_id.as_str()))
             .collect()
+    }
+
+    /// Fork (sidebar filters): whether a filter is set and the tabs sidebar
+    /// model applying it is current (the tabs layout, shown, one endpoint).
+    fn ensure_sidebar_filter_model(&mut self) -> bool {
+        if !self.sidebar_filter.active() {
+            return false;
+        }
+        let news_row = self.news_row();
+        let coordinator_row = self.coordinator_row();
+        self.ensure_tabs_sidebar_model(news_row.as_ref(), coordinator_row.as_ref())
+    }
+
+    /// Fork (sidebar filters): leave out the tabs the filtered list hides
+    /// (the focused tab is never hidden, so it keeps its place in the cycle).
+    fn retain_sidebar_filter_tabs(
+        &self,
+        snapshot: &crate::protocol::ClientShellSnapshot,
+        tabs: &mut Vec<&crate::protocol::ClientShellTab>,
+    ) {
+        let facts = &self.sidebar_model.tabs;
+        if facts.len() != snapshot.tabs.len() {
+            return;
+        }
+        let hidden = snapshot
+            .tabs
+            .iter()
+            .zip(facts)
+            .filter(|(_, facts)| facts.hidden)
+            .map(|(tab, _)| tab.tab_id.as_str())
+            .collect::<HashSet<_>>();
+        if !hidden.is_empty() {
+            tabs.retain(|tab| !hidden.contains(tab.tab_id.as_str()));
+        }
     }
 }
