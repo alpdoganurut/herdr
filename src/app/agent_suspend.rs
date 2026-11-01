@@ -401,13 +401,6 @@ impl App {
                 target: target.to_string(),
             })
         };
-        let (text, enter) = super::api_helpers::encode_api_submission_parts(
-            self.terminal_runtimes
-                .get(&terminal_id)
-                .ok_or_else(not_found)?,
-            exit_input,
-        );
-
         let now = Instant::now();
         let busy = force
             .then(|| self.state.terminals.get(&terminal_id))
@@ -464,6 +457,8 @@ impl App {
                     .terminal_runtimes
                     .get(&terminal_id)
                     .ok_or_else(not_found)?;
+                let (text, enter) =
+                    super::api_helpers::encode_api_submission_parts(runtime, exit_input);
                 let terminal = self
                     .state
                     .terminals
@@ -1108,33 +1103,58 @@ impl App {
     /// typed, the exit escalation starts now instead (`SIGTERM`). Never types
     /// into a dialog.
     fn send_forced_exit_inputs(&mut self, now: Instant) -> bool {
-        let due: Vec<_> = self
-            .state
-            .terminals
-            .values()
-            .filter_map(|terminal| {
-                let record = terminal.suspended_agent.as_ref()?;
-                let forced = record.forced_exit()?;
-                (record.exit_observed() || record.exit_deadline().is_some_and(|at| now >= at)).then(
-                    || {
-                        let back = !matches!(
-                            terminal.state,
-                            crate::detect::AgentState::Working | crate::detect::AgentState::Blocked
-                        );
-                        (terminal.id.clone(), forced, back, record.exit_observed())
-                    },
-                )
-            })
-            .collect();
-        let changed = !due.is_empty();
-        for (terminal_id, forced, back, exit_observed) in due {
+        let due: Vec<_> =
+            self.state
+                .terminals
+                .values()
+                .filter_map(|terminal| {
+                    let record = terminal.suspended_agent.as_ref()?;
+                    let forced = record.forced_exit()?;
+                    (record.exit_observed() || record.exit_deadline().is_some_and(|at| now >= at))
+                        .then(|| {
+                            // Back at its prompt: idle, still the agent the Esc
+                            // went to (the screen is read below, only then).
+                            let idle_agent = (terminal.state == crate::detect::AgentState::Idle)
+                                .then(|| terminal.effective_known_agent())
+                                .flatten()
+                                .filter(|agent| {
+                                    matches!(
+                                        agent,
+                                        crate::detect::Agent::Claude | crate::detect::Agent::Codex
+                                    )
+                                });
+                            (
+                                terminal.id.clone(),
+                                forced,
+                                idle_agent,
+                                record.exit_observed(),
+                            )
+                        })
+                })
+                .collect();
+        let mut changed = false;
+        for (terminal_id, forced, idle_agent, exit_observed) in due {
             if exit_observed {
                 if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
                     terminal.finish_forced_exit_wait(None);
                 }
+                changed = true;
                 continue;
             }
-            if !back && now < forced.send_by {
+            // Its input box is on screen and holds no draft (not the typing
+            // guard: its recent-input hold outlasts the force wait).
+            let free = idle_agent.is_some_and(|agent| {
+                self.terminal_runtimes
+                    .get(&terminal_id)
+                    .is_some_and(|runtime| {
+                        let rows = usize::from(runtime.current_size().0.max(1));
+                        super::typing_guard::composer(
+                            agent,
+                            &runtime.recent_ansi_snapshot(rows).text,
+                        ) == super::typing_guard::Composer::Free
+                    })
+            });
+            if !free && now < forced.send_by {
                 if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
                     terminal.defer_forced_exit(
                         (now + RESTART_RESUME_POLL_INTERVAL).min(forced.send_by),
@@ -1142,7 +1162,8 @@ impl App {
                 }
                 continue;
             }
-            let typed = back
+            changed = true;
+            let typed = free
                 && self
                     .terminal_runtimes
                     .get(&terminal_id)
@@ -3101,12 +3122,17 @@ mod tests {
         assert!(escalate(&mut app, settled).is_empty());
         no_input(&mut rx, "never typed into a working agent").await;
 
-        // Back at its prompt: the exit input, then the usual escalation.
+        // Back at its prompt (idle, a free input box): the exit input, then
+        // the usual escalation.
         app.state
             .terminals
             .get_mut(&terminal_id)
             .unwrap()
             .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        app.terminal_runtimes
+            .get(&terminal_id)
+            .unwrap()
+            .test_process_pty_bytes(super::super::typing_guard::TEST_FREE_INPUT_BOX);
         let idle_at = settled + RESTART_RESUME_POLL_INTERVAL;
         assert!(escalate(&mut app, idle_at).is_empty());
         assert_eq!(
@@ -3119,6 +3145,66 @@ mod tests {
             .unwrap();
         assert!(record.forced_exit().is_none());
         escalation_reaches_kill(&mut app, &terminal_id, idle_at);
+    }
+
+    /// Force a working Claude, then leave it in `state` with `screen` until
+    /// the wait runs out: never typed into, terminated at `send_by`.
+    async fn forced_exit_never_types_unless_back_at_a_free_prompt(
+        state: AgentState,
+        screen: &[u8],
+    ) {
+        let mut app = test_app();
+        let (terminal_id, mut rx) = live_claude(&mut app, AgentState::Working);
+        let response = force_suspend(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_suspended", "{response}");
+        assert_eq!(&next_input(&mut rx).await[..], b"\x1b");
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), state);
+        app.terminal_runtimes
+            .get(&terminal_id)
+            .unwrap()
+            .test_process_pty_bytes(screen);
+        let record = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .unwrap();
+        let (first, send_by) = (
+            record.exit_deadline().unwrap(),
+            record.forced_exit().unwrap().send_by,
+        );
+        let mut at = first;
+        while at < send_by {
+            assert!(escalate(&mut app, at).is_empty(), "{state:?}");
+            at += RESTART_RESUME_POLL_INTERVAL;
+        }
+        assert_eq!(
+            escalate(&mut app, send_by),
+            vec![crate::platform::Signal::Terminate]
+        );
+        no_input(&mut rx, "never typed").await;
+    }
+
+    #[tokio::test]
+    async fn force_suspend_never_types_over_a_draft_in_the_composer() {
+        let screen = "\r\n─────\r\n❯ my unsent draft\r\n─────\r\n";
+        assert_eq!(
+            super::super::typing_guard::composer(Agent::Claude, screen),
+            super::super::typing_guard::Composer::Draft
+        );
+        forced_exit_never_types_unless_back_at_a_free_prompt(AgentState::Idle, screen.as_bytes())
+            .await;
+    }
+
+    #[tokio::test]
+    async fn force_suspend_never_types_into_an_unknown_state() {
+        forced_exit_never_types_unless_back_at_a_free_prompt(
+            AgentState::Unknown,
+            super::super::typing_guard::TEST_FREE_INPUT_BOX,
+        )
+        .await;
     }
 
     #[tokio::test]
