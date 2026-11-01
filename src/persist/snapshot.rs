@@ -196,6 +196,23 @@ pub struct PaneSnapshot {
     /// public id aliases. An older build drops it on read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_meta: Option<crate::agents_model::PaneAgentMeta>,
+    /// Fork: when the pane's agent entered its current state, so a restore
+    /// or live handoff keeps it while the agent comes back in that state
+    /// (src/app/agent_times.rs). An older build drops it on read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_state_since: Option<PaneAgentStateSinceSnapshot>,
+}
+
+/// Fork: a pane's agent state time (`PaneSnapshot.agent_state_since`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneAgentStateSinceSnapshot {
+    /// `idle`, `working` or `blocked`; anything else restores no time.
+    pub state: String,
+    /// The agent label the state belonged to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Wall-clock milliseconds (server clock) when the state began.
+    pub since_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -512,6 +529,8 @@ fn capture_tab(
                     .map(|terminal| terminal.agent_meta())
                     .filter(|meta| !meta.is_empty())
                     .cloned(),
+                agent_state_since: terminal
+                    .and_then(crate::app::agent_times::agent_state_since_snapshot),
             },
         );
     }
@@ -837,6 +856,7 @@ mod tests {
         };
         let pane = PaneSnapshot {
             agent_meta: Default::default(),
+            agent_state_since: None,
             cwd: PathBuf::from("/tmp"),
             label: None,
             agent_name: Some("reviewer".into()),
@@ -930,6 +950,7 @@ mod tests {
             0,
             PaneSnapshot {
                 agent_meta: Default::default(),
+                agent_state_since: None,
                 cwd: PathBuf::from("/home/can/Projects/herdr"),
                 label: None,
                 agent_name: None,
@@ -944,6 +965,7 @@ mod tests {
             1,
             PaneSnapshot {
                 agent_meta: Default::default(),
+                agent_state_since: None,
                 cwd: PathBuf::from("/home/can/Projects/website"),
                 label: Some("website".into()),
                 agent_name: None,
@@ -1642,6 +1664,7 @@ mod tests {
             0,
             PaneSnapshot {
                 agent_meta: Default::default(),
+                agent_state_since: None,
                 cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test"),
                 label: None,
                 agent_name: None,
@@ -1656,6 +1679,7 @@ mod tests {
             1,
             PaneSnapshot {
                 agent_meta: Default::default(),
+                agent_state_since: None,
                 cwd: std::env::var("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| PathBuf::from("/tmp")),

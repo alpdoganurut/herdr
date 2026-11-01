@@ -585,6 +585,34 @@ fn reinstate_agent_meta(
     }
 }
 
+/// Fork: the saved agent state times back on the restored terminals, by the
+/// panes' old raw ids, waiting for their agents' states
+/// (src/app/agent_times.rs).
+fn reinstate_agent_state_since(
+    snap: &TabSnapshot,
+    panes: &HashMap<PaneId, PaneState>,
+    reverse_id_map: &HashMap<PaneId, u32>,
+    terminals: &mut [TerminalState],
+) {
+    let now = std::time::Instant::now();
+    for (new_id, pane) in panes {
+        let Some(saved) = reverse_id_map
+            .get(new_id)
+            .and_then(|old_id| snap.panes.get(old_id))
+            .and_then(|saved| saved.agent_state_since.as_ref())
+        else {
+            continue;
+        };
+        if let Some(terminal) = terminals
+            .iter_mut()
+            .find(|terminal| terminal.id == pane.attached_terminal_id)
+        {
+            terminal.restored_agent_state_since =
+                crate::app::agent_times::restored_agent_state_since(saved, now);
+        }
+    }
+}
+
 pub(crate) fn restored_worktree_space_membership(
     space: Option<crate::workspace::WorktreeSpaceMembership>,
 ) -> Option<crate::workspace::WorktreeSpaceMembership> {
@@ -945,6 +973,7 @@ fn restore_tab(
     };
     let layout = TileLayout::from_saved(node, focus);
     reinstate_agent_meta(snap, &panes, &reverse_id_map, &mut terminals);
+    reinstate_agent_state_since(snap, &panes, &reverse_id_map, &mut terminals);
 
     (
         Some((
@@ -2162,6 +2191,7 @@ mod tests {
                         0,
                         super::super::snapshot::PaneSnapshot {
                             agent_meta: Default::default(),
+                            agent_state_since: None,
                             cwd,
                             label: None,
                             agent_name: Some("reviewer".into()),
@@ -2356,6 +2386,7 @@ mod tests {
                         0,
                         super::super::snapshot::PaneSnapshot {
                             agent_meta: Default::default(),
+                            agent_state_since: None,
                             cwd,
                             label: Some("reviewer".into()),
                             agent_name: Some("reviewer".into()),
@@ -2437,6 +2468,7 @@ mod tests {
         };
         let pane = super::super::snapshot::PaneSnapshot {
             agent_meta: Some(meta.clone()),
+            agent_state_since: None,
             cwd: cwd.clone(),
             label: None,
             agent_name: None,
@@ -2565,6 +2597,7 @@ mod tests {
                             10,
                             super::super::snapshot::PaneSnapshot {
                                 agent_meta: Default::default(),
+                                agent_state_since: None,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -2579,6 +2612,7 @@ mod tests {
                             20,
                             super::super::snapshot::PaneSnapshot {
                                 agent_meta: Default::default(),
+                                agent_state_since: None,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -2635,6 +2669,7 @@ mod tests {
                 id.parse::<u32>().unwrap(),
                 super::super::snapshot::PaneSnapshot {
                     agent_meta: Default::default(),
+                    agent_state_since: None,
                     cwd: cwd.clone(),
                     label: None,
                     agent_name: None,
@@ -2648,6 +2683,7 @@ mod tests {
         };
         let final_pane = super::super::snapshot::PaneSnapshot {
             agent_meta: Default::default(),
+            agent_state_since: None,
             cwd: cwd.clone(),
             label: Some("planner".into()),
             agent_name: Some("planner".into()),
@@ -2848,6 +2884,7 @@ mod tests {
                         0,
                         super::super::snapshot::PaneSnapshot {
                             agent_meta: Default::default(),
+                            agent_state_since: None,
                             cwd,
                             label: None,
                             agent_name: None,
@@ -3134,6 +3171,160 @@ mod tests {
         }
     }
 
+    /// Fork: the saved agent state time is parked on the restored terminal
+    /// until its agent's state is known; a capture before then keeps it.
+    #[tokio::test]
+    async fn restore_parks_the_saved_agent_state_time_and_a_capture_keeps_it() {
+        let (mut snapshot, _) = snapshot_with_saved_pane_history();
+        let saved = super::super::snapshot::PaneAgentStateSinceSnapshot {
+            state: "idle".into(),
+            agent: Some("claude".into()),
+            since_unix_ms: 1_700_000_000_000,
+        };
+        let pane = snapshot.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&0)
+            .expect("saved pane");
+        pane.agent_state_since = Some(saved.clone());
+        // JSON both ways; an older snapshot has none.
+        let json = serde_json::to_value(&*pane).unwrap();
+        assert_eq!(json["agent_state_since"]["state"], "idle");
+        let mut old = json.clone();
+        old.as_object_mut().unwrap().remove("agent_state_since");
+        let old: super::super::snapshot::PaneSnapshot = serde_json::from_value(old).unwrap();
+        assert_eq!(old.agent_state_since, None);
+        let snapshot: SessionSnapshot =
+            serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
+
+        let (events, _events_rx) = mpsc::channel(8);
+        let (workspaces, mut terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let terminal = terminals.values().next().expect("restored terminal");
+        let parked = terminal
+            .restored_agent_state_since
+            .as_ref()
+            .expect("the saved time is parked");
+        assert_eq!(parked.state, AgentState::Idle);
+        assert_eq!(parked.agent_label.as_deref(), Some("claude"));
+        assert_eq!(parked.since_unix_ms, saved.since_unix_ms);
+        assert_eq!(terminal.agent_state_since_unix_ms, None);
+
+        // The agent has not answered: nothing settles, a capture keeps it.
+        let mut state = crate::app::AppState::test_new();
+        state.terminals = std::mem::take(&mut terminals);
+        state.note_restored_agent_times();
+        assert_eq!(state.agent_times_view_rev, 0);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let again = crate::persist::capture(&workspaces, &state.terminals, &runtimes, Some(0), 0);
+        assert_eq!(
+            again.workspaces[0].tabs[0]
+                .panes
+                .values()
+                .next()
+                .and_then(|pane| pane.agent_state_since.clone()),
+            Some(saved)
+        );
+    }
+
+    /// Fork: a live handoff carries the agent state time in the manifest's
+    /// snapshot; a handed-off hook status that is still the saved one keeps
+    /// it under a fresh seq.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn live_handoff_keeps_the_agent_state_time_of_an_unchanged_state() {
+        let (snapshot, _) = snapshot_with_saved_pane_history();
+        let (events, _events_rx) = mpsc::channel(32);
+        let (workspaces, mut terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let saved = crate::codex_sessions::now_unix_ms() - 3_600_000;
+        let terminal = terminals.values_mut().next().unwrap();
+        terminal.set_detected_agent_process_at(crate::detect::Agent::Pi, std::time::Instant::now());
+        let session_ref =
+            crate::agent_resume::AgentSessionRef::path("/var/tmp/handoff-since-test.jsonl")
+                .unwrap();
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: session_ref.clone(),
+            transcript_path: None,
+        });
+        terminal.set_hook_authority_with_session_ref(
+            "herdr:pi".into(),
+            "pi".into(),
+            AgentState::Working,
+            None,
+            Some(session_ref),
+            Some(1),
+        );
+        assert_eq!(terminal.state, AgentState::Working);
+        terminal.last_agent_state_change_seq = Some(9);
+        terminal.agent_state_since_unix_ms = Some(saved);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let snapshot = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let snapshot: SessionSnapshot =
+            serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
+        let pane_id = workspaces[0].tabs[0].panes.keys().next().copied().unwrap();
+        let runtime = runtimes.values().next().unwrap();
+        runtime
+            .pause_handoff_reader(std::time::Duration::from_secs(2))
+            .unwrap();
+        let mut state = runtime.handoff_runtime_state(pane_id.raw());
+        state.agent_state = terminals.values().next().unwrap().handoff_agent_state();
+        let state = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        let mut imports = HashMap::from([(
+            pane_id.raw(),
+            crate::handoff_runtime::ImportedHandoffRuntime {
+                master_fd: runtime.duplicate_handoff_fd().unwrap(),
+                state,
+            },
+        )]);
+        let (_, restored_terminals, restored_runtimes) = restore_handoff(
+            &snapshot,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            &mut imports,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+        drop(restored_runtimes);
+        drop(runtimes);
+        let mut app_state = crate::app::AppState::test_new();
+        let seq_before = app_state.next_agent_state_change_seq;
+        app_state.terminals = restored_terminals;
+        app_state.note_restored_agent_times();
+        let terminal = app_state.terminals.values().next().unwrap();
+        assert_eq!(terminal.state, AgentState::Working);
+        assert_eq!(terminal.agent_state_since_unix_ms, Some(saved));
+        assert_eq!(terminal.last_agent_state_change_seq, Some(seq_before + 1));
+        assert_eq!(terminal.restored_agent_state_since, None);
+        assert_eq!(app_state.agent_times_view_rev, 1);
+    }
+
     #[tokio::test]
     async fn restore_seeds_saved_pane_history_into_runtime() {
         let (snapshot, history) = snapshot_with_saved_pane_history();
@@ -3260,6 +3451,7 @@ mod tests {
             0,
             super::super::snapshot::PaneSnapshot {
                 agent_meta: Default::default(),
+                agent_state_since: None,
                 cwd: cwd.clone(),
                 label: None,
                 agent_name: None,
@@ -3350,6 +3542,7 @@ mod tests {
                 0,
                 super::super::snapshot::PaneSnapshot {
                     agent_meta: Default::default(),
+                    agent_state_since: None,
                     cwd: cwd.clone(),
                     label: None,
                     agent_name: None,

@@ -686,6 +686,8 @@ impl App {
         };
 
         state.terminals = restored_terminals;
+        // Fork: saved agent state times stay with the states they belong to.
+        state.note_restored_agent_times();
         // Fork teams: restored teams rebuild their index.
         state.rebuild_team_index();
         // Fork (sidebar v3): restored pins reach clients on the first pass.
@@ -904,6 +906,8 @@ impl App {
         // Fork: handed-off mutes reach clients on the first pass.
         app.state.note_restored_mutes();
         app.state.terminals = terminals;
+        // Fork: handed-off agent state times stay with their states.
+        app.state.note_restored_agent_times();
         // Fork (agents v2): public id aliases ride the pane meta.
         app.state.restore_public_aliases_from_meta();
         app.state.adopt_member_roles_into_meta();

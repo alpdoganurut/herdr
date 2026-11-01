@@ -1825,8 +1825,18 @@ impl AppState {
             if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
                 terminal.last_agent_state_change_seq = Some(self.next_agent_state_change_seq);
                 // Fork (sidebar v2): when this state began, for the
-                // `endpoint.agent-times.v1` push (app/agent_times.rs).
-                terminal.agent_state_since_unix_ms = Some(crate::codex_sessions::now_unix_ms());
+                // `endpoint.agent-times.v1` push (app/agent_times.rs); the
+                // first change after a restore or handoff keeps the saved
+                // time when it lands on the saved state.
+                let now_ms = crate::codex_sessions::now_unix_ms();
+                let since = crate::app::agent_times::take_restored_since(
+                    terminal,
+                    change.state,
+                    change.agent_label.as_deref(),
+                    now_ms,
+                    now,
+                );
+                terminal.agent_state_since_unix_ms = Some(since.unwrap_or(now_ms));
                 self.agent_times_view_rev = self.agent_times_view_rev.wrapping_add(1).max(1);
                 terminal.last_agent_completion_seq = (!suppress_completion
                     && is_completion_transition(&change))

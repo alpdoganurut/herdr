@@ -9,12 +9,139 @@
 //! bumps the revision too. The render pass compares the revision per client
 //! (one comparison, no allocation while nothing changed) and pushes the list
 //! as `endpoint.agent-times.v1` (src/server/headless/agent_times.rs; no
-//! bincode change). The time is runtime only: it restarts at the first state
-//! change after a server restart.
+//! bincode change).
+//!
+//! The time survives a restart and a live handoff: the pane snapshot saves
+//! it with its state and agent (`PaneSnapshot.agent_state_since`, JSON; the
+//! handoff manifest carries the same snapshot), restore parks it on the
+//! terminal (`TerminalState::restored_agent_state_since`), and it is kept
+//! when the agent comes back in that state: at once when restore already
+//! knows the state (`AppState::note_restored_agent_times`, a fresh seq so
+//! clients match it), else at the first state change, which takes it only
+//! when it lands on the saved state and agent within `RESTORED_SINCE_GRACE`.
+//! Any other first change stamps now. A saved time in the future is now.
+
+use std::time::{Duration, Instant};
 
 use crate::api::schema::EventKind;
+use crate::detect::AgentState;
+use crate::persist::PaneAgentStateSinceSnapshot;
+use crate::terminal::state::RestoredAgentStateSince;
+use crate::terminal::TerminalState;
 
 use super::App;
+
+/// How long a restored pane's saved state time waits for its agent's state.
+pub(crate) const RESTORED_SINCE_GRACE: Duration = Duration::from_secs(120);
+
+fn state_name(state: AgentState) -> Option<&'static str> {
+    match state {
+        AgentState::Idle => Some("idle"),
+        AgentState::Working => Some("working"),
+        AgentState::Blocked => Some("blocked"),
+        AgentState::Unknown => None,
+    }
+}
+
+fn parse_state(name: &str) -> Option<AgentState> {
+    match name {
+        "idle" => Some(AgentState::Idle),
+        "working" => Some(AgentState::Working),
+        "blocked" => Some(AgentState::Blocked),
+        _ => None,
+    }
+}
+
+/// The pane's state time as saved: its stamped one, else one a restore
+/// brought that its agent has not answered yet (within the grace). `None`
+/// without an agent state.
+pub(crate) fn agent_state_since_snapshot(
+    terminal: &TerminalState,
+) -> Option<PaneAgentStateSinceSnapshot> {
+    let stamped = terminal
+        .last_agent_state_change_seq
+        .and(terminal.agent_state_since_unix_ms)
+        .and_then(|since_unix_ms| {
+            Some(PaneAgentStateSinceSnapshot {
+                state: state_name(terminal.state)?.to_string(),
+                agent: terminal.effective_agent_label().map(str::to_string),
+                since_unix_ms,
+            })
+        });
+    stamped.or_else(|| {
+        let restored = terminal
+            .restored_agent_state_since
+            .as_ref()
+            .filter(|restored| restored.until > Instant::now())?;
+        Some(PaneAgentStateSinceSnapshot {
+            state: state_name(restored.state)?.to_string(),
+            agent: restored.agent_label.clone(),
+            since_unix_ms: restored.since_unix_ms,
+        })
+    })
+}
+
+/// A saved state time, parked on a restored terminal until `now + RESTORED_SINCE_GRACE`.
+pub(crate) fn restored_agent_state_since(
+    saved: &PaneAgentStateSinceSnapshot,
+    now: Instant,
+) -> Option<RestoredAgentStateSince> {
+    Some(RestoredAgentStateSince {
+        state: parse_state(&saved.state)?,
+        agent_label: saved.agent.clone(),
+        since_unix_ms: saved.since_unix_ms,
+        until: now + RESTORED_SINCE_GRACE,
+    })
+}
+
+/// Takes the parked time (always: only the first change may use it) and
+/// answers it, clamped to `now_unix_ms`, when `state` and `agent_label`
+/// are the saved ones and the grace has not run out.
+pub(crate) fn take_restored_since(
+    terminal: &mut TerminalState,
+    state: AgentState,
+    agent_label: Option<&str>,
+    now_unix_ms: u64,
+    now: Instant,
+) -> Option<u64> {
+    let restored = terminal.restored_agent_state_since.take()?;
+    (restored.until > now
+        && restored.state == state
+        && restored.agent_label.as_deref() == agent_label)
+        .then_some(restored.since_unix_ms.min(now_unix_ms))
+}
+
+impl super::state::AppState {
+    /// After a restore or live handoff: every terminal whose agent state is
+    /// already the saved one keeps its saved time under a fresh state change
+    /// seq (the one clients match the time by), and clients get the list on
+    /// the first pass. The others wait for their first state change. O(terminals), once.
+    pub(crate) fn note_restored_agent_times(&mut self) {
+        let now_unix_ms = crate::codex_sessions::now_unix_ms();
+        let now = Instant::now();
+        for terminal in self.terminals.values_mut() {
+            let state = terminal.state;
+            let Some(restored) = terminal.restored_agent_state_since.as_ref() else {
+                continue;
+            };
+            if restored.state != state
+                || restored.agent_label.as_deref() != terminal.effective_agent_label()
+            {
+                continue;
+            }
+            let agent_label = restored.agent_label.clone();
+            let Some(since) =
+                take_restored_since(terminal, state, agent_label.as_deref(), now_unix_ms, now)
+            else {
+                continue;
+            };
+            self.next_agent_state_change_seq += 1;
+            terminal.last_agent_state_change_seq = Some(self.next_agent_state_change_seq);
+            terminal.agent_state_since_unix_ms = Some(since);
+            self.agent_times_view_rev = self.agent_times_view_rev.wrapping_add(1).max(1);
+        }
+    }
+}
 
 /// One pane's last agent state change, as pushed to client shells.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -176,6 +303,195 @@ mod tests {
         assert_eq!(app.state.agent_times_view_rev, rev + 1);
     }
 
+    fn park(app: &mut App, state: AgentState, since_unix_ms: u64) {
+        let pane = &app.state.workspaces[0].tabs[0].panes[&pane(app)];
+        let id = pane.attached_terminal_id.clone();
+        app.state
+            .terminals
+            .get_mut(&id)
+            .expect("terminal")
+            .restored_agent_state_since = Some(RestoredAgentStateSince {
+            state,
+            agent_label: Some(crate::detect::agent_label(Agent::Claude).to_string()),
+            since_unix_ms,
+            until: Instant::now() + RESTORED_SINCE_GRACE,
+        });
+    }
+
+    fn terminal_mut(app: &mut App) -> &mut crate::terminal::TerminalState {
+        let pane = &app.state.workspaces[0].tabs[0].panes[&pane(app)];
+        let id = pane.attached_terminal_id.clone();
+        app.state.terminals.get_mut(&id).expect("terminal")
+    }
+
+    const HOUR_MS: u64 = 3_600_000;
+
+    #[tokio::test]
+    async fn a_restored_time_is_kept_when_the_first_change_lands_on_its_state() {
+        let mut app = app();
+        let saved = crate::codex_sessions::now_unix_ms() - 2 * HOUR_MS;
+        park(&mut app, AgentState::Idle, saved);
+
+        report(&mut app, Some(Agent::Claude), AgentState::Idle);
+        let seq = terminal(&app)
+            .last_agent_state_change_seq
+            .expect("a state change seq");
+        assert_eq!(terminal(&app).agent_state_since_unix_ms, Some(saved));
+        assert_eq!(terminal(&app).restored_agent_state_since, None);
+        assert!(app.state.agent_times_view_rev >= 1);
+        let info = app.agent_info(0, pane(&app)).expect("an agent pane");
+        assert_eq!(info.state_change_seq, seq);
+        assert_eq!(app.agent_times()[0].since_unix_ms, saved);
+        assert_eq!(app.agent_times()[0].state_change_seq, seq);
+
+        // The next change is a real one: now.
+        let before = crate::codex_sessions::now_unix_ms();
+        report(&mut app, Some(Agent::Claude), AgentState::Working);
+        let since = terminal(&app).agent_state_since_unix_ms.expect("a since");
+        assert!(since >= before);
+    }
+
+    #[tokio::test]
+    async fn a_restored_time_is_dropped_when_the_state_differs() {
+        let mut app = app();
+        let saved = crate::codex_sessions::now_unix_ms() - 2 * HOUR_MS;
+        park(&mut app, AgentState::Idle, saved);
+
+        let before = crate::codex_sessions::now_unix_ms();
+        report(&mut app, Some(Agent::Claude), AgentState::Working);
+        let after = crate::codex_sessions::now_unix_ms();
+        let since = terminal(&app).agent_state_since_unix_ms.expect("a since");
+        assert!((before..=after).contains(&since));
+        assert_eq!(terminal(&app).restored_agent_state_since, None);
+
+        // Consumed by the first change: a later idle is not the saved one.
+        report(&mut app, Some(Agent::Claude), AgentState::Idle);
+        assert!(terminal(&app).agent_state_since_unix_ms >= Some(before));
+    }
+
+    #[tokio::test]
+    async fn a_restored_time_needs_the_same_agent_and_the_grace() {
+        let mut app = app();
+        let saved = crate::codex_sessions::now_unix_ms() - 2 * HOUR_MS;
+        park(&mut app, AgentState::Idle, saved);
+        let before = crate::codex_sessions::now_unix_ms();
+        report(&mut app, Some(Agent::Codex), AgentState::Idle);
+        assert!(terminal(&app).agent_state_since_unix_ms >= Some(before));
+
+        let mut app = self::app();
+        park(&mut app, AgentState::Idle, saved);
+        if let Some(restored) = terminal_mut(&mut app).restored_agent_state_since.as_mut() {
+            restored.until = Instant::now() - Duration::from_secs(1);
+        }
+        let before = crate::codex_sessions::now_unix_ms();
+        report(&mut app, Some(Agent::Claude), AgentState::Idle);
+        assert!(terminal(&app).agent_state_since_unix_ms >= Some(before));
+    }
+
+    #[tokio::test]
+    async fn a_restored_time_in_the_future_is_now() {
+        let mut app = app();
+        park(
+            &mut app,
+            AgentState::Idle,
+            crate::codex_sessions::now_unix_ms() + 10 * HOUR_MS,
+        );
+        report(&mut app, Some(Agent::Claude), AgentState::Idle);
+        let after = crate::codex_sessions::now_unix_ms();
+        let since = terminal(&app).agent_state_since_unix_ms.expect("a since");
+        assert!(since <= after);
+    }
+
+    #[tokio::test]
+    async fn a_settled_restored_state_keeps_its_time_under_a_fresh_seq() {
+        let mut app = app();
+        let saved = crate::codex_sessions::now_unix_ms() - 2 * HOUR_MS;
+        // Restore already knows the state (a resumed agent, a hook status).
+        let _ = terminal_mut(&mut app).set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert_eq!(terminal(&app).state, AgentState::Idle);
+        assert_eq!(terminal(&app).last_agent_state_change_seq, None);
+        park(&mut app, AgentState::Idle, saved);
+
+        app.state.note_restored_agent_times();
+        let seq = terminal(&app)
+            .last_agent_state_change_seq
+            .expect("a fresh seq");
+        assert_eq!(seq, app.state.next_agent_state_change_seq);
+        assert_eq!(terminal(&app).agent_state_since_unix_ms, Some(saved));
+        assert_eq!(terminal(&app).restored_agent_state_since, None);
+        assert_eq!(app.state.agent_times_view_rev, 1);
+        let info = app.agent_info(0, pane(&app)).expect("an agent pane");
+        assert_eq!(info.state_change_seq, seq, "clients match the time by it");
+        assert_eq!(
+            app.agent_times()[0],
+            AgentTimePane {
+                pane_id: app.public_pane_id(0, pane(&app)).unwrap(),
+                state_change_seq: seq,
+                since_unix_ms: saved,
+            }
+        );
+        // Detection confirming the state changes nothing.
+        report(&mut app, Some(Agent::Claude), AgentState::Idle);
+        assert_eq!(terminal(&app).agent_state_since_unix_ms, Some(saved));
+    }
+
+    #[tokio::test]
+    async fn an_unsettled_restored_state_waits_for_its_first_change() {
+        let mut app = app();
+        let saved = crate::codex_sessions::now_unix_ms() - 2 * HOUR_MS;
+        park(&mut app, AgentState::Blocked, saved);
+        app.state.note_restored_agent_times();
+        assert_eq!(app.state.agent_times_view_rev, 0, "nothing to push yet");
+        assert!(terminal(&app).restored_agent_state_since.is_some());
+        report(&mut app, Some(Agent::Claude), AgentState::Blocked);
+        assert_eq!(terminal(&app).agent_state_since_unix_ms, Some(saved));
+    }
+
+    #[tokio::test]
+    async fn the_saved_time_is_the_stamped_one_else_the_parked_one() {
+        let mut app = app();
+        assert_eq!(agent_state_since_snapshot(terminal(&app)), None);
+        let saved = crate::codex_sessions::now_unix_ms() - HOUR_MS;
+        park(&mut app, AgentState::Working, saved);
+        // A second restart before the agent answered keeps the parked time.
+        let parked = agent_state_since_snapshot(terminal(&app)).expect("parked");
+        assert_eq!(
+            parked,
+            PaneAgentStateSinceSnapshot {
+                state: "working".into(),
+                agent: Some(crate::detect::agent_label(Agent::Claude).to_string()),
+                since_unix_ms: saved,
+            }
+        );
+        assert_eq!(
+            restored_agent_state_since(&parked, Instant::now()).map(|r| (r.state, r.since_unix_ms)),
+            Some((AgentState::Working, saved))
+        );
+        report(&mut app, Some(Agent::Claude), AgentState::Blocked);
+        let stamped = agent_state_since_snapshot(terminal(&app)).expect("stamped");
+        assert_eq!(stamped.state, "blocked");
+        assert_eq!(
+            Some(stamped.since_unix_ms),
+            terminal(&app).agent_state_since_unix_ms
+        );
+        // A restore whose grace ran out saves nothing.
+        let mut expired = self::app();
+        park(&mut expired, AgentState::Working, saved);
+        if let Some(restored) = terminal_mut(&mut expired)
+            .restored_agent_state_since
+            .as_mut()
+        {
+            restored.until = Instant::now() - Duration::from_secs(1);
+        }
+        assert_eq!(agent_state_since_snapshot(terminal(&expired)), None);
+        // A state this build does not know restores no time.
+        let unknown = PaneAgentStateSinceSnapshot {
+            state: "dreaming".into(),
+            ..stamped
+        };
+        assert_eq!(restored_agent_state_since(&unknown, Instant::now()), None);
+    }
+
     #[test]
     fn a_respawn_clears_the_time_with_the_seq() {
         let mut terminal = crate::terminal::TerminalState::new(
@@ -184,8 +500,15 @@ mod tests {
         );
         terminal.last_agent_state_change_seq = Some(3);
         terminal.agent_state_since_unix_ms = Some(42);
+        terminal.restored_agent_state_since = Some(RestoredAgentStateSince {
+            state: AgentState::Idle,
+            agent_label: None,
+            since_unix_ms: 7,
+            until: Instant::now() + RESTORED_SINCE_GRACE,
+        });
         terminal.clear_agent_runtime_identity_after_respawn();
         assert_eq!(terminal.last_agent_state_change_seq, None);
         assert_eq!(terminal.agent_state_since_unix_ms, None);
+        assert_eq!(terminal.restored_agent_state_since, None);
     }
 }

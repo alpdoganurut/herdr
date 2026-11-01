@@ -1825,6 +1825,50 @@ async fn agent_times_push_reaches_the_client_shell() {
     assert!(!shell.receive_agent_times(&crate::client::endpoint::ClientEndpointId::Local, payload));
 }
 
+/// Fork (state times): a time a restore or live handoff parked on the pane
+/// is pushed when its agent comes back in the saved state, under the seq the
+/// shell snapshot's agent row carries, so the client uses it.
+#[tokio::test]
+async fn a_restored_agent_state_time_reaches_the_client_shell() {
+    let (mut server, _rx) = server_with_claude(None);
+    let (control, _render) = connect_test_shell(&mut server, 71, 80, 23);
+    server.render_and_stream();
+    let _ = agent_times_payloads(&control);
+    let saved = crate::codex_sessions::now_unix_ms() - 2 * 3_600_000;
+    let terminal_id = root_terminal_id(&server);
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .expect("root terminal")
+        .restored_agent_state_since = Some(crate::terminal::state::RestoredAgentStateSince {
+        state: AgentState::Blocked,
+        agent_label: Some(crate::detect::agent_label(Agent::Claude).to_string()),
+        since_unix_ms: saved,
+        until: std::time::Instant::now() + crate::app::agent_times::RESTORED_SINCE_GRACE,
+    });
+
+    report_state(&mut server, AgentState::Blocked);
+    server.render_and_stream();
+    let snapshot = crate::server::client_shell::snapshot(&server.app, "fork-smoke", 1, None, None);
+    let row = &snapshot.agents[0];
+    let payloads = agent_times_payloads(&control);
+    let (kind, data) = payloads.last().expect("an agent times payload");
+    let crate::client::endpoint::EndpointControlMessage::AgentTimes(payload) =
+        crate::client::endpoint::decode_endpoint_control(kind, data).expect("decodes")
+    else {
+        panic!("an agent times control message");
+    };
+    assert_eq!(payload.panes.len(), 1);
+    assert_eq!(payload.panes[0].pane_id, row.pane_id);
+    assert_eq!(payload.panes[0].state_change_seq, row.state_change_seq);
+    assert_eq!(
+        payload.panes[0].since_unix_ms, saved,
+        "the saved time, not now"
+    );
+}
+
 /// Every `endpoint.tab-pins.v1` payload in a client's control stream so far.
 fn tab_pins_payloads(
     control: &std::sync::mpsc::Receiver<Vec<u8>>,

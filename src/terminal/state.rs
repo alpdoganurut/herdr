@@ -25,6 +25,20 @@ pub struct HookAuthority {
     pub session_ref: Option<crate::agent_resume::AgentSessionRef>,
 }
 
+/// Fork: a saved agent state time waiting for the restored pane's agent
+/// state (`TerminalState::restored_agent_state_since`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredAgentStateSince {
+    /// The state the time belongs to (never `Unknown`).
+    pub state: AgentState,
+    /// The agent label it belonged to (`effective_agent_label`).
+    pub agent_label: Option<String>,
+    /// Wall-clock milliseconds (server clock) when that state began.
+    pub since_unix_ms: u64,
+    /// Past this instant the restore is over and the time is dropped.
+    pub until: Instant,
+}
+
 #[cfg(unix)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct HandoffAgentState {
@@ -265,8 +279,14 @@ pub struct TerminalState {
     pub last_agent_state_change_seq: Option<u64>,
     /// Fork: wall-clock milliseconds (server clock) of the last agent state
     /// change, stamped with `last_agent_state_change_seq` and cleared with it;
-    /// pushed to client shells as `endpoint.agent-times.v1`.
+    /// pushed to client shells as `endpoint.agent-times.v1`. Saved with the
+    /// pane (`PaneSnapshot.agent_state_since`) and carried across a restore or
+    /// live handoff through `restored_agent_state_since`.
     pub agent_state_since_unix_ms: Option<u64>,
+    /// Fork: the state time a restore or live handoff brought for this pane,
+    /// until its agent's state is known again (src/app/agent_times.rs): kept
+    /// when that state and agent match the saved ones, else dropped.
+    pub restored_agent_state_since: Option<RestoredAgentStateSince>,
     /// Fork: the agent's context use, read from its session file
     /// (`App::handle_agent_context_probe`); pushed as `endpoint.agent-context.v1`.
     pub agent_context: Option<crate::agent_context::ContextUsage>,
@@ -374,6 +394,7 @@ impl TerminalState {
             state: AgentState::Unknown,
             last_agent_state_change_seq: None,
             agent_state_since_unix_ms: None,
+            restored_agent_state_since: None,
             agent_context: None,
             last_agent_completion_seq: None,
             revision: 0,
@@ -2724,6 +2745,7 @@ impl TerminalState {
         self.turn.clear_hook_marks();
         self.last_agent_state_change_seq = None;
         self.agent_state_since_unix_ms = None;
+        self.restored_agent_state_since = None;
         self.last_agent_completion_seq = None;
         self.launch_argv = None;
         self.respawn_shell_on_exit = false;

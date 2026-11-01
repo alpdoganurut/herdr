@@ -658,6 +658,40 @@ fn an_agent_time_behind_the_snapshot_counts_as_recent() {
 }
 
 #[test]
+fn an_idle_tab_whose_restored_time_is_older_than_the_window_is_hidden() {
+    // After a restart the server pushes the saved times under the agents'
+    // current seqs (src/app/agent_times.rs): reviewer and notes have been
+    // idle for two hours, not since the restart.
+    let snapshot = fixture();
+    let received = Instant::now();
+    let server_now_unix_ms = 1_800_000_000_000;
+    let payload = crate::server::headless::agent_times::AgentTimesPayload {
+        boot_id: "boot-1".into(),
+        revision: 1,
+        server_now_unix_ms,
+        panes: ["pane_2", "pane_3"]
+            .into_iter()
+            .map(|pane_id| crate::app::agent_times::AgentTimePane {
+                pane_id: pane_id.into(),
+                state_change_seq: 1,
+                since_unix_ms: server_now_unix_ms - 2 * 3_600_000,
+            })
+            .collect(),
+    };
+    let times = ClientAgentTimesState::from_payload(payload, received);
+    let mut filter = SidebarFilter::default();
+    filter.recency = Recency::H1;
+    let model = build(&snapshot, &filter, Some(&times), received);
+    assert_eq!(rows(&snapshot, &model), ["T:tab_1", "F:7"]);
+    filter.recency = Recency::H6;
+    let model = build(&snapshot, &filter, Some(&times), received);
+    assert_eq!(
+        rows(&snapshot, &model),
+        ["T:tab_1", "T:tab_2", "H:api(1)", "T:tab_3", "F:5"]
+    );
+}
+
+#[test]
 fn a_literal_prefix_never_reaches_the_pane_while_the_field_is_focused() {
     let mut state = filter_state();
     state.handle_input_bytes(b"\x02f");
