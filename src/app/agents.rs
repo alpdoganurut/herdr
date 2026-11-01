@@ -446,6 +446,7 @@ impl App {
             interactive_ready: terminal.managed_agent_interactive_ready(),
             state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
             subagents: terminal.active_subagent_count(),
+            background_tasks: terminal.active_background_task_count(),
             voice: crate::api::schema::AgentVoiceMode::from_detected(terminal.agent_voice()),
             context: super::agent_context::agent_context_info(terminal.agent_context),
             blocked_since: self.agent_blocked_since(terminal),

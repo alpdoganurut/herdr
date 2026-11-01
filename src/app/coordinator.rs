@@ -4032,7 +4032,7 @@ mod tests {
         let pane = app.public_pane_id(own.ws_idx, own.pane_id).unwrap();
         // The coordinator's own turn ended with a background agent still out.
         let update = app.state.update_terminal_state(own.pane_id, |terminal| {
-            terminal.report_subagents_with_mutation(None, ["b1"])
+            terminal.report_subagents_with_mutation(None, ["b1"], [])
         });
         assert!(update.is_none(), "the count is not a status: {update:?}");
         let terminal = coordinator_terminal_mut(&mut app);

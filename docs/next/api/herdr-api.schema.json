@@ -6441,6 +6441,13 @@
             "agent": {
               "type": "string"
             },
+            "background_task_ids": {
+              "description": "Fork: `snapshot`: every other in-flight background task (a shell, a\nmonitor, a workflow, a session cron as `cron:<id>`); replaces the\npane's set. Absent from hooks before Claude integration v16.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "event": {
               "$ref": "#/schemas/request/$defs/SubagentEvent"
             },
@@ -12063,6 +12070,12 @@
             },
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
+            },
+            "background_tasks": {
+              "description": "Fork (autosuspend): the agent's other background tasks in flight\n(shells, monitors, workflows, session crons), from its Stop hook's\nlast snapshot (Claude integration v16); absent when none or while\nsuspended. Suspend and restart refuse while it is not zero.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
             },
             "blocked_since": {
               "description": "Fork: since when (Unix seconds) the agent has been waiting on its\nuser: its screen reads blocked, or herdr holds agent messages for it\nbecause its own status report reads blocked or its input box is not\non screen. Absent otherwise.",

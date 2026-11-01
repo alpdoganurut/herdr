@@ -376,6 +376,7 @@ fn pane_report_subagent_request_round_trips() {
             event: SubagentEvent::Start,
             subagent_id: "a1b2".into(),
             subagent_ids: Vec::new(),
+            background_task_ids: Vec::new(),
         }),
     };
     let json = serde_json::to_value(&report).unwrap();
@@ -404,6 +405,18 @@ fn pane_report_subagent_request_round_trips() {
     assert_eq!(params.event, SubagentEvent::Snapshot);
     assert_eq!(params.subagent_id, "");
     assert_eq!(params.subagent_ids, ["a", "b"]);
+    assert!(params.background_task_ids.is_empty(), "absent before v16");
+    let snapshot: Request = serde_json::from_str(
+        r#"{"id":"s","method":"pane.report_subagent","params":{"pane_id":"p_1","agent":"claude","event":"snapshot","background_task_ids":["b1","cron:c1"]}}"#,
+    )
+    .unwrap();
+    let Method::PaneReportSubagent(params) = &snapshot.method else {
+        panic!("{snapshot:?}");
+    };
+    assert!(params.subagent_ids.is_empty());
+    assert_eq!(params.background_task_ids, ["b1", "cron:c1"]);
+    let json = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(json["params"]["background_task_ids"][1], "cron:c1");
 }
 
 #[test]

@@ -8,7 +8,11 @@
 //! (`TerminalState::record_subagent`, `replace_subagents`), never persisted.
 //! It outlives the main turn: agent records carry the count whatever the
 //! agent's status (`AgentInfo.subagents`, 0 while suspended), clients show
-//! it, and suspend/restart refuse while it is not zero. It never makes the
+//! it, and suspend/restart refuse while it is not zero. A snapshot also
+//! carries the agent's other background tasks (`background_task_ids`:
+//! shells, monitors, workflows, session crons; Claude integration v16),
+//! kept beside the set with the same lifecycle; suspend/restart refuse
+//! while any runs (`background_tasks_running`). It never makes the
 //! agent `working`: an agent whose own turn ended is idle while its
 //! background subagents run.
 
@@ -44,7 +48,16 @@ impl App {
             );
         }
         let snapshot_ids: Vec<&str> = params.subagent_ids.iter().map(|id| id.trim()).collect();
-        if snapshot_ids.iter().any(|subagent_id| !valid(subagent_id)) {
+        let task_ids: Vec<&str> = params
+            .background_task_ids
+            .iter()
+            .map(|id| id.trim())
+            .collect();
+        if snapshot_ids
+            .iter()
+            .chain(&task_ids)
+            .any(|subagent_id| !valid(subagent_id))
+        {
             return encode_error(
                 id,
                 "invalid_subagent_id",
@@ -82,7 +95,7 @@ impl App {
             if terminal.effective_known_agent() != Some(agent) {
                 return None;
             }
-            terminal.report_subagents_with_mutation(event, snapshot_ids)
+            terminal.report_subagents_with_mutation(event, snapshot_ids, task_ids)
         });
         if let Some(update) = update {
             self.refresh_new_herdr_toast_context_for_update(&update, &previous_toast);
@@ -138,6 +151,7 @@ mod tests {
                 event,
                 subagent_id: subagent_id.into(),
                 subagent_ids: Vec::new(),
+                background_task_ids: Vec::new(),
             }),
         })
     }
@@ -153,8 +167,63 @@ mod tests {
                 event: SubagentEvent::Snapshot,
                 subagent_id: String::new(),
                 subagent_ids: ids.iter().map(|id| id.to_string()).collect(),
+                background_task_ids: Vec::new(),
             }),
         })
+    }
+
+    fn task_snapshot(app: &mut App, subagents: &[&str], tasks: &[&str]) -> String {
+        let pane = app.state.workspaces[0].tabs[0].root_pane;
+        let pane_id = app.public_pane_id(0, pane).unwrap();
+        app.handle_api_request(Request {
+            id: "req".into(),
+            method: Method::PaneReportSubagent(PaneReportSubagentParams {
+                pane_id,
+                agent: "claude".into(),
+                event: SubagentEvent::Snapshot,
+                subagent_id: String::new(),
+                subagent_ids: subagents.iter().map(|id| id.to_string()).collect(),
+                background_task_ids: tasks.iter().map(|id| id.to_string()).collect(),
+            }),
+        })
+    }
+
+    fn agent_background_tasks(app: &App) -> u32 {
+        let pane = app.state.workspaces[0].tabs[0].root_pane;
+        app.agent_info(0, pane)
+            .map_or(0, |agent| agent.background_tasks)
+    }
+
+    #[test]
+    fn a_snapshot_with_background_tasks_counts_them_beside_the_subagents() {
+        let mut app = working_claude();
+        let response = task_snapshot(&mut app, &["a1"], &["s1", "m1", "cron:c1"]);
+        assert!(!response.contains("error"), "{response}");
+        detect(&mut app, Some(Agent::Claude), AgentState::Idle);
+        assert_eq!(agent_subagents(&app), 1);
+        assert_eq!(agent_background_tasks(&app), 3, "they outlive the turn");
+        let pane = app.state.workspaces[0].tabs[0].root_pane;
+        let json = serde_json::to_value(app.agent_info(0, pane).unwrap()).unwrap();
+        assert_eq!(json["background_tasks"], 3);
+        // A start or stop of a subagent leaves the tasks alone.
+        report(&mut app, SubagentEvent::Stop, "a1");
+        assert_eq!(agent_background_tasks(&app), 3);
+        // The next snapshot replaces them; one without any (v15) clears them.
+        task_snapshot(&mut app, &[], &["s1"]);
+        assert_eq!(agent_background_tasks(&app), 1);
+        snapshot(&mut app, &[]);
+        assert_eq!(agent_background_tasks(&app), 0);
+        let json = serde_json::to_value(app.agent_info(0, pane).unwrap()).unwrap();
+        assert!(json.get("background_tasks").is_none(), "absent when zero");
+        // A bad id is refused and changes nothing.
+        task_snapshot(&mut app, &[], &["s1"]);
+        let response = task_snapshot(&mut app, &[], &[""]);
+        assert!(response.contains("invalid_subagent_id"), "{response}");
+        assert_eq!(agent_background_tasks(&app), 1);
+        // The agent going away forgets them.
+        detect(&mut app, None, AgentState::Unknown);
+        detect(&mut app, Some(Agent::Claude), AgentState::Idle);
+        assert_eq!(agent_background_tasks(&app), 0);
     }
 
     fn detect(app: &mut App, agent: Option<Agent>, state: AgentState) {
@@ -451,7 +520,7 @@ mod tests {
         // transition and no second completion.
         let pane_id = root_pane(&app);
         let update = app.state.update_terminal_state(pane_id, |terminal| {
-            terminal.report_subagents_with_mutation(None, [])
+            terminal.report_subagents_with_mutation(None, [], [])
         });
         assert!(update.is_none(), "{update:?}");
         assert_eq!(terminal(&mut app).active_subagent_count(), 0);
@@ -531,6 +600,7 @@ mod tests {
                 event: SubagentEvent::Start,
                 subagent_id: "a1".into(),
                 subagent_ids: Vec::new(),
+                background_task_ids: Vec::new(),
             }),
         });
         assert!(!response.contains("error"), "{response}");
