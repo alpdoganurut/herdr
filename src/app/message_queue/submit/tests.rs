@@ -483,3 +483,122 @@ fn draft_matching_ignores_wrapping_and_knows_paste_placeholders() {
     ));
     assert!(!draft_shows("the body", envelope, true));
 }
+
+/// A restart or a live handoff: the queue file round-trips, the runtime
+/// delivery checks start empty.
+fn restart(app: &mut App) {
+    let saved = serde_json::to_string(&app.message_queue.entries).unwrap();
+    app.message_queue.entries = serde_json::from_str(&saved).unwrap();
+    app.message_queue.delivery = DeliveryWatch {
+        enabled_for_test: true,
+        ..DeliveryWatch::default()
+    };
+    app.message_queue.ready_since.clear();
+    app.message_queue.mark_due();
+}
+
+/// Type `id` as a pointer line and restart before any look at the box.
+fn typed_then_restarted(
+    app: &mut App,
+    rx: &mut tokio::sync::mpsc::Receiver<Bytes>,
+    id: &str,
+) -> String {
+    send(app, id, "hello");
+    let line = written(rx);
+    assert!(line.contains(id) && !line.contains('\r'), "{line:?}");
+    assert!(app.message_queue.entries[0].typed_unix.is_some());
+    restart(app);
+    assert!(
+        app.message_queue.entries[0].typed_unix.is_some(),
+        "saved with the queue"
+    );
+    line
+}
+
+/// Passes through a fresh SETTLE after the restart.
+fn settle(app: &mut App) {
+    let t0 = Instant::now();
+    app.message_queue_pass(t0, now_unix());
+    app.message_queue_pass(t0 + SETTLE, now_unix());
+    invariants(app);
+}
+
+#[tokio::test]
+async fn after_a_restart_the_text_still_in_the_box_gets_the_enter_alone() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    let line = typed_then_restarted(&mut app, &mut rx, "ma1");
+    draw_box(&app, &line);
+    settle(&mut app);
+    assert_eq!(
+        written(&mut rx),
+        "\r",
+        "the Enter alone, not the text again"
+    );
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
+    assert!(app.message_queue.entries.is_empty());
+    settle(&mut app);
+    assert_eq!(written(&mut rx), "");
+}
+
+#[tokio::test]
+async fn after_a_restart_a_read_by_id_means_its_user_sent_it_and_it_is_not_retyped() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    typed_then_restarted(&mut app, &mut rx, "ma1");
+    // The user pressed Enter; the agent reads the message by id.
+    draw_empty_box(&app);
+    read(&mut app, &["ma1"]);
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
+    assert_eq!(count(&app, "ma1", OUTCOME_CONFIRMED), 1);
+    settle(&mut app);
+    assert_eq!(written(&mut rx), "", "never typed again");
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
+}
+
+#[tokio::test]
+async fn after_a_restart_a_turn_start_means_its_user_sent_it_and_it_is_not_retyped() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    typed_then_restarted(&mut app, &mut rx, "ma1");
+    draw_empty_box(&app);
+    app.note_submitted_turn(terminal_id(&app).as_str());
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
+    assert_eq!(count(&app, "ma1", OUTCOME_CONFIRMED), 1);
+    settle(&mut app);
+    assert_eq!(written(&mut rx), "", "never typed again");
+}
+
+#[tokio::test]
+async fn after_a_restart_an_empty_box_without_evidence_is_typed_again_once() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    let line = typed_then_restarted(&mut app, &mut rx, "ma1");
+    draw_empty_box(&app);
+    settle(&mut app);
+    assert_eq!(written(&mut rx), line, "typed again, once");
+    assert_eq!(app.message_queue.entries[0].attempts, 1);
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 0);
+    // This time it shows: the Enter, one delivery.
+    draw_box(&app, &line);
+    pass(&mut app, SETTLE + Duration::from_millis(300));
+    assert_eq!(written(&mut rx), "\r");
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
+}
+
+#[tokio::test]
+async fn after_a_restart_other_text_in_the_box_is_unconfirmed_without_an_enter() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    typed_then_restarted(&mut app, &mut rx, "ma1");
+    draw_box(&app, "the user's own draft");
+    // The typing guard reads a draft: the recovery looks before it.
+    settle(&mut app);
+    assert_eq!(written(&mut rx), "", "no Enter, no retype");
+    assert_eq!(count(&app, "ma1", OUTCOME_UNCONFIRMED), 1);
+    assert!(app.message_queue.entries.is_empty());
+}

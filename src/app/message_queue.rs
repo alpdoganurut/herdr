@@ -127,6 +127,11 @@ pub(crate) const SUBMITTING_REASON: &str = "submitting";
 
 mod submit;
 pub(crate) use submit::DeliveryWatch;
+/// Tests elsewhere: how long the input box may take to show typed text.
+#[cfg(test)]
+pub(crate) fn submit_window_for_test() -> Duration {
+    submit::SUBMIT_WINDOW
+}
 
 /// Whether a wait reason means the target waits on its user: its screen or
 /// its own status report reads blocked, or its input box is not on screen.
@@ -184,6 +189,13 @@ pub(crate) struct QueuedMessage {
     /// [`submit::MAX_SUBMIT_ATTEMPTS`].
     #[serde(default, skip_serializing_if = "is_zero")]
     pub(crate) attempts: u32,
+    /// Fork (lost-message fix): when its text was typed in and its Enter
+    /// had not gone in yet. Saved, so a restart or a live handoff inside
+    /// that window looks at the input box before typing it again
+    /// ([`submit`]); cleared when it is typed again (it leaves the queue
+    /// once delivered).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) typed_unix: Option<u64>,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -945,6 +957,7 @@ impl App {
             stuck_notified: false,
             herdr_notice: false,
             attempts: 0,
+            typed_unix: None,
         }
     }
 
@@ -1130,7 +1143,7 @@ impl App {
                 };
                 match typed {
                     Ok(()) if submit.is_some() => {
-                        let entry = self.queued_message(
+                        let mut entry = self.queued_message(
                             target,
                             message,
                             envelope,
@@ -1139,6 +1152,7 @@ impl App {
                             from,
                             now_unix,
                         );
+                        entry.typed_unix = Some(now_unix);
                         self.message_queue.push(entry);
                         return Ok(MessageDelivery::Queued {
                             reason: SUBMITTING_REASON.to_string(),
@@ -2020,6 +2034,12 @@ impl App {
         // empty; it waits for its expiry or a claim.
         if self.message_queue.submit_held(&terminal_id) {
             return false;
+        }
+        // Fork (lost-message fix): its text went in before a restart or a
+        // live handoff and no Enter is known to have followed: look at the
+        // input box before typing it again (submit.rs).
+        if let Some(changed) = self.recover_typed_batch(&terminal_id, now, now_unix) {
+            return changed;
         }
         // One delivery: the oldest messages for this target, each with its
         // envelope (one paste, or one pointer line listing their ids).

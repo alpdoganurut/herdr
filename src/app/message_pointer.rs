@@ -224,6 +224,19 @@ impl App {
             .get(&caller.terminal_id)
             .and_then(super::coordinator::terminal_session);
         let now = crate::coordinator::now_unix();
+        // Fork (lost-message fix): a message whose text went in but whose
+        // Enter herdr has not pressed (its user pressed it, before herdr
+        // or across a restart) is read now: it was delivered.
+        for id in &ids {
+            let known = self.message_queue.delivered.iter().any(|message| {
+                message.id == *id
+                    && (message.terminal_id == terminal_id
+                        || (session.is_some() && message.session == session))
+            });
+            if !known {
+                self.adopt_typed_message(&terminal_id, session.as_deref(), id);
+            }
+        }
         let mut read_any = false;
         let mut first_reads: Vec<String> = Vec::new();
         let mut out = Vec::with_capacity(ids.len());
