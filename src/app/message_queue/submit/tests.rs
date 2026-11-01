@@ -787,3 +787,265 @@ async fn a_first_sighting_or_a_box_still_showing_the_text_does_not_adopt_it() {
     assert!(app.message_queue.entries[0].typed_unix.is_some());
     let _ = line;
 }
+
+// ----- verify before Enter with quiet messages and per-tab DND -----
+
+fn set_dnd(app: &mut App, dnd: bool) {
+    let tab_id = app.public_tab_id(0, 0).unwrap();
+    let reply = app.handle_api_request(crate::api::schema::Request {
+        id: "dnd".into(),
+        method: crate::api::schema::Method::TabSetDnd(crate::api::schema::TabSetDndParams {
+            tab_id,
+            dnd,
+        }),
+    });
+    assert!(reply.contains("\"result\""), "{reply}");
+}
+
+fn quiet_ids(app: &App) -> Vec<String> {
+    app.quiet
+        .entries
+        .iter()
+        .map(|entry| entry.id().to_string())
+        .collect()
+}
+
+/// Passes `SETTLE` apart from `from` until something is written.
+fn pass_until_written(
+    app: &mut App,
+    rx: &mut tokio::sync::mpsc::Receiver<Bytes>,
+    from: Duration,
+) -> (String, Duration) {
+    let mut at = from;
+    for _ in 0..4 {
+        app.message_queue.mark_due();
+        pass(app, at);
+        let out = written(rx);
+        if !out.is_empty() {
+            return (out, at);
+        }
+        at += SETTLE;
+    }
+    (String::new(), at)
+}
+
+/// The box showing what herdr typed: a paste's placeholder, else the line.
+fn draw_typed(app: &App, typed: &str) {
+    if typed.starts_with("\x1b[200~") {
+        draw_box(app, "[Pasted text #1 +2 lines]");
+    } else {
+        draw_box(app, typed);
+    }
+}
+
+/// A message to a DND tab is stored quietly and the submit path never
+/// types it; leaving DND releases it (a target that takes no quiet
+/// messages) into the queue, where it goes through verify-before-Enter
+/// like any queued message: text first, Enter only once the box shows it.
+#[tokio::test]
+async fn a_dnd_message_is_never_typed_and_its_release_is_verified_before_enter() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    app.quiet.claude_hook_for_test = Some(false);
+    set_dnd(&mut app, true);
+    let reply = send(&mut app, "ma1", "hello");
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    assert_eq!(
+        reply["result"]["reason"],
+        crate::app::quiet_messages::DND_REASON
+    );
+    assert_eq!(quiet_ids(&app), vec!["ma1".to_string()]);
+    assert!(app.message_queue.entries.is_empty());
+    for step in 0..4 {
+        app.message_queue.mark_due();
+        pass(&mut app, SETTLE * step);
+    }
+    assert_eq!(written(&mut rx), "", "a stored message is never typed");
+    assert!(!app
+        .message_queue
+        .delivery
+        .submitting(terminal_id(&app).to_string().as_str()));
+
+    set_dnd(&mut app, false);
+    assert!(app.quiet.is_empty(), "released to the typing queue");
+    assert_eq!(app.message_queue.entries.len(), 1);
+    assert_eq!(app.message_queue.entries[0].attempts, 0);
+    assert!(app.message_queue.entries[0].typed_unix.is_none());
+    let (typed, at) = pass_until_written(&mut app, &mut rx, SETTLE * 4);
+    assert!(typed.contains("hello"), "{typed:?}");
+    assert!(!typed.ends_with('\r'), "no Enter with the text: {typed:?}");
+    assert!(app
+        .message_queue
+        .delivery
+        .submitting(terminal_id(&app).to_string().as_str()));
+    assert!(app.message_queue.entries[0].typed_unix.is_some());
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 0);
+
+    draw_typed(&app, &typed);
+    assert!(pass(&mut app, at + Duration::from_millis(300)));
+    assert_eq!(written(&mut rx), "\r", "the Enter alone");
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
+    pass(&mut app, at + SETTLE * 2);
+    assert_eq!(written(&mut rx), "", "typed once");
+}
+
+/// DND turning on while a message's text is in and its Enter waits does
+/// not move it into the quiet store: it finishes its own delivery (the
+/// Enter goes in once the box shows it) and is typed in once. Messages
+/// sent after that are stored quietly.
+#[tokio::test]
+async fn dnd_on_mid_submit_lets_the_batch_in_flight_finish_once() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    send(&mut app, "ma1", "hello");
+    let line = written(&mut rx);
+    assert!(line.contains("ma1"), "{line:?}");
+    let terminal = terminal_id(&app).to_string();
+    assert!(app.message_queue.delivery.submitting(&terminal));
+
+    set_dnd(&mut app, true);
+    assert!(app.quiet.is_empty(), "the batch in flight stays queued");
+    assert!(app.message_queue.delivery.submitting(&terminal));
+    let later = send(&mut app, "ma2", "after dnd");
+    assert_eq!(
+        later["result"]["reason"],
+        crate::app::quiet_messages::DND_REASON,
+        "{later}"
+    );
+    assert_eq!(quiet_ids(&app), vec!["ma2".to_string()]);
+
+    draw_box(&app, &line);
+    assert!(pass(&mut app, Duration::from_millis(600)));
+    assert_eq!(written(&mut rx), "\r", "its Enter goes in");
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
+    assert_eq!(
+        count(&app, "ma1", crate::coordinator::messages::OUTCOME_QUIET),
+        0
+    );
+    for step in 1..4 {
+        app.message_queue.mark_due();
+        pass(&mut app, SETTLE * step);
+    }
+    assert_eq!(written(&mut rx), "", "nothing else typed into the DND tab");
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
+    assert_eq!(quiet_ids(&app), vec!["ma2".to_string()]);
+}
+
+/// A batch typed with no Enter known (`typed_unix`, the box was empty at
+/// the deadline) when DND turns on stays queued, is not retyped while the
+/// tab is in DND (the DND wait comes before the recovery look), and its
+/// recovery runs once DND is off: one delivery, never quiet.
+#[tokio::test]
+async fn dnd_on_after_an_empty_box_holds_the_recovery_until_dnd_is_off() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    send(&mut app, "ma1", "hello");
+    let first = written(&mut rx);
+    let window = SUBMIT_WINDOW + Duration::from_millis(100);
+    assert!(pass(&mut app, window));
+    assert!(app.message_queue.entries[0].typed_unix.is_some());
+    let terminal = terminal_id(&app).to_string();
+    assert!(!app.message_queue.delivery.submitting(&terminal));
+
+    set_dnd(&mut app, true);
+    assert!(app.quiet.is_empty(), "a typed batch is never moved");
+    assert_eq!(app.message_queue.entries[0].id(), "ma1");
+    for step in 1..5 {
+        app.message_queue.mark_due();
+        pass(&mut app, window + SETTLE * step);
+    }
+    assert_eq!(written(&mut rx), "", "no retype while in DND");
+    assert!(app.message_queue.entries[0].typed_unix.is_some());
+    assert_eq!(app.message_queue.entries[0].attempts, 0);
+
+    set_dnd(&mut app, false);
+    let (again, at) = pass_until_written(&mut app, &mut rx, window + SETTLE * 5);
+    assert_eq!(again, first, "the recovery types the same line");
+    draw_box(&app, &again);
+    pass(&mut app, at + Duration::from_millis(300));
+    assert_eq!(written(&mut rx), "\r");
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
+    assert_eq!(
+        count(&app, "ma1", crate::coordinator::messages::OUTCOME_QUIET),
+        0
+    );
+}
+
+/// Every hold is a wait: the batch in flight, DND and the OSC 7501
+/// blocked report, alone or together, never read Ready.
+#[tokio::test]
+async fn submitting_dnd_and_the_osc_veto_are_all_waits() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    let terminal = terminal_id(&app).to_string();
+    let target = app.message_target(&terminal, None).unwrap();
+    let reason = |app: &App| match app.message_check_with(&target, true) {
+        crate::app::message_queue::Check::Wait(reason) => Some(reason),
+        _ => None,
+    };
+    assert_eq!(reason(&app), None, "free");
+
+    app.state.workspaces[0].tabs[0].dnd = true;
+    assert_eq!(
+        reason(&app).as_deref(),
+        Some(crate::app::tab_dnd::DND_WAIT_REASON)
+    );
+    runtime(&app).test_process_pty_bytes(b"\x1b]7501;state=blocked:kind=question\x07");
+    assert!(reason(&app).is_some(), "DND and blocked");
+    app.state.workspaces[0].tabs[0].dnd = false;
+    assert!(reason(&app).is_some(), "blocked alone");
+    runtime(&app).test_process_pty_bytes(b"\x1b]7501;state=idle\x07");
+    assert_eq!(reason(&app), None);
+
+    send(&mut app, "ma1", "hello");
+    written(&mut rx);
+    assert_eq!(reason(&app).as_deref(), Some(SUBMITTING_REASON));
+    app.state.workspaces[0].tabs[0].dnd = true;
+    assert!(reason(&app).is_some(), "submitting and DND");
+    runtime(&app).test_process_pty_bytes(b"\x1b]7501;state=blocked:kind=question\x07");
+    assert!(reason(&app).is_some(), "all three");
+    app.state.workspaces[0].tabs[0].dnd = false;
+    assert!(reason(&app).is_some(), "submitting and blocked");
+}
+
+/// A message in flight cannot be claimed; a quiet one in the same target's
+/// inbox can.
+#[tokio::test]
+async fn a_claim_refuses_the_batch_in_flight_and_takes_a_quiet_message() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    send(&mut app, "ma1", "hello");
+    written(&mut rx);
+    set_dnd(&mut app, true);
+    send(&mut app, "ma2", "fyi");
+    assert_eq!(quiet_ids(&app), vec!["ma2".to_string()]);
+    let me = app.public_pane_id(0, pane(&app)).unwrap();
+
+    let inbox = app.handle_agents_inbox(
+        "req".into(),
+        crate::api::schema::agents_model::AgentsInboxParams {
+            caller_pane: me.clone(),
+        },
+    );
+    assert!(inbox.contains("\"ma2\""), "{inbox}");
+
+    let claim = |app: &mut App, id: &str| {
+        app.handle_agent_message_claim(
+            "req".into(),
+            crate::api::schema::agent_messages::AgentMessageClaimParams {
+                id: id.into(),
+                pane: me.clone(),
+            },
+        )
+    };
+    let in_flight = claim(&mut app, "ma1");
+    assert!(in_flight.contains("\"claimed\":false"), "{in_flight}");
+    assert_eq!(app.message_queue.entries[0].id(), "ma1");
+    let quiet = claim(&mut app, "ma2");
+    assert!(quiet.contains("\"claimed\":true"), "{quiet}");
+    assert!(app.quiet.is_empty());
+}

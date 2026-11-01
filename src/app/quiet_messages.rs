@@ -937,7 +937,9 @@ impl App {
     /// The tab at `ws_idx`/`tab_idx` went into do-not-disturb: the agent
     /// messages queued for its agents become quiet (a herdr notice and an
     /// older sender's prompt stay queued; the queue holds them while the
-    /// tab is in do-not-disturb).
+    /// tab is in do-not-disturb). A message already typed in (verify-before-
+    /// Enter in flight, or `typed_unix` set) stays queued too: its Enter or
+    /// its recovery look finishes it, and it is never typed in again.
     pub(crate) fn move_queued_into_quiet(&mut self, ws_idx: usize, tab_idx: usize) {
         let Some(tab) = self
             .state
@@ -957,7 +959,20 @@ impl App {
             .entries
             .iter()
             .filter(|entry| {
-                terminals.contains(&entry.terminal_id) && !entry.herdr_notice && !entry.legacy
+                terminals.contains(&entry.terminal_id)
+                    && !entry.herdr_notice
+                    && !entry.legacy
+                    // Fork (lost-message fix): a message whose text is in
+                    // (its Enter pending, or typed with no Enter known)
+                    // stays queued and finishes its own delivery
+                    // (src/app/message_queue/submit.rs): moving it would
+                    // leave its text in the box and type it again later.
+                    && entry.typed_unix.is_none()
+                    && !entry
+                        .message
+                        .id
+                        .as_deref()
+                        .is_some_and(|id| self.message_queue.delivery.submitting_id(id))
             })
             .cloned()
             .collect();
@@ -1066,6 +1081,8 @@ impl App {
                     pointer: release.pointer,
                     stuck_notified: false,
                     herdr_notice: false,
+                    // A fresh delivery through verify-before-Enter
+                    // (src/app/message_queue/submit.rs): never typed yet.
                     attempts: 0,
                     typed_unix: None,
                 });

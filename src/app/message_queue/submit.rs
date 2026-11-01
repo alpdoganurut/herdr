@@ -203,7 +203,7 @@ impl DeliveryWatch {
     }
 
     /// Whether message `id` is in a batch in flight.
-    pub(super) fn submitting_id(&self, id: &str) -> bool {
+    pub(crate) fn submitting_id(&self, id: &str) -> bool {
         self.pending
             .values()
             .any(|submit| submit.ids.iter().any(|pending| pending == id))
