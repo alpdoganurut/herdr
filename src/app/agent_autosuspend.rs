@@ -94,14 +94,13 @@ impl App {
             return false;
         }
         self.agent_autosuspend.next_scan = Some(now + SCAN_EVERY);
-        self.retry_quiet_wakes(now);
+        let mut changed = self.retry_quiet_wakes(now);
         let now_ms = crate::codex_sessions::now_unix_ms();
         self.note_shown_terminals(shown, now_ms);
         let candidates = self.autosuspend_candidates(after, now_ms, now, shown);
         if candidates.is_empty() || !self.autosuspend_hook_current() {
-            return false;
+            return changed;
         }
-        let mut changed = false;
         for target in candidates {
             match self.suspend_agent_auto(&target) {
                 Ok(pane) => {
@@ -129,10 +128,10 @@ impl App {
 
     /// Auto-suspended agents with quiet messages stored for them (their
     /// wake failed when the message came): try again. Queued messages retry
-    /// in the queue pass instead.
-    fn retry_quiet_wakes(&mut self, now: Instant) {
+    /// in the queue pass instead. Returns whether one woke.
+    fn retry_quiet_wakes(&mut self, now: Instant) -> bool {
         if self.quiet.is_empty() {
-            return;
+            return false;
         }
         let waiting: Vec<String> = self
             .state
@@ -147,11 +146,14 @@ impl App {
             })
             .map(|terminal| terminal.id.to_string())
             .collect();
+        let mut woke = false;
         for terminal_id in waiting {
             if let Some(target) = self.message_target(&terminal_id, None) {
                 self.wake_auto_suspended(&target, now);
+                woke |= !self.auto_suspended(&terminal_id);
             }
         }
+        woke
     }
 
     /// Stamp `now_ms` on the shown terminals; forget terminals that are gone.
@@ -773,6 +775,35 @@ mod tests {
         );
         assert!(!parked(&mut app), "woken on a retry");
         assert!(!app.message_queue.wake_failed.contains_key(&terminal_id));
+        assert!(typed(&mut rx).contains(SESSION));
+    }
+
+    #[tokio::test]
+    async fn the_scan_retries_waking_an_auto_suspended_agent_with_quiet_messages() {
+        let (mut app, mut rx) = parked_auto().await;
+        typed(&mut rx);
+        let terminal_id = root_terminal_id(&app).to_string();
+        let now_unix = crate::coordinator::now_unix();
+        app.quiet.push(
+            crate::app::quiet_messages::QuietMessage {
+                message: crate::coordinator::messages::AgentMessage {
+                    unix: now_unix,
+                    text: "fyi".into(),
+                    id: Some(crate::coordinator::messages::new_id()),
+                    ..Default::default()
+                },
+                terminal_id,
+                session: None,
+                expires_unix: now_unix + 3600,
+                dnd: false,
+                offered_unix: None,
+                offers: 0,
+                release: None,
+            },
+            false,
+        );
+        assert!(scan(&mut app), "the wake is a change");
+        assert!(!parked(&mut app), "woken for its quiet message");
         assert!(typed(&mut rx).contains(SESSION));
     }
 
