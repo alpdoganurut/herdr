@@ -230,11 +230,18 @@ fn tab_chips(
     let icon =
         super::sidebar_model::tab_row_icon(status, facts.subagents, config.status_indicators);
     let parked = facts.parked && status != AgentStatus::Suspended;
+    // Fork (autosuspend): herdr parked it for idling; a message wakes it.
+    let parked_text = match (parked, facts.auto_parked) {
+        (true, true) => " (auto-suspended)",
+        (true, false) => " (suspended)",
+        (false, true) => " (auto)",
+        (false, false) => "",
+    };
     chips.chip(&[
         (icon, status_style),
         (" ", status_style),
         (status_text(status), status_style),
-        (if parked { " (suspended)" } else { "" }, status_style),
+        (parked_text, status_style),
     ]);
     let mut tick = None;
     if super::tab_sidebar_active::shows_time(status, facts.subagents) {

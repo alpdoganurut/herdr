@@ -175,6 +175,7 @@ impl App {
             self.next_codex_session_probe_deadline(),
             self.next_agent_context_probe_deadline(),
             self.next_agent_handoff_deadline(),
+            self.next_agent_autosuspend_deadline(),
             self.next_tab_bar_status_deadline(),
             self.next_news_deadline(now),
             self.next_coordinator_deadline(now),

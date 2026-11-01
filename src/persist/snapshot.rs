@@ -242,6 +242,9 @@ pub struct SuspendedAgentSnapshot {
     /// Fork (agents v2): who suspended it; absent counts as the user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suspended_by: Option<crate::api::schema::agents_model::AgentsWho>,
+    /// Fork (autosuspend): herdr suspended it for idling; absent is false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_suspended: bool,
 }
 
 impl PaneAgentSessionSnapshot {
@@ -498,6 +501,7 @@ fn capture_tab(
                         &terminal.attach_transcript_path(record.session.clone()),
                     ),
                     suspended_by: record.suspended_by.clone(),
+                    auto_suspended: record.auto,
                 })
         });
         // The parked session is the one that relaunches the agent; live
@@ -865,6 +869,7 @@ mod tests {
             launch_argv: None,
             suspended_agent: Some(SuspendedAgentSnapshot {
                 suspended_by: Default::default(),
+                auto_suspended: false,
                 agent: "claude".into(),
                 name: Some("reviewer".into()),
                 session: session.clone(),

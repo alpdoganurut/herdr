@@ -3915,6 +3915,7 @@ mod tests {
                         _ => AgentStatus::Idle,
                     }),
                     suspended: false,
+                    auto_suspended: false,
                     launch_pending: false,
                     session: fake.session.clone(),
                     role: fake.role.clone(),

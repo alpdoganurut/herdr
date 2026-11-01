@@ -152,6 +152,10 @@ pub struct AgentTimePane {
     pub state_change_seq: u64,
     /// Wall-clock milliseconds (server clock) of that change.
     pub since_unix_ms: u64,
+    /// Fork (autosuspend): the pane's agent is parked by herdr for idling
+    /// (the detail strip says so). Absent when false; older clients ignore it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_suspended: bool,
 }
 
 impl App {
@@ -179,7 +183,7 @@ impl App {
         let mut panes = Vec::new();
         for (ws_idx, workspace) in self.state.workspaces.iter().enumerate() {
             for (pane_id, pane) in workspace.tabs.iter().flat_map(|tab| tab.panes.iter()) {
-                let Some((state_change_seq, since_unix_ms)) = self
+                let Some((state_change_seq, since_unix_ms, auto_suspended)) = self
                     .state
                     .terminals
                     .get(&pane.attached_terminal_id)
@@ -187,6 +191,10 @@ impl App {
                         Some((
                             terminal.last_agent_state_change_seq?,
                             terminal.agent_state_since_unix_ms?,
+                            terminal
+                                .suspended_agent
+                                .as_ref()
+                                .is_some_and(|record| record.auto),
                         ))
                     })
                 else {
@@ -197,6 +205,7 @@ impl App {
                         pane_id: public,
                         state_change_seq,
                         since_unix_ms,
+                        auto_suspended,
                     });
                 }
             }
@@ -279,6 +288,7 @@ mod tests {
                 pane_id: public,
                 state_change_seq: seq,
                 since_unix_ms: since,
+                auto_suspended: false,
             }]
         );
         let info = app.agent_info(0, pane(&app)).expect("an agent pane");
@@ -428,6 +438,7 @@ mod tests {
                 pane_id: app.public_pane_id(0, pane(&app)).unwrap(),
                 state_change_seq: seq,
                 since_unix_ms: saved,
+                auto_suspended: false,
             }
         );
         // Detection confirming the state changes nothing.

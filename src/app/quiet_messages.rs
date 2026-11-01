@@ -419,7 +419,7 @@ impl QuietStore {
     }
 
     /// The number of entries stored for `terminal_id`.
-    fn count_for(&self, terminal_id: &str) -> usize {
+    pub(crate) fn count_for(&self, terminal_id: &str) -> usize {
         self.entries
             .iter()
             .filter(|entry| entry.terminal_id == terminal_id)

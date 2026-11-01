@@ -305,6 +305,41 @@ impl App {
         Ok(suspended)
     }
 
+    /// Fork (autosuspend): [`Self::suspend_agent`] by herdr itself for an
+    /// agent left idle (src/app/agent_autosuspend.rs): every check is the
+    /// same, and the record is marked `auto` so a message wakes it.
+    pub(super) fn suspend_agent_auto(&mut self, target: &str) -> Result<String, AgentSuspendError> {
+        let resolved = self
+            .resolve_agent_target(target)
+            .map_err(AgentSuspendError::Target)?;
+        self.fill_resolved_process_agent_session(&resolved);
+        let suspended = self.suspend_resolved_agent(target, &resolved)?;
+        if let Some(record) = self
+            .state
+            .workspaces
+            .get(resolved.ws_idx)
+            .and_then(|ws| ws.terminal_id(resolved.pane_id))
+            .cloned()
+            .and_then(|terminal_id| self.state.terminals.get_mut(&terminal_id))
+            .and_then(|terminal| terminal.suspended_agent.as_mut())
+        {
+            record.auto = true;
+        }
+        // Clients show the mark with the agent's state time.
+        self.state.agent_times_view_rev = self.state.agent_times_view_rev.wrapping_add(1).max(1);
+        Ok(suspended)
+    }
+
+    /// Fork (autosuspend): whether the agent parked in `terminal_id` was
+    /// suspended by herdr for idling.
+    pub(crate) fn auto_suspended(&self, terminal_id: &str) -> bool {
+        self.state
+            .terminals
+            .get(terminal_id)
+            .and_then(|terminal| terminal.suspended_agent.as_ref())
+            .is_some_and(|record| record.auto)
+    }
+
     /// Fork: [`Self::fill_process_agent_session`] for a resolved target.
     fn fill_resolved_process_agent_session(&mut self, resolved: &TerminalTarget) {
         if let Some(terminal_id) = self
@@ -738,7 +773,14 @@ impl App {
                 if managed.is_some() {
                     terminal.clear_agent_name();
                 }
+                let (suspended_by, auto) = (record.suspended_by.clone(), record.auto);
                 terminal.restore_suspended_agent(record.agent, record.name, record.session);
+                // Fork: the record stays whoever's it was (a message's wake
+                // retries an auto-suspended one).
+                if let Some(restored) = terminal.suspended_agent.as_mut() {
+                    restored.suspended_by = suspended_by;
+                    restored.auto = auto;
+                }
                 return Err(AgentActivateError::InputFailed(err.to_string()));
             }
             // Fork (agents v2): a scripted write, for the turn origin.

@@ -557,6 +557,7 @@ fn reinstate_suspended_agent(
     terminal.restore_suspended_agent(suspended.agent.clone(), suspended.name.clone(), session);
     if let Some(record) = terminal.suspended_agent.as_mut() {
         record.suspended_by = suspended.suspended_by.clone();
+        record.auto = suspended.auto_suspended;
     }
 }
 
@@ -2200,6 +2201,7 @@ mod tests {
                             launch_argv: None,
                             suspended_agent: Some(super::super::snapshot::SuspendedAgentSnapshot {
                                 suspended_by: Default::default(),
+                                auto_suspended: false,
                                 agent: "claude".into(),
                                 name: Some("reviewer".into()),
                                 session,
@@ -2556,10 +2558,37 @@ mod tests {
             suspended_by: Some(crate::api::schema::agents_model::AgentsWho::Agent {
                 name: "lead".into(),
             }),
+            auto_suspended: false,
         };
+        let json = serde_json::to_value(&suspended).unwrap();
+        assert!(json.get("auto_suspended").is_none(), "absent when false");
         let back: super::super::snapshot::SuspendedAgentSnapshot =
-            serde_json::from_value(serde_json::to_value(&suspended).unwrap()).unwrap();
+            serde_json::from_value(json).unwrap();
         assert_eq!(back, suspended);
+        // Fork (autosuspend): herdr's own mark round-trips onto the record.
+        let auto = super::super::snapshot::SuspendedAgentSnapshot {
+            auto_suspended: true,
+            suspended_by: None,
+            session: super::super::snapshot::PaneAgentSessionSnapshot {
+                value: "6f1c7a8e-0d1b-4c4e-9a52-3c1f0b2d4e5f".into(),
+                ..suspended.session.clone()
+            },
+            ..suspended
+        };
+        let json = serde_json::to_value(&auto).unwrap();
+        assert_eq!(json["auto_suspended"], true);
+        let back: super::super::snapshot::SuspendedAgentSnapshot =
+            serde_json::from_value(json).unwrap();
+        assert_eq!(back, auto);
+        let mut restored = crate::terminal::TerminalState::new(
+            crate::terminal::TerminalId::alloc(),
+            "/tmp".into(),
+        );
+        super::reinstate_suspended_agent(&mut restored, Some(&back));
+        assert!(restored
+            .suspended_agent
+            .as_ref()
+            .is_some_and(|record| record.auto));
     }
 
     #[tokio::test]

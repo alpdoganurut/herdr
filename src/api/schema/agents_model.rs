@@ -813,6 +813,10 @@ pub struct AgentsPaneInfo {
     pub status: Option<AgentStatus>,
     #[serde(default)]
     pub suspended: bool,
+    /// Fork (autosuspend): herdr suspended it for idling; a message wakes
+    /// it. Absent when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_suspended: bool,
     #[serde(default)]
     pub launch_pending: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

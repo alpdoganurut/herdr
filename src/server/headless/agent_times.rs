@@ -118,11 +118,13 @@ mod tests {
                     pane_id: "w1:p2".into(),
                     state_change_seq: 7,
                     since_unix_ms: 1_700_000_000_000,
+                    auto_suspended: false,
                 },
                 AgentTimePane {
                     pane_id: "w2:p1".into(),
                     state_change_seq: 9,
                     since_unix_ms: 1_700_000_050_000,
+                    auto_suspended: false,
                 },
             ],
         };

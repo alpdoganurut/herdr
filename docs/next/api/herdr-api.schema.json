@@ -12071,6 +12071,10 @@
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
             },
+            "auto_suspended": {
+              "description": "Fork (autosuspend): herdr suspended it for idling\n(`[agents.autosuspend]`); a message to it wakes it. Absent when false.",
+              "type": "boolean"
+            },
             "background_tasks": {
               "description": "Fork (autosuspend): the agent's other background tasks in flight\n(shells, monitors, workflows, session crons), from its Stop hook's\nlast snapshot (Claude integration v16); absent when none or while\nsuspended. Suspend and restart refuse while it is not zero.",
               "format": "uint32",
@@ -13348,6 +13352,10 @@
                 "string",
                 "null"
               ]
+            },
+            "auto_suspended": {
+              "description": "Fork (autosuspend): herdr suspended it for idling; a message wakes\nit. Absent when false.",
+              "type": "boolean"
             },
             "cwd": {
               "description": "Omitted for a shell outside the caller's team (U6).",

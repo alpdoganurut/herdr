@@ -1589,6 +1589,10 @@ impl App {
             status: agent_pane
                 .then(|| crate::workspace::agent_status(terminal.state, pane.seen, suspended)),
             suspended,
+            auto_suspended: terminal
+                .suspended_agent
+                .as_ref()
+                .is_some_and(|record| record.auto),
             launch_pending: terminal.managed_agent_launch_pending(),
             session: agent_pane
                 .then(|| terminal.persistable_agent_session())

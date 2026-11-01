@@ -129,6 +129,9 @@ pub struct SuspendedAgent {
     pub session: crate::agent_resume::PersistedAgentSession,
     /// Fork (agents v2): who suspended it; `None` counts as the user (D4).
     pub suspended_by: Option<crate::api::schema::agents_model::AgentsWho>,
+    /// Fork (autosuspend): herdr suspended it for idling
+    /// (`[agents.autosuspend]`); a message to it wakes it.
+    pub auto: bool,
     /// Set while the process is still expected to exit; escalation clears it.
     exit_deadline: Option<Instant>,
     escalation: SuspendExitEscalation,
@@ -2812,6 +2815,7 @@ impl TerminalState {
             name: self.agent_name.clone(),
             session,
             suspended_by: None,
+            auto: false,
             exit_deadline: Some(exit_deadline),
             escalation: SuspendExitEscalation::Pending,
             exit_observed: false,
@@ -2837,6 +2841,7 @@ impl TerminalState {
             name,
             session,
             suspended_by: None,
+            auto: false,
             exit_deadline: None,
             escalation: SuspendExitEscalation::Pending,
             exit_observed: true,
@@ -3257,6 +3262,12 @@ impl TerminalState {
         self.background_tasks = next;
         self.revision = self.revision.saturating_add(1);
         true
+    }
+
+    /// Fork (autosuspend): whether the agent has sent a subagent snapshot
+    /// since herdr started watching it (so its background work is known).
+    pub fn subagent_snapshot_seen(&self) -> bool {
+        self.subagent_snapshot_seen
     }
 
     /// Fork (autosuspend): background tasks other than subagents in flight

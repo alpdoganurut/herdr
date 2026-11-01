@@ -79,6 +79,8 @@ pub mod agent_context;
 pub mod agent_notices;
 /// Fork (sidebar v2): the `endpoint.agent-times.v1` push.
 pub mod agent_times;
+/// Fork: the autosuspend scan's shown panes.
+mod autosuspend;
 mod bootstrap;
 mod client_views;
 mod coordinator_notify;
@@ -3477,6 +3479,8 @@ impl HeadlessServer {
         changed |= self.app.maybe_run_agents_migration(now);
         changed |= self.app.escalate_suspended_agent_exits(now);
         changed |= self.app.start_pending_agent_restarts(now);
+        // Fork: park agents left idle (about once a minute while it is on).
+        changed |= self.handle_agent_autosuspend(now);
 
         if geometry_dirty {
             self.app.pending_agent_resume_deadline = None;

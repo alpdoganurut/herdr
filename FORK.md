@@ -262,6 +262,8 @@ src/pane/program_status_log.rs
 src/app/missing_cwd.rs
 src/app/missing_cwd/tests.rs
 src/agent_session_chain.rs
+src/app/agent_autosuspend.rs
+src/server/headless/autosuspend.rs
 
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
@@ -287,6 +289,7 @@ src/agent_session_chain.rs
 | TerminalState | background_tasks | std::collections::HashSet::new() |
 | AgentInfo | subagents | 0 |
 | AgentInfo | background_tasks | 0 |
+| AgentInfo | auto_suspended | false |
 | ClientShellAgent | subagents | 0 |
 | App | backup_agent_transcripts | config.session.backup_agent_transcripts |
 | App | agent_transcript_backup_deadline | None |
@@ -460,8 +463,10 @@ src/agent_session_chain.rs
 | TerminalState | created_unix | 0 |
 | TerminalState | process_agent_session | None |
 | SuspendedAgent | suspended_by | None |
+| SuspendedAgent | auto | false |
 | PaneSnapshot | agent_meta | None |
 | SuspendedAgentSnapshot | suspended_by | None |
+| SuspendedAgentSnapshot | auto_suspended | false |
 | App | codex_sessions | codex_sessions::CodexSessionProbe::default() |
 | ApiRequestMessage | peer_pid | None |
 | AppEvent::StateChanged | voice | crate::detect::AgentVoice::Off |
@@ -582,6 +587,7 @@ src/agent_session_chain.rs
 | ClientShellConfig | sidebar_context_usage | true |
 | ClientShellState | agent_context | HashMap::new() |
 | App | agent_handoff | agent_handoff::AgentHandoffRuntime::default() |
+| App | agent_autosuspend | agent_autosuspend::AutosuspendState::default() |
 | KeysConfig | handoff_compact | crate::config::BindingConfig::default() |
 | KeysConfigOverlay | handoff_compact | None |
 | Keybinds | handoff_compact | crate::config::ActionKeybinds::default() |
@@ -977,7 +983,7 @@ Digest asserts in advertised_client_shell_method_shapes_stay_at_the_v1_contract:
 Any digest value change = deny (contract change, never a fixture fix). pane.move's digest covers upstream-owned PaneMoveParams/PaneMoveDestination: an upstream reshape fails it after a clean merge, and that is a deny.
 tests/fixtures/endpoint-*-v1.json and src/protocol/** frozen tests: never edited (the fork has no diff under tests/).
 Upstream setting client_shell = true on the pane.move or pane.get row, or adding any section 9 identifier = deny (collision).
-endpoint.agent-times.v1 (sidebar v2): an optional JSON control, not a client-shell method shape (src/server/headless/agent_times.rs: AgentTimesPayload { boot_id, revision, server_now_unix_ms, panes: Vec<AgentTimePane { pane_id, state_change_seq, since_unix_ms }> }, the whole list of panes with a stamped state change, sent from the render pass when ClientConnection.shell_agent_times_sent != AppState.agent_times_view_rev; nothing while the revision is 0). The client measures each age on the server's clock (server_now_unix_ms - since_unix_ms) and uses a time only while its state_change_seq equals the snapshot agent's. Old clients ignore the kind; no bincode type and no PROTOCOL_VERSION change.
+endpoint.agent-times.v1 (sidebar v2): an optional JSON control, not a client-shell method shape (src/server/headless/agent_times.rs: AgentTimesPayload { boot_id, revision, server_now_unix_ms, panes: Vec<AgentTimePane { pane_id, state_change_seq, since_unix_ms, auto_suspended (autosuspend: serde default, omitted when false; the detail strip reads `suspended (auto)`) }> }, the whole list of panes with a stamped state change, sent from the render pass when ClientConnection.shell_agent_times_sent != AppState.agent_times_view_rev; nothing while the revision is 0). The client measures each age on the server's clock (server_now_unix_ms - since_unix_ms) and uses a time only while its state_change_seq equals the snapshot agent's. Old clients ignore the kind; no bincode type and no PROTOCOL_VERSION change.
 agent.get, agent.list (upstream methods), agent context: fork optional AgentInfo.context (AgentContextInfo { used_tokens: u64, window_tokens: u64, percent: u8 }, fork type directly after AgentInfo in src/api/schema/agents.rs; `#[serde(default, skip_serializing_if = "Option::is_none")]`, absent while unknown, so an agent without it serializes as upstream's; docs/next/api/herdr-api.schema.json regenerated). Not a client-shell method shape: the client shell learns it from the optional control `endpoint.agent-context.v1` (src/server/headless/agent_context.rs: AgentContextPayload { boot_id, revision, panes: Vec<AgentContextPane { pane_id, used, window }> }, the whole list of panes with a known context use, sent from the render pass when ClientConnection.shell_agent_context_sent != AppState.agent_context_view_rev; nothing while the revision is 0; bumped only when a read changes a value or clears one, and, once any value was known, by pane/tab/workspace moves and closes). Old clients ignore the kind; no bincode type and no PROTOCOL_VERSION change (stays 25), endpoint generation 1, no frozen fixture touched.
 agent.get, agent.list (upstream methods), lost-message fix: fork optional AgentInfo.blocked_since (Unix seconds; `#[serde(default, skip_serializing_if = "Option::is_none")]`, directly after context): since when herdr's message queue has seen the agent wait on its user (MessageQueue.user_blocked: screen blocked, OSC 7501 blocked, input box absent; only while messages are queued for it), else since its screen state turned blocked (TerminalState.agent_state_since_unix_ms). JSON only (docs/next/api/herdr-api.schema.json regenerated); no bincode, PROTOCOL_VERSION stays 25, no frozen fixture touched.
 agents.suspend, agents.restart (fork methods), lost-message: refused with the new error_code::AGENT_BLOCKED (`agent_blocked`, src/api/schema/agents_model.rs after USER_TYPING) while App::pane_waits_on_user (src/app/agents_model.rs, after pane_user_typing: OSC 7501 blocked, or the typing guard's InputBoxAbsent) holds, checked after the user-typing check and before the soft edit; agents.activate (types into the shell) and the close check (pane_user_typing) are unchanged.
@@ -1293,6 +1299,18 @@ src/api/schema/panes.rs  additive: autosuspend: PaneReportSubagentParams.backgro
 src/config/write.rs  additive: autosuspend: ConfigEdit::AgentsAutosuspendAfter last in the enum, in description's agents arm and atomic(); set_handoff_item became set_agents_table_item(doc, table, key, item) (both handoff arms pass "handoff"); its unit test directly before browser_edits_keep_comments_spacing_and_other_tables
 src/config.rs  additive: autosuspend: `parse_autosuspend_after` and `AUTOSUSPEND_OFF` in the agents re-export; collect_diagnostics chains self.agents.autosuspend.diagnostics() last
 src/main.rs  additive: autosuspend: the commented `# [agents.autosuspend]` DEFAULT_CONFIG block directly after the `# [agents.handoff]` block
+src/terminal/state.rs  additive: autosuspend: SuspendedAgent.auto directly after suspended_by (false in begin_agent_suspend and restore_suspended_agent); TerminalState::subagent_snapshot_seen() directly before active_background_task_count
+src/persist/snapshot.rs  additive: autosuspend: SuspendedAgentSnapshot.auto_suspended (`#[serde(default, skip_serializing_if = "std::ops::Not::not")]`) directly after suspended_by, captured from SuspendedAgent.auto
+src/persist/restore.rs  additive: autosuspend: reinstate_suspended_agent copies auto_suspended onto record.auto directly after suspended_by
+src/app/mod.rs  additive: autosuspend: `pub(crate) mod agent_autosuspend;` directly after `pub(crate) mod agent_handoff;`; App.agent_autosuspend directly after agent_handoff (struct and new())
+src/app/runtime.rs  additive: autosuspend: next_agent_autosuspend_deadline() directly after next_agent_handoff_deadline() in the headless loop deadlines (None while `[agents.autosuspend]` is off)
+src/server/headless.rs  additive: autosuspend: `mod autosuspend;` directly after `pub mod agent_times;`; the scheduler tick calls self.handle_agent_autosuspend(now) directly after start_pending_agent_restarts (gathers the shown panes only when a scan is due)
+src/api/schema/agents.rs  additive: autosuspend: AgentInfo.auto_suspended directly after background_tasks
+src/app/agents.rs  additive: autosuspend: agent_info sets AgentInfo.auto_suspended from the suspended record's auto directly after background_tasks
+src/app/agent_times.rs  additive: autosuspend: AgentTimePane.auto_suspended last; agent_times() sets it from the suspended record
+src/client/shell/agent_times.rs  additive: autosuspend: ClientAgentTimesState.auto_suspended (pane ids) and auto_suspended(pane_id)
+src/client/shell/sidebar_model.rs  mid-logic: autosuspend: TabFacts.auto_parked directly after parked (struct and Default), set for a Suspended agent the agent times push marks
+src/client/shell/tab_sidebar_detail.rs  mid-logic: autosuspend: tab_chips' status chip appends ` (auto)` (a Suspended tab) or ` (auto-suspended)` (a parked agent in a tab of another status) when TabFacts.auto_parked
 
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
@@ -1781,6 +1799,10 @@ forget_subagents
 subagent_ids
 agent_subagents_running
 background_tasks_running
+auto_suspended
+autosuspend
+AutosuspendState
+suspend_agent_auto
 background_task_ids
 replace_background_tasks
 active_background_task_count

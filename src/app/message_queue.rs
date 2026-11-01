@@ -527,7 +527,7 @@ impl MessageQueue {
         self.save();
     }
 
-    fn queued_for(&self, terminal_id: &str) -> bool {
+    pub(crate) fn queued_for(&self, terminal_id: &str) -> bool {
         self.entries
             .iter()
             .any(|entry| entry.terminal_id == terminal_id)
@@ -863,7 +863,7 @@ impl App {
     /// queued: that turn ends without a Stop, and the urgent message goes in
     /// once the screen reads idle. A stale or finished interrupt no longer
     /// counts (a later turn's hooks hold its idle screen again).
-    fn hook_live_until(&self, terminal_id: &str) -> Option<Instant> {
+    pub(crate) fn hook_live_until(&self, terminal_id: &str) -> Option<Instant> {
         let now = Instant::now();
         if self
             .message_queue
