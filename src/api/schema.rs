@@ -192,6 +192,9 @@ operations::define_operations! {
     CheckpointsUpdate(notes::CheckpointsUpdateParams) => "checkpoints.update", false, true;
     CheckpointsRemove(notes::CheckpointTarget) => "checkpoints.remove", false, true;
     CheckpointsContext(notes::CheckpointsContextParams) => "checkpoints.context", false, true;
+    /// Fork: show a tab's notes in the attached clients' info panes (an
+    /// agent's `agents_notes_write reveal=true`).
+    NotesReveal(notes::NotesRevealParams) => "notes.reveal", true, false;
     // fork: the agents model (agents v2).
     AgentsActor(agents_model::AgentsActorParams) => "agents.actor", false, false;
     AgentsDirectory(agents_model::AgentsDirectoryParams) => "agents.directory", false, false;

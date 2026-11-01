@@ -679,6 +679,17 @@ pub(crate) struct NotesRuntime {
     pub enabled: bool,
     pub store: NotesStore,
     pub panes: PaneKeys,
+    /// The latest `notes.reveal` (`endpoint.notes-reveal.v1`), never
+    /// persisted.
+    pub reveal: Option<NotesReveal>,
+}
+
+/// One `notes.reveal`: its revision (1 and up, per server run) and the
+/// public tab id whose info pane the clients show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NotesReveal {
+    pub revision: u64,
+    pub tab_id: String,
 }
 
 impl Default for NotesRuntime {
@@ -693,6 +704,17 @@ impl NotesRuntime {
             enabled,
             store: NotesStore::new(dir),
             panes: PaneKeys::default(),
+            reveal: None,
         }
+    }
+
+    /// Record a reveal of `tab_id` under the next revision.
+    pub(crate) fn note_reveal(&mut self, tab_id: String) -> u64 {
+        let revision = self
+            .reveal
+            .as_ref()
+            .map_or(1, |reveal| reveal.revision.wrapping_add(1).max(1));
+        self.reveal = Some(NotesReveal { revision, tab_id });
+        revision
     }
 }

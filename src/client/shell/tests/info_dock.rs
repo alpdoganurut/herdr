@@ -1576,3 +1576,51 @@ fn opening_the_info_pane_never_moves_the_keyboard_focus() {
     assert!(state.info_dock_open_for_focused_tab());
     assert!(!state.info_dock_focused());
 }
+
+#[test]
+fn a_notes_reveal_opens_the_tabs_pane_once_without_taking_the_keyboard() {
+    use crate::server::headless::notes_reveal::NotesRevealPayload;
+    let payload = |boot_id: &str, revision, tab_id: &str| NotesRevealPayload {
+        boot_id: boot_id.into(),
+        revision,
+        tab_id: tab_id.into(),
+    };
+    let local = ClientEndpointId::Local;
+    let mut state = dock_state();
+    // The focused tab: the dock opens (the surface narrows), unfocused.
+    let outcome = state.receive_notes_reveal(&local, payload("boot-1", 1, "tab_1"));
+    assert!(outcome.repaint && outcome.resize);
+    assert!(state.info_dock_open_for_focused_tab());
+    recompose(&mut state);
+    assert!(!state.info_dock_focused());
+    let typed = state.handle_raw_events(vec![key(KeyCode::Char('j'))]);
+    assert_eq!(pane_requests(&typed), 1, "keys stay with the session");
+
+    // Already open: nothing changes (a reveal never closes it).
+    let again = state.receive_notes_reveal(&local, payload("boot-1", 2, "tab_1"));
+    assert!(!again.repaint && !again.resize);
+    assert!(state.info_dock_open_for_focused_tab());
+
+    // Closed by the user, an old or repeated revision does not reopen it; a
+    // newer one does.
+    toggle(&mut state);
+    assert!(!state.info_dock_open_for_focused_tab());
+    state.receive_notes_reveal(&local, payload("boot-1", 2, "tab_1"));
+    assert!(!state.info_dock_open_for_focused_tab(), "seen already");
+    state.receive_notes_reveal(&local, payload("boot-1", 3, "tab_1"));
+    assert!(state.info_dock_open_for_focused_tab());
+
+    // A background tab opens in state only.
+    let background = state.receive_notes_reveal(&local, payload("boot-1", 4, "tab_2"));
+    assert!(!background.resize);
+    assert!(state.info_dock.as_deref().is_some_and(|dock| dock
+        .open_tabs
+        .contains(&(local.clone(), "tab_2".to_owned()))));
+
+    // A new server boot starts its revisions over.
+    toggle(&mut state);
+    state.receive_notes_reveal(&local, payload("boot-2", 1, "tab_1"));
+    assert!(state.info_dock_open_for_focused_tab());
+    recompose(&mut state);
+    assert!(!state.info_dock_focused());
+}

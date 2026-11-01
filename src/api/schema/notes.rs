@@ -26,6 +26,8 @@ pub mod method {
     pub const CP_UPDATE: &str = "checkpoints.update";
     pub const CP_REMOVE: &str = "checkpoints.remove";
     pub const CP_CONTEXT: &str = "checkpoints.context";
+    /// Ask attached clients to show a tab's notes (UI only).
+    pub const REVEAL: &str = "notes.reveal";
 
     /// Every method, in the order of the design's table.
     #[cfg(test)]
@@ -152,6 +154,16 @@ pub struct NotesSetParams {
     pub base_revision: Option<String>,
     #[serde(default = "default_author")]
     pub author: NotesAuthor,
+}
+
+/// `notes.reveal`: ask the attached clients to show the notes' tab's info
+/// pane (UI only; nothing is written). The server only signals
+/// (`endpoint.notes-reveal.v1`); whether a pane opens is each client's: it
+/// opens it, without taking the keyboard, unless it is already open. An
+/// older server answers with an unknown method, which a caller ignores.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NotesRevealParams {
+    pub target: NotesTarget,
 }
 
 /// `notes.append`: add text at the end, or at the end of `## <section>`

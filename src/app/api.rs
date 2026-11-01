@@ -1401,6 +1401,7 @@ impl App {
             Method::NotesGet(params) => return self.handle_notes_get(request.id, params),
             Method::NotesSet(params) => return self.handle_notes_set(request.id, params),
             Method::NotesAppend(params) => return self.handle_notes_append(request.id, params),
+            Method::NotesReveal(params) => return self.handle_notes_reveal(request.id, params),
             // Fork: checkpoints were removed; the names stay and refuse.
             Method::CheckpointsList(_)
             | Method::CheckpointsAdd(_)

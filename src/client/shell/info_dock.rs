@@ -19,7 +19,7 @@
 //! is needed against `endpoint_busy`. Replies never raise a notice: errors
 //! show in the dock body or footer.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
@@ -362,6 +362,9 @@ pub(crate) struct ClientInfoDockState {
     pub(crate) dragging: bool,
     pub(crate) last_divider_press: Option<Instant>,
     pub(crate) flash: Option<(String, Instant)>,
+    /// The last `endpoint.notes-reveal.v1` acted on, per endpoint: its boot
+    /// and revision.
+    pub(crate) reveal_seen: HashMap<ClientEndpointId, (String, u64)>,
     /// Bumps on every change to `ui` (and on a session key change).
     ui_generation: u64,
     /// Bumps on every editor change.
@@ -385,6 +388,7 @@ impl Default for ClientInfoDockState {
             dragging: false,
             last_divider_press: None,
             flash: None,
+            reveal_seen: HashMap::new(),
             ui_generation: 0,
             editor_generation: 0,
             rows: None,
@@ -923,6 +927,54 @@ impl ClientShellState {
         }
         let now = Instant::now();
         self.tick_info_dock(now, outcome);
+    }
+
+    /// An `endpoint.notes-reveal.v1` push (an agent's `agents_notes_write
+    /// reveal=true`): open that tab's dock unless it is open, never taking
+    /// the keyboard (a tab of another endpoint, or not focused, opens in
+    /// state only). Each revision acts once per server boot.
+    pub(crate) fn receive_notes_reveal(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        payload: crate::server::headless::notes_reveal::NotesRevealPayload,
+    ) -> ClientShellInput {
+        let mut outcome = ClientShellInput::default();
+        let dock = self.info_dock.get_or_insert_with(Box::default);
+        if dock
+            .reveal_seen
+            .get(endpoint_id)
+            .is_some_and(|(boot_id, revision)| {
+                *boot_id == payload.boot_id && *revision >= payload.revision
+            })
+        {
+            return outcome;
+        }
+        dock.reveal_seen.insert(
+            endpoint_id.clone(),
+            (payload.boot_id.clone(), payload.revision),
+        );
+        let key = (endpoint_id.clone(), payload.tab_id.clone());
+        if dock.open_tabs.contains(&key) {
+            return outcome;
+        }
+        if *endpoint_id == self.active_endpoint_id {
+            self.toggle_info_pane(payload.tab_id, &mut outcome);
+        } else {
+            dock.open_tabs.insert(key);
+        }
+        outcome
+    }
+
+    /// Whether `tab_id` of the active endpoint has its dock open while the
+    /// dock does not have the keyboard (server-side smoke tests).
+    #[cfg(test)]
+    pub(crate) fn info_dock_open_unfocused_for_test(&self, tab_id: &str) -> bool {
+        self.info_dock.as_deref().is_some_and(|dock| {
+            !dock.focused
+                && dock
+                    .open_tabs
+                    .contains(&(self.active_endpoint_id.clone(), tab_id.to_owned()))
+        })
     }
 
     /// The `toggle_info_pane` keybind: the focused tab.

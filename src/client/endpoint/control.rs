@@ -27,6 +27,8 @@ pub(crate) enum EndpointControlMessage {
     Quiet(crate::server::headless::quiet::QuietPayload),
     /// Fork: the endpoint's agents' context use (`endpoint.agent-context.v1`).
     AgentContext(crate::server::headless::agent_context::AgentContextPayload),
+    /// Fork: show a tab's info pane (`endpoint.notes-reveal.v1`).
+    NotesReveal(crate::server::headless::notes_reveal::NotesRevealPayload),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -99,6 +101,14 @@ pub(crate) fn decode_endpoint_control(
         return Ok(
             crate::server::headless::agent_context::AgentContextPayload::decode(data)
                 .map(EndpointControlMessage::AgentContext)
+                .unwrap_or(EndpointControlMessage::Ignored),
+        );
+    }
+    // Fork: a notes reveal, optional like agents' context use.
+    if kind == crate::server::headless::notes_reveal::NOTES_REVEAL_KIND {
+        return Ok(
+            crate::server::headless::notes_reveal::NotesRevealPayload::decode(data)
+                .map(EndpointControlMessage::NotesReveal)
                 .unwrap_or(EndpointControlMessage::Ignored),
         );
     }
@@ -447,6 +457,31 @@ mod tests {
         assert_eq!(decoded, payload);
         assert!(matches!(
             decode_endpoint_control(AGENT_CONTEXT_KIND, "{garbage").unwrap(),
+            EndpointControlMessage::Ignored
+        ));
+    }
+
+    #[test]
+    fn notes_reveal_round_trip_and_garbage_is_ignored() {
+        use crate::server::headless::notes_reveal::{NotesRevealPayload, NOTES_REVEAL_KIND};
+        let payload = NotesRevealPayload {
+            boot_id: "boot".into(),
+            revision: 3,
+            tab_id: "w1:t2".into(),
+        };
+        let crate::protocol::ServerMessage::EndpointControl { kind, data } =
+            payload.message().unwrap()
+        else {
+            panic!("expected a control message");
+        };
+        let EndpointControlMessage::NotesReveal(decoded) =
+            decode_endpoint_control(&kind, &data).unwrap()
+        else {
+            panic!("decoded notes reveal");
+        };
+        assert_eq!(decoded, payload);
+        assert!(matches!(
+            decode_endpoint_control(NOTES_REVEAL_KIND, "{garbage").unwrap(),
             EndpointControlMessage::Ignored
         ));
     }

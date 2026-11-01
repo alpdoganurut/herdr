@@ -2008,6 +2008,7 @@ fn fork_method_constants_match_the_operations_table() {
         super::notes::method::CP_UPDATE,
         super::notes::method::CP_REMOVE,
         super::notes::method::CP_CONTEXT,
+        super::notes::method::REVEAL,
         super::team::method::LIST,
         super::team::method::GET,
         super::team::method::MAKE,
