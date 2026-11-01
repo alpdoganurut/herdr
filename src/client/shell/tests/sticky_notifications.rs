@@ -517,6 +517,130 @@ fn turning_sticky_off_keeps_one_timed_card_and_queues_the_rest() {
     assert!(state.queued_notifications.is_empty());
 }
 
+// Fork (toast dock): a right-anchored toast lays out left of the open info
+// dock, one blank column before it; left anchors and a closed dock keep the
+// whole frame.
+
+/// Open the focused tab's info dock (its notes request stays in flight) and
+/// return the dock's rect.
+fn open_dock(state: &mut ClientShellState, cols: u16, rows: u16) -> Rect {
+    state.compose(cols, rows).expect("frame");
+    let mut outcome = ClientShellInput::default();
+    state.toggle_info_pane_for_focused_tab(&mut outcome);
+    if state.pane_surface.is_none() {
+        state.set_pane_surface(surface());
+    }
+    state.compose(cols, rows).expect("frame");
+    let dock = state.info_dock_area();
+    assert!(!dock.is_empty(), "the dock is drawn at {cols}x{rows}");
+    dock
+}
+
+fn docked_sticky_state(max_stack: usize) -> ClientShellState {
+    let mut state = sticky_state(max_stack);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state
+}
+
+#[test]
+fn toasts_keep_the_whole_frame_while_the_dock_is_closed() {
+    let mut state = docked_sticky_state(6);
+    deliver(&mut state, custom("bottom"));
+    state.compose(100, 40).expect("frame");
+    assert!(state.info_dock_area().is_empty());
+    assert_eq!(
+        state.hits.notification_toasts,
+        vec![(Rect::new(88, 37, 12, 3), Some(0))]
+    );
+}
+
+#[test]
+fn right_anchored_sticky_cards_and_the_fold_line_sit_left_of_the_open_dock() {
+    let mut state = docked_sticky_state(2);
+    let dock = open_dock(&mut state, 120, 40);
+    let mut top = custom("top");
+    top.position = Some(crate::config::ToastHerdrPosition::TopRight);
+    for title in ["first", "second", "third"] {
+        deliver(&mut state, custom(title));
+    }
+    deliver(&mut state, top);
+    let frame = state.compose(120, 40).expect("frame");
+    let hits = &state.hits.notification_toasts;
+    // top (TopRight), third (BottomRight), then the fold line in the default
+    // bottom-right corner.
+    assert_eq!(
+        hits.iter().map(|(_, index)| *index).collect::<Vec<_>>(),
+        [Some(3), Some(2), None]
+    );
+    for (rect, _) in hits {
+        assert_eq!(rect.right(), dock.x - 1, "{rect:?} beside {dock:?}");
+    }
+    assert_eq!(hits[0].0.y, 0);
+    assert_eq!(hits[1].0.bottom(), 40);
+    let rows = frame_rows(&frame);
+    assert!(rows[usize::from(hits[2].0.y)].contains("+2 more"));
+}
+
+#[test]
+fn a_timed_top_right_toast_sits_left_of_the_open_dock() {
+    let mut state = docked_sticky_state(6);
+    state.config.toast_sticky = false;
+    state.config.toast_position = crate::config::ToastHerdrPosition::TopRight;
+    let dock = open_dock(&mut state, 120, 40);
+    deliver(&mut state, custom("timed"));
+    state.compose(120, 40).expect("frame");
+    let rect = state.hits.notification_toast;
+    assert!(!rect.is_empty());
+    assert_eq!(rect.right(), dock.x - 1);
+    assert_eq!(rect.y, 0);
+}
+
+#[test]
+fn left_anchored_cards_ignore_the_open_dock() {
+    let mut state = docked_sticky_state(6);
+    open_dock(&mut state, 120, 40);
+    let mut top = custom("top");
+    top.position = Some(crate::config::ToastHerdrPosition::TopLeft);
+    deliver(&mut state, top);
+    state.compose(120, 40).expect("frame");
+    assert_eq!(
+        state.hits.notification_toasts,
+        vec![(Rect::new(0, 0, 9, 3), Some(0))]
+    );
+}
+
+#[test]
+fn a_card_too_wide_for_the_room_beside_the_dock_keeps_its_old_place() {
+    let mut state = docked_sticky_state(6);
+    let dock = open_dock(&mut state, 70, 40);
+    // Six cells of chrome: this title needs more than the dock leaves.
+    deliver(&mut state, custom(&"w".repeat(usize::from(dock.x))));
+    state.compose(70, 40).expect("frame");
+    let (rect, _) = state.hits.notification_toasts[0];
+    assert_eq!(rect.right(), 70);
+}
+
+#[test]
+fn a_click_lands_on_a_card_moved_beside_the_dock() {
+    let mut state = docked_sticky_state(6);
+    state.set_snapshot(Box::new(snapshot_with(&[
+        ("pane_2", "tab_2", AgentStatus::Blocked),
+        ("pane_3", "tab_3", AgentStatus::Blocked),
+    ])));
+    let dock = open_dock(&mut state, 120, 40);
+    deliver(&mut state, attention("two", "pane_2", "tab_2"));
+    deliver(&mut state, attention("three", "pane_3", "tab_3"));
+    state.compose(120, 40).expect("frame");
+
+    let hit = card_hit(&state, "three");
+    assert_eq!(hit.right(), dock.x - 1);
+    let outcome =
+        state.handle_raw_events(vec![mouse(MouseEventKind::Down(MouseButton::Left), hit)]);
+    assert_eq!(focused_pane(&outcome).as_deref(), Some("pane_3"));
+    assert_eq!(titles(&state), ["two"]);
+}
+
 mod fork_smoke {
     use super::*;
 

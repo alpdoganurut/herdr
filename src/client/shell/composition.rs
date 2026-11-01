@@ -292,6 +292,7 @@ impl ClientShellState {
             self.hits.notification_toast = endpoint_notices::render_notice(
                 &mut buffer,
                 Rect::new(0, 0, cols, rows),
+                Rect::default(),
                 notice,
                 1,
                 &self.config.palette,
@@ -747,6 +748,7 @@ impl ClientShellState {
                     endpoint_notices::render_notice(
                         &mut composed,
                         Rect::new(0, 0, cols, rows),
+                        layout.info_dock,
                         notice,
                         u16::from(has_config_diagnostic) + lifecycle_offset,
                         &self.config.palette,
@@ -764,6 +766,7 @@ impl ClientShellState {
                 self.hits.notification_toasts = notifications::render_notification_stack(
                     &mut composed,
                     Rect::new(0, 0, cols, rows),
+                    layout.info_dock,
                     &self.visible_notifications,
                     self.config.toast_position,
                     self.config.toast_max_stack,
@@ -780,6 +783,7 @@ impl ClientShellState {
                     notifications::render_visible_notification(
                         &mut composed,
                         Rect::new(0, 0, cols, rows),
+                        layout.info_dock,
                         notification,
                         self.config.toast_position,
                         u16::from(has_config_diagnostic) + lifecycle_offset,

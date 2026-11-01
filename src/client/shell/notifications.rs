@@ -139,9 +139,35 @@ fn put_notification_glyph(
     }
 }
 
+/// Fork: the area a right-anchored toast lays out in while the info dock is
+/// open: everything left of `dock`, one blank column before it, same rows. A
+/// left anchor, a closed dock (empty rect) or a toast wider than that area
+/// keeps the whole `area`.
+pub(super) fn toast_area_beside_dock(
+    area: Rect,
+    dock: Rect,
+    position: crate::config::ToastHerdrPosition,
+    width: usize,
+) -> Rect {
+    let right_anchored = matches!(
+        position,
+        crate::config::ToastHerdrPosition::TopRight
+            | crate::config::ToastHerdrPosition::BottomRight
+    );
+    if !right_anchored || dock.is_empty() {
+        return area;
+    }
+    let beside = dock.x.saturating_sub(1).saturating_sub(area.x);
+    if beside == 0 || width > usize::from(beside) || dock.x > area.right() {
+        return area;
+    }
+    Rect::new(area.x, area.y, beside, area.height)
+}
+
 pub(super) fn render_notification_card(
     buffer: &mut Buffer,
     area: Rect,
+    dock: Rect,
     title: &str,
     body: &str,
     position: crate::config::ToastHerdrPosition,
@@ -155,6 +181,7 @@ pub(super) fn render_notification_card(
     let content_width = unicode_width::UnicodeWidthStr::width(title)
         .max(unicode_width::UnicodeWidthStr::width(body))
         .saturating_add(6);
+    let area = toast_area_beside_dock(area, dock, position, content_width);
     let width = u16::try_from(content_width)
         .unwrap_or(u16::MAX)
         .min(area.width);
@@ -215,6 +242,7 @@ pub(super) fn render_notification_card(
 pub(super) fn render_visible_notification(
     buffer: &mut Buffer,
     area: Rect,
+    dock: Rect,
     notification: &ClientVisibleNotification,
     default_position: crate::config::ToastHerdrPosition,
     top_offset: u16,
@@ -231,6 +259,7 @@ pub(super) fn render_visible_notification(
     let rect = render_notification_card(
         buffer,
         area,
+        dock,
         &event.title,
         event.body.as_deref().unwrap_or_default(),
         event.position.unwrap_or(default_position),
@@ -266,6 +295,7 @@ fn notification_corner(position: crate::config::ToastHerdrPosition) -> usize {
 pub(super) fn render_notification_stack(
     buffer: &mut Buffer,
     area: Rect,
+    dock: Rect,
     cards: &VecDeque<ClientVisibleNotification>,
     default_position: crate::config::ToastHerdrPosition,
     max_stack: usize,
@@ -299,8 +329,15 @@ pub(super) fn render_notification_stack(
             folded = index + 1;
             break;
         }
-        let rect =
-            render_visible_notification(buffer, area, card, default_position, top_offset, palette);
+        let rect = render_visible_notification(
+            buffer,
+            area,
+            dock,
+            card,
+            default_position,
+            top_offset,
+            palette,
+        );
         hits.push((rect, Some(index)));
         next_offset[corner] = top_offset.saturating_add(height).saturating_add(1);
     }
@@ -308,6 +345,7 @@ pub(super) fn render_notification_stack(
         let rect = render_notification_fold_line(
             buffer,
             area,
+            dock,
             folded,
             default_position,
             next_offset[default_corner],
@@ -321,12 +359,19 @@ pub(super) fn render_notification_stack(
 fn render_notification_fold_line(
     buffer: &mut Buffer,
     area: Rect,
+    dock: Rect,
     folded: usize,
     position: crate::config::ToastHerdrPosition,
     top_offset: u16,
     palette: &Palette,
 ) -> Rect {
     let text = format!(" +{folded} more ");
+    let area = toast_area_beside_dock(
+        area,
+        dock,
+        position,
+        unicode_width::UnicodeWidthStr::width(text.as_str()),
+    );
     let width = u16::try_from(unicode_width::UnicodeWidthStr::width(text.as_str()))
         .unwrap_or(u16::MAX)
         .min(area.width);
@@ -394,6 +439,7 @@ mod tests {
         let rect = render_visible_notification(
             &mut buffer,
             area,
+            Rect::default(),
             notification,
             crate::config::ToastHerdrPosition::TopLeft,
             0,
@@ -491,6 +537,7 @@ mod tests {
             render_visible_notification(
                 &mut buffer,
                 area,
+                Rect::default(),
                 &card,
                 crate::config::ToastHerdrPosition::TopLeft,
                 0,
@@ -750,6 +797,7 @@ mod tests {
                 let rect = render_visible_notification(
                     &mut buffer,
                     area,
+                    Rect::default(),
                     &notification(),
                     position,
                     1,

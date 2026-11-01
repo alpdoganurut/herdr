@@ -56,6 +56,7 @@ pub(super) fn render_lifecycle_banner(
 pub(super) fn render_notice(
     buffer: &mut Buffer,
     area: Rect,
+    dock: Rect,
     notice: &ClientVisibleEndpointNotice,
     top_offset: u16,
     palette: &Palette,
@@ -63,6 +64,7 @@ pub(super) fn render_notice(
     super::notifications::render_notification_card(
         buffer,
         area,
+        dock,
         &notice.title,
         &notice.body,
         crate::config::ToastHerdrPosition::TopRight,
