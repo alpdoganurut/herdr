@@ -42,6 +42,12 @@ pub const OUTCOME_DELIVERED: &str = "delivered";
 pub const OUTCOME_EXPIRED: &str = "expired";
 /// A queued message's target pane or agent is gone.
 pub const OUTCOME_DROPPED: &str = "dropped";
+/// Fork: a quiet message (`agents_send_message quiet=true`, or any message to
+/// a tab in do-not-disturb), stored for its target without being typed in
+/// (src/app/quiet_messages.rs). An update line moves it to `delivered` when
+/// the target's hook took it into its context (or a waiter claimed it), or
+/// to `expired`. Not a refusal: waiters receive it like a queued message.
+pub const OUTCOME_QUIET: &str = "quiet";
 
 /// `kind` of a line that only moves an earlier message (same `id`) to a new
 /// outcome (`queued`, `delivered`, `expired`, `dropped`). The log stays

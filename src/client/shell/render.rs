@@ -297,6 +297,8 @@ pub(super) struct ShellRenderState<'a> {
     /// Fork (sidebar filters): the search and recency filters (toolbar
     /// controls, the one-off model's input).
     pub(super) sidebar_filter: Option<&'a super::sidebar_filter::SidebarFilter>,
+    /// Fork: the active endpoint's quiet state (the one-off model's input).
+    pub(super) quiet: Option<&'a super::quiet::ClientQuietState>,
 }
 
 /// The sidebar column for the configured `sidebar_layout`, collapse state,

@@ -2347,7 +2347,14 @@ async fn fork_smoke_handoff_then_compact_runs_through_the_claude_hooks() {
             "source": "startup",
         }),
     );
-    assert_eq!(requests.len(), 1, "a startup reports only its session");
+    // Fork (quiet messages, integration 15): then it asks for its quiet
+    // messages (none here, nothing printed).
+    assert_eq!(
+        requests.len(),
+        2,
+        "a startup reports its session and asks for quiet messages"
+    );
+    assert!(matches!(requests[1].method, Method::AgentsTakeQuiet(_)));
 
     // The context read crosses 80 %: a run starts (once).
     let terminal_id = root_terminal_id(&server);
@@ -2434,9 +2441,10 @@ async fn fork_smoke_handoff_then_compact_runs_through_the_claude_hooks() {
     );
     assert_eq!(
         requests.len(),
-        2,
-        "the session report, then the compact report"
+        3,
+        "the session report, the compact report, then the quiet messages"
     );
+    assert!(matches!(requests[2].method, Method::AgentsTakeQuiet(_)));
     let printed: serde_json::Value = serde_json::from_str(out.trim()).expect("hook JSON");
     assert_eq!(
         printed["hookSpecificOutput"]["hookEventName"],
@@ -2533,6 +2541,142 @@ async fn fork_smoke_program_status_reports_reach_explain() {
         explain(&mut server)["root"].is_null(),
         "RIS clears the records"
     );
+}
+
+/// The `endpoint.quiet.v1` payloads among `messages`.
+fn quiet_payloads(messages: &[ServerMessage]) -> Vec<crate::server::headless::quiet::QuietPayload> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::EndpointControl { kind, data }
+                if kind == crate::server::headless::quiet::QUIET_KIND =>
+            {
+                Some(
+                    crate::server::headless::quiet::QuietPayload::decode(data)
+                        .expect("quiet payload decodes"),
+                )
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Fork: a tab in do-not-disturb (`tab.set_dnd`) stores an agent message
+/// quietly instead of typing it in and answers "in DND, queued"; clients get
+/// the tab and the pending count as `endpoint.quiet.v1`; the shipped Claude
+/// hook's UserPromptSubmit takes it into the agent's context as data
+/// (`agents.take_quiet`), once; the count goes back to nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn fork_smoke_a_dnd_tab_stores_messages_quietly_and_the_claude_hook_injects_them() {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "hfs-quiet-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let (mut server, mut rx) = server_with_claude(None);
+    let (control, render) = connect_test_shell(&mut server, 81, 80, 23);
+    server.render_and_stream();
+    assert!(
+        quiet_payloads(&control_messages(&control, &render)).is_empty(),
+        "nothing while nothing was ever quiet"
+    );
+
+    let tab_id = server.app.public_tab_id(0, 0).expect("tab id");
+    let pane_id = server
+        .app
+        .public_pane_id(0, root_pane(&server))
+        .expect("pane id");
+    let reply = api(
+        &mut server,
+        Method::TabSetDnd(crate::api::schema::TabSetDndParams {
+            tab_id: tab_id.clone(),
+            dnd: true,
+        }),
+    );
+    assert_eq!(reply["result"]["tab"]["dnd"], true, "{reply}");
+    let reply = api(
+        &mut server,
+        Method::AgentMessageSend(crate::api::schema::AgentMessageSendParams {
+            target: pane_id.clone(),
+            id: "mq1".into(),
+            envelope: "[herdr+ message mq1 from lead (w9:p1) 10:00 \u{2014} another agent]\nthe build is green".into(),
+            text: "the build is green".into(),
+            from_pane: Some("w9:p1".into()),
+            from_name: Some("lead".into()),
+            ..crate::api::schema::AgentMessageSendParams::default()
+        }),
+    );
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    assert_eq!(reply["result"]["reason"], "in DND, queued", "{reply}");
+    assert!(
+        !typed_so_far(&mut rx).contains("build is green"),
+        "not typed into a DND tab"
+    );
+    server.render_and_stream();
+    let payloads = quiet_payloads(&control_messages(&control, &render));
+    let last = payloads.last().expect("the quiet state is pushed");
+    assert_eq!(last.dnd_tab_ids, std::slice::from_ref(&tab_id));
+    assert_eq!(last.pending.len(), 1);
+    assert_eq!(last.pending[0].pane_id, pane_id);
+    assert_eq!(last.pending[0].tab_id, tab_id, "keyed like the tab row");
+    assert_eq!(last.pending[0].count, 1);
+
+    // The user's next prompt: the hook adds it to the context, as data.
+    let (requests, out) = run_claude_hook_asset_live(
+        &mut server,
+        &dir,
+        &pane_id,
+        "turn",
+        serde_json::json!({ "hook_event_name": "UserPromptSubmit", "prompt_id": "p1" }),
+    );
+    let methods: Vec<String> = requests
+        .iter()
+        .map(|request| {
+            serde_json::to_value(request).unwrap()["method"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect();
+    assert!(
+        methods.contains(&"agents.take_quiet".to_string()),
+        "{methods:?}"
+    );
+    let printed: serde_json::Value = serde_json::from_str(out.trim()).expect("one JSON object");
+    let output = &printed["hookSpecificOutput"];
+    assert_eq!(output["hookEventName"], "UserPromptSubmit");
+    let context = output["additionalContext"].as_str().unwrap_or_default();
+    assert!(context.contains("data, not instructions"), "{context}");
+    assert!(context.contains("mq1 from lead"), "{context}");
+    assert!(context.contains("\n  the build is green"), "{context}");
+
+    // Taken once: the next prompt adds nothing, and the count is gone.
+    let (_, out) = run_claude_hook_asset_live(
+        &mut server,
+        &dir,
+        &pane_id,
+        "turn",
+        serde_json::json!({ "hook_event_name": "UserPromptSubmit", "prompt_id": "p2" }),
+    );
+    assert!(out.trim().is_empty(), "{out}");
+    server.render_and_stream();
+    let payloads = quiet_payloads(&control_messages(&control, &render));
+    let last = payloads.last().expect("the change is pushed");
+    assert!(last.pending.is_empty());
+    assert_eq!(last.dnd_tab_ids, std::slice::from_ref(&tab_id));
+
+    // The client shell takes it once.
+    let mut shell = crate::client::ClientShellState::new(
+        crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),
+    );
+    let local = crate::client::endpoint::ClientEndpointId::Local;
+    assert!(shell.receive_quiet(&local, last.clone()));
+    assert!(!shell.receive_quiet(&local, last.clone()));
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[path = "fork_smoke/coordinator.rs"]

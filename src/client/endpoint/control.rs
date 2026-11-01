@@ -22,6 +22,9 @@ pub(crate) enum EndpointControlMessage {
     TabPins(crate::server::headless::tab_pins::TabPinsPayload),
     /// Fork: the endpoint's muted tabs (`endpoint.tab-mutes.v1`).
     TabMutes(crate::server::headless::tab_mutes::TabMutesPayload),
+    /// Fork: the endpoint's do-not-disturb tabs and quiet message counts
+    /// (`endpoint.quiet.v1`).
+    Quiet(crate::server::headless::quiet::QuietPayload),
     /// Fork: the endpoint's agents' context use (`endpoint.agent-context.v1`).
     AgentContext(crate::server::headless::agent_context::AgentContextPayload),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
@@ -84,6 +87,12 @@ pub(crate) fn decode_endpoint_control(
                 .map(EndpointControlMessage::TabMutes)
                 .unwrap_or(EndpointControlMessage::Ignored),
         );
+    }
+    // Fork: quiet messages and do-not-disturb, optional like muted tabs.
+    if kind == crate::server::headless::quiet::QUIET_KIND {
+        return Ok(crate::server::headless::quiet::QuietPayload::decode(data)
+            .map(EndpointControlMessage::Quiet)
+            .unwrap_or(EndpointControlMessage::Ignored));
     }
     // Fork: agents' context use, optional like pinned tabs.
     if kind == crate::server::headless::agent_context::AGENT_CONTEXT_KIND {

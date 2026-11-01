@@ -3,7 +3,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=14
+# HERDR_INTEGRATION_VERSION=15
 
 set -eu
 
@@ -106,6 +106,32 @@ def report_compact(event):
     return call({"id": request_id, "method": "pane.report_compact", "params": params})
 
 
+# Quiet messages other agents stored for this pane instead of typing them in
+# (agents.take_quiet): herdr answers them as one text, framed as data, and
+# marks them delivered. A server without the method answers with an error,
+# which adds nothing.
+def take_quiet():
+    response = call(
+        {"id": request_id, "method": "agents.take_quiet", "params": {"caller_pane": pane_id}},
+        timeout=2.0,
+    )
+    result = response.get("result") if isinstance(response, dict) else None
+    context = result.get("context") if isinstance(result, dict) else None
+    return context if isinstance(context, str) and context else None
+
+
+# Print the texts to add to the agent's context for `event`, as one object.
+def add_context(event, parts):
+    parts = [part for part in parts if part]
+    if parts:
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": event,
+                "additionalContext": "\n\n".join(parts),
+            }
+        }))
+
+
 if action == "precompact":
     if hook_event_name == "PreCompact" and not hook_input.get("agent_id"):
         report_compact("pre")
@@ -155,6 +181,7 @@ def report_turn(event):
 if action == "turn":
     if hook_event_name == "UserPromptSubmit" and not hook_input.get("agent_id"):
         report_turn("start")
+        add_context("UserPromptSubmit", [take_quiet()])
     raise SystemExit(0)
 
 # The main agent's turn ended (Stop): report every subagent still running
@@ -225,16 +252,15 @@ else:
 
 send(request)
 
+context_parts = []
 # The compacted session starts: add herdr's handoff to its context.
 if session_start_source == "compact":
     response = report_compact("post")
     result = response.get("result") if isinstance(response, dict) else None
     context = result.get("context") if isinstance(result, dict) else None
     if isinstance(context, str) and context:
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context,
-            }
-        }))
+        context_parts.append(context)
+# Any session start: the quiet messages stored for this pane.
+context_parts.append(take_quiet())
+add_context("SessionStart", context_parts)
 PY

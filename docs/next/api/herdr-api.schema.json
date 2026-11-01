@@ -1074,6 +1074,10 @@
               ],
               "description": "The tab's color tag; absent when the tab has none."
             },
+            "dnd": {
+              "description": "Fork: do-not-disturb (`tab.set_dnd`): agent messages to its agents\nare stored quietly. Absent when not.",
+              "type": "boolean"
+            },
             "focused": {
               "type": "boolean"
             },
@@ -2687,6 +2691,10 @@
             "caller_pane": {
               "type": "string"
             },
+            "quiet": {
+              "description": "Fork: store it for the target without typing it in or waking it\n(src/app/quiet_messages.rs); a Claude target gets it in its context\nat its next prompt. Not with `urgent`. Omitted when false.",
+              "type": "boolean"
+            },
             "reply_to": {
               "description": "The id of the message this answers.",
               "type": [
@@ -2754,6 +2762,18 @@
           "required": [
             "key",
             "value"
+          ],
+          "type": "object"
+        },
+        "AgentsTakeQuietParams": {
+          "description": "`agents.take_quiet` (fork, src/app/quiet_messages.rs): take the quiet\nmessages stored for the caller, oldest first, as the text its Claude hook\nadds to its context (UserPromptSubmit, SessionStart). Taking marks them\ndelivered. Answers `ResponseResult::AgentsTakeQuiet`.",
+          "properties": {
+            "caller_pane": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "caller_pane"
           ],
           "type": "object"
         },
@@ -7790,6 +7810,22 @@
           ],
           "type": "object"
         },
+        "TabSetDndParams": {
+          "description": "Fork: turn a tab's do-not-disturb on or off (`tab.set_dnd`). While it is\non, every agent message to the tab's agents is stored quietly instead of\nbeing typed in, urgent messages are refused and herdr's wake-ups are\nheld; the user typing is unaffected.",
+          "properties": {
+            "dnd": {
+              "type": "boolean"
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "dnd"
+          ],
+          "type": "object"
+        },
         "TabSetMutedParams": {
           "description": "Fork: mute or unmute a tab's notifications (`tab.set_muted`). A muted\ntab raises none of herdr's own automatic notifications (toasts, sounds,\nsystem or terminal notifications, bells, reminder alerts); agent cards\n(`agent.notify`) still show.",
           "properties": {
@@ -9521,6 +9557,23 @@
           "type": "object"
         },
         {
+          "description": "Fork: turn a tab's do-not-disturb on or off.",
+          "properties": {
+            "method": {
+              "const": "tab.set_dnd",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabSetDndParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "pane.report_subagent",
@@ -10622,6 +10675,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentsReportWaitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork: take the caller's quiet messages (its Claude hook).",
+          "properties": {
+            "method": {
+              "const": "agents.take_quiet",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/AgentsTakeQuietParams"
             }
           },
           "required": [
@@ -13103,6 +13173,10 @@
                 "null"
               ]
             },
+            "quiet": {
+              "description": "Fork: stored quietly (asked for, or the target's tab is in\ndo-not-disturb): it is not typed in; `outcome` is `queued`.",
+              "type": "boolean"
+            },
             "reason": {
               "description": "Why a queued message was not typed in now (working, blocked, its\nuser typing, earlier messages waiting, ...).",
               "type": [
@@ -15049,6 +15123,10 @@
             "cwd": {
               "description": "The pane's working directory.",
               "type": "string"
+            },
+            "dnd": {
+              "description": "Fork: the tab was in do-not-disturb (`tab.set_dnd`); absent when\nnot. Reopening restores it.",
+              "type": "boolean"
             },
             "id": {
               "description": "Stable id of the record: the close time and the session id.",
@@ -19733,6 +19811,37 @@
               "type": "object"
             },
             {
+              "description": "Fork: `agents.take_quiet`. `context` is the text the Claude hook adds\nto the agent's context (absent when nothing was stored); `taken`\nmessages left the store (all marked delivered), `shown` of them are\nin `context` in full (the rest are named by one overflow line).",
+              "properties": {
+                "context": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "shown": {
+                  "default": 0,
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "taken": {
+                  "default": 0,
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "agents_take_quiet",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "agent": {
                   "$ref": "#/schemas/success_response/$defs/AgentInfo"
@@ -20819,6 +20928,10 @@
                 }
               ],
               "description": "The tab's color tag; absent when the tab has none."
+            },
+            "dnd": {
+              "description": "Fork: do-not-disturb (`tab.set_dnd`): agent messages to its agents\nare stored quietly. Absent when not.",
+              "type": "boolean"
             },
             "focused": {
               "type": "boolean"

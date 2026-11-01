@@ -45,6 +45,8 @@ mod notification_policy;
 mod notifications;
 mod overlay_input;
 mod preferences;
+/// Fork: quiet messages and do-not-disturb tabs (`endpoint.quiet.v1`).
+mod quiet;
 mod render;
 mod scroll;
 mod settings;

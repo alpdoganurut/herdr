@@ -2276,6 +2276,13 @@ impl App {
                 "text is required",
             ));
         }
+        // Fork: a quiet message never interrupts.
+        if params.quiet && params.urgent {
+            return Err(ModelError::new(
+                error_code::INVALID_PARAMS,
+                "quiet and urgent exclude each other",
+            ));
+        }
         let text: String = crate::agents_model::envelope::message_text(&params.text)
             .chars()
             .take(MESSAGE_MAX_CHARS)
@@ -2338,6 +2345,30 @@ impl App {
         self.model_authorize(&caller, relation, Action::Message, &facts, &line)?;
         let for_user = matches!(caller.actor, Actor::Coordinator) && facts.user_turn;
         let now = now_unix();
+        // Fork: a tab in do-not-disturb (src/app/tab_dnd.rs) takes messages
+        // quietly and refuses urgent ones; the coordinator does not break
+        // through.
+        let dnd = self.pane_in_dnd(target.ws_idx, pane);
+        if params.urgent && dnd {
+            let hint = format!(
+                "{to_name} is in do not disturb: urgent messages are refused; send it without urgent and it is stored for them"
+            );
+            let mut denied = line.clone();
+            denied.code = Some(crate::app::quiet_messages::DND_CODE.to_string());
+            denied.detail = Some(hint.clone());
+            self.log_message(
+                &caller,
+                &to_public,
+                &to_name,
+                &text,
+                None,
+                reply_to,
+                crate::app::quiet_messages::DND_CODE,
+                None,
+            );
+            self.log_model_action(Some(&caller), AgentsActionOutcome::Denied, denied);
+            return Err(ModelError::new(crate::app::quiet_messages::DND_CODE, hint));
+        }
         // Fork: an urgent message may interrupt the target's turn: only the
         // user's own turn or the coordinator, one per pair per 5 minutes.
         if params.urgent {
@@ -2444,6 +2475,27 @@ impl App {
             crate::coordinator::messages::OUTCOME_QUEUED,
             log_team.clone(),
         );
+        // Fork: stored quietly, never typed in (src/app/quiet_messages.rs).
+        if params.quiet || dnd {
+            return self.send_quiet_message(
+                &caller,
+                &queue_target,
+                QuietSend {
+                    id,
+                    line,
+                    dnd,
+                    to_public,
+                    to_name,
+                    to_terminal,
+                    status,
+                    team: target_team,
+                    cross_team: !teammate,
+                    reply_to: reply_to.map(str::to_string),
+                    text,
+                    now,
+                },
+            );
+        }
         let (delivered, interrupted) = if params.urgent {
             match self.deliver_urgent_message(
                 &format!("agents-model:{id}"),
@@ -2547,6 +2599,70 @@ impl App {
             cross_team: !teammate,
             reason,
             queue_age_s,
+            quiet: false,
+        })
+    }
+
+    /// Fork: the quiet end of [`Self::agents_send_message`]: `quiet=true`
+    /// to a Claude agent (refused `quiet_unsupported` for others), or any
+    /// message to a tab in do-not-disturb, is stored for the target
+    /// (src/app/quiet_messages.rs) and answered `queued` with `quiet`.
+    fn send_quiet_message(
+        &mut self,
+        caller: &ModelCaller,
+        queue_target: &super::terminal_targets::TerminalTarget,
+        send: QuietSend,
+    ) -> ModelResult<AgentsMessageResult> {
+        use crate::app::quiet_messages::{DND_REASON, QUIET_REASON, QUIET_UNSUPPORTED_CODE};
+        let refuse = |app: &mut Self, code: &str, message: String| {
+            app.log_message(
+                caller,
+                &send.to_public,
+                &send.to_name,
+                &send.text,
+                Some(&send.id),
+                send.reply_to.as_deref(),
+                code,
+                None,
+            );
+            Err(ModelError::new(code, message))
+        };
+        if !send.dnd && !self.takes_quiet_messages(queue_target) {
+            return refuse(
+                self,
+                QUIET_UNSUPPORTED_CODE,
+                format!(
+                    "{} does not take quiet messages (Claude agents only for now); send it without quiet",
+                    send.to_name
+                ),
+            );
+        }
+        if let Err((code, message)) =
+            self.store_quiet_message(queue_target, send.line.clone(), send.dnd, send.now)
+        {
+            return refuse(self, &code, message);
+        }
+        self.agents_model
+            .limiter
+            .record_message(&caller.terminal_id, &send.to_terminal, send.now);
+        self.reply_index().insert(
+            send.id.clone(),
+            caller.public.clone(),
+            send.to_public.clone(),
+            send.now,
+            send.now,
+        );
+        Ok(AgentsMessageResult {
+            id: send.id,
+            outcome: AgentsMessageOutcome::Queued,
+            to_pane: send.to_public,
+            to_name: send.to_name,
+            status: send.status,
+            team: send.team,
+            cross_team: send.cross_team,
+            reason: Some(if send.dnd { DND_REASON } else { QUIET_REASON }.to_string()),
+            queue_age_s: None,
+            quiet: true,
         })
     }
 
@@ -3194,6 +3310,22 @@ fn created_ids(result: &ResponseResult) -> ModelResult<(String, String, String)>
             "unexpected create reply",
         )),
     }
+}
+
+/// Fork: one quiet message's parts for [`App::send_quiet_message`].
+struct QuietSend {
+    id: String,
+    line: crate::coordinator::messages::AgentMessage,
+    dnd: bool,
+    to_public: String,
+    to_name: String,
+    to_terminal: crate::terminal::TerminalId,
+    status: Option<crate::api::schema::AgentStatus>,
+    team: Option<String>,
+    cross_team: bool,
+    reply_to: Option<String>,
+    text: String,
+    now: u64,
 }
 
 #[cfg(test)]
@@ -4170,6 +4302,7 @@ pub(crate) mod tests {
                 text: "hi".into(),
                 reply_to: None,
                 urgent: false,
+                quiet: false,
             }),
         );
         assert_eq!(code(&result), "not_an_agent", "{result}");
@@ -4181,6 +4314,7 @@ pub(crate) mod tests {
                 text: "hi".into(),
                 reply_to: None,
                 urgent: false,
+                quiet: false,
             }),
         );
         assert_eq!(code(&result), "invalid_target", "{result}");
@@ -4199,6 +4333,7 @@ pub(crate) mod tests {
                 text: "hi".into(),
                 reply_to: None,
                 urgent: false,
+                quiet: false,
             }),
         );
         let message = &result["result"]["message"];
@@ -4258,6 +4393,7 @@ pub(crate) mod tests {
                     text: text.into(),
                     reply_to: None,
                     urgent: true,
+                    quiet: false,
                 }),
             )
         };
@@ -4336,6 +4472,7 @@ pub(crate) mod tests {
                 text: "run the tests".into(),
                 reply_to: None,
                 urgent: false,
+                quiet: false,
             }),
         );
         assert_eq!(result["result"]["message"]["outcome"], "queued", "{result}");
@@ -4364,6 +4501,7 @@ pub(crate) mod tests {
                     text: "done: see notes".into(),
                     reply_to: None,
                     urgent: false,
+                    quiet: false,
                 }),
             )
         };

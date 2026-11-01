@@ -52,6 +52,11 @@ pub struct Tab {
     /// notifications for the tab are silenced. Persisted, carried by
     /// whole-tab moves and close/reopen.
     pub muted: bool,
+    /// Fork: do-not-disturb (`tab.set_dnd`): agent messages to its agents
+    /// are stored quietly (src/app/quiet_messages.rs), urgent ones refused,
+    /// herdr's wake-ups held. Persisted, carried by whole-tab moves and
+    /// close/reopen.
+    pub dnd: bool,
     pub number: usize,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
@@ -201,6 +206,7 @@ impl Tab {
                 remind_every: None,
                 pinned: false,
                 muted: false,
+                dnd: false,
                 number,
                 root_pane: root_id,
                 layout,
@@ -469,6 +475,7 @@ impl Tab {
             remind_every: None,
             pinned: false,
             muted: false,
+            dnd: false,
             number,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),

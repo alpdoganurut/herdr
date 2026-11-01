@@ -147,6 +147,8 @@ operations::define_operations! {
     TabSetPinned(TabSetPinnedParams) => "tab.set_pinned", true, true;
     /// Fork: mute or unmute a tab's notifications.
     TabSetMuted(TabSetMutedParams) => "tab.set_muted", true, true;
+    /// Fork: turn a tab's do-not-disturb on or off.
+    TabSetDnd(TabSetDndParams) => "tab.set_dnd", true, true;
     PaneReportSubagent(PaneReportSubagentParams) => "pane.report_subagent", true, false;
     SessionClosedList(EmptyParams) => "session.closed_list", false, true;
     SessionClosedReopen(ClosedSessionTarget) => "session.closed_reopen", true, true;
@@ -225,6 +227,8 @@ operations::define_operations! {
     /// Fork: a wait of the caller started or finished (the herdr_agents
     /// MCP), for its turn origin.
     AgentsReportWait(agents_model::AgentsReportWaitParams) => "agents.report_wait", false, false;
+    /// Fork: take the caller's quiet messages (its Claude hook).
+    AgentsTakeQuiet(agents_model::AgentsTakeQuietParams) => "agents.take_quiet", false, false;
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;

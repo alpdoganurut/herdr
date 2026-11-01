@@ -1050,7 +1050,11 @@ fn queue_messages(
         if coordinator == Some(message.to_pane.as_str()) {
             // Typed into the coordinator: it has seen that one already. A
             // queued one is typed in once it is free, which starts its turn.
-            if message.outcome == messages::OUTCOME_QUEUED {
+            // Fork: a quiet one (its tab in do-not-disturb) reaches its
+            // context at its next prompt and wakes nothing.
+            if message.outcome == messages::OUTCOME_QUEUED
+                || message.outcome == messages::OUTCOME_QUIET
+            {
                 continue;
             }
             if message.outcome == messages::OUTCOME_LOGGED {
@@ -2414,6 +2418,37 @@ mod tests {
                 .iter()
                 .any(|ev| matches!(ev, Ev::Messages { .. })),
             "typed in once the coordinator is free: {:?}",
+            state.pending
+        );
+        assert!(state.refusal_queued.is_empty());
+    }
+
+    /// Fork: a quiet message to the coordinator (its tab in do-not-disturb)
+    /// is no refusal: it wakes nothing.
+    #[test]
+    fn a_quiet_message_to_the_coordinator_wakes_nothing() {
+        let cfg = cfg();
+        let mut state = WatchState::default();
+        let data = live(vec![coord("idle"), agent("w2:p1", "a", "idle")]);
+        quiet(&mut state, &data, &cfg, 0);
+        let stored = message("w2:p1", "w1:p1", messages::OUTCOME_QUIET);
+        let taken = AgentMessage::update(&stored, messages::OUTCOME_DELIVERED, 12);
+        tick(
+            &mut state,
+            &data,
+            &[stored, taken],
+            &[],
+            None,
+            false,
+            &cfg,
+            10,
+        );
+        assert!(
+            !state
+                .pending
+                .iter()
+                .any(|ev| matches!(ev, Ev::Messages { .. })),
+            "{:?}",
             state.pending
         );
         assert!(state.refusal_queued.is_empty());

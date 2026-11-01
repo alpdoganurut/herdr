@@ -54,6 +54,8 @@ impl ClientContextMenuOverlay {
                 pin_supported,
                 muted,
                 mute_supported,
+                dnd,
+                dnd_supported,
                 ..
             } => {
                 let mut items = vec![
@@ -130,6 +132,18 @@ impl ClientContextMenuOverlay {
                             "Mute notifications"
                         },
                         Action::Mute,
+                    ));
+                }
+                // Fork: do-not-disturb on or off, when the server has
+                // `tab.set_dnd`.
+                if *dnd_supported {
+                    items.push(item(
+                        if *dnd {
+                            "End do not disturb"
+                        } else {
+                            "Do not disturb"
+                        },
+                        Action::Dnd,
                     ));
                 }
                 items.push(item("remind", Action::RemindTop));
@@ -319,6 +333,14 @@ impl ClientShellState {
                 muted: true,
             }),
         );
+        // Fork: the Do not disturb item's state and whether it shows.
+        let dnd = self.active_tab_dnd(&tab_id);
+        let dnd_supported = self.supports_endpoint_method(&crate::api::schema::Method::TabSetDnd(
+            crate::api::schema::TabSetDndParams {
+                tab_id: String::new(),
+                dnd: true,
+            },
+        ));
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
@@ -333,6 +355,8 @@ impl ClientShellState {
                 pin_supported,
                 muted,
                 mute_supported,
+                dnd,
+                dnd_supported,
             },
             x,
             y,
@@ -447,6 +471,20 @@ impl ClientShellState {
                             muted: !*muted,
                         },
                     ),
+                    outcome,
+                );
+                outcome.repaint = true;
+                return;
+            }
+            // Fork: Do not disturb / End do not disturb, without focusing
+            // the tab. The mark follows when the `endpoint.quiet.v1` push
+            // arrives.
+            (ClientContextMenuAction::Dnd, ClientContextMenuTarget::Tab { tab_id, dnd, .. }) => {
+                self.push_endpoint_method(
+                    crate::api::schema::Method::TabSetDnd(crate::api::schema::TabSetDndParams {
+                        tab_id: tab_id.clone(),
+                        dnd: !*dnd,
+                    }),
                     outcome,
                 );
                 outcome.repaint = true;

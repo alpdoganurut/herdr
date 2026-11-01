@@ -328,6 +328,18 @@ pub enum ResponseResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<String>,
     },
+    /// Fork: `agents.take_quiet`. `context` is the text the Claude hook adds
+    /// to the agent's context (absent when nothing was stored); `taken`
+    /// messages left the store (all marked delivered), `shown` of them are
+    /// in `context` in full (the rest are named by one overflow line).
+    AgentsTakeQuiet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+        #[serde(default)]
+        taken: u32,
+        #[serde(default)]
+        shown: u32,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

@@ -917,6 +917,7 @@ fn render_sidebar(
         tab_pins: None,
         tab_mutes: None,
         sidebar_filter: None,
+        quiet: None,
     };
     let rect = render_tab_sidebar_with(
         &mut buffer,

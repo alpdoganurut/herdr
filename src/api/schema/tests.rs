@@ -241,6 +241,66 @@ fn tab_set_muted_request_round_trips_and_needs_both_params() {
 }
 
 #[test]
+fn tab_set_dnd_request_round_trips_and_needs_both_params() {
+    let set = Request {
+        id: "dnd".into(),
+        method: Method::TabSetDnd(TabSetDndParams {
+            tab_id: "w1:t2".into(),
+            dnd: true,
+        }),
+    };
+    let json = serde_json::to_value(&set).unwrap();
+    assert_eq!(json["method"], "tab.set_dnd");
+    assert_eq!(json["params"]["dnd"], true);
+    assert_eq!(serde_json::from_value::<Request>(json).unwrap(), set);
+    for params in [r#"{"tab_id":"t"}"#, r#"{"dnd":true}"#] {
+        let request = format!(r#"{{"id":"r","method":"tab.set_dnd","params":{params}}}"#);
+        assert!(
+            serde_json::from_str::<Request>(&request).is_err(),
+            "{request}"
+        );
+    }
+}
+
+#[test]
+fn agents_take_quiet_and_send_message_quiet_round_trip() {
+    let take = Request {
+        id: "q".into(),
+        method: Method::AgentsTakeQuiet(crate::api::schema::agents_model::AgentsTakeQuietParams {
+            caller_pane: "w1:p2".into(),
+        }),
+    };
+    let json = serde_json::to_value(&take).unwrap();
+    assert_eq!(json["method"], "agents.take_quiet");
+    assert_eq!(serde_json::from_value::<Request>(json).unwrap(), take);
+    // `quiet` is optional and absent when false (an older sender's request
+    // still parses).
+    let plain: Request = serde_json::from_str(
+        r#"{"id":"r","method":"agents.send_message","params":{"caller_pane":"w1:p1","to":"x","text":"t"}}"#,
+    )
+    .unwrap();
+    let Method::AgentsSendMessage(params) = &plain.method else {
+        panic!("send_message");
+    };
+    assert!(!params.quiet);
+    assert!(serde_json::to_value(&plain).unwrap()["params"]
+        .get("quiet")
+        .is_none());
+    let reply: ResponseResult = serde_json::from_str(
+        r#"{"type":"agents_take_quiet","context":"[herdr+ quiet]","taken":2,"shown":1}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        reply,
+        ResponseResult::AgentsTakeQuiet {
+            taken: 2,
+            shown: 1,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn tab_set_reminder_request_and_tab_reminder_fields_round_trip() {
     let set = Request {
         id: "reminder".into(),
@@ -1237,6 +1297,7 @@ fn worktree_request_and_response_round_trip() {
                 remind_every: None,
                 pinned: false,
                 muted: false,
+                dnd: false,
             },
             root_pane: PaneInfo {
                 pane_id: "w_1-1".into(),
@@ -1671,6 +1732,7 @@ fn create_response_round_trips_with_root_pane() {
                 remind_every: None,
                 pinned: false,
                 muted: false,
+                dnd: false,
             },
             root_pane: PaneInfo {
                 pane_id: "w_1-3".into(),

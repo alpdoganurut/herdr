@@ -55,6 +55,10 @@ pub(crate) struct TabFacts {
     /// Fork: notifications muted (`tab.set_muted`, the
     /// `endpoint.tab-mutes.v1` push).
     pub(crate) muted: bool,
+    /// Fork: do-not-disturb (`tab.set_dnd`, the `endpoint.quiet.v1` push).
+    pub(crate) dnd: bool,
+    /// Fork: quiet messages waiting for the tab's agents (the same push).
+    pub(crate) quiet: u32,
     /// Fork: the fullest context use over the tab's agents (the
     /// `endpoint.agent-context.v1` push); `None` while none is known or
     /// `ui.sidebar_context_usage` is off.
@@ -85,6 +89,8 @@ impl Default for TabFacts {
             parked: false,
             pin: false,
             muted: false,
+            dnd: false,
+            quiet: 0,
             context: None,
             handoff_unix: None,
             filter_match: true,
@@ -187,6 +193,8 @@ pub(crate) struct ModelInputs<'a> {
     pub(crate) pins: Option<&'a super::tab_pins::ClientTabPinsState>,
     /// Fork: the muted tabs (the row's gutter mark).
     pub(crate) mutes: Option<&'a super::tab_mutes::ClientTabMutesState>,
+    /// Fork: do-not-disturb tabs and pending counts (`quiet.rs`).
+    pub(crate) quiet: Option<&'a super::quiet::ClientQuietState>,
     /// The News and coordinator tab ids (fixed rows, never list rows).
     pub(crate) fixed_ids: (Option<&'a str>, Option<&'a str>),
     pub(crate) sections: Sections,
@@ -216,6 +224,7 @@ impl<'a> ModelInputs<'a> {
             times: None,
             pins: None,
             mutes: None,
+            quiet: None,
             fixed_ids: (None, None),
             sections: Sections::default(),
             expanded_runs: None,
@@ -431,6 +440,7 @@ impl SidebarModel {
             times,
             pins,
             mutes,
+            quiet,
             fixed_ids,
             sections,
             expanded_runs,
@@ -457,10 +467,14 @@ impl SidebarModel {
         let pins = pins.filter(|pins| !pins.tab_ids.is_empty());
         // Fork: likewise no mute lookups while nothing is muted.
         let mutes = mutes.filter(|mutes| !mutes.tab_ids.is_empty());
+        // Fork: and no quiet lookups while the push lists nothing.
+        let quiet = quiet.filter(|quiet| !quiet.is_empty());
         self.tabs.extend(snapshot.tabs.iter().map(|tab| TabFacts {
             fixed: is_fixed(&tab.tab_id),
             pin: pins.is_some_and(|pins| pins.is_pinned(&tab.tab_id)),
             muted: mutes.is_some_and(|mutes| mutes.is_muted(&tab.tab_id)),
+            dnd: quiet.is_some_and(|quiet| quiet.is_dnd(&tab.tab_id)),
+            quiet: quiet.map_or(0, |quiet| quiet.pending(&tab.tab_id)),
             ..TabFacts::default()
         }));
         let index: HashMap<&str, u32> = snapshot

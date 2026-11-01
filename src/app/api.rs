@@ -894,6 +894,8 @@ impl App {
         self.note_tab_pins_event(&event.event);
         // Fork: muted tabs follow moves and closes (O(1)).
         self.note_tab_mutes_event(&event.event);
+        // Fork: quiet messages and do-not-disturb tabs, likewise (O(1)).
+        self.note_quiet_event(&event.event);
         // Fork (sidebar v2): agent state times follow moves and closes (O(1)).
         self.note_agent_times_event(&event.event);
         // Fork: agents' context use follows moves and closes (O(1)).
@@ -1322,6 +1324,7 @@ impl App {
             }
             Method::TabSetPinned(params) => return self.handle_tab_set_pinned(request.id, params),
             Method::TabSetMuted(params) => return self.handle_tab_set_muted(request.id, params),
+            Method::TabSetDnd(params) => return self.handle_tab_set_dnd(request.id, params),
             Method::PaneReportSubagent(params) => {
                 return self.handle_pane_report_subagent(request.id, params)
             }
@@ -1476,6 +1479,9 @@ impl App {
             }
             Method::AgentsReportWait(params) => {
                 return self.handle_agents_report_wait(request.id, params)
+            }
+            Method::AgentsTakeQuiet(params) => {
+                return self.handle_agents_take_quiet(request.id, params)
             }
             Method::AgentPrompt(_) => {
                 return responses::encode_error(

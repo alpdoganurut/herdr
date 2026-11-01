@@ -32,6 +32,8 @@ pub(crate) mod message_queue;
 pub(crate) mod missing_cwd;
 pub(crate) mod news;
 mod notes;
+/// Fork: quiet messages, stored instead of typed in (`agents.take_quiet`).
+pub(crate) mod quiet_messages;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
 #[cfg(test)]
@@ -56,6 +58,8 @@ pub mod state;
 mod subagents;
 mod tab_bar_status;
 mod tab_color;
+/// Fork: `tab.set_dnd` (a tab's do-not-disturb).
+pub(crate) mod tab_dnd;
 /// Fork: `tab.set_muted` (a tab's notification mute).
 mod tab_mute;
 /// Fork (sidebar v3): `tab.set_pinned` (the tabs sidebar's Pinned section).
@@ -210,6 +214,8 @@ pub struct App {
     pub(crate) agent_notices: agent_notices::AgentNotices,
     /// Agent messages (fork): the server-side delivery queue.
     pub(crate) message_queue: message_queue::MessageQueue,
+    /// Quiet messages (fork): stored for their target, not typed in.
+    pub(crate) quiet: quiet_messages::QuietStore,
     /// `[agents]` as last applied (fork; the Agents settings section).
     pub(crate) agents_config: crate::config::AgentsConfig,
     /// Where `agents.settings` / `agents.fix` look and write; `None` = the
@@ -786,6 +792,10 @@ impl App {
                 policy.persist_session,
                 crate::coordinator::coordinator_dir(),
             ),
+            quiet: quiet_messages::QuietStore::new(
+                policy.persist_session,
+                crate::coordinator::coordinator_dir(),
+            ),
             agents_config: config.agents.clone(),
             agents_setup_env: None,
             team_tombstones: team::TeamTombstones::default(),
@@ -841,6 +851,8 @@ impl App {
         app.note_recreated_cwds();
         // Fork: queued messages follow sessions restore advanced.
         app.follow_restored_sessions();
+        // Fork: quiet messages and do-not-disturb tabs reach clients.
+        app.note_restored_quiet();
         app.refresh_restored_workspace_git_metadata();
         Ok(app)
     }
@@ -898,6 +910,8 @@ impl App {
         app.terminal_runtimes = runtimes.into();
         // Fork: saved recreated-directory notices wait again (src/app/missing_cwd.rs).
         app.rearm_missing_cwd_notices(Instant::now(), crate::coordinator::now_unix());
+        // Fork: handed-off quiet messages and do-not-disturb tabs reach clients.
+        app.note_restored_quiet();
         app.state.active = snapshot
             .active
             .filter(|&idx| idx < app.state.workspaces.len());

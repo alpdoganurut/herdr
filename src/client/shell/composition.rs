@@ -90,6 +90,11 @@ impl ClientShellState {
                     &self.active_endpoint_id,
                     Some(snapshot),
                 ),
+                quiet: super::quiet::active_quiet_of(
+                    &self.quiet,
+                    &self.active_endpoint_id,
+                    Some(snapshot),
+                ),
                 fixed_ids: (
                     news_row.and_then(|row| row.tab_id.as_deref()),
                     coordinator_row.and_then(|row| row.tab_id.as_deref()),
@@ -211,6 +216,11 @@ impl ClientShellState {
                 self.snapshot.as_deref(),
             ),
             sidebar_filter: Some(&self.sidebar_filter),
+            quiet: super::quiet::active_quiet_of(
+                &self.quiet,
+                &self.active_endpoint_id,
+                self.snapshot.as_deref(),
+            ),
         };
         if let Some(snapshot) = local_snapshot {
             if layout.mobile_header.height > 0 {
@@ -437,6 +447,11 @@ impl ClientShellState {
                     Some(snapshot),
                 ),
                 sidebar_filter: Some(&self.sidebar_filter),
+                quiet: super::quiet::active_quiet_of(
+                    &self.quiet,
+                    &self.active_endpoint_id,
+                    Some(snapshot),
+                ),
             },
         );
         // Fork: the info dock, into the chrome buffer; the pane surface blit
