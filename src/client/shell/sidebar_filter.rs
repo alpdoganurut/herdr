@@ -10,8 +10,8 @@
 //! all.
 //!
 //! - **Search** (`keys.sidebar_search`, default `prefix+f`, or a click on
-//!   the field): while the field has the keyboard every key goes to it, never
-//!   to the pane. The query's whitespace-separated terms must all match,
+//!   the field): while the field has the keyboard keys go to it, never to
+//!   the pane (direct bindings and the prefix still fire first). The query's whitespace-separated terms must all match,
 //!   case-insensitively, somewhere in the tab's label, its group's name or its
 //!   agent kind. Esc clears the query and lets go; Enter focuses the first
 //!   matching tab and lets go (the query stays).
@@ -49,6 +49,8 @@ use super::*;
 /// The most search terms that take part (one bit each in a match mask);
 /// later terms are ignored.
 pub(crate) const MAX_TERMS: usize = 64;
+/// The longest query, in characters; more typed or pasted text is dropped.
+pub(crate) const MAX_QUERY_CHARS: usize = 256;
 /// Cells of the recency chip (`◷15m`), right-aligned before `+`.
 const CHIP_CELLS: u16 = 4;
 /// The field's fewest cells; a narrower toolbar draws no controls.
@@ -165,8 +167,12 @@ impl SidebarFilter {
     /// Append typed or pasted text (control characters, newlines included,
     /// become spaces).
     pub(crate) fn push_text(&mut self, text: &str) {
-        self.query
-            .extend(text.chars().map(|c| if c.is_control() { ' ' } else { c }));
+        let room = MAX_QUERY_CHARS.saturating_sub(self.query.chars().count());
+        self.query.extend(
+            text.chars()
+                .take(room)
+                .map(|c| if c.is_control() { ' ' } else { c }),
+        );
         self.retokenize();
     }
 
@@ -183,8 +189,10 @@ impl SidebarFilter {
     pub(crate) fn pop_word(&mut self) {
         let kept = self.query.trim_end().len();
         let start = self.query[..kept]
-            .rfind(char::is_whitespace)
-            .map_or(0, |index| index + 1);
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map_or(0, |(index, c)| index + c.len_utf8());
         self.query.truncate(start);
         self.retokenize();
     }
@@ -423,6 +431,15 @@ impl ClientShellState {
         self.sidebar_filter.focused && self.sidebar_filter_shown()
     }
 
+    /// The field lets go of the keyboard once its sidebar is gone (collapsed,
+    /// another layout, several machines, no snapshot), so it never resumes
+    /// focus on its own. Called at the top of compose and of key routing.
+    pub(super) fn blur_hidden_sidebar_search(&mut self) {
+        if self.sidebar_filter.focused && !self.sidebar_filter_shown() {
+            self.sidebar_filter.focused = false;
+        }
+    }
+
     /// The expanded `tabs` sidebar (one machine) is up, so its toolbar is.
     fn sidebar_filter_shown(&self) -> bool {
         self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
@@ -573,6 +590,8 @@ impl ClientShellState {
         if super::contains(self.hits.sidebar_recency, point) {
             let back = modifiers.contains(crossterm::event::KeyModifiers::SHIFT);
             self.step_sidebar_recency(!back, outcome);
+            // The pointer is still on the toolbar: keep its controls shown.
+            self.sidebar_hover = Some(super::sidebar_model::SidebarHover::Toolbar);
             return true;
         }
         if super::contains(self.hits.sidebar_search, point) {
@@ -672,6 +691,30 @@ mod tests {
         let many: Vec<String> = (0..70).map(|index| index.to_string()).collect();
         assert_eq!(full_mask(&many), u64::MAX);
         assert_eq!(full_mask(&[]), 0);
+    }
+
+    #[test]
+    fn pop_word_splits_on_unicode_whitespace() {
+        for space in ['\u{a0}', '\u{3000}'] {
+            let mut filter = SidebarFilter::default();
+            filter.set_query(&format!("foo{space}bar"));
+            filter.pop_word();
+            assert_eq!(filter.query(), format!("foo{space}"));
+            filter.pop_word();
+            assert_eq!(filter.query(), "");
+        }
+    }
+
+    #[test]
+    fn the_query_is_capped_on_a_char_boundary() {
+        let mut filter = SidebarFilter::default();
+        filter.push_text(&"é".repeat(300));
+        assert_eq!(filter.query().chars().count(), MAX_QUERY_CHARS);
+        filter.push_text("x");
+        assert_eq!(filter.query().chars().count(), MAX_QUERY_CHARS);
+        assert!(filter.pop_char());
+        filter.push_text("xy");
+        assert!(filter.query().ends_with('x'));
     }
 
     #[test]

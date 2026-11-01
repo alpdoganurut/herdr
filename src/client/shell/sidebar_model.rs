@@ -735,10 +735,15 @@ impl SidebarModel {
                         agent.agent_status,
                         AgentStatus::Working | AgentStatus::Blocked
                     ) || agent.subagents > 0;
-                    if let Some(at) = times
-                        .and_then(|times| times.since_of(&agent.pane_id, agent.state_change_seq))
-                    {
-                        activity.newest = Some(activity.newest.map_or(at, |newest| newest.max(at)));
+                    match times.and_then(|times| times.panes.get(&agent.pane_id)) {
+                        Some(&(seq, at)) if seq == agent.state_change_seq => {
+                            activity.newest =
+                                Some(activity.newest.map_or(at, |newest| newest.max(at)));
+                        }
+                        // The snapshot moved past the last push: the state
+                        // just changed, so the tab is recent.
+                        Some(_) => activity.live = true,
+                        None => {}
                     }
                 }
             }

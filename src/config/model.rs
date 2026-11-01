@@ -726,6 +726,7 @@ pub(crate) struct KeysConfigOverlay {
     tab_history_back: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tab_history_forward: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sidebar_search: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     copy_mode: Option<BindingConfig>,

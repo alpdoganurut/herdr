@@ -1048,6 +1048,10 @@ impl ClientShellState {
             }
             true
         };
+        if opened && focused {
+            // Fork (sidebar filters): one keyboard owner at a time.
+            self.sidebar_filter.focused = false;
+        }
         if !focused {
             outcome.repaint = true;
             return;

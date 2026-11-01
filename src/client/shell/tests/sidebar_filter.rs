@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use super::super::agent_times::ClientAgentTimesState;
 use super::super::sidebar_filter::{Recency, SidebarFilter};
-use super::super::sidebar_model::{ModelInputs, Row, SidebarModel};
+use super::super::sidebar_model::{ModelInputs, Row, SidebarHover, SidebarModel};
 use super::*;
 use crate::config::{Config, SidebarLayoutConfig};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
@@ -639,6 +639,73 @@ fn compose_does_not_rebuild_the_model_while_a_filter_is_set() {
         state.compose(106, 30).expect("composed frame");
     }
     assert_eq!(state.sidebar_model.builds, builds);
+}
+
+#[test]
+fn an_agent_time_behind_the_snapshot_counts_as_recent() {
+    let mut snapshot = fixture();
+    let now = Instant::now();
+    // reviewer's push is two hours old but for an older state: it just changed.
+    let mut times = times(now, &[None, Some(120), Some(120)]);
+    times
+        .panes
+        .insert("pane_2".into(), (0, now - Duration::from_secs(7200)));
+    snapshot.agents[2].state_change_seq = 1;
+    let mut filter = SidebarFilter::default();
+    filter.recency = Recency::M15;
+    let model = build(&snapshot, &filter, Some(&times), now);
+    assert_eq!(rows(&snapshot, &model), ["T:tab_1", "T:tab_2", "F:6"]);
+}
+
+#[test]
+fn a_literal_prefix_never_reaches_the_pane_while_the_field_is_focused() {
+    let mut state = filter_state();
+    state.handle_input_bytes(b"\x02f");
+    assert!(state.sidebar_search_focused());
+    let outcome = state.handle_input_bytes(b"\x02\x02");
+    assert_eq!(pane_inputs(&outcome), 0);
+    assert!(state.sidebar_search_focused());
+    state.handle_input_bytes(b"\x02f");
+    assert!(!state.sidebar_search_focused(), "prefix+f still toggles");
+}
+
+#[test]
+fn a_hidden_sidebar_lets_go_of_the_field_for_good() {
+    let mut state = filter_state();
+    state.handle_input_bytes(b"\x02f");
+    state.sidebar_collapsed = true;
+    state.compose(106, 30).expect("composed frame");
+    state.sidebar_collapsed = false;
+    state.compose(106, 30).expect("composed frame");
+    assert!(!state.sidebar_search_focused(), "no focus comes back");
+    assert!(pane_inputs(&state.handle_input_bytes(b"a")) > 0);
+}
+
+#[test]
+fn opening_the_info_pane_takes_the_keyboard_from_the_field() {
+    let mut state = filter_state();
+    state.handle_input_bytes(b"\x02f");
+    let mut outcome = ClientShellInput::default();
+    state.toggle_info_pane("tab_1".into(), &mut outcome);
+    assert!(!state.sidebar_filter.focused);
+}
+
+#[test]
+fn fold_all_waits_while_a_filter_is_set_and_the_chip_keeps_its_hover() {
+    let mut state = filter_state();
+    let chip = state.hits.sidebar_recency;
+    click(&mut state, chip);
+    assert_eq!(state.sidebar_hover, Some(SidebarHover::Toolbar));
+    let before = state.collapsed_groups.clone();
+    let mut outcome = ClientShellInput::default();
+    state.toggle_all_groups_folded(&mut outcome);
+    assert_eq!(state.collapsed_groups, before);
+    state.sidebar_filter.clear();
+    state.toggle_all_groups_folded(&mut outcome);
+    assert_ne!(
+        state.collapsed_groups, before,
+        "folds again once unfiltered"
+    );
 }
 
 mod fork_smoke {

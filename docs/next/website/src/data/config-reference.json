@@ -809,7 +809,7 @@
           "key": "keys.sidebar_search",
           "type": "keybinding",
           "default": "\"prefix+f\"",
-          "description": "In the tabs sidebar layout, focus the search field in the sidebar toolbar, or let go of it (a click on the empty toolbar does the same). While it has focus every key goes to it, not to the pane: the list keeps the tabs whose label, group name or agent kind contains every space-separated term, case-insensitively, with their group headers. Esc clears the search and lets go; Enter focuses the first match. The toolbar's recency chip next to it hides tabs without activity in the last 15m, 30m, 1h, 6h or 1d. Filters are not saved; the focused tab, the fixed rows and the Active, Pinned and Scheduled blocks are never filtered, and a ~ N filtered row at the end of the list clears every filter."
+          "description": "In the tabs sidebar layout, focus the search field in the sidebar toolbar, or let go of it; a click on the empty toolbar also focuses it. While it has focus, keys go to the field, not the pane (direct bindings and the prefix still fire first): the list keeps the tabs whose label, group name or agent kind contains every space-separated term, case-insensitively, with their group headers. Esc clears the search and lets go; Enter focuses the first match. The toolbar's recency chip next to it hides tabs without activity in the last 15m, 30m, 1h, 6h or 1d. Filters are not saved; the focused tab, the fixed rows and the Active, Pinned and Scheduled blocks are never filtered, and a ~ N filtered row at the end of the list clears every filter."
         },
         {
           "key": "keys.copy_mode",

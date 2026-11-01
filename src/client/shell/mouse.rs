@@ -2919,6 +2919,11 @@ impl ClientShellState {
     /// Toolbar / keybinding fold toggle: fold everything foldable, or expand
     /// everything once it is all folded. No-op without foldable groups.
     pub(super) fn toggle_all_groups_folded(&mut self, outcome: &mut ClientShellInput) {
+        // Fork (sidebar filters): groups draw open while filtering, so a
+        // fold-all would change nothing visible: it waits.
+        if self.sidebar_filter.active() {
+            return;
+        }
         let all_folded = self.snapshot.as_deref().and_then(|snapshot| {
             super::tab_sidebar::all_groups_folded(snapshot, &self.collapsed_groups)
         });

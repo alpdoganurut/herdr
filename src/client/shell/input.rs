@@ -679,6 +679,8 @@ impl ClientShellState {
             outcome.repaint = true;
         }
 
+        // Fork (sidebar filters): a hidden sidebar's field lets go.
+        self.blur_hidden_sidebar_search();
         match self.mode {
             ClientShellMode::Terminal => {
                 if let Some(binding) =
@@ -715,6 +717,11 @@ impl ClientShellState {
                 if self.config.keybinds.matches_prefix(key) {
                     self.mode = return_mode;
                     outcome.repaint = true;
+                    // Fork (sidebar filters): a literal prefix never reaches
+                    // the pane while the search field has the keyboard.
+                    if self.sidebar_search_focused() {
+                        return None;
+                    }
                     return self.focused_pane_id().map(ClientInputTarget::Pane);
                 }
                 if key.code == KeyCode::Esc {
