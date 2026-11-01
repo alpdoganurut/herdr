@@ -48,6 +48,8 @@ pub mod method {
     pub const INBOX: &str = "agents.inbox";
     pub const HANDOFF: &str = "agents.handoff";
     pub const REPORT_WAIT: &str = "agents.report_wait";
+    pub const TAKE_QUIET: &str = "agents.take_quiet";
+    pub const ACK_QUIET: &str = "agents.ack_quiet";
 
     /// The methods advertised to client shells (the TUI's "Set role…" and
     /// "Handoff & compact").
@@ -56,7 +58,7 @@ pub mod method {
 
     /// Every method.
     #[cfg(test)]
-    pub const ALL: [&str; 24] = [
+    pub const ALL: [&str; 26] = [
         ACTOR,
         DIRECTORY,
         READ,
@@ -81,6 +83,8 @@ pub mod method {
         INBOX,
         HANDOFF,
         REPORT_WAIT,
+        TAKE_QUIET,
+        ACK_QUIET,
     ];
 }
 
@@ -496,6 +500,11 @@ pub struct AgentsSendMessageParams {
     /// sender→target per 5 minutes. Omitted when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub urgent: bool,
+    /// Fork: store it for the target without typing it in or waking it
+    /// (src/app/quiet_messages.rs); a Claude target gets it in its context
+    /// at its next prompt. Not with `urgent`. Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quiet: bool,
 }
 
 /// `agents.read_messages`: the full text of messages herdr typed into the
@@ -943,6 +952,10 @@ pub struct AgentsMessageResult {
     /// target has waited (seconds; 0 when this one is the first).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_age_s: Option<u64>,
+    /// Fork: stored quietly (asked for, or the target's tab is in
+    /// do-not-disturb): it is not typed in; `outcome` is `queued`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quiet: bool,
 }
 
 /// `agents.queued`: the caller's own messages that still wait in herdr's
@@ -989,6 +1002,26 @@ pub struct AgentsReportWaitParams {
     pub started: bool,
     #[serde(default)]
     pub seq: u64,
+}
+
+/// `agents.take_quiet` (fork, src/app/quiet_messages.rs): take the quiet
+/// messages stored for the caller, oldest first, as the text its Claude hook
+/// adds to its context (UserPromptSubmit, SessionStart). Taking marks them
+/// delivered. Answers `ResponseResult::AgentsTakeQuiet`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsTakeQuietParams {
+    pub caller_pane: String,
+}
+
+/// `agents.ack_quiet` (fork, src/app/quiet_messages.rs): the Claude hook
+/// printed the text `agents.take_quiet` answered; the messages it offered
+/// (`ids`, at most 64) are delivered. Idempotent: ids no longer offered to
+/// the caller are ignored. Answers `ok`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentsAckQuietParams {
+    pub caller_pane: String,
+    #[serde(default)]
+    pub ids: Vec<String>,
 }
 
 /// `agents.handoff` (fork): handoff, then compact, for a Claude agent
@@ -1198,7 +1231,7 @@ pub struct AgentActionEntry {
 
 /// The type names the params structs may reference (digest hygiene).
 #[cfg(test)]
-pub const PARAM_TYPES: [&str; 25] = [
+pub const PARAM_TYPES: [&str; 27] = [
     "AgentsActorParams",
     "AgentsDirectoryParams",
     "AgentsReadParams",
@@ -1224,6 +1257,8 @@ pub const PARAM_TYPES: [&str; 25] = [
     "AgentsInboxParams",
     "AgentsHandoffParams",
     "AgentsReportWaitParams",
+    "AgentsTakeQuietParams",
+    "AgentsAckQuietParams",
 ];
 
 #[cfg(test)]

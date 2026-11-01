@@ -926,6 +926,7 @@ fn agent_prompt(params: AgentPromptParams) -> std::io::Result<i32> {
                         text: params.text.clone(),
                         reply_to: None,
                         urgent: false,
+                        quiet: false,
                     },
                 ),
             )

@@ -367,6 +367,20 @@ fn tab_chips(
     if facts.muted {
         chips.chip(&[("notifications off", fg(palette.overlay1))]);
     }
+    // Fork: do-not-disturb from the tab menu, and the quiet messages waiting.
+    if facts.dnd {
+        let (mark, _) = super::quiet::dnd_mark(config);
+        chips.chip(&[
+            (mark, fg(palette.accent)),
+            (" ", fg(palette.accent)),
+            ("do not disturb", fg(palette.accent)),
+        ]);
+    }
+    if facts.quiet > 0 {
+        let mut count = StackStr::<16>::new();
+        let _ = write!(count, "{} quiet", facts.quiet);
+        chips.chip(&[(count.as_str(), fg(palette.overlay1))]);
+    }
     if let Some(voice) = facts.voice {
         let (mark, color) = super::voice::voice_mark(voice, config);
         let word = if voice == AgentVoiceMode::Muted {

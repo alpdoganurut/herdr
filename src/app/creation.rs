@@ -230,6 +230,7 @@ impl App {
             remind_every: tab.remind_every,
             pinned: tab.pinned,
             muted: tab.muted,
+            dnd: tab.dnd,
         })
     }
 

@@ -87,6 +87,10 @@ pub struct TabInfo {
     /// Fork: notifications muted (`tab.set_muted`). Absent when not.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub muted: bool,
+    /// Fork: do-not-disturb (`tab.set_dnd`): agent messages to its agents
+    /// are stored quietly. Absent when not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dnd: bool,
 }
 
 /// A named color tag on a tab. Clients map each name to a theme color.
@@ -323,4 +327,14 @@ pub struct TabSetPinnedParams {
 pub struct TabSetMutedParams {
     pub tab_id: String,
     pub muted: bool,
+}
+
+/// Fork: turn a tab's do-not-disturb on or off (`tab.set_dnd`). While it is
+/// on, every agent message to the tab's agents is stored quietly instead of
+/// being typed in, urgent messages are refused and herdr's wake-ups are
+/// held; the user typing is unaffected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabSetDndParams {
+    pub tab_id: String,
+    pub dnd: bool,
 }

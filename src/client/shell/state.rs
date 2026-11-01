@@ -805,6 +805,9 @@ pub(super) enum ClientContextMenuAction {
     /// Fork, tab menu of a live Claude agent tab: handoff, then compact
     /// (`agents.handoff`).
     HandoffCompact,
+    /// Fork, tab menu: turn the tab's do-not-disturb on or off
+    /// (`tab.set_dnd`).
+    Dnd,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -878,6 +881,11 @@ pub(super) enum ClientContextMenuTarget {
         /// Fork: the server advertises `tab.set_muted` (the Mute item shows
         /// only then).
         mute_supported: bool,
+        /// Fork: whether the tab was in do-not-disturb when the menu opened.
+        dnd: bool,
+        /// Fork: the server advertises `tab.set_dnd` (the Do not disturb
+        /// item shows only then).
+        dnd_supported: bool,
     },
     /// A space shown as a tab group in the `tabs` layout. Fork: `team` is
     /// the team items' state, `None` without `team.get` on the server.
@@ -1442,6 +1450,9 @@ pub(crate) struct ClientShellState {
     /// Fork: each endpoint's muted tabs as its last `endpoint.tab-mutes.v1`
     /// push listed them (`tab_mutes.rs`).
     pub(super) tab_mutes: HashMap<ClientEndpointId, super::tab_mutes::ClientTabMutesState>,
+    /// Fork: each endpoint's quiet state (do-not-disturb tabs, pending
+    /// counts) as its last `endpoint.quiet.v1` push listed it (`quiet.rs`).
+    pub(super) quiet: HashMap<ClientEndpointId, super::quiet::ClientQuietState>,
     /// Fork (sidebar v3): the Pinned block folded (`None` until toggled; persisted).
     pub(super) pinned_agents_folded: Option<bool>,
     /// Fork (sidebar v3): the Scheduled block folded (`None` until toggled; persisted).
@@ -1668,6 +1679,7 @@ impl ClientShellState {
             sidebar_clock: None,
             tab_pins: HashMap::new(),
             tab_mutes: HashMap::new(),
+            quiet: HashMap::new(),
             pinned_agents_folded,
             scheduled_agents_folded,
             expanded_runs,

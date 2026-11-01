@@ -223,6 +223,7 @@ mod tests {
             "tab.set_reminder",
             "tab.set_pinned",
             "tab.set_muted",
+            "tab.set_dnd",
             "pane.report_subagent",
             "session.closed_reopen",
             "news.run",

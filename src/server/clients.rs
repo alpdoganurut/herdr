@@ -199,6 +199,10 @@ pub(crate) struct ClientConnection {
     /// `None` until the first payload (none while the server never had a
     /// mute).
     pub(crate) shell_tab_mutes_sent: Option<u64>,
+    /// Fork: the quiet view revision last sent (`endpoint.quiet.v1`);
+    /// `None` until the first payload (none while the server never had a
+    /// quiet message or a do-not-disturb tab).
+    pub(crate) shell_quiet_sent: Option<u64>,
     /// Fork: the agent-context view revision last sent
     /// (`endpoint.agent-context.v1`); `None` until the first payload.
     pub(crate) shell_agent_context_sent: Option<u64>,
@@ -278,6 +282,7 @@ impl ClientConnection {
             shell_agent_times_sent: None,
             shell_tab_pins_sent: None,
             shell_tab_mutes_sent: None,
+            shell_quiet_sent: None,
             shell_agent_context_sent: None,
             shell_agent_view: None,
             shell_projection_revision: 0,

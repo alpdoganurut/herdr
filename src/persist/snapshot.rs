@@ -162,6 +162,9 @@ pub struct TabSnapshot {
     /// Fork: `Tab.muted`; absent (not muted) in older files.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub muted: bool,
+    /// Fork: `Tab.dnd`; absent (off) in older files.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dnd: bool,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
@@ -271,6 +274,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             remind_every: None,
             pinned: false,
             muted: false,
+            dnd: false,
             layout: snap.layout,
             panes: snap.panes,
             zoomed: snap.zoomed,
@@ -519,6 +523,7 @@ fn capture_tab(
         remind_every: tab.remind_every,
         pinned: tab.pinned,
         muted: tab.muted,
+        dnd: tab.dnd,
         layout: capture_node(tab.layout.root()),
         panes,
         zoomed: tab.zoomed,
@@ -969,6 +974,7 @@ mod tests {
                     remind_every: None,
                     pinned: false,
                     muted: false,
+                    dnd: false,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
                         ratio: 0.5,
@@ -1683,6 +1689,7 @@ mod tests {
                     remind_every: None,
                     pinned: false,
                     muted: false,
+                    dnd: false,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
                         ratio: 0.5,

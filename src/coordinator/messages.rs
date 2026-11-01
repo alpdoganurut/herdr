@@ -53,9 +53,16 @@ pub const OUTCOME_CONFIRMED: &str = "confirmed";
 /// sender is told. Only on [`KIND_UPDATE`] lines.
 pub const OUTCOME_UNCONFIRMED: &str = "unconfirmed";
 
+/// Fork: a quiet message (`agents_send_message quiet=true`, or any message to
+/// a tab in do-not-disturb), stored for its target without being typed in
+/// (src/app/quiet_messages.rs). An update line moves it to `delivered` when
+/// the target's hook took it into its context (or a waiter claimed it), or
+/// to `expired`. Not a refusal: waiters receive it like a queued message.
+pub const OUTCOME_QUIET: &str = "quiet";
+
 /// `kind` of a line that only moves an earlier message (same `id`) to a new
 /// outcome (`queued`, `delivered`, `expired`, `dropped`, `confirmed`,
-/// `unconfirmed`). The log stays
+/// `unconfirmed`, `quiet`). The log stays
 /// append-only; readers fold these lines into the message ([`fold`]).
 pub const KIND_UPDATE: &str = "update";
 

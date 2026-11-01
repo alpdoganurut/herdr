@@ -570,6 +570,8 @@ impl HeadlessServer {
         let mut tab_pins_frame = super::tab_pins::PassFrame::default();
         // Fork: muted tabs, likewise.
         let mut tab_mutes_frame = super::tab_mutes::PassFrame::default();
+        // Fork: quiet messages and do-not-disturb tabs, likewise.
+        let mut quiet_frame = super::quiet::PassFrame::default();
         // Fork: agents' context use, likewise.
         let mut agent_context_frame = super::agent_context::PassFrame::default();
         for (client_id, (cols, rows), cell_size, _is_foreground, mode) in render_targets {
@@ -799,6 +801,16 @@ impl HeadlessServer {
                     &mut tab_mutes_frame,
                 ) {
                     warn!(client_id, err = %err, "failed to send tab mutes");
+                    broken_clients.push(client_id);
+                    continue;
+                }
+                if let Err(err) = super::quiet::sync_client(
+                    &self.app,
+                    &self.client_shell_boot_id,
+                    client,
+                    &mut quiet_frame,
+                ) {
+                    warn!(client_id, err = %err, "failed to send quiet state");
                     broken_clients.push(client_id);
                     continue;
                 }

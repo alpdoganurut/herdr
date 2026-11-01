@@ -58,6 +58,9 @@ use crate::persist::coordinator::{
 
 /// The coordinator tab's label (it identifies the tab with its stored id).
 pub(crate) const COORDINATOR_TAB_LABEL: &str = "coordinator";
+/// Fork: why a wake-up waits while the coordinator's tab is in
+/// do-not-disturb (src/app/tab_dnd.rs).
+pub(crate) const COORDINATOR_DND_HOLD: &str = "coordinator is in do not disturb";
 /// The coordinator's agent name.
 pub(crate) const COORDINATOR_AGENT_NAME: &str = "coordinator";
 /// The POC's live coordinator is renamed to this on migration.
@@ -1208,6 +1211,10 @@ impl App {
         if self.pane_voice(own.pane_id).active() {
             return Some("coordinator is in voice mode".into());
         }
+        // Fork: its tab is in do-not-disturb (src/app/tab_dnd.rs).
+        if self.pane_in_dnd(own.ws_idx, own.pane_id) {
+            return Some(COORDINATOR_DND_HOLD.into());
+        }
         let reason = match status {
             Some("idle" | "done") if !self.coordinator_interactive(own) => {
                 "coordinator is starting"
@@ -2277,6 +2284,14 @@ impl App {
             reply(
                 &mut self.coordinator,
                 WakeOutcome::Held("coordinator is in voice mode".into()),
+            );
+            return;
+        }
+        // Fork: nor into a tab in do-not-disturb (src/app/tab_dnd.rs).
+        if self.pane_in_dnd(own.ws_idx, own.pane_id) {
+            reply(
+                &mut self.coordinator,
+                WakeOutcome::Held(COORDINATOR_DND_HOLD.into()),
             );
             return;
         }
@@ -3971,6 +3986,39 @@ mod tests {
             crate::detect::AgentVoice::Off,
         );
         assert!(app.coordinator.input_dirty, "the change is looked at again");
+        app.coordinator.sent.clear();
+        prompt_effect(&mut app, &pane);
+        assert_eq!(wake_outcomes(&app), vec![WakeOutcome::Delivered]);
+    }
+
+    /// Fork: a coordinator whose tab is in do-not-disturb gets no wake-up
+    /// typed in (src/app/tab_dnd.rs), and agent messages wait too.
+    #[tokio::test]
+    async fn a_wake_is_held_while_the_coordinator_tab_is_in_do_not_disturb() {
+        let mut app = coordinator_app(true);
+        running(&mut app);
+        let own = app.existing_coordinator_pane().unwrap();
+        let pane = app.public_pane_id(own.ws_idx, own.pane_id).unwrap();
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(crate::app::typing_guard::TEST_FREE_INPUT_BOX);
+        app.state.insert_test_runtime(own.pane_id, runtime);
+        let tab_idx = app.state.workspaces[own.ws_idx]
+            .find_tab_index_for_pane(own.pane_id)
+            .unwrap();
+        app.state.workspaces[own.ws_idx].tabs[tab_idx].dnd = true;
+        assert_eq!(
+            app.coordinator_message_hold().as_deref(),
+            Some(COORDINATOR_DND_HOLD)
+        );
+        app.coordinator.sent.clear();
+        prompt_effect(&mut app, &pane);
+        assert_eq!(
+            wake_outcomes(&app),
+            vec![WakeOutcome::Held(COORDINATOR_DND_HOLD.into())]
+        );
+        assert!(rx.try_recv().is_err(), "nothing typed into a DND tab");
+
+        app.state.workspaces[own.ws_idx].tabs[tab_idx].dnd = false;
         app.coordinator.sent.clear();
         prompt_effect(&mut app, &pane);
         assert_eq!(wake_outcomes(&app), vec![WakeOutcome::Delivered]);

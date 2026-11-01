@@ -299,6 +299,11 @@ mod tests {
             actual.remove("tab.set_muted").as_deref(),
             Some("560a2b945b17390a3f773b3d090425aab4e64717492841117bd350edded661c1")
         );
+        // Fork: TabSetDndParams { tab_id, dnd: bool }.
+        assert_eq!(
+            actual.remove("tab.set_dnd").as_deref(),
+            Some("79f9239823862d78236a9ae47fd8c62b228b3516864d8dff9ffd2f626158be12")
+        );
         assert_eq!(
             actual.remove("session.closed_list").as_deref(),
             Some("36061ddc74238ec4cbe0e9b01e685d417718a12f09ebac9334b7c1fc754c22cd")
@@ -518,7 +523,7 @@ mod tests {
         assert!(!supports_client_shell_method_name(
             crate::api::schema::team::method::CONTEXT
         ));
-        assert_eq!(supported_client_shell_method_names().len(), 97);
+        assert_eq!(supported_client_shell_method_names().len(), 98);
     }
 
     #[test]

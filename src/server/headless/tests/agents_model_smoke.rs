@@ -233,6 +233,7 @@ async fn fork_smoke_client_typing_in_an_agent_holds_messages_back() {
             text: "status?".into(),
             reply_to: None,
             urgent: false,
+            quiet: false,
         }),
     );
     // Queued, not refused: typed in once the user is quiet (the queue's
@@ -280,6 +281,7 @@ async fn fork_smoke_turn_hooks_free_a_working_claude_for_messages() {
                 text: text.into(),
                 reply_to: None,
                 urgent: false,
+                quiet: false,
             }),
         )
     };
@@ -368,6 +370,7 @@ async fn fork_smoke_a_stuck_queued_message_notifies_its_sender_once() {
             text: "status?".into(),
             reply_to: None,
             urgent: false,
+            quiet: false,
         }),
     );
     let id = sent["result"]["message"]["id"]
@@ -440,6 +443,7 @@ async fn fork_smoke_urgent_message_interrupts_a_working_teammate() {
                 text: "stop the deploy".into(),
                 reply_to: None,
                 urgent: true,
+                quiet: false,
             }),
         )
     };
@@ -506,6 +510,7 @@ async fn fork_smoke_a_user_turn_wait_carries_urgent_authority_into_its_continuat
                 text: "stop the deploy".into(),
                 reply_to: None,
                 urgent: true,
+                quiet: false,
             }),
         )
     };

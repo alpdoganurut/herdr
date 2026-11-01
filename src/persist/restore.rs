@@ -961,6 +961,7 @@ fn restore_tab(
                     .filter(|every| *every != crate::api::schema::TabRemindInterval::Unknown),
                 pinned: snap.pinned,
                 muted: snap.muted,
+                dnd: snap.dnd,
                 number,
                 root_pane,
                 layout,
@@ -2006,7 +2007,7 @@ mod tests {
                     tab(serde_json::json!({"important": true, "remind_every": "daily"})),
                     tab(serde_json::json!({"remind_every": "30m"})),
                     tab(serde_json::json!({"remind_every": "2h"})),
-                    tab(serde_json::json!({"pinned": true, "muted": true})),
+                    tab(serde_json::json!({"pinned": true, "muted": true, "dnd": true})),
                 ],
             }],
             "active": 0,
@@ -2086,6 +2087,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             [false, false, false, false, false, true]
         );
+        // Fork: and the do-not-disturb.
+        let dnds =
+            |tabs: &[crate::workspace::Tab]| tabs.iter().map(|tab| tab.dnd).collect::<Vec<_>>();
+        assert_eq!(
+            dnds(&workspaces[0].tabs),
+            [false, false, false, false, false, true]
+        );
+        assert_eq!(
+            captured.workspaces[0]
+                .tabs
+                .iter()
+                .map(|tab| tab.dnd)
+                .collect::<Vec<_>>(),
+            [false, false, false, false, false, true]
+        );
         // Written with `remind` too when important (an older build reads it),
         // nothing when both are off.
         let written = serde_json::to_value(&captured).unwrap();
@@ -2097,7 +2113,15 @@ mod tests {
         assert!(tabs[3].get("remind").is_none());
         assert_eq!(tabs[5]["pinned"], true);
         assert_eq!(tabs[5]["muted"], true);
-        for key in ["remind", "important", "remind_every", "pinned", "muted"] {
+        assert_eq!(tabs[5]["dnd"], true);
+        for key in [
+            "remind",
+            "important",
+            "remind_every",
+            "pinned",
+            "muted",
+            "dnd",
+        ] {
             assert!(tabs[1].get(key).is_none(), "{key}");
         }
     }
@@ -2132,6 +2156,7 @@ mod tests {
                     remind_every: None,
                     pinned: false,
                     muted: false,
+                    dnd: false,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -2325,6 +2350,7 @@ mod tests {
                     remind_every: None,
                     pinned: false,
                     muted: false,
+                    dnd: false,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -2447,6 +2473,7 @@ mod tests {
                     remind_every: None,
                     pinned: false,
                     muted: false,
+                    dnd: false,
                     layout: LayoutSnapshot::Pane(5),
                     panes: HashMap::from([(5, pane)]),
                     zoomed: false,
@@ -2526,6 +2553,7 @@ mod tests {
                     remind_every: None,
                     pinned: false,
                     muted: false,
+                    dnd: false,
                     layout: LayoutSnapshot::Split {
                         direction: super::super::snapshot::DirectionSnapshot::Horizontal,
                         ratio: 0.5,
@@ -2656,6 +2684,7 @@ mod tests {
                         remind_every: None,
                         pinned: false,
                         muted: false,
+                        dnd: false,
                         layout: LayoutSnapshot::Pane(10),
                         panes: HashMap::from([pane_snap("10")]),
                         zoomed: false,
@@ -2670,6 +2699,7 @@ mod tests {
                         remind_every: None,
                         pinned: false,
                         muted: false,
+                        dnd: false,
                         layout: LayoutSnapshot::Pane(11),
                         panes: HashMap::from([pane_snap("11")]),
                         zoomed: false,
@@ -2684,6 +2714,7 @@ mod tests {
                         remind_every: None,
                         pinned: false,
                         muted: false,
+                        dnd: false,
                         layout: LayoutSnapshot::Pane(12),
                         panes: HashMap::from([pane_snap("12")]),
                         zoomed: false,
@@ -2698,6 +2729,7 @@ mod tests {
                         remind_every: None,
                         pinned: false,
                         muted: false,
+                        dnd: false,
                         layout: LayoutSnapshot::Pane(13),
                         panes: HashMap::from([(13, final_pane)]),
                         zoomed: false,
@@ -2763,6 +2795,7 @@ mod tests {
                 remind_every: None,
                 pinned: false,
                 muted: false,
+                dnd: false,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
                     ratio: 0.5,
@@ -2809,6 +2842,7 @@ mod tests {
                     remind_every: None,
                     pinned: false,
                     muted: false,
+                    dnd: false,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -3275,6 +3309,7 @@ mod tests {
                     remind_every: None,
                     pinned: false,
                     muted: false,
+                    dnd: false,
                     layout: LayoutSnapshot::Pane(0),
                     panes,
                     zoomed: false,
@@ -3309,6 +3344,7 @@ mod tests {
             remind_every: None,
             pinned: false,
             muted: false,
+            dnd: false,
             layout: LayoutSnapshot::Pane(0),
             panes: HashMap::from([(
                 0,

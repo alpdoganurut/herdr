@@ -221,6 +221,7 @@ pub(super) fn render_tab_sidebar_with(
                 voice: state.voice,
                 pins: state.tab_pins,
                 mutes: state.tab_mutes,
+                quiet: state.quiet,
                 fixed_ids: fixed_tab_ids,
                 sections: sidebar_sections(config),
                 expanded_runs: Some(state.expanded_runs),
@@ -518,6 +519,10 @@ pub(super) fn render_tab_sidebar_with(
                     palette.sidebar_bg
                 };
                 let mut marks = Marks::default();
+                // Fork: quiet messages waiting for the tab's agents, first.
+                if let Some((glyph, color)) = super::quiet::pending_mark(facts.quiet, palette) {
+                    marks.push(glyph, color);
+                }
                 push_reminder_marks(&mut marks, tab, state, palette);
                 if model.focused_tab == Some(tab_index) {
                     if let Some(harness) =
@@ -548,7 +553,12 @@ pub(super) fn render_tab_sidebar_with(
                         background: (hovered || tab.focused).then_some(background),
                         voice,
                         pinned: facts.pin.then(|| super::tab_pins::pin_mark(config)),
-                        muted: facts.muted.then(|| super::tab_mutes::mute_mark(config)),
+                        // Fork: do-not-disturb takes the muted mark's cell.
+                        muted: if facts.dnd {
+                            Some(super::quiet::dnd_mark(config))
+                        } else {
+                            facts.muted.then(|| super::tab_mutes::mute_mark(config))
+                        },
                         marks: marks.as_slice(),
                         context,
                     },
@@ -1615,7 +1625,8 @@ struct TabRowLook<'a, 'c> {
     voice: Option<(&'c str, Color)>,
     /// Fork: the pinned mark (`tab_pins::pin_mark`), in the left gutter.
     pinned: Option<(&'c str, Color)>,
-    /// Fork: the muted mark (`tab_mutes::mute_mark`), in the left gutter.
+    /// Fork: the muted mark (`tab_mutes::mute_mark`), in the left gutter;
+    /// the do-not-disturb mark (`quiet::dnd_mark`) takes its cell.
     muted: Option<(&'c str, Color)>,
     /// The right-hand marks, left to right.
     marks: &'a [(&'c str, Color)],

@@ -2222,6 +2222,19 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            // Fork: quiet messages and do-not-disturb (`shell/quiet.rs`).
+                            Ok(endpoint::EndpointControlMessage::Quiet(payload)) => {
+                                if let Some(shell) = state.shell.as_mut() {
+                                    if shell.receive_quiet(&endpoint_id, payload) {
+                                        if let Some(frame) = shell
+                                            .compose(state.reported_size.0, state.reported_size.1)
+                                        {
+                                            state.present_frame(frame);
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
                             // Fork: agents' context use (`shell/agent_context.rs`).
                             Ok(endpoint::EndpointControlMessage::AgentContext(payload)) => {
                                 if let Some(shell) = state.shell.as_mut() {

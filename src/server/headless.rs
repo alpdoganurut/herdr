@@ -87,6 +87,8 @@ mod lifecycle;
 mod native_graphics;
 mod news_notify;
 mod notifications;
+/// Fork: the `endpoint.quiet.v1` push (quiet messages, do-not-disturb).
+pub mod quiet;
 mod render;
 mod retained_surface;
 mod surface_interest;

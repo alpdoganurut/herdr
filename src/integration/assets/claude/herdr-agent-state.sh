@@ -3,7 +3,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=14
+# HERDR_INTEGRATION_VERSION=15
 
 set -eu
 
@@ -27,6 +27,7 @@ import json
 import os
 import random
 import socket
+import sys
 import time
 
 source = "herdr:claude"
@@ -106,6 +107,53 @@ def report_compact(event):
     return call({"id": request_id, "method": "pane.report_compact", "params": params})
 
 
+# Quiet messages other agents stored for this pane instead of typing them in
+# (agents.take_quiet): herdr answers them as one text, framed as data, with
+# the ids it offered; they are delivered once acknowledged (ack_quiet, after
+# the text was printed). A server without the method answers with an error,
+# which adds nothing.
+def take_quiet():
+    response = call(
+        {"id": request_id, "method": "agents.take_quiet", "params": {"caller_pane": pane_id}},
+        timeout=2.0,
+    )
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        return None, []
+    context = result.get("context")
+    ids = result.get("ids")
+    ids = [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else []
+    return (context if isinstance(context, str) and context else None), ids
+
+
+def ack_quiet(ids):
+    if ids:
+        call(
+            {"id": request_id, "method": "agents.ack_quiet",
+             "params": {"caller_pane": pane_id, "ids": ids}},
+            timeout=2.0,
+        )
+
+
+# Print the texts to add to the agent's context for `event`, as one object;
+# True once it is written.
+def add_context(event, parts):
+    parts = [part for part in parts if part]
+    if not parts:
+        return False
+    try:
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": event,
+                "additionalContext": "\n\n".join(parts),
+            }
+        }))
+        sys.stdout.flush()
+        return True
+    except Exception:
+        return False
+
+
 if action == "precompact":
     if hook_event_name == "PreCompact" and not hook_input.get("agent_id"):
         report_compact("pre")
@@ -155,6 +203,9 @@ def report_turn(event):
 if action == "turn":
     if hook_event_name == "UserPromptSubmit" and not hook_input.get("agent_id"):
         report_turn("start")
+        quiet_context, quiet_ids = take_quiet()
+        if add_context("UserPromptSubmit", [quiet_context]):
+            ack_quiet(quiet_ids)
     raise SystemExit(0)
 
 # The main agent's turn ended (Stop): report every subagent still running
@@ -225,16 +276,17 @@ else:
 
 send(request)
 
+context_parts = []
 # The compacted session starts: add herdr's handoff to its context.
 if session_start_source == "compact":
     response = report_compact("post")
     result = response.get("result") if isinstance(response, dict) else None
     context = result.get("context") if isinstance(result, dict) else None
     if isinstance(context, str) and context:
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context,
-            }
-        }))
+        context_parts.append(context)
+# Any session start: the quiet messages stored for this pane.
+quiet_context, quiet_ids = take_quiet()
+context_parts.append(quiet_context)
+if add_context("SessionStart", context_parts) and quiet_context:
+    ack_quiet(quiet_ids)
 PY

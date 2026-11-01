@@ -448,6 +448,20 @@ impl MessageQueue {
         self.push_at(entry, false);
     }
 
+    /// Fork: a quiet message released back to the queue (its tab left
+    /// do-not-disturb, src/app/quiet_messages.rs): logged as an update line
+    /// `queued` (its full line is in the log already), queued last.
+    pub(super) fn requeue(&mut self, entry: QueuedMessage) {
+        self.log(AgentMessage::update(
+            &entry.message,
+            OUTCOME_QUEUED,
+            crate::coordinator::now_unix(),
+        ));
+        self.entries.push(entry);
+        self.due = true;
+        self.save();
+    }
+
     /// Queue `entry`; `front`: ahead of every plain message queued for the
     /// same target, behind the urgent ones queued before it (an urgent
     /// message; urgent ones keep their sending order).
@@ -475,7 +489,7 @@ impl MessageQueue {
         self.save();
     }
 
-    fn finish(&mut self, ids: &[String], outcome: &str, now_unix: u64) {
+    pub(super) fn finish(&mut self, ids: &[String], outcome: &str, now_unix: u64) {
         let mut done = Vec::new();
         let mut targets: Vec<String> = Vec::new();
         self.entries.retain(|entry| {
@@ -693,7 +707,7 @@ pub(crate) enum LegacyPrompt {
 impl App {
     /// The live target of a queued message: its terminal (by id, else by the
     /// agent's session after a restart) and pane.
-    fn message_target(
+    pub(super) fn message_target(
         &self,
         terminal_id: &str,
         session: Option<&str>,
@@ -819,6 +833,11 @@ impl App {
         // agent; typed text would land in it (src/app/voice.rs).
         if terminal.agent_voice().active() {
             return Check::Wait("voice mode".into());
+        }
+        // Fork: a tab in do-not-disturb (src/app/tab_dnd.rs) gets nothing
+        // typed in; the user's own handoff still goes.
+        if handoff_hold && self.pane_in_dnd(target.ws_idx, target.pane_id) {
+            return Check::Wait(super::tab_dnd::DND_WAIT_REASON.into());
         }
         // Fork (agent handoff): nothing lands between the handoff turn,
         // /compact and the resume line.
@@ -1003,6 +1022,19 @@ impl App {
             team: params.team,
         };
         let status = check.status();
+        // Fork: a tab in do-not-disturb stores it quietly
+        // (src/app/quiet_messages.rs).
+        if let Some(reply) = self.dnd_agent_message_send(
+            &id,
+            &target,
+            &check,
+            &message,
+            &params.envelope,
+            &params.id,
+            now_unix,
+        ) {
+            return reply;
+        }
         // The pointer facts from the envelope's header, with the sender
         // this method names.
         let mut pointer = PointerFrom::from_envelope(&params.id, &params.envelope);
@@ -1326,6 +1358,8 @@ impl App {
                 },
             )
             .collect();
+        // Fork: and the quiet messages stored for it (src/app/quiet_messages.rs).
+        messages.extend(self.quiet_inbox_messages(caller.terminal_id.as_str(), now_unix));
         // An urgent message sits at the front of its target's queue; the
         // inbox reads in sending order (stable for equal times).
         messages.sort_by_key(|message| message.queued_unix);
@@ -1588,6 +1622,7 @@ impl App {
             .map(|target| target.terminal_id);
         // Fork (lost-message fix): a message whose text is in and whose
         // Enter waits is not taken (the waiter skips it; it goes in).
+        let quiet_claimer = claimer.clone();
         let claimed = claimer.is_some_and(|terminal_id| {
             self.message_queue
                 .entries
@@ -1601,6 +1636,10 @@ impl App {
                 crate::coordinator::now_unix(),
             );
         }
+        // Fork: or a quiet message (src/app/quiet_messages.rs).
+        let claimed = claimed
+            || quiet_claimer
+                .is_some_and(|terminal_id| self.claim_quiet_message(&terminal_id, &params.id));
         encode_success(id, ResponseResult::AgentMessageClaim { claimed })
     }
 

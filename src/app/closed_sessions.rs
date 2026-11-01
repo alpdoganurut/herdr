@@ -110,6 +110,7 @@ impl App {
             remind_every: tab.remind_every,
             pinned: tab.pinned,
             muted: tab.muted,
+            dnd: tab.dnd,
             space_id: workspace.id.clone(),
             space_name: workspace.display_name_from(&self.state.terminals, &self.terminal_runtimes),
             cwd: cwd.display().to_string(),
@@ -402,6 +403,7 @@ impl App {
             .filter(|every| *every != TabRemindInterval::Unknown);
         tab.pinned = entry.pinned;
         tab.muted = entry.muted;
+        tab.dnd = entry.dnd;
         let terminal_id = tab
             .terminal_id(tab.root_pane)
             .cloned()
@@ -413,6 +415,10 @@ impl App {
         // Fork: so does a reopened mute.
         if entry.muted {
             self.bump_tab_mutes_view();
+        }
+        // Fork: and a reopened do-not-disturb.
+        if entry.dnd {
+            self.bump_quiet_view();
         }
         Ok(ReopenedTab {
             ws_idx,

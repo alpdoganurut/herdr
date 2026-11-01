@@ -328,6 +328,21 @@ pub enum ResponseResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<String>,
     },
+    /// Fork: `agents.take_quiet`. `context` is the text the Claude hook adds
+    /// to the agent's context (absent when nothing waits); the `shown`
+    /// messages in it (`ids`; `taken` is the same count) are offered, and
+    /// delivered once the hook acknowledges them (`agents.ack_quiet`); the
+    /// rest stay stored, named by one overflow line.
+    AgentsTakeQuiet {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+        #[serde(default)]
+        taken: u32,
+        #[serde(default)]
+        shown: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ids: Vec<String>,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },
