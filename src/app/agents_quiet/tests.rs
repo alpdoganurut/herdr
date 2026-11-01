@@ -135,6 +135,13 @@ fn the_coordinator_needs_its_users_turn_and_the_user_needs_nothing() {
     let out = set_quiet(&mut app, Some(&coordinator), &fixer, Some(true), Some(true));
     assert_eq!(code(&out), "ok", "{out}");
     assert!(tab(&app, 1, 1).muted && tab(&app, 1, 1).dnd);
+    // Not even in its user's turn: its own tab is the user's.
+    let own_tab = app.public_tab_id(0, 0).unwrap();
+    for target in [coordinator.as_str(), own_tab.as_str()] {
+        let out = set_quiet(&mut app, Some(&coordinator), target, Some(true), None);
+        assert_eq!(code(&out), "protected_tab", "{out}");
+    }
+    assert!(!tab(&app, 0, 0).muted);
 
     // The user (no caller): any tab, by agent pane or tab id.
     let plain_tab = app.public_tab_id(2, 1).unwrap();

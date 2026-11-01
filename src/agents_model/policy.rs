@@ -217,6 +217,7 @@ fn coordinator(relation: Relation, action: Action, facts: &Facts) -> Decision {
                     | SoftEdit::SuspendRestart
                     | SoftEdit::Activate { .. }
                     | SoftEdit::Handoff
+                    | SoftEdit::Quiet
             )
     );
     if relation == Relation::Protected && tab_change {
@@ -764,6 +765,16 @@ mod tests {
             );
             assert!(authorize(Actor::Coordinator, relation, quiet, &facts(true)).is_allowed());
         }
+        // Not even its user's turn lets the coordinator quiet its own tab.
+        assert_eq!(
+            code(authorize(
+                Actor::Coordinator,
+                Relation::Protected,
+                quiet,
+                &facts(true)
+            )),
+            "protected_tab"
+        );
         for relation in RELATIONS {
             assert!(authorize(Actor::User, relation, quiet, &facts(false)).is_allowed());
         }

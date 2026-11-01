@@ -180,8 +180,10 @@ async fn fork_smoke_agents_mute_of_a_teammate_tab_reaches_the_mutes_push() {
     assert_eq!(result["result"]["tab"]["muted"], true, "{result}");
     assert_eq!(result["result"]["tab"]["dnd"], true, "{result}");
     server.render_and_stream();
+    // The push can land a moment after the pass: read until the channel
+    // stays quiet.
     let mut pushed = Vec::new();
-    while let Ok(bytes) = control.try_recv() {
+    while let Ok(bytes) = control.recv_timeout(std::time::Duration::from_millis(200)) {
         if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
             if kind == TAB_MUTES_KIND {
                 pushed.push(TabMutesPayload::decode(&data).unwrap().tab_ids);

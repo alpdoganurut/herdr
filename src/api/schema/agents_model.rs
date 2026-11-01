@@ -1040,7 +1040,7 @@ pub struct AgentsAckQuietParams {
 pub struct AgentsSetQuietParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller_pane: Option<String>,
-    /// A tab id, a pane id or an agent name (its tab).
+    /// A tab id, a pane id, an agent name (its tab) or a unique tab label.
     pub target: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub muted: Option<bool>,
