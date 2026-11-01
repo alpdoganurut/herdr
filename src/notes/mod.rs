@@ -679,6 +679,20 @@ pub(crate) struct NotesRuntime {
     pub enabled: bool,
     pub store: NotesStore,
     pub panes: PaneKeys,
+    /// The latest `notes.reveal`s (`endpoint.notes-reveal.v1`), oldest
+    /// first, at most [`REVEAL_CAP`]; never persisted.
+    pub reveals: std::collections::VecDeque<NotesReveal>,
+}
+
+/// The most `notes.reveal`s kept for a render pass to send.
+pub(crate) const REVEAL_CAP: usize = 16;
+
+/// One `notes.reveal`: its revision (1 and up, per server run) and the
+/// public tab id whose info pane the clients show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NotesReveal {
+    pub revision: u64,
+    pub tab_id: String,
 }
 
 impl Default for NotesRuntime {
@@ -693,6 +707,20 @@ impl NotesRuntime {
             enabled,
             store: NotesStore::new(dir),
             panes: PaneKeys::default(),
+            reveals: std::collections::VecDeque::new(),
         }
+    }
+
+    /// Record a reveal of `tab_id` under the next revision.
+    pub(crate) fn note_reveal(&mut self, tab_id: String) -> u64 {
+        let revision = self
+            .reveals
+            .back()
+            .map_or(1, |reveal| reveal.revision.wrapping_add(1).max(1));
+        if self.reveals.len() >= REVEAL_CAP {
+            self.reveals.pop_front();
+        }
+        self.reveals.push_back(NotesReveal { revision, tab_id });
+        revision
     }
 }

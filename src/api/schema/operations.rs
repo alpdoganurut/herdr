@@ -231,6 +231,7 @@ mod tests {
             "coordinator.open",
             "coordinator.wake",
             "coordinator.start",
+            "notes.reveal",
             "agents.open_tab",
             "agents.send_message",
             "agents.rename_tab",

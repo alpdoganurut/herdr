@@ -20,8 +20,8 @@ use super::api::responses::{encode_error, encode_success};
 use super::App;
 use crate::agent_resume::{AgentSessionRefKind, PersistedAgentSession};
 use crate::api::schema::notes::{
-    error_code, NotesAppendParams, NotesAuthor, NotesGetParams, NotesInfo, NotesSetParams,
-    NotesTarget, NotesWriteInfo,
+    error_code, NotesAppendParams, NotesAuthor, NotesGetParams, NotesInfo, NotesRevealParams,
+    NotesSetParams, NotesTarget, NotesWriteInfo,
 };
 use crate::api::schema::ResponseResult;
 use crate::notes::{NotesError, NotesRuntime, NotesSnapshot, WriteBy};
@@ -314,6 +314,23 @@ impl App {
                     notes: Self::notes_info(&resolved, snapshot),
                 },
             })
+        });
+        Self::notes_reply(id, result)
+    }
+
+    /// `notes.reveal`: the target's tab, signalled to every client shell by
+    /// the next render pass (`server/headless/notes_reveal.rs`).
+    pub(super) fn handle_notes_reveal(&mut self, id: String, params: NotesRevealParams) -> String {
+        let result = self.notes_enabled().and_then(|()| {
+            let resolved = self.resolve_notes_target(&params.target)?;
+            let tab_id = resolved.tab_id.ok_or_else(|| {
+                (
+                    error_code::NOT_FOUND,
+                    format!("no open tab holds notes {}", resolved.key),
+                )
+            })?;
+            self.notes.note_reveal(tab_id);
+            Ok(ResponseResult::Ok {})
         });
         Self::notes_reply(id, result)
     }
@@ -634,6 +651,67 @@ mod tests {
             serde_json::from_value(stale["result"]["write"]["outcome"].clone()).unwrap();
         assert_eq!(outcome, NotesWriteOutcome::Conflict);
         assert_eq!(stale["result"]["write"]["notes"]["text"], text.as_str());
+    }
+
+    #[test]
+    fn a_reveal_records_the_targets_tab_under_a_new_revision() {
+        let (mut app, tab_id, _, split_id, _guard) = app_with_two_panes();
+        assert!(app.notes.reveals.is_empty(), "nothing before a reveal");
+        let reveal = |app: &mut App, target: NotesTarget| -> serde_json::Value {
+            let reply = app.handle_api_request(Request {
+                id: "r".into(),
+                method: crate::api::schema::Method::NotesReveal(NotesRevealParams { target }),
+            });
+            serde_json::from_str(&reply).unwrap()
+        };
+        let reply = reveal(&mut app, pane(&split_id));
+        assert_eq!(reply["result"]["type"], "ok", "{reply}");
+        assert_eq!(
+            app.notes.reveals.back(),
+            Some(&crate::notes::NotesReveal {
+                revision: 1,
+                tab_id: tab_id.clone(),
+            }),
+            "a pane names its tab"
+        );
+        reveal(&mut app, tab(&tab_id));
+        let revisions =
+            |app: &App| -> Vec<u64> { app.notes.reveals.iter().map(|r| r.revision).collect() };
+        assert_eq!(revisions(&app), [1, 2], "both kept, oldest first");
+        // UI only: the method is marked so a render pass follows.
+        assert!(crate::api::request_changes_ui(&Request {
+            id: "r".into(),
+            method: crate::api::schema::Method::NotesReveal(NotesRevealParams {
+                target: tab(&tab_id),
+            }),
+        }));
+
+        // A key with no open tab, an unknown tab, or notes turned off:
+        // refused, nothing recorded.
+        let reply = reveal(
+            &mut app,
+            NotesTarget {
+                key: Some("claude-gone".into()),
+                ..NotesTarget::default()
+            },
+        );
+        assert_eq!(reply["error"]["code"], "not_found", "{reply}");
+        let reply = reveal(&mut app, tab("w9:t9"));
+        assert_eq!(reply["error"]["code"], "not_found", "{reply}");
+        app.notes.enabled = false;
+        let reply = reveal(&mut app, tab(&tab_id));
+        assert_eq!(reply["error"]["code"], "notes_disabled", "{reply}");
+        assert_eq!(revisions(&app), [1, 2]);
+
+        // Bounded: only the newest REVEAL_CAP stay.
+        app.notes.enabled = true;
+        for _ in 0..crate::notes::REVEAL_CAP {
+            reveal(&mut app, tab(&tab_id));
+        }
+        let kept = revisions(&app);
+        assert_eq!(kept.len(), crate::notes::REVEAL_CAP);
+        assert_eq!(kept.last(), Some(&(crate::notes::REVEAL_CAP as u64 + 2)));
+        assert_eq!(kept.first(), Some(&3));
     }
 
     #[test]

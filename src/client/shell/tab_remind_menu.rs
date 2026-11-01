@@ -2,8 +2,8 @@
 //! color swatch row (`ClientContextMenuAction::RemindTop` / `RemindBottom`),
 //!
 //! ```text
-//! remind  5m  10m  30m
-//!         1h  6h   daily
+//! ◷ remind   5m    10m   30m
+//!            1h    6h    daily
 //! ```
 //!
 //! one selector across both rows, the options in columns. The current
@@ -25,18 +25,21 @@ const ROW_LABEL: &str = "remind";
 /// Options per row.
 const COLUMNS: usize = 3;
 
-/// A column's width: its widest option plus a bracket (or space) each side.
+/// A column's width: its widest option plus a bracket (or space) each side,
+/// at least six cells (fork, menu design: the options sit on a six-cell
+/// pitch).
 fn column_width(column: usize) -> u16 {
-    [column, column + COLUMNS]
+    ([column, column + COLUMNS]
         .into_iter()
         .map(|index| TabRemindInterval::ALL[index].name().len())
         .max()
         .unwrap_or(0) as u16
-        + 2
+        + 2)
+    .max(6)
 }
 
 fn column_x(column: usize) -> u16 {
-    ROW_LABEL.len() as u16 + 1 + (0..column).map(column_width).sum::<u16>()
+    super::context_menu_look::SELECTOR_LABEL_CELLS + (0..column).map(column_width).sum::<u16>()
 }
 
 /// Width of a selector row: the label, a gap, the columns.
@@ -120,7 +123,8 @@ pub(super) fn render_remind_row(
                 .bg(palette.accent)
                 .add_modifier(Modifier::BOLD)
         } else if current {
-            base.add_modifier(Modifier::BOLD)
+            // Fork (menu design): the current interval in yellow.
+            base.fg(palette.yellow).add_modifier(Modifier::BOLD)
         } else {
             base
         };

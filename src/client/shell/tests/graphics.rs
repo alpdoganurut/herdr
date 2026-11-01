@@ -360,9 +360,12 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 106, 40));
         let snapshot = state.snapshot.as_deref().unwrap();
         let rendered = match &overlay {
-            ClientShellOverlay::ContextMenu(menu) => {
-                render::render_context_menu(&mut buffer, menu, &state.config.palette)
-            }
+            ClientShellOverlay::ContextMenu(menu) => render::render_context_menu(
+                &mut buffer,
+                menu,
+                &state.config.palette,
+                &state.config.keybinds,
+            ),
             ClientShellOverlay::GlobalMenu(menu) => render::render_global_menu(
                 &mut buffer,
                 state.hits.global_launcher,

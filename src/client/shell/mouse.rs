@@ -1522,10 +1522,25 @@ impl ClientShellState {
                 MouseEventKind::Down(MouseButton::Left) => {
                     if let Some((_, index)) = row_hit {
                         self.activate_context_menu_item(index, outcome);
+                    } else if super::contains(self.hits.context_menu_area, point) {
+                        // Fork (menu design): a rule row or the border
+                        // picks nothing and keeps the menu.
                     } else {
                         self.overlay = None;
                         outcome.repaint = true;
                     }
+                }
+                // Fork (menu design): the wheel moves the highlight, which
+                // scrolls a menu taller than the screen.
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    if super::contains(self.hits.context_menu_area, point) =>
+                {
+                    self.move_context_menu_selection(if mouse.kind == MouseEventKind::ScrollUp {
+                        -1
+                    } else {
+                        1
+                    });
+                    outcome.repaint = true;
                 }
                 _ => {}
             }

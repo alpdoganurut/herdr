@@ -281,6 +281,7 @@ pub(super) fn render_tab_sidebar_with(
         buffer,
         content,
         all_groups_folded(snapshot, state.collapsed_groups),
+        state.info_pane_open,
         config,
         hits,
     );
@@ -1310,12 +1311,14 @@ fn put_status_spans(buffer: &mut Buffer, x: u16, y: u16, width: u16, spans: &[Sp
     }
 }
 
-/// The fold toggle on the left (absent without foldable groups), `+` on the
-/// right, all one row.
+/// The fold toggle on the left (absent without foldable groups), the `◧`
+/// notes button (accent while the focused tab's info pane is open) and `+`
+/// on the right, all one row.
 fn render_toolbar(
     buffer: &mut Buffer,
     content: Rect,
     all_folded: Option<bool>,
+    info_pane_open: bool,
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
 ) {
@@ -1333,6 +1336,24 @@ fn render_toolbar(
         put_text(buffer, x, y, toggle_width, toggle, style);
         if config.mouse_capture {
             hits.group_toggle_all = Rect::new(x, y, toggle_width, 1);
+        }
+    }
+    if let Some(notes) = super::sidebar_filter::notes_button_rect(content) {
+        let fg = if info_pane_open {
+            palette.accent
+        } else {
+            palette.overlay0
+        };
+        put_text(
+            buffer,
+            notes.x,
+            y,
+            1,
+            super::sidebar_filter::NOTES_GLYPH,
+            Style::default().fg(fg),
+        );
+        if config.mouse_capture {
+            hits.sidebar_notes = notes;
         }
     }
     let new_width = display_width(NEW_GROUP_LABEL);

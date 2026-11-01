@@ -153,10 +153,12 @@ fn tab_menu_lists_copy_session_id_after_restart_once_the_id_arrives() {
         items.get(restart + 2),
         Some(&ClientContextMenuAction::CopySessionId)
     );
-    assert_eq!(
-        items.get(restart + 3),
-        Some(&ClientContextMenuAction::Close)
-    );
+    // Fork (menu design): Close leads the menu, before the Agent section.
+    let close = items
+        .iter()
+        .position(|action| *action == ClientContextMenuAction::Close)
+        .expect("close item");
+    assert!(close < restart);
     let frame = state.compose(106, 20).expect("menu frame");
     assert!(frame_rows(&frame).join("\n").contains("Copy session ID"));
 }
@@ -332,14 +334,18 @@ fn pane_menu_lists_and_copies_the_pane_agent_session_id() {
         )),
     );
     let items = menu_actions(&state);
+    let info = items
+        .iter()
+        .position(|action| *action == ClientContextMenuAction::ToggleInfoPane)
+        .expect("info pane item");
     assert_eq!(
-        items.last(),
+        items.get(info + 1),
         Some(&ClientContextMenuAction::CopySessionId),
         "after Info pane"
     );
 
     let mut outcome = ClientShellInput::default();
-    state.activate_context_menu_item(items.len() - 1, &mut outcome);
+    state.activate_context_menu_item(info + 1, &mut outcome);
     assert!(matches!(
         &outcome.actions[..],
         [ClientShellAction::ClipboardWrite(bytes)] if bytes == b"codex-thread-1"

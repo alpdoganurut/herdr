@@ -88,6 +88,8 @@ mod endpoint_requests;
 mod lifecycle;
 mod native_graphics;
 mod news_notify;
+/// Fork: the `endpoint.notes-reveal.v1` push.
+pub mod notes_reveal;
 mod notifications;
 /// Fork: the `endpoint.quiet.v1` push (quiet messages, do-not-disturb).
 pub mod quiet;

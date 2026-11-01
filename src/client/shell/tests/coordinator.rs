@@ -918,6 +918,7 @@ fn render_sidebar(
         tab_mutes: None,
         sidebar_filter: None,
         quiet: None,
+        info_pane_open: false,
     };
     let rect = render_tab_sidebar_with(
         &mut buffer,

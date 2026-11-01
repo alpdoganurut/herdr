@@ -155,6 +155,8 @@ impl ClientShellState {
         let active_view = self.active_view();
         let pins_view = self.pins_view();
         let scheduled_view = self.scheduled_view();
+        // Fork (menu design): the toolbar's notes button.
+        let info_pane_open = self.info_dock_open_for_focused_tab();
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
@@ -221,6 +223,7 @@ impl ClientShellState {
                 &self.active_endpoint_id,
                 self.snapshot.as_deref(),
             ),
+            info_pane_open,
         };
         if let Some(snapshot) = local_snapshot {
             if layout.mobile_header.height > 0 {
@@ -375,6 +378,8 @@ impl ClientShellState {
         let active_view = self.active_view();
         let pins_view = self.pins_view();
         let scheduled_view = self.scheduled_view();
+        // Fork (menu design): the toolbar's notes button.
+        let info_pane_open = self.info_dock_open_for_focused_tab();
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
         self.hits = render::render_shell(
             &mut buffer,
@@ -453,6 +458,7 @@ impl ClientShellState {
                     &self.active_endpoint_id,
                     Some(snapshot),
                 ),
+                info_pane_open,
             },
         );
         // Fork: the info dock, into the chrome buffer; the pane surface blit
@@ -981,12 +987,17 @@ impl ClientShellState {
         if let Some(overlay) = self.overlay.as_ref() {
             let mut composed = frame.to_ratatui_buffer()?;
             let cursor = if let ClientShellOverlay::ContextMenu(menu) = overlay {
-                let rendered =
-                    render::render_context_menu(&mut composed, menu, &self.config.palette)?;
+                let rendered = render::render_context_menu(
+                    &mut composed,
+                    menu,
+                    &self.config.palette,
+                    &self.config.keybinds,
+                )?;
                 occlusion.cover(rendered.area);
                 self.hits.context_menu_rows = rendered.menu_rows;
                 self.hits.context_menu_swatches = rendered.menu_swatches;
                 self.hits.context_menu_remind_options = rendered.menu_remind_options;
+                self.hits.context_menu_area = rendered.area;
                 None
             } else if let ClientShellOverlay::GlobalMenu(menu) = overlay {
                 let rendered = render::render_global_menu(

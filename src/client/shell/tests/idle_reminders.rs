@@ -748,35 +748,35 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
     snapshot.tabs[1].remind_every = Some(TabRemindInterval::H6);
     let mut state = tabs_state(snapshot);
     let items = open_tab_menu(&mut state, 1);
-    let close = items
+    // Fork (menu design): the Team section's "Set role…", then the Alerts
+    // section: Important, the toggles, the selector and the swatches.
+    let role = items
         .iter()
-        .position(|item| item.action == ClientContextMenuAction::Close)
+        .position(|item| item.action == ClientContextMenuAction::SetRole)
         .unwrap();
     assert_eq!(
-        items[close..]
+        items[role..]
             .iter()
             .map(|item| item.action)
             .collect::<Vec<_>>(),
         [
-            ClientContextMenuAction::Close,
-            // Fork (agents model v2): "Set role…" on an agent tab and the
-            // tab's "Info pane" sit between Close and Important.
             ClientContextMenuAction::SetRole,
-            ClientContextMenuAction::ToggleInfoPane,
             ClientContextMenuAction::Important,
-            // Fork (sidebar v3): Pin / Unpin right after Important.
             ClientContextMenuAction::Pin,
-            // Fork: Mute / Unmute notifications right after Pin.
             ClientContextMenuAction::Mute,
-            // Fork: Do not disturb right after Mute.
             ClientContextMenuAction::Dnd,
             ClientContextMenuAction::RemindTop,
             ClientContextMenuAction::RemindBottom,
             ClientContextMenuAction::Color
         ]
     );
-    let important = close + 3;
-    assert_eq!(items[important].label, "Important \u{2713}");
+    let important = role + 1;
+    // A stable label; the star carries the state.
+    assert_eq!(items[important].label, "Important");
+    assert_eq!(
+        items[important].look.kind,
+        super::super::context_menu_look::MenuKind::Star(true)
+    );
     assert_eq!(
         menu_remind(&state).1,
         ClientTabMenuRemind {
@@ -784,13 +784,17 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
             cursor: 4
         }
     );
-    let frame = state.compose(106, 20).expect("menu frame");
-    // Fork (sidebar v3): Pin (and Mute, and Do not disturb) sit between
-    // Important and the selector.
+    let frame = state.compose(106, 30).expect("menu frame");
     let top = row_text(&frame, state.hits.context_menu_rows[important + 4].0);
     let bottom = row_text(&frame, state.hits.context_menu_rows[important + 5].0);
-    assert!(top.starts_with("remind  5m  10m  30m"), "{top:?}");
-    assert!(bottom.starts_with("        1h [6h]  daily"), "{bottom:?}");
+    assert!(
+        top.starts_with(" \u{25F7} remind   5m    10m   30m"),
+        "{top:?}"
+    );
+    assert!(
+        bottom.starts_with("            1h   [6h]   daily"),
+        "{bottom:?}"
+    );
     let options = state.hits.context_menu_remind_options.clone();
     assert_eq!(
         options.iter().map(|(_, index)| *index).collect::<Vec<_>>(),
@@ -803,19 +807,18 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
 
     let on_width = state.hits.context_menu_rows[0].0.width;
     let important_row = state.hits.context_menu_rows[important].0;
-    assert!(
-        row_text(&frame, important_row).starts_with("Important \u{2713} "),
-        "label, one space, the check: {:?}",
-        row_text(&frame, important_row)
-    );
+    let text = row_text(&frame, important_row);
+    assert!(text.starts_with(" \u{2605} Important "), "{text:?}");
+    assert!(text.trim_end().ends_with("on"), "{text:?}");
 
     let mut state = tabs_state(waiting_snapshot(AgentStatus::Done, false));
     let items = open_tab_menu(&mut state, 1);
-    assert!(items.iter().any(|item| item.label == "Important"));
-    state.compose(106, 20).expect("menu frame");
+    assert!(items.iter().any(|item| item.label == "Important"
+        && item.look.kind == super::super::context_menu_look::MenuKind::Star(false)));
+    state.compose(106, 30).expect("menu frame");
     assert_eq!(
         state.hits.context_menu_rows[0].0.width, on_width,
-        "the check does not widen the menu"
+        "the state does not widen the menu"
     );
 }
 

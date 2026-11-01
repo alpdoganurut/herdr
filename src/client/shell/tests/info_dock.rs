@@ -1438,9 +1438,10 @@ fn the_tab_menu_toggles_that_tabs_info_pane_without_focusing_it() {
             .iter()
             .position(|item| item.action == ClientContextMenuAction::Important)
             .expect("important");
+        // Fork (menu design): Info pane leads with Close, before Important.
         assert!(
-            close < index && index < important,
-            "between Close and Important"
+            index < close && close < important,
+            "before Close and Important"
         );
         let mut outcome = ClientShellInput::default();
         state.activate_context_menu_item(index, &mut outcome);
@@ -1453,11 +1454,14 @@ fn the_tab_menu_toggles_that_tabs_info_pane_without_focusing_it() {
         outcome
     }
 
-    // The focused tab: the dock opens and the surface narrows.
+    // The focused tab: the dock opens and the surface narrows; the session
+    // keeps the keyboard.
     let mut state = dock_state();
     let outcome = pick_info_pane(&mut state, "tab_1");
     assert!(state.info_dock_open_for_focused_tab());
     assert!(outcome.resize);
+    recompose(&mut state);
+    assert!(!state.info_dock_focused());
 
     // A background tab: state only, nothing focused or resized.
     let mut state = dock_state();
@@ -1528,4 +1532,150 @@ fn the_first_snapshot_reports_only_a_size_change() {
         state.surface_report_required(&before, COLS, ROWS),
         before.size != state.surface_size(COLS, ROWS)
     );
+}
+
+#[test]
+fn opening_the_info_pane_never_moves_the_keyboard_focus() {
+    let mut config = Config::default();
+    config.keys.toggle_info_pane = crate::config::BindingConfig::one("alt+n");
+    let mut state = state_with(config);
+    let alt_n = || {
+        vec![RawInputEvent::Key(TerminalKey::new(
+            KeyCode::Char('n'),
+            KeyModifiers::ALT,
+        ))]
+    };
+    // alt+n opens the focused tab's dock; keys still go to the session.
+    let opened = state.handle_raw_events(alt_n());
+    answer_in_flight(&mut state, &opened, |_| ResponseResult::NotesGet {
+        notes: notes_info(NOTES, "sha256:4e9b1c07a2f3"),
+    });
+    recompose(&mut state);
+    assert!(state.info_dock_open_for_focused_tab());
+    assert!(!state.info_dock_focused());
+    let typed = state.handle_raw_events(vec![key(KeyCode::Char('j'))]);
+    assert_eq!(pane_requests(&typed), 1, "j goes to the pane");
+
+    // A click into the dock focuses it.
+    let body = state.hits.info_dock.body;
+    state.handle_raw_events(click(body.x + 5, body.y + 3));
+    assert!(state.info_dock_focused());
+
+    // alt+n again closes it and drops its focus; keys go to the pane again.
+    state.handle_raw_events(alt_n());
+    recompose(&mut state);
+    assert!(!state.info_dock_open_for_focused_tab());
+    assert!(!state.info_dock.as_deref().expect("dock").focused);
+    let typed = state.handle_raw_events(vec![key(KeyCode::Char('k'))]);
+    assert_eq!(pane_requests(&typed), 1);
+
+    // Reopened: still not focused (the earlier click does not carry over).
+    let reopened = state.handle_raw_events(alt_n());
+    recompose(&mut state);
+    let _ = reopened;
+    assert!(state.info_dock_open_for_focused_tab());
+    assert!(!state.info_dock_focused());
+}
+
+#[test]
+fn a_notes_reveal_opens_the_tabs_pane_once_without_taking_the_keyboard() {
+    use crate::server::headless::notes_reveal::NotesRevealPayload;
+    let payload = |boot_id: &str, revision, tab_id: &str| NotesRevealPayload {
+        boot_id: boot_id.into(),
+        revision,
+        tab_id: tab_id.into(),
+    };
+    let local = ClientEndpointId::Local;
+    let mut state = dock_state();
+    // The focused tab: the dock opens (the surface narrows), unfocused.
+    let outcome = state.receive_notes_reveal(&local, payload("boot-1", 1, "tab_1"));
+    assert!(outcome.repaint && outcome.resize);
+    assert!(state.info_dock_open_for_focused_tab());
+    recompose(&mut state);
+    assert!(!state.info_dock_focused());
+    let typed = state.handle_raw_events(vec![key(KeyCode::Char('j'))]);
+    assert_eq!(pane_requests(&typed), 1, "keys stay with the session");
+
+    // Already open: nothing changes (a reveal never closes it).
+    let again = state.receive_notes_reveal(&local, payload("boot-1", 2, "tab_1"));
+    assert!(!again.repaint && !again.resize);
+    assert!(state.info_dock_open_for_focused_tab());
+
+    // Closed by the user, an old or repeated revision does not reopen it; a
+    // newer one does.
+    toggle(&mut state);
+    assert!(!state.info_dock_open_for_focused_tab());
+    state.receive_notes_reveal(&local, payload("boot-1", 2, "tab_1"));
+    assert!(!state.info_dock_open_for_focused_tab(), "seen already");
+    state.receive_notes_reveal(&local, payload("boot-1", 3, "tab_1"));
+    assert!(state.info_dock_open_for_focused_tab());
+
+    // A background tab opens in state only.
+    let background = state.receive_notes_reveal(&local, payload("boot-1", 4, "tab_2"));
+    assert!(!background.resize);
+    assert!(state.info_dock.as_deref().is_some_and(|dock| dock
+        .open_tabs
+        .contains(&(local.clone(), "tab_2".to_owned()))));
+
+    // A new server boot starts its revisions over.
+    toggle(&mut state);
+    state.receive_notes_reveal(&local, payload("boot-2", 1, "tab_1"));
+    assert!(state.info_dock_open_for_focused_tab());
+    recompose(&mut state);
+    assert!(!state.info_dock_focused());
+}
+
+/// Tab A's dock has the keyboard (a click), then tab B is focused with the
+/// `next_tab` key (the server's answer is the new snapshot).
+fn focused_dock_then_tab_b() -> ClientShellState {
+    let mut config = Config::default();
+    config.keys.toggle_info_pane = crate::config::BindingConfig::one("alt+n");
+    config.keys.next_tab = crate::config::BindingConfig::one("alt+l");
+    let mut state = state_with(config);
+    open_loaded(&mut state);
+    let body = state.hits.info_dock.body;
+    state.handle_raw_events(click(body.x + 5, body.y + 3));
+    assert!(state.info_dock_focused(), "tab A's dock has the keyboard");
+    let switched = state.handle_raw_events(vec![RawInputEvent::Key(TerminalKey::new(
+        KeyCode::Char('l'),
+        KeyModifiers::ALT,
+    ))]);
+    assert!(
+        !info_requests(&switched).is_empty(),
+        "the key asks the server to focus the next tab"
+    );
+    state.set_snapshot(Box::new(two_tab_snapshot("tab_2")));
+    recompose(&mut state);
+    state
+}
+
+#[test]
+fn opening_another_tabs_pane_drops_a_focus_left_from_the_first() {
+    let mut state = focused_dock_then_tab_b();
+    state.handle_raw_events(vec![RawInputEvent::Key(TerminalKey::new(
+        KeyCode::Char('n'),
+        KeyModifiers::ALT,
+    ))]);
+    recompose(&mut state);
+    assert!(state.info_dock_open_for_focused_tab());
+    assert!(!state.info_dock_focused());
+    let typed = state.handle_raw_events(vec![key(KeyCode::Char('j'))]);
+    assert_eq!(pane_requests(&typed), 1, "keys go to tab B's pane");
+}
+
+#[test]
+fn a_reveal_of_another_tab_drops_a_focus_left_from_the_first() {
+    use crate::server::headless::notes_reveal::NotesRevealPayload;
+    let mut state = focused_dock_then_tab_b();
+    state.receive_notes_reveal(
+        &ClientEndpointId::Local,
+        NotesRevealPayload {
+            boot_id: "boot-1".into(),
+            revision: 1,
+            tab_id: "tab_2".into(),
+        },
+    );
+    recompose(&mut state);
+    assert!(state.info_dock_open_for_focused_tab());
+    assert!(!state.info_dock_focused());
 }

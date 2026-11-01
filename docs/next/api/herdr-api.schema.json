@@ -5615,6 +5615,18 @@
           ],
           "type": "object"
         },
+        "NotesRevealParams": {
+          "description": "`notes.reveal`: ask the attached clients to show the notes' tab's info\npane (UI only; nothing is written). The server only signals\n(`endpoint.notes-reveal.v1`); whether a pane opens is each client's: it\nopens it, without taking the keyboard, unless it is already open. An\nolder server answers with an unknown method, which a caller ignores.",
+          "properties": {
+            "target": {
+              "$ref": "#/schemas/request/$defs/NotesTarget"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
         "NotesSetParams": {
           "description": "`notes.set`: replace the text when `base_revision` is current (compare\nand swap). `None` only succeeds while no notes file exists.",
           "properties": {
@@ -10279,6 +10291,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/CheckpointsContextParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork: show a tab's notes in the attached clients' info panes (an\nagent's `agents_notes_write reveal=true`).",
+          "properties": {
+            "method": {
+              "const": "notes.reveal",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/NotesRevealParams"
             }
           },
           "required": [

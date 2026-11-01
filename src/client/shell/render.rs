@@ -299,6 +299,9 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) sidebar_filter: Option<&'a super::sidebar_filter::SidebarFilter>,
     /// Fork: the active endpoint's quiet state (the one-off model's input).
     pub(super) quiet: Option<&'a super::quiet::ClientQuietState>,
+    /// Fork (menu design): the focused tab's info pane is open (the
+    /// toolbar's notes button is lit).
+    pub(super) info_pane_open: bool,
 }
 
 /// The sidebar column for the configured `sidebar_layout`, collapse state,

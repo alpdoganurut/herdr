@@ -205,7 +205,10 @@ fn dnd_menu_item_toggles_through_tab_set_dnd_and_hides_without_server_support() 
     let items = open(&mut state);
     let index = items
         .iter()
-        .position(|item| item.label == "Do not disturb")
+        .position(|item| {
+            item.label == "Do not disturb"
+                && item.look.kind == super::super::context_menu_look::MenuKind::Toggle(false)
+        })
         .expect("a Do not disturb item");
     let mute = items
         .iter()
@@ -223,8 +226,11 @@ fn dnd_menu_item_toggles_through_tab_set_dnd_and_hides_without_server_support() 
     let items = open(&mut state);
     let index = items
         .iter()
-        .position(|item| item.label == "End do not disturb")
-        .expect("an End do not disturb item");
+        .position(|item| {
+            item.label == "Do not disturb"
+                && item.look.kind == super::super::context_menu_look::MenuKind::Toggle(true)
+        })
+        .expect("a Do not disturb item, on");
     let mut outcome = ClientShellInput::default();
     state.activate_context_menu_item(index, &mut outcome);
     assert!(matches!(

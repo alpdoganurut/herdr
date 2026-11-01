@@ -195,3 +195,120 @@ async fn dock_methods_round_trip_over_the_client_shell() {
 
     shutdown_test_runtimes(&mut server);
 }
+
+fn notes_reveal_payloads(
+    control: &std::sync::mpsc::Receiver<Vec<u8>>,
+) -> Vec<crate::server::headless::notes_reveal::NotesRevealPayload> {
+    let mut payloads = Vec::new();
+    while let Ok(bytes) = control.try_recv() {
+        if let ServerMessage::EndpointControl { kind, data } = read_server_message(bytes) {
+            if kind == crate::server::headless::notes_reveal::NOTES_REVEAL_KIND {
+                payloads.push(
+                    crate::server::headless::notes_reveal::NotesRevealPayload::decode(&data)
+                        .expect("notes reveal payload decodes"),
+                );
+            }
+        }
+    }
+    payloads
+}
+
+/// Fork (`agents_notes_write reveal=true`): `notes.reveal` reaches every
+/// attached client shell once as `endpoint.notes-reveal.v1`, keyed like the
+/// shell snapshot's tab row; a client that attaches later gets no replay.
+#[tokio::test]
+async fn fork_smoke_a_notes_reveal_reaches_every_client_once() {
+    let (mut server, _rx) = server_with_claude(Some(SESSION_ID));
+    let (first, _first_render) = connect_test_shell(&mut server, 91, 80, 23);
+    let (second, _second_render) = connect_test_shell(&mut server, 92, 80, 23);
+    server.render_and_stream();
+    assert!(
+        notes_reveal_payloads(&first).is_empty() && notes_reveal_payloads(&second).is_empty(),
+        "nothing before a reveal"
+    );
+
+    let tab_id = server.app.public_tab_id(0, 0).expect("tab id");
+    let reply = api(
+        &mut server,
+        Method::NotesReveal(crate::api::schema::notes::NotesRevealParams {
+            target: tab_target(&tab_id),
+        }),
+    );
+    assert_eq!(reply["result"]["type"], "ok", "{reply}");
+    server.render_and_stream();
+    let snapshot = crate::server::client_shell::snapshot(&server.app, "fork-smoke", 1, None, None);
+    assert!(snapshot.tabs.iter().any(|tab| tab.tab_id == tab_id));
+    for control in [&first, &second] {
+        let payloads = notes_reveal_payloads(control);
+        assert_eq!(payloads.len(), 1, "one payload per client");
+        assert_eq!(payloads[0].tab_id, tab_id, "keyed like the tab row");
+        assert_eq!(payloads[0].revision, 1);
+    }
+    server.render_and_stream();
+    assert!(
+        notes_reveal_payloads(&first).is_empty(),
+        "a reveal is sent once"
+    );
+
+    // A client attaching after the reveal does not get it replayed.
+    let (late, _late_render) = connect_test_shell(&mut server, 93, 80, 23);
+    server.render_and_stream();
+    server.render_and_stream();
+    assert!(notes_reveal_payloads(&late).is_empty(), "no replay");
+
+    // The next reveal reaches all three.
+    api(
+        &mut server,
+        Method::NotesReveal(crate::api::schema::notes::NotesRevealParams {
+            target: tab_target(&tab_id),
+        }),
+    );
+    server.render_and_stream();
+    for control in [&first, &second, &late] {
+        let payloads = notes_reveal_payloads(control);
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0].revision, 2);
+    }
+
+    // Two reveals before one render pass: both reach every client, in
+    // order (another tab's first).
+    let other = crate::workspace::Workspace::test_new("other");
+    server.app.state.workspaces.push(other);
+    server.app.state.ensure_test_terminals();
+    let other_tab = server.app.public_tab_id(1, 0).expect("other tab id");
+    for tab in [&other_tab, &tab_id] {
+        let reply = api(
+            &mut server,
+            Method::NotesReveal(crate::api::schema::notes::NotesRevealParams {
+                target: tab_target(tab),
+            }),
+        );
+        assert_eq!(reply["result"]["type"], "ok", "{reply}");
+    }
+    server.render_and_stream();
+    for control in [&first, &second, &late] {
+        let payloads = notes_reveal_payloads(control);
+        let got: Vec<(u64, &str)> = payloads
+            .iter()
+            .map(|payload| (payload.revision, payload.tab_id.as_str()))
+            .collect();
+        assert_eq!(got, [(3, other_tab.as_str()), (4, tab_id.as_str())]);
+    }
+
+    // The client shell takes it: the tab's info pane opens without focus.
+    let mut shell = crate::client::ClientShellState::new(
+        crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),
+    );
+    let outcome = shell.receive_notes_reveal(
+        &crate::client::endpoint::ClientEndpointId::Local,
+        crate::server::headless::notes_reveal::NotesRevealPayload {
+            boot_id: "fork-smoke".into(),
+            revision: 2,
+            tab_id: tab_id.clone(),
+        },
+    );
+    assert!(outcome.repaint);
+    assert!(shell.info_dock_open_unfocused_for_test(&tab_id));
+
+    shutdown_test_runtimes(&mut server);
+}

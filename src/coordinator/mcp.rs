@@ -50,8 +50,8 @@ use crate::api::schema::agents_model::{
     AgentsTurnOrigin,
 };
 use crate::api::schema::notes::{
-    NotesAuthor, NotesGetParams, NotesInfo, NotesSetParams, NotesTarget, NotesWriteInfo,
-    NotesWriteOutcome,
+    NotesAuthor, NotesGetParams, NotesInfo, NotesRevealParams, NotesSetParams, NotesTarget,
+    NotesWriteInfo, NotesWriteOutcome,
 };
 use crate::api::schema::Method;
 
@@ -2559,9 +2559,10 @@ impl<A: Api> Session<A> {
         let text =
             raw_str_arg(args, "text")?.ok_or_else(|| err("invalid_request", "text is required"))?;
         let base = req_str(args, "base_revision")?;
+        let reveal = bool_arg(args, "reveal")?;
         let target = self.notes_target(caller, args)?;
         let result = self.api.call(Method::NotesSet(NotesSetParams {
-            target,
+            target: target.clone(),
             text,
             base_revision: Some(base.clone()),
             author: NotesAuthor::Agent,
@@ -2582,10 +2583,25 @@ impl<A: Api> Session<A> {
             }
             NotesWriteOutcome::Unknown => "done",
         };
+        // Fork: `reveal` asks the attached clients to show the page (UI
+        // only). The write stands either way: an older server's unknown
+        // method or a closed tab only leaves the pane as it was.
+        let shown = reveal
+            && self
+                .api
+                .call(Method::NotesReveal(NotesRevealParams { target }))
+                .is_ok();
         Ok(Reply::new(
             format!(
-                "rev {}  {what}: {} ({} bytes)",
-                notes.revision, notes.key, notes.bytes
+                "rev {}  {what}: {} ({} bytes){}",
+                notes.revision,
+                notes.key,
+                notes.bytes,
+                if shown {
+                    ", shown in the info pane"
+                } else {
+                    ""
+                }
             ),
             write_data(&write),
         ))
@@ -3450,6 +3466,7 @@ pub fn tools() -> Vec<Value> {
                 "text": string("The whole new notes (markdown)"),
                 "base_revision": string("The rev from agents_notes_read (`none` while there are no notes)"),
                 "target": string("Coordinator only, in your user's turn: another agent's notes"),
+                "reveal": { "type": "boolean", "description": "Also open the page in your user's info pane (it does not take their keyboard). Default false" },
             }), &["text", "base_revision"]) }),
         json!({ "name": "agents_set_meta", "description": "Set the role and/or the one-line note of your own pane or a teammate's (an empty string clears it). A team member's role also names it (fixer, reviewer-2).",
             "inputSchema": schema(json!({
@@ -4061,6 +4078,10 @@ mod tests {
                     self.notes_write(&pane, params.text);
                     Ok(written(NotesWriteOutcome::Written, self.notes_info(&pane)))
                 }
+                Method::NotesReveal(params) => {
+                    pane(&params.target)?;
+                    Ok(json!({ "type": "ok" }))
+                }
                 // Nothing kept: every id unknown (tests queue real answers).
                 Method::AgentsReadMessages(params) => Ok(json!({
                     "type": "agents_read_messages",
@@ -4243,9 +4264,10 @@ mod tests {
                 Method::TeamSetPurpose(params) => Ok(
                     json!({ "team": { "workspace_id": params.workspace_id, "purpose": params.purpose } }),
                 ),
-                notes @ (Method::NotesGet(_) | Method::NotesAppend(_) | Method::NotesSet(_)) => {
-                    self.notes_answer(notes)
-                }
+                notes @ (Method::NotesGet(_)
+                | Method::NotesAppend(_)
+                | Method::NotesSet(_)
+                | Method::NotesReveal(_)) => self.notes_answer(notes),
                 Method::AgentsQueued(_) => Ok(json!({ "type": "agents_queued", "messages": [] })),
                 Method::AgentsReportWait(_) => Ok(json!({ "type": "ok" })),
                 // The server queue: its ids, read through the log, to the caller.
@@ -6181,6 +6203,62 @@ mod tests {
         );
         assert!(!out.is_error, "{}", out.text);
         assert_eq!(world.calls_of("notes.set").len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn notes_write_with_reveal_asks_the_server_to_show_the_page() {
+        let (dir, world) = world("mcp-notes-reveal");
+        let mut s = session(&world, "w3:p1", Verdict::Verified);
+        // Without reveal (the default): no notes.reveal.
+        let out = call(
+            &mut s,
+            "agents_notes_write",
+            json!({ "text": "- one", "base_revision": "none" }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(world.calls_of("notes.reveal").is_empty());
+        assert!(!out.text.contains("shown"), "{}", out.text);
+
+        // reveal=true: the write, then one notes.reveal for the same notes.
+        let out = call(
+            &mut s,
+            "agents_notes_write",
+            json!({ "text": "- two", "base_revision": "r1", "reveal": true }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("shown in the info pane"), "{}", out.text);
+        let reveals = world.calls_of("notes.reveal");
+        let [Method::NotesReveal(params)] = &reveals[..] else {
+            panic!("one notes.reveal, got {reveals:?}");
+        };
+        let sets = world.calls_of("notes.set");
+        let Some(Method::NotesSet(set)) = sets.last() else {
+            panic!("notes.set");
+        };
+        assert_eq!(params.target, set.target);
+
+        // A conflict writes nothing and reveals nothing.
+        let out = call(
+            &mut s,
+            "agents_notes_write",
+            json!({ "text": "- three", "base_revision": "r1", "reveal": true }),
+        );
+        assert!(body(&out).starts_with("error conflict"), "{}", out.text);
+        assert_eq!(world.calls_of("notes.reveal").len(), 1);
+
+        // Not a boolean: refused before anything is written.
+        let out = call(
+            &mut s,
+            "agents_notes_write",
+            json!({ "text": "- four", "base_revision": "r2", "reveal": "yes" }),
+        );
+        assert!(
+            body(&out).starts_with("error invalid_request"),
+            "{}",
+            out.text
+        );
+        assert_eq!(world.calls_of("notes.set").len(), 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
