@@ -17,13 +17,12 @@ use crate::agents_model::{InputSource, TurnOrigin};
 use crate::api::schema::agents_model::{
     error_code, AgentActorKind, AgentPaneKind, AgentsAccess, AgentsActionOutcome,
     AgentsActionsParams, AgentsActorInfo, AgentsActorParams, AgentsCheckAction, AgentsCheckParams,
-    AgentsCheckpointParams, AgentsDirectory, AgentsDirectoryParams, AgentsGroupInfo,
-    AgentsGroupTeam, AgentsLifecycleParams, AgentsMessageOutcome, AgentsMessageResult,
-    AgentsMoveResult, AgentsMoveTabParams, AgentsNotesAppendParams, AgentsOpenResult,
-    AgentsOpenTabParams, AgentsOriginDetail, AgentsPaneInfo, AgentsReadFormat, AgentsReadParams,
-    AgentsReadResult, AgentsReadSource, AgentsRenameResult, AgentsRenameTabParams,
-    AgentsScreenAccess, AgentsSendMessageParams, AgentsSetMetaParams, AgentsSetMetaResult,
-    AgentsTabInfo, AgentsTeamRef, AgentsWho,
+    AgentsDirectory, AgentsDirectoryParams, AgentsGroupInfo, AgentsGroupTeam,
+    AgentsLifecycleParams, AgentsMessageOutcome, AgentsMessageResult, AgentsMoveResult,
+    AgentsMoveTabParams, AgentsOpenResult, AgentsOpenTabParams, AgentsOriginDetail, AgentsPaneInfo,
+    AgentsReadFormat, AgentsReadParams, AgentsReadResult, AgentsReadSource, AgentsRenameResult,
+    AgentsRenameTabParams, AgentsScreenAccess, AgentsSendMessageParams, AgentsSetMetaParams,
+    AgentsSetMetaResult, AgentsTabInfo, AgentsTeamRef, AgentsWho,
 };
 use crate::api::schema::{ErrorBody, Method, Request, ResponseResult};
 use crate::layout::PaneId;
@@ -210,14 +209,9 @@ impl App {
     }
 
     /// A pane state update's status edge, for the turn origin. O(tabs).
-    /// What it did to the turn (the automatic checkpoints read it).
-    pub(crate) fn note_turn_edge(
-        &mut self,
-        update: &crate::app::actions::PaneStateUpdate,
-    ) -> crate::agents_model::turn::TurnEdge {
-        use crate::agents_model::turn::TurnEdge;
+    pub(crate) fn note_turn_edge(&mut self, update: &crate::app::actions::PaneStateUpdate) {
         if update.previous_state == update.state {
-            return TurnEdge::None;
+            return;
         }
         let Some(terminal_id) = self
             .state
@@ -226,10 +220,10 @@ impl App {
             .and_then(|ws| ws.pane_state(update.pane_id))
             .map(|pane| &pane.attached_terminal_id)
         else {
-            return TurnEdge::None;
+            return;
         };
         let Some(terminal) = self.state.terminals.get_mut(terminal_id) else {
-            return TurnEdge::None;
+            return;
         };
         let hook = terminal.full_lifecycle_hook_authority_active();
         terminal.turn_mut().on_status_edge(
@@ -238,7 +232,7 @@ impl App {
             hook,
             Instant::now(),
             now_unix(),
-        )
+        );
     }
 
     /// The effective turn of a terminal now.
@@ -1975,123 +1969,6 @@ impl App {
             self.schedule_session_save();
             self.mark_coordinator_input_dirty();
         }
-    }
-
-    // ----- agents.notes_append / agents.checkpoint ---------------------------
-
-    pub(super) fn handle_agents_notes_append(
-        &mut self,
-        id: String,
-        params: AgentsNotesAppendParams,
-    ) -> String {
-        let result = self.agents_notes_append(params);
-        Self::model_reply(id, result)
-    }
-
-    /// The pane a notes write targets, after the check.
-    fn notes_target(
-        &mut self,
-        caller: &ModelCaller,
-        target: &str,
-        action: &'static str,
-        soft: policy::SoftEdit,
-    ) -> ModelResult<(String, bool, LogLine)> {
-        let target = self.resolve_model_tab(target)?;
-        let pane = self
-            .target_pane(target)
-            .ok_or_else(|| ModelError::new(error_code::NOT_FOUND, "no pane"))?;
-        let public = self.public_pane_id(target.ws_idx, pane).unwrap_or_default();
-        let mut line = self.tab_line(action, target);
-        line.target_pane = Some(public.clone());
-        self.authorize_on_tab(caller, target, Action::SoftEdit(soft), &line)?;
-        self.take_soft_edit(caller, &line)?;
-        let own = caller.ws_idx == target.ws_idx && caller.pane_id == pane;
-        Ok((public, own, line))
-    }
-
-    fn agents_notes_append(
-        &mut self,
-        params: AgentsNotesAppendParams,
-    ) -> ModelResult<ResponseResult> {
-        let caller = self.required_caller(&params.caller_pane)?;
-        let (public, own, line) = self.notes_target(
-            &caller,
-            &params.target,
-            "notes_append",
-            policy::SoftEdit::NotesAppend,
-        )?;
-        let text = if own {
-            params.text
-        } else {
-            format!(
-                "[from {}] {}",
-                one_line(&caller.name, LABEL_MAX_CHARS),
-                params.text
-            )
-        };
-        let result = self.call_method(Method::NotesAppend(
-            crate::api::schema::notes::NotesAppendParams {
-                target: crate::api::schema::notes::NotesTarget {
-                    pane_id: Some(public),
-                    ..Default::default()
-                },
-                text,
-                section: params.section,
-                stamp: params.stamp,
-                author: crate::api::schema::notes::NotesAuthor::Agent,
-            },
-        ))?;
-        self.log_model_action(Some(&caller), AgentsActionOutcome::Ok, line);
-        Ok(result)
-    }
-
-    pub(super) fn handle_agents_checkpoint(
-        &mut self,
-        id: String,
-        params: AgentsCheckpointParams,
-    ) -> String {
-        let result = self.agents_checkpoint(params);
-        Self::model_reply(id, result)
-    }
-
-    fn agents_checkpoint(&mut self, params: AgentsCheckpointParams) -> ModelResult<ResponseResult> {
-        let caller = self.required_caller(&params.caller_pane)?;
-        let kind: crate::api::schema::notes::CheckpointKind = serde_json::from_value(
-            serde_json::Value::String(params.kind.trim().to_ascii_lowercase()),
-        )
-        .ok()
-        .filter(|kind| *kind != crate::api::schema::notes::CheckpointKind::Unknown)
-        .ok_or_else(|| {
-            ModelError::new(
-                error_code::INVALID_PARAMS,
-                "kind: decision, milestone, failure, bookmark or note",
-            )
-        })?;
-        let (public, own, line) = self.notes_target(
-            &caller,
-            &params.target,
-            "checkpoint",
-            policy::SoftEdit::Checkpoint,
-        )?;
-        let mut tags = params.tags;
-        if !own {
-            tags.push(format!("from:{}", one_line(&caller.name, LABEL_MAX_CHARS)));
-        }
-        let result = self.call_method(Method::CheckpointsAdd(
-            crate::api::schema::notes::CheckpointsAddParams {
-                target: crate::api::schema::notes::NotesTarget {
-                    pane_id: Some(public),
-                    ..Default::default()
-                },
-                kind,
-                title: params.title,
-                detail: params.detail,
-                tags,
-                author: crate::api::schema::notes::NotesAuthor::Agent,
-            },
-        ))?;
-        self.log_model_action(Some(&caller), AgentsActionOutcome::Ok, line);
-        Ok(result)
     }
 
     // ----- agents.actions ------------------------------------------------------

@@ -463,7 +463,9 @@ pub(crate) fn injection(handoff: &Path, transcript: Option<&Path>, kind: Kind) -
         handoff.display()
     );
     if kind == Kind::Mechanical {
-        text.push_str(" (written by herdr from your notes, checkpoints, git state and recent prompts, not by you)");
+        text.push_str(
+            " (written by herdr from your notes page, git state and recent prompts, not by you)",
+        );
     }
     if let Some(transcript) = transcript {
         text.push_str(&format!(
@@ -554,10 +556,8 @@ pub(crate) struct Mechanical {
     pub(crate) reason: String,
     pub(crate) written_unix: u64,
     pub(crate) cwd: Option<PathBuf>,
-    /// The tail of the agent's herdr notes.
-    pub(crate) notes_tail: Option<String>,
-    /// Recent checkpoints, oldest first, one line each.
-    pub(crate) checkpoints: Vec<String>,
+    /// The top of the session's notes page (the user's page).
+    pub(crate) notes: Option<String>,
     /// `git status --porcelain=v1 -b` lines (branch first).
     pub(crate) git: Vec<String>,
     /// The last user prompts, oldest first.
@@ -565,21 +565,12 @@ pub(crate) struct Mechanical {
     pub(crate) transcript: Option<PathBuf>,
 }
 
-/// Lines of notes kept in a mechanical handoff.
-pub(crate) const MECHANICAL_NOTES_LINES: usize = 40;
 /// Prompts kept.
 pub(crate) const MECHANICAL_PROMPTS: usize = 5;
 /// Characters per prompt.
 pub(crate) const MECHANICAL_PROMPT_CHARS: usize = 400;
 /// git status lines kept.
 pub(crate) const MECHANICAL_GIT_LINES: usize = 40;
-
-/// The last `max` lines of `text`.
-pub(crate) fn tail_lines(text: &str, max: usize) -> String {
-    let lines: Vec<&str> = text.trim_end().lines().collect();
-    let skip = lines.len().saturating_sub(max);
-    lines[skip..].join("\n")
-}
 
 /// The mechanical handoff as markdown.
 pub(crate) fn render_mechanical(m: &Mechanical) -> String {
@@ -620,19 +611,8 @@ pub(crate) fn render_mechanical(m: &Mechanical) -> String {
         }
         out.push_str("```\n");
     }
-    out.push_str("\n## Recent checkpoints (oldest first)\n");
-    if m.checkpoints.is_empty() {
-        out.push_str("- (none)\n");
-    }
-    for checkpoint in &m.checkpoints {
-        out.push_str(&format!("- {checkpoint}\n"));
-    }
-    out.push_str("\n## Notes (the end)\n");
-    match m
-        .notes_tail
-        .as_deref()
-        .filter(|text| !text.trim().is_empty())
-    {
+    out.push_str("\n## Notes page\n");
+    match m.notes.as_deref().filter(|text| !text.trim().is_empty()) {
         Some(text) => {
             out.push_str(text.trim_end());
             out.push('\n');

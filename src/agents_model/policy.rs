@@ -72,8 +72,6 @@ pub enum Dest {
 pub enum SoftEdit {
     RenameTab,
     SetMeta,
-    NotesAppend,
-    Checkpoint,
     /// Tab color, important, reminders.
     Cosmetic,
     SuspendRestart,
@@ -95,15 +93,13 @@ pub enum SoftEdit {
 }
 
 /// Writes only the owner may make.
-// The owner's own-pane writes run through the existing `notes.*` and
-// `checkpoints.*` methods; the variants keep the matrix complete and tested.
+// The owner's own-pane writes run through the existing `notes.*` methods;
+// the variant keeps the matrix complete and tested.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OwnOnly {
     /// Replacing the notes.
     NotesWrite,
-    CheckpointUpdate,
-    CheckpointRemove,
 }
 
 /// Team structure (D2). Disband, join and leave stay the user's.
@@ -121,7 +117,7 @@ pub enum TeamOp {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// List, get, status, notes and checkpoints, message and action logs,
+    /// List, get, status, notes, message and action logs,
     /// an agent pane's screen.
     Read,
     /// A shell pane's screen (U6).
@@ -415,8 +411,6 @@ mod tests {
         for soft in [
             SoftEdit::RenameTab,
             SoftEdit::SetMeta,
-            SoftEdit::NotesAppend,
-            SoftEdit::Checkpoint,
             SoftEdit::Cosmetic,
             SoftEdit::SuspendRestart,
             SoftEdit::ShellInput,
@@ -433,13 +427,7 @@ mod tests {
                 out.push(Action::SoftEdit(SoftEdit::Reopen { by_agent, dest }));
             }
         }
-        for own in [
-            OwnOnly::NotesWrite,
-            OwnOnly::CheckpointUpdate,
-            OwnOnly::CheckpointRemove,
-        ] {
-            out.push(Action::OwnOnly(own));
-        }
+        out.push(Action::OwnOnly(OwnOnly::NotesWrite));
         out.push(Action::Close);
         out.push(Action::TeamStructure(TeamOp::Make));
         out.push(Action::TeamStructure(TeamOp::Purpose));

@@ -1,19 +1,16 @@
-//! Notes and checkpoints (fork): the per-session markdown notes and the
-//! checkpoint timeline behind the info pane. Plain file I/O under
-//! `<config_dir>/notes/`; no `App`.
+//! Notes (fork): the per-session markdown page behind the info pane, the
+//! user's page (agents write it only when the user asks). Plain file I/O
+//! under `<config_dir>/notes/`; no `App`.
 //!
-//! Each key has up to three files: `<key>.md` (the notes), `<key>.meta.json`
-//! (who wrote last, when, and the key the pane used before) and
-//! `<key>.checkpoints.jsonl` (see [`checkpoints`]). Every write is a temp file
+//! Each key has up to two files: `<key>.md` (the notes) and `<key>.meta.json`
+//! (who wrote last, when, and the key the pane used before). Older builds
+//! also kept `<key>.checkpoints.jsonl`; such files are left alone and never
+//! read. Every write is a temp file
 //! in the same directory renamed over the target, so a reader never sees a
 //! partial file.
 
-pub(crate) mod auto;
 pub(crate) mod bounded;
-pub(crate) mod checkpoints;
 pub(crate) mod recall;
-pub(crate) mod transcript;
-pub(crate) mod worker;
 
 #[cfg(test)]
 mod tests;
@@ -143,12 +140,8 @@ pub(crate) fn local_hhmm() -> Option<String> {
 pub(crate) enum NotesError {
     /// A malformed key or argument.
     Invalid(String),
-    /// The id does not exist.
-    NotFound(String),
     /// Over a size cap.
     TooLarge(String),
-    /// Over the add rate limit.
-    RateLimited(String),
     Io(io::Error),
 }
 
@@ -157,19 +150,14 @@ impl NotesError {
         use crate::api::schema::notes::error_code;
         match self {
             Self::Invalid(_) => error_code::INVALID_PARAMS,
-            Self::NotFound(_) => error_code::NOT_FOUND,
             Self::TooLarge(_) => error_code::TOO_LARGE,
-            Self::RateLimited(_) => error_code::RATE_LIMITED,
             Self::Io(_) => error_code::IO,
         }
     }
 
     pub(crate) fn message(&self) -> String {
         match self {
-            Self::Invalid(message)
-            | Self::NotFound(message)
-            | Self::TooLarge(message)
-            | Self::RateLimited(message) => message.clone(),
+            Self::Invalid(message) | Self::TooLarge(message) => message.clone(),
             Self::Io(err) => format!("notes I/O failed: {err}"),
         }
     }
@@ -683,151 +671,28 @@ impl PaneKeys {
     }
 }
 
-/// Cached `checkpoints.context` results.
-const CONTEXT_CACHE_CAPACITY: usize = 256;
-/// Remembered transcript locations.
-const LOCATE_MEMO_CAPACITY: usize = 64;
-/// How long a transcript that was not found stays "not found".
-pub(crate) const LOCATE_MISS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
-/// A queued context read older than this is asked for again.
-pub(crate) const PENDING_TTL: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// The server's notes runtime (`App.notes`): the stores, the pane → key
-/// memory, the transcript location memo, the context cache and the worker.
+/// The server's notes runtime (`App.notes`): the store and the pane → key
+/// memory.
 #[derive(Debug)]
 pub(crate) struct NotesRuntime {
     /// `[notes] enabled`.
     pub enabled: bool,
-    /// `[notes] auto_checkpoints` (only while `enabled`).
-    pub auto: bool,
-    /// The automatic checkpoints' per-pane memory.
-    pub auto_tracker: auto::AutoTracker,
     pub store: NotesStore,
-    pub checkpoints: checkpoints::CheckpointStore,
     pub panes: PaneKeys,
-    /// herdr's transcript backup store (`agent_transcripts::store_dir()`).
-    pub store_dir: PathBuf,
-    /// Live transcript locations by `<agent>:<session>`: a hit is kept, a
-    /// miss expires after [`LOCATE_MISS_TTL`].
-    locate_memo: BoundedMap<String, (Option<PathBuf>, std::time::Instant)>,
-    /// `checkpoints.context` results by `<key>/<id>/<chars>`.
-    contexts: BoundedMap<String, crate::api::schema::notes::CheckpointContextInfo>,
-    /// Context reads on the worker, by the same key, since when.
-    pending: HashMap<String, std::time::Instant>,
-    pub worker: Option<worker::NotesWorker>,
 }
 
 impl Default for NotesRuntime {
     fn default() -> Self {
-        Self::new(
-            true,
-            notes_dir(),
-            crate::persist::agent_transcripts::store_dir(),
-        )
+        Self::new(true, notes_dir())
     }
 }
 
 impl NotesRuntime {
-    pub(crate) fn new(enabled: bool, dir: PathBuf, store_dir: PathBuf) -> Self {
+    pub(crate) fn new(enabled: bool, dir: PathBuf) -> Self {
         Self {
             enabled,
-            auto: true,
-            auto_tracker: auto::AutoTracker::default(),
-            store: NotesStore::new(dir.clone()),
-            checkpoints: checkpoints::CheckpointStore::new(dir),
+            store: NotesStore::new(dir),
             panes: PaneKeys::default(),
-            store_dir,
-            locate_memo: BoundedMap::new(LOCATE_MEMO_CAPACITY),
-            contexts: BoundedMap::new(CONTEXT_CACHE_CAPACITY),
-            pending: HashMap::new(),
-            worker: None,
         }
-    }
-
-    pub(crate) fn context_key(key: &str, id: &str, chars: u32) -> String {
-        format!("{key}/{id}/{chars}")
-    }
-
-    pub(crate) fn cached_context(
-        &mut self,
-        cache_key: &str,
-    ) -> Option<crate::api::schema::notes::CheckpointContextInfo> {
-        self.contexts.get(cache_key).cloned()
-    }
-
-    /// Whether a context read for `cache_key` is already queued (and not
-    /// stale).
-    pub(crate) fn context_pending(&self, cache_key: &str, now: std::time::Instant) -> bool {
-        self.pending
-            .get(cache_key)
-            .is_some_and(|since| now.duration_since(*since) < PENDING_TTL)
-    }
-
-    pub(crate) fn mark_context_pending(&mut self, cache_key: String, now: std::time::Instant) {
-        self.pending
-            .retain(|_, since| now.duration_since(*since) < PENDING_TTL);
-        self.pending.insert(cache_key, now);
-    }
-
-    /// The memoised live transcript of a session: `Some(Some(path))` found,
-    /// `Some(None)` recently not found, `None` unknown.
-    pub(crate) fn located(
-        &mut self,
-        memo_key: &str,
-        now: std::time::Instant,
-    ) -> Option<Option<PathBuf>> {
-        let (path, at) = self.locate_memo.get(memo_key)?.clone();
-        if path.is_none() && now.duration_since(at) >= LOCATE_MISS_TTL {
-            self.locate_memo.remove(memo_key);
-            return None;
-        }
-        Some(path)
-    }
-
-    /// Apply a worker result: fill the memo or the context cache. Returns
-    /// the anchor to record, when the job captured one for a checkpoint.
-    pub(crate) fn apply_worker_result(
-        &mut self,
-        result: worker::NotesWorkerResult,
-        now: std::time::Instant,
-    ) -> Option<(String, String, transcript::Anchor)> {
-        match result {
-            worker::NotesWorkerResult::Located {
-                memo_key,
-                path,
-                anchor_for,
-                anchor,
-            } => {
-                self.locate_memo.insert(memo_key, (path, now));
-                match (anchor_for, anchor) {
-                    (Some((key, id)), Some(anchor)) => Some((key, id, anchor)),
-                    _ => None,
-                }
-            }
-            // The app handles HEAD reads itself (`App::handle_auto_git`).
-            worker::NotesWorkerResult::GitHead { .. } => None,
-            worker::NotesWorkerResult::Context {
-                key,
-                id,
-                chars,
-                info,
-                located,
-            } => {
-                if let Some((memo_key, path)) = located {
-                    self.locate_memo.insert(memo_key, (path, now));
-                }
-                let cache_key = Self::context_key(&key, &id, chars);
-                self.pending.remove(&cache_key);
-                self.contexts.insert(cache_key, info);
-                None
-            }
-        }
-    }
-
-    /// Forget cached contexts of a checkpoint (after an anchor change).
-    pub(crate) fn forget_contexts(&mut self, key: &str, id: &str) {
-        let prefix = format!("{key}/{id}/");
-        self.contexts
-            .retain(|cache_key, _| !cache_key.starts_with(&prefix));
     }
 }

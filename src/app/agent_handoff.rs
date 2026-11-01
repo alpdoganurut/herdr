@@ -60,8 +60,6 @@ const MAX_WRITE_FAILURES: u32 = 5;
 /// A saved handoff is offered to a SessionStart(compact) without a run
 /// this long.
 const SAVED_FRESH: Duration = Duration::from_secs(15 * 60);
-/// Checkpoints copied into a mechanical handoff.
-const MECHANICAL_CHECKPOINTS: u32 = 10;
 /// The automatic trigger tries again this long after a start it could not
 /// make or a run that stopped before `/compact` (the context stays over the
 /// threshold until a compaction, so it would never re-arm on its own).
@@ -818,8 +816,8 @@ impl App {
         let transcript_hint = terminal
             .and_then(|terminal| terminal.persistable_agent_session())
             .and_then(|session| session.transcript_path);
-        let (notes_tail, checkpoints) = if pane.is_empty() {
-            (None, Vec::new())
+        let notes = if pane.is_empty() {
+            None
         } else {
             self.handoff_notes(&pane)
         };
@@ -830,8 +828,7 @@ impl App {
             reason: reason.to_string(),
             written_unix: now_unix(),
             cwd,
-            notes_tail,
-            checkpoints,
+            notes,
             git: Vec::new(),
             prompts: Vec::new(),
             transcript: transcript_hint,
@@ -864,21 +861,18 @@ impl App {
         }
     }
 
-    /// The tail of the pane's notes and its recent checkpoints, one line
-    /// each (the existing notes methods, in process).
-    fn handoff_notes(&mut self, pane: &str) -> (Option<String>, Vec<String>) {
-        use crate::api::schema::notes::{CheckpointsListParams, NotesGetParams, NotesTarget};
-        let target = NotesTarget {
-            pane_id: Some(pane.to_string()),
-            ..NotesTarget::default()
-        };
-        let notes = match self.call_method(Method::NotesGet(NotesGetParams {
-            target: target.clone(),
+    /// The top of the pane's notes page (the existing notes method, in
+    /// process; the same cap as the recall).
+    fn handoff_notes(&mut self, pane: &str) -> Option<String> {
+        use crate::api::schema::notes::{NotesGetParams, NotesTarget};
+        match self.call_method(Method::NotesGet(NotesGetParams {
+            target: NotesTarget {
+                pane_id: Some(pane.to_string()),
+                ..NotesTarget::default()
+            },
             known_revision: None,
         })) {
-            Ok(ResponseResult::NotesGet { notes }) => notes
-                .text
-                .map(|text| handoff::tail_lines(&text, handoff::MECHANICAL_NOTES_LINES)),
+            Ok(ResponseResult::NotesGet { notes }) => notes.text.map(|text| handoff_page(&text)),
             Ok(_) => {
                 tracing::debug!(pane, "agent handoff: notes.get answered another result");
                 None
@@ -887,53 +881,12 @@ impl App {
                 tracing::debug!(pane, code = %err.code, message = %err.message, "agent handoff: no notes for the mechanical handoff");
                 None
             }
-        };
-        let checkpoints = match self.call_method(Method::CheckpointsList(CheckpointsListParams {
-            target,
-            kinds: Vec::new(),
-            since_seq: None,
-            limit: Some(MECHANICAL_CHECKPOINTS),
-        })) {
-            Ok(ResponseResult::CheckpointsList { checkpoints }) => {
-                let offset = crate::notes::recall::local_offset_seconds();
-                // herdr's own prompt bookmarks are noise here (the prompts
-                // section has the prompts).
-                crate::notes::recall::pick_checkpoints(checkpoints.checkpoints)
-                    .iter()
-                    .map(|cp| {
-                        let mut line = format!(
-                            "{} {}: {}",
-                            crate::notes::recall::hhmm(cp.ts, offset),
-                            checkpoint_kind_name(cp.kind),
-                            handoff::one_line(&cp.title, 160)
-                        );
-                        if let Some(detail) = cp.detail.as_deref().filter(|d| !d.trim().is_empty())
-                        {
-                            line.push_str(" \u{2014} ");
-                            line.push_str(&handoff::one_line(detail, 200));
-                        }
-                        line
-                    })
-                    .collect()
-            }
-            Ok(_) => {
-                tracing::debug!(
-                    pane,
-                    "agent handoff: checkpoints.list answered another result"
-                );
-                Vec::new()
-            }
-            Err(err) => {
-                tracing::debug!(pane, code = %err.code, message = %err.message, "agent handoff: no checkpoints for the mechanical handoff");
-                Vec::new()
-            }
-        };
-        (notes, checkpoints)
+        }
     }
 
     /// A handoff is saved: remember it (the sidebar's age, the
-    /// SessionStart(compact) text), point the agent's notes at it and add a
-    /// checkpoint, log it.
+    /// SessionStart(compact) text) and log it. The notes page is the
+    /// user's: nothing is written there.
     fn record_saved_handoff(&mut self, terminal_id: &TerminalId, saved: SavedHandoff) {
         let path = saved.paths.handoff.display().to_string();
         let kind = saved.kind;
@@ -945,43 +898,6 @@ impl App {
             AgentsActionOutcome::Ok,
             &format!("handoff saved ({}): {path}", kind.as_str()),
         );
-        let Some(pane) = self
-            .resolve_terminal_target(&terminal_id.to_string())
-            .ok()
-            .and_then(|target| self.public_pane_id(target.ws_idx, target.pane_id))
-        else {
-            return;
-        };
-        use crate::api::schema::notes::{
-            CheckpointKind, CheckpointsAddParams, NotesAppendParams, NotesAuthor, NotesTarget,
-        };
-        let target = NotesTarget {
-            pane_id: Some(pane),
-            ..NotesTarget::default()
-        };
-        let who = match kind {
-            Kind::Agent => "written by the agent",
-            Kind::Mechanical => "written by herdr",
-        };
-        if let Err(err) = self.call_method(Method::NotesAppend(NotesAppendParams {
-            target: target.clone(),
-            text: format!("handoff before compaction ({who}): {path}"),
-            section: Some("Log".into()),
-            stamp: true,
-            author: NotesAuthor::Agent,
-        })) {
-            tracing::debug!(code = %err.code, "agent handoff: notes line skipped");
-        }
-        if let Err(err) = self.call_method(Method::CheckpointsAdd(CheckpointsAddParams {
-            target,
-            kind: CheckpointKind::Note,
-            title: "handoff saved before compaction".into(),
-            detail: Some(format!("{path} ({who})")),
-            tags: vec!["handoff".into()],
-            author: NotesAuthor::Agent,
-        })) {
-            tracing::debug!(code = %err.code, "agent handoff: checkpoint skipped");
-        }
     }
 
     /// The compaction of `terminal_id`'s agent ended (its SessionStart
@@ -1730,17 +1646,6 @@ fn trigger_detail(trigger: &Trigger) -> String {
     }
 }
 
-fn checkpoint_kind_name(kind: crate::api::schema::notes::CheckpointKind) -> &'static str {
-    use crate::api::schema::notes::CheckpointKind;
-    match kind {
-        CheckpointKind::Decision => "decision",
-        CheckpointKind::Milestone => "milestone",
-        CheckpointKind::Failure => "failure",
-        CheckpointKind::Bookmark => "bookmark",
-        CheckpointKind::Note | CheckpointKind::Unknown => "note",
-    }
-}
-
 #[cfg(test)]
 mod tests;
 
@@ -1779,4 +1684,14 @@ impl App {
             run.free_since = Some(Instant::now() - SETTLE - Duration::from_millis(1));
         }
     }
+}
+
+/// The top of a notes page for the mechanical handoff (the recall's cap),
+/// saying how much was left out.
+fn handoff_page(text: &str) -> String {
+    let (head, left_out) = crate::notes::recall::notes_head(text);
+    if left_out == 0 {
+        return head;
+    }
+    format!("{head}\n(the top; {left_out} more lines: agents_notes_read)")
 }

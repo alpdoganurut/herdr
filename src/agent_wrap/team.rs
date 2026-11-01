@@ -31,7 +31,7 @@ use super::{instructions, WrapEnv};
 pub const ROSTER_MAX: usize = 12;
 
 /// The team text is capped at this many bytes (whole characters): a full
-/// block with twelve teammates, the report rule and the notes habit line fits.
+/// block with twelve teammates, the report rule and the notes rule line fits.
 pub const MAX_TEXT_BYTES: usize = 4 * 1024;
 /// The wrap's `team.context` lookup timeout.
 pub const LOOKUP_TIMEOUT: Duration = Duration::from_secs(1);
@@ -109,7 +109,7 @@ fn limits_sentence() -> String {
 
 /// What a member may do in its team (agents v2), the same rights the MCP
 /// texts and the server's check state.
-pub const TEAM_RIGHTS: &str = "In this team you may also rename, reorder (agents_reorder_tab) and move tabs, set roles and notes, add to teammates' notes and checkpoints, open new teammates (agents_open_tab group=<this group> role=…) and suspend, activate or restart teammates (agents_suspend / agents_activate / agents_restart, never yourself; activating one your user suspended needs their request); closing any tab needs your user's request. The coordinator is a member of every team and speaks for your user.";
+pub const TEAM_RIGHTS: &str = "In this team you may also rename, reorder (agents_reorder_tab) and move tabs, set roles and one-line notes, open new teammates (agents_open_tab group=<this group> role=…) and suspend, activate or restart teammates (agents_suspend / agents_activate / agents_restart, never yourself; activating one your user suspended needs their request); closing any tab needs your user's request. The coordinator is a member of every team and speaks for your user.";
 
 /// The teammates part of a roster: at most [`ROSTER_MAX`], and how many more.
 fn capped<'a, 'b>(others: &'a [TeamTextMember<'b>]) -> (&'a [TeamTextMember<'b>], usize) {
@@ -177,7 +177,7 @@ pub fn full_text(t: &TeamTextInput<'_>) -> String {
         "Roster changes reach you at your next turn; agents_whoami always shows the current team."
             .to_string(),
         // Last: the size cap cuts this line before the rules above it.
-        crate::coordinator::mcp::NOTES_HABIT.to_string(),
+        crate::coordinator::mcp::NOTES_RULE.to_string(),
     ];
     finish(&lines.join("\n"))
 }
@@ -567,7 +567,7 @@ mod tests {
         assert!(lines[6]
             .contains("The coordinator is a member of every team and speaks for your user."));
         assert!(lines[7].starts_with("Roster changes reach you at your next turn"));
-        assert_eq!(lines[8], crate::coordinator::mcp::NOTES_HABIT);
+        assert_eq!(lines[8], crate::coordinator::mcp::NOTES_RULE);
         assert_eq!(lines.len(), 9);
     }
 
@@ -642,10 +642,10 @@ mod tests {
             roster.ends_with("m11 (idle) · +3 more (agents_list team=search-it)"),
             "{roster}"
         );
-        // Twelve fit without a fold, the notes habit line included.
+        // Twelve fit without a fold, the notes rule line included.
         t.others.truncate(ROSTER_MAX);
         assert!(!full_text(&t).contains("more (agents_list"));
-        assert!(full_text(&t).ends_with(crate::coordinator::mcp::NOTES_HABIT));
+        assert!(full_text(&t).ends_with(crate::coordinator::mcp::NOTES_RULE));
     }
 
     #[test]
@@ -668,9 +668,9 @@ mod tests {
         assert!(!format!(" {text} ").contains(" -p "));
         assert!(text.len() <= MAX_TEXT_BYTES, "{}", text.len());
         // every field is capped: the largest block still ends with the
-        // notes habit; anything longer is cut on a character boundary
+        // notes rule; anything longer is cut on a character boundary
         assert!(
-            text.ends_with(crate::coordinator::mcp::NOTES_HABIT),
+            text.ends_with(crate::coordinator::mcp::NOTES_RULE),
             "{text}"
         );
         let long = finish(&"é".repeat(MAX_TEXT_BYTES));

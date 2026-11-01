@@ -554,7 +554,7 @@ pub struct KeysConfig {
     pub open_browser: BindingConfig,
     /// Focus the coordinator tab (coordinator.open), creating it when it is gone. Unset by default.
     pub open_coordinator: BindingConfig,
-    /// Show or hide the focused tab's info pane (notes and history). Unset by default.
+    /// Show or hide the focused tab's info pane (notes). Unset by default.
     pub toggle_info_pane: BindingConfig,
     /// Focus the previously focused tab (browser-style back). Default: "cmd+[".
     pub tab_history_back: BindingConfig,

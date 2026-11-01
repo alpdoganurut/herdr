@@ -1,6 +1,8 @@
-//! Notes and checkpoints (fork): the per-session markdown notes and the
-//! checkpoint timeline behind the info pane, `herdr notes`, `herdr checkpoint`
-//! and the agents' notes tools.
+//! Notes (fork): the per-session markdown page behind the info pane and the
+//! agents' notes tools. The `checkpoints.*` methods and their types stay
+//! (the names and shapes are part of the client-shell contract and these
+//! enums are append-closed), but the server refuses every one of them with
+//! [`error_code::CHECKPOINTS_REMOVED`].
 //!
 //! Every field past the required core is optional or defaulted, and the closed
 //! enums carry an `Unknown` fallback, so an older client can read a newer
@@ -41,12 +43,14 @@ pub mod error_code {
     pub const NOT_FOUND: &str = "not_found";
     /// The notes file is over the size cap.
     pub const TOO_LARGE: &str = "too_large";
-    /// Too many checkpoints added for this key in the last hour.
-    pub const RATE_LIMITED: &str = "rate_limited";
     /// `[notes] enabled = false`.
     pub const DISABLED: &str = "notes_disabled";
     /// Reading or writing a notes file failed.
     pub const IO: &str = "notes_io";
+    /// Every `checkpoints.*` method, `agents.checkpoint` and
+    /// `agents.notes_append`: removed (the names stay so a caller gets
+    /// this answer instead of an unknown method).
+    pub const CHECKPOINTS_REMOVED: &str = "checkpoints_removed";
 }
 
 /// Which notes a request is about. Precedence: `key` > `pane_id` > `tab_id`;

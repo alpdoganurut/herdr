@@ -64,8 +64,7 @@ impl From<crate::detect::AgentState> for EdgeStatus {
     }
 }
 
-/// What a status edge did to the turn ([`TurnState::on_status_edge`]); the
-/// automatic checkpoints (`crate::notes::auto`) read it.
+/// What a status edge did to the turn ([`TurnState::on_status_edge`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnEdge {
     /// Nothing for the turn.
@@ -306,8 +305,7 @@ impl TurnState {
                 if self.record.bridged {
                     TurnEdge::Bridged
                 } else {
-                    // A continued turn is not a new prompt of the user's (no
-                    // automatic "you" checkpoint).
+                    // A continued turn is not a new prompt of the user's.
                     TurnEdge::Started {
                         user: self.record.origin == TurnOrigin::User && !self.record.continued,
                     }

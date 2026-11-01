@@ -269,8 +269,8 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <div class="card" style="margin-bottom:14px">
     <h3>herdr_agents tools</h3>
     <div class="chips">
-      <code>agents_whoami</code><code>agents_list</code><code>agents_get</code><code>agents_read</code><code>agents_messages</code><code>agents_wait</code><code>agents_wait_for_message</code><code>agents_actions</code><code>agents_notes_read</code><code>agents_checkpoints_list</code>
-      <code class="w">agents_send_message</code><code class="w">agents_notify</code><code class="w">agents_notes_append</code><code class="w">agents_notes_write</code><code class="w">agents_checkpoint</code><code class="w">agents_open_tab</code><code class="w">agents_rename_tab</code><code class="w">agents_move_to_group</code><code class="w">agents_create_group</code><code class="w">agents_set_meta</code><code class="w">agents_reorder_tab</code><code class="w">agents_reorder_group</code><code class="w">agents_suspend</code><code class="w">agents_activate</code><code class="w">agents_restart</code><code class="w">agents_close_tab</code><code class="w">agents_reopen_tab</code><code class="w">agents_team</code>
+      <code>agents_whoami</code><code>agents_list</code><code>agents_get</code><code>agents_read</code><code>agents_messages</code><code>agents_wait</code><code>agents_wait_for_message</code><code>agents_actions</code><code>agents_notes_read</code>
+      <code class="w">agents_send_message</code><code class="w">agents_notify</code><code class="w">agents_notes_write</code><code class="w">agents_open_tab</code><code class="w">agents_rename_tab</code><code class="w">agents_move_to_group</code><code class="w">agents_create_group</code><code class="w">agents_set_meta</code><code class="w">agents_reorder_tab</code><code class="w">agents_reorder_group</code><code class="w">agents_suspend</code><code class="w">agents_activate</code><code class="w">agents_restart</code><code class="w">agents_close_tab</code><code class="w">agents_reopen_tab</code><code class="w">agents_team</code>
     </div>
     <p class="dim" style="margin-top:.5rem;font-size:.82rem">Blue = writes, checked by the server. Grey = reads.</p>
   </div>
@@ -279,7 +279,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="tbl"><table>
       <tr><th>Who</th><th>May do</th></tr>
       <tr><td>Itself</td><td>Edit its own tab.</td></tr>
-      <tr><td>Teammates</td><td>Rename, move, set role and note, add notes and checkpoints, open new teammates, suspend / activate / restart.</td></tr>
+      <tr><td>Teammates</td><td>Rename, move, set role and note, open new teammates, suspend / activate / restart.</td></tr>
       <tr><td>Everyone else</td><td>Read screens and message. Nothing more (<code>outside_team</code>).</td></tr>
       <tr><td>Shell screens</td><td>Readable by teammates and the coordinator only.</td></tr>
       <tr><td>Closing a tab</td><td>Only in a turn you started in that agent (<code>non_user_turn</code>). Reopenable.</td></tr>
@@ -335,7 +335,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="pane" style="padding:.7rem 1.4ch;color:var(--sub0)"><span class="t">&gt;</span> herdr+ message <span class="ac">m_7f3a</span> from <span class="t">reviewer</span> (teammate, w3:p2): read it with agents_messages id=<span class="ac">m_7f3a</span>
 
 <span class="t">●</span> agents_messages(id="m_7f3a")
-  <span class="o0">⎿  from reviewer · "auth review done, 2 issues in session.rs, notes in ## Log"</span></div>
+  <span class="o0">⎿  from reviewer · "auth review done, 2 issues in session.rs, details in review.md"</span></div>
   </div>
 
   <div class="grid">
@@ -399,36 +399,42 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 <!-- ============ INFO PANE ============ -->
 <section id="info">
   <p class="eyebrow">06 · info pane</p>
-  <h2>Notes and history beside every agent</h2>
-  <p class="lede">A dock on the right of the pane. Notes are the agent's memory; History is its timeline. Nothing is computed until you open it.</p>
+  <h2>Your notes page beside every agent</h2>
+  <p class="lede">A dock on the right of the pane with the session's notes: your page, not the agent's log. Agents write it only when you ask. Nothing is computed until you open it.</p>
   <div class="two">
-    <div class="dock" role="img" aria-label="Info pane History view"><span class="ac">❦</span> <span class="t b">C A L E N D A R - F I X</span>
-  <span class="o1">claude · 6f1c2a9e · since 09:41 · 2h 30m</span>
+    <div class="dock" role="img" aria-label="Info pane notes page"><span class="o1">──</span> <span class="ac"> ✦ </span><span class="t b">Notes</span><span class="ac"> ✦ </span><span class="o1">──────────────────────────────</span>
+<span class="ac">❦</span> <span class="t b">B a c k u p   S 3   w a t c h</span>
 
-<span class="o1">──  Notes  ──</span> <span class="t">✦ History ✦</span> <span class="o1">──────────────</span>
-<span class="ac">◇ 3</span>  <span class="gr">○ 3</span>  <span class="re">× 2</span>  <span class="ye">⚐ 3</span>  <span class="o0">· 1</span>          <span class="o1">all</span>
+<span class="o0" style="font-style:italic">Owner:</span> infra monitor, daily since 10-31.
+Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" style="text-decoration:underline">the /tr skill</span>.
 
-<span class="o1">09:43</span> <span class="o0">·</span> Session start: reproduce DST
-<span class="o1">09:58</span> <span class="gr">○</span> Reproduced with fixed clock
-<span class="o1">10:14</span> <span class="ac">◇</span> Store next fire as zoned
-      <span class="o0">│</span> wall-clock
-<span class="o1">10:31</span> <span class="re">×</span> Snapshot round-trip loses tz
-      <span class="o0">│ ┆</span> <span class="o1">you</span>
-      <span class="o0">│ ┆</span> <span class="o1">(continuing)</span>
-      <span class="o0">│ ┆</span> <span class="cl">claude</span>
-      <span class="o0">│ ┆</span> The fix works live but fails
-      <span class="o0">│ ┆</span> after restore…
-<span class="o1">10:57</span> <span class="ye">⚐</span> Spring-forward edge case
-<span class="o1">11:12</span> <span class="gr">○</span> DST tests green
-<span class="o1">12:03</span> <span class="ac">◇</span> Migrate on load (option a)
-<span class="o0">      ┊</span>
-    <span class="o0">❧  12:12 · now</span>
-<span class="o0">j/k move  ⏎ open  f kind  b pin  ⇥ notes</span></div>
+<span class="o1">── ✦</span> <span class="ac">Daily checklist</span> <span class="o1">✦ ───────────────────</span>
+
+<span class="ac b">Cost</span>
+<span class="o0">○</span> Run <span class="ac">check.sh</span>, compare with <i>yesterday's</i> line
+<span class="ac">●</span> <span class="o0">S3 cost under $1.30/day</span>
+
+<span class="ac b">Buckets</span>
+<span class="pe">1.</span> New bucket: flag one day above +15 GB
+<span class="pe">2.</span> Old bucket: flag growth above 5 GB/day
+   <span class="pe">·</span> report its size once on 11-07
+
+  <span class="o1">▎</span> <i>Nightly full passes must succeed in 48 h.</i>
+
+  <span class="o1">▎</span> <span class="ac">ssh -p 10041 root@master 'kubectl get</span>
+  <span class="o1">▎</span>   <span class="ac">jobs -n backup'</span>
+
+<span class="t b">Bucket</span>           <span class="o1">│</span> <span class="t b">Purpose</span> <span class="o1">│</span> <span class="t b">Expiry</span>
+<span class="o1">─────────────────┼─────────┼───────</span>
+<span class="ac">leap-bi4-backups</span> <span class="o1">│</span> new     <span class="o1">│</span> none
+
+<span class="ac">❧</span> <span class="o0">rev 4e9b1c07 · you · 12:03</span>
+<span class="o0">click edit  ○ tick  wheel scroll  e edit</span></div>
     <div class="grid" style="grid-template-columns:1fr">
-      <div class="card"><h3><span class="g">✎</span>Notes, edited in place</h3><p>Markdown notes per agent session. Click to edit; saves on Esc or after 2 s idle. <code>- [ ]</code> tasks tick with a click. Toggle with <code>keys.toggle_info_pane</code> or the menu.</p></div>
-      <div class="card"><h3><span class="g">◇</span>Checkpoints</h3><p>Decisions, milestones, failures and notes the agent marks, plus your bookmarks. Expand one to see the prompt and reply around it.</p></div>
-      <div class="card"><h3><span class="g">◷</span>Auto history</h3><p>herdr adds its own dim checkpoints: a bookmark per prompt you send, a milestone per commit, a failure when an agent stays blocked 10+ min.</p></div>
-      <div class="card"><h3><span class="g">↻</span>Survives /clear and compaction</h3><p>The last 60 lines of notes and 8 checkpoints are put back into the agent's context at start, resume, <code>/clear</code> and compaction.</p></div>
+      <div class="card"><h3><span class="g">✎</span>Your page, edited in place</h3><p>One markdown page per agent session: a plan, a checklist, whatever fits. Click to edit; saves on Esc or after 2 s idle. <code>- [ ]</code> tasks tick with a click. Toggle with <code>keys.toggle_info_pane</code> or the menu.</p></div>
+      <div class="card"><h3><span class="g">❦</span>Markdown, drawn for a terminal</h3><p>Headings, <b>bold</b>, <i>italic</i>, links, numbered and nested lists, quotes, code blocks, rules and tables, in the dock's palette. Clicks land on the source text.</p></div>
+      <div class="card"><h3><span class="g">◇</span>Agents write it when you ask</h3><p>Ask directly, or use <code>/plus:notes</code> (a brief page: what is in flight, what waits on you, the plan) or <code>/plus:notify</code>. Once asked, the agent keeps it current. No running log, no checkpoints.</p></div>
+      <div class="card"><h3><span class="g">↻</span>Survives /clear and compaction</h3><p>The page (its first 3 KB) is put back into the agent's context at start, resume, <code>/clear</code> and compaction.</p></div>
     </div>
   </div>
 </section>
@@ -489,8 +495,8 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   </div>
   <div class="grid" style="margin-top:1rem">
     <div class="card"><h3><span class="g">◔</span>Two ways to start</h3><p>Automatically at <code>[agents.handoff] at_percent</code> (80 by default, 0 = off), once per compaction cycle and only while the agent is idle. Or by hand: tab menu “Handoff &amp; compact”, a key, <code>herdr agent handoff &lt;target&gt;</code>.</p></div>
-    <div class="card"><h3><span class="g">✎</span>Your handoff skill, or herdr's</h3><p>Set <code>command</code> to your own skill line with a <code>{path}</code> placeholder, or leave it empty for herdr's short prompt. If the agent never writes the file, herdr writes a mechanical handoff from notes, checkpoints, git state and recent prompts.</p></div>
-    <div class="card"><h3><span class="g">▤</span>Known place, nothing lost</h3><p>Each run keeps <code>transcript.jsonl</code> and <code>handoff.md</code> under <code>handoffs/&lt;session&gt;/&lt;time&gt;/</code>, with a <code>latest</code> pointer, a notes entry and a checkpoint. The sidebar shows “handoff 12m ago”.</p></div>
+    <div class="card"><h3><span class="g">✎</span>Your handoff skill, or herdr's</h3><p>Set <code>command</code> to your own skill line with a <code>{path}</code> placeholder, or leave it empty for herdr's short prompt. If the agent never writes the file, herdr writes a mechanical handoff from the notes page, git state and recent prompts.</p></div>
+    <div class="card"><h3><span class="g">▤</span>Known place, nothing lost</h3><p>Each run keeps <code>transcript.jsonl</code> and <code>handoff.md</code> under <code>handoffs/&lt;session&gt;/&lt;time&gt;/</code>, with a <code>latest</code> pointer. The sidebar shows “handoff 12m ago”.</p></div>
     <div class="card"><h3><span class="g">↻</span>Back to work</h3><p>After <code>/compact</code> the agent's new context names the handoff and transcript, and a short line asks it to continue, or to pause if nothing was in flight.</p></div>
     <div class="card"><h3><span class="g">⛨</span>Safety net</h3><p>When Claude compacts on its own or you type <code>/compact</code>, herdr still saves the transcript and a handoff first. Messages wait for the run; nothing is typed over you. A <code>/clear</code> or another session in the pane ends the run, and another agent cannot hand the same agent off again within 10 minutes.</p></div>
   </div>

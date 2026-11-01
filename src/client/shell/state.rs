@@ -1029,14 +1029,6 @@ pub(super) enum PendingEndpointKind {
     InfoNotesGet,
     /// Fork: the info dock's `notes.set` (a save or a task tick).
     InfoNotesWrite,
-    /// Fork: the info dock's `checkpoints.list`.
-    InfoCheckpointsList,
-    /// Fork: the info dock's `checkpoints.add` / `checkpoints.remove`.
-    InfoCheckpointWrite,
-    /// Fork: the info dock's `checkpoints.context`.
-    InfoCheckpointContext {
-        id: String,
-    },
     /// Fork: the `pane.get` a tab or pane menu sends when it opens, for the
     /// agent's session id (`context_menu_session.rs`).
     ContextMenuSession {

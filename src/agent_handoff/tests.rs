@@ -336,8 +336,7 @@ fn the_mechanical_handoff_lists_what_herdr_knows() {
         reason: "the agent did not write one within 10 minutes".into(),
         written_unix: 1_760_350_500,
         cwd: Some(PathBuf::from("/repo")),
-        notes_tail: Some("## Log\n- did a thing".into()),
-        checkpoints: vec!["10:00 decision: use X".into()],
+        notes: Some("# Plan\n- [ ] ship the fix".into()),
         git: vec!["## main...origin/main".into(), " M src/a.rs".into()],
         prompts: vec!["fix the bug\nplease".into()],
         transcript: Some(PathBuf::from("/s/t.jsonl")),
@@ -350,14 +349,14 @@ fn the_mechanical_handoff_lists_what_herdr_knows() {
         "/s/t.jsonl",
         "- fix the bug please",
         " M src/a.rs",
-        "- 10:00 decision: use X",
-        "- did a thing",
+        "## Notes page\n# Plan\n- [ ] ship the fix",
         "## Next step",
     ] {
         assert!(text.contains(part), "{part}:\n{text}");
     }
     let empty = render_mechanical(&Mechanical::default());
     assert!(empty.contains("(none found)") && empty.contains("(no notes)"));
+    assert!(!text.contains("checkpoint"), "{text}");
 }
 
 #[test]
@@ -388,7 +387,6 @@ fn user_prompts_skip_tool_results_meta_and_herdr_lines() {
     );
     assert_eq!(one_line("a\n  b   c", 10), "a b c");
     assert_eq!(one_line("abcdef", 4), "abc\u{2026}");
-    assert_eq!(tail_lines("1\n2\n3\n", 2), "2\n3");
 }
 
 #[test]
