@@ -1,0 +1,824 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>herdr+ · configuration guide</title>
+<style>
+:root{
+  --crust:#11111b; --mantle:#181825; --base:#1e1e2e; --s0:#313244; --s1:#45475a; --s2:#585b70;
+  --o0:#6c7086; --o1:#7f849c; --o2:#9399b2; --sub0:#a6adc8; --sub1:#bac2de; --text:#cdd6f4;
+  --blue:#89b4fa; --green:#a6e3a1; --yellow:#f9e2af; --red:#f38ba8; --teal:#94e2d5; --peach:#fab387; --mauve:#cba6f7;
+  --claude:#D97757; --codex:#3B82F6; --tag:#b06cf5;
+  --mono:"JetBrainsMono Nerd Font","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Inter","Helvetica Neue",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:64px}
+body{margin:0;background:var(--crust);color:var(--text);font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+code,kbd,.m{font-family:var(--mono);font-size:.86em}
+code{background:var(--s0);color:var(--sub1);padding:.08em .38em;border-radius:4px;overflow-wrap:anywhere}
+kbd{border:1px solid var(--s1);border-bottom-width:2px;border-radius:4px;padding:0 .35em;color:var(--text);background:var(--mantle);white-space:nowrap}
+
+/* nav */
+nav{position:sticky;top:0;z-index:10;background:rgba(17,17,27,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--s0)}
+nav .in{max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:1.2rem;padding:.55rem 1.25rem;overflow-x:auto;scrollbar-width:none}
+nav .in::-webkit-scrollbar{display:none}
+nav .brand{font-family:var(--mono);font-weight:700;color:var(--text);white-space:nowrap}
+nav .brand b{color:var(--blue)}
+nav .brand:hover{text-decoration:none}
+nav .brand span{color:var(--o1);font-weight:400}
+nav a.l{color:var(--o2);font-size:.83rem;white-space:nowrap;padding:.2rem 0;border-bottom:2px solid transparent}
+nav a.l:hover{color:var(--text);text-decoration:none}
+nav a.l.on{color:var(--text);border-bottom-color:var(--blue)}
+nav a.back{margin-left:auto;font-family:var(--mono);font-size:.78rem;color:var(--blue);white-space:nowrap;border:1px solid rgba(137,180,250,.3);border-radius:6px;padding:.15rem .5rem}
+nav a.back:hover{text-decoration:none;background:rgba(137,180,250,.08)}
+
+main{max-width:1180px;margin:0 auto;padding:0 1.25rem 4rem}
+section{padding:3.2rem 0 1rem;border-top:1px solid var(--s0)}
+section:first-of-type{border-top:0}
+.eyebrow{font-family:var(--mono);font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;color:var(--o1);margin:0 0 .4rem}
+h1{font-size:clamp(2.2rem,5vw,3.4rem);line-height:1.08;margin:.2rem 0 1rem;letter-spacing:-.02em}
+h1 .p{color:var(--blue)}
+h2{font-size:1.7rem;margin:0 0 .35rem;letter-spacing:-.01em}
+h2 code{font-size:.55em;vertical-align:middle;margin-left:.4rem}
+h3{font-size:1.02rem;margin:0 0 .3rem;color:var(--text)}
+h4{font-family:var(--mono);font-size:.78rem;letter-spacing:.1em;text-transform:uppercase;color:var(--o1);margin:1.8rem 0 .6rem;font-weight:600}
+h4 code{text-transform:none;letter-spacing:0}
+.lede{color:var(--sub0);max-width:68ch;margin:0 0 1.4rem}
+p{margin:.25rem 0}
+.dim{color:var(--o1)}
+.note{color:var(--sub0);font-size:.9rem;max-width:80ch;margin:.9rem 0 0}
+
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.card{background:var(--mantle);border:1px solid var(--s0);border-radius:10px;padding:1rem 1.1rem}
+.card p,.card li{color:var(--sub0);font-size:.92rem}
+.card .g{font-family:var(--mono);color:var(--blue);margin-right:.35rem}
+.card.warn{border-color:rgba(243,139,168,.35)}
+.card.warn .g{color:var(--red)}
+
+/* hero */
+.hero{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:34px;align-items:start;padding-top:3rem}
+@media (max-width:980px){.hero{grid-template-columns:1fr}}
+.facts{display:grid;gap:10px}
+.fact{display:grid;grid-template-columns:2.2rem minmax(0,1fr);gap:.2rem .6rem;background:var(--mantle);border:1px solid var(--s0);border-radius:10px;padding:.75rem 1rem}
+.fact .g{font-family:var(--mono);color:var(--blue);font-size:1.1rem;line-height:1.4}
+.fact h3{margin:0}
+.fact p{color:var(--sub0);font-size:.9rem;grid-column:2}
+.legend{display:flex;flex-wrap:wrap;gap:10px 22px;margin:1.2rem 0 0;font-size:.85rem;color:var(--sub0);align-items:center}
+.legend .lt{font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--o1)}
+
+/* pills and badges */
+.pill{display:inline-block;font:600 .7rem/1 var(--mono);letter-spacing:.04em;padding:.3rem .5rem;border-radius:999px;white-space:nowrap;border:1px solid var(--s1);color:var(--sub1);background:var(--base)}
+.pill.on{color:var(--green);border-color:rgba(166,227,161,.4);background:rgba(166,227,161,.08)}
+.pill.off{color:var(--o2);border-color:var(--s1);background:transparent}
+.pill.val{color:var(--peach);border-color:rgba(250,179,135,.35);background:rgba(250,179,135,.07);white-space:normal;line-height:1.25}
+.badge{display:inline-block;font:600 .64rem/1 var(--mono);letter-spacing:.07em;text-transform:uppercase;padding:.28rem .42rem;border-radius:4px;white-space:nowrap}
+.badge.set{background:rgba(137,180,250,.1);color:var(--blue);border:1px solid rgba(137,180,250,.3)}
+.badge.cfg{background:transparent;color:var(--o1);border:1px solid var(--s1)}
+.badge.tab{background:rgba(203,166,247,.1);color:var(--mauve);border:1px solid rgba(203,166,247,.3)}
+.badge.ro{background:rgba(249,226,175,.08);color:var(--yellow);border:1px solid rgba(249,226,175,.3)}
+.badge.na{background:transparent;color:var(--o0);border:1px dashed var(--s1)}
+
+/* feature rows */
+.rows{background:var(--mantle);border:1px solid var(--s0);border-radius:10px;overflow:hidden}
+.row{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,.55fr) minmax(0,1.25fr) minmax(0,.8fr);gap:.4rem 1.1rem;padding:.8rem 1.1rem;border-top:1px solid var(--s0);align-items:start}
+.row:first-child{border-top:0}
+.row.head{background:var(--crust);padding:.45rem 1.1rem}
+.row.head span{font:600 .68rem/1.4 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--o1)}
+.row h3{font-size:.95rem;margin:0}
+.row p{color:var(--sub0);font-size:.86rem;margin:.15rem 0 0}
+.row small{display:block;color:var(--o1);font-size:.8rem;line-height:1.45;margin-top:.3rem}
+.row .k{font-size:.86rem;color:var(--sub0)}
+.row .k small{color:var(--o1)}
+@media (max-width:820px){
+  .row{grid-template-columns:minmax(0,1fr) auto}
+  .row .f{grid-column:1}
+  .row .d{grid-column:2;grid-row:1;text-align:right}
+  .row .k,.row .s{grid-column:1 / -1}
+  .row.head{display:none}
+  .row .d small{text-align:right}
+}
+
+/* code blocks */
+.ex{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(320px,1fr))}
+figure{margin:0;background:var(--mantle);border:1px solid var(--s0);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
+figcaption{display:flex;justify-content:space-between;align-items:center;gap:.6rem;padding:.5rem .9rem;background:var(--crust);border-bottom:1px solid var(--s0);font-size:.84rem;color:var(--sub0)}
+figcaption .fn{font-family:var(--mono);font-size:.72rem;color:var(--o0);white-space:nowrap}
+pre{margin:0;padding:.8rem 1rem;font:13px/1.55 var(--mono);color:var(--sub1);overflow-x:auto;flex:1}
+pre .h{color:var(--mauve)} pre .kk{color:var(--blue)} pre .v{color:var(--green)} pre .n{color:var(--peach)} pre .c{color:var(--o0);font-style:italic}
+.copy{font:600 .66rem/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--o1);background:transparent;border:1px solid var(--s1);border-radius:4px;padding:.25rem .45rem;cursor:pointer}
+.copy:hover{color:var(--text);border-color:var(--o0)}
+.copy.ok{color:var(--green);border-color:rgba(166,227,161,.4)}
+
+/* keybinds */
+.keys{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:0 22px}
+.kb{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.15rem .8rem;padding:.6rem 0;border-bottom:1px solid var(--s0)}
+.kb code{background:transparent;padding:0;color:var(--text);font-size:.84rem}
+.kb .ks{text-align:right;white-space:nowrap}
+.kb .ks .ub{font:.72rem var(--mono);color:var(--o0);border:1px dashed var(--s1);border-radius:4px;padding:.05rem .4rem}
+.kb p{grid-column:1 / -1;color:var(--sub0);font-size:.86rem;margin:0}
+.kb .up{font:600 .6rem/1 var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--o0);margin-left:.4rem}
+
+/* limits */
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px;margin:1rem 0 0}
+.stats div{font-size:.82rem;color:var(--o1);background:var(--mantle);border:1px solid var(--s0);border-radius:10px;padding:.8rem .9rem;line-height:1.45}
+.stats b{display:block;font:700 1.45rem/1.2 var(--mono);color:var(--text);margin-bottom:.2rem}
+.stats b small{font-size:.6em;color:var(--o1);font-weight:600}
+
+footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px solid var(--s0);color:var(--o1);font-size:.85rem;font-family:var(--mono)}
+</style>
+</head>
+<body>
+
+<nav aria-label="Sections"><div class="in">
+  <a class="brand" href="herdr-plus.html">herdr<b>+</b> <span>config</span></a>
+  <a class="l" href="#top">Overview</a>
+  <a class="l" href="#agents">Agents</a>
+  <a class="l" href="#sidebar">Sidebar</a>
+  <a class="l" href="#tabmenu">Per-tab toggles</a>
+  <a class="l" href="#notes">Notes pane</a>
+  <a class="l" href="#reminders">Reminders &amp; sounds</a>
+  <a class="l" href="#coordinator">Coordinator</a>
+  <a class="l" href="#browser">Browser</a>
+  <a class="l" href="#updates">Updates</a>
+  <a class="l" href="#news">News</a>
+  <a class="l" href="#examples">Examples</a>
+  <a class="l" href="#keys">Keybinds</a>
+  <a class="l" href="#limits">Not configurable</a>
+  <a class="back" href="herdr-plus.html">← herdr+ showcase</a>
+</div></nav>
+
+<main>
+
+<!-- ============ HERO ============ -->
+<section id="top" class="hero">
+  <div>
+    <p class="eyebrow">herdr+ configuration guide</p>
+    <h1>Configure herdr<span class="p">+</span></h1>
+    <p class="lede">What you can turn on or off in herdr+, what it starts as, and where to change it.</p>
+    <div class="legend">
+      <span class="lt">default</span>
+      <span><span class="pill on">on</span> opt-out: it works until you turn it off</span>
+      <span><span class="pill off">off</span> opt-in</span>
+    </div>
+    <div class="legend">
+      <span class="lt">where</span>
+      <span class="badge set">in Settings</span>
+      <span class="badge cfg">config only</span>
+      <span class="badge tab">tab menu</span>
+      <span class="badge ro">read-only</span>
+      <span class="badge na">n/a</span>
+    </div>
+    <figure style="margin-top:1.6rem">
+      <figcaption><span>Most fork sidebar features need the <code>tabs</code> sidebar layout. Turn that on first:</span><span class="fn">config.toml</span></figcaption>
+<pre><span class="h">[ui]</span>
+<span class="kk">sidebar_layout</span> = <span class="v">"tabs"</span>   <span class="c"># default "spaces"</span></pre>
+    </figure>
+  </div>
+  <div class="facts">
+    <div class="fact"><span class="g">▤</span><h3>Config file</h3>
+      <p><code>~/.config/herdr/config.toml</code> (<code>$XDG_CONFIG_HOME/herdr/config.toml</code> when that is set; debug builds use <code>herdr-dev</code>). <code>herdr --default-config</code> prints a commented default file; the full key reference is <code>docs/next/website/src/data/config-reference.json</code>.</p></div>
+    <div class="fact"><span class="g">⚙</span><h3>Settings panel · <kbd>prefix</kbd>+<kbd>s</kbd></h3>
+      <p><kbd>ctrl+b</kbd>, then <kbd>s</kbd>. Sections: theme, indicators, sound, toasts, integrations, backups, reminders, closed, news, browser, coordinator, agents. Settings rows write the same <code>config.toml</code> keys; the browser, coordinator and agents sections ask the server to write its own config and reload it.</p></div>
+    <div class="fact"><span class="g">↻</span><h3>Reload after a hand edit · <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>r</kbd></h3>
+      <p>The <code>reload_config</code> action.</p></div>
+  </div>
+</section>
+
+<!-- ============ AGENTS ============ -->
+<section id="agents">
+  <p class="eyebrow">01 · agents</p>
+  <h2>Agents <code>[agents]</code></h2>
+  <p class="lede">Wrapping changes apply at the next agent launch; running agents keep what they started with.</p>
+  <div class="rows">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Wrap plain <code>claude</code> / <code>codex</code></h3><p>In herdr+ panes. Master switch for tools and instructions.</p></div>
+      <div class="d"><span class="pill off">off</span><small>unset; falls back to legacy <code>[browser] wrap_agents</code>, else off</small></div>
+      <div class="k"><code>[agents] wrap = true</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents → wrap</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Agent tools</h3><p>The herdr_agents MCP server on wrapped launches.</p></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k"><code>[agents] tools = true</code><small>needs <code>wrap</code></small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>herdr+ instructions</h3><p>The instructions paragraph on wrapped launches.</p></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k"><code>[agents] instructions = true</code><small>needs <code>wrap</code></small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Custom instructions text</h3></div>
+      <div class="d"><span class="pill val">built-in</span></div>
+      <div class="k"><code>[agents] instructions_file = "~/path.md"</code><small>empty = built-in</small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>toggles built-in and <code>agents.md</code> in the config dir; other paths config only</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Team roster</h3><p>Roster, purpose and team tools for agents launched in a team group.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[agents] team_roster = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Agent notices</h3><p><code>agents_notify</code>, <code>herdr agent notify</code>.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[agents] notices = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Program status</h3><p>OSC 7501 probe; Claude Code 2.1.295+. Screen detection still decides the state. Applied live.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[agents] program_status = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Context window per agent</h3><p>Sidebar context %.</p></div>
+      <div class="d"><span class="pill val">from session / model</span></div>
+      <div class="k"><code>[agents] context_window = { claude = 1000000 }</code></div>
+      <div class="s"><span class="badge ro">read-only</span><small>No, shown read-only</small></div>
+    </div>
+  </div>
+
+  <h4>Handoff and compact · <code>[agents.handoff]</code> · Claude only</h4>
+  <p class="lede" style="margin-bottom:.9rem">Before a Claude agent's context is compacted, herdr has it write a handoff, saves the transcript, types <code>/compact</code> and points the new session back at both.</p>
+  <div class="rows">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Handoff feature as a whole</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[agents.handoff] enabled = false</code><small>Off also removes the menu item, the <code>handoff_compact</code> key and the PreCompact safety net</small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Automatic trigger</h3><p>At context use.</p></div>
+      <div class="d"><span class="pill val">80</span></div>
+      <div class="k"><code>[agents.handoff] at_percent = 0..100</code><small>0 = no automatic trigger</small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>cycles 60 / 70 / 80 / 90 / off</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Custom handoff prompt</h3></div>
+      <div class="d"><span class="pill val">herdr's own</span></div>
+      <div class="k"><code>[agents.handoff] command = "/my:handoff {path}"</code><small><code>{path}</code> is replaced; appended when missing</small></div>
+      <div class="s"><span class="badge ro">read-only</span><small>No, shown read-only</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Resume line after compaction</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[agents.handoff] resume = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+  </div>
+
+  <h4>Suspend and autosuspend</h4>
+  <div class="rows">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Suspend / activate an agent by hand</h3></div>
+      <div class="d"><span class="pill val">always available</span></div>
+      <div class="k">Tab menu "Suspend agent" / "Activate agent", or bind <code>toggle_agent_suspend</code></div>
+      <div class="s"><span class="badge tab">tab menu</span><small>n/a</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Autosuspend idle Claude agents</h3><p>Idle and seen, nothing running; a message wakes it.</p></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k"><code>[agents.autosuspend] after = "off"</code> or <code>"&lt;N&gt;m"</code>, <code>"&lt;N&gt;h"</code>, <code>"&lt;N&gt;d"</code><small>at most 365 days</small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>agents, cycles 1h / 4h / 1d / 3d / off</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Restart an idle agent in place</h3></div>
+      <div class="d"><span class="pill val">always available</span></div>
+      <div class="k">Tab menu "Restart agent", or bind <code>restart_agent</code></div>
+      <div class="s"><span class="badge tab">tab menu</span><small>n/a</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Transcript backups</h3><p>A copy of each open or suspended agent's native transcript, put back before a resume when the agent deleted its own.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[session] backup_agent_transcripts = false</code></div>
+      <div class="s"><span class="badge ro">status only</span><small>backups section</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Resume agents on session restore</h3><p>Upstream.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[session] resume_agents_on_restore = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SIDEBAR ============ -->
+<section id="sidebar">
+  <p class="eyebrow">02 · sidebar</p>
+  <h2>Sidebar <code>[ui]</code> <code>tabs</code> layout</h2>
+  <div class="rows" style="margin-top:1rem">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Tabs sidebar layout</h3><p>Needed by the rows below.</p></div>
+      <div class="d"><span class="pill off">off</span><small><code>"spaces"</code></small></div>
+      <div class="k"><code>[ui] sidebar_layout = "tabs"</code></div>
+      <div class="s"><span class="badge ro">hint only</span><small>Only as the one-way hint row in coordinator settings</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Active block</h3><p>Blocked, working, finished agents.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[ui] sidebar_active_agents = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>indicators</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Pinned block</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[ui] sidebar_pinned_agents = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>indicators</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Scheduled block</h3><p>Tabs with a reminder.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[ui] sidebar_scheduled_agents = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>indicators</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Suspended-run folding</h3><p>3+ suspended tabs in a row fold into "N suspended".</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[ui] sidebar_collapse_suspended = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>indicators ("fold suspended runs")</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Context use</h3><p><code>NN%</code> from 75 %.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[ui] sidebar_context_usage = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Sidebar search</h3><p>Type to filter tabs; Esc clears, Enter focuses the first match.</p></div>
+      <div class="d"><span class="pill val">available</span></div>
+      <div class="k">Key <code>sidebar_search</code> (default <kbd>prefix</kbd>+<kbd>f</kbd>) or click the toolbar field</div>
+      <div class="s"><span class="badge na">n/a</span><small>not saved</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Recency filter</h3><p><code>◷</code> chip: off, 15m, 30m, 1h, 6h, 1d.</p></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k">Click the chip (shift-click or right-click steps back)<small>No config key</small></div>
+      <div class="s"><span class="badge na">n/a</span><small>not saved</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Tab history back / forward</h3></div>
+      <div class="d"><span class="pill val">available</span></div>
+      <div class="k">The toolbar's <code>‹</code> <code>›</code> buttons; keys <code>tab_history_back</code> (<kbd>cmd</kbd>+<kbd>[</kbd>), <code>tab_history_forward</code> (<kbd>cmd</kbd>+<kbd>]</kbd>)</div>
+      <div class="s"><span class="badge na">n/a</span></div>
+    </div>
+  </div>
+  <p class="note">The search query and recency chip belong to the client only. They are never saved: a restart or a new client lists every tab again.</p>
+</section>
+
+<!-- ============ PER-TAB ============ -->
+<section id="tabmenu">
+  <p class="eyebrow">03 · per-tab toggles</p>
+  <h2>Per-tab toggles <code>tab menu</code></h2>
+  <p class="lede">Right-click a tab. These are per tab, not config keys. Important, pin, mute, do not disturb, the reminder and the colour are server session state: they are saved with the tab in <code>session.json</code>, so they survive a server restart (session restore) and a live handoff, and move with the tab. Only the notes pane's open or closed state belongs to the client and is never saved.</p>
+  <div class="rows">
+    <div class="row head"><span>Item</span><span>Default (new tab)</span><span>What it does</span><span>Key</span></div>
+    <div class="row">
+      <div class="f"><h3>Important</h3></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k">Reminds you while its agent waits finished-unseen or blocked</div>
+      <div class="s"><span class="badge tab">tab menu</span><small>also key <code>toggle_tab_important</code></small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Pin</h3></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k">Lists the tab in the Pinned block</div>
+      <div class="s"><span class="badge tab">tab menu</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Mute notifications</h3></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k">No herdr automatic notifications for the tab (toasts, sounds, system/terminal notifications, bells, reminders); agent cards still show</div>
+      <div class="s"><span class="badge tab">tab menu</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Do not disturb</h3></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k">Agent messages to the tab are stored quietly instead of typed in, urgent ones are refused, herdr types nothing in and the coordinator's wake-ups are held; your typing is unaffected. Notifications are untouched (that is mute).<small>An agent can also turn it on or off for its own tab and its teammates' tabs (<code>agents_dnd</code>, <code>herdr tab dnd on|off</code>), never outside its team or on the coordinator's tab; the coordinator can, for any other tab, in your turn. When an agent or the coordinator turned it on, the coordinator's messages still get through.</small></div>
+      <div class="s"><span class="badge tab">tab menu</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>remind</h3></div>
+      <div class="d"><span class="pill off">none</span></div>
+      <div class="k">Scheduled reminder: 5m, 10m, 30m, 1h, 6h, daily. Pick the current one again to turn it off. Picking never focuses the tab</div>
+      <div class="s"><span class="badge tab">tab menu</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Color</h3></div>
+      <div class="d"><span class="pill off">none</span></div>
+      <div class="k">Color tag</div>
+      <div class="s"><span class="badge tab">tab menu</span><small>also key <code>cycle_tab_color</code></small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Info pane</h3></div>
+      <div class="d"><span class="pill off">hidden, every start</span></div>
+      <div class="k">Shows or hides the tab's notes pane. Which tabs have it open is client-only: after a restart or in a new client every notes pane starts hidden</div>
+      <div class="s"><span class="badge tab">tab menu</span><small>also key <code>toggle_info_pane</code>, or the <code>◧</code> toolbar button</small></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ NOTES ============ -->
+<section id="notes">
+  <p class="eyebrow">04 · notes pane</p>
+  <h2>Notes pane <code>[notes]</code></h2>
+  <div class="rows" style="margin-top:1rem">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Notes pane and the agents' notes tools</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[notes] enabled = false</code><small>nothing is read or written under <code>&lt;config dir&gt;/notes/</code></small></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Notes pane default width</h3></div>
+      <div class="d"><span class="pill val">44</span></div>
+      <div class="k"><code>[ui] info_pane_width = 28..120</code><small>A width you drag or step is saved per client and wins from then on</small></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ REMINDERS ============ -->
+<section id="reminders">
+  <p class="eyebrow">05 · reminders, toasts and sounds</p>
+  <h2>Reminders, toasts and sounds <code>[ui]</code> <code>[ui.toast]</code> <code>[ui.sound]</code></h2>
+  <div class="rows" style="margin-top:1rem">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Idle reminders for important tabs</h3></div>
+      <div class="d"><span class="pill val">10 min</span></div>
+      <div class="k"><code>[ui] idle_reminder_minutes = 0..240</code><small>0 = off</small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>reminders (0 / 5 / 10 / 15 / 30 / 60)</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Daily reminder time</h3></div>
+      <div class="d"><span class="pill val">"09:30"</span></div>
+      <div class="k"><code>[ui] daily_reminder_time = "HH:MM"</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>reminders</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Toast popups</h3><p>Upstream.</p></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k"><code>[ui.toast] delivery = "off"</code>, <code>"herdr"</code>, <code>"terminal"</code> or <code>"system"</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>toasts</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Sticky in-app toasts</h3><p>Stack until dismissed.</p></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k"><code>[ui.toast.herdr] sticky = true</code>; <code>max_stack = 1..20</code><small>default 6</small></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Toast position, delay</h3></div>
+      <div class="d"><span class="pill val">bottom-right, 1 s</span></div>
+      <div class="k"><code>[ui.toast.herdr] position</code>; <code>[ui.toast] delay_seconds = 0..3600</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Clipboard toast</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[ui.toast.clipboard] enabled = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Sounds</h3><p>Upstream.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[ui.sound] enabled = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>sound</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Sound files</h3><p>Finished, needs input, reminder.</p></div>
+      <div class="d"><span class="pill val">default sound</span><small>a reminder without <code>reminder_path</code> plays the finished or needs-input sound</small></div>
+      <div class="k"><code>[ui.sound] done_path</code>, <code>request_path</code>, <code>reminder_path</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>sound (picker: <code>default</code> and the sounds in <code>/System/Library/Sounds</code>)</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Per-agent sound</h3></div>
+      <div class="d"><span class="pill val">default</span></div>
+      <div class="k"><code>[ui.sound.agents] claude = "on"</code>, <code>"off"</code> or <code>"default"</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ COORDINATOR ============ -->
+<section id="coordinator">
+  <p class="eyebrow">06 · coordinator</p>
+  <h2>Coordinator <code>[coordinator]</code></h2>
+  <p class="lede">A server-run Claude agent in a pinned <code>coordinator</code> tab that watches other agents and suggests next steps.</p>
+  <div class="rows">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Coordinator</h3></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k"><code>[coordinator] enabled = true</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>coordinator</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Model</h3></div>
+      <div class="d"><span class="pill val">Claude's default</span></div>
+      <div class="k"><code>[coordinator] model = "opus"</code><small>applies at the next launch</small></div>
+      <div class="s"><span class="badge set">in Settings</span><small>default / opus / sonnet</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Wake-ups per hour / day</h3></div>
+      <div class="d"><span class="pill val">12 / 80</span></div>
+      <div class="k"><code>[coordinator] cap_hour</code>, <code>cap_day</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>4–30 / 20–200 pickers</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Notifications</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[coordinator] notify = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>coordinator</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Suggestion notifications per day</h3></div>
+      <div class="d"><span class="pill val">6</span></div>
+      <div class="k"><code>[coordinator] notify_daily_cap</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Quiet hours for its notifications</h3><p>A <code>down</code> alert still goes out.</p></div>
+      <div class="d"><span class="pill off">none</span></div>
+      <div class="k"><code>[coordinator] quiet_hours = "22:00-08:00"</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Wake scope</h3></div>
+      <div class="d"><span class="pill val">"opened"</span></div>
+      <div class="k"><code>[coordinator] wake_scope = "opened"</code>, <code>"teams"</code> or <code>"all"</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Dashboard on 127.0.0.1</h3></div>
+      <div class="d"><span class="pill val">port 7718</span></div>
+      <div class="k"><code>[coordinator] dashboard_port = 7718</code><small>0 = off</small></div>
+      <div class="s"><span class="badge ro">read-only</span><small>Shown, not editable</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Periodic check when changes are pending</h3></div>
+      <div class="d"><span class="pill val">60 min</span></div>
+      <div class="k"><code>[coordinator] periodic_minutes</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Relaunches per hour before reported down</h3></div>
+      <div class="d"><span class="pill val">3</span></div>
+      <div class="k"><code>[coordinator] relaunch_cap_hour</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ BROWSER ============ -->
+<section id="browser">
+  <p class="eyebrow">07 · browser</p>
+  <h2>Browser <code>[browser]</code></h2>
+  <p class="lede">The herdr-owned Chromium the server runs for agents. It starts on first use.</p>
+  <div class="rows">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Browser feature</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] enabled = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Start with the server</h3></div>
+      <div class="d"><span class="pill off">off</span><small>lazy</small></div>
+      <div class="k"><code>[browser] autostart = true</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Close the browser when the server stops</h3><p>Not on a live handoff.</p></div>
+      <div class="d"><span class="pill off">off</span><small>the window survives herdr</small></div>
+      <div class="k"><code>[browser] stop_with_server = true</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Activity overlay</h3><p>Tab groups, glow, cursor.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] show_activity = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Activity color</h3></div>
+      <div class="d"><span class="pill val"><span style="color:#aa6eff">●</span> #aa6eff</span></div>
+      <div class="k"><code>[browser] activity_color = "#rrggbb"</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>5 presets</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Pinned dashboard tab</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] pin_dashboard = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Steer agents to the herdr browser</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] steer_agents = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Turn off agents' own browsers</h3><p>While <code>wrap</code> is on.</p></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] disable_native_browser = false</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>browser</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>MCP registration</h3></div>
+      <div class="d"><span class="pill val">claude and codex</span></div>
+      <div class="k"><code>[browser] mcp_agents = ["claude"]</code></div>
+      <div class="s"><span class="badge set">in Settings</span><small>both / claude / codex / none</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3><code>eval</code>, act family, typing into password fields</h3></div>
+      <div class="d"><span class="pill on">on</span> <span class="pill on">on</span> <span class="pill off">off</span></div>
+      <div class="k"><code>[browser] allow_eval</code>, <code>allow_act</code>, <code>type_into_password_fields</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Restore tabs on relaunch</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[browser] restore_tabs = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+  </div>
+  <p class="note"><b>Legacy keys:</b> <code>wrap_agents</code> is only read as a fallback for <code>[agents] wrap</code> (a Settings change to wrap removes it), and <code>shell_hook</code> is inert. The commented default file still says <code>stop_with_server</code> is not honoured; it is.</p>
+</section>
+
+<!-- ============ UPDATES ============ -->
+<section id="updates">
+  <p class="eyebrow">08 · updates · upstream</p>
+  <h2>Updates <code>[update]</code></h2>
+  <div class="rows" style="margin-top:1rem">
+    <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
+    <div class="row">
+      <div class="f"><h3>Version check</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[update] version_check = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Agent detection manifest check</h3></div>
+      <div class="d"><span class="pill on">on</span></div>
+      <div class="k"><code>[update] manifest_check = false</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+  </div>
+  <div class="card warn" style="margin-top:14px">
+    <h3><span class="g">!</span>Turn both off on a herdr+ build.</h3>
+    <p><code>version_check</code> polls <code>herdr.dev/latest.json</code> in the background, so upstream releases show up as "update available" on a fork binary; the check itself only notifies. Do not follow that prompt: <code>herdr update</code> ignores <code>version_check</code>, fetches the same upstream manifest, and when upstream's version is newer than the fork's it downloads the upstream binary, verifies its checksum and renames it over the herdr+ binary on disk (<code>current_exe</code>). It refuses inside herdr and on Homebrew, mise or Nix installs. Before installing it asks to stop or live-hand-off running servers, and a handoff relaunches them on the upstream binary. After that you run upstream herdr, not herdr+.</p>
+    <p style="margin-top:.5rem"><code>manifest_check</code> downloads <code>herdr.dev/agent-detection/index.toml</code>. A remote manifest at the bundled version or newer replaces the fork's bundled detection rules; only the fork's signal rules survive.</p>
+  </div>
+</section>
+
+<!-- ============ NEWS ============ -->
+<section id="news">
+  <p class="eyebrow">09 · news</p>
+  <h2>News <code>[news]</code></h2>
+  <div class="card" style="margin-top:1rem;max-width:72ch">
+    <p><span class="g">❧</span>There is an AI news desk. It is <span class="pill off">off</span> by default (<code>[news] enabled = false</code>, with a settings section), and it is outside the scope of this guide.</p>
+  </div>
+</section>
+
+<!-- ============ EXAMPLES ============ -->
+<section id="examples">
+  <p class="eyebrow">10 · config.toml examples</p>
+  <h2>config.toml examples</h2>
+  <div class="ex" style="margin-top:1rem">
+    <figure>
+      <figcaption><span>Minimal teammate setup (agents wrapped with tools, tabs sidebar, no upstream update prompts)</span><span class="fn">config.toml</span></figcaption>
+<pre><span class="h">[ui]</span>
+<span class="kk">sidebar_layout</span> = <span class="v">"tabs"</span>
+
+<span class="h">[ui.toast]</span>
+<span class="kk">delivery</span> = <span class="v">"herdr"</span>
+
+<span class="h">[agents]</span>
+<span class="kk">wrap</span> = <span class="n">true</span>
+<span class="kk">tools</span> = <span class="n">true</span>
+<span class="kk">instructions</span> = <span class="n">true</span>
+
+<span class="h">[update]</span>
+<span class="kk">version_check</span> = <span class="n">false</span>
+<span class="kk">manifest_check</span> = <span class="n">false</span></pre>
+    </figure>
+    <figure>
+      <figcaption><span>Coordinator on</span><span class="fn">config.toml</span></figcaption>
+<pre><span class="h">[ui]</span>
+<span class="kk">sidebar_layout</span> = <span class="v">"tabs"</span>   <span class="c"># the pinned coordinator row needs it</span>
+
+<span class="h">[coordinator]</span>
+<span class="kk">enabled</span> = <span class="n">true</span>
+<span class="kk">model</span> = <span class="v">"sonnet"</span>
+<span class="kk">wake_scope</span> = <span class="v">"teams"</span>
+<span class="kk">quiet_hours</span> = <span class="v">"22:00-08:00"</span></pre>
+    </figure>
+    <figure>
+      <figcaption><span>Autosuspend at one day</span><span class="fn">config.toml</span></figcaption>
+<pre><span class="h">[agents.autosuspend]</span>
+<span class="kk">after</span> = <span class="v">"1d"</span></pre>
+    </figure>
+    <figure>
+      <figcaption><span>Quieter setup (no notes, no handoff, no browser)</span><span class="fn">config.toml</span></figcaption>
+<pre><span class="h">[notes]</span>
+<span class="kk">enabled</span> = <span class="n">false</span>
+
+<span class="h">[agents.handoff]</span>
+<span class="kk">enabled</span> = <span class="n">false</span>
+
+<span class="h">[browser]</span>
+<span class="kk">enabled</span> = <span class="n">false</span></pre>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ KEYS ============ -->
+<section id="keys">
+  <p class="eyebrow">11 · keybinds</p>
+  <h2>Keybinds <code>[keys]</code></h2>
+  <p class="lede">Bind a key with <code>[keys] &lt;action&gt; = "prefix+x"</code> (the prefix is <kbd>ctrl+b</kbd>).</p>
+  <div class="keys">
+    <div class="kb"><code>settings</code><span class="ks"><kbd>prefix</kbd>+<kbd>s</kbd></span><p>Opens the settings panel <span class="up">upstream</span></p></div>
+    <div class="kb"><code>reload_config</code><span class="ks"><kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>r</kbd></span><p>Reloads <code>config.toml</code> <span class="up">upstream</span></p></div>
+    <div class="kb"><code>open_notification_target</code><span class="ks"><kbd>prefix</kbd>+<kbd>o</kbd></span><p>Focuses the tab of the visible notification <span class="up">upstream</span></p></div>
+    <div class="kb"><code>clear_pane</code><span class="ks"><span class="ub">unbound</span></span><p>Clears the focused pane <span class="up">upstream</span></p></div>
+    <div class="kb"><code>sidebar_search</code><span class="ks"><kbd>prefix</kbd>+<kbd>f</kbd></span><p>Focuses or leaves the tabs sidebar search field</p></div>
+    <div class="kb"><code>tab_history_back</code><span class="ks"><kbd>cmd</kbd>+<kbd>[</kbd></span><p>Previously focused tab, browser-style</p></div>
+    <div class="kb"><code>tab_history_forward</code><span class="ks"><kbd>cmd</kbd>+<kbd>]</kbd></span><p>Forward again after going back</p></div>
+    <div class="kb"><code>toggle_info_pane</code><span class="ks"><span class="ub">unbound</span></span><p>Shows or hides the focused tab's notes pane</p></div>
+    <div class="kb"><code>toggle_agent_suspend</code><span class="ks"><span class="ub">unbound</span></span><p>Suspends the focused agent, or activates it again</p></div>
+    <div class="kb"><code>handoff_compact</code><span class="ks"><span class="ub">unbound</span></span><p>The focused Claude agent writes a handoff, then <code>/compact</code></p></div>
+    <div class="kb"><code>restart_agent</code><span class="ks"><span class="ub">unbound</span></span><p>Exits the focused idle agent and relaunches it with its resume command</p></div>
+    <div class="kb"><code>toggle_tab_important</code><span class="ks"><span class="ub">unbound</span></span><p>Marks the focused tab important or unmarks it (old name <code>toggle_tab_remind</code> accepted)</p></div>
+    <div class="kb"><code>cycle_tab_color</code><span class="ks"><span class="ub">unbound</span></span><p>Cycles the tab color: none, <span class="re">red</span>, <span class="pe">orange</span>, <span class="ye">yellow</span>, <span class="gr">green</span>, <span class="te">cyan</span>, <span class="ac">blue</span>, <span class="pu">purple</span></p></div>
+    <div class="kb"><code>move_tab_to_group</code><span class="ks"><span class="ub">unbound</span></span><p>Tabs layout: moves the focused tab to a group by name</p></div>
+    <div class="kb"><code>toggle_groups_folded</code><span class="ks"><span class="ub">unbound</span></span><p>Tabs layout: folds every group, or expands all</p></div>
+    <div class="kb"><code>open_coordinator</code><span class="ks"><span class="ub">unbound</span></span><p>Focuses the coordinator tab, creating it when gone</p></div>
+    <div class="kb"><code>open_browser</code><span class="ks"><span class="ub">unbound</span></span><p>Opens the Browser overlay</p></div>
+    <div class="kb"><code>open_news</code><span class="ks"><span class="ub">unbound</span></span><p>Focuses the News tab</p></div>
+  </div>
+  <p class="note"><code>cmd+[</code> / <code>cmd+]</code> only work if your terminal passes Cmd through to herdr; most macOS terminals keep Cmd for themselves. The toolbar's <code>‹</code> <code>›</code> buttons always work, or bind keys any terminal sends, e.g. <code>tab_history_back = "alt+,"</code> and <code>tab_history_forward = "alt+."</code>. Example: Ghostty passes them on with <code>keybind = super+[=csi:91;9u</code> and <code>keybind = super+]=csi:93;9u</code>.</p>
+</section>
+
+<!-- ============ LIMITS ============ -->
+<section id="limits">
+  <p class="eyebrow">12 · not configurable</p>
+  <h2>Not configurable</h2>
+  <p class="lede">These agent limits are built in (<code>src/agents_model/limits.rs</code>) and have no config keys:</p>
+  <div class="stats">
+    <div><b>200<small> /h</small></b>delivered messages per sender per hour</div>
+    <div><b>&gt;30<small> /10 min</small></b>Loop guard: more than 30 messages between one pair (both directions) in 10 minutes</div>
+    <div><b>20<small> /h</small></b>agent-opened tabs or reopens per caller per hour, outside a user turn</div>
+    <div><b>300<small> /h</small></b>soft edits (rename, meta, notes, cosmetic) per caller per hour</div>
+    <div><b>2 s</b>gap between messages from one sender to one target (a reply is exempt)</div>
+    <div><b>5 min</b>gap between urgent messages from one sender to one target</div>
+    <div><b>40</b>live agent-opened panes per team</div>
+  </div>
+</section>
+
+</main>
+
+<footer>herdr+ configuration guide · source <code>docs/fork/CONFIG.md</code> · <a href="herdr-plus.html">what the fork adds</a></footer>
+
+<script>
+(function(){
+  var links=[].slice.call(document.querySelectorAll('nav a.l'));
+  var map={}; links.forEach(function(a){map[a.getAttribute('href').slice(1)]=a;});
+  if('IntersectionObserver' in window){
+    var obs=new IntersectionObserver(function(es){
+      es.forEach(function(e){
+        if(e.isIntersecting){links.forEach(function(a){a.classList.remove('on');});
+          var a=map[e.target.id]; if(a){a.classList.add('on');}}
+      });
+    },{rootMargin:'-45% 0px -50% 0px'});
+    document.querySelectorAll('main section[id]').forEach(function(s){obs.observe(s);});
+  }
+  if(navigator.clipboard){
+    document.querySelectorAll('figure').forEach(function(f){
+      var pre=f.querySelector('pre'), cap=f.querySelector('figcaption .fn'); if(!pre||!cap){return;}
+      var b=document.createElement('button'); b.className='copy'; b.type='button'; b.textContent='copy';
+      b.addEventListener('click',function(){
+        navigator.clipboard.writeText(pre.textContent).then(function(){
+          b.textContent='copied'; b.classList.add('ok');
+          setTimeout(function(){b.textContent='copy'; b.classList.remove('ok');},1400);
+        });
+      });
+      cap.replaceWith(b);
+    });
+  }
+})();
+</script>
+</body>
+</html>
