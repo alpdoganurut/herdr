@@ -4,6 +4,19 @@ An Electron browser window that herdr drives as its browser host: one group of p
 the window follows the focused herdr tab, and agents' `herdr browser …` / MCP ops act on the same
 views over CDP. Contract: `.local/prd/companion/contract.md` (not in git).
 
+## Try it (one command)
+
+```
+scripts/try.sh [url]
+```
+
+Run in a plain terminal (not inside herdr, tmux or ssh). It starts a throwaway herdr (temp HOME/XDG dirs,
+its own socket; your live herdr is never touched) in that terminal, opens the companion window next to it,
+and optionally opens `url` in the first tab. In a pane: `herdr browser open <url>`,
+`herdr browser show <file.html>`; for an agent run `HOME=$REAL_HOME claude`. Leaving herdr (ctrl+b q)
+quits the companion, stops the throwaway server and deletes its folder. `TRY_HEADLESS=1` runs a hidden
+self-check instead (used by CI-style dry runs).
+
 ## Run
 
 ```sh
