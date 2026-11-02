@@ -144,3 +144,10 @@ test('a live group keeps its views when herdr reports the same tab under another
   assert.ok(s.dirty.has('w1:t2'));
   assert.deepEqual(out.created, []);
 });
+
+test('connect settles when herdr is down (missing socket) instead of hanging', async () => {
+  const { Connection } = require('../src/herdr-api.js');
+  const c = new Connection(require('node:path').join(require('node:os').tmpdir(), `hc-missing-${process.pid}.sock`));
+  c.on('error', () => {});
+  await assert.rejects(c.connect({ timeoutMs: 2000 }), (e) => e.code === 'ENOENT' || e.code === 'ECONNREFUSED');
+});

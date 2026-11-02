@@ -62,19 +62,36 @@ class Connection extends EventEmitter {
     this.closed = false;
   }
 
-  connect() {
+  // Settles exactly once: connected, a connect error (ENOENT/ECONNREFUSED: herdr is down),
+  // or a timeout (a socket that never accepts).
+  connect({ timeoutMs = 5000 } = {}) {
     return new Promise((resolve, reject) => {
       const sock = net.createConnection(this.socketPath);
       this.sock = sock;
       sock.setEncoding('utf8');
+      let settled = false;
+      const settle = (fn, v) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn(v);
+      };
+      const timer = setTimeout(() => {
+        const e = new ApiError('connect_timeout', `connecting to ${this.socketPath} timed out`);
+        settle(reject, e);
+        sock.destroy();
+      }, timeoutMs);
       const parser = new LineParser((v) => this._onValue(v));
-      sock.once('connect', () => resolve(this));
+      sock.once('connect', () => settle(resolve, this));
       sock.on('data', (d) => parser.push(d));
       sock.on('error', (e) => {
-        if (!this.closed && sock.connecting) reject(e);
+        settle(reject, e);
         this.emit('error', e);
       });
-      sock.on('close', () => this._onClose());
+      sock.on('close', () => {
+        settle(reject, new ApiError('disconnected', 'herdr connection closed before it connected'));
+        this._onClose();
+      });
     });
   }
 
