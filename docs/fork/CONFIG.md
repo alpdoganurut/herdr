@@ -47,7 +47,7 @@ Before a Claude agent's context is compacted, herdr has it write a handoff, save
 | Suspend / activate an agent by hand | always available | Tab menu "Suspend agent" / "Activate agent", or bind `toggle_agent_suspend` | n/a |
 | Autosuspend idle Claude agents (idle and seen, nothing running; a message wakes it) | off | `[agents.autosuspend] after = "off"` or `"<N>m"`, `"<N>h"`, `"<N>d"` (at most 365 days) | Yes, agents, cycles 1h / 4h / 1d / 3d / off |
 | Restart an idle agent in place | always available | Tab menu "Restart agent", or bind `restart_agent` | n/a |
-| Transcript backups (copy of each agent's native transcript, restored before a resume) | on | `[session] backup_agent_transcripts = false` | Status only (backups section) |
+| Transcript backups (a copy of each open or suspended agent's native transcript, put back before a resume when the agent deleted its own) | on | `[session] backup_agent_transcripts = false` | Status only (backups section) |
 | Resume agents on session restore (upstream) | on | `[session] resume_agents_on_restore = false` | No, config only |
 
 ## Sidebar (`[ui]`, `tabs` layout)
@@ -68,24 +68,24 @@ The search query and recency chip belong to the client only. They are never save
 
 ## Per-tab toggles (tab menu)
 
-Right-click a tab. These are per tab, not config keys.
+Right-click a tab. These are per tab, not config keys. Important, pin, mute, do not disturb, the reminder and the colour are server session state: they are saved with the tab in `session.json`, so they survive a server restart (session restore) and a live handoff, and move with the tab. Only the notes pane's open or closed state belongs to the client and is never saved.
 
-| Item | Default | What it does |
+| Item | Default (new tab) | What it does |
 |---|---|---|
 | Important | off | Reminds you while its agent waits finished-unseen or blocked (also key `toggle_tab_important`) |
 | Pin | off | Lists the tab in the Pinned block |
 | Mute notifications | off | No herdr automatic notifications for the tab (toasts, sounds, system/terminal notifications, bells, reminders); agent cards still show |
-| Do not disturb | off | Agent messages to the tab are stored quietly instead of typed in, urgent ones are refused, herdr wake-ups are held; your typing is unaffected. An agent can also turn it on for its own tab |
-| remind | none | Scheduled reminder: 5m, 10m, 30m, 1h, 6h, daily. Pick the current one again to turn it off |
+| Do not disturb | off | Agent messages to the tab are stored quietly instead of typed in, urgent ones are refused, herdr types nothing in and the coordinator's wake-ups are held; your typing is unaffected. Notifications are untouched (that is mute). An agent can also turn it on or off for its own tab and its teammates' tabs (`agents_dnd`, `herdr tab dnd on|off`), never outside its team or on the coordinator's tab; the coordinator can, for any other tab, in your turn. When an agent or the coordinator turned it on, the coordinator's messages still get through |
+| remind | none | Scheduled reminder: 5m, 10m, 30m, 1h, 6h, daily. Pick the current one again to turn it off. Picking never focuses the tab |
 | Color | none | Color tag (also key `cycle_tab_color`) |
-| Info pane | hidden | Shows the tab's notes pane (also key `toggle_info_pane`, or the `◧` toolbar button) |
+| Info pane | hidden, every start | Shows or hides the tab's notes pane (also key `toggle_info_pane`, or the `◧` toolbar button). Which tabs have it open is client-only: after a restart or in a new client every notes pane starts hidden |
 
 ## Notes pane (`[notes]`)
 
 | Feature | Default | Where to change | In Settings? |
 |---|---|---|---|
 | Notes pane and the agents' notes tools | on | `[notes] enabled = false` (nothing is read or written under `<config dir>/notes/`) | No, config only |
-| Info pane default width | 44 | `[ui] info_pane_width = 28..120` | No, config only |
+| Notes pane default width | 44 | `[ui] info_pane_width = 28..120`. A width you drag or step is saved per client and wins from then on | No, config only |
 
 ## Reminders, toasts and sounds (`[ui]`, `[ui.toast]`, `[ui.sound]`)
 
@@ -98,7 +98,7 @@ Right-click a tab. These are per tab, not config keys.
 | Toast position, delay | bottom-right, 1 s | `[ui.toast.herdr] position`; `[ui.toast] delay_seconds = 0..3600` | No, config only |
 | Clipboard toast | on | `[ui.toast.clipboard] enabled = false` | No, config only |
 | Sounds (upstream) | on | `[ui.sound] enabled = false` | Yes, sound |
-| Sound files (finished, needs input, reminder) | default sound | `[ui.sound] done_path`, `request_path`, `reminder_path` | Yes, sound (picker of macOS system sounds) |
+| Sound files (finished, needs input, reminder) | default sound (a reminder without `reminder_path` plays the finished or needs-input sound) | `[ui.sound] done_path`, `request_path`, `reminder_path` | Yes, sound (picker: `default` and the sounds in `/System/Library/Sounds`) |
 | Per-agent sound | `default` | `[ui.sound.agents] claude = "on"`, `"off"` or `"default"` | No, config only |
 
 ## Coordinator (`[coordinator]`)
@@ -126,6 +126,7 @@ The herdr-owned Chromium the server runs for agents. It starts on first use.
 |---|---|---|---|
 | Browser feature | on | `[browser] enabled = false` | Yes, browser |
 | Start with the server | off (lazy) | `[browser] autostart = true` | No, config only |
+| Close the browser when the server stops (not on a live handoff) | off (the window survives herdr) | `[browser] stop_with_server = true` | No, config only |
 | Activity overlay (tab groups, glow, cursor) | on | `[browser] show_activity = false` | Yes, browser |
 | Activity color | `#aa6eff` | `[browser] activity_color = "#rrggbb"` | Yes (5 presets) |
 | Pinned dashboard tab | on | `[browser] pin_dashboard = false` | Yes, browser |
@@ -135,7 +136,7 @@ The herdr-owned Chromium the server runs for agents. It starts on first use.
 | `eval`, act family, typing into password fields | on, on, off | `[browser] allow_eval`, `allow_act`, `type_into_password_fields` | No, config only |
 | Restore tabs on relaunch | on | `[browser] restore_tabs = false` | No, config only |
 
-Legacy keys: `wrap_agents` is only read as a fallback for `[agents] wrap`, `shell_hook` is inert, and `stop_with_server` is read but not yet honored.
+Legacy keys: `wrap_agents` is only read as a fallback for `[agents] wrap` (a Settings change to wrap removes it), and `shell_hook` is inert. The commented default file still says `stop_with_server` is not honoured; it is.
 
 ## Updates (`[update]`, upstream)
 
@@ -144,7 +145,7 @@ Legacy keys: `wrap_agents` is only read as a fallback for `[agents] wrap`, `shel
 | Version check | on | `[update] version_check = false` | No, config only |
 | Agent detection manifest check | on | `[update] manifest_check = false` | No, config only |
 
-**Turn both off on a herdr+ build.** `version_check` polls `herdr.dev/latest.json`, so upstream releases show up as "update available" on a fork binary, and following that prompt (`herdr update`) installs upstream herdr, not herdr+. `manifest_check` downloads `herdr.dev/agent-detection/index.toml`. A remote manifest at the bundled version or newer replaces the fork's bundled detection rules; only the fork's signal rules survive.
+**Turn both off on a herdr+ build.** `version_check` polls `herdr.dev/latest.json` in the background, so upstream releases show up as "update available" on a fork binary; the check itself only notifies. Do not follow that prompt: `herdr update` ignores `version_check`, fetches the same upstream manifest, and when upstream's version is newer than the fork's it downloads the upstream binary, verifies its checksum and renames it over the herdr+ binary on disk (`current_exe`). It refuses inside herdr and on Homebrew, mise or Nix installs. Before installing it asks to stop or live-hand-off running servers, and a handoff relaunches them on the upstream binary. After that you run upstream herdr, not herdr+. `manifest_check` downloads `herdr.dev/agent-detection/index.toml`. A remote manifest at the bundled version or newer replaces the fork's bundled detection rules; only the fork's signal rules survive.
 
 ## News (`[news]`)
 
@@ -237,8 +238,8 @@ These agent limits are built in (`src/agents_model/limits.rs`) and have no confi
 
 - 200 delivered messages per sender per hour
 - Loop guard: more than 30 messages between one pair (both directions) in 10 minutes
-- 20 agent-opened tabs or reopens per caller per hour
+- 20 agent-opened tabs or reopens per caller per hour, outside a user turn
 - 300 soft edits (rename, meta, notes, cosmetic) per caller per hour
-- 2 s gap between messages from one sender to one target
+- 2 s gap between messages from one sender to one target (a reply is exempt)
 - 5 min gap between urgent messages from one sender to one target
 - 40 live agent-opened panes per team
