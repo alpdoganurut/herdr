@@ -10,6 +10,28 @@ Section 2 also covers E0027 (an exhaustive struct pattern missing a fork field):
 ## 1. Owned files (added by the fork; upstream R/D/T on any = deny)
 .claude/skills/fork-sync/SKILL.md
 FORK.md
+apps/companion/.gitignore
+apps/companion/README.md
+apps/companion/package-lock.json
+apps/companion/package.json
+apps/companion/spike/driver.mjs
+apps/companion/spike/main.js
+apps/companion/src/groups.js
+apps/companion/src/herdr-api.js
+apps/companion/src/host.js
+apps/companion/src/main.js
+apps/companion/src/preload/control.js
+apps/companion/src/preload/strip.js
+apps/companion/src/ui/control.html
+apps/companion/src/ui/strip.css
+apps/companion/src/ui/strip.html
+apps/companion/src/ui/strip.js
+apps/companion/src/views.js
+apps/companion/test/e2e-real-herdr.mjs
+apps/companion/test/e2e-real-herdr.sh
+apps/companion/test/e2e.mjs
+apps/companion/test/groups.test.js
+apps/companion/test/mock-herdr.mjs
 docs/fork/CONFIG.md
 docs/fork/SETUP.md
 docs/fork/config.html
@@ -609,6 +631,7 @@ src/client/shell/tests/force_notice.rs
 | ClientShellState | quiet | HashMap::new() |
 | ClientContextMenuTarget::Tab | dnd | false |
 | ClientContextMenuTarget::Tab | dnd_supported | false |
+| ClientContextMenuTarget::Tab | browser_page | None |
 | KeysConfig | tab_history_back | crate::config::BindingConfig::one("cmd+[") |
 | KeysConfig | tab_history_forward | crate::config::BindingConfig::one("cmd+]") |
 | KeysConfigOverlay | tab_history_back | None |
@@ -696,6 +719,7 @@ cli::runtime (removed upstream, ee5bfb50 sync) and the hand-parsed tab / pane / 
 cli::spec::{id_command, env_option, agent_kind_values} and cli::parse_{split_direction, read_source, read_format, agent_status, pane_agent_state} -> removed upstream (ee5bfb50 sync); the fork re-adds none of them (spec::repeatable_option, re-added for the checkpoint command, went with that command)
 client::terminal_geometry::resize_poll_loop -> upstream wrapper over resize_poll_loop_with(resize_tx, initial_size, read_geometry, take_signal, should_quit) (ee5bfb50 sync); the fork's ResizeCoalescer lives in resize_poll_loop_with
 client::shell::overlays::render_context_menu(buffer, menu, palette) -> (buffer, menu, palette, keybinds: &LiveKeybindConfig) (menu design: the key hints come from the effective keybindings; the body delegates to client::shell::context_menu_look::render_menu; a new upstream call site = E0061: pass &config.keybinds)
+client::shell::ClientContextMenuItem.label: &'static str -> std::borrow::Cow<'static, str> (companion browser: the tab menu's page title row is owned; an upstream item literal passes `label: "…".into()` or `Cow::Borrowed("…")`, a reader takes `&item.label`)
 
 
 ## 4. Owned enum variants (append last; E0004 in upstream match = deny)
@@ -1285,9 +1309,11 @@ src/client/endpoint/control.rs  additive: quiet messages: EndpointControlMessage
 src/client/mod.rs  additive: quiet messages: the EndpointControlMessage::Quiet arm directly after the TabMutes arm
 src/client/shell.rs  additive: quiet messages: `mod quiet;` (with its doc line) directly after `mod tab_mutes;`
 src/client/shell/state.rs  additive: dnd: ClientContextMenuAction::Dnd last after HandoffCompact; ClientContextMenuTarget::Tab.dnd, dnd_supported directly after mute_supported; ClientShellState.quiet directly after tab_mutes (struct and new())
+src/client/shell/state.rs  additive: companion browser: ClientContextMenuTarget::Tab.browser_page directly after dnd_supported; ClientContextMenuItem.label is a Cow<'static, str> (section 3)
 src/client/shell/render.rs  additive: quiet messages: ShellRenderState.quiet last after sidebar_filter
 src/client/shell/composition.rs  additive: quiet messages: the sidebar model's ModelInputs passes quiet (quiet::active_quiet_of) directly after mutes; both ShellRenderState literals pass quiet last after sidebar_filter
 src/client/shell/tests/graphics.rs  additive: dnd: its ClientContextMenuTarget::Tab literal carries `dnd: false`, `dnd_supported: false` after mute_supported
+src/client/shell/tests/graphics.rs  additive: companion browser: its ClientContextMenuTarget::Tab literal carries `browser_page: None` after dnd_supported
 src/client/shell/tests/mod.rs  additive: quiet messages: `mod quiet;` directly after `mod tab_mutes;`
 docs/next/website/src/content/docs/socket-api.mdx  additive: dnd: `tab.set_dnd` in the Tab row after `tab.set_muted`; its paragraph directly after the `tab.set_muted` one; `dnd` in the session.closed_list field list; quiet messages: the agents.send_message quiet / agents.take_quiet / pending files paragraph directly after the `pane.report_compact` one
 *  deny: anything that is not a structural additive conflict (zdiff3 base empty, both sides pure insertions)
@@ -1748,6 +1774,7 @@ src/client/shell/tab_sidebar.rs  mid-logic: mute: the one-off ModelInputs passes
 src/client/shell/tab_sidebar_detail.rs  mid-logic: mute: tab_chips adds a `notifications off` chip directly after the `pinned` one
 src/client/shell/sidebar_model.rs  mid-logic: mute: TabFacts.muted after pin; ModelInputs.mutes after pins (no lookups while empty)
 src/client/shell/context_menu.rs  mid-logic: dnd: the tab menu's Do not disturb / End do not disturb item directly after the Mute item, only with dnd_supported; its activation (tab.set_dnd, no focus) directly after the Mute arm; open_tab_context_menu fills dnd / dnd_supported (active_tab_dnd, supports_endpoint_method(TabSetDnd))
+src/client/shell/context_menu.rs  mid-logic: companion browser: the tab menu's page title row (section `Browser`, glyph ◉ while a page needs the user, else ◎; Action::BrowserOpenOverlay) directly after the lead block, only with browser_page; its activation (the Browser overlay, no focus) directly before the Pin arm; open_tab_context_menu fills browser_page from browser.get `sessions` (the active page's title, else its url); the item closure wraps its label in Cow::Borrowed
 src/client/shell/tab_sidebar.rs  mid-logic: dnd: render_tab_row's x=3 cell shows quiet::dnd_mark (accent moon U+F0594; `ui.tab_agent_glyphs.dnd`) instead of the muted mark when TabFacts.dnd; the pending mark (`✉N`, `✉9+`, overlay1) is pushed first into the row's marks when TabFacts.quiet > 0; the one-off ModelInputs passes quiet
 src/client/shell/tab_sidebar_detail.rs  mid-logic: dnd: tab_chips adds a `<moon> do not disturb` chip (accent) and an `N quiet` chip (overlay1) directly after the `notifications off` one
 src/client/shell/sidebar_model.rs  mid-logic: dnd: TabFacts.dnd and TabFacts.quiet after muted; ModelInputs.quiet after mutes (no lookups while the state lists nothing)
@@ -2826,7 +2853,7 @@ A user-facing feature or fix that changes what herdr+ offers also updates the sh
 ### Added
 - The herdr+ Claude Code skills ship with the fork: `docs/fork/skills/` holds `plus:notes`, `plus:notify`, `plus:status` and `plus:team-build` (the skills herdr+'s built-in agent instructions name), stored as `plus-<name>` because tracked paths carry no `:`. `scripts/install-plus-skills.sh [--dest <dir>] [--dry-run]` installs them as `plus:<name>` into `${CLAUDE_CONFIG_DIR:-~/.claude}/skills`; a skill already identical is left alone, one that differs is first moved to `skills-backup/<name>.<timestamp>` next to the skills folder (outside it, so Claude Code does not load the backup), and `run-with-deadline.sh` keeps its executable bit. `plus:status` needs `jq` (macOS 15 ships `/usr/bin/jq`). `plus:team-build`'s batch audit uses a second model such as the `codex` CLI when installed and otherwise falls back to 2 Opus auditors + a judge, so Codex is optional. Tests: `python3 -m unittest scripts/test_install_plus_skills.py`.
 - The `tabs` sidebar's toolbar has `‹` and `›` buttons at its start, after the fold toggle and before the search field, always shown: a click goes back or forward through the tab history exactly like `keys.tab_history_back` / `keys.tab_history_forward` (cmd+[ / cmd+]); a button is lit (accent) while the history has a tab that way and dim otherwise, where a click does nothing. A narrow sidebar drops them before the search field gets too short.
-- Companion browser host (herdr side): an external browser (the Electron companion, `apps/companion`) registers over the API (`browser.host_register`, a heartbeat lease) and becomes the reserved profile `companion`; with `[browser] host = "auto"` (default) agents' `browser open` / `show` go to it while it runs and silently to the herdr+ window otherwise (`host` in the result). Each herdr tab keeps its browser pages (`browser.host_state` / `host_sync`), restored across restarts and live handoff. `herdr browser show <file.html>` (MCP `browser_show`) shows a local HTML file in a sandboxed, network-blocked tab of the session that reloads when the file changes. Send page to agent (`browser.send_page`, quiet under do not disturb), user actions in the ledger as you, a `◉` needs-you mark on the tab (an agent's focus request, a dialog, a failed view) and the sessions in the Browser overlay; page errors go quietly to the Claude agent that uses the tab (`[browser] page_errors = "agent"`, default).
+- Companion browser host (herdr side): an external browser (the Electron companion, `apps/companion`) registers over the API (`browser.host_register`, a heartbeat lease) and becomes the reserved profile `companion`; with `[browser] host = "auto"` (default) agents' `browser open` / `show` go to it while it runs and silently to the herdr+ window otherwise (`host` in the result). Each herdr tab keeps its browser pages (`browser.host_state` / `host_sync`), restored across restarts and live handoff. `herdr browser show <file.html>` (MCP `browser_show`) shows a local HTML file in a sandboxed, network-blocked tab of the session that reloads when the file changes. Send page to agent (`browser.send_page`, quiet under do not disturb), user actions in the ledger as you, a `◉` needs-you mark on the tab (an agent's focus request, a dialog, a failed view) and the sessions in the Browser overlay; page errors go quietly to the Claude agent that uses the tab (`[browser] page_errors = "agent"`, default); the tab's context menu names its page (a click opens the Browser overlay). The companion app (`apps/companion`, Electron): one strip per session with back/stop/reload and send to agent, follows the focused herdr tab, asks before a page gets your location, notifications, camera/microphone or clipboard (allow once / deny).
 - Force suspend: when your own suspend or restart (the tab menu, `keys.toggle_agent_suspend`, `keys.restart_agent`) is refused because the agent is working or blocked on a dialog, or its subagents or background tasks (shells, monitors, `/loop`s) still run, the refusal notice now has a `Force suspend` (or `Force restart`) button and stays 8 s. One click, no second confirm: a working or blocked Claude Code or Codex gets Esc, then its exit command once it is back at its prompt (within 5 s; else it is terminated), then the usual SIGTERM / SIGKILL escalation; another busy agent is terminated directly; its subagents and background tasks end with it. A forced restart relaunches as usual. Refusals force cannot fix (no session yet, no resume plan, the pane's own process, not running) keep the plain notice. Mouse only (notices have no key path) and not on the mobile banner. Only you can force: the new `agent.suspend_force` / `agent.restart_force` methods answer `force_user_only` outside herdr's interface, so the CLI and agents' MCP tools keep today's refusals; an older server keeps the plain notice.
 - Autosuspend (`[agents.autosuspend] after`, off by default; `"<N>m"`, `"<N>h"` or `"<N>d"` up to 365 days, an invalid value is a config warning and means off): about once a minute herdr suspends a Claude agent that has been idle and seen that long, like `herdr agent suspend`, and marks it as its own (`auto_suspended` in `agent.get` / `agent.list`, the agents directory and the session file; the detail strip reads `suspended (auto)` through the agent times push). The idle time is the agent's state time (it survives restarts), counted from the last scan that saw the pane on an attached client's screen. Never suspended: a blocked agent, a finished one its user has not looked at, any pane on screen in an attached client (every pane of each client's shown tab), the coordinator, an agent with subagents or background tasks running or that has not reported its background work since herdr started watching it (a Stop snapshot), an installed Claude integration older than v16, messages queued or quiet messages stored for it, a turn its hooks hold live, a handoff run, voice mode, a launch in progress, a draft in its input box or a dialog on screen, or anything `agent.suspend` refuses. A message to an auto-suspended agent (`agents.send_message`, quiet and urgent ones too, and older `agent.message_send` senders) activates it and is delivered once it is up (the sender's reason says it is waking it); a wake that fails keeps the message queued, is retried, and after a minute tells the senders once. Activation clears the mark. A message to an agent its user suspended waits as before (queued, `suspended`; a quiet one is still refused). Settings → Agents gains `suspend idle claude after` (↵ steps 1h · 4h · 1d · 3d · off), written by the server through `agents.settings.set autosuspend.after` (`AgentsSettingsInfo.autosuspend_after`, hidden on older servers).
 - Context menus redesigned, one language for every menu (tab with and without an agent, suspended tab, group and team, workspace and worktree, pane, News, Browser, coordinator): section rules with a mauve title (`─ Agent ──`; never selectable: the cursor and clicks pass over them), one accent glyph per item, dim right-aligned key hints read from your effective keybindings (`⌥t`, `^b X`; none when unbound), toggles that keep one label and show their state with `○`/`●` (green, with `on`) or `☆`/`★` (Important, yellow), destructive items in red with a red cursor bar, and a rounded box. The tab menu leads with New tab, Rename, Info pane and Close, then Agent, Team and Alerts (the toggles, `◷ remind` and `◐ colour`); the group menu ends with a red Danger section; the pane and workspace menus put their close items last behind a rule; disabled coordinator items are dim.

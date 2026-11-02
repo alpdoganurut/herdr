@@ -226,7 +226,10 @@ fn mute_menu_item_toggles_through_tab_set_muted_and_hides_without_server_support
             .iter()
             .any(|item| item.action == ClientContextMenuAction::Mute),
         "{:?}",
-        items.iter().map(|item| item.label).collect::<Vec<_>>()
+        items
+            .iter()
+            .map(|item| item.label.to_string())
+            .collect::<Vec<_>>()
     );
 }
 

@@ -208,7 +208,7 @@ fn group_menu(state: &mut ClientShellState) -> Vec<(String, ClientContextMenuAct
         Some(ClientShellOverlay::ContextMenu(menu)) => menu
             .items()
             .into_iter()
-            .map(|item| (item.label.to_owned(), item.action))
+            .map(|item| (item.label.to_string(), item.action))
             .collect(),
         _ => panic!("group menu"),
     }
@@ -232,7 +232,7 @@ fn tab_menu(state: &mut ClientShellState, tab_id: &str) -> Vec<(String, ClientCo
         Some(ClientShellOverlay::ContextMenu(menu)) => menu
             .items()
             .into_iter()
-            .map(|item| (item.label.to_owned(), item.action))
+            .map(|item| (item.label.to_string(), item.action))
             .collect(),
         _ => panic!("tab menu"),
     }

@@ -325,6 +325,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
                 mute_supported: false,
                 dnd: false,
                 dnd_supported: false,
+                browser_page: None,
             },
             x: 35,
             y: 8,

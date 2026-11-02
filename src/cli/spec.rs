@@ -603,6 +603,15 @@ fn browser_command() -> Command {
         )
         .subcommand(verb("close", "Close the current tab").arg(browser_tab_arg()))
         .subcommand(verb("focus", "Select the tab and raise the window for the user").arg(browser_tab_arg()))
+        // Fork (companion browser).
+        .subcommand(
+            verb("show", "Show a local HTML file in a sandboxed tab of your session; it reloads when the file changes")
+                .arg(Arg::new("file").value_name("FILE.html").required(true).value_hint(ValueHint::FilePath))
+                .arg(flag("allow-network").help("Let the page reach the network (blocked by default)"))
+                .arg(flag("no-watch").help("Do not reload when the file changes"))
+                .arg(flag("focus").help("Also show the tab and raise the window"))
+                .arg(option("title", "TITLE")),
+        )
         .subcommand(Command::new("status").about("Browser, sidecar, profiles, tabs and recent activity").arg(json_flag()))
         .subcommand(
             Command::new("log")

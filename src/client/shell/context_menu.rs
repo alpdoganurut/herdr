@@ -7,8 +7,8 @@ impl ClientContextMenuOverlay {
         use super::context_menu_look::{MenuKind as Kind, MenuLook, MenuSection as Section};
         use ClientContextMenuAction as Action;
 
-        let item = |label, action, glyph, section, kind| ClientContextMenuItem {
-            label,
+        let item = |label: &'static str, action, glyph, section, kind| ClientContextMenuItem {
+            label: std::borrow::Cow::Borrowed(label),
             action,
             look: MenuLook::new(glyph, section, kind),
         };
@@ -86,6 +86,7 @@ impl ClientContextMenuOverlay {
                 mute_supported,
                 dnd,
                 dnd_supported,
+                browser_page,
                 ..
             } => {
                 let agent_section = Section::Titled("Agent");
@@ -108,6 +109,19 @@ impl ClientContextMenuOverlay {
                         Kind::Danger,
                     ),
                 ];
+                // Fork (companion browser): the session's page title; a
+                // click opens the Browser overlay.
+                if let Some((title, needs_you)) = browser_page {
+                    items.push(ClientContextMenuItem {
+                        label: std::borrow::Cow::Owned(title.clone()),
+                        action: Action::BrowserOpenOverlay,
+                        look: MenuLook::new(
+                            if *needs_you { "\u{25C9}" } else { "\u{25CE}" },
+                            Section::Titled("Browser"),
+                            Kind::Action,
+                        ),
+                    });
+                }
                 match agent {
                     Some(ClientTabMenuAgent {
                         suspended: true, ..
@@ -568,6 +582,21 @@ impl ClientShellState {
                 dnd: true,
             },
         ));
+        // Fork (companion browser): the session's active page, if any.
+        let browser_page = self.browser.info.as_ref().and_then(|info| {
+            info.sessions
+                .iter()
+                .find(|session| session.tab_id == tab_id)
+                .map(|session| {
+                    let title = if session.title.trim().is_empty() {
+                        session.url.clone()
+                    } else {
+                        session.title.clone()
+                    };
+                    (title, session.needs_you)
+                })
+                .filter(|(title, _)| !title.trim().is_empty())
+        });
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
@@ -584,6 +613,7 @@ impl ClientShellState {
                 mute_supported,
                 dnd,
                 dnd_supported,
+                browser_page,
             },
             x,
             y,
@@ -670,6 +700,13 @@ impl ClientShellState {
                     ),
                     outcome,
                 );
+                outcome.repaint = true;
+                return;
+            }
+            // Fork (companion browser): the page title row opens the
+            // Browser overlay, without focusing the tab.
+            (ClientContextMenuAction::BrowserOpenOverlay, ClientContextMenuTarget::Tab { .. }) => {
+                self.open_browser_overlay(outcome);
                 outcome.repaint = true;
                 return;
             }
