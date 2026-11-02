@@ -76,6 +76,7 @@ fn running_info(seq: u64, touched_at: u64) -> BrowserGetInfo {
         enabled: true,
         host: Default::default(),
         setup_needed: false,
+        sessions: vec![],
         profiles: vec![BrowserProfileInfo {
             name: "main".into(),
             state: "running".into(),

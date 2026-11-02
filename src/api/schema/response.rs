@@ -343,6 +343,37 @@ pub enum ResponseResult {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         ids: Vec<String>,
     },
+    /// Fork (companion browser): `browser.host_register` / `browser.host_heartbeat`.
+    BrowserHostLease {
+        lease: super::browser::BrowserHostLeaseInfo,
+    },
+    /// Fork: `browser.host_state`.
+    BrowserHostState {
+        state: super::browser::BrowserHostStateInfo,
+    },
+    /// Fork: `browser.host_sync`: keys minted for new groups (`tab_id`) and
+    /// new entries (`tab_id/view_id`), herdr tabs that no longer exist.
+    BrowserHostSynced {
+        #[serde(default)]
+        keys: std::collections::BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unknown_tabs: Vec<String>,
+    },
+    /// Fork: `browser.host_report`.
+    BrowserHostReported {
+        accepted: u32,
+        dropped: u32,
+    },
+    /// Fork: `browser.send_page`: `sent`, `queued` or `quiet`.
+    BrowserSendPage {
+        outcome: String,
+        to_pane: String,
+        #[serde(default)]
+        to_name: String,
+        message_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

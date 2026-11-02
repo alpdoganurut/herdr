@@ -780,3 +780,117 @@ export class Companion {
     this.scope = null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Fork (companion browser): the companion's control page. An Electron app
+// registered as the browser host (`attach` with kind "companion") is driven
+// through `window.__herdrCompanion` on its always-hidden control page
+// (`herdr-companion://control/`): open/select/focus/close/show views. Its
+// own pages (`herdr-companion:` scheme) are furniture, never tabs.
+
+export const CONTROL_URL_PREFIX = 'herdr-companion://control/';
+/** A view the companion created, before its target id is known. */
+export const VIEW_MARKER = 'about:blank#herdr-view=';
+export const CONTROL_CALL_MS = 5000;
+
+/** The companion's own pages (control page, strip): never adopted, tracked or counted. */
+export function isFurnitureUrl(url) {
+  return typeof url === 'string' && url.startsWith('herdr-companion:');
+}
+
+/** The control page driver. `pages()` lists the candidate pages (every
+ *  context's); `evaluate(page, fn, arg)` runs in the page. Errors the page
+ *  answers (`{error:{code,message}}`) throw with that code. */
+export class ControlPage {
+  constructor({ pages, evaluate, callMs = CONTROL_CALL_MS }) {
+    this.pages = pages;
+    this.evaluate = evaluate;
+    this.callMs = callMs;
+    this.page = null;
+    this.views = new Map(); // target id -> view id
+  }
+  find() {
+    if (this.page && !(this.page.isClosed && this.page.isClosed())) return this.page;
+    this.page = this.pages().find((page) => String(page.url()).startsWith(CONTROL_URL_PREFIX)) || null;
+    return this.page;
+  }
+  async call(fn, arg) {
+    const page = this.find();
+    if (!page) throw Object.assign(new Error('the companion control page is gone'), { herdr: true, code: 'host_verify_failed' });
+    let timer;
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error(`companion ${fn} did not answer in ${this.callMs} ms`), { herdr: true, code: 'browser_timeout' })), this.callMs); });
+    try {
+      const out = await Promise.race([
+        this.evaluate(page, ([name, value]) => {
+          const api = globalThis.__herdrCompanion;
+          if (!api || typeof api[name] !== 'function') return { error: { herdr: true, code: 'host_verify_failed', message: `the control page has no ${name}()` } };
+          return api[name](value);
+        }, [fn, arg === undefined ? null : arg]),
+        timeout,
+      ]);
+      if (out && typeof out === 'object' && out.error) {
+        throw Object.assign(new Error(String(out.error.message || out.error.code)), { herdr: true, code: String(out.error.code || 'browser_error') });
+      }
+      return out;
+    } finally { clearTimeout(timer); }
+  }
+  /** The control page answers the registration's nonce. */
+  async verify(nonce) {
+    let got = null;
+    try { got = await this.call('nonce'); } catch (err) { throw Object.assign(new Error(`the companion did not answer its nonce: ${err.message}`), { herdr: true, code: 'host_verify_failed' }); }
+    if (got !== nonce) throw Object.assign(new Error('the companion on that port is not the one that registered (nonce mismatch)'), { herdr: true, code: 'host_verify_failed' });
+    return true;
+  }
+  remember(target, view) { if (target && view) this.views.set(String(target), String(view)); }
+  forget(target) { this.views.delete(String(target)); }
+  /** A target's view id (asks the companion once when unknown). */
+  async viewOf(target) {
+    if (this.views.has(target)) return this.views.get(target);
+    const views = await this.call('views').catch(() => []);
+    for (const view of Array.isArray(views) ? views : []) {
+      if (view && view.target_id && view.view_id) this.remember(view.target_id, view.view_id);
+    }
+    if (!this.views.has(target)) throw Object.assign(new Error('the companion does not know this tab'), { herdr: true, code: 'tab_closed' });
+    return this.views.get(target);
+  }
+}
+
+/** File watches for HTML views: the file and its directory (not
+ *  recursive), debounced, then `reload()`. At most `max` views. `watchFn`
+ *  is `fs.watch`. */
+export class ViewWatches {
+  constructor({ watchFn, debounceMs = 200, max = 32, log = () => {} }) {
+    this.watchFn = watchFn;
+    this.debounceMs = debounceMs;
+    this.max = max;
+    this.log = log;
+    this.watches = new Map(); // target -> { watchers, timer }
+  }
+  arm(target, file, reload) {
+    if (!this.watches.has(target) && this.watches.size >= this.max) {
+      throw Object.assign(new Error(`at most ${this.max} views are watched; close some`), { herdr: true, code: 'too_many_watches' });
+    }
+    this.disarm(target);
+    const entry = { watchers: [], timer: null };
+    const fire = () => {
+      clearTimeout(entry.timer);
+      entry.timer = setTimeout(() => { Promise.resolve().then(reload).catch((err) => this.log(`reload: ${err && err.message}`)); }, this.debounceMs);
+    };
+    const slash = Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\'));
+    const dir = slash > 0 ? file.slice(0, slash) : '.';
+    for (const path of [file, dir]) {
+      try { entry.watchers.push(this.watchFn(path, fire)); } catch (err) { this.log(`watch ${path}: ${err && err.message}`); }
+    }
+    this.watches.set(target, entry);
+    return entry.watchers.length > 0;
+  }
+  disarm(target) {
+    const entry = this.watches.get(target);
+    if (!entry) return false;
+    clearTimeout(entry.timer);
+    for (const watcher of entry.watchers) { try { watcher.close(); } catch {} }
+    this.watches.delete(target);
+    return true;
+  }
+  has(target) { return this.watches.has(target); }
+}

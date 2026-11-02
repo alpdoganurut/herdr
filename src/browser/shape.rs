@@ -903,6 +903,7 @@ mod tests {
             console_errors: 0,
             state: TabState::Open,
             closed_at: None,
+            attention: None,
         }
     }
 

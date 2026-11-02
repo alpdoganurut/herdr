@@ -1549,7 +1549,9 @@ fn push_reminder_marks(
     state: &ShellRenderState<'_>,
     palette: &Palette,
 ) {
-    if state.browser_marked_tabs.contains(&tab.tab_id) {
+    if state.browser_attention_tabs.contains(&tab.tab_id) {
+        marks.push(super::browser::TAB_BROWSER_ATTENTION_MARKER, palette.yellow);
+    } else if state.browser_marked_tabs.contains(&tab.tab_id) {
         marks.push(super::browser::TAB_BROWSER_MARKER, palette.accent);
     }
     let remind_every = tab

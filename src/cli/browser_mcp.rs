@@ -304,6 +304,13 @@ pub fn op_for_tool(
         }
         "browser_close" => BrowserOp::Close,
         "browser_focus" => BrowserOp::Focus,
+        "browser_show" => BrowserOp::Show {
+            file: need("file")?,
+            allow_network: flag(a, "allow_network"),
+            watch: a["watch"].as_bool().unwrap_or(true),
+            focus: flag(a, "focus"),
+            title: opt_str(a, "title"),
+        },
         "browser_click" => BrowserOp::Click {
             ref_: opt_str(a, "ref"),
             selector: opt_str(a, "selector"),
@@ -401,6 +408,7 @@ pub fn tools() -> Vec<Value> {
         json!({ "name": "browser_tabs", "description": "List the browser's open tabs with who opened and last used each one; `*` marks your current tab.", "inputSchema": schema(json!({ "mine": { "type": "boolean", "description": "Only tabs your pane touched" } }), &[]) }),
         json!({ "name": "browser_use", "description": "Make a tab (yours or the user's) your current tab.", "inputSchema": schema(json!({}), &["tab"]) }),
         json!({ "name": "browser_close", "description": "Close the current (or given) tab. Close tabs you opened when the whole task is done, unless the user may want to look at them.", "inputSchema": schema(json!({}), &[]) }),
+        json!({ "name": "browser_show", "description": "Show a local HTML file (a report, a chart, a prototype you wrote) to the user in a sandboxed tab of your session: the companion browser when it runs, else the herdr+ window. The network is blocked unless allow_network; it reloads when the file changes (watch, default true). The tab becomes your current tab. `file` must be an absolute path to an .html/.htm file.", "inputSchema": schema(json!({ "file": { "type": "string" }, "allow_network": { "type": "boolean" }, "watch": { "type": "boolean" }, "focus": { "type": "boolean" }, "title": { "type": "string" } }), &["file"]) }),
         json!({ "name": "browser_focus", "description": "Bring the browser window up for the user with the current (or given) tab selected, e.g. to ask them to log in or look at something. The only call that raises the window.", "inputSchema": schema(json!({}), &[]) }),
         json!({ "name": "browser_click", "description": "Click an element of the current tab by aria ref (from browser_snapshot) or CSS selector. Works on background tabs. A stale ref answers stale_ref: re-run browser_snapshot.", "inputSchema": schema(target_props(json!({})), &[]) }),
         json!({ "name": "browser_type", "description": "Type text key by key into an element (ref or selector); `clear` empties it first, `submit` presses Enter after. Password fields are refused: ask the user to type it (browser_focus).", "inputSchema": schema(target_props(json!({ "text": { "type": "string" }, "submit": { "type": "boolean" }, "clear": { "type": "boolean" } })), &["text"]) }),
@@ -575,7 +583,7 @@ mod tests {
             .handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }))
             .unwrap();
         let tools = list["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 25);
+        assert_eq!(tools.len(), 26);
         for act in [
             "browser_click",
             "browser_type",
@@ -775,7 +783,7 @@ mod tests {
     fn every_tool_maps_to_an_op() {
         for tool in tools() {
             let name = tool["name"].as_str().unwrap();
-            let args = json!({ "url": "https://a/", "action": "back", "query": "q", "expr": "1", "tab": "t1", "text": "t", "key": "Enter", "value": "v", "ops": [ { "op": "click", "ref": "e1" } ] });
+            let args = json!({ "url": "https://a/", "action": "back", "query": "q", "expr": "1", "tab": "t1", "text": "t", "key": "Enter", "value": "v", "file": "/tmp/view.html", "ops": [ { "op": "click", "ref": "e1" } ] });
             let (op, _, tab) =
                 op_for_tool(name, &args).unwrap_or_else(|err| panic!("{name}: {err}"));
             assert_ne!(op, BrowserOp::Unknown, "{name}");

@@ -2895,3 +2895,81 @@ async fn fork_smoke_an_idle_claude_off_screen_is_autosuspended_and_a_message_wak
     assert_eq!(server.app.message_queue.entries.len(), 1);
     shutdown_test_runtimes(&mut server);
 }
+
+/// Fork (companion browser): a herdr tab's browser group is in the
+/// snapshot a live handoff hands over (`session.json`), so the replacement
+/// server has the same key, entries and active page; runtime targets are
+/// not carried (the companion re-syncs them).
+#[tokio::test]
+async fn tab_browser_state_survives_a_live_handoff() {
+    use crate::api::schema::{BrowserHostEntry, BrowserHostSyncGroup, TabBrowserKind};
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("one")];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    let mut browser = crate::browser::session::TabBrowser::new(Some("g-0123456789abcdef"));
+    browser.apply_sync(
+        "w1:t1",
+        &BrowserHostSyncGroup {
+            tab_id: "w1:t1".into(),
+            key: None,
+            active: Some("v2".into()),
+            entries: vec![
+                BrowserHostEntry {
+                    view_id: Some("v1".into()),
+                    target: Some("T1".into()),
+                    url: "https://a.test/".into(),
+                    title: "A".into(),
+                    ..Default::default()
+                },
+                BrowserHostEntry {
+                    view_id: Some("v2".into()),
+                    target: Some("T2".into()),
+                    kind: TabBrowserKind::HtmlView,
+                    url: "file:///tmp/report.html".into(),
+                    file: Some("/tmp/report.html".into()),
+                    title: "Report".into(),
+                    ..Default::default()
+                },
+            ],
+        },
+        &mut Default::default(),
+    );
+    server.app.state.workspaces[0].tabs[0].browser = Some(browser);
+    let snapshot = crate::persist::capture(
+        &server.app.state.workspaces,
+        &server.app.state.terminals,
+        &server.app.terminal_runtimes,
+        Some(0),
+        0,
+    );
+    // The handoff hands the snapshot over as JSON.
+    let json = serde_json::to_string(&snapshot).expect("snapshot json");
+    let handed: crate::persist::SessionSnapshot = serde_json::from_str(&json).expect("parses");
+    let mut imports = std::collections::HashMap::new();
+    let (workspaces, _terminals, runtimes) = crate::persist::restore_handoff(
+        &handed,
+        0,
+        "/bin/sh",
+        crate::config::ShellModeConfig::NonLogin,
+        &mut imports,
+        tokio::sync::mpsc::channel(4).0,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        std::sync::Arc::new(crate::render_signal::RenderSignal::new()),
+    )
+    .expect("handoff restore");
+    drop(runtimes);
+    let restored = workspaces[0].tabs[0]
+        .browser
+        .as_ref()
+        .expect("browser state");
+    assert_eq!(restored.key, "g-0123456789abcdef");
+    assert_eq!(restored.entries.len(), 2);
+    assert_eq!(restored.active.as_deref(), Some("b2"));
+    assert_eq!(restored.entries[1].kind, TabBrowserKind::HtmlView);
+    assert_eq!(
+        restored.entries[1].file.as_deref(),
+        Some("/tmp/report.html")
+    );
+    assert!(restored.entries.iter().all(|entry| entry.target.is_none()));
+}

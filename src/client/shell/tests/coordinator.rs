@@ -890,6 +890,7 @@ fn render_sidebar(
         news_row,
         browser_row: None,
         browser_marked_tabs: HashSet::new(),
+        browser_attention_tabs: HashSet::new(),
         voice: None,
         coordinator_row: None,
         teams: None,

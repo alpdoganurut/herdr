@@ -152,6 +152,7 @@ impl ClientShellState {
         let breathe_reset_rgb = self.breathe_reset_rgb();
         let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
+        let browser_attention_tabs = self.browser_attention_tabs();
         let active_view = self.active_view();
         let pins_view = self.pins_view();
         let scheduled_view = self.scheduled_view();
@@ -173,6 +174,7 @@ impl ClientShellState {
             news_row,
             browser_row,
             browser_marked_tabs,
+            browser_attention_tabs,
             coordinator_row,
             teams: super::teams::active_teams_of(
                 &self.teams,
@@ -375,6 +377,7 @@ impl ClientShellState {
         let breathe_reset_rgb = self.breathe_reset_rgb();
         let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
+        let browser_attention_tabs = self.browser_attention_tabs();
         let pending_workspace_highlight =
             self.pending_workspace_highlight.as_ref().filter(|pending| {
                 self.mode != ClientShellMode::Navigate
@@ -408,6 +411,7 @@ impl ClientShellState {
                 news_row,
                 browser_row,
                 browser_marked_tabs,
+                browser_attention_tabs,
                 coordinator_row,
                 teams: super::teams::active_teams_of(
                     &self.teams,

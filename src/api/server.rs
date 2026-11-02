@@ -521,6 +521,13 @@ fn serve_connection(
             let response = crate::browser::serve::run(request_id.clone(), params, api_tx);
             finish_wait_response(&mut stream, Some(response), &request_id, method, changes_ui)
         }
+        // Fork (companion browser): the host lease on the connection thread.
+        method_body @ (Method::BrowserHostRegister(_)
+        | Method::BrowserHostHeartbeat(_)
+        | Method::BrowserHostUnregister(_)) => {
+            let response = crate::browser::serve::host_lease(request_id.clone(), method_body);
+            finish_wait_response(&mut stream, Some(response), &request_id, method, changes_ui)
+        }
         method_body => {
             let (response_write_tx, response_write_rx) = std::sync::mpsc::channel();
             let stop_caller = matches!(method_body, Method::ServerStop(_))

@@ -1841,6 +1841,18 @@
           "type": "string",
           "default": "\"#aa6eff\"",
           "description": "The activity overlay's colour as `#rrggbb`: the frame border and glow, the cursor fill and the click ripple (the glow's transparency is fixed). Applies live after `herdr server reload-config` (the next overlay refresh uses it); an invalid value reports a config diagnostic and keeps the default purple. Tab-group colours are not affected: Chrome only offers its own nine named colours, and herdr picks one per pane."
+        },
+        {
+          "key": "browser.host",
+          "type": "string",
+          "default": "\"auto\"",
+          "description": "Fork (companion browser): where `herdr browser open` and `herdr browser show` without `--profile` go. `auto` uses the companion browser (the Electron app, `apps/companion`) while it is registered and the herdr+ window otherwise; `companion` only the companion (`host_unavailable` without it); `window` only the herdr+ window. Every other operation follows the pane's current tab, wherever it lives. Applies live after `herdr server reload-config`; an unknown value reports a config diagnostic and reads as `auto`."
+        },
+        {
+          "key": "browser.page_errors",
+          "type": "string",
+          "default": "\"agent\"",
+          "description": "Fork (companion browser): uncaught page errors, console errors, failed loads and crashes of a tab an agent opened or used recently are stored quietly for that agent when it is a Claude agent (batched, deduplicated and capped; never typed in, never a wake-up); other agents read them with `herdr browser console`. `off` keeps them pull-only. An unknown value reports a config diagnostic and reads as `agent`."
         }
       ]
     },

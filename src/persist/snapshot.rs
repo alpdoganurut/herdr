@@ -169,6 +169,10 @@ pub struct TabSnapshot {
     /// files.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dnd_by_agent: bool,
+    /// Fork (companion browser): `Tab.browser` without runtime targets;
+    /// absent when the tab has no pages (and in older files).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<crate::browser::session::TabBrowser>,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
@@ -300,6 +304,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             muted: false,
             dnd: false,
             dnd_by_agent: false,
+            browser: None,
             layout: snap.layout,
             panes: snap.panes,
             zoomed: snap.zoomed,
@@ -553,6 +558,10 @@ fn capture_tab(
         muted: tab.muted,
         dnd: tab.dnd,
         dnd_by_agent: tab.dnd && tab.dnd_by_agent,
+        browser: tab
+            .browser
+            .as_ref()
+            .and_then(crate::browser::session::TabBrowser::for_snapshot),
         layout: capture_node(tab.layout.root()),
         panes,
         zoomed: tab.zoomed,
@@ -699,6 +708,59 @@ mod tests {
             }
             other => panic!("unknown session fixture: {other}"),
         }
+    }
+
+    /// Fork (companion browser): `Tab.browser` goes into the snapshot
+    /// without runtime targets and comes back; a tab without pages (or an
+    /// empty group) writes no `browser` key, and an older file without one
+    /// reads as none.
+    #[test]
+    fn fork_smoke_tab_browser_state_round_trips_and_is_absent_when_empty() {
+        use crate::api::schema::{BrowserHostEntry, BrowserHostSyncGroup};
+        let mut ws = Workspace::test_new("browser");
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::default();
+        let terminals = HashMap::new();
+        let empty = capture(std::slice::from_ref(&ws), &terminals, &runtimes, Some(0), 0);
+        let json = serde_json::to_value(&empty).unwrap();
+        assert!(json["workspaces"][0]["tabs"][0].get("browser").is_none());
+        ws.tabs[0].browser = Some(crate::browser::session::TabBrowser::new(Some("g-1")));
+        let still_empty = capture(std::slice::from_ref(&ws), &terminals, &runtimes, Some(0), 0);
+        let json = serde_json::to_value(&still_empty).unwrap();
+        assert!(json["workspaces"][0]["tabs"][0].get("browser").is_none());
+        if let Some(browser) = ws.tabs[0].browser.as_mut() {
+            browser.apply_sync(
+                "w1:t1",
+                &BrowserHostSyncGroup {
+                    tab_id: "w1:t1".into(),
+                    entries: vec![BrowserHostEntry {
+                        view_id: Some("v1".into()),
+                        target: Some("T1".into()),
+                        url: "https://a.test/".into(),
+                        title: "A".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                &mut Default::default(),
+            );
+        }
+        let full = capture(std::slice::from_ref(&ws), &terminals, &runtimes, Some(0), 0);
+        let json = serde_json::to_value(&full).unwrap();
+        let tab = &json["workspaces"][0]["tabs"][0]["browser"];
+        assert_eq!(tab["key"], "g-1");
+        assert_eq!(tab["entries"][0]["id"], "b1");
+        assert!(tab["entries"][0].get("target").is_none());
+        let back: SessionSnapshot = serde_json::from_value(json).unwrap();
+        let restored = back.workspaces[0].tabs[0].browser.clone().unwrap();
+        assert_eq!(restored.entries[0].url, "https://a.test/");
+        // An older file: no key at all.
+        let mut old = serde_json::to_value(&empty).unwrap();
+        old["workspaces"][0]["tabs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("browser");
+        let back: SessionSnapshot = serde_json::from_value(old).unwrap();
+        assert!(back.workspaces[0].tabs[0].browser.is_none());
     }
 
     fn test_session_path(name: &str) -> String {
@@ -1009,6 +1071,7 @@ mod tests {
                     muted: false,
                     dnd: false,
                     dnd_by_agent: false,
+                    browser: None,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
                         ratio: 0.5,
@@ -1727,6 +1790,7 @@ mod tests {
                     muted: false,
                     dnd: false,
                     dnd_by_agent: false,
+                    browser: None,
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
                         ratio: 0.5,
