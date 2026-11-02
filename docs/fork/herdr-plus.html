@@ -31,6 +31,8 @@ nav .brand b{color:var(--blue)}
 nav a.l{color:var(--o2);font-size:.83rem;white-space:nowrap;padding:.2rem 0;border-bottom:2px solid transparent}
 nav a.l:hover{color:var(--text);text-decoration:none}
 nav a.l.on{color:var(--text);border-bottom-color:var(--blue)}
+nav a.x{color:var(--blue);font-size:.83rem;white-space:nowrap;padding:.2rem 0}
+nav a.x.first{margin-left:auto}
 
 main{max-width:1180px;margin:0 auto;padding:0 1.25rem 4rem}
 section{padding:3.6rem 0 1rem;border-top:1px solid var(--s0)}
@@ -135,6 +137,8 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <a class="l" href="#more">More</a>
   <a class="l" href="#handoff">Auto handoff</a>
   <a class="l" href="#eng">Engineering</a>
+  <a class="x first" href="config.html">Configuration</a>
+  <a class="x" href="SETUP.md">Setup guide</a>
 </div></nav>
 
 <main>
@@ -435,7 +439,7 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
 <span class="ac">❧</span> <span class="o0">rev 4e9b1c07 · you · 12:03</span>
 <span class="o0">click edit  ○ tick  wheel scroll  e edit</span></div>
     <div class="grid" style="grid-template-columns:1fr">
-      <div class="card"><h3><span class="g">✎</span>Your page, edited in place</h3><p>One markdown page per agent session, for a plan, a checklist or anything else. Click to edit; it saves on Esc or after 2 s. <code>- [ ]</code> tasks tick with a click. Open it with the toolbar&#39;s <code>◧</code> or the tab menu; key bindings are on the configuration page.</p></div>
+      <div class="card"><h3><span class="g">✎</span>Your page, edited in place</h3><p>One markdown page per agent session, for a plan, a checklist or anything else. Click to edit; it saves on Esc or after 2 s. <code>- [ ]</code> tasks tick with a click. Open it with the toolbar&#39;s <code>◧</code> or the tab menu; key bindings are on the <a href="config.html">configuration page</a>.</p></div>
       <div class="card"><h3><span class="g">❦</span>Markdown, drawn for a terminal</h3><p>Headings, <b>bold</b>, <i>italic</i>, links, lists, quotes, code blocks and tables, drawn for the terminal. Clicking a word edits it in place.</p></div>
       <div class="card"><h3><span class="g">◇</span>Agents write it when you ask</h3><p>Ask the agent, or run <code>/plus:notes</code> for a short page with what's in flight, what's waiting on you and the plan (it opens the pane too). Once asked, the agent keeps it up to date. It is one page, not a running log.</p></div>
       <div class="card"><h3><span class="g">↻</span>Survives /clear and compaction</h3><p>The page (its first 3 KB) goes back into the agent's context on start, resume, <code>/clear</code> and compaction, so the agent never loses the plan.</p></div>
@@ -519,7 +523,7 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
 
 </main>
 
-<footer>built on herdr (upstream: <a href="https://github.com/herdrdev/herdr">herdrdev/herdr</a>) · fork branch <code>fork</code></footer>
+<footer>built on herdr (upstream: <a href="https://github.com/herdrdev/herdr">herdrdev/herdr</a>) · fork branch <code>fork</code> · <a href="config.html">configuration</a> · <a href="SETUP.md">setup guide</a></footer>
 
 <script>
 (function(){

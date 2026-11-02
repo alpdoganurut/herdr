@@ -1,5 +1,7 @@
 # herdr+ setup on macOS (Apple Silicon)
 
+What you get: [herdr-plus.html](herdr-plus.html). Configuration: [CONFIG.md](CONFIG.md) ([config.html](config.html)).
+
 herdr is a terminal agent runtime: one TUI that runs Claude Code, Codex and shells in
 workspaces, tabs and panes, and tracks each agent's state. herdr+ is a fork that adds
 agent-to-agent tools (`herdr_agents` MCP), team rules, a herdr-owned Chromium browser
