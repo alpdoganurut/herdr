@@ -137,11 +137,14 @@ const W = `http://127.0.0.1:${web.address().port}`;
 // ---------- the companion (headless Electron) and an inspector on its CDP port ----------
 
 let child = null;
+const SYNC_BUDGET = 1500;
 let insp = null; // {browser, control(), strip()}
 function startCompanion() {
   const out = fs.openSync(path.join(T, 'companion.log'), 'a');
   child = spawn(electronBin, [appDir, '--socket', SOCK, '--profile-dir', PROFILE, '--headless'], {
-    env: { ...process.env, HERDR_COMPANION_HEADLESS: '1' },
+    // A small sync budget: the companion splits its syncs (one group each, titles cut when one
+    // group alone is over it), as it does for a real oversized sync.
+    env: { ...process.env, HERDR_COMPANION_HEADLESS: '1', HERDR_COMPANION_SYNC_BUDGET: String(SYNC_BUDGET) },
     stdio: ['ignore', out, out],
   });
   child.exited = new Promise((r) => child.on('exit', (code) => r(code)));
@@ -414,6 +417,52 @@ try {
     check('browser sessions carried over', after.length === before.length && after.every((s) => before.some((b) => b.tab_id === s.tab_id && b.pages === s.pages)), { before, after });
     const r = await browser(['read', '--format', 'text'], p1);
     check('the agent keeps working on its tab after the handoff', !r.error && /E/.test(text(r)), r.error || text(r).slice(0, 100));
+  });
+
+  await section('cross-workspace move: the moved tab keeps its live views', async () => {
+    const w2 = await api('workspace.create', { label: 'e2e-two', focus: false });
+    const ws2 = (w2.workspace && w2.workspace.workspace_id) || w2.workspace_id;
+    const ws2Tabs = ((await api('tab.list', { workspace_id: ws2 })).tabs || []).map((t) => t.tab_id); // its default tab
+    const pane2 = ((await panesOf()).find((p) => p.tab_id === t2) || {}).pane_id;
+    const ctlOpen = (a) => within(insp.control().evaluate((x) => globalThis.__herdrCompanion.open(x), a), 10000, 'open()');
+    const live = await ctlOpen({ tab_id: t2, url: `${W}/a`, background: false });
+    check(`a live view in ${t2}`, live && live.view_id && !live.error, live);
+    const before = (await views()).filter((x) => x.tab_id === t2).map((x) => x.view_id).sort();
+    const unknownBefore = (fs.readFileSync(path.join(T, 'companion.log'), 'utf8').match(/sync named unknown tabs/g) || []).length;
+    // the pane is the tab's only one: it moves as a whole tab (new tab id, same browser group)
+    const mv = await apiOk('pane.move', { pane_id: pane2, destination: { type: 'new_tab', workspace_id: ws2 }, focus: false });
+    // a sync right away still names the old tab id (herdr answers it in unknown_tabs)
+    const raced = await within(insp.control().evaluate((x) => globalThis.__herdrCompanion.open(x), { tab_id: t2, url: `${W}/b` }), 10000, 'open()').catch((e) => ({ error: String(e) }));
+    const t2new =
+      (mv.move_result && mv.move_result.pane && mv.move_result.pane.tab_id) ||
+      (await waitFor(async () => {
+        const t = ((await api('tab.list', { workspace_id: ws2 })).tabs || []).find((x) => !ws2Tabs.includes(x.tab_id));
+        return t && t.tab_id;
+      }, 10000));
+    check('pane.move moves the tab to the other workspace', !mv.error && t2new && t2new !== t2, mv.error || { t2new, raced });
+    const moved = await waitFor(async () => {
+      const v = (await views()).filter((x) => x.tab_id === t2new).map((x) => x.view_id);
+      return before.every((id) => v.includes(id)) ? v : null;
+    }, 15000);
+    check(`the companion follows the group to ${t2new} with the same views`, moved, { before, now: await views() });
+    check('the live view is still live', ((await views()).find((x) => x.view_id === live.view_id) || {}).live === true);
+    const s = await waitFor(async () => (await sessions()).find((x) => x.tab_id === t2new && x.pages >= before.length), 10000);
+    check(`herdr's browser sessions follow the move (${t2new})`, s, await sessions());
+    const unknownAfter = (fs.readFileSync(path.join(T, 'companion.log'), 'utf8').match(/sync named unknown tabs/g) || []).length;
+    console.log(`  (syncs that named the old tab id: ${unknownAfter - unknownBefore})`);
+    t2 = t2new;
+  });
+
+  await section('split syncs: every group reaches herdr under a small sync budget', async () => {
+    const all = await views();
+    const tabs = [...new Set(all.map((x) => x.tab_id))];
+    const s = await waitFor(async () => {
+      const ss = await sessions();
+      return tabs.every((t) => (ss.find((x) => x.tab_id === t) || {}).pages === all.filter((x) => x.tab_id === t).length) ? ss : null;
+    }, 15000);
+    check(`herdr has every group's pages (${tabs.length} groups, budget ${SYNC_BUDGET} bytes)`, s, { views: all.map((x) => [x.tab_id, x.view_id]), sessions: await sessions() });
+    const log = fs.readFileSync(path.join(T, 'companion.log'), 'utf8');
+    check('no sync was refused (too_large) or failed', !/host_sync failed/.test(log), (log.match(/host_sync failed.*/g) || []).slice(0, 3));
   });
 } finally {
   await section('teardown', async () => {
