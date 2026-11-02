@@ -101,7 +101,7 @@ td{color:var(--sub0)} td:first-child{color:var(--text);white-space:nowrap}
 .ncard .x{color:var(--o0)}
 .k-info{--k:var(--blue)} .k-q{--k:var(--red)} .k-done{--k:var(--green)} .k-warn{--k:var(--red)}
 
-/* info pane */
+/* notes pane */
 .dock{font-family:var(--mono);font-size:12.5px;line-height:1.5;background:var(--base);border:1px solid var(--s1);border-radius:10px;padding:.7rem 1.1ch;white-space:pre;overflow-x:auto;color:var(--sub0)}
 
 /* flow */
@@ -130,7 +130,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <a class="l" href="#teams">Teams</a>
   <a class="l" href="#messaging">Messaging</a>
   <a class="l" href="#sidebar">Sidebar</a>
-  <a class="l" href="#info">Info pane</a>
+  <a class="l" href="#info">Notes pane</a>
   <a class="l" href="#notify">Notifications</a>
   <a class="l" href="#more">More</a>
   <a class="l" href="#handoff">Auto handoff</a>
@@ -144,11 +144,11 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <div>
     <p class="eyebrow">a fork of herdr</p>
     <h1>herdr<span class="p">+</span><br>run many coding agents, together.</h1>
-    <p class="lede">herdr is a terminal runtime for coding agents. herdr+ adds what you need when ten or twenty of them run at once: a coordinator, teams, safe agent-to-agent messages, a sidebar that shows who needs you, notes that survive <code>/clear</code>, and notification cards.</p>
+    <p class="lede">herdr is a terminal runtime for coding agents. herdr+ adds what you need when ten or twenty of them run at once: a coordinator, teams, agent-to-agent messages that never type over you, a sidebar that shows who needs you, a notes pane that survives <code>/clear</code>, and notification cards.</p>
     <div class="stats">
       <div><b>1</b>coordinator agent</div>
-      <div><b>30+</b>agents_* tools</div>
-      <div><b>0</b>wire breaks</div>
+      <div><b>27</b>agent tools</div>
+      <div><b>0</b>restarts to update</div>
       <div><b>0.9.3</b>upstream base</div>
     </div>
     <div class="legend">
@@ -202,7 +202,6 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
         <div class="r c"><span>  <span class="o0">☼</span> <span class="t">logs-tail</span> <span class="o0">daily</span></span><span>09:30</span></div>
         <div class="r c rule"><span>───────────────────────────</span><span></span></div>
         <div class="r"><span>  <span class="ac">◎</span> <span class="s0">Browser</span></span><span class="o1">3 tabs · 2 agents</span></div>
-        <div class="r"><span>  <span class="gr">○</span> <span class="s0">News</span></span><span class="o1">next 13:00</span></div>
         <div class="r"><span>  <span class="gr">○</span> <span class="s0">coordinator</span></span><span class="o1">74 watched</span></div>
         <div class="r c"><span class="o1">cpu 12%  mem 80%  net ok</span><span></span></div>
         <div class="r c"><span></span><span class="o0">menu «</span></div>
@@ -227,13 +226,13 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 <section id="coordinator">
   <p class="eyebrow">01 · coordinator</p>
   <h2>A coordinator agent, run by herdr itself</h2>
-  <p class="lede">One long-running Claude Code session that knows who is doing what, keeps a dashboard, remembers things for you, and acts for you when you ask. It is not a relay: agents talk to each other directly, it sees the log.</p>
+  <p class="lede">One long-running Claude Code session that knows who is doing what, keeps a dashboard, remembers what you tell it, and acts when you ask. It doesn't relay messages: agents talk to each other directly, and it reads the log.</p>
   <div class="two">
     <div class="grid" style="grid-template-columns:1fr">
-      <div class="card"><h3><span class="g">◉</span>Native, server-run</h3><p>The herdr server starts it in a <code>coordinator</code> tab, resumes it, and relaunches it if it goes missing. Turn on with <code>[coordinator] enabled = true</code>.</p></div>
-      <div class="card"><h3><span class="g">▤</span>HTML dashboard on <code>127.0.0.1:7718</code></h3><p>Served by herdr. Live data (agents, status, messages, actions) plus the coordinator's own summaries and suggestions. Opens in herdr's browser or yours.</p></div>
-      <div class="card"><h3><span class="g">❖</span>Its own memory</h3><p><code>memory/</code> with one fact per file and a <code>MEMORY.md</code> index it reads on every start and wake-up. State lives in files, so it can restart fresh.</p></div>
-      <div class="card"><h3><span class="g">⊘</span>Acts only on your word</h3><p>Write tools refuse unless the turn started from your own typing in its pane (<code>non_user_turn</code>). Wake-ups update the board and suggest; they never act.</p></div>
+      <div class="card"><h3><span class="g">◉</span>Native, server-run</h3><p>You never run it yourself: herdr starts it in its own <code>coordinator</code> tab, resumes it after restarts and relaunches it if it disappears. Turn it on with <code>[coordinator] enabled = true</code>.</p></div>
+      <div class="card"><h3><span class="g">▤</span>HTML dashboard on <code>127.0.0.1:7718</code></h3><p>One page with every agent's status, recent messages and actions, plus the coordinator's own summaries and suggestions. Opens in herdr's browser or yours.</p></div>
+      <div class="card"><h3><span class="g">❖</span>Its own memory</h3><p>It remembers what you tell it across restarts: one fact per file, with an index it reads every time it starts or wakes.</p></div>
+      <div class="card"><h3><span class="g">⊘</span>Acts only on your word</h3><p>It changes things only when you asked, by typing in its pane. When it wakes up by itself, it updates the dashboard and makes suggestions, but changes nothing.</p></div>
     </div>
     <div>
       <div class="term solo" style="width:100%;margin-bottom:14px" role="img" aria-label="Coordinator row states">
@@ -247,6 +246,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
           <div class="r"><span>  <span class="re">×</span> <span class="s0">coordinator</span></span><span class="o1">down</span></div>
         </div>
       </div>
+      <p class="dim" style="font-size:.82rem;margin:-.4rem 0 14px">capped = hit its wake-up limit · locked = another herdr server runs it · down = stopped after too many relaunches or a failed start</p>
       <div class="tbl"><table>
         <tr><th>Wake-up limit</th><th>Default</th></tr>
         <tr><td><code>cap_hour</code></td><td>12 wake-ups an hour</td></tr>
@@ -254,7 +254,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
         <tr><td><code>periodic_minutes</code></td><td>a slow check every 60 min</td></tr>
         <tr><td><code>relaunch_cap_hour</code></td><td>3 relaunches an hour, then <code>down</code></td></tr>
         <tr><td><code>notify_daily_cap</code></td><td>6 of its own notifications a day, plus <code>quiet_hours</code></td></tr>
-        <tr><td><code>wake_scope</code></td><td><code>opened</code>: only agents it opened wake it</td></tr>
+        <tr><td><code>wake_scope</code></td><td><code>opened</code>: only agents the coordinator opened can wake it</td></tr>
       </table></div>
     </div>
   </div>
@@ -264,31 +264,31 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 <section id="control">
   <p class="eyebrow">02 · agents control herdr</p>
   <h2>Agents can drive herdr, within clear rules</h2>
-  <p class="lede">Every Claude Code or Codex agent can get the <code>herdr_agents</code> MCP tools. One server-side check decides what each agent may do. Every write and every refusal is logged.</p>
+  <p class="lede">Every Claude Code or Codex agent can get the <code>herdr_agents</code> tools to read, message and manage other tabs. herdr checks every request against the rules below and logs every change and every refusal.</p>
 
   <div class="card" style="margin-bottom:14px">
-    <h3>herdr_agents tools</h3>
+    <h3>The <code>herdr_agents</code> tools</h3>
     <div class="chips">
       <code>agents_whoami</code><code>agents_list</code><code>agents_get</code><code>agents_read</code><code>agents_messages</code><code>agents_wait</code><code>agents_wait_for_message</code><code>agents_actions</code><code>agents_notes_read</code>
       <code class="w">agents_send_message</code><code class="w">agents_notify</code><code class="w">agents_notes_write</code><code class="w">agents_open_tab</code><code class="w">agents_rename_tab</code><code class="w">agents_move_to_group</code><code class="w">agents_create_group</code><code class="w">agents_set_meta</code><code class="w">agents_reorder_tab</code><code class="w">agents_reorder_group</code><code class="w">agents_suspend</code><code class="w">agents_activate</code><code class="w">agents_restart</code><code class="w">agents_mute</code><code class="w">agents_dnd</code><code class="w">agents_close_tab</code><code class="w">agents_reopen_tab</code><code class="w">agents_team</code>
     </div>
-    <p class="dim" style="margin-top:.5rem;font-size:.82rem">Blue = writes, checked by the server. Grey = reads.</p>
+    <p class="dim" style="margin-top:.5rem;font-size:.82rem">Blue = changes, checked by herdr. Grey = reads.</p>
   </div>
 
   <div class="two">
     <div class="tbl"><table>
       <tr><th>Who</th><th>May do</th></tr>
       <tr><td>Itself</td><td>Edit its own tab.</td></tr>
-      <tr><td>Teammates</td><td>Rename, move, set role and note, open new teammates, suspend / activate / restart, mute / do not disturb (several at once).</td></tr>
-      <tr><td>Everyone else</td><td>Read screens and message. Nothing more (<code>outside_team</code>).</td></tr>
+      <tr><td>Teammates</td><td>Rename, move, set role and note, open new teammates, suspend, activate, restart, mute, do not disturb, several at once.</td></tr>
+      <tr><td>Everyone else</td><td>Read screens and send messages. Nothing more.</td></tr>
       <tr><td>Shell screens</td><td>Readable by teammates and the coordinator only.</td></tr>
-      <tr><td>Closing a tab</td><td>Only in a turn you started in that agent (<code>non_user_turn</code>). Reopenable.</td></tr>
+      <tr><td>Closing a tab</td><td>Only when you asked for it by typing in that agent's pane. Closed tabs can be reopened.</td></tr>
       <tr><td>Coordinator tab</td><td>Off limits to every agent: no rename, move, close, suspend, restart, mute or do not disturb.</td></tr>
     </table></div>
     <div class="grid" style="grid-template-columns:1fr">
-      <div class="card"><h3><span class="g">›</span>User turns are tracked</h3><p>herdr knows whether a turn started from your typing or from a script, message or wake-up. Sensitive actions need your turn.</p></div>
-      <div class="card"><h3><span class="g">≡</span>Actions log</h3><p>Every agent write, every refusal, and your own tab and team actions go to <code>actions.jsonl</code>. The dashboard shows it; <code>agents_actions</code> reads it.</p></div>
-      <div class="card"><h3><span class="g">≤</span>Loose limits, server-side</h3><p>200 messages an hour, a 30-in-10-minutes loop guard per pair, 20 spawns an hour, 300 soft edits an hour.</p></div>
+      <div class="card"><h3><span class="g">›</span>Your turns are tracked</h3><p>herdr knows whether an agent's turn started from your typing or from a message, a script or a wake-up. Risky actions need a turn you started.</p></div>
+      <div class="card"><h3><span class="g">≡</span>Actions log</h3><p>Every agent change, every refusal, and your own tab and team actions are logged. You see them on the dashboard; agents read them with <code>agents_actions</code>.</p></div>
+      <div class="card"><h3><span class="g">≤</span>Loose limits</h3><p>Generous limits stop a runaway agent: 200 messages an hour, 30 between the same two agents in 10 minutes, 20 new tabs an hour, 300 other tab changes (renames, moves, roles, mutes) an hour.</p></div>
     </div>
   </div>
 </section>
@@ -300,10 +300,10 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <p class="lede">A group of tabs becomes a team with a purpose and roles. Members know each other from their first turn.</p>
   <div class="two">
     <div class="grid" style="grid-template-columns:1fr">
-      <div class="card"><h3><span class="g">◆</span>Make team from a group</h3><p><em>Make team…</em> on the group menu, <code>herdr team make &lt;group&gt; --purpose T</code>, or the coordinator. The header shows <code>◆ &lt;purpose&gt;</code>.</p></div>
-      <div class="card"><h3><span class="g">@</span>Roles name the members</h3><p>Every Claude or Codex started in the group joins. A member is named after its role: <code>fixer</code>, <code>reviewer</code>, <code>reviewer-2</code>. Address one by <code>to="role:lead"</code>.</p></div>
-      <div class="card"><h3><span class="g">≣</span>Roster in the instructions</h3><p>The roster, roles and purpose go into the system prompt. Changes reach Claude through a hook on the next prompt, and Codex on its next tool result.</p></div>
-      <div class="card"><h3><span class="g">↩</span>Report-back rule</h3><p>A member that finishes, gets stuck on, or drops work it was given sends one short report: what is done, where the details are, what is next.</p></div>
+      <div class="card"><h3><span class="g">◆</span>Make team from a group</h3><p>Use <em>Make team…</em> on the group menu, <code>herdr team make &lt;group&gt; --purpose "&lt;text&gt;"</code>, or ask the coordinator. The group header then shows <code>◆ &lt;purpose&gt;</code>.</p></div>
+      <div class="card"><h3><span class="g">@</span>Roles name the members</h3><p>Every Claude Code or Codex agent started in the group joins, named after its role: <code>fixer</code>, <code>reviewer</code>, <code>reviewer-2</code>. Agents message a member by its role.</p></div>
+      <div class="card"><h3><span class="g">≣</span>Members know the team</h3><p>Every member knows the roster, roles and purpose from its first turn, and hears about changes on its next step.</p></div>
+      <div class="card"><h3><span class="g">↩</span>Report-back rule</h3><p>A member that finishes, gets stuck on, or drops work it was given sends whoever gave it the work one short report: what is done, where the details are, what is next.</p></div>
     </div>
     <div>
       <div class="term solo" style="width:100%" role="img" aria-label="Team info mockup">
@@ -319,7 +319,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
           <div class="r"><span class="ac">+ join</span><span class="o1">disband</span></div>
         </div>
       </div>
-      <p class="dim" style="font-size:.85rem;margin-top:.7rem">The coordinator is in every team and speaks for you. A teammate's message is acted on when it fits the team's purpose; nothing destructive without you.</p>
+      <p class="dim" style="font-size:.85rem;margin-top:.7rem">The coordinator is in every team and speaks for you. Members act on each other's messages when they fit the team's purpose, and never do anything destructive without you.</p>
     </div>
   </div>
 </section>
@@ -328,9 +328,9 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 <section id="messaging">
   <p class="eyebrow">04 · agent-to-agent messaging</p>
   <h2>Messages that never type over you</h2>
-  <p class="lede">Sending to a busy agent used to fail or land on top of your half-written prompt. Now the server queues it and types it in at the right moment.</p>
+  <p class="lede">Agents can message each other without ever typing over your half-written prompt: herdr queues each message and types it in when the agent is free and you aren't typing.</p>
 
-  <div class="term" style="margin-bottom:16px" role="img" aria-label="Pointer line example">
+  <div class="term" style="margin-bottom:16px" role="img" aria-label="Message line example">
     <div class="bar">what the receiving agent sees</div>
     <div class="pane" style="padding:.7rem 1.4ch;color:var(--sub0)"><span class="t">&gt;</span> herdr+ message <span class="ac">m_7f3a</span> from <span class="t">reviewer</span> (teammate, w3:p2): read it with agents_messages id=<span class="ac">m_7f3a</span>
 
@@ -339,39 +339,37 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   </div>
 
   <div class="grid">
-    <div class="card"><h3><span class="g">⇶</span>Server-side queue</h3><p>Per target, oldest first. Saved with the session, survives restarts. Expires after 2 h; messages waiting on the target's user are kept up to 24 h. Dropped if the target is gone.</p></div>
-    <div class="card"><h3><span class="g">‖</span>Typing guard</h3><p>Nothing is typed while you typed in that pane in the last 10 s, or have an unsent draft in its input box. For Claude Code and Codex it fails closed: no visible input box (a question, a permission prompt, a menu) means the message waits.</p></div>
-    <div class="card"><h3><span class="g">›</span>Pointer-line delivery</h3><p>One short plain line instead of a paste, so Claude does not treat it as your pasted content. The agent reads the full message by id.</p></div>
-    <div class="card"><h3><span class="g">⧉</span>Batch delivery</h3><p>Several queued messages go in together once the target has been idle for 3 s, as one line.</p></div>
-    <div class="card"><h3><span class="g">⏱</span>Stuck-message notice</h3><p>If a message waited 10 min on an agent whose screen has not moved for 10 min, the sender gets one notice with the reason. A working agent running a subagent says so instead: <code>is running a subagent (12m); it will read your message when that turn ends</code>.</p></div>
-    <div class="card"><h3><span class="g">↵</span>Enter only when it landed</h3><p>Claude Code and Codex get the text first; herdr presses Enter only once their input box shows it and you typed nothing since. Otherwise no Enter, and the sender hears why. Then each message is confirmed (read by id, or a turn started) or reported unconfirmed; never resent on its own.</p></div>
-    <div class="card"><h3><span class="g">?</span>Waiting on you</h3><p>An agent that asks its user something holds its messages (its screen, its own status report, or no input box). After 10 min the senders get a notice (again after 1 h, then every 4 h) and you get one card; held messages live up to 24 h, and every expiry tells the sender.</p></div>
-    <div class="card"><h3><span class="g">!</span>Urgent interrupt, safely</h3><p><code>urgent=true</code>: one Esc to a working agent, then the message goes first. Only from your turn or the coordinator; once per pair every 5 min. Never into a dialog, voice mode, or while you type.</p></div>
-    <div class="card"><h3><span class="g">↯</span>Claude turn hooks</h3><p>Claude reports each turn's start and end, so messages are not stuck behind background agents that keep its spinner going.</p></div>
-    <div class="card"><h3><span class="g">⇣</span>Wait backlog + inbox</h3><p><code>agents_wait_for_message</code> returns what is already queued for you first. <code>agents_messages inbox=true</code> lists it without taking it.</p></div>
-    <div class="card"><h3><span class="g">✓</span>Exactly once</h3><p>A waiting agent claims a message before it is returned, so it is never also typed in, and never returned twice.</p></div>
-    <div class="card"><h3><span class="g">✉</span>Quiet messages</h3><p><code>quiet=true</code> stores an FYI for a Claude agent instead of typing it in: nothing wakes or interrupts it. At its next prompt (or session start) its hook adds them to its context as data, oldest first, with sender and time; past 8 messages the rest wait for the next prompt. The hook acknowledges what it printed, so a timed-out hook loses nothing. Kept 7 days; Claude with integration 15. The tab row shows <code>✉3</code>; the agent's own status line can read <code>pending/&lt;pane&gt;.json</code> next to herdr's socket.</p></div>
-    <div class="card"><h3><span class="g">☾</span>Do not disturb</h3><p>From the tab menu (or <code>tab.set_dnd</code>, <code>herdr tab dnd on</code>, or a teammate's <code>agents_dnd</code>): every agent message to that tab becomes a quiet one, the sender is told <code>in DND, queued</code>, urgent ones are refused and herdr's wake-ups wait. You typing is unaffected. The coordinator still gets through when an agent turned it on, never when you did. A moon in the row's gutter, saved with the session.</p></div>
-    <div class="card"><h3><span class="g">◔</span>100 s waits</h3><p>Waits stop at 100 s, under Claude Code's 120 s mark, and a timeout is a normal result, not a failed tool call.</p></div>
-    <div class="card"><h3><span class="g">❯</span>Suggestions are not approvals</h3><p><code>agents_read</code> marks a Claude Code or Codex prompt box: a dim suggestion reads <code>(suggestion shown by the agent, not typed by its user: …)</code>, a real unsent draft <code>(unsent draft typed by its user: …)</code>.</p></div>
+    <div class="card"><h3><span class="g">⇶</span>A queue per agent</h3><p>Each agent gets its own queue, oldest first, kept across restarts. Messages expire after 2 h (24 h if the agent is waiting for you) or when the agent's tab is gone.</p></div>
+    <div class="card"><h3><span class="g">‖</span>Typing guard</h3><p>Nothing is typed while you have typed in that pane in the last 10 s or left an unsent draft. If Claude Code or Codex shows no input box (a question, a permission prompt, a menu), the message waits.</p></div>
+    <div class="card"><h3><span class="g">❝</span>One short line, not a paste</h3><p>The agent gets one short line naming the sender and a message id, then reads the full message itself, so Claude never mistakes it for something you pasted.</p></div>
+    <div class="card"><h3><span class="g">⧉</span>Together, once, on time</h3><p>Waiting messages go in together, as one line, once the agent has been idle for 3 s. One the agent picks up while waiting is never also typed in or handed out twice, and a wait ends at 100 s with a normal result, before Claude Code's 120 s tool limit.</p></div>
+    <div class="card"><h3><span class="g">⏱</span>Stuck-message notice</h3><p>If a message has waited 10 min on an agent whose screen hasn't moved, the sender gets one notice saying why, for example that the agent is still running a subagent.</p></div>
+    <div class="card"><h3><span class="g">↵</span>Enter only when it landed</h3><p>herdr presses Enter only once the text shows in the agent's input box and you haven't typed since; otherwise the sender is told why. herdr never resends a message on its own.</p></div>
+    <div class="card"><h3><span class="g">?</span>Waiting on you</h3><p>When an agent is waiting for your answer, messages to it wait too. After 10 min the senders are told, and you get one card. Held messages last up to 24 h; senders hear when one expires.</p></div>
+    <div class="card"><h3><span class="g">!</span>Urgent interrupt, safely</h3><p><code>urgent=true</code> presses Esc once on a working agent and puts the message first. Only when you asked for it or from the coordinator, at most once every 5 min between the same two agents, and never into a dialog, voice mode or while you type.</p></div>
+    <div class="card"><h3><span class="g">↯</span>No false "busy"</h3><p>Claude Code tells herdr when each turn starts and ends, so messages aren't held back by background agents that keep its spinner going.</p></div>
+    <div class="card"><h3><span class="g">⇣</span>Backlog first</h3><p>An agent waiting with <code>agents_wait_for_message</code> gets the messages already queued for it first; <code>agents_messages inbox=true</code> lists them without taking them.</p></div>
+    <div class="card"><h3><span class="g">✉</span>Quiet messages</h3><p>For an FYI that shouldn't interrupt: <code>quiet=true</code> holds the message, and the Claude agent sees it, with sender and time, at its next prompt. Nothing is lost if delivery fails. The tab row shows <code>✉3</code>.</p></div>
+    <div class="card"><h3><span class="g">☾</span>Do not disturb</h3><p>Keeps an agent focused: every message to it becomes a quiet one, urgent ones are refused, and herdr types nothing in. Your own typing is unaffected; the coordinator gets through only if an agent turned it on, not you. Tab menu, <code>herdr tab dnd on</code>, or a teammate's <code>agents_dnd</code>; shows a <code>☾</code> in the row.</p></div>
+    <div class="card"><h3><span class="g">❯</span>Suggestions are not approvals</h3><p>When an agent reads another agent's screen, herdr marks the prompt box as either a dim suggestion from the agent or an unsent draft you typed, so a suggestion is never taken as your answer.</p></div>
   </div>
-  <div class="flow" aria-label="Delivery flow"><span>send</span><i>→</i><span>queued (busy / typing / blocked)</span><i>→</i><span>idle 3 s + guard clear</span><i>→</i><span>pointer line typed</span><i>→</i><span>read by id</span></div>
+  <div class="flow" aria-label="Delivery flow"><span>send</span><i>→</i><span>queued (busy / typing / blocked)</span><i>→</i><span>idle 3 s + guard clear</span><i>→</i><span>short line typed</span><i>→</i><span>read by id</span></div>
 </section>
 
 <!-- ============ SIDEBAR ============ -->
 <section id="sidebar">
-  <p class="eyebrow">05 · sidebar v2 / v3</p>
+  <p class="eyebrow">05 · sidebar</p>
   <h2>A sidebar that shows who needs you</h2>
-  <p class="lede">One row per tab across every space, grouped and foldable. From top to bottom: toolbar, detail strip, list, Active, Pinned, Scheduled, fixed rows, status footer. The chrome sits on the theme's <code>surface_dim</code>.</p>
+  <p class="lede">One row per tab across every workspace, grouped and foldable, with blocks for what's active, pinned and scheduled, so you see at a glance who needs you.</p>
 
   <div class="two">
     <div class="grid" style="grid-template-columns:1fr">
-      <div class="card"><h3><span class="g">☰</span>Detail strip on top</h3><p>About the hovered row, else the focused tab: status and time, agent, team role, reminders, browser use, colour tag, context use.</p></div>
-      <div class="card"><h3><span class="g">▾</span>Active · Pinned · Scheduled</h3><p><b>Active</b>: blocked first, then voice, working, idle-with-subagents, finished, longest first. <b>Pinned</b>: tabs you pin from the menu. <b>Scheduled</b>: tabs with a reminder and the time to the next one. Folded headers keep their count.</p></div>
+      <div class="card"><h3><span class="g">☰</span>Detail strip on top</h3><p>Hover a row (or just focus a tab) to see its details at the top: status and how long, agent, team role, reminders, browser use, colour and context use.</p></div>
+      <div class="card"><h3><span class="g">▾</span>Active · Pinned · Scheduled</h3><p><b>Active</b>: every busy tab, the ones that need you first. <b>Pinned</b>: tabs you pin from the menu. <b>Scheduled</b>: tabs with a reminder and the time to the next one. Folded blocks still show their count.</p></div>
       <div class="card"><h3><span class="g">◌</span>Suspended runs fold</h3><p>Three or more suspended tabs in a row become one <code>◌ N suspended ▸</code> row. Hover lists them. Off in Settings → Indicators (<code>fold suspended runs</code>).</p></div>
-      <div class="card"><h3><span class="g">%</span>Context use</h3><p><code>NN%</code> on the row from 75% (yellow), red from 90%. The detail strip shows <code>ctx 78% · 156k/200k</code> at any level.</p></div>
-      <div class="card"><h3><span class="g">✎</span>Context menus with sections</h3><p>Every right-click menu reads the same: titled rules (<code>─ Agent ──</code>), one glyph per item, your own key bindings dim on the right (<code>⌥t</code>, <code>^b X</code>), toggles as <code>○</code>/<code>●</code> (<code>☆</code>/<code>★</code> for Important), and destructive items in red, last behind a rule.</p></div>
-      <div class="card"><h3><span class="g">⌕</span>Search and recency filters</h3><p>Hover the toolbar for <code>⌕ search</code> and <code>◷</code>, or press <code>prefix+f</code> (<code>keys.sidebar_search</code>). Typing keeps the tabs whose label, group or agent kind has every term; Esc clears, Enter jumps to the first match. <code>◷</code> cycles 15m · 30m · 1h · 6h · 1d of last activity (shift or right click goes back); busy and pinned tabs always pass it. Both AND together; the focused tab, fixed rows and the Active / Pinned / Scheduled blocks stay. A dim <code>~ N filtered</code> row clears everything. Previous / next tab (<code>keys.previous_tab</code> / <code>keys.next_tab</code>) cycle only the listed tabs while a filter is set. Not saved across restarts.</p></div>
+      <div class="card"><h3><span class="g">%</span>Context use</h3><p>Shows when an agent is running out of room: a percentage on the row from 75% (yellow, red from 90%); the detail strip shows <code>ctx 78% · 156k/200k</code> at any level. Read from the agent's own session file, never on every frame.</p></div>
+      <div class="card"><h3><span class="g">▦</span>Context menus with sections</h3><p>Every right-click menu has the same layout: titled sections, one icon per item, your own key bindings shown on the right, and destructive items in red at the bottom.</p></div>
+      <div class="card"><h3><span class="g">⌕</span>Search and recency filters</h3><p>Find a tab fast: <code>prefix+f</code> (<code>keys.sidebar_search</code>) or the toolbar's <code>⌕</code> keeps tabs whose label, group or agent matches every word; Enter jumps to the first match, Esc clears. <code>◷</code> shows only tabs active in the last 15m to 1d; busy and pinned tabs always show. Previous/next tab keys skip hidden tabs.</p></div>
     </div>
     <div>
       <div class="tbl" style="margin-bottom:14px"><table>
@@ -380,11 +378,11 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
         <tr><td class="m o0">◷ ◑ ☼</td><td>Scheduled reminder: minutes, hours, daily</td></tr>
         <tr><td class="m ac">◎</td><td>This tab's agent used the browser in the last 2 min</td></tr>
         <tr><td class="m ac">◆</td><td>Team member (header shows the purpose)</td></tr>
-        <tr><td class="m"><span class="cl">⧆</span> <span class="cx">⧇</span></td><td>Harness glyph, focused row only, in brand colour, breathing while it works</td></tr>
+        <tr><td class="m"><span class="cl">⧆</span> <span class="cx">⧇</span></td><td>Agent icon (Claude Code / Codex), on the focused row, pulsing while it works</td></tr>
         <tr><td class="m re"><svg class="ic" viewBox="0 0 16 16"><path d="M8 1.5a2.3 2.3 0 0 0-2.3 2.3v3.9a2.3 2.3 0 0 0 4.6 0V3.8A2.3 2.3 0 0 0 8 1.5zM4.2 7.4a3.8 3.8 0 0 0 7.6 0M8 11.3v2.6M5.6 13.9h4.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></td><td>Voice mode: red mic live, dim mic muted (Codex)</td></tr>
         <tr><td class="m o0"><svg class="ic" viewBox="0 0 16 16"><path d="M6 2h4l-.6 4 2.1 2.2H4.5L6.6 6zM8 8.2V14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></td><td>Pinned tab, in the left gutter</td></tr>
         <tr><td class="m o0"><svg class="ic" viewBox="0 0 16 16"><path d="M4 11.5h8l-1.2-1.6V7a2.8 2.8 0 0 0-5.6 0v2.9zM6.8 13.3a1.3 1.3 0 0 0 2.4 0M2.5 2.5l11 11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></td><td>Muted tab, in the left gutter</td></tr>
-        <tr><td class="m ac">☾</td><td>Do not disturb, in the left gutter (takes the muted mark's cell)</td></tr>
+        <tr><td class="m ac">☾</td><td>Do not disturb, in the left gutter</td></tr>
         <tr><td class="m o1">✉3</td><td>Three quiet messages wait for the tab's agent</td></tr>
         <tr><td class="m ye">⚭2</td><td>Two subagents still running</td></tr>
         <tr><td class="m ye">84%</td><td>Context window use (red from 90%)</td></tr>
@@ -402,13 +400,13 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   </div>
 </section>
 
-<!-- ============ INFO PANE ============ -->
+<!-- ============ NOTES PANE ============ -->
 <section id="info">
-  <p class="eyebrow">06 · info pane</p>
-  <h2>Your notes page beside every agent</h2>
-  <p class="lede">A dock on the right of the pane with the session's notes: your page, not the agent's log. Agents write it only when you ask. Nothing is computed until you open it.</p>
+  <p class="eyebrow">06 · notes pane</p>
+  <h2>Your notes beside every agent</h2>
+  <p class="lede">A notes pane on the right of each agent: your page for the session, not the agent's log. Agents write to it only when you ask.</p>
   <div class="two">
-    <div class="dock" role="img" aria-label="Info pane notes page"><span class="o1">──</span> <span class="ac"> ✦ </span><span class="t b">Notes</span><span class="ac"> ✦ </span><span class="o1">──────────────────────────────</span>
+    <div class="dock" role="img" aria-label="Notes pane"><span class="o1">──</span> <span class="ac"> ✦ </span><span class="t b">Notes</span><span class="ac"> ✦ </span><span class="o1">──────────────────────────────</span>
 <span class="ac">❦</span> <span class="t b">B a c k u p   S 3   w a t c h</span>
 
 <span class="o0" style="font-style:italic">Owner:</span> infra monitor, daily since 10-31.
@@ -437,10 +435,10 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
 <span class="ac">❧</span> <span class="o0">rev 4e9b1c07 · you · 12:03</span>
 <span class="o0">click edit  ○ tick  wheel scroll  e edit</span></div>
     <div class="grid" style="grid-template-columns:1fr">
-      <div class="card"><h3><span class="g">✎</span>Your page, edited in place</h3><p>One markdown page per agent session: a plan, a checklist, whatever fits. Click to edit; saves on Esc or after 2 s idle. <code>- [ ]</code> tasks tick with a click. Toggle with <code>keys.toggle_info_pane</code>, the menu or the toolbar&#39;s <code>◧</code>; opening never takes your keyboard (click into the pane to type there).</p></div>
-      <div class="card"><h3><span class="g">❦</span>Markdown, drawn for a terminal</h3><p>Headings, <b>bold</b>, <i>italic</i>, links, numbered and nested lists, quotes, code blocks, rules and tables, in the dock's palette. Clicks land on the source text.</p></div>
-      <div class="card"><h3><span class="g">◇</span>Agents write it when you ask</h3><p>Ask directly, or use <code>/plus:notes</code> (a brief page: what is in flight, what waits on you, the plan) or <code>/plus:notify</code>; <code>/plus:notes</code> also opens the pane for you (<code>agents_notes_write reveal=true</code>). Once asked, the agent keeps it current. No running log, no checkpoints.</p></div>
-      <div class="card"><h3><span class="g">↻</span>Survives /clear and compaction</h3><p>The page (its first 3 KB) is put back into the agent's context at start, resume, <code>/clear</code> and compaction.</p></div>
+      <div class="card"><h3><span class="g">✎</span>Your page, edited in place</h3><p>One markdown page per agent session, for a plan, a checklist or anything else. Click to edit; it saves on Esc or after 2 s. <code>- [ ]</code> tasks tick with a click. Open it with <code>keys.toggle_info_pane</code>, the tab menu or the toolbar&#39;s <code>◧</code>.</p></div>
+      <div class="card"><h3><span class="g">❦</span>Markdown, drawn for a terminal</h3><p>Headings, <b>bold</b>, <i>italic</i>, links, lists, quotes, code blocks and tables, drawn for the terminal. Clicking a word edits it in place.</p></div>
+      <div class="card"><h3><span class="g">◇</span>Agents write it when you ask</h3><p>Ask the agent, or run <code>/plus:notes</code> for a short page with what's in flight, what's waiting on you and the plan (it opens the pane too). Once asked, the agent keeps it up to date. It is one page, not a running log.</p></div>
+      <div class="card"><h3><span class="g">↻</span>Survives /clear and compaction</h3><p>The page (its first 3 KB) goes back into the agent's context on start, resume, <code>/clear</code> and compaction, so the agent never loses the plan.</p></div>
     </div>
   </div>
 </section>
@@ -459,11 +457,11 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
       <p class="m o1" style="text-align:right;max-width:44ch;margin:0">+1 more from agents</p>
     </div>
     <div class="grid" style="grid-template-columns:1fr">
-      <div class="card"><h3><span class="g">▣</span>Agent cards (<code>agents_notify</code>)</h3><p>Kinds: info, question, done, warning. Accent from your theme: done green, info blue, question and warning red. The team and role sit in the top border. A question rings, done plays the done sound.</p></div>
-      <div class="card"><h3><span class="g">✍</span>You decide when</h3><p>Agents follow a <code>## Notify</code> section in the session's notes: when, and about what, to ping you (<code>/plus:notify</code>).</p></div>
-      <div class="card"><h3><span class="g">◆</span>Toasts name the team</h3><p>herdr's own toasts (finished, needs attention, reminders) for a tab in a group say <code>group · role</code>, the team named as on agent cards (<code>api rewrite · builder</code>), or just the group without a role. Ungrouped tabs keep <code>agent · folder</code>. With the notes pane open, right-side toasts sit just left of it instead of covering it.</p></div>
-      <div class="card"><h3><span class="g">∅</span>Per-tab mute</h3><p>No toasts, sounds, bells or reminders from that tab. Its agent's own cards still show. Saved with the session. From the tab menu, <code>herdr tab mute</code>, or a teammate's <code>agents_mute</code> (a lead quiets several members at once).</p></div>
-      <div class="card"><h3><span class="g">★</span>Reminders and important tabs</h3><p><b>Important</b>: reminds you while the agent waits on you. <b>Remind</b>: 5m, 10m, 30m, 1h, 6h or daily, whatever the agent does. Sticky cards optional.</p></div>
+      <div class="card"><h3><span class="g">▣</span>Agent cards (<code>agents_notify</code>)</h3><p>An agent can pin a card for you: info, question, done or warning, coloured from your theme, with its team and role on the border. Questions ring; done plays the done sound.</p></div>
+      <div class="card"><h3><span class="g">✍</span>You decide when</h3><p>Tell an agent when to ping you and about what, with <code>/plus:notify</code> or in your own words. It saves that in a <code>## Notify</code> section of its notes and follows it.</p></div>
+      <div class="card"><h3><span class="g">◆</span>Toasts name the team</h3><p>herdr's own pop-ups (finished, needs attention, reminders) name the team and role, for example <code>api rewrite · builder</code>, and move left of the notes pane when it's open.</p></div>
+      <div class="card"><h3><span class="g">∅</span>Per-tab mute</h3><p>Silences a tab's pop-ups, sounds, bells and reminders; cards from its agent still show. Tab menu, <code>herdr tab mute</code>, or a teammate's <code>agents_mute</code>.</p></div>
+      <div class="card"><h3><span class="g">★</span>Reminders and important tabs</h3><p><b>Important</b>: herdr keeps reminding you while the agent is waiting for you. <b>Remind</b>: a nudge every 5m, 10m, 30m, 1h, 6h or daily, whatever the agent is doing, optionally as a card.</p></div>
     </div>
   </div>
 </section>
@@ -473,22 +471,20 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
   <p class="eyebrow">08 · more</p>
   <h2>Smaller things that add up</h2>
   <div class="grid">
-    <div class="card"><h3><span class="g">◫</span>Agent wrap &amp; Settings → Agents</h3><p><code>herdr agent wrap claude|codex</code> adds the herdr_agents tools and herdr+ instructions. Off by default; Settings → Agents turns it on and shows the exact <code>.zshrc</code> line before it fixes anything. It also switches program status reports and handoff &amp; compact, steps the handoff threshold (60 · 70 · 80 · 90 · off) and the autosuspend time (1h · 4h · 1d · 3d · off); the handoff command and context windows show there read-only.</p></div>
-    <div class="card"><h3><span class="g">⏎</span>Launch gate</h3><p>herdr waits until the new tab's shell is ready before typing a launch, and runs long launch lines from a one-shot script, so nothing gets cut off.</p></div>
-    <div class="card"><h3><span class="g">◉</span>Better detection</h3><p>Codex voice mode shows on the tab. A Claude whose turn ended while background agents run reads idle, not working.</p></div>
-    <div class="card"><h3><span class="g">⌁</span>Claude's own status (OSC 7501)</h3><p>herdr answers Claude Code's status probe and keeps what it reports: working, blocked with the prompt, done, and each background subagent. <code>herdr agent explain</code> shows it next to screen detection, which still decides. Disagreements longer than 2 s go to <code>program-status-disagreements.jsonl</code>. <code>[agents] program_status = false</code> turns it off; Claude stays silent while <code>CLAUDE_CODE_DISABLE_TERMINAL_TITLE</code> is set.</p></div>
-    <div class="card"><h3><span class="g">%</span>Context usage</h3><p>Read from the tail of the agent's own session file after state changes, never per frame. Also in <code>agent.list</code> as <code>context</code>.</p></div>
-    <div class="card"><h3><span class="g">⎘</span>Copy session ID</h3><p>Tab and pane menus copy the Claude session uuid or Codex thread id.</p></div>
+    <div class="card"><h3><span class="g">◫</span>Agent wrap &amp; Settings → Agents</h3><p><code>herdr agent wrap claude|codex</code> gives your agents the <code>herdr_agents</code> tools and herdr+ instructions. It's off by default: Settings → Agents turns it on and shows the <code>.zshrc</code> line before changing anything. The same page sets auto handoff, autosuspend and Claude's status reports.</p></div>
+    <div class="card"><h3><span class="g">⏎</span>Launches never get cut off</h3><p>herdr waits until a new tab's shell is ready before starting the agent, and runs long commands from a script so nothing is cut off.</p></div>
+    <div class="card"><h3><span class="g">◈</span>Better detection</h3><p>Codex voice mode shows on the tab. A Claude whose turn ended while background agents run reads idle, not working.</p></div>
+    <div class="card"><h3><span class="g">⌁</span>Claude's own status</h3><p>Claude Code reports its own status to herdr: working, blocked on a question, done, and each background subagent. Screen detection still decides; <code>herdr agent explain</code> shows both side by side. Turn it off with <code>[agents] program_status = false</code>.</p></div>
+    <div class="card"><h3><span class="g">⎘</span>Copy session ID</h3><p>Tab and pane menus copy the Claude Code session ID or Codex thread ID, for <code>--resume</code> elsewhere.</p></div>
     <div class="card"><h3><span class="g">⇆</span><kbd>cmd</kbd>+<kbd>[</kbd> / <kbd>cmd</kbd>+<kbd>]</kbd> tab history</h3><p>Back and forward through the tabs you focused, like a browser. Closed tabs are skipped.</p></div>
-    <div class="card"><h3><span class="g">⤧</span>Drag &amp; drop and resize fixes</h3><p>Drops land where the indicator shows. A window drag sends one size every 300 ms instead of ten a second, and the sidebar no longer flashes during it.</p></div>
+    <div class="card"><h3><span class="g">⤧</span>Drag &amp; drop and resize fixes</h3><p>Drops land where the marker shows. Resizing the window is smoother and the sidebar no longer flickers.</p></div>
     <div class="card"><h3><span class="g">◎</span>Built-in browser</h3><p>herdr runs its own Chromium for agents (<code>herdr-browser</code> MCP): tabs grouped per agent, a glow and cursor while an agent acts, password fields protected, never pulls the window forward.</p></div>
-    <div class="card"><h3><span class="g">◌</span>Suspend, activate, restart</h3><p>Park an agent and bring it back in the same pane with its session. Transcripts are backed up so <code>--resume</code> keeps working. Background shells, monitors and <code>/loop</code>s hold a suspend back, like subagents. When yours is refused for that, or because the agent is working or blocked, the notice has a <code>Force suspend</code> (or <code>Force restart</code>) button: Esc, then exit; agents cannot force. A forced restart relaunches the agent even when it had to be killed.</p></div>
-    <div class="card"><h3><span class="g">◌</span>Autosuspend</h3><p><code>[agents.autosuspend] after = "1d"</code> (off by default; Settings → Agents steps 1h · 4h · 1d · 3d · off) parks a Claude agent left idle and seen that long. Never one that is blocked, finished but unseen, on screen, the coordinator, busy in the background or with messages waiting. The detail strip reads <code>suspended (auto)</code>; a message to it wakes it and goes in once it is up.</p></div>
-    <div class="card"><h3><span class="g">⌂</span>Removed worktree, session back</h3><p>A pane whose saved directory is gone after a restart starts in a recreated, empty one at the same path, so <code>--resume</code> still finds the session. You get one card; an agent is told through the message queue and asked to tell you first, even when it takes minutes to come up.</p></div>
-    <div class="card"><h3><span class="g">⇢</span>Backgrounded Claude sessions</h3><p>A Claude session you background carries on under a new id outside the pane. Resume, restart and restore follow its <code>continued-in</code> records to the newest session, and its herdr_agents tools still act as its pane (found by session id, the pane's own rights). If herdr cannot find the pane, the error says to <code>claude --resume &lt;id&gt;</code> in it.</p></div>
-    <div class="card"><h3><span class="g">↺</span>Recently closed sessions</h3><p>Closed agent tabs can be reopened with label, colour, group and reminders (<code>herdr tab reopen</code>, Settings → closed).</p></div>
+    <div class="card"><h3><span class="g">⏸</span>Suspend, activate, restart</h3><p>Suspend an idle agent to free resources and bring it back later in the same pane and session. If it's still busy (working, a subagent, a background shell, a <code>/loop</code>), suspend is refused and the notice offers <b>Force suspend</b> or <b>Force restart</b>. Only you can force it, not agents.</p></div>
+    <div class="card"><h3><span class="g">⏲</span>Autosuspend</h3><p>Suspends a Claude agent you've seen and left idle for a set time (<code>[agents.autosuspend] after = "1d"</code>, off by default). It never touches one that needs you, is on screen, is busy in the background or has messages waiting. A message to it wakes it up.</p></div>
+    <div class="card"><h3><span class="g">⌂</span>Removed worktree, session back</h3><p>If a pane's folder was deleted (say, a removed worktree), herdr recreates it empty after a restart so <code>--resume</code> still finds the session. You get one card, and the agent is told so it can warn you.</p></div>
+    <div class="card"><h3><span class="g">⇢</span>Backgrounded Claude sessions</h3><p>When you background a Claude session it continues under a new ID. herdr follows it, so resume, restart and restore pick up the newest session and its tools still work as that pane.</p></div>
+    <div class="card"><h3><span class="g">↺</span>Recently closed sessions</h3><p>Reopen a closed agent tab with its label, colour, group and reminders: <code>herdr tab closed</code> lists them, <code>herdr tab reopen</code> brings one back, or use Settings → Closed sessions.</p></div>
     <div class="card"><h3><span class="g">■</span>Tab colours &amp; groups</h3><p>Colour tags, foldable groups, drag tabs and groups, move to group by name.</p></div>
-    <div class="card"><h3><span class="g">❧</span>AI news desk</h3><p>A pinned News tab that runs a news edition at fixed times and marks what is new since you last read.</p></div>
   </div>
 </section>
 
@@ -501,11 +497,11 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
     <span>80% context or manual</span><i>→</i><span>transcript snapshot</span><i>→</i><span>handoff.md</span><i>→</i><span>/compact</span><i>→</i><span>resume</span>
   </div>
   <div class="grid" style="margin-top:1rem">
-    <div class="card"><h3><span class="g">◔</span>Two ways to start</h3><p>Automatically at <code>[agents.handoff] at_percent</code> (80 by default, 0 = off), once per compaction cycle and only while the agent is idle. Or by hand: tab menu “Handoff &amp; compact”, a key, <code>herdr agent handoff &lt;target&gt;</code>.</p></div>
-    <div class="card"><h3><span class="g">✎</span>Your handoff skill, or herdr's</h3><p>Set <code>command</code> to your own skill line with a <code>{path}</code> placeholder, or leave it empty for herdr's short prompt. If the agent never writes the file, herdr writes a mechanical handoff from the notes page, git state and recent prompts.</p></div>
-    <div class="card"><h3><span class="g">▤</span>Known place, nothing lost</h3><p>Each run keeps <code>transcript.jsonl</code> and <code>handoff.md</code> under <code>handoffs/&lt;session&gt;/&lt;time&gt;/</code>, with a <code>latest</code> pointer. The sidebar shows “handoff 12m ago”.</p></div>
-    <div class="card"><h3><span class="g">↻</span>Back to work</h3><p>After <code>/compact</code> the agent's new context names the handoff and transcript, and a short line asks it to continue, or to pause if nothing was in flight.</p></div>
-    <div class="card"><h3><span class="g">⛨</span>Safety net</h3><p>When Claude compacts on its own or you type <code>/compact</code>, herdr still saves the transcript and a handoff first. Messages wait for the run; nothing is typed over you. A <code>/clear</code> or another session in the pane ends the run, and another agent cannot hand the same agent off again within 10 minutes.</p></div>
+    <div class="card"><h3><span class="g">◔</span>Two ways to start</h3><p>Automatically when context reaches <code>[agents.handoff] at_percent</code> (80 by default, 0 turns it off), once each time and only while the agent is idle. Or by hand: the tab menu's “Handoff &amp; compact”, a key, or <code>herdr agent handoff &lt;target&gt;</code>.</p></div>
+    <div class="card"><h3><span class="g">⚙</span>Your handoff skill, or herdr's</h3><p>Set <code>command</code> to your own skill with a <code>{path}</code> placeholder, or leave it empty to use herdr's prompt. If the agent writes nothing, herdr writes a basic handoff from the notes, git state and recent prompts.</p></div>
+    <div class="card"><h3><span class="g">⌸</span>Known place, nothing lost</h3><p>Each run keeps the transcript and the handoff in a folder per session and time, and the newest one is always easy to find. The sidebar shows “handoff 12m ago”.</p></div>
+    <div class="card"><h3><span class="g">▶</span>Back to work</h3><p>After <code>/compact</code> the agent's new context names the handoff and transcript, and a short line asks it to continue, or to pause if nothing was in flight.</p></div>
+    <div class="card"><h3><span class="g">⛨</span>Safety net</h3><p>When Claude compacts on its own or you type <code>/compact</code>, herdr still saves the transcript and a handoff first. Messages wait until it's done. A <code>/clear</code> cancels it.</p></div>
   </div>
 </section>
 
@@ -514,10 +510,10 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
   <p class="eyebrow">10 · engineering notes</p>
   <h2>How the fork stays healthy</h2>
   <div class="grid">
-    <div class="card"><h3><span class="g">⇄</span>Protocol-compatible</h3><p>New features ride new API methods and optional pushes. Protocol 25 and endpoint generation 1 hold, so an install is a live handoff: no restart, sessions keep running.</p></div>
-    <div class="card"><h3><span class="g">§</span>FORK.md merge contract</h3><p>Owned files, fields, enum variants, methods, merge rules and a watch-list. The <code>fork-sync</code> tool reads it and refuses a sync that would collide.</p></div>
-    <div class="card"><h3><span class="g">✓</span>Audited</h3><p>Big features go through tri-audits and a cross-model check, then live smoke tests on a throwaway dev server.</p></div>
-    <div class="card"><h3><span class="g">↑</span>Synced with upstream</h3><p>On upstream herdr 0.9.3 (master <code>2563803d</code>).</p></div>
+    <div class="card"><h3><span class="g">⇄</span>Updates without restarts</h3><p>herdr+ only adds to herdr's protocol, never changes it, so installing an update hands over live: sessions keep running.</p></div>
+    <div class="card"><h3><span class="g">§</span>FORK.md merge contract</h3><p><code>FORK.md</code> lists everything the fork owns and how to merge upstream; the <code>fork-sync</code> tool reads it and refuses a sync that would collide.</p></div>
+    <div class="card"><h3><span class="g">⚖</span>Audited</h3><p>Big features are reviewed by three independent audits and a second model, then smoke-tested live on a throwaway server.</p></div>
+    <div class="card"><h3><span class="g">↑</span>Synced with upstream</h3><p>Based on upstream herdr 0.9.3.</p></div>
   </div>
 </section>
 

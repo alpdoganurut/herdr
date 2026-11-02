@@ -259,7 +259,7 @@ Claude Code afterwards.
 
 | Skill | What it does |
 |---|---|
-| `/plus:notes` | Writes or refreshes this session's notes page (context, work in flight, plan). Only on request. |
+| `/plus:notes` | Writes or refreshes this session's notes in the notes pane (context, work in flight, plan). Only on request. |
 | `/plus:notify` | Sets, shows or clears when this agent should alert you through `agents_notify`. |
 | `/plus:status` | One-shot digest of agents: working, blocked, done, what waits on you. Args: `[group \| all]`. |
 | `/plus:team-build` | Runs a multi-agent build as a herdr+ team: design, contracts, lanes, review, gate, cutover. |
