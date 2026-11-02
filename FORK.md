@@ -10,6 +10,9 @@ Section 2 also covers E0027 (an exhaustive struct pattern missing a fork field):
 ## 1. Owned files (added by the fork; upstream R/D/T on any = deny)
 .claude/skills/fork-sync/SKILL.md
 FORK.md
+docs/fork/CONFIG.md
+docs/fork/SETUP.md
+docs/fork/config.html
 docs/fork/herdr-plus.html
 docs/fork/skills/plus-notes/SKILL.md
 docs/fork/skills/plus-notify/SKILL.md
