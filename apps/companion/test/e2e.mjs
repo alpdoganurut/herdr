@@ -191,8 +191,15 @@ try {
   const before = (await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2').length;
   const active = (await ctl('__herdrCompanion.views()')).find((v) => v.tab_id === 'w1:t2' && v.active);
   await strip.evaluate((id) => window.stripBridge.action('close', id), active.view_id);
-  const after = await waitFor(async () => ((await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2').length === before - 1 ? true : null), 3000);
-  check('strip close removes the page and reports close_tab', after && mock.state.reports.some((r) => r.action === 'close_tab'), {
+  const after = await waitFor(
+    async () =>
+      (await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2').length === before - 1 &&
+      mock.state.reports.some((r) => r.action === 'close_tab')
+        ? true
+        : null,
+    3000,
+  );
+  check('strip close removes the page and reports close_tab', after, {
     before,
     now: (await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2').map((v) => [v.view_id, v.url.slice(0, 40)]),
     closed: active && active.view_id,

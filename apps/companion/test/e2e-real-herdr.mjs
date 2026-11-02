@@ -179,11 +179,17 @@ const profileState = async (name) => {
   return p ? p.state : null;
 };
 const sessions = async () => ((await api('browser.get', {})).browser || {}).sessions || [];
-// The lease is live (not just a pending registration, which already reads "running"):
+// The lease is live, not just a pending registration (which already reads "running"):
+// the companion has logged a new lease since `since` (a count of earlier lease lines) and
 // every herdr tab with pages reports host "companion".
-const companionLive = async () => {
+const leaseLines = () => (fs.existsSync(path.join(T, 'companion.log')) ? fs.readFileSync(path.join(T, 'companion.log'), 'utf8').match(/\] lease L/g) || [] : []).length;
+let leasesSeen = 0;
+const companionLive = async ({ newLease = true } = {}) => {
+  if (newLease && leaseLines() <= leasesSeen) return false;
   const s = await sessions();
-  return (await profileState('companion')) === 'running' && s.length > 0 && s.every((x) => x.host === 'companion');
+  if (!((await profileState('companion')) === 'running' && s.every((x) => x.host === 'companion'))) return false;
+  leasesSeen = leaseLines();
+  return true;
 };
 
 // ---------- the session under test ----------
@@ -222,8 +228,8 @@ try {
 
   await section('registration', async () => {
     startCompanion();
-    const running = await waitFor(async () => (await profileState('companion')) === 'running', 90000, 500);
-    check('the companion registers: profile companion is running', running, await profileState('companion').catch(() => null));
+    const running = await waitFor(companionLive, 90000, 500);
+    check('the companion registers (lease live, profile running)', running, await profileState('companion').catch(() => null));
     await inspector();
     check('its control page and strip are up', insp.control() && insp.strip());
     const v = await waitFor(async () => (await views()).length === 0 || null, 5000);
@@ -402,7 +408,7 @@ try {
     const h = await apiOk('server.live_handoff', { import_exe: BIN }, 60000);
     check('server.live_handoff answers', !h.error, h.error);
     await sleep(2000);
-    const back = await waitFor(companionLive, 40000, 500);
+    const back = await waitFor(() => companionLive({ newLease: false }), 40000, 500);
     check('the companion is attached after the handoff (lease live)', back, await sessions());
     const after = await sessions();
     check('browser sessions carried over', after.length === before.length && after.every((s) => before.some((b) => b.tab_id === s.tab_id && b.pages === s.pages)), { before, after });
