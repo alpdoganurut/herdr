@@ -113,6 +113,15 @@ class Companion {
     ui.protocol.handle(SCHEME, (req) => this.serveUi(req));
     ui.setPermissionRequestHandler((_wc, _p, cb) => cb(false));
 
+    ipcMain.handle('herdr-companion:control', (e, op, a) => {
+      if (!this.control || e.sender !== this.control.webContents) return errOut('forbidden', 'not the control page');
+      return this.controlCall(op, a);
+    });
+    ipcMain.handle('herdr-companion:strip', (e, name, a) => {
+      if (!this.win || e.sender !== this.win.webContents) return null;
+      return this.stripAction(name, a);
+    });
+
     this.win = new BrowserWindow({
       show: false,
       width: 1200,
@@ -154,14 +163,6 @@ class Companion {
     this.control.setVisible(false);
     await this.control.webContents.loadURL(`${SCHEME}://control/`);
 
-    ipcMain.handle('herdr-companion:control', (e, op, a) => {
-      if (!this.control || e.sender !== this.control.webContents) return errOut('forbidden', 'not the control page');
-      return this.controlCall(op, a);
-    });
-    ipcMain.handle('herdr-companion:strip', (e, name, a) => {
-      if (!this.win || e.sender !== this.win.webContents) return null;
-      return this.stripAction(name, a);
-    });
     this.installMenu();
 
     this.port = await readDevToolsPort();
@@ -253,12 +254,19 @@ class Companion {
       log('host_state failed', e.code || e.message);
       return;
     }
+    const prevFocus = this.store.focusedTabId;
     const out = this.store.applyHostState(res.state || {});
     for (const g of out.dropped) this.destroyGroupViews(g);
     if (out.moved.length) log('groups moved', JSON.stringify(out.moved));
     if (this.shownTab && !this.store.tabs.has(this.shownTab)) this.shownTab = null;
-    if (this.store.focusedTabId) await this.showGroup(this.store.focusedTabId, { reason: 'follow' });
-    else this.pushStrip();
+    // Re-show only when herdr focus moved (or nothing valid is shown): a page an agent raised
+    // with focus() stays up across unrelated tab/workspace events.
+    const focus = this.store.focusedTabId;
+    if (focus && (focus !== prevFocus || !this.shownTab)) await this.showGroup(focus, { reason: 'follow' });
+    else {
+      this.layout();
+      this.pushStrip();
+    }
     this.scheduleSync();
   }
 
@@ -454,14 +462,18 @@ class Companion {
     }
   }
 
-  resolveTab(tabId) {
-    const t = tabId || this.store.focusedTabId;
-    if (!t || (!this.store.tabs.has(t) && !this.store.group(t))) return null;
-    return t;
+  async resolveTab(tabId) {
+    const known = (t) => t && (this.store.tabs.has(t) || this.store.group(t));
+    let t = tabId || this.store.focusedTabId;
+    if (known(t)) return t;
+    // a herdr tab created moments ago: its tab.created re-read may not have landed yet
+    await this.refreshState();
+    t = tabId || this.store.focusedTabId;
+    return known(t) ? t : null;
   }
 
   async ctlOpen(a) {
-    const tabId = this.resolveTab(a.tab_id);
+    const tabId = await this.resolveTab(a.tab_id);
     if (!tabId) return errOut('tab_unknown', `herdr tab ${a.tab_id || '(focused)'} is not known to the companion`);
     const background = a.background === undefined ? true : !!a.background;
     const e = await this.openEntry(tabId, { url: a.url || 'about:blank', opened_by: a.opened_by || 'agent' }, { background });
@@ -493,7 +505,7 @@ class Companion {
       return errOut('file_not_found', `${file} does not exist`);
     }
     if (!st.isFile()) return errOut('file_not_found', `${file} is not a file`);
-    const tabId = this.resolveTab(a.tab_id);
+    const tabId = await this.resolveTab(a.tab_id);
     if (!tabId) return errOut('tab_unknown', `herdr tab ${a.tab_id || '(focused)'} is not known to the companion`);
     const root = a.root && path.isAbsolute(a.root) && within(path.resolve(a.root), path.resolve(file)) ? a.root : path.dirname(file);
     const e = await this.openEntry(

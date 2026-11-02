@@ -9,7 +9,7 @@ views over CDP. Contract: `.local/prd/companion/contract.md` (not in git).
 ```sh
 cd apps/companion
 npm install
-node node_modules/electron/install.js   # only if npm runs with ignore-scripts (the Electron binary is a postinstall download)
+node node_modules/electron/install.js   # if node_modules/electron/dist is missing (seen here: npm skipped the postinstall binary download)
 npm start -- --socket /path/to/herdr.sock
 ```
 
@@ -51,7 +51,7 @@ The DevTools port is loopback-only and unauthenticated (same exposure as the her
 
 ```sh
 npm test                 # unit tests (groups/sync logic, line parser, socket path), no Electron
-npm run e2e              # headless Electron against test/mock-herdr.mjs (30 checks)
+npm run e2e              # headless Electron against test/mock-herdr.mjs (headless; never shows a window)
 npm run mock -- --socket /tmp/hc.sock --verify-cdp   # a mock herdr to point `npm start` at
 npm run spike            # P3.0 spike: Playwright over CDP against Electron views
 ```

@@ -152,7 +152,11 @@ try {
   const active = (await ctl('__herdrCompanion.views()')).find((v) => v.tab_id === 'w1:t2' && v.active);
   await strip.evaluate((id) => window.stripBridge.action('close', id), active.view_id);
   const after = await waitFor(async () => ((await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2').length === before - 1 ? true : null), 3000);
-  check('strip close removes the page and reports close_tab', after && mock.state.reports.some((r) => r.action === 'close_tab'));
+  check('strip close removes the page and reports close_tab', after && mock.state.reports.some((r) => r.action === 'close_tab'), {
+    before,
+    now: (await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2').map((v) => [v.view_id, v.url.slice(0, 40)]),
+    closed: active && active.view_id,
+  });
 
   // html view sandbox
   const site = path.join(tmp, 'site');
@@ -192,6 +196,16 @@ try {
   const synced = await waitFor(() => mock.state.tabs.get('w1:t2').browser.entries.find((e) => e.kind === 'html_view' && e.file), 3000);
   check('html views sync kind, file and allow_network', synced, synced);
 
+  // an agent focus() into a non-focused herdr tab survives unrelated tab events
+  const fo = await ctl(`__herdrCompanion.show({tab_id:'w1:t1', file:${JSON.stringify(path.join(site, 'inside.html'))}, focus:true})`);
+  await api('mock.create_tab', { label: 'later' });
+  await sleep(800);
+  const stillShown = (await ctl('__herdrCompanion.views()')).find((v) => v.view_id === fo.view_id);
+  check('an agent-focused page stays shown across unrelated tab events', stillShown && stillShown.shown, stillShown);
+  const t3 = await api('mock.create_tab', { label: 'fresh' });
+  const fresh = await ctl(`__herdrCompanion.open({tab_id:${JSON.stringify(t3.tab_id)}, url:'about:blank'})`);
+  check('open into a herdr tab created a moment ago works', fresh && fresh.view_id && !fresh.error, fresh);
+
   // server restart / live handoff: same instance re-registers, full resync from seq 1
   const syncsBefore = mock.state.syncs.length;
   await api('mock.restart');
@@ -219,12 +233,13 @@ try {
     const restored = await waitFor(async () => {
       const v = await ctl('__herdrCompanion.views()');
       const t1 = v.filter((x) => x.tab_id === 'w1:t1');
-      return t1.length === 1 && t1[0].live && t1[0].target_id && t1[0].id ? t1 : null;
+      const act = t1.find((x) => x.active);
+      return t1.length === 2 && t1.every((x) => x.id) && act && act.live && act.shown && act.target_id ? act : null;
     }, 8000);
-    check('the focused session is restored live with the same entry id', restored, restored);
+    check('the focused session is restored (entry ids kept, active page live and shown)', restored, restored);
     const rsync = await waitFor(() => {
-      const e = mock.state.tabs.get('w1:t1').browser.entries[0];
-      return restored && e.target === restored[0].target_id ? e : null;
+      const e = mock.state.tabs.get('w1:t1').browser.entries.find((x) => restored && x.id === restored.id);
+      return e && e.target === restored.target_id ? e : null;
     }, 4000);
     check('the restored view syncs its new target', rsync);
     check('quits again', await quitCompanion());
