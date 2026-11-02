@@ -302,6 +302,10 @@ pub(super) struct ShellRenderState<'a> {
     /// Fork (menu design): the focused tab's info pane is open (the
     /// toolbar's notes button is lit).
     pub(super) info_pane_open: bool,
+    /// Fork (tab history): the history has a live tab back / forward (the
+    /// toolbar's `‹` / `›` are lit).
+    pub(super) history_back: bool,
+    pub(super) history_forward: bool,
 }
 
 /// The sidebar column for the configured `sidebar_layout`, collapse state,

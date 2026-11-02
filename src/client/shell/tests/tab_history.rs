@@ -180,7 +180,11 @@ fn focus(snapshot: &mut ClientShellSnapshot, tab_id: &str) {
 
 /// `tab_1` (first snapshot), then `tab_2`, then `tab_3`.
 fn visited_state() -> (ClientShellState, ClientShellSnapshot) {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    visited_state_with(tabs_config())
+}
+
+fn visited_state_with(config: crate::config::Config) -> (ClientShellState, ClientShellSnapshot) {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     let mut snapshot = team_snapshot();
     state.set_snapshot(Box::new(snapshot.clone()));
     state.set_pane_surface(surface());
@@ -233,6 +237,241 @@ fn history_resets_when_the_active_endpoint_changes() {
     assert!(state.activate_endpoint_projection(&remote));
     assert_eq!(state.tab_history.entries(), ["tab_1"]);
     assert!(press(&mut state, "\x1b[91;9u").is_empty());
+}
+
+#[test]
+fn availability_follows_the_scan_without_moving_anything() {
+    let mut history = visited(&["a", "b", "c"]);
+    assert!(history.can_go_back(live));
+    assert!(!history.can_go_forward(live));
+    assert!(!TabHistory::default().can_go_back(live));
+    assert!(!TabHistory::default().can_go_forward(live));
+    assert_eq!(history.entries(), ["a", "b", "c"], "nothing pruned");
+
+    // A press in flight counts from its target, like the next press: the
+    // only entry after it is the focused tab.
+    assert_eq!(history.back(live).as_deref(), Some("b"));
+    assert!(history.can_go_back(live));
+    assert!(!history.can_go_forward(live));
+    history.observe("b", live);
+    assert!(history.can_go_forward(live), "landed");
+    assert_eq!(history.back(live).as_deref(), Some("a"));
+    history.observe("a", live);
+    assert!(!history.can_go_back(live));
+    assert!(history.back(live).is_none(), "agrees with the press");
+
+    // Closed tabs and the focused tab's other entries do not count.
+    let history = visited(&["a", "b", "a", "c"]);
+    let only_c = |id: &str| id == "c";
+    assert!(!history.can_go_back(only_c));
+    let only_ac = |id: &str| id != "b";
+    assert!(history.can_go_back(only_ac));
+    let history = visited(&["c", "a", "c"]);
+    assert!(!history.can_go_back(only_c), "only the focused tab's id");
+}
+
+// ------------------------------------------------------- toolbar buttons
+
+/// A frame for the current snapshot (a pane surface of its revision first).
+fn composed(state: &mut ClientShellState) -> crate::client::frame_output::ComposedFrame {
+    let mut pane = surface();
+    if let Some(snapshot) = state.snapshot.as_deref() {
+        pane.projection_revision = snapshot.revision;
+    }
+    state.set_pane_surface(pane);
+    state.compose(106, 30).expect("composed frame")
+}
+
+fn click(state: &mut ClientShellState, rect: ratatui::layout::Rect) -> ClientShellInput {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: rect.x,
+        row: rect.y,
+        modifiers: KeyModifiers::empty(),
+    })])
+}
+
+fn focused_by(outcome: &ClientShellInput) -> Vec<String> {
+    endpoint_requests(outcome)
+        .into_iter()
+        .filter_map(|(_, method)| match method {
+            Method::TabFocus(target) => Some(target.tab_id),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The toolbar buttons' (`‹`, `›`) foregrounds as palette tokens: `true`
+/// when accent, `false` when overlay0.
+fn lit(state: &mut ClientShellState) -> (bool, bool) {
+    let frame = composed(state);
+    let palette = state.config.palette.clone();
+    let fg = |rect: ratatui::layout::Rect| {
+        let cell = &frame.cells[(rect.y * frame.width + rect.x) as usize];
+        if cell.fg == crate::protocol::color_to_u32(palette.accent) {
+            true
+        } else {
+            assert_eq!(cell.fg, crate::protocol::color_to_u32(palette.overlay0));
+            false
+        }
+    };
+    (
+        fg(state.hits.sidebar_history_back),
+        fg(state.hits.sidebar_history_forward),
+    )
+}
+
+#[test]
+fn the_history_buttons_sit_after_the_toggle_slot_before_the_search_field() {
+    let (mut state, _) = visited_state();
+    let frame = composed(&mut state);
+    let (back, forward) = (
+        state.hits.sidebar_history_back,
+        state.hits.sidebar_history_forward,
+    );
+    let glyph = |rect: ratatui::layout::Rect| {
+        frame.cells[(rect.y * frame.width + rect.x) as usize]
+            .symbol
+            .clone()
+    };
+    assert_eq!((back.width, back.height, forward.width), (1, 1, 1));
+    assert_eq!(back.y, state.hits.group_new.y, "in the toolbar row");
+    assert_eq!(back.x, 3, "after the fold toggle's slot");
+    assert_eq!(back.x + 2, forward.x, "one blank cell between");
+    assert_eq!(
+        forward.x + 2,
+        state.hits.sidebar_search.x,
+        "one blank cell before the field"
+    );
+    assert_eq!(
+        glyph(back),
+        crate::client::shell::sidebar_filter::HISTORY_BACK_GLYPH
+    );
+    assert_eq!(
+        glyph(forward),
+        crate::client::shell::sidebar_filter::HISTORY_FORWARD_GLYPH
+    );
+    assert!(state.sidebar_hover.is_none(), "shown without the pointer");
+    for other in [
+        state.hits.group_toggle_all,
+        state.hits.sidebar_search,
+        state.hits.sidebar_recency,
+        state.hits.sidebar_notes,
+        state.hits.group_new,
+    ] {
+        assert!(!back.intersects(other) && !forward.intersects(other));
+    }
+}
+
+#[test]
+fn the_history_buttons_are_lit_only_with_history_that_way() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(team_snapshot()));
+    state.set_pane_surface(surface());
+    assert_eq!(lit(&mut state), (false, false), "one entry");
+
+    let (mut state, mut snapshot) = visited_state();
+    assert_eq!(lit(&mut state), (true, false));
+    assert_eq!(press(&mut state, "\x1b[91;9u"), ["tab_2"]);
+    assert_eq!(
+        lit(&mut state),
+        (true, false),
+        "a press in flight counts from its target, like the keys"
+    );
+    focus(&mut snapshot, "tab_2");
+    state.set_snapshot(Box::new(snapshot.clone()));
+    assert_eq!(lit(&mut state), (true, true));
+
+    // Every older tab closed: back goes dim.
+    snapshot.revision += 1;
+    snapshot.tabs.retain(|tab| tab.tab_id != "tab_1");
+    snapshot.panes.retain(|pane| pane.tab_id != "tab_1");
+    snapshot.agents.retain(|agent| agent.tab_id != "tab_1");
+    state.set_snapshot(Box::new(snapshot));
+    assert_eq!(lit(&mut state), (false, true));
+}
+
+#[test]
+fn clicking_the_history_buttons_does_what_the_keys_do() {
+    let (mut state, mut snapshot) = visited_state();
+    composed(&mut state);
+    let (back, forward) = (
+        state.hits.sidebar_history_back,
+        state.hits.sidebar_history_forward,
+    );
+    assert_eq!(focused_by(&click(&mut state, back)), ["tab_2"]);
+    focus(&mut snapshot, "tab_2");
+    state.set_snapshot(Box::new(snapshot.clone()));
+    assert_eq!(
+        state.tab_history.entries(),
+        ["tab_1", "tab_2", "tab_3"],
+        "the landing pushes nothing"
+    );
+    composed(&mut state);
+    assert_eq!(focused_by(&click(&mut state, forward)), ["tab_3"]);
+    focus(&mut snapshot, "tab_3");
+    state.set_snapshot(Box::new(snapshot));
+    composed(&mut state);
+
+    // `›` is dim now: a click sends nothing and does not focus the field.
+    let outcome = click(&mut state, forward);
+    assert!(focused_by(&outcome).is_empty());
+    assert!(endpoint_requests(&outcome).is_empty());
+    assert!(!state.sidebar_filter.focused);
+    assert_eq!(state.tab_history.focused(), Some("tab_3"));
+}
+
+#[test]
+fn a_click_on_a_dim_history_button_does_nothing() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(team_snapshot()));
+    state.set_pane_surface(surface());
+    composed(&mut state);
+    for rect in [
+        state.hits.sidebar_history_back,
+        state.hits.sidebar_history_forward,
+    ] {
+        assert!(!rect.is_empty());
+        let outcome = click(&mut state, rect);
+        assert!(endpoint_requests(&outcome).is_empty());
+        assert!(!state.sidebar_filter.focused, "not the search field's");
+    }
+    assert_eq!(state.tab_history.entries(), ["tab_1"]);
+}
+
+#[test]
+fn narrow_toolbars_drop_the_history_buttons_before_the_search_field() {
+    let mut config = tabs_config();
+    config.ui.sidebar_width = 22;
+    let (mut state, _) = visited_state_with(config);
+    let frame = composed(&mut state);
+    assert!(state.hits.sidebar_history_back.is_empty());
+    assert!(state.hits.sidebar_history_forward.is_empty());
+    let field = state.hits.sidebar_search;
+    assert_eq!(field.x, 3, "the field takes the buttons' cells");
+    let row: String = (0..21)
+        .map(|x| {
+            frame.cells[(field.y * frame.width + x) as usize]
+                .symbol
+                .as_str()
+        })
+        .collect();
+    assert!(
+        !row.contains(crate::client::shell::sidebar_filter::HISTORY_BACK_GLYPH),
+        "{row:?}"
+    );
+
+    // Without mouse capture the buttons still show, with no hit (the
+    // sidebar starts at x=0 and its toolbar at y=0: cell 3 is `‹`).
+    let (mut state, _) = visited_state();
+    state.config.mouse_capture = false;
+    let frame = composed(&mut state);
+    assert!(state.hits.sidebar_history_back.is_empty());
+    assert_eq!(
+        frame.cells[3].symbol,
+        crate::client::shell::sidebar_filter::HISTORY_BACK_GLYPH
+    );
 }
 
 mod fork_smoke {

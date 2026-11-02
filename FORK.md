@@ -630,6 +630,10 @@ src/client/shell/tests/force_notice.rs
 | App | request_from_client_shell | false |
 | ClientVisibleEndpointNotice | force | None |
 | ShellHitMap | notification_toast_action | Rect::default() |
+| ShellHitMap | sidebar_history_back | Rect::default() |
+| ShellHitMap | sidebar_history_forward | Rect::default() |
+| ShellRenderState | history_back | false |
+| ShellRenderState | history_forward | false |
 
 
 ## 3. Removed or re-signatured upstream symbols (E0425/E0061 at a new upstream call site = deny)
@@ -1409,6 +1413,10 @@ src/cli/tab_closed.rs  additive: dnd provenance: `dnd_by_agent: false` after `dn
 src/client/shell/tests/settings_closed.rs  additive: dnd provenance: `dnd_by_agent: false` after `dnd: false` in the ClosedSessionInfo literal
 src/terminal/state.rs  additive: forced restart: AgentRestartResume.forced last; mark_suspended_agent_resume_pending takes `forced: bool` last (agent_suspend.rs passes restart_agent_with's `force`; restore.rs's test passes false)
 src/persist/restore.rs  additive: forced restart: the restored-record test's mark_suspended_agent_resume_pending call passes `false` last
+src/client/shell/state.rs  additive: toolbar history: ShellHitMap.sidebar_history_back, sidebar_history_forward directly after sidebar_notes
+src/client/shell/render.rs  additive: toolbar history: ShellRenderState.history_back, history_forward last after info_pane_open
+src/client/shell/composition.rs  additive: toolbar history: both ShellRenderState literals pass history_back, history_forward (tab_history_available(), bound directly after info_pane_open, before the literal) last after info_pane_open
+src/client/shell/tests/coordinator.rs  additive: toolbar history: the render_sidebar ShellRenderState literal gains history_back: false, history_forward: false last
 
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
@@ -2621,6 +2629,16 @@ begin_forced_agent_suspend
 ForceableAgentStop
 notification_toast_action
 force_notice
+sidebar_history_back
+sidebar_history_forward
+history_button_rects
+HISTORY_BACK_GLYPH
+HISTORY_FORWARD_GLYPH
+tab_history_available
+can_go_back
+can_go_forward
+history_back
+history_forward
 
 
 ## 10. Fork smoke tests (run by name in the gate)
@@ -2725,6 +2743,7 @@ server::headless::tests::fork_smoke::forced_suspend_is_the_client_shells_alone
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 A user-facing feature or fix that changes what herdr+ offers also updates the showcase page `docs/fork/herdr-plus.html` (self-contained, no network resources, no personal data; mockups follow the current code), in the same change.
 ### Added
+- The `tabs` sidebar's toolbar has `‹` and `›` buttons at its start, after the fold toggle and before the search field, always shown: a click goes back or forward through the tab history exactly like `keys.tab_history_back` / `keys.tab_history_forward` (cmd+[ / cmd+]); a button is lit (accent) while the history has a tab that way and dim otherwise, where a click does nothing. A narrow sidebar drops them before the search field gets too short.
 - Force suspend: when your own suspend or restart (the tab menu, `keys.toggle_agent_suspend`, `keys.restart_agent`) is refused because the agent is working or blocked on a dialog, or its subagents or background tasks (shells, monitors, `/loop`s) still run, the refusal notice now has a `Force suspend` (or `Force restart`) button and stays 8 s. One click, no second confirm: a working or blocked Claude Code or Codex gets Esc, then its exit command once it is back at its prompt (within 5 s; else it is terminated), then the usual SIGTERM / SIGKILL escalation; another busy agent is terminated directly; its subagents and background tasks end with it. A forced restart relaunches as usual. Refusals force cannot fix (no session yet, no resume plan, the pane's own process, not running) keep the plain notice. Mouse only (notices have no key path) and not on the mobile banner. Only you can force: the new `agent.suspend_force` / `agent.restart_force` methods answer `force_user_only` outside herdr's interface, so the CLI and agents' MCP tools keep today's refusals; an older server keeps the plain notice.
 - Autosuspend (`[agents.autosuspend] after`, off by default; `"<N>m"`, `"<N>h"` or `"<N>d"` up to 365 days, an invalid value is a config warning and means off): about once a minute herdr suspends a Claude agent that has been idle and seen that long, like `herdr agent suspend`, and marks it as its own (`auto_suspended` in `agent.get` / `agent.list`, the agents directory and the session file; the detail strip reads `suspended (auto)` through the agent times push). The idle time is the agent's state time (it survives restarts), counted from the last scan that saw the pane on an attached client's screen. Never suspended: a blocked agent, a finished one its user has not looked at, any pane on screen in an attached client (every pane of each client's shown tab), the coordinator, an agent with subagents or background tasks running or that has not reported its background work since herdr started watching it (a Stop snapshot), an installed Claude integration older than v16, messages queued or quiet messages stored for it, a turn its hooks hold live, a handoff run, voice mode, a launch in progress, a draft in its input box or a dialog on screen, or anything `agent.suspend` refuses. A message to an auto-suspended agent (`agents.send_message`, quiet and urgent ones too, and older `agent.message_send` senders) activates it and is delivered once it is up (the sender's reason says it is waking it); a wake that fails keeps the message queued, is retried, and after a minute tells the senders once. Activation clears the mark. A message to an agent its user suspended waits as before (queued, `suspended`; a quiet one is still refused). Settings → Agents gains `suspend idle claude after` (↵ steps 1h · 4h · 1d · 3d · off), written by the server through `agents.settings.set autosuspend.after` (`AgentsSettingsInfo.autosuspend_after`, hidden on older servers).
 - Context menus redesigned, one language for every menu (tab with and without an agent, suspended tab, group and team, workspace and worktree, pane, News, Browser, coordinator): section rules with a mauve title (`─ Agent ──`; never selectable: the cursor and clicks pass over them), one accent glyph per item, dim right-aligned key hints read from your effective keybindings (`⌥t`, `^b X`; none when unbound), toggles that keep one label and show their state with `○`/`●` (green, with `on`) or `☆`/`★` (Important, yellow), destructive items in red with a red cursor bar, and a rounded box. The tab menu leads with New tab, Rename, Info pane and Close, then Agent, Team and Alerts (the toggles, `◷ remind` and `◐ colour`); the group menu ends with a red Danger section; the pane and workspace menus put their close items last behind a rule; disabled coordinator items are dim.

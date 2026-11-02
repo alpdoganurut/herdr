@@ -919,6 +919,8 @@ fn render_sidebar(
         sidebar_filter: None,
         quiet: None,
         info_pane_open: false,
+        history_back: false,
+        history_forward: false,
     };
     let rect = render_tab_sidebar_with(
         &mut buffer,

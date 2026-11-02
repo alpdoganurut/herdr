@@ -1,7 +1,11 @@
-00| ⏶                       ◧  + │|
+00| ⏶ ‹ ›                   ◧  + │|
    00-00 -/sidebar_chrome_bg
    01-01 overlay0/sidebar_chrome_bg
-   02-24 -/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-03 overlay0/sidebar_chrome_bg
+   04-04 -/sidebar_chrome_bg
+   05-05 overlay0/sidebar_chrome_bg
+   06-24 -/sidebar_chrome_bg
    25-25 overlay0/sidebar_chrome_bg
    26-27 -/sidebar_chrome_bg
    28-28 overlay0/sidebar_chrome_bg
