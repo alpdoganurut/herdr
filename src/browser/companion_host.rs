@@ -764,8 +764,13 @@ impl BrowserHub {
         event: &crate::browser::state::HostTabEvent,
         now_unix: u64,
     ) {
-        let config = self.config();
-        if !config.page_errors_to_agents() {
+        // Per console error, under the ledger lock: two fields read in place, no
+        // config clone.
+        let (to_agents, active_seconds) = {
+            let config = self.inner.config.read().unwrap();
+            (config.page_errors_to_agents(), config.active_seconds)
+        };
+        if !to_agents {
             return;
         }
         let key = super::TabKey::new(&event.profile, &event.target);
@@ -774,12 +779,11 @@ impl BrowserHub {
         };
         // The opener of an HTML view; else whoever used the tab lately,
         // else its opener.
-        let html_view = self.inner.html_views.lock().unwrap().contains(&key);
         let recent = record
             .last_actor
             .pane_id()
-            .filter(|_| !html_view)
-            .filter(|_| now_unix.saturating_sub(record.last_at) <= config.active_seconds);
+            .filter(|_| now_unix.saturating_sub(record.last_at) <= active_seconds)
+            .filter(|_| !self.inner.html_views.lock().unwrap().contains(&key));
         let Some(pane) = recent.or_else(|| record.opened_by.pane_id()) else {
             return;
         };
