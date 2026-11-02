@@ -2581,6 +2581,23 @@ fn fork_smoke_a_second_companion_is_refused_while_the_first_lease_lives() {
 }
 
 #[test]
+fn a_pending_companion_registration_that_died_mid_attach_times_out() {
+    let (hub, _shared, _stream, _home) = hub("companion-pending");
+    // A registration still within its attach window blocks another instance.
+    hub.install_pending_registration_for_test("dead", std::time::Duration::from_secs(1));
+    assert_eq!(
+        hub.host_register(&register_params("b")).unwrap_err().code,
+        "host_in_use"
+    );
+    // One whose register call never came back past PENDING_TIMEOUT no longer
+    // does, and the supervisor pass drops it.
+    hub.install_pending_registration_for_test("dead", std::time::Duration::from_secs(3600));
+    hub.supervise();
+    assert!(!hub.companion_live());
+    assert!(hub.host_register(&register_params("b")).is_ok());
+}
+
+#[test]
 fn a_companion_attach_skips_the_extension_sweep_and_checks_the_nonce() {
     let (hub, shared, _stream, _home) = hub("companion-attach");
     hub.host_register(&register_params("a"))

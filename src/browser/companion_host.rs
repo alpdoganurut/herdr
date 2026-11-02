@@ -44,6 +44,11 @@ pub const SERVER_FEATURES: [&str; 5] = [
 ];
 /// The DevTools probe of a registering host.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// A pending registration (the attach under way, at most twice
+/// `ATTACH_TIMEOUT` plus the probe) goes after this even when its
+/// register call never returns, so a companion that died mid-attach does
+/// not block the next one for good.
+pub(super) const PENDING_TIMEOUT: Duration = Duration::from_secs(ATTACH_TIMEOUT.as_secs() * 2 + 10);
 /// `browser.host_report`: at most this many events per second per lease
 /// (token bucket, burst of the same size).
 pub const REPORT_RATE_PER_S: f64 = 20.0;
@@ -54,7 +59,8 @@ pub const REPORT_MAX_EVENTS: usize = 50;
 #[derive(Debug, Clone)]
 pub(super) struct CompanionLease {
     /// `None` while the registration is pending (attach under way): it
-    /// already blocks other instances.
+    /// already blocks other instances, until `expires_at`
+    /// (`PENDING_TIMEOUT` after it started).
     pub lease_id: Option<String>,
     pub instance: String,
     pub version: String,
@@ -71,7 +77,7 @@ pub(super) struct CompanionLease {
 
 impl CompanionLease {
     fn live(&self, now: Instant) -> bool {
-        self.lease_id.is_none() || self.expires_at > now
+        self.expires_at > now
     }
 }
 
@@ -146,7 +152,7 @@ impl BrowserHub {
                 version: params.version.clone(),
                 port: params.cdp.port,
                 nonce: params.nonce.clone(),
-                expires_at: now,
+                expires_at: now + PENDING_TIMEOUT,
                 expires_unix: 0,
                 last_seq: None,
                 report_tokens: REPORT_RATE_PER_S,
@@ -200,11 +206,18 @@ impl BrowserHub {
                     lease.expires_at = Instant::now() + ttl;
                     lease.expires_unix = expires_unix;
                 }
-                _ => {
+                other => {
+                    // Expired (the supervisor dropped it) or replaced by
+                    // another instance while the attach ran.
+                    let expired = other.is_none();
+                    drop(slot);
+                    if expired {
+                        self.detach_companion();
+                    }
                     return Err(BrowserError::new(
                         "host_in_use",
-                        "the registration was replaced while it attached; retry",
-                    ))
+                        "the registration timed out or was replaced while it attached; retry",
+                    ));
                 }
             }
         }
@@ -466,7 +479,10 @@ impl BrowserHub {
             .as_ref()
             .is_some_and(|lease| !lease.live(now));
         if expired {
-            tracing::info!(event = "browser.host.expired", "companion lease expired");
+            tracing::info!(
+                event = "browser.host.expired",
+                "companion lease (or pending registration) expired"
+            );
             self.drop_registration(
                 ProfileStatus::Crashed {
                     at: unix_now(),
@@ -508,6 +524,25 @@ impl BrowserHub {
             nonce: "n".into(),
             expires_at: now + Duration::from_secs(3600),
             expires_unix: unix_now() + 3600,
+            last_seq: None,
+            report_tokens: REPORT_RATE_PER_S,
+            report_refill: now,
+        });
+    }
+
+    /// Tests: a registration left pending (its register call never
+    /// returned) that started `ago`.
+    #[cfg(test)]
+    pub fn install_pending_registration_for_test(&self, instance: &str, ago: Duration) {
+        let now = Instant::now();
+        *self.inner.companion_host.lock().unwrap() = Some(CompanionLease {
+            lease_id: None,
+            instance: instance.into(),
+            version: String::new(),
+            port: 1,
+            nonce: "n".into(),
+            expires_at: (now + PENDING_TIMEOUT).checked_sub(ago).unwrap_or(now),
+            expires_unix: 0,
             last_seq: None,
             report_tokens: REPORT_RATE_PER_S,
             report_refill: now,
