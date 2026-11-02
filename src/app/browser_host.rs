@@ -187,12 +187,33 @@ impl App {
         id: String,
         params: BrowserHostReportParams,
     ) -> String {
-        let admitted = match hub().admit_host_report(&params.lease_id, params.events.len()) {
+        // `shown` (the user looks: needs-you clears) is never rate limited, so a page
+        // that errors in a loop cannot starve it; everything else shares the bucket.
+        let is_shown = |event: &crate::api::schema::BrowserHostReportEvent| {
+            event.kind == BrowserHostReportKind::UserAction
+                && event.action.as_deref().map(str::trim) == Some("shown")
+        };
+        let limited = params
+            .events
+            .iter()
+            .filter(|event| !is_shown(event))
+            .count();
+        let mut budget = match hub().admit_host_report(&params.lease_id, limited) {
             Ok(admitted) => admitted,
             Err(err) => return error(id, err),
         };
+        let mut shown_left = crate::browser::hub::REPORT_MAX_EVENTS;
         let mut accepted = 0u32;
-        for event in params.events.iter().take(admitted) {
+        for event in &params.events {
+            let slot = if is_shown(event) {
+                &mut shown_left
+            } else {
+                &mut budget
+            };
+            if *slot == 0 {
+                continue;
+            }
+            *slot -= 1;
             match event.kind {
                 BrowserHostReportKind::UserAction => {
                     let Some(action) = event

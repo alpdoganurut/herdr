@@ -902,8 +902,12 @@ class Companion {
     const now = Date.now();
     this.tokens = Math.min(REPORT_RATE, this.tokens + ((now - this.tokensAt) / 1000) * REPORT_RATE);
     this.tokensAt = now;
-    if (this.tokens < 1) return; // over the rate: dropped here, never an error
-    this.tokens -= 1;
+    // `shown` (the user looks: herdr clears needs-you) is never rate limited; herdr admits
+    // it past its own bucket too
+    if (ev.action !== 'shown') {
+      if (this.tokens < 1) return; // over the rate: dropped here, never an error
+      this.tokens -= 1;
+    }
     this.reports.push({ ...ev, at_ms: now });
     if (this.reports.length > 200) this.reports.splice(0, this.reports.length - 200);
   }

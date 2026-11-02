@@ -241,3 +241,36 @@ fn send_page_picks_the_focused_agent_pane_then_the_last_user() {
     });
     assert!(text.contains("…(truncated 5 chars)"));
 }
+
+#[test]
+fn shown_is_never_starved_by_the_report_rate_limit() {
+    use crate::api::schema::{
+        BrowserHostReportEvent, BrowserHostReportKind, BrowserHostReportParams,
+    };
+    let mut app = model_app();
+    leased("L-report");
+    let tab_id = app.public_tab_id(1, 0).unwrap();
+    let action = |action: &str| BrowserHostReportEvent {
+        kind: BrowserHostReportKind::UserAction,
+        action: Some(action.into()),
+        tab_id: Some(tab_id.clone()),
+        ..Default::default()
+    };
+    let report = |app: &mut App, events: Vec<BrowserHostReportEvent>| {
+        call(
+            app,
+            Method::BrowserHostReport(BrowserHostReportParams {
+                lease_id: "L-report".into(),
+                events,
+            }),
+        )
+    };
+    // a burst past the bucket (20/s, burst 20) with a `shown` last: the burst is cut,
+    // the `shown` still gets through
+    let mut events: Vec<_> = (0..40).map(|_| action("reload")).collect();
+    events.push(action("shown"));
+    let burst = report(&mut app, events);
+    assert_eq!(code(&burst), "ok", "{burst}");
+    assert_eq!(burst["result"]["accepted"], 21, "{burst}");
+    assert_eq!(burst["result"]["dropped"], 20, "{burst}");
+}

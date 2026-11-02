@@ -35,7 +35,9 @@ use crate::integration::browser_assets;
 #[path = "companion_host.rs"]
 mod companion_host;
 use companion_host::ShowRequest;
-pub use companion_host::{host_unavailable, is_companion, lease_unknown, COMPANION_PROFILE};
+pub use companion_host::{
+    host_unavailable, is_companion, lease_unknown, COMPANION_PROFILE, REPORT_MAX_EVENTS,
+};
 
 /// Grace the hub adds to the sidecar's own deadline before giving up on a reply.
 pub const REPLY_GRACE: Duration = Duration::from_secs(5);
