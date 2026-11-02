@@ -7,6 +7,17 @@ let urlEditing = false;
 
 const act = (name, args) => bridge.action(name, args);
 
+const SVG = 'http://www.w3.org/2000/svg';
+function icon(name, size) {
+  const svg = document.createElementNS(SVG, 'svg');
+  svg.setAttribute('class', size ? `ico ${size}` : 'ico');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS(SVG, 'use');
+  use.setAttribute('href', `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
+
 function reportHeight() {
   act('chrome-height', Math.ceil($('chrome').getBoundingClientRect().height));
 }
@@ -14,7 +25,17 @@ function reportHeight() {
 function render() {
   if (!state) return;
   document.body.classList.toggle('noinset', !state.inset);
-  $('session').textContent = state.session ? state.session.label : '';
+  const sess = $('session');
+  sess.textContent = '';
+  if (state.session) {
+    if (state.session.workspace) {
+      const ws = document.createElement('span');
+      ws.className = 'ws';
+      ws.textContent = state.session.workspace;
+      sess.append(ws);
+    }
+    sess.append(state.session.label);
+  }
   $('session').title = state.session ? `herdr tab ${state.session.tab_id}` : 'no herdr tab';
   const tabs = $('tabs');
   tabs.textContent = '';
@@ -25,9 +46,14 @@ function render() {
     el.title = `${t.title || t.url}\n${t.url}${t.opened_by && t.opened_by !== 'user' ? `\nopened by ${t.opened_by}` : ''}`;
     if (t.needs_you) {
       const d = document.createElement('span');
-      d.className = 'dot';
+      d.className = 'attn';
       d.title = 'an agent asked for you here';
+      d.append(icon('attention', 'sm'));
       el.append(d);
+    } else if (t.loading) {
+      const sp = document.createElement('span');
+      sp.className = 'spin';
+      el.append(sp);
     }
     if (t.kind === 'html_view') {
       const k = document.createElement('span');
@@ -41,7 +67,7 @@ function render() {
     title.textContent = t.title || t.url || 'New tab';
     const close = document.createElement('button');
     close.className = 'close';
-    close.textContent = '×';
+    close.append(icon('close', 'sm'));
     close.title = 'Close tab (⌘W)';
     close.addEventListener('click', (e) => {
       e.stopPropagation();

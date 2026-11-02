@@ -1,7 +1,7 @@
 // herdr+ companion browser: Electron main process (contract §6).
 // One window; a WebContentsView per page; one group of pages per herdr tab; follows herdr focus.
 'use strict';
-const { app, BrowserWindow, WebContentsView, ipcMain, protocol, session, Menu, net } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, protocol, session, Menu, net, nativeTheme, nativeImage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -13,6 +13,10 @@ const { resolveSocketPath, serialized } = require('./herdr-api.js');
 
 const VERSION = require('../package.json').version;
 const UI_DIR = path.join(__dirname, 'ui');
+const ICON_DIR = path.join(__dirname, '..', 'assets', 'icon'); // eye-plus app icon (eye-plus.icns for packaging)
+const CHROME_HEIGHT = 56; // strip.css: tabs row 26 + nav row 30; extra rows add to it (reported by the strip)
+// The window background behind the bar before it paints: the bar's --chrome colour (light / Dusk dark).
+const chromeBackground = () => (nativeTheme.shouldUseDarkColors ? '#1b1c23' : '#efeee9');
 const SCHEME = 'herdr-companion';
 const SYNC_MIN_INTERVAL_MS = 250; // ≤ 4 syncs/s (contract §2.3)
 const SYNC_MAX_BYTES = 256 * 1024; // herdr's cap on a sync's groups
@@ -52,6 +56,12 @@ app.commandLine.appendSwitch('user-data-dir', app.getPath('userData'));
 app.commandLine.appendSwitch('remote-debugging-port', '0');
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
 if (HEADLESS && process.platform === 'darwin' && app.dock) app.dock.hide();
+else if (process.platform === 'darwin' && app.dock) {
+  app.whenReady().then(() => {
+    const img = nativeImage.createFromPath(path.join(ICON_DIR, 'eye-plus-512.png'));
+    if (!img.isEmpty()) app.dock.setIcon(img);
+  });
+}
 
 protocol.registerSchemesAsPrivileged([
   { scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } },
@@ -90,7 +100,7 @@ class Companion {
     this.nonce = crypto.randomBytes(16).toString('hex');
     this.win = null;
     this.control = null;
-    this.chromeHeight = 76;
+    this.chromeHeight = CHROME_HEIGHT;
     this.shownTab = null;
     this.flash = null; // transient strip message
     this.syncTimer = null;
@@ -137,7 +147,8 @@ class Companion {
       minWidth: 480,
       minHeight: 300,
       title: 'herdr companion',
-      backgroundColor: '#1c1d21',
+      backgroundColor: chromeBackground(),
+      icon: path.join(ICON_DIR, 'eye-plus-512.png'),
       paintWhenInitiallyHidden: true,
       titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
       webPreferences: {
@@ -149,6 +160,9 @@ class Companion {
       },
     });
     this.win.on('resize', () => this.layout());
+    const onTheme = () => this.win && this.win.setBackgroundColor(chromeBackground());
+    nativeTheme.on('updated', onTheme);
+    this.win.on('closed', () => nativeTheme.removeListener('updated', onTheme));
     this.win.on('focus', () => this.onWindowFocus());
     this.win.on('closed', () => {
       this.win = null;
@@ -697,7 +711,7 @@ class Companion {
       case 'ready':
         return this.pushStrip();
       case 'chrome-height': {
-        const h = Math.max(40, Math.min(200, Number(a) || 76));
+        const h = Math.max(40, Math.min(200, Number(a) || CHROME_HEIGHT));
         if (h !== this.chromeHeight) {
           this.chromeHeight = h;
           this.layout();
@@ -767,7 +781,13 @@ class Companion {
     else if (status.state !== 'registered') line = { level: 'warn', text: status.text };
     return {
       inset: process.platform === 'darwin',
-      session: this.shownTab ? { tab_id: this.shownTab, label: this.store.label(this.shownTab) } : null,
+      session: this.shownTab
+        ? {
+            tab_id: this.shownTab,
+            label: this.store.label(this.shownTab),
+            workspace: (this.store.tabs.get(this.shownTab) || {}).workspace_id || null,
+          }
+        : null,
       tabs: g
         ? g.entries.map((x) => ({
             view_id: x.view_id,

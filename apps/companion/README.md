@@ -62,6 +62,7 @@ test/e2e-real-herdr.sh   # headless Electron against a REAL isolated herdr (targ
                          # temp HOME/XDG dirs, no inherited HERDR_* vars, no Chromium window (fallback asserted by routing)
 npm run mock -- --socket /tmp/hc.sock --verify-cdp   # a mock herdr to point `npm start` at
 npm run spike            # P3.0 spike: Playwright over CDP against Electron views
+npx electron test/ui-shots.cjs <dir>   # bar screenshots (light/dark, fixed states) from a hidden window
 ```
 
 `test/mock-herdr.mjs` implements the contract's JSON shapes plus test-only `mock.*` methods
@@ -95,6 +96,7 @@ herdr tabs swaps its pages. Quit the companion and the next `open` goes to the h
 | `src/groups.js` | herdr tab → group bookkeeping, host_state merge, host_sync payloads (pure) |
 | `src/views.js` | WebContentsView per page, partitions, html sandbox, CDP target id |
 | `src/preload/control.js`, `src/preload/strip.js` | context bridges |
-| `src/ui/` | strip page and control page |
+| `src/ui/` | strip page (bar variant A, light/dark follows the system) and control page; `icons/` = icon set A masters |
+| `assets/icon/` | eye-plus app icon: PNGs (window/dock), `eye-plus.icns` for packaging (`make-icns.sh` rebuilds it) |
 | `test/` | unit tests, mock herdr, e2e |
 | `spike/` | P3.0 spike |

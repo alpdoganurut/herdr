@@ -7,33 +7,53 @@
 <link rel="stylesheet" href="strip.css">
 </head>
 <body>
+  <!-- Icon set A "Soft line" (masters in icons/*.svg), inlined as symbols: the stroke follows currentColor. -->
+  <svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 6 9 12l6 6"/></symbol>
+    <symbol id="i-forward" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="i-reload" viewBox="0 0 24 24"><path d="M19.969 14.135A8.25 8.25 0 1 1 17.834 6.166L19.5 7.5"/><path d="M19.5 3v4.5H15"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-newtab" viewBox="0 0 24 24"><path d="M12 5.25v13.5M5.25 12h13.5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M7.5 7.5l9 9M16.5 7.5l-9 9"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M20.25 3.75 3.75 9.6l7.2 4.05 4.05 7.2z"/><path d="M20.25 3.75 10.95 13.65"/></symbol>
+    <symbol id="i-attention" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V13"/><path d="M12 16.5h.01"/></symbol>
+    <symbol id="i-allow" viewBox="0 0 24 24"><path d="M4.5 12 9 16.5 19.5 6"/></symbol>
+    <symbol id="i-deny" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M5.636 5.636L18.364 18.364"/></symbol>
+    <symbol id="i-note" viewBox="0 0 16 16"><path d="M3 4.5h10M3 8h10M3 11.5h6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 16 16"><path d="M8 2.5 3.5 4.2v3.6c0 2.8 1.9 4.8 4.5 5.7 2.6-.9 4.5-2.9 4.5-5.7V4.2z"/></symbol>
+  </svg>
   <header id="chrome">
     <div id="tabsrow">
       <div id="session" title="herdr tab this window follows"></div>
+      <div class="sep"></div>
       <div id="tabs" role="tablist"></div>
-      <button id="newtab" class="icon" title="New tab (⌘T)">+</button>
+      <button id="newtab" class="ib" title="New tab (⌘T)"><svg class="ico"><use href="#i-newtab"/></svg></button>
+      <div class="grow"></div>
     </div>
     <div id="toolbar">
-      <button id="back" class="icon" title="Back (⌘[)">‹</button>
-      <button id="forward" class="icon" title="Forward (⌘])">›</button>
-      <button id="reload" class="icon" title="Reload (⌘R)">↻</button>
-      <button id="stop" class="icon" title="Stop">✕</button>
+      <button id="back" class="ib" title="Back (⌘[)"><svg class="ico"><use href="#i-back"/></svg></button>
+      <button id="forward" class="ib" title="Forward (⌘])"><svg class="ico"><use href="#i-forward"/></svg></button>
+      <button id="reload" class="ib" title="Reload (⌘R)"><svg class="ico"><use href="#i-reload"/></svg></button>
+      <button id="stop" class="ib" title="Stop"><svg class="ico"><use href="#i-stop"/></svg></button>
       <form id="urlform"><input id="url" spellcheck="false" autocomplete="off" placeholder="Search or enter address"></form>
-      <button id="send" title="Send this page to the session's agent">Send to agent</button>
+      <button id="send" class="ib" title="Send this page to the session's agent"><svg class="ico"><use href="#i-send"/></svg></button>
     </div>
-    <form id="sendbar" hidden>
+    <form id="sendbar" class="sub" hidden>
+      <svg class="ico lead"><use href="#i-note"/></svg>
       <input id="note" maxlength="2000" placeholder="Note for the agent (optional); the selected text is sent too">
-      <button type="submit">Send</button>
-      <button type="button" id="sendcancel">Cancel</button>
+      <button type="submit" class="tb primary">Send</button>
+      <button type="button" id="sendcancel" class="ib" title="Cancel"><svg class="ico sm"><use href="#i-close"/></svg></button>
     </form>
-    <div id="permbar" hidden>
+    <div id="permbar" class="sub" hidden>
+      <svg class="ico lead warn"><use href="#i-shield"/></svg>
       <span id="permtext"></span>
-      <button type="button" id="permallow">Allow once</button>
-      <button type="button" id="permdeny">Deny</button>
+      <button type="button" id="permallow" class="tb primary iconed"><svg class="ico sm"><use href="#i-allow"/></svg>Allow once</button>
+      <button type="button" id="permdeny" class="tb ghost iconed"><svg class="ico sm"><use href="#i-deny"/></svg>Deny</button>
     </div>
     <div id="status" hidden></div>
   </header>
   <main id="empty">
+    <img class="mark" src="icons/eye-plus-small.svg" alt="" width="40" height="40">
     <p id="emptytext">No pages in this session.</p>
     <p class="hint">⌘T opens a page here. Agents in this herdr tab open their pages here too.</p>
   </main>
