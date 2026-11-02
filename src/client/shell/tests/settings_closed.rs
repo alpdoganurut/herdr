@@ -28,6 +28,7 @@ fn entry(id: &str, label: Option<&str>, group: &str, cwd: &str, age: u64) -> Clo
         pinned: false,
         muted: false,
         dnd: false,
+        dnd_by_agent: false,
         space_id: format!("w_{group}"),
         space_name: group.into(),
         cwd: cwd.into(),

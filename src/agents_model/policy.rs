@@ -365,7 +365,7 @@ fn outside_team(facts: &Facts) -> Decision {
 fn protected(_facts: &Facts) -> Decision {
     deny(
         error_code::PROTECTED_TAB,
-        "the coordinator's tab is the user's; no agent renames, moves, closes, suspends or restarts it".into(),
+        "the coordinator's tab is the user's; no agent renames, moves, closes, suspends, restarts, mutes or puts it in do not disturb".into(),
     )
 }
 
@@ -774,6 +774,19 @@ mod tests {
                 &facts(true)
             )),
             "protected_tab"
+        );
+        // The refusal names mute and do not disturb among what no agent does.
+        let Decision::Deny { hint, .. } = authorize(
+            Actor::Agent { team: true },
+            Relation::Protected,
+            quiet,
+            &facts(true),
+        ) else {
+            panic!("the coordinator's tab is protected");
+        };
+        assert!(
+            hint.contains("mutes") && hint.contains("do not disturb"),
+            "{hint}"
         );
         for relation in RELATIONS {
             assert!(authorize(Actor::User, relation, quiet, &facts(false)).is_allowed());

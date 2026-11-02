@@ -992,6 +992,7 @@ fn restore_tab(
                 pinned: snap.pinned,
                 muted: snap.muted,
                 dnd: snap.dnd,
+                dnd_by_agent: snap.dnd && snap.dnd_by_agent,
                 number,
                 root_pane,
                 layout,
@@ -2035,9 +2036,9 @@ mod tests {
                     tab(serde_json::json!({"remind": true})),
                     tab(serde_json::json!({})),
                     tab(serde_json::json!({"important": true, "remind_every": "daily"})),
-                    tab(serde_json::json!({"remind_every": "30m"})),
+                    tab(serde_json::json!({"remind_every": "30m", "dnd_by_agent": true})),
                     tab(serde_json::json!({"remind_every": "2h"})),
-                    tab(serde_json::json!({"pinned": true, "muted": true, "dnd": true})),
+                    tab(serde_json::json!({"pinned": true, "muted": true, "dnd": true, "dnd_by_agent": true})),
                 ],
             }],
             "active": 0,
@@ -2132,6 +2133,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             [false, false, false, false, false, true]
         );
+        // Fork: and who turned it on (only while it is on).
+        let by_agent = |tabs: &[crate::workspace::Tab]| {
+            tabs.iter().map(|tab| tab.dnd_by_agent).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            by_agent(&workspaces[0].tabs),
+            [false, false, false, false, false, true]
+        );
+        assert_eq!(
+            captured.workspaces[0]
+                .tabs
+                .iter()
+                .map(|tab| tab.dnd_by_agent)
+                .collect::<Vec<_>>(),
+            [false, false, false, false, false, true]
+        );
         // Written with `remind` too when important (an older build reads it),
         // nothing when both are off.
         let written = serde_json::to_value(&captured).unwrap();
@@ -2144,6 +2161,8 @@ mod tests {
         assert_eq!(tabs[5]["pinned"], true);
         assert_eq!(tabs[5]["muted"], true);
         assert_eq!(tabs[5]["dnd"], true);
+        assert_eq!(tabs[5]["dnd_by_agent"], true);
+        assert!(tabs[3].get("dnd_by_agent").is_none());
         for key in [
             "remind",
             "important",
@@ -2151,6 +2170,7 @@ mod tests {
             "pinned",
             "muted",
             "dnd",
+            "dnd_by_agent",
         ] {
             assert!(tabs[1].get(key).is_none(), "{key}");
         }
@@ -2187,6 +2207,7 @@ mod tests {
                     pinned: false,
                     muted: false,
                     dnd: false,
+                    dnd_by_agent: false,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -2318,8 +2339,11 @@ mod tests {
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(crate::detect::Agent::Claude), AgentState::Idle);
         terminal.begin_agent_suspend(session.clone(), now + std::time::Duration::from_secs(5));
-        assert!(terminal
-            .mark_suspended_agent_resume_pending(now, now + std::time::Duration::from_secs(30)));
+        assert!(terminal.mark_suspended_agent_resume_pending(
+            now,
+            now + std::time::Duration::from_secs(30),
+            false
+        ));
         assert!(terminal.suspended_agent_resume_deadline().is_some());
         let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
 
@@ -2383,6 +2407,7 @@ mod tests {
                     pinned: false,
                     muted: false,
                     dnd: false,
+                    dnd_by_agent: false,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -2508,6 +2533,7 @@ mod tests {
                     pinned: false,
                     muted: false,
                     dnd: false,
+                    dnd_by_agent: false,
                     layout: LayoutSnapshot::Pane(5),
                     panes: HashMap::from([(5, pane)]),
                     zoomed: false,
@@ -2615,6 +2641,7 @@ mod tests {
                     pinned: false,
                     muted: false,
                     dnd: false,
+                    dnd_by_agent: false,
                     layout: LayoutSnapshot::Split {
                         direction: super::super::snapshot::DirectionSnapshot::Horizontal,
                         ratio: 0.5,
@@ -2750,6 +2777,7 @@ mod tests {
                         pinned: false,
                         muted: false,
                         dnd: false,
+                        dnd_by_agent: false,
                         layout: LayoutSnapshot::Pane(10),
                         panes: HashMap::from([pane_snap("10")]),
                         zoomed: false,
@@ -2765,6 +2793,7 @@ mod tests {
                         pinned: false,
                         muted: false,
                         dnd: false,
+                        dnd_by_agent: false,
                         layout: LayoutSnapshot::Pane(11),
                         panes: HashMap::from([pane_snap("11")]),
                         zoomed: false,
@@ -2780,6 +2809,7 @@ mod tests {
                         pinned: false,
                         muted: false,
                         dnd: false,
+                        dnd_by_agent: false,
                         layout: LayoutSnapshot::Pane(12),
                         panes: HashMap::from([pane_snap("12")]),
                         zoomed: false,
@@ -2795,6 +2825,7 @@ mod tests {
                         pinned: false,
                         muted: false,
                         dnd: false,
+                        dnd_by_agent: false,
                         layout: LayoutSnapshot::Pane(13),
                         panes: HashMap::from([(13, final_pane)]),
                         zoomed: false,
@@ -2861,6 +2892,7 @@ mod tests {
                 pinned: false,
                 muted: false,
                 dnd: false,
+                dnd_by_agent: false,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
                     ratio: 0.5,
@@ -2908,6 +2940,7 @@ mod tests {
                     pinned: false,
                     muted: false,
                     dnd: false,
+                    dnd_by_agent: false,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -3531,6 +3564,7 @@ mod tests {
                     pinned: false,
                     muted: false,
                     dnd: false,
+                    dnd_by_agent: false,
                     layout: LayoutSnapshot::Pane(0),
                     panes,
                     zoomed: false,
@@ -3566,6 +3600,7 @@ mod tests {
             pinned: false,
             muted: false,
             dnd: false,
+            dnd_by_agent: false,
             layout: LayoutSnapshot::Pane(0),
             panes: HashMap::from([(
                 0,

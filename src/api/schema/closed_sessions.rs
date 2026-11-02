@@ -43,6 +43,11 @@ pub struct ClosedSessionInfo {
     /// not. Reopening restores it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dnd: bool,
+    /// Fork: that do-not-disturb was turned on by an agent or the
+    /// coordinator (`agents.set_quiet`), not the user; absent when not.
+    /// Reopening restores it with the do-not-disturb.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dnd_by_agent: bool,
     /// The space (workspace) the tab was in.
     pub space_id: String,
     pub space_name: String,
@@ -104,6 +109,7 @@ mod tests {
             pinned: false,
             muted: false,
             dnd: false,
+            dnd_by_agent: false,
             space_id: "w_1".into(),
             space_name: "leap".into(),
             cwd: "/tmp/p".into(),

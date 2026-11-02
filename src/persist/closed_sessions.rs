@@ -321,6 +321,7 @@ mod tests {
             pinned: false,
             muted: false,
             dnd: false,
+            dnd_by_agent: false,
             space_id: "w_abc".into(),
             space_name: "leap".into(),
             cwd: "/tmp/project".into(),

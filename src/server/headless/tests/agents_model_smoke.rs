@@ -231,6 +231,105 @@ async fn fork_smoke_agents_mute_of_a_teammate_tab_reaches_the_mutes_push() {
     shutdown_test_runtimes(&mut server);
 }
 
+/// Fork (agent mute): a do-not-disturb a team member turned on through
+/// `agents.set_quiet` holds other agents' messages but lets the
+/// coordinator's (in its user's turn) in as without it; once the user turns
+/// it on from a client (`tab.set_dnd`) it holds the coordinator too.
+#[tokio::test]
+async fn fork_smoke_the_coordinator_gets_through_an_agents_dnd_not_the_users() {
+    use crate::api::schema::agents_model::AgentsSetQuietParams;
+    let (mut server, mut input, panes) = crew_server();
+    let (_control, _render) = connect_test_shell(&mut server, 64, 80, 23);
+    server.app.coordinator.dir = temp_dir("dnd-coordinator");
+    let coordinator_pane = server.app.state.workspaces[0].tabs[0].root_pane;
+    let coordinator_terminal = server.app.state.workspaces[0]
+        .pane_state(coordinator_pane)
+        .unwrap()
+        .attached_terminal_id
+        .clone();
+    server.app.state.coordinator_terminal_id = Some(coordinator_terminal.clone());
+    {
+        let terminal = server
+            .app
+            .state
+            .terminals
+            .get_mut(&coordinator_terminal)
+            .unwrap();
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        let now = std::time::Instant::now();
+        terminal.turn_mut().note_input(
+            &InputSource::Client {
+                submit: true,
+                attach: false,
+            },
+            now,
+        );
+        terminal
+            .turn_mut()
+            .on_status_edge(EdgeStatus::Idle, EdgeStatus::Working, false, now, 1);
+    }
+    let coordinator = server.app.public_pane_id(0, coordinator_pane).unwrap();
+    let (lead, fixer) = (public(&server, panes[0]), public(&server, panes[1]));
+    let fixer_tab = server.app.public_tab_id(1, 1).unwrap();
+    let send = |server: &mut HeadlessServer, from: &str, text: &str| {
+        public_api(
+            server,
+            Method::AgentsSendMessage(AgentsSendMessageParams {
+                caller_pane: from.to_string(),
+                to: fixer.clone(),
+                text: text.into(),
+                reply_to: None,
+                urgent: false,
+                quiet: false,
+            }),
+        )
+    };
+    let typed = |input: &mut tokio::sync::mpsc::Receiver<Bytes>| {
+        let mut out = String::new();
+        while let Ok(bytes) = input.try_recv() {
+            out.push_str(&String::from_utf8_lossy(&bytes));
+        }
+        out
+    };
+    let result = public_api(
+        &mut server,
+        Method::AgentsSetQuiet(AgentsSetQuietParams {
+            caller_pane: Some(lead.clone()),
+            target: fixer_tab.clone(),
+            muted: None,
+            dnd: Some(true),
+        }),
+    );
+    assert_eq!(result["result"]["tab"]["dnd"], true, "{result}");
+    assert!(server.app.state.workspaces[1].tabs[1].dnd_by_agent);
+
+    let held = send(&mut server, &lead, "from the lead");
+    assert_eq!(held["result"]["message"]["quiet"], true, "{held}");
+    let through = send(&mut server, &coordinator, "run the tests");
+    assert_eq!(through["result"]["message"]["outcome"], "sent", "{through}");
+    let text = typed(&mut input);
+    assert!(text.contains("run the tests"), "{text:?}");
+    assert!(!text.contains("from the lead"), "{text:?}");
+
+    // The user turns it on from a client: now it is the user's.
+    let reply = client_api(
+        &mut server,
+        64,
+        Method::TabSetDnd(crate::api::schema::TabSetDndParams {
+            tab_id: fixer_tab,
+            dnd: true,
+        }),
+    );
+    assert_eq!(reply["result"]["tab"]["dnd"], true, "{reply}");
+    assert!(!server.app.state.workspaces[1].tabs[1].dnd_by_agent);
+    server.app.agents_model.limiter = Default::default();
+    let held = send(&mut server, &coordinator, "and the lints");
+    assert_eq!(held["result"]["message"]["quiet"], true, "{held}");
+    assert!(!typed(&mut input).contains("and the lints"));
+    let _ = std::fs::remove_dir_all(&server.app.coordinator.dir);
+    shutdown_test_runtimes(&mut server);
+}
+
 #[tokio::test]
 async fn fork_smoke_agents_close_of_a_teammate_tab_needs_the_users_turn_and_is_logged() {
     let (mut server, _input, panes) = crew_server();

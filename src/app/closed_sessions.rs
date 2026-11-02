@@ -111,6 +111,7 @@ impl App {
             pinned: tab.pinned,
             muted: tab.muted,
             dnd: tab.dnd,
+            dnd_by_agent: tab.dnd && tab.dnd_by_agent,
             space_id: workspace.id.clone(),
             space_name: workspace.display_name_from(&self.state.terminals, &self.terminal_runtimes),
             cwd: cwd.display().to_string(),
@@ -404,6 +405,7 @@ impl App {
         tab.pinned = entry.pinned;
         tab.muted = entry.muted;
         tab.dnd = entry.dnd;
+        tab.dnd_by_agent = entry.dnd && entry.dnd_by_agent;
         let terminal_id = tab
             .terminal_id(tab.root_pane)
             .cloned()
@@ -781,8 +783,11 @@ mod tests {
             tab.remind_every = Some(TabRemindInterval::Daily);
             tab.pinned = true;
             tab.muted = true;
+            tab.dnd = true;
+            tab.dnd_by_agent = true;
         }
         let entry = record_entry(&mut app, 1, "reopen-session");
+        assert!(entry.dnd && entry.dnd_by_agent);
         record_entry(&mut app, 0, "other-session");
         let tabs_before = app.state.workspaces[1].tabs.len();
 
@@ -817,6 +822,7 @@ mod tests {
         assert_eq!(app.state.active, Some(1));
         assert_eq!(app.state.workspaces[1].active_tab, tab_idx);
         let tab = &app.state.workspaces[1].tabs[tab_idx];
+        assert!(tab.dnd && tab.dnd_by_agent, "who turned DND on reopens too");
         let terminal = &app.state.terminals[tab.terminal_id(tab.root_pane).unwrap()];
         assert_eq!(terminal.cwd, sandbox.project());
         assert!(terminal

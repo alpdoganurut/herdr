@@ -57,6 +57,11 @@ pub struct Tab {
     /// herdr's wake-ups held. Persisted, carried by whole-tab moves and
     /// close/reopen.
     pub dnd: bool,
+    /// Fork: `dnd` was turned on by an agent or the coordinator
+    /// (`agents.set_quiet`), not by the user; the coordinator's messages
+    /// then get through. False while `dnd` is off. Persisted and carried
+    /// with `dnd`.
+    pub dnd_by_agent: bool,
     pub number: usize,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
@@ -207,6 +212,7 @@ impl Tab {
                 pinned: false,
                 muted: false,
                 dnd: false,
+                dnd_by_agent: false,
                 number,
                 root_pane: root_id,
                 layout,
@@ -476,6 +482,7 @@ impl Tab {
             pinned: false,
             muted: false,
             dnd: false,
+            dnd_by_agent: false,
             number,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),
