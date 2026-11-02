@@ -2040,3 +2040,45 @@ fn fork_method_constants_match_the_operations_table() {
         );
     }
 }
+
+/// Fork (companion browser): the browser host methods are not client-shell
+/// methods (no digest, not advertised to the TUI); the existing digests
+/// stay as they were (the frozen digest tests).
+#[test]
+fn new_browser_host_methods_are_not_client_shell_and_old_digests_hold() {
+    let names = [
+        "browser.host_register",
+        "browser.host_heartbeat",
+        "browser.host_unregister",
+        "browser.host_state",
+        "browser.host_sync",
+        "browser.host_report",
+        "browser.send_page",
+    ];
+    for name in names {
+        let operation = Method::OPERATIONS
+            .iter()
+            .find(|operation| operation.name == name)
+            .unwrap_or_else(|| panic!("{name} is a method"));
+        assert!(!operation.client_shell, "{name} is not client-shell");
+        assert!(!operation.changes_ui, "{name} does not change the UI");
+        assert!(
+            !super::operations::client_shell_method_names().contains(&name),
+            "{name} is not advertised to the client shell"
+        );
+    }
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "id": "c1",
+        "method": "browser.host_register",
+        "params": {
+            "instance": "i",
+            "cdp": { "host": "127.0.0.1", "port": 1 },
+            "nonce": "n",
+            "protocol": 1
+        }
+    }))
+    .expect("parses with the optional fields absent");
+    assert!(
+        matches!(request.method, Method::BrowserHostRegister(ref p) if p.kind == BrowserHostKind::Companion)
+    );
+}

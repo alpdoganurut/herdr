@@ -355,7 +355,11 @@ async function viewTarget(profile, answer, matchUrl, deadlineAt) {
   if (answer && answer.target_id) return String(answer.target_id);
   while (Date.now() < deadlineAt) {
     for (const page of allPages(profile)) {
-      if (matchUrl(page.url())) return (await targetIdOf(profile, page)).targetId;
+      if (matchUrl(page.url())) {
+        const { targetId, session } = await targetIdOf(profile, page);
+        await session.detach().catch(() => {});
+        return targetId;
+      }
     }
     await sleep(50);
   }
