@@ -66,6 +66,19 @@ Before a Claude agent's context is compacted, herdr has it write a handoff, save
 
 The search query and recency chip belong to the client only. They are never saved: a restart or a new client lists every tab again.
 
+### Sidebar toolbar
+
+The top row of the tabs sidebar, left to right: `⏶ ‹ ›  ⌕ search  ◷ 1h  ◧  +`. Dim controls are `overlay0`; lit ones take the theme accent. Widths below are the sidebar's (`[ui] sidebar_width`, default 26; `sidebar_min_width` 18).
+
+| Control | What it does | Shown when | Key / setting |
+|---|---|---|---|
+| `⏶` / `⏷` fold toggle | `⏶` folds every group, `⏷` (once all are folded) expands them all. The group holding the focused tab always stays open. Does nothing while a search or recency filter is on | There is a group that can fold | `toggle_groups_folded` (unbound) |
+| `‹` `›` tab history | Back to the previously focused tab, forward again after going back (browser-style). Lit while there is a tab that way; a dim one does nothing | Always, from 24 columns; below that they drop first | `tab_history_back` (`cmd+[`), `tab_history_forward` (`cmd+]`), see the Cmd note under Keybinds |
+| `⌕ search` field | Click to type a filter (Esc clears and leaves, Enter focuses the first match, the query stays). Dim placeholder when empty, accent `⌕` with a query, highlighted with a caret while typing | On toolbar hover, or while the field has the keyboard, holds a query or the recency chip is on; from 20 columns | `sidebar_search` (`prefix+f`) |
+| `◷` recency chip | Click steps forward through off, 15m, 30m, 1h, 6h, 1d and round again; shift-click or right-click steps back. Dim `◷` while off, accent `◷ 1h` while on | Same as the search field | None, not saved |
+| `◧` notes button | Opens or closes the focused tab's notes pane, without moving the keyboard to it. Lit while that pane is open | Always | `toggle_info_pane` (unbound) |
+| `+` | Moves the focused tab to a group by name, creating the group when the name is new | Always | `move_tab_to_group` (unbound) |
+
 ## Per-tab toggles (tab menu)
 
 Right-click a tab. These are per tab, not config keys. Important, pin, mute, do not disturb, the reminder and the colour are server session state: they are saved with the tab in `session.json`, so they survive a server restart (session restore) and a live handoff, and move with the tab. Only the notes pane's open or closed state belongs to the client and is never saved.

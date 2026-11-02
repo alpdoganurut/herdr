@@ -372,6 +372,48 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     </div>
   </div>
   <p class="note">The search query and recency chip belong to the client only. They are never saved: a restart or a new client lists every tab again.</p>
+
+  <h4 id="sidebar-toolbar">Sidebar toolbar</h4>
+  <p class="lede" style="margin-bottom:.9rem">The top row of the tabs sidebar, left to right: <code>⏶ ‹ ›  ⌕ search  ◷ 1h  ◧  +</code>. Dim controls are <code>overlay0</code>; lit ones take the theme accent. Widths below are the sidebar's (<code>[ui] sidebar_width</code>, default 26; <code>sidebar_min_width</code> 18).</p>
+  <div class="rows">
+    <div class="row head"><span>Control</span><span>Shown when</span><span>What it does</span><span>Key / setting</span></div>
+    <div class="row">
+      <div class="f"><h3><code>⏶</code> / <code>⏷</code> fold toggle</h3></div>
+      <div class="d"><span class="pill val">a group can fold</span></div>
+      <div class="k"><code>⏶</code> folds every group, <code>⏷</code> (once all are folded) expands them all<small>The group holding the focused tab always stays open. Does nothing while a search or recency filter is on</small></div>
+      <div class="s"><code>toggle_groups_folded</code><small>unbound</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3><code>‹</code> <code>›</code> tab history</h3></div>
+      <div class="d"><span class="pill val">always, from 24 columns</span><small>below that they drop first</small></div>
+      <div class="k">Back to the previously focused tab, forward again after going back (browser-style)<small>Lit while there is a tab that way; a dim one does nothing</small></div>
+      <div class="s"><code>tab_history_back</code> <kbd>cmd</kbd>+<kbd>[</kbd><br><code>tab_history_forward</code> <kbd>cmd</kbd>+<kbd>]</kbd><small>see the Cmd note under <a href="#keys">Keybinds</a></small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3><code>⌕ search</code> field</h3></div>
+      <div class="d"><span class="pill val">on toolbar hover, or while engaged</span><small>engaged: the field has the keyboard, holds a query, or the recency chip is on; from 20 columns</small></div>
+      <div class="k">Click to type a filter (Esc clears and leaves, Enter focuses the first match, the query stays)<small>Dim placeholder when empty, accent <code>⌕</code> with a query, highlighted with a caret while typing</small></div>
+      <div class="s"><code>sidebar_search</code> <kbd>prefix</kbd>+<kbd>f</kbd></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3><code>◷</code> recency chip</h3></div>
+      <div class="d"><span class="pill val">same as the search field</span></div>
+      <div class="k">Click steps forward through off, 15m, 30m, 1h, 6h, 1d and round again; shift-click or right-click steps back<small>Dim <code>◷</code> while off, accent <code>◷ 1h</code> while on</small></div>
+      <div class="s"><span class="badge na">none</span><small>not saved</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3><code>◧</code> notes button</h3></div>
+      <div class="d"><span class="pill val">always</span></div>
+      <div class="k">Opens or closes the focused tab's notes pane, without moving the keyboard to it<small>Lit while that pane is open</small></div>
+      <div class="s"><code>toggle_info_pane</code><small>unbound</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3><code>+</code></h3></div>
+      <div class="d"><span class="pill val">always</span></div>
+      <div class="k">Moves the focused tab to a group by name, creating the group when the name is new</div>
+      <div class="s"><code>move_tab_to_group</code><small>unbound</small></div>
+    </div>
+  </div>
 </section>
 
 <!-- ============ PER-TAB ============ -->

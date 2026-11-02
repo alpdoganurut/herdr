@@ -171,7 +171,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="bar"><i></i><i></i><i></i>&nbsp; herdr+ · tabs sidebar</div>
     <div class="body">
       <div class="sb">
-        <div class="r c"><span class="o0">⏶</span><span class="o0">+</span></div>
+        <div class="r c"><span class="o0">⏶ ‹ ›</span><span class="o0">◧  +</span></div>
         <div class="r c"><span><span class="t b">reviewer</span>  <span class="ye">● working</span> <span class="o1">12m</span></span><span></span></div>
         <div class="r c"><span><span class="cl">⧆</span> claude  <span class="o1">1 pane · ◎ browser</span></span><span></span></div>
         <div class="r c"><span><span class="ac">◆</span> api rewrite · reviewer</span><span></span></div>
@@ -373,6 +373,21 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="card"><h3><span class="g">◌</span>Suspended runs fold</h3><p>Three or more suspended tabs in a row become one <code>◌ N suspended ▸</code> row. Hover lists them. Off in Settings → Indicators (<code>fold suspended runs</code>).</p></div>
       <div class="card"><h3><span class="g">%</span>Context use</h3><p>Shows when an agent is running out of room: a percentage on the row from 75% (yellow, red from 90%); the detail strip shows <code>ctx 78% · 156k/200k</code> at any level. Read from the agent's own session file, never on every frame.</p></div>
       <div class="card"><h3><span class="g">▦</span>Context menus with sections</h3><p>Every right-click menu has the same layout: titled sections, one icon per item, your own key bindings shown on the right, and destructive items in red at the bottom.</p></div>
+      <div class="card"><h3><span class="g">⏶</span>The toolbar</h3><p>The top row of the sidebar keeps the everyday moves one click away. At rest it shows only the buttons; hover it and the search field and recency chip appear (they stay while a filter is on).</p>
+        <div class="term solo" style="width:100%;margin:.6rem 0 .5rem;box-shadow:none" role="img" aria-label="The sidebar toolbar at rest and on hover">
+          <div class="sb">
+            <div class="r c"><span class="o0">⏶ ‹ ›</span><span class="o0">◧  +</span></div>
+            <div class="r c"><span><span class="o0">⏶</span> <span class="ac">‹</span> <span class="o0">›</span> <span class="o0">⌕ search</span>     <span class="ac">◷ 1h</span> <span class="ac">◧</span>  <span class="o0">+</span></span><span></span></div>
+          </div>
+        </div>
+        <ul>
+          <li><code>⏶</code> folds every group, <code>⏷</code> opens them all again.</li>
+          <li><code>‹</code> <code>›</code> go back and forward through the tabs you focused, like a browser; lit when there is somewhere to go. Keys <code>cmd+[</code> / <code>cmd+]</code> where your terminal passes Cmd.</li>
+          <li><code>⌕</code> filters the tabs as you type (<code>prefix+f</code>); <code>◷</code> keeps only recently active tabs (click forward, right-click back).</li>
+          <li><code>◧</code> opens or closes the focused tab's notes pane; lit while it is open.</li>
+          <li><code>+</code> moves the focused tab into a group, new or existing, by name.</li>
+        </ul>
+        <p>On a narrow sidebar the history buttons drop out first, then the search controls. Other keys and widths: <a href="config.html#sidebar-toolbar">configuration page</a>.</p></div>
       <div class="card"><h3><span class="g">⌕</span>Search and recency filters</h3><p>Find a tab fast: <code>prefix+f</code> or the toolbar's <code>⌕</code> keeps tabs whose label, group or agent matches every word; Enter jumps to the first match, Esc clears. <code>◷</code> shows only tabs active in the last 15m to 1d; busy and pinned tabs always show. Previous/next tab keys skip hidden tabs.</p></div>
     </div>
     <div>
