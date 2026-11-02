@@ -367,7 +367,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="row">
       <div class="f"><h3>Tab history back / forward</h3></div>
       <div class="d"><span class="pill val">available</span></div>
-      <div class="k">Keys <code>tab_history_back</code> (<kbd>cmd</kbd>+<kbd>[</kbd>), <code>tab_history_forward</code> (<kbd>cmd</kbd>+<kbd>]</kbd>)</div>
+      <div class="k">The toolbar's <code>‹</code> <code>›</code> buttons; keys <code>tab_history_back</code> (<kbd>cmd</kbd>+<kbd>[</kbd>), <code>tab_history_forward</code> (<kbd>cmd</kbd>+<kbd>]</kbd>)</div>
       <div class="s"><span class="badge na">n/a</span></div>
     </div>
   </div>
@@ -769,7 +769,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="kb"><code>open_browser</code><span class="ks"><span class="ub">unbound</span></span><p>Opens the Browser overlay</p></div>
     <div class="kb"><code>open_news</code><span class="ks"><span class="ub">unbound</span></span><p>Focuses the News tab</p></div>
   </div>
-  <p class="note">On terminals without a Cmd key, use e.g. <code>tab_history_back = "alt+,"</code>. In Ghostty, map <code>super+[</code> to <code>csi:91;9u</code> and <code>super+]</code> to <code>csi:93;9u</code>.</p>
+  <p class="note"><code>cmd+[</code> / <code>cmd+]</code> only work if your terminal passes Cmd through to herdr; most macOS terminals keep Cmd for themselves. The toolbar's <code>‹</code> <code>›</code> buttons always work, or bind keys any terminal sends, e.g. <code>tab_history_back = "alt+,"</code> and <code>tab_history_forward = "alt+."</code>. Example: Ghostty passes them on with <code>keybind = super+[=csi:91;9u</code> and <code>keybind = super+]=csi:93;9u</code>.</p>
 </section>
 
 <!-- ============ LIMITS ============ -->

@@ -62,7 +62,7 @@ Before a Claude agent's context is compacted, herdr has it write a handoff, save
 | Context use (`NN%` from 75 %) | on | `[ui] sidebar_context_usage = false` | No, config only |
 | Sidebar search (type to filter tabs; Esc clears, Enter focuses the first match) | available | Key `sidebar_search` (default `prefix+f`) or click the toolbar field | n/a, not saved |
 | Recency filter (`◷` chip: off, 15m, 30m, 1h, 6h, 1d) | off | Click the chip (shift-click or right-click steps back). No config key | n/a, not saved |
-| Tab history back / forward | available | Keys `tab_history_back` (`cmd+[`), `tab_history_forward` (`cmd+]`) | n/a |
+| Tab history back / forward | available | The toolbar's `‹` `›` buttons; keys `tab_history_back` (`cmd+[`), `tab_history_forward` (`cmd+]`) | n/a |
 
 The search query and recency chip belong to the client only. They are never saved: a restart or a new client lists every tab again.
 
@@ -230,7 +230,7 @@ Bind a key with `[keys] <action> = "prefix+x"` (the prefix is `ctrl+b`).
 | `open_browser` | unbound | Opens the Browser overlay |
 | `open_news` | unbound | Focuses the News tab |
 
-On terminals without a Cmd key, use e.g. `tab_history_back = "alt+,"`. In Ghostty, map `super+[` to `csi:91;9u` and `super+]` to `csi:93;9u`.
+`cmd+[` / `cmd+]` only work if your terminal passes Cmd through to herdr; most macOS terminals keep Cmd for themselves. The toolbar's `‹` `›` buttons always work, or bind keys any terminal sends, e.g. `tab_history_back = "alt+,"` and `tab_history_forward = "alt+."`. Example: Ghostty passes them on with `keybind = super+[=csi:91;9u` and `keybind = super+]=csi:93;9u`.
 
 ## Not configurable
 
