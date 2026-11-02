@@ -282,6 +282,7 @@ pub(super) fn render_tab_sidebar_with(
         content,
         all_groups_folded(snapshot, state.collapsed_groups),
         state.info_pane_open,
+        (state.history_back, state.history_forward),
         config,
         hits,
     );
@@ -1311,14 +1312,16 @@ fn put_status_spans(buffer: &mut Buffer, x: u16, y: u16, width: u16, spans: &[Sp
     }
 }
 
-/// The fold toggle on the left (absent without foldable groups), the `◧`
-/// notes button (accent while the focused tab's info pane is open) and `+`
-/// on the right, all one row.
+/// The fold toggle on the left (absent without foldable groups), the `‹`
+/// `›` tab history buttons after it (accent while the history has a tab
+/// that way), the `◧` notes button (accent while the focused tab's info
+/// pane is open) and `+` on the right, all one row.
 fn render_toolbar(
     buffer: &mut Buffer,
     content: Rect,
     all_folded: Option<bool>,
     info_pane_open: bool,
+    history: (bool, bool),
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
 ) {
@@ -1336,6 +1339,27 @@ fn render_toolbar(
         put_text(buffer, x, y, toggle_width, toggle, style);
         if config.mouse_capture {
             hits.group_toggle_all = Rect::new(x, y, toggle_width, 1);
+        }
+    }
+    if let Some((back, forward)) = super::sidebar_filter::history_button_rects(content) {
+        for (rect, glyph, lit) in [
+            (back, super::sidebar_filter::HISTORY_BACK_GLYPH, history.0),
+            (
+                forward,
+                super::sidebar_filter::HISTORY_FORWARD_GLYPH,
+                history.1,
+            ),
+        ] {
+            let fg = if lit {
+                palette.accent
+            } else {
+                palette.overlay0
+            };
+            put_text(buffer, rect.x, y, 1, glyph, Style::default().fg(fg));
+        }
+        if config.mouse_capture {
+            hits.sidebar_history_back = back;
+            hits.sidebar_history_forward = forward;
         }
     }
     if let Some(notes) = super::sidebar_filter::notes_button_rect(content) {

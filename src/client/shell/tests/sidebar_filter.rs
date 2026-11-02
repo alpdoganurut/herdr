@@ -560,7 +560,9 @@ fn the_toolbar_shows_the_controls_only_on_hover_or_while_engaged() {
     let frame = state.compose(106, 30).expect("composed frame");
     let hovered = row_text(&frame, toolbar);
     assert!(
-        hovered.contains("\u{2315} search") && hovered.contains('\u{25F7}'),
+        // At the default width the history buttons leave the field six
+        // cells: the placeholder truncates.
+        hovered.contains("\u{2315} sea") && hovered.contains('\u{25F7}'),
         "{hovered:?}"
     );
 
@@ -585,7 +587,8 @@ fn the_search_field_takes_every_key_and_esc_clears_it() {
     let frame = state.compose(106, 30).expect("composed frame");
     assert_eq!(listed(&state), ["tab_1", "tab_2"]);
     assert!(frame.cursor.is_none(), "the pane's cursor hides");
-    assert!(row_text(&frame, state.hits.sidebar_search).contains("Revi"));
+    // The field is six cells at the default width: the query's tail shows.
+    assert!(row_text(&frame, state.hits.sidebar_search).contains("evi"));
 
     // Backspace, then a committed text (IME / paste path).
     key(&mut state, "\x7f");

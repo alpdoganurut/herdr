@@ -137,6 +137,9 @@ pub(super) struct ShellHitMap {
     pub(super) sidebar_recency: Rect,
     /// Fork (menu design): the toolbar's `◧` notes button.
     pub(super) sidebar_notes: Rect,
+    /// Fork (tab history): the toolbar's `‹` and `›` buttons.
+    pub(super) sidebar_history_back: Rect,
+    pub(super) sidebar_history_forward: Rect,
     pub(super) sidebar_filtered: Rect,
     /// Fork: the frame drew a breathing agent glyph (`breathe.rs`), so the
     /// client loop schedules the next animation frame.

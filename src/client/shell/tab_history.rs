@@ -106,6 +106,33 @@ impl TabHistory {
         Some(self.entries[target].clone())
     }
 
+    /// Whether [`back`](Self::back) would pick a target, without moving
+    /// anything (the toolbar's `‹` button). The scan skips dead ids itself,
+    /// so it agrees with the pruning press.
+    pub(super) fn can_go_back(&self, is_live: impl Fn(&str) -> bool) -> bool {
+        let Some(current) = self.current() else {
+            return false;
+        };
+        let from = self.pending.unwrap_or(self.cursor);
+        self.entries
+            .iter()
+            .take(from)
+            .any(|id| id != current && is_live(id))
+    }
+
+    /// Whether [`forward`](Self::forward) would pick a target, without
+    /// moving anything (the toolbar's `›` button).
+    pub(super) fn can_go_forward(&self, is_live: impl Fn(&str) -> bool) -> bool {
+        let Some(current) = self.current() else {
+            return false;
+        };
+        let from = self.pending.unwrap_or(self.cursor);
+        self.entries
+            .iter()
+            .skip(from + 1)
+            .any(|id| id != current && is_live(id))
+    }
+
     /// Drops the closed tabs' entries (except the cursor's and the pending
     /// target's) and collapses the duplicates that leaves next to each
     /// other, so dead ids never crowd live ones out of the capped history.
