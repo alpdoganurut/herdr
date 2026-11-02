@@ -24,6 +24,8 @@ pub(super) const BROWSER_REFRESH_IDLE: std::time::Duration = std::time::Duration
 pub(crate) const BROWSER_ROW_LABEL: &str = "Browser";
 /// The marker of a herdr tab whose pane uses the browser.
 pub(crate) const TAB_BROWSER_MARKER: &str = "\u{25CE}"; // ◎
+/// Fork (companion browser): a page of the tab needs the user.
+pub(crate) const TAB_BROWSER_ATTENTION_MARKER: &str = "\u{25C9}"; // ◉
 
 /// Client-only browser state for the active endpoint.
 #[derive(Debug, Default)]
@@ -208,6 +210,29 @@ pub(crate) fn browser_overlay_rows(info: &BrowserGetInfo, now: u64) -> Vec<Brows
         ));
         return rows;
     }
+    // Fork (companion browser): the herdr tabs' browser sessions first.
+    if !info.sessions.is_empty() {
+        rows.push(BrowserOverlayRow::Empty("sessions".into()));
+        for session in &info.sessions {
+            let title = if session.title.is_empty() {
+                session.url.as_str()
+            } else {
+                session.title.as_str()
+            };
+            rows.push(BrowserOverlayRow::Empty(format!(
+                "  {} {} · {} · {} page{}",
+                if session.needs_you {
+                    TAB_BROWSER_ATTENTION_MARKER
+                } else {
+                    TAB_BROWSER_MARKER
+                },
+                session.tab_id,
+                title,
+                session.pages,
+                if session.pages == 1 { "" } else { "s" }
+            )));
+        }
+    }
     for profile in profiles {
         let state = info
             .profiles
@@ -345,6 +370,22 @@ impl ClientShellState {
             }
         }
         tabs
+    }
+
+    /// Fork (companion browser): the herdr tabs whose browser pages need
+    /// the user (`browser.get` `sessions`): `◉` instead of `◎`.
+    pub(crate) fn browser_attention_tabs(&self) -> HashSet<String> {
+        self.browser
+            .info
+            .as_ref()
+            .map(|info| {
+                info.sessions
+                    .iter()
+                    .filter(|session| session.needs_you)
+                    .map(|session| session.tab_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn browser_boot_id(&self) -> Option<String> {

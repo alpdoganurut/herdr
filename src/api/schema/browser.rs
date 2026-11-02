@@ -320,6 +320,25 @@ pub enum BrowserOp {
         #[serde(default = "default_true", skip_serializing_if = "is_true")]
         animate: bool,
     },
+    /// Fork (companion browser): show a local HTML file in a sandboxed
+    /// view of the caller's session (the companion), else a window tab with
+    /// the network routed off; it reloads when the file changes.
+    Show {
+        /// Absolute path of a `.html` / `.htm` file.
+        file: String,
+        /// Let the page reach the network (default false: http(s) and ws(s) blocked).
+        #[serde(default, skip_serializing_if = "super::is_false")]
+        allow_network: bool,
+        /// Reload the view when the file or its directory changes (default true).
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        watch: bool,
+        /// Also bring the view up for the user.
+        #[serde(default, skip_serializing_if = "super::is_false")]
+        focus: bool,
+        /// The view's title in the strip (default: the document's).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -330,6 +349,10 @@ fn default_true() -> bool {
 
 fn is_true(value: &bool) -> bool {
     *value
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 /// One step of a batch: the operation plus, when it needs one, its tab
@@ -378,6 +401,7 @@ impl BrowserOp {
             BrowserOp::Hover { .. } => "act:hover",
             BrowserOp::Snapshot { .. } => "snapshot",
             BrowserOp::Batch { .. } => "batch",
+            BrowserOp::Show { .. } => "show",
             BrowserOp::Unknown => "unknown",
         }
     }
@@ -556,6 +580,10 @@ pub struct BrowserGetInfo {
     /// the shell hook) is failing: the Browser row shows a `!` hint.
     #[serde(default)]
     pub setup_needed: bool,
+    /// Fork (companion browser): per herdr tab with browser state, its
+    /// active page and whether it needs the user (`◉`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<BrowserSessionInfo>,
 }
 
 /// `herdr browser setup`'s record of the installed runtime.
@@ -771,6 +799,249 @@ pub struct BrowserSettingsSetParams {
 pub struct BrowserFixParams {
     #[serde(default)]
     pub ids: Vec<String>,
+}
+
+// ----- Fork (companion browser): the browser host role ----------------------
+
+/// What kind of browser host registers. Append-closed, `Unknown` the serde
+/// fallback (FORK §4).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserHostKind {
+    #[default]
+    Companion,
+    #[serde(other)]
+    Unknown,
+}
+
+/// The host's DevTools endpoint (loopback only in v1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserHostCdp {
+    pub host: String,
+    pub port: u16,
+}
+
+/// `browser.host_register`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserHostRegisterParams {
+    #[serde(default)]
+    pub kind: BrowserHostKind,
+    /// Random per app launch; the same instance re-registering replaces its lease.
+    pub instance: String,
+    /// Informational only: never signalled, never probed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    pub cdp: BrowserHostCdp,
+    /// The control page answers it (`window.__herdrCompanion.nonce()`).
+    pub nonce: String,
+    #[serde(default)]
+    pub version: String,
+    pub protocol: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+/// `browser.host_heartbeat` / `browser.host_unregister`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserHostLeaseTarget {
+    pub lease_id: String,
+}
+
+/// The lease `browser.host_register` and `browser.host_heartbeat` answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserHostLeaseInfo {
+    pub lease_id: String,
+    /// The reserved profile the host serves (`companion`).
+    pub profile: String,
+    /// `attached`.
+    pub state: String,
+    pub heartbeat_ms: u64,
+    pub ttl_ms: u64,
+    pub expires_unix: u64,
+    pub host_protocol: u32,
+    #[serde(default)]
+    pub server_features: Vec<String>,
+}
+
+/// `browser.host_state`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserHostStateParams {
+    pub lease_id: String,
+    /// Only these herdr tabs (default: every tab).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_ids: Option<Vec<String>>,
+}
+
+/// One page of a herdr tab's browser group. Append-closed kind.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TabBrowserKind {
+    #[default]
+    Web,
+    HtmlView,
+    #[serde(other)]
+    Unknown,
+}
+
+/// One entry of a group, as `browser.host_state` answers it and
+/// `browser.host_sync` sends it (`view_id` / `target` only in a sync).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserHostEntry {
+    /// The entry id (`b<n>`); absent for a new entry in a sync (minted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_id: Option<String>,
+    /// The CDP target id while the host has the view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub kind: TabBrowserKind,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub allow_network: bool,
+    /// `user` or `agent:<pane_id>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_by: Option<String>,
+}
+
+/// One herdr tab in `browser.host_state`; `key` / `entries` absent when it
+/// has no browser state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserHostTabState {
+    pub tab_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub rev: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<BrowserHostEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserHostStateInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused_tab_id: Option<String>,
+    #[serde(default)]
+    pub tabs: Vec<BrowserHostTabState>,
+}
+
+/// One group of `browser.host_sync`: the full live list of a herdr tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserHostSyncGroup {
+    pub tab_id: String,
+    /// Absent for a new group (minted, answered in `keys`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The active entry: its `id`, or the `view_id` of a new entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+    #[serde(default)]
+    pub entries: Vec<BrowserHostEntry>,
+}
+
+/// `browser.host_sync`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserHostSyncParams {
+    pub lease_id: String,
+    /// Monotonic per lease; `seq <=` the last applied is `stale_seq`.
+    pub seq: u64,
+    #[serde(default)]
+    pub groups: Vec<BrowserHostSyncGroup>,
+}
+
+/// The kind of a `browser.host_report` event. Append-closed.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserHostReportKind {
+    #[default]
+    UserAction,
+    PageError,
+    #[serde(other)]
+    Unknown,
+}
+
+/// One event of `browser.host_report`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserHostReportEvent {
+    #[serde(default)]
+    pub kind: BrowserHostReportKind,
+    /// `navigate`, `back`, `forward`, `reload`, `stop`, `new_tab`,
+    /// `close_tab`, `select`, `send_page`, `shown`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// A page error's kind: `load_failed` or `crashed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// A page error's message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_ms: Option<u64>,
+}
+
+/// `browser.host_report`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserHostReportParams {
+    pub lease_id: String,
+    #[serde(default)]
+    pub events: Vec<BrowserHostReportEvent>,
+}
+
+/// `browser.send_page`: the user sends the page to an agent of the herdr tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserSendPageParams {
+    pub tab_id: String,
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
+}
+
+/// A herdr tab's browser session, for the client (`browser.get`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserSessionInfo {
+    pub tab_id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub pages: u32,
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub needs_you: bool,
+    /// `companion` while a live host has the group, else `none`.
+    #[serde(default)]
+    pub host: String,
 }
 
 #[cfg(test)]

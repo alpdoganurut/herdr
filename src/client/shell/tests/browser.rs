@@ -76,6 +76,7 @@ fn running_info(seq: u64, touched_at: u64) -> BrowserGetInfo {
         enabled: true,
         host: Default::default(),
         setup_needed: false,
+        sessions: vec![],
         profiles: vec![BrowserProfileInfo {
             name: "main".into(),
             state: "running".into(),
@@ -475,7 +476,7 @@ fn the_row_opens_the_overlay_and_its_menu_focuses_starts_and_stops() {
             ));
             menu.items()
                 .iter()
-                .map(|item| item.label)
+                .map(|item| item.label.to_string())
                 .collect::<Vec<_>>()
         }
         other => panic!("expected the Browser menu, got {other:?}"),

@@ -896,6 +896,10 @@ pub(super) enum ClientContextMenuTarget {
         /// Fork: the server advertises `tab.set_dnd` (the Do not disturb
         /// item shows only then).
         dnd_supported: bool,
+        /// Fork (companion browser): the tab's browser session when the menu
+        /// opened (`browser.get` `sessions`): its active page's title (the
+        /// URL without one) and whether a page needs the user.
+        browser_page: Option<(String, bool)>,
     },
     /// A space shown as a tab group in the `tabs` layout. Fork: `team` is
     /// the team items' state, `None` without `team.get` on the server.
@@ -939,7 +943,8 @@ pub(super) struct ClientContextMenuOverlay {
 }
 
 pub(super) struct ClientContextMenuItem {
-    pub(super) label: &'static str,
+    /// Fork (companion browser): owned for the tab menu's page title row.
+    pub(super) label: std::borrow::Cow<'static, str>,
     pub(super) action: ClientContextMenuAction,
     /// Fork (menu design): the item's glyph, section and kind
     /// (`context_menu_look.rs`).

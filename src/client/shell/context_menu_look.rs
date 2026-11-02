@@ -282,7 +282,7 @@ fn item_width(item: &ClientContextMenuItem, hint: Option<&str>) -> u16 {
         }
         _ => {
             LABEL_X
-                + super::render::display_width(item.label)
+                + super::render::display_width(&item.label)
                 + hint.map_or(0, |hint| HINT_GAP + super::render::display_width(hint))
                 + RIGHT_PAD
         }
@@ -575,8 +575,8 @@ fn draw_item(
         row_style.fg(glyph_fg),
     );
     let label_room = rect.right().saturating_sub(label_x).saturating_sub(1);
-    let label_width = super::render::display_width(item.label).min(label_room);
-    super::render::put_truncated(buffer, label_x, rect.y, label_room, item.label, row_style);
+    let label_width = super::render::display_width(&item.label).min(label_room);
+    super::render::put_truncated(buffer, label_x, rect.y, label_room, &item.label, row_style);
     let Some(hint) = hint else {
         return;
     };

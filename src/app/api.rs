@@ -1383,6 +1383,27 @@ impl App {
                     "browser.run is handled on its connection thread, not by the app runtime",
                 );
             }
+            Method::BrowserHostRegister(_)
+            | Method::BrowserHostHeartbeat(_)
+            | Method::BrowserHostUnregister(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "browser_lane",
+                    "the browser host lease is handled on its connection thread, not by the app runtime",
+                );
+            }
+            Method::BrowserHostState(params) => {
+                return self.handle_browser_host_state(request.id, params)
+            }
+            Method::BrowserHostSync(params) => {
+                return self.handle_browser_host_sync(request.id, params)
+            }
+            Method::BrowserHostReport(params) => {
+                return self.handle_browser_host_report(request.id, params)
+            }
+            Method::BrowserSendPage(params) => {
+                return self.handle_browser_send_page(request.id, params)
+            }
             Method::BrowserGet(params) => return self.handle_browser_get(request.id, params),
             Method::BrowserStatus(_) => return self.handle_browser_status(request.id),
             Method::BrowserFocus(params) => return self.handle_browser_focus(request.id, params),

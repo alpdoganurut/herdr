@@ -3475,6 +3475,8 @@ impl HeadlessServer {
         changed |= self.app.handle_news_tasks(now);
         changed |= self.app.handle_coordinator_tasks(now);
         changed |= self.app.handle_message_queue_tasks(now);
+        // Fork (companion browser): page errors to their agents, quietly.
+        changed |= self.app.handle_browser_page_errors();
         self.flush_coordinator_notifications(now);
         self.flush_news_notifications(now);
         // Fork (agents v2): closes in flight, before the exit escalation,

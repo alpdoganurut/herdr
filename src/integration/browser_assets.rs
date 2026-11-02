@@ -379,6 +379,13 @@ mod tests {
         run_node_check("scripts/test_browser_overlay.mjs");
     }
 
+    /// Fork (companion browser): the control-page driver and the HTML view
+    /// watches (scripts/test_browser_companion_host.mjs).
+    #[test]
+    fn companion_host_control_page_and_view_watches() {
+        run_node_check("scripts/test_browser_companion_host.mjs");
+    }
+
     #[test]
     fn install_writes_missing_then_only_stale_and_runtime_round_trips() {
         let dir = temp_dir("install");

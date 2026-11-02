@@ -993,6 +993,9 @@ impl App {
             previous_tab_dnd: self.state.workspaces[source_ws_idx].tabs[source_tab_idx].dnd,
             previous_tab_dnd_by_agent: self.state.workspaces[source_ws_idx].tabs[source_tab_idx]
                 .dnd_by_agent,
+            previous_tab_browser: self.state.workspaces[source_ws_idx].tabs[source_tab_idx]
+                .browser
+                .clone(),
             previous_worktree_space: self.state.workspaces[source_ws_idx].worktree_space.clone(),
             identity_cwd: self.state.workspaces[source_ws_idx].identity_cwd.clone(),
         };
@@ -1174,6 +1177,11 @@ impl App {
         let carried_tab_dnd = recovery_context.previous_tab_dnd && source_removed_tab_id.is_some();
         let carried_tab_dnd_by_agent =
             carried_tab_dnd && recovery_context.previous_tab_dnd_by_agent;
+        // Fork (companion browser): and its browser group.
+        let carried_tab_browser = recovery_context
+            .previous_tab_browser
+            .clone()
+            .filter(|_| source_removed_tab_id.is_some());
         let source_workspace_empty = taken.workspace_empty;
         let moved = taken.moved;
         let cross_workspace = match &resolved {
@@ -1287,6 +1295,7 @@ impl App {
                     tab.muted = carried_tab_muted;
                     tab.dnd = carried_tab_dnd;
                     tab.dnd_by_agent = carried_tab_dnd_by_agent;
+                    tab.browser = carried_tab_browser.clone();
                 }
                 created_tab = true;
                 (target_ws_idx, target_tab_idx, moved_pane_id)
@@ -1316,6 +1325,7 @@ impl App {
                     tab.muted = carried_tab_muted;
                     tab.dnd = carried_tab_dnd;
                     tab.dnd_by_agent = carried_tab_dnd_by_agent;
+                    tab.browser = carried_tab_browser.clone();
                 }
                 self.state.workspaces.push(workspace);
                 let target_ws_idx = self.state.workspaces.len() - 1;
@@ -1444,6 +1454,7 @@ impl App {
                 tab.muted = context.previous_tab_muted;
                 tab.dnd = context.previous_tab_dnd;
                 tab.dnd_by_agent = context.previous_tab_dnd_by_agent;
+                tab.browser = context.previous_tab_browser.clone();
             }
         } else {
             let mut workspace = crate::workspace::Workspace::from_existing_pane(
@@ -1465,6 +1476,7 @@ impl App {
                 tab.muted = context.previous_tab_muted;
                 tab.dnd = context.previous_tab_dnd;
                 tab.dnd_by_agent = context.previous_tab_dnd_by_agent;
+                tab.browser = context.previous_tab_browser.clone();
             }
             let insert_idx = context.source_ws_idx.min(self.state.workspaces.len());
             if let Some(active) = self.state.active {
@@ -2367,6 +2379,8 @@ struct PaneMoveRecoveryContext {
     previous_tab_dnd: bool,
     /// Fork: `Tab.dnd_by_agent`.
     previous_tab_dnd_by_agent: bool,
+    /// Fork (companion browser): `Tab.browser`.
+    previous_tab_browser: Option<crate::browser::session::TabBrowser>,
     previous_worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
     identity_cwd: std::path::PathBuf,
 }
@@ -3962,6 +3976,7 @@ mod tests {
             previous_tab_muted: false,
             previous_tab_dnd: false,
             previous_tab_dnd_by_agent: false,
+            previous_tab_browser: None,
             previous_worktree_space: app.state.workspaces[0].worktree_space.clone(),
             identity_cwd: app.state.workspaces[0].identity_cwd.clone(),
         };

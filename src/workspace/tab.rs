@@ -62,6 +62,11 @@ pub struct Tab {
     /// then get through. False while `dnd` is off. Persisted and carried
     /// with `dnd`.
     pub dnd_by_agent: bool,
+    /// Fork (companion browser): the tab's browser group (its pages in the
+    /// companion). Persisted, carried by whole-tab moves; the companion
+    /// replaces it (`browser.host_sync`), herdr keeps it as the restore
+    /// source. Not carried by close/reopen (later).
+    pub browser: Option<crate::browser::session::TabBrowser>,
     pub number: usize,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
@@ -213,6 +218,7 @@ impl Tab {
                 muted: false,
                 dnd: false,
                 dnd_by_agent: false,
+                browser: None,
                 number,
                 root_pane: root_id,
                 layout,
@@ -483,6 +489,7 @@ impl Tab {
             muted: false,
             dnd: false,
             dnd_by_agent: false,
+            browser: None,
             number,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),

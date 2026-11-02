@@ -139,7 +139,8 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                             let target = format!("T{n}");
                             // The real sidecar's `opened` event (initiator other: the
                             // page event fires before the reply) reaches the ledger first.
-                            events.push(json!({ "event": "tab", "profile": "main", "target": target, "kind": "opened", "url": "about:blank", "initiator": "other" }).to_string());
+                            let profile = request["profile"].as_str().unwrap_or("main");
+                            events.push(json!({ "event": "tab", "profile": profile, "target": target, "kind": "opened", "url": "about:blank", "initiator": "other" }).to_string());
                             json!({ "id": id, "ok": true, "result": { "target": target, "card": { "headings": 2, "links": 5, "forms": 0, "text_chars": 900, "main_chars": 400, "login_wall": false, "preview": "# Opened" } }, "page": { "url": args["url"], "title": "Opened", "status": 200 } })
                         }
                         "read" => {
@@ -196,7 +197,17 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                         "navigate" | "history" | "focus" | "select" => {
                             json!({ "id": id, "ok": true, "result": {}, "page": { "url": args["url"].as_str().unwrap_or("https://site.test/after"), "title": "After", "status": 200 } })
                         }
-                        "close" | "close_browser" => json!({ "id": id, "ok": true, "result": {} }),
+                        "close" | "close_browser" | "detach" | "watch" | "unwatch" => {
+                            json!({ "id": id, "ok": true, "result": {} })
+                        }
+                        // Fork (companion browser): an HTML view.
+                        "show" => {
+                            let n = state.next_target;
+                            state.next_target += 1;
+                            let target = format!("T{n}");
+                            let file = args["file"].as_str().unwrap_or_default().to_string();
+                            json!({ "id": id, "ok": true, "result": { "target": target, "view_id": format!("v{n}"), "watching": args["watch"] }, "page": { "url": format!("file://{file}"), "title": "View", "status": 200 } })
+                        }
                         "ntp" => json!({ "id": id, "ok": true, "result": { "pushed": 1 } }),
                         "dashboard" => {
                             json!({ "id": id, "ok": true, "result": { "windows": 1, "pin": args["pin"] } })
@@ -2433,4 +2444,521 @@ fn a_hub_side_attach_timeout_gets_the_fixed_clause() {
         err.message
     );
     let _ = std::fs::remove_dir_all(&home);
+}
+
+// ----- Fork (companion browser) ---------------------------------------------
+
+fn register_params(instance: &str) -> crate::api::schema::BrowserHostRegisterParams {
+    crate::api::schema::BrowserHostRegisterParams {
+        kind: crate::api::schema::BrowserHostKind::Companion,
+        instance: instance.into(),
+        pid: Some(4242),
+        cdp: crate::api::schema::BrowserHostCdp {
+            host: "127.0.0.1".into(),
+            port: 49731,
+        },
+        nonce: format!("nonce-{instance}"),
+        version: "0.1.0".into(),
+        protocol: 1,
+        capabilities: vec!["views".into()],
+    }
+}
+
+fn open_op(url: &str) -> BrowserOp {
+    BrowserOp::Open {
+        url: url.into(),
+        focus: false,
+        wait: None,
+    }
+}
+
+#[test]
+fn fork_smoke_a_registered_companion_takes_new_tabs_and_the_window_takes_them_back_when_its_lease_expires(
+) {
+    let (hub, shared, _stream, _home) = hub("companion-routing");
+    let lease = hub
+        .host_register(&register_params("a"))
+        .expect("registered");
+    assert_eq!(lease.profile, "companion");
+    assert_eq!(lease.state, "attached");
+    assert!(lease.server_features.iter().any(|f| f == "show"));
+    assert!(hub.companion_live());
+    let actor = pane("w2:pD");
+    let opened = hub
+        .run(&actor, params(open_op("https://a.test/")))
+        .expect("open");
+    assert!(opened
+        .tab
+        .as_deref()
+        .is_some_and(|tab| tab.starts_with("companion:")));
+    assert_eq!(opened.data["host"], "companion");
+    {
+        let state = shared.lock().unwrap();
+        let open = state
+            .ops
+            .iter()
+            .rev()
+            .find(|(op, _, _)| op == "open")
+            .unwrap();
+        assert_eq!(
+            open.2["tab_id"], "w2:tD",
+            "the view goes to the caller's group"
+        );
+        assert_eq!(open.2["opened_by"], "agent:w2:pD");
+    }
+    // The heartbeat keeps it; an expired lease goes on the supervisor's pass.
+    assert!(hub.host_heartbeat(&lease.lease_id).is_ok());
+    hub.expire_host_lease_for_test();
+    hub.supervise();
+    assert!(!hub.companion_live());
+    assert!(matches!(
+        hub.host_heartbeat(&lease.lease_id),
+        Err(err) if err.code == "lease_unknown"
+    ));
+    hub.with_state(|state| {
+        assert!(matches!(
+            state.profile("companion"),
+            super::state::ProfileStatus::Crashed { .. }
+        ));
+        assert!(state
+            .tabs
+            .values()
+            .filter(|record| record.profile == "companion")
+            .all(|record| !record.is_open()));
+    });
+    // Silent fallback: the next open goes to the window, `host` says so.
+    let back = hub
+        .run(&actor, params(open_op("https://b.test/")))
+        .expect("open");
+    assert!(back
+        .tab
+        .as_deref()
+        .is_some_and(|tab| tab.starts_with("main:")));
+    assert_eq!(back.data["host"], "window");
+}
+
+#[test]
+fn fork_smoke_a_second_companion_is_refused_while_the_first_lease_lives() {
+    let (hub, _shared, _stream, _home) = hub("companion-in-use");
+    let first = hub
+        .host_register(&register_params("a"))
+        .expect("registered");
+    let err = hub.host_register(&register_params("b")).unwrap_err();
+    assert_eq!(err.code, "host_in_use");
+    assert!(err.message.contains("instance a"), "{}", err.message);
+    // The same instance re-registering (a reconnect) replaces its lease.
+    let again = hub
+        .host_register(&register_params("a"))
+        .expect("re-registered");
+    assert_ne!(again.lease_id, first.lease_id);
+    assert!(!hub.lease_matches(&first.lease_id));
+    // Unregister frees the slot for another instance.
+    hub.host_unregister(&again.lease_id).expect("unregistered");
+    assert!(hub.host_register(&register_params("b")).is_ok());
+    // Bad registrations.
+    let mut remote = register_params("c");
+    remote.cdp.host = "10.0.0.2".into();
+    let (hub2, _s2, _st2, _h2) = self::hub("companion-bad");
+    assert_eq!(
+        hub2.host_register(&remote).unwrap_err().code,
+        "invalid_request"
+    );
+    let mut old = register_params("c");
+    old.protocol = 2;
+    assert_eq!(
+        hub2.host_register(&old).unwrap_err().code,
+        "host_protocol_unsupported"
+    );
+    let config = BrowserConfig {
+        host: "window".into(),
+        ..BrowserConfig::default()
+    };
+    hub2.apply_config(&config);
+    assert_eq!(
+        hub2.host_register(&register_params("c")).unwrap_err().code,
+        "host_disabled"
+    );
+}
+
+#[test]
+fn a_pending_companion_registration_that_died_mid_attach_times_out() {
+    let (hub, _shared, _stream, _home) = hub("companion-pending");
+    // A registration still within its attach window blocks another instance.
+    hub.install_pending_registration_for_test("dead", std::time::Duration::from_secs(1));
+    assert_eq!(
+        hub.host_register(&register_params("b")).unwrap_err().code,
+        "host_in_use"
+    );
+    // One whose register call never came back past PENDING_TIMEOUT no longer
+    // does, and the supervisor pass drops it.
+    hub.install_pending_registration_for_test("dead", std::time::Duration::from_secs(3600));
+    hub.supervise();
+    assert!(!hub.companion_live());
+    assert!(hub.host_register(&register_params("b")).is_ok());
+}
+
+#[test]
+fn a_companion_attach_skips_the_extension_sweep_and_checks_the_nonce() {
+    let (hub, shared, _stream, _home) = hub("companion-attach");
+    hub.host_register(&register_params("a"))
+        .expect("registered");
+    let state = shared.lock().unwrap();
+    let attach = state
+        .ops
+        .iter()
+        .find(|(op, _, _)| op == "attach")
+        .expect("attached");
+    assert_eq!(attach.2["kind"], "companion");
+    assert_eq!(attach.2["nonce"], "nonce-a");
+    assert_eq!(attach.2["port"], 49731);
+    assert!(
+        attach.2.get("pin_dashboard").is_none(),
+        "no dashboard for a companion"
+    );
+    drop(state);
+    // A failed nonce check drops the registration.
+    let (hub2, shared2, _stream2, _home2) = self::hub("companion-nonce");
+    shared2.lock().unwrap().errors.push((
+        "attach".into(),
+        "host_verify_failed".into(),
+        "nonce mismatch".into(),
+    ));
+    let err = hub2.host_register(&register_params("x")).unwrap_err();
+    assert_eq!(err.code, "host_verify_failed");
+    assert!(!hub2.companion_live());
+    assert!(
+        hub2.host_register(&register_params("y")).is_err(),
+        "still failing, but not host_in_use"
+    );
+    // The reserved profile is never created, deleted or launched.
+    assert_eq!(
+        hub.profile_create("companion", false).unwrap_err().code,
+        "invalid_profile"
+    );
+}
+
+#[test]
+fn an_open_without_profile_follows_host_but_other_ops_follow_the_cursor() {
+    let (hub, _shared, _stream, _home) = hub("companion-cursor");
+    let actor = pane("w2:pD");
+    // Before the companion: the window, and the cursor lives there.
+    let first = hub
+        .run(&actor, params(open_op("https://a.test/")))
+        .expect("open");
+    assert!(first.tab.as_deref().unwrap().starts_with("main:"));
+    hub.host_register(&register_params("a"))
+        .expect("registered");
+    // A read follows the pane's cursor (still the window tab).
+    let read = hub
+        .run(
+            &actor,
+            params(BrowserOp::Read {
+                format: None,
+                selector: None,
+                ref_: None,
+                offset: None,
+                max: None,
+                all: false,
+                interactive: false,
+            }),
+        )
+        .expect("read");
+    assert_eq!(read.tab, first.tab);
+    // An open goes to the companion; the cursor moves with it.
+    let second = hub
+        .run(&actor, params(open_op("https://b.test/")))
+        .expect("open");
+    assert!(second.tab.as_deref().unwrap().starts_with("companion:"));
+    // `[browser] host = "window"` keeps opens in the window.
+    let config = BrowserConfig {
+        host: "window".into(),
+        ..BrowserConfig::default()
+    };
+    hub.apply_config(&config);
+    let third = hub
+        .run(&actor, params(open_op("https://c.test/")))
+        .expect("open");
+    assert!(third.tab.as_deref().unwrap().starts_with("main:"));
+    // `host = "companion"` without a companion: host_unavailable.
+    let (hub2, _s2, _st2, _h2) = self::hub("companion-only");
+    let config = BrowserConfig {
+        host: "companion".into(),
+        ..BrowserConfig::default()
+    };
+    hub2.apply_config(&config);
+    let err = hub2
+        .run(&actor, params(open_op("https://d.test/")))
+        .unwrap_err();
+    assert_eq!(err.code, "host_unavailable");
+}
+
+#[test]
+fn page_errors_are_batched_deduped_and_capped_per_tab() {
+    let (hub, shared, _stream, _home) = hub("page-errors");
+    let actor = pane("w2:pD");
+    let opened = hub
+        .run(&actor, params(open_op("https://a.test/")))
+        .expect("open");
+    let target = opened.data["target_id"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| "T1".into());
+    let event = |kind: &str, text: &str| {
+        json!({ "event": "tab", "profile": "main", "target": target, "kind": kind, "text": text })
+            .to_string()
+    };
+    {
+        let mut state = shared.lock().unwrap();
+        for n in 0..12 {
+            state.events.push(event("page_error", &format!("boom {n}")));
+        }
+        // A repeat of the first: deduped.
+        state.events.push(event("page_error", "boom 0"));
+    }
+    // Any op makes the fake host send the queued events first.
+    hub.run(
+        &actor,
+        params(BrowserOp::Links {
+            filter: None,
+            max: None,
+        }),
+    )
+    .expect("links");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !hub.page_errors_pending() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        hub.take_page_errors().is_empty(),
+        "the window is still open"
+    );
+    let later = Instant::now() + super::page_errors::BATCH_WINDOW;
+    let batches = hub.take_page_errors_at(later);
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].pane, "w2:pD");
+    assert_eq!(
+        batches[0].errors.len(),
+        super::page_errors::BATCH_MAX_ERRORS
+    );
+    assert_eq!(
+        batches[0].more, 2,
+        "12 errors, 10 shown, the repeat dropped"
+    );
+    assert!(batches[0].message_text().contains("untrusted"));
+    // Per tab: at most TAB_PUSHES batches in the window.
+    let mut pushed = 1;
+    for round in 0..8 {
+        let mut state = shared.lock().unwrap();
+        state
+            .events
+            .push(event("console_error", &format!("round {round}")));
+        drop(state);
+        hub.run(
+            &actor,
+            params(BrowserOp::Links {
+                filter: None,
+                max: None,
+            }),
+        )
+        .expect("links");
+        std::thread::sleep(Duration::from_millis(30));
+        pushed += hub
+            .take_page_errors_at(later + super::page_errors::BATCH_WINDOW * (round + 2))
+            .len();
+    }
+    assert_eq!(pushed, super::page_errors::TAB_PUSHES);
+    // `[browser] page_errors = "off"`: nothing queued.
+    let config = BrowserConfig {
+        page_errors: "off".into(),
+        ..BrowserConfig::default()
+    };
+    hub.apply_config(&config);
+    shared
+        .lock()
+        .unwrap()
+        .events
+        .push(event("page_error", "quiet please"));
+    hub.run(
+        &actor,
+        params(BrowserOp::Links {
+            filter: None,
+            max: None,
+        }),
+    )
+    .expect("links");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(!hub.page_errors_pending());
+}
+
+#[test]
+fn a_show_outside_the_companion_opens_in_the_window_with_network_routed_off() {
+    let (hub, shared, _stream, home) = hub("show-window");
+    let actor = pane("w2:pD");
+    let file = home.join("report.html");
+    std::fs::write(&file, "<h1>hi</h1>").unwrap();
+    let show = |file: &str| {
+        params(BrowserOp::Show {
+            file: file.into(),
+            allow_network: false,
+            watch: true,
+            focus: false,
+            title: None,
+        })
+    };
+    let shown = hub
+        .run(&actor, show(&file.display().to_string()))
+        .expect("show");
+    assert!(shown.tab.as_deref().unwrap().starts_with("main:"));
+    assert_eq!(shown.data["host"], "window");
+    assert_eq!(shown.data["kind"], "html_view");
+    {
+        let state = shared.lock().unwrap();
+        let op = state
+            .ops
+            .iter()
+            .rev()
+            .find(|(op, _, _)| op == "show")
+            .unwrap();
+        assert_eq!(op.2["allow_network"], false, "network routed off");
+        assert_eq!(op.2["watch"], true);
+        assert_eq!(
+            op.2["root"],
+            std::fs::canonicalize(&home).unwrap().display().to_string()
+        );
+    }
+    // The cursor moved to the view.
+    let read = hub
+        .run(
+            &actor,
+            params(BrowserOp::Read {
+                format: None,
+                selector: None,
+                ref_: None,
+                offset: None,
+                max: None,
+                all: false,
+                interactive: false,
+            }),
+        )
+        .expect("read");
+    assert_eq!(read.tab, shown.tab);
+    // Refusals.
+    let txt = home.join("notes.txt");
+    std::fs::write(&txt, "x").unwrap();
+    assert_eq!(
+        hub.run(&actor, show(&txt.display().to_string()))
+            .unwrap_err()
+            .code,
+        "not_html"
+    );
+    assert_eq!(
+        hub.run(&actor, show(&home.join("gone.html").display().to_string()))
+            .unwrap_err()
+            .code,
+        "file_not_found"
+    );
+    assert_eq!(
+        hub.run(&actor, show("relative.html")).unwrap_err().code,
+        "invalid_request"
+    );
+    // With a companion the view goes there, in the caller's group.
+    hub.host_register(&register_params("a"))
+        .expect("registered");
+    let in_companion = hub
+        .run(&actor, show(&file.display().to_string()))
+        .expect("show");
+    assert_eq!(in_companion.data["host"], "companion");
+    assert_eq!(
+        in_companion.data["view_id"]
+            .as_str()
+            .map(|v| v.starts_with('v')),
+        Some(true)
+    );
+    let state = shared.lock().unwrap();
+    let op = state
+        .ops
+        .iter()
+        .rev()
+        .find(|(op, _, _)| op == "show")
+        .unwrap();
+    assert_eq!(op.1, None);
+    assert_eq!(op.2["tab_id"], "w2:tD");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_show_file_gets_the_directory_it_really_lives_in_as_root() {
+    let (hub, shared, _stream, home) = hub("show-symlink");
+    let real = home.join("real");
+    let links = home.join("links");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::create_dir_all(&links).unwrap();
+    std::fs::write(real.join("report.html"), "<h1>hi</h1>").unwrap();
+    let link = links.join("report.html");
+    std::os::unix::fs::symlink(real.join("report.html"), &link).unwrap();
+    hub.run(
+        &pane("w2:pD"),
+        params(BrowserOp::Show {
+            file: link.display().to_string(),
+            allow_network: false,
+            watch: true,
+            focus: false,
+            title: None,
+        }),
+    )
+    .expect("show");
+    let state = shared.lock().unwrap();
+    let op = state
+        .ops
+        .iter()
+        .rev()
+        .find(|(op, _, _)| op == "show")
+        .unwrap();
+    assert_eq!(
+        op.2["root"],
+        std::fs::canonicalize(&real).unwrap().display().to_string()
+    );
+    assert_eq!(
+        op.2["file"],
+        link.display().to_string(),
+        "the file as given"
+    );
+}
+
+#[test]
+fn a_companion_that_goes_takes_its_html_views_with_it() {
+    let (hub, _shared, _stream, home) = hub("companion-html-views");
+    let lease = hub
+        .host_register(&register_params("a"))
+        .expect("registered");
+    let file = home.join("v.html");
+    std::fs::write(&file, "<p>v</p>").unwrap();
+    let shown = hub
+        .run(
+            &pane("w2:pD"),
+            params(BrowserOp::Show {
+                file: file.display().to_string(),
+                allow_network: false,
+                watch: true,
+                focus: false,
+                title: None,
+            }),
+        )
+        .expect("show");
+    assert_eq!(shown.data["host"], "companion");
+    assert_eq!(hub.html_views_for_test("companion"), 1);
+    hub.host_unregister(&lease.lease_id).expect("unregistered");
+    assert_eq!(hub.html_views_for_test("companion"), 0);
+}
+
+#[test]
+fn a_supervisor_pass_never_drops_a_live_lease() {
+    let (hub, _shared, _stream, _home) = hub("companion-expiry");
+    hub.install_test_lease("L1");
+    hub.supervise();
+    assert!(hub.companion_live(), "a live lease stays");
+    hub.expire_host_lease_for_test();
+    hub.supervise();
+    assert!(!hub.companion_live(), "an expired one goes");
 }

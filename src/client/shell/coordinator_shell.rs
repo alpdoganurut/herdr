@@ -326,7 +326,7 @@ pub(super) fn coordinator_menu_items(items: &[CoordinatorMenuItem]) -> Vec<Clien
                 MenuKind::Action
             };
             ClientContextMenuItem {
-                label: item.label,
+                label: item.label.into(),
                 action: ClientContextMenuAction::Coordinator(item.action),
                 look: MenuLook::new(glyph, MenuSection::Lead, kind),
             }

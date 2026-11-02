@@ -23,6 +23,7 @@ mod agents_quiet;
 mod agents_reorder;
 // fork: typed launches wait for the shell and stay short.
 mod browser;
+mod browser_host;
 mod closed_sessions;
 mod codex_sessions;
 pub(crate) mod coordinator;

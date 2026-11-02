@@ -143,6 +143,10 @@ The herdr-owned Chromium the server runs for agents. It starts on first use.
 | MCP registration | claude and codex | `[browser] mcp_agents = ["claude"]` | Yes (both / claude / codex / none) |
 | `eval`, act family, typing into password fields | on, on, off | `[browser] allow_eval`, `allow_act`, `type_into_password_fields` | No, config only |
 | Restore tabs on relaunch | on | `[browser] restore_tabs = false` | No, config only |
+| Where `open` / `show` go (the companion browser while it runs, else the herdr+ window) | `"auto"` | `[browser] host = "companion"` or `"window"` | No, config only |
+| Page errors of a tab an agent uses, stored quietly for that Claude agent | `"agent"` | `[browser] page_errors = "off"` | No, config only |
+
+The companion browser is the Electron app in `apps/companion`; `apps/companion/scripts/try.sh` tries it against a throwaway herdr in one command (run it in a plain terminal).
 
 Legacy keys: `wrap_agents` is only read as a fallback for `[agents] wrap` (a Settings change to wrap removes it), and `shell_hook` is inert. The commented default file still says `stop_with_server` is not honoured; it is.
 

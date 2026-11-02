@@ -695,7 +695,20 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="k"><code>[browser] restore_tabs = false</code></div>
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
+    <div class="row">
+      <div class="f"><h3>Where <code>open</code> / <code>show</code> go</h3><p>The companion browser while it runs, else the herdr+ window.</p></div>
+      <div class="d"><span class="pill val">"auto"</span></div>
+      <div class="k"><code>[browser] host = "companion"</code> or <code>"window"</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Page errors of a tab an agent uses</h3><p>Stored quietly for that Claude agent.</p></div>
+      <div class="d"><span class="pill val">"agent"</span></div>
+      <div class="k"><code>[browser] page_errors = "off"</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
   </div>
+  <p class="note"><b>Companion browser:</b> the Electron app in <code>apps/companion</code>; <code>apps/companion/scripts/try.sh</code> tries it against a throwaway herdr in one command (run it in a plain terminal).</p>
   <p class="note"><b>Legacy keys:</b> <code>wrap_agents</code> is only read as a fallback for <code>[agents] wrap</code> (a Settings change to wrap removes it), and <code>shell_hook</code> is inert. The commented default file still says <code>stop_with_server</code> is not honoured; it is.</p>
 </section>
 

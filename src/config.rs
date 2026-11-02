@@ -18,7 +18,8 @@ mod write;
 pub use self::{
     agents::{parse_autosuspend_after, AgentsConfig, WrapSource, AUTOSUSPEND_OFF},
     browser::{
-        is_forbidden_switch, valid_profile_name, BrowserConfig, AUTO_EXECUTABLE, MCP_AGENTS,
+        is_forbidden_switch, valid_profile_name, BrowserConfig, BrowserHostMode, AUTO_EXECUTABLE,
+        MCP_AGENTS,
     },
     coordinator::{validate_caps, CoordinatorConfig},
     io::{

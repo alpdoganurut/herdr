@@ -62,6 +62,32 @@ pub fn run(request_id: String, params: BrowserRunParams, api_tx: &ApiRequestSend
     }
 }
 
+/// Fork (companion browser): `browser.host_register` /
+/// `browser.host_heartbeat` / `browser.host_unregister` on the connection
+/// lane (the register blocks for the sidecar attach).
+pub fn host_lease(request_id: String, method: Method) -> String {
+    let hub = super::hub();
+    let outcome = match method {
+        Method::BrowserHostRegister(params) => hub
+            .host_register(&params)
+            .map(|lease| ResponseResult::BrowserHostLease { lease }),
+        Method::BrowserHostHeartbeat(params) => hub
+            .host_heartbeat(&params.lease_id)
+            .map(|lease| ResponseResult::BrowserHostLease { lease }),
+        Method::BrowserHostUnregister(params) => hub
+            .host_unregister(&params.lease_id)
+            .map(|()| ResponseResult::Ok {}),
+        _ => Err(super::BrowserError::new(
+            "invalid_request",
+            "not a browser host lease method",
+        )),
+    };
+    match outcome {
+        Ok(result) => encode_success(request_id, result),
+        Err(err) => encode_error(request_id, err.code(), err.message()),
+    }
+}
+
 fn encode_success(id: String, result: ResponseResult) -> String {
     serde_json::to_string(&crate::api::schema::SuccessResponse { id, result })
         .unwrap_or_else(|err| encode_error(String::new(), "internal_error", err.to_string()))

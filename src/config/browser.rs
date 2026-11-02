@@ -114,12 +114,55 @@ pub struct BrowserConfig {
     /// explicit, confirmed fix) and `herdr browser setup --shell`; nothing
     /// reads this key to edit a file. Kept so old configs parse.
     pub shell_hook: bool,
+    /// Fork (companion browser): where `open` / `show` without a profile
+    /// go: `auto` (the companion while one is registered, else the herdr+
+    /// window), `companion` (only the companion: `host_unavailable`
+    /// without one) or `window`. Anything else is a diagnostic and reads as
+    /// `auto`. Default: `auto`.
+    pub host: String,
+    /// Fork (companion browser): page errors of a tab an agent uses go to
+    /// that agent quietly (`agent`, Claude only; others pull) or nowhere
+    /// (`off`). Anything else is a diagnostic and reads as `agent`.
+    /// Default: `agent`.
+    pub page_errors: String,
     /// Not a key: the effective `[agents] wrap` (`Config::agents_wrap`),
     /// filled in by the config loaders so the browser hub, which only
     /// receives this section, reports and applies the resolved value.
     #[serde(skip)]
     pub effective_wrap: bool,
 }
+
+/// `[browser] host` (fork, companion browser).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserHostMode {
+    Auto,
+    Companion,
+    Window,
+}
+
+impl BrowserHostMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "auto" | "" => Some(Self::Auto),
+            "companion" => Some(Self::Companion),
+            "window" => Some(Self::Window),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Companion => "companion",
+            Self::Window => "window",
+        }
+    }
+}
+
+/// `[browser] page_errors = "agent"` (the default).
+pub const PAGE_ERRORS_AGENT: &str = "agent";
+/// `[browser] page_errors = "off"`.
+pub const PAGE_ERRORS_OFF: &str = "off";
 
 /// The tab group title symbols keys omit fall back to.
 pub const DEFAULT_GROUP_SYMBOLS: [(&str, &str); 3] =
@@ -170,6 +213,8 @@ impl Default for BrowserConfig {
                 .map(|a| (*a).to_string())
                 .collect(),
             shell_hook: true,
+            host: BrowserHostMode::Auto.as_str().into(),
+            page_errors: PAGE_ERRORS_AGENT.into(),
             effective_wrap: false,
         }
     }
@@ -336,6 +381,18 @@ impl BrowserConfig {
                 self.activity_color
             ));
         }
+        if BrowserHostMode::parse(&self.host).is_none() {
+            diagnostics.push(format!(
+                "browser.host = {:?} is not auto, companion or window; using auto",
+                self.host
+            ));
+        }
+        if !matches!(self.page_errors.trim(), PAGE_ERRORS_AGENT | PAGE_ERRORS_OFF) {
+            diagnostics.push(format!(
+                "browser.page_errors = {:?} is not agent or off; using agent",
+                self.page_errors
+            ));
+        }
         for arg in &self.extra_args {
             if is_forbidden_switch(arg) {
                 diagnostics.push(format!(
@@ -344,6 +401,16 @@ impl BrowserConfig {
             }
         }
         diagnostics
+    }
+
+    /// `[browser] host`; an unknown value reads as `auto`.
+    pub fn host_mode(&self) -> BrowserHostMode {
+        BrowserHostMode::parse(&self.host).unwrap_or(BrowserHostMode::Auto)
+    }
+
+    /// `[browser] page_errors = "agent"` (anything but `off`).
+    pub fn page_errors_to_agents(&self) -> bool {
+        self.page_errors.trim() != PAGE_ERRORS_OFF
     }
 
     /// `extra_args` without the switches herdr never passes.
@@ -571,5 +638,25 @@ mod tests {
         assert_eq!(config.extra_args, ["--lang=tr"]);
         assert_eq!(config.read_max_chars(), 30_000);
         assert!(config.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn host_and_page_errors_default_and_fall_back_with_a_diagnostic() {
+        let config = BrowserConfig::default();
+        assert_eq!(config.host_mode(), BrowserHostMode::Auto);
+        assert!(config.page_errors_to_agents());
+        let config: BrowserConfig =
+            toml::from_str("host = \"window\"\npage_errors = \"off\"\n").unwrap();
+        assert_eq!(config.host_mode(), BrowserHostMode::Window);
+        assert!(!config.page_errors_to_agents());
+        assert!(config.diagnostics().is_empty());
+        let config: BrowserConfig =
+            toml::from_str("host = \"electron\"\npage_errors = \"loud\"\n").unwrap();
+        assert_eq!(config.host_mode(), BrowserHostMode::Auto);
+        assert!(config.page_errors_to_agents());
+        let diagnostics = config.diagnostics();
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+        assert!(diagnostics[0].contains("browser.host"));
+        assert!(diagnostics[1].contains("browser.page_errors"));
     }
 }

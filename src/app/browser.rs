@@ -256,6 +256,8 @@ impl App {
                 cursor.tab_id = Some(tab_id);
             }
         }
+        // Fork (companion browser): per herdr tab, its pages and needs-you.
+        browser.sessions = self.browser_sessions();
         encode_success(id, ResponseResult::BrowserGet { browser })
     }
 

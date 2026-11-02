@@ -30,6 +30,15 @@ use crate::api::schema::{
 use crate::config::{valid_profile_name, BrowserConfig};
 use crate::integration::browser_assets;
 
+// Fork (companion browser): the browser host role, a child module so it
+// reaches the hub's private state.
+#[path = "companion_host.rs"]
+mod companion_host;
+use companion_host::ShowRequest;
+pub use companion_host::{
+    host_unavailable, is_companion, lease_unknown, COMPANION_PROFILE, REPORT_MAX_EVENTS,
+};
+
 /// Grace the hub adds to the sidecar's own deadline before giving up on a reply.
 pub const REPLY_GRACE: Duration = Duration::from_secs(5);
 /// Deadline of the attach handshake. Restored tabs Chrome never loaded are
@@ -123,6 +132,12 @@ struct Inner {
     /// Tests: where the checks look and the fixes write (never the real
     /// home directory).
     setup_env_override: Mutex<Option<SetupEnv>>,
+    /// Fork (companion browser): the registered browser host's lease.
+    companion_host: Mutex<Option<companion_host::CompanionLease>>,
+    /// Fork (companion browser): page errors waiting for their agents.
+    page_errors: Mutex<super::page_errors::PageErrorQueue>,
+    /// Fork (companion browser): the tabs `show` opened (HTML views).
+    html_views: Mutex<HashSet<TabKey>>,
 }
 
 /// The new tab page's snapshot goes out at most this often.
@@ -190,6 +205,9 @@ impl BrowserHub {
                 ntp_push: Mutex::new((None, false)),
                 setup: Mutex::new(SetupState::default()),
                 setup_env_override: Mutex::new(None),
+                companion_host: Mutex::new(None),
+                page_errors: Mutex::new(Default::default()),
+                html_views: Mutex::new(HashSet::new()),
             }),
         }
     }
@@ -882,6 +900,9 @@ impl BrowserHub {
         name: &str,
         temporary: bool,
     ) -> Result<BrowserProfileRecord, BrowserError> {
+        if is_companion(name) {
+            return Err(reserved_profile());
+        }
         let name = if profiles::is_new_request(name) {
             self.inner.profiles.temporary_name(unix_now())
         } else {
@@ -900,6 +921,9 @@ impl BrowserHub {
     }
 
     pub fn profile_delete(&self, name: &str) -> Result<(), BrowserError> {
+        if is_companion(name) {
+            return Err(reserved_profile());
+        }
         let config = self.config();
         if name == config.default_profile() {
             return Err(BrowserError::new(
@@ -973,6 +997,10 @@ impl BrowserHub {
             return Err(BrowserError::disabled());
         }
         let name = self.profile_name(profile, None, &config)?;
+        // Fork (companion browser): the companion starts itself.
+        if is_companion(&name) && !self.companion_live() {
+            return Err(host_unavailable());
+        }
         {
             let mut state = self.inner.state.lock().unwrap();
             if !state.profile(&name).is_running() {
@@ -1129,7 +1157,14 @@ impl BrowserHub {
             (Some(explicit), _) => Some(explicit),
             (None, prefix) => prefix,
         };
-        let profile = self.profile_name(explicit_profile, pane.as_deref(), &config)?;
+        // Fork (companion browser): a page-creating op without a profile
+        // follows `[browser] host`; everything else the pane's cursor.
+        let profile = match explicit_profile {
+            None if params.tab.is_none() && Self::op_follows_host(&params.op) => {
+                self.host_profile(&config)?
+            }
+            _ => self.profile_name(explicit_profile, pane.as_deref(), &config)?,
+        };
         self.ensure_running(&profile)?;
         let deadline = Duration::from_millis(match &params.op {
             BrowserOp::Wait { timeout_s, .. } => timeout_s.unwrap_or(30).clamp(1, 300) * 1000 + 500,
@@ -1171,6 +1206,20 @@ impl BrowserHub {
         match result {
             Ok((mut result, _, _)) => {
                 result.ms = ms;
+                // Fork (companion browser): which host the new page went to.
+                if matches!(params.op, BrowserOp::Open { .. } | BrowserOp::Show { .. }) {
+                    let host = if is_companion(&profile) {
+                        "companion"
+                    } else {
+                        "window"
+                    };
+                    if result.data.is_null() {
+                        result.data = json!({});
+                    }
+                    if let Some(data) = result.data.as_object_mut() {
+                        data.insert("host".into(), json!(host));
+                    }
+                }
                 Ok(result)
             }
             Err(err) => Err(err),
@@ -1304,7 +1353,13 @@ impl BrowserHub {
                     "open",
                     Some(profile),
                     None,
-                    json!({ "url": url, "background": true, "wait": wait }),
+                    json!({
+                        "url": url,
+                        "background": true,
+                        "wait": wait,
+                        "tab_id": actor.tab_id(),
+                        "opened_by": actor.pane_id().map(|pane| format!("agent:{pane}")),
+                    }),
                     deadline,
                 ) {
                     Ok(reply) => reply,
@@ -1397,6 +1452,26 @@ impl BrowserHub {
                 let detail = super::state::display_url(&page.url);
                 Ok((result, Some(key), detail))
             }
+            BrowserOp::Show {
+                file,
+                allow_network,
+                watch,
+                focus,
+                title,
+            } => self.execute_show(
+                actor,
+                profile,
+                pane,
+                ShowRequest {
+                    file,
+                    allow_network: *allow_network,
+                    watch: *watch,
+                    focus: *focus,
+                    title: title.as_deref(),
+                },
+                deadline,
+                now,
+            ),
             BrowserOp::Tabs { mine } => {
                 let reply = self.request("tabs", Some(profile), None, Value::Null, deadline)?;
                 let tabs: Vec<HostTab> =
@@ -1948,6 +2023,15 @@ impl BrowserHub {
                             Value::Null,
                             deadline,
                         )?;
+                        // Fork (companion browser): an agent hands the tab to
+                        // the user (a login): `◉` until the user looks.
+                        if !actor.is_user() {
+                            self.inner.state.lock().unwrap().set_attention(
+                                &key,
+                                super::state::BrowserAttentionKind::FocusRequest,
+                                now,
+                            );
+                        }
                         let page = reply.page.clone().unwrap_or_default();
                         let record = self.record(&key)?;
                         (
@@ -2002,6 +2086,7 @@ impl BrowserHub {
                         )
                     }
                     BrowserOp::Open { .. }
+                    | BrowserOp::Show { .. }
                     | BrowserOp::Tabs { .. }
                     | BrowserOp::Use
                     | BrowserOp::Snapshot { .. }
@@ -2363,6 +2448,10 @@ impl BrowserHub {
         let lock = self.profile_lock(name);
         let _guard = lock.lock().unwrap();
         self.start_supervisor();
+        // Fork (companion browser): never launched, only attached while registered.
+        if is_companion(name) {
+            return self.ensure_companion_attached();
+        }
         let config = self.config();
         let profile_dir = self.inner.profiles.dir(name);
         let log_path = self.inner.profiles.log_path(name);
@@ -2591,6 +2680,12 @@ impl BrowserHub {
     /// shutdown path passes false: it never starts a sidecar or attaches, it
     /// only closes what is attached and terminates the recorded live pid.
     fn stop_profile_with(&self, name: &str, attach: bool) {
+        // Fork (companion browser): stopping the companion detaches it and
+        // drops its lease; the app is never signalled (it re-registers).
+        if is_companion(name) {
+            self.drop_registration(ProfileStatus::Stopped, true);
+            return;
+        }
         // Only a live browser is attached to (a Running state whose process is
         // gone must not make this launch one in order to stop it).
         let live_pid = {
@@ -2866,11 +2961,34 @@ impl BrowserHub {
         // Console-error counts only mark the ledger dirty; the supervisor's next
         // pass persists them (an error-looping page must not write per event).
         let persist_now = !matches!(&event,
-            HostEvent::Tab(tab) if tab.kind == "console_error")
+            HostEvent::Tab(tab) if tab.kind == "console_error" || tab.kind == "page_error")
             && !matches!(&event, HostEvent::Log { .. } | HostEvent::Unknown);
         match event {
             HostEvent::Tab(tab) => {
-                self.inner.state.lock().unwrap().apply_tab_event(&tab, now);
+                let mut state = self.inner.state.lock().unwrap();
+                state.apply_tab_event(&tab, now);
+                // Fork (companion browser): page errors for the agent, a
+                // failed HTML view for the user.
+                if matches!(
+                    tab.kind.as_str(),
+                    "page_error" | "console_error" | "load_failed" | "crashed"
+                ) {
+                    self.queue_page_error(&state, &tab, now);
+                }
+                if tab.kind == "load_failed" {
+                    let key = TabKey::new(&tab.profile, &tab.target);
+                    if self.inner.html_views.lock().unwrap().contains(&key) {
+                        state.set_attention(
+                            &key,
+                            super::state::BrowserAttentionKind::LoadFailed,
+                            now,
+                        );
+                    }
+                }
+                if tab.kind == "closed" {
+                    let key = TabKey::new(&tab.profile, &tab.target);
+                    self.inner.html_views.lock().unwrap().remove(&key);
+                }
             }
             HostEvent::Dialog {
                 profile,
@@ -2893,6 +3011,10 @@ impl BrowserHub {
                 if kind == "disconnected" {
                     if let Some(link) = self.inner.host.lock().unwrap().as_mut() {
                         link.attached.remove(&profile);
+                    }
+                    if is_companion(&profile) {
+                        self.companion_disconnected();
+                        return;
                     }
                     let hub = self.clone();
                     // The pid usually goes a moment later; let the supervisor classify
@@ -3037,6 +3159,7 @@ impl BrowserHub {
         for name in running {
             self.check_profile_alive(&name, None);
         }
+        self.expire_host_lease(Instant::now());
         let has_host = self.inner.host.lock().unwrap().is_some();
         if has_host && !self.inner.test_mode.load(Ordering::Relaxed) {
             match self.request("ping", None, None, Value::Null, PING_TIMEOUT) {
@@ -3069,6 +3192,10 @@ impl BrowserHub {
 
     /// Reclassify a running profile whose process is gone.
     fn check_profile_alive(&self, name: &str, detail: Option<&str>) {
+        // Fork (companion browser): the host's liveness is its lease, never its pid.
+        if is_companion(name) {
+            return;
+        }
         let status = self.inner.state.lock().unwrap().profile(name);
         let ProfileStatus::Running { pid, .. } = status else {
             return;
@@ -3257,6 +3384,13 @@ impl BrowserHub {
 /// How long a live-browser check waits for a run record's DevTools to answer
 /// (the attach and `profile delete` alike).
 const DEVTOOLS_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+
+fn reserved_profile() -> BrowserError {
+    BrowserError::new(
+        "invalid_profile",
+        "\"companion\" is reserved for the companion browser (it registers itself)",
+    )
+}
 
 fn configured_browser_binary(config: &BrowserConfig) -> Option<PathBuf> {
     let home_env = std::env::var_os("HOME").map(PathBuf::from);

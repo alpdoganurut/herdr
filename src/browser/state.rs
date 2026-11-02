@@ -178,6 +178,30 @@ pub struct BrowserTabRecord {
     pub state: TabState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<u64>,
+    /// Fork (companion browser): the tab needs the user (an agent's login
+    /// handoff, a dialog, a failed HTML view); `◉` on its herdr tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention: Option<BrowserAttention>,
+}
+
+/// Why a tab needs the user. Append-closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserAttentionKind {
+    /// An agent's `browser focus` (the login handoff).
+    #[default]
+    FocusRequest,
+    Dialog,
+    LoadFailed,
+    #[serde(other)]
+    Unknown,
+}
+
+/// A tab's need for the user, and since when.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserAttention {
+    pub kind: BrowserAttentionKind,
+    pub since: u64,
 }
 
 impl BrowserTabRecord {
@@ -237,6 +261,10 @@ pub struct HostTabEvent {
     pub initiator: String,
     #[serde(default)]
     pub selected: Option<bool>,
+    /// Fork (companion browser): an error's message (`console_error`,
+    /// `page_error`, `load_failed`), at most 300 chars.
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// The durable part of the ledger (`browser.json`).
@@ -274,6 +302,11 @@ pub fn is_dashboard_url(url: &str) -> bool {
     if url.starts_with("chrome://newtab") || url.starts_with("chrome://new-tab-page") {
         return true;
     }
+    // Fork (companion browser): the companion's own pages (control page,
+    // strip) are furniture too.
+    if url.starts_with("herdr-companion:") {
+        return true;
+    }
     // only the companion's own id: another extension's dashboard.html is a tab
     let ours = format!(
         "chrome-extension://{}/",
@@ -305,6 +338,12 @@ impl BrowserState {
     fn bump(&mut self) {
         self.seq += 1;
         self.dirty = true;
+    }
+
+    /// Fork (companion browser): something `browser.get` shows changed
+    /// outside the ledger (a herdr tab's browser group).
+    pub fn bump_seq(&mut self) {
+        self.seq += 1;
     }
 
     pub fn snapshot(&self) -> LedgerSnapshot {
@@ -414,6 +453,7 @@ impl BrowserState {
                 console_errors: 0,
                 state: TabState::Open,
                 closed_at: None,
+                attention: None,
             },
         );
         self.bump();
@@ -604,7 +644,9 @@ impl BrowserState {
                     self.bump();
                 }
             }
-            "console_error" => {
+            // Fork (companion browser): an uncaught page error counts like
+            // a console error.
+            "console_error" | "page_error" => {
                 if let Some(record) = self.tabs.get_mut(&key) {
                     record.console_errors = record.console_errors.saturating_add(1);
                     // Not a seq bump: a chatty page must not make every client re-pull.
@@ -619,6 +661,52 @@ impl BrowserState {
         if let Some(record) = self.tabs.get_mut(key) {
             if record.dialog_open != open {
                 record.dialog_open = open;
+                self.bump();
+            }
+        }
+        // Fork (companion browser): a dialog needs the user until it closes.
+        if open {
+            self.set_attention(
+                key,
+                BrowserAttentionKind::Dialog,
+                crate::browser::unix_now(),
+            );
+        } else {
+            self.clear_attention_kind(key, BrowserAttentionKind::Dialog);
+        }
+    }
+
+    /// Fork (companion browser): mark an open tab as needing the user (the
+    /// first reason and time stay).
+    pub fn set_attention(&mut self, key: &TabKey, kind: BrowserAttentionKind, now: u64) {
+        if let Some(record) = self.tabs.get_mut(key).filter(|record| record.is_open()) {
+            if record.attention.is_none() {
+                record.attention = Some(BrowserAttention { kind, since: now });
+                self.bump();
+            }
+        }
+    }
+
+    /// Fork (companion browser): the user saw these tabs.
+    pub fn clear_attention(&mut self, keys: &[TabKey]) {
+        let mut changed = false;
+        for key in keys {
+            if let Some(record) = self.tabs.get_mut(key) {
+                changed |= record.attention.take().is_some();
+            }
+        }
+        if changed {
+            self.bump();
+        }
+    }
+
+    fn clear_attention_kind(&mut self, key: &TabKey, kind: BrowserAttentionKind) {
+        if let Some(record) = self.tabs.get_mut(key) {
+            if record
+                .attention
+                .is_some_and(|attention| attention.kind == kind)
+            {
+                record.attention = None;
                 self.bump();
             }
         }
@@ -904,6 +992,8 @@ impl BrowserState {
             recent_panes,
             // the hub fills this in from its cached checks
             setup_needed: false,
+            // the App fills this in from the herdr tabs (companion browser)
+            sessions: Vec::new(),
         }
     }
 
@@ -1017,6 +1107,7 @@ mod tests {
                 opener: None,
                 initiator: "other".into(),
                 selected: None,
+                text: None,
             },
             5,
         );
@@ -1056,6 +1147,7 @@ mod tests {
                 opener: None,
                 initiator: "other".into(),
                 selected: None,
+                text: None,
             },
             12,
         );
@@ -1089,6 +1181,7 @@ mod tests {
                 opener: None,
                 initiator: "other".into(),
                 selected: None,
+                text: None,
             },
             20,
         );
@@ -1150,6 +1243,7 @@ mod tests {
                 title: String::new(),
                 initiator: "other".into(),
                 selected: None,
+                text: None,
                 opener: None,
             },
             11,
@@ -1164,6 +1258,7 @@ mod tests {
                 title: String::new(),
                 initiator: "other".into(),
                 selected: None,
+                text: None,
                 opener: None,
             },
             12,

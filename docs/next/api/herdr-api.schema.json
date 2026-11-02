@@ -3567,6 +3567,43 @@
               "type": "object"
             },
             {
+              "description": "Fork (companion browser): show a local HTML file in a sandboxed\nview of the caller's session (the companion), else a window tab with\nthe network routed off; it reloads when the file changes.",
+              "properties": {
+                "allow_network": {
+                  "description": "Let the page reach the network (default false: http(s) and ws(s) blocked).",
+                  "type": "boolean"
+                },
+                "file": {
+                  "description": "Absolute path of a `.html` / `.htm` file.",
+                  "type": "string"
+                },
+                "focus": {
+                  "description": "Also bring the view up for the user.",
+                  "type": "boolean"
+                },
+                "op": {
+                  "const": "show",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "The view's title in the strip (default: the document's).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "watch": {
+                  "description": "Reload the view when the file or its directory changes (default true).",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "op",
+                "file"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "op": {
                   "const": "unknown",
@@ -3626,6 +3663,322 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "BrowserHostCdp": {
+          "description": "The host's DevTools endpoint (loopback only in v1).",
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "host",
+            "port"
+          ],
+          "type": "object"
+        },
+        "BrowserHostEntry": {
+          "description": "One entry of a group, as `browser.host_state` answers it and\n`browser.host_sync` sends it (`view_id` / `target` only in a sync).",
+          "properties": {
+            "allow_network": {
+              "type": "boolean"
+            },
+            "file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "The entry id (`b<n>`); absent for a new entry in a sync (minted).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/schemas/request/$defs/TabBrowserKind",
+              "default": "web"
+            },
+            "opened_by": {
+              "description": "`user` or `agent:<pane_id>`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "description": "The CDP target id while the host has the view.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "default": "",
+              "type": "string"
+            },
+            "url": {
+              "default": "",
+              "type": "string"
+            },
+            "view_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "BrowserHostKind": {
+          "description": "What kind of browser host registers. Append-closed, `Unknown` the serde\nfallback (FORK §4).",
+          "enum": [
+            "companion",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "BrowserHostLeaseTarget": {
+          "description": "`browser.host_heartbeat` / `browser.host_unregister`.",
+          "properties": {
+            "lease_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "lease_id"
+          ],
+          "type": "object"
+        },
+        "BrowserHostRegisterParams": {
+          "description": "`browser.host_register`.",
+          "properties": {
+            "capabilities": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "cdp": {
+              "$ref": "#/schemas/request/$defs/BrowserHostCdp"
+            },
+            "instance": {
+              "description": "Random per app launch; the same instance re-registering replaces its lease.",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/schemas/request/$defs/BrowserHostKind",
+              "default": "companion"
+            },
+            "nonce": {
+              "description": "The control page answers it (`window.__herdrCompanion.nonce()`).",
+              "type": "string"
+            },
+            "pid": {
+              "description": "Informational only: never signalled, never probed.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "protocol": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "version": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "instance",
+            "cdp",
+            "nonce",
+            "protocol"
+          ],
+          "type": "object"
+        },
+        "BrowserHostReportEvent": {
+          "description": "One event of `browser.host_report`.",
+          "properties": {
+            "action": {
+              "description": "`navigate`, `back`, `forward`, `reload`, `stop`, `new_tab`,\n`close_tab`, `select`, `send_page`, `shown`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "error": {
+              "description": "A page error's kind: `load_failed` or `crashed`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/schemas/request/$defs/BrowserHostReportKind",
+              "default": "user_action"
+            },
+            "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "description": "A page error's message.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "view_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "BrowserHostReportKind": {
+          "description": "The kind of a `browser.host_report` event. Append-closed.",
+          "enum": [
+            "user_action",
+            "page_error",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "BrowserHostReportParams": {
+          "description": "`browser.host_report`.",
+          "properties": {
+            "events": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/request/$defs/BrowserHostReportEvent"
+              },
+              "type": "array"
+            },
+            "lease_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "lease_id"
+          ],
+          "type": "object"
+        },
+        "BrowserHostStateParams": {
+          "description": "`browser.host_state`.",
+          "properties": {
+            "lease_id": {
+              "type": "string"
+            },
+            "tab_ids": {
+              "description": "Only these herdr tabs (default: every tab).",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "lease_id"
+          ],
+          "type": "object"
+        },
+        "BrowserHostSyncGroup": {
+          "description": "One group of `browser.host_sync`: the full live list of a herdr tab.",
+          "properties": {
+            "active": {
+              "description": "The active entry: its `id`, or the `view_id` of a new entry.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "entries": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/request/$defs/BrowserHostEntry"
+              },
+              "type": "array"
+            },
+            "key": {
+              "description": "Absent for a new group (minted, answered in `keys`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id"
+          ],
+          "type": "object"
+        },
+        "BrowserHostSyncParams": {
+          "description": "`browser.host_sync`.",
+          "properties": {
+            "groups": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/request/$defs/BrowserHostSyncGroup"
+              },
+              "type": "array"
+            },
+            "lease_id": {
+              "type": "string"
+            },
+            "seq": {
+              "description": "Monotonic per lease; `seq <=` the last applied is `stale_seq`.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "lease_id",
+            "seq"
+          ],
           "type": "object"
         },
         "BrowserLogParams": {
@@ -4429,6 +4782,43 @@
               "type": "object"
             },
             {
+              "description": "Fork (companion browser): show a local HTML file in a sandboxed\nview of the caller's session (the companion), else a window tab with\nthe network routed off; it reloads when the file changes.",
+              "properties": {
+                "allow_network": {
+                  "description": "Let the page reach the network (default false: http(s) and ws(s) blocked).",
+                  "type": "boolean"
+                },
+                "file": {
+                  "description": "Absolute path of a `.html` / `.htm` file.",
+                  "type": "string"
+                },
+                "focus": {
+                  "description": "Also bring the view up for the user.",
+                  "type": "boolean"
+                },
+                "op": {
+                  "const": "show",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "The view's title in the strip (default: the document's).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "watch": {
+                  "description": "Reload the view when the file or its directory changes (default true).",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "op",
+                "file"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "op": {
                   "const": "unknown",
@@ -4476,6 +4866,44 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "BrowserSendPageParams": {
+          "description": "`browser.send_page`: the user sends the page to an agent of the herdr tab.",
+          "properties": {
+            "lease_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "selection": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "title": {
+              "default": "",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "url"
+          ],
           "type": "object"
         },
         "BrowserSettingsSetParams": {
@@ -7753,6 +8181,15 @@
             }
           ]
         },
+        "TabBrowserKind": {
+          "description": "One page of a herdr tab's browser group. Append-closed kind.",
+          "enum": [
+            "web",
+            "html_view",
+            "unknown"
+          ],
+          "type": "string"
+        },
         "TabColor": {
           "description": "A named color tag on a tab. Clients map each name to a theme color.\n`Unknown` is the fallback for a name this build does not know, so a newer\npeer's color decodes (and is ignored) instead of failing the message.",
           "enum": [
@@ -10846,6 +11283,119 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/AgentsSetQuietParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork (companion browser): the browser host role. register /\nheartbeat / unregister run on the connection thread\n(src/browser/serve.rs); the rest on the App lane\n(src/app/browser_host.rs). None is client-shell.",
+          "properties": {
+            "method": {
+              "const": "browser.host_register",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserHostRegisterParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.host_heartbeat",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserHostLeaseTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.host_unregister",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserHostLeaseTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.host_state",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserHostStateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.host_sync",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserHostSyncParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.host_report",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserHostReportParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.send_page",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserSendPageParams"
             }
           },
           "required": [
@@ -14407,6 +14957,13 @@
               "minimum": 0,
               "type": "integer"
             },
+            "sessions": {
+              "description": "Fork (companion browser): per herdr tab with browser state, its\nactive page and whether it needs the user (`◉`).",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserSessionInfo"
+              },
+              "type": "array"
+            },
             "setup_needed": {
               "default": false,
               "description": "A check that only an explicit request may fix (an MCP registration,\nthe shell hook) is failing: the Browser row shows a `!` hint.",
@@ -14426,6 +14983,60 @@
           "required": [
             "seq"
           ],
+          "type": "object"
+        },
+        "BrowserHostEntry": {
+          "description": "One entry of a group, as `browser.host_state` answers it and\n`browser.host_sync` sends it (`view_id` / `target` only in a sync).",
+          "properties": {
+            "allow_network": {
+              "type": "boolean"
+            },
+            "file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "description": "The entry id (`b<n>`); absent for a new entry in a sync (minted).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/TabBrowserKind",
+              "default": "web"
+            },
+            "opened_by": {
+              "description": "`user` or `agent:<pane_id>`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "description": "The CDP target id while the host has the view.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "default": "",
+              "type": "string"
+            },
+            "url": {
+              "default": "",
+              "type": "string"
+            },
+            "view_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
           "type": "object"
         },
         "BrowserHostInfo": {
@@ -14463,6 +15074,120 @@
           },
           "required": [
             "state"
+          ],
+          "type": "object"
+        },
+        "BrowserHostLeaseInfo": {
+          "description": "The lease `browser.host_register` and `browser.host_heartbeat` answer.",
+          "properties": {
+            "expires_unix": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "heartbeat_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "host_protocol": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "lease_id": {
+              "type": "string"
+            },
+            "profile": {
+              "description": "The reserved profile the host serves (`companion`).",
+              "type": "string"
+            },
+            "server_features": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "state": {
+              "description": "`attached`.",
+              "type": "string"
+            },
+            "ttl_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "lease_id",
+            "profile",
+            "state",
+            "heartbeat_ms",
+            "ttl_ms",
+            "expires_unix",
+            "host_protocol"
+          ],
+          "type": "object"
+        },
+        "BrowserHostStateInfo": {
+          "properties": {
+            "focused_tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tabs": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserHostTabState"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "BrowserHostTabState": {
+          "description": "One herdr tab in `browser.host_state`; `key` / `entries` absent when it\nhas no browser state.",
+          "properties": {
+            "active": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "entries": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserHostEntry"
+              },
+              "type": "array"
+            },
+            "key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "label": {
+              "default": "",
+              "type": "string"
+            },
+            "rev": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "workspace_id"
           ],
           "type": "object"
         },
@@ -14705,6 +15430,40 @@
           },
           "type": "object"
         },
+        "BrowserSessionInfo": {
+          "description": "A herdr tab's browser session, for the client (`browser.get`).",
+          "properties": {
+            "host": {
+              "default": "",
+              "description": "`companion` while a live host has the group, else `none`.",
+              "type": "string"
+            },
+            "needs_you": {
+              "type": "boolean"
+            },
+            "pages": {
+              "default": 0,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "title": {
+              "default": "",
+              "type": "string"
+            },
+            "url": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id"
+          ],
+          "type": "object"
+        },
         "BrowserSettingsInfo": {
           "description": "`browser.settings`: the `[browser]` keys the settings overlay edits, the\nchecks (cached on the server; `checking` while they are being refreshed)\nand the last fixes (`fixing` while they run).",
           "properties": {
@@ -14886,6 +15645,13 @@
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "sessions": {
+              "description": "Fork (companion browser): per herdr tab with browser state, its\nactive page and whether it needs the user (`◉`).",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserSessionInfo"
+              },
+              "type": "array"
             },
             "setup_needed": {
               "default": false,
@@ -20027,6 +20793,126 @@
               "type": "object"
             },
             {
+              "description": "Fork (companion browser): `browser.host_register` / `browser.host_heartbeat`.",
+              "properties": {
+                "lease": {
+                  "$ref": "#/schemas/success_response/$defs/BrowserHostLeaseInfo"
+                },
+                "type": {
+                  "const": "browser_host_lease",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "lease"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork: `browser.host_state`.",
+              "properties": {
+                "state": {
+                  "$ref": "#/schemas/success_response/$defs/BrowserHostStateInfo"
+                },
+                "type": {
+                  "const": "browser_host_state",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork: `browser.host_sync`: keys minted for new groups (`tab_id`) and\nnew entries (`tab_id/view_id`), herdr tabs that no longer exist.",
+              "properties": {
+                "keys": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "default": {},
+                  "type": "object"
+                },
+                "type": {
+                  "const": "browser_host_synced",
+                  "type": "string"
+                },
+                "unknown_tabs": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork: `browser.host_report`.",
+              "properties": {
+                "accepted": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "dropped": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "browser_host_reported",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "accepted",
+                "dropped"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork: `browser.send_page`: `sent`, `queued` or `quiet`.",
+              "properties": {
+                "message_id": {
+                  "type": "string"
+                },
+                "outcome": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "to_name": {
+                  "default": "",
+                  "type": "string"
+                },
+                "to_pane": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "browser_send_page",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "outcome",
+                "to_pane",
+                "message_id"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "agent": {
                   "$ref": "#/schemas/success_response/$defs/AgentInfo"
@@ -21081,6 +21967,15 @@
           "enum": [
             "right",
             "down"
+          ],
+          "type": "string"
+        },
+        "TabBrowserKind": {
+          "description": "One page of a herdr tab's browser group. Append-closed kind.",
+          "enum": [
+            "web",
+            "html_view",
+            "unknown"
           ],
           "type": "string"
         },

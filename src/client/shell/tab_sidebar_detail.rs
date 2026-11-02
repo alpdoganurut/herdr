@@ -363,7 +363,12 @@ fn tab_chips(
             ]);
         }
     }
-    if state.browser_marked_tabs.contains(&tab.tab_id) {
+    if state.browser_attention_tabs.contains(&tab.tab_id) {
+        chips.chip(&[(
+            super::browser::TAB_BROWSER_ATTENTION_MARKER,
+            fg(palette.yellow),
+        )]);
+    } else if state.browser_marked_tabs.contains(&tab.tab_id) {
         chips.chip(&[(super::browser::TAB_BROWSER_MARKER, fg(palette.accent))]);
     }
     // Fork (sidebar v3): pinned from the tab menu.

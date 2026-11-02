@@ -245,6 +245,17 @@ operations::define_operations! {
     /// caller (the herdr_agents agents_mute / agents_dnd tools, `herdr tab
     /// mute|unmute|dnd`).
     AgentsSetQuiet(agents_model::AgentsSetQuietParams) => "agents.set_quiet", true, false;
+    /// Fork (companion browser): the browser host role. register /
+    /// heartbeat / unregister run on the connection thread
+    /// (src/browser/serve.rs); the rest on the App lane
+    /// (src/app/browser_host.rs). None is client-shell.
+    BrowserHostRegister(BrowserHostRegisterParams) => "browser.host_register", false, false;
+    BrowserHostHeartbeat(BrowserHostLeaseTarget) => "browser.host_heartbeat", false, false;
+    BrowserHostUnregister(BrowserHostLeaseTarget) => "browser.host_unregister", false, false;
+    BrowserHostState(BrowserHostStateParams) => "browser.host_state", false, false;
+    BrowserHostSync(BrowserHostSyncParams) => "browser.host_sync", false, false;
+    BrowserHostReport(BrowserHostReportParams) => "browser.host_report", false, false;
+    BrowserSendPage(BrowserSendPageParams) => "browser.send_page", false, false;
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;

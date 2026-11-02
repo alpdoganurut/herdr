@@ -209,7 +209,13 @@ fn toggles_keep_their_label_and_show_the_state_with_a_dot() {
                         | ClientContextMenuAction::Dnd
                 )
             })
-            .map(|item| (item.label, item.look.glyph, item.look.kind))
+            .map(|item| {
+                let label = match item.label {
+                    std::borrow::Cow::Borrowed(label) => label,
+                    std::borrow::Cow::Owned(label) => panic!("unexpected owned label {label}"),
+                };
+                (label, item.look.glyph, item.look.kind)
+            })
             .collect::<Vec<_>>()
     };
     assert_eq!(
@@ -432,4 +438,41 @@ fn a_short_screen_drops_the_rules_and_scrolls_to_the_highlighted_item() {
     assert_eq!(highlighted(&state), 1);
     mouse(&mut state, MouseEventKind::ScrollUp, area.x + 3, area.y + 2);
     assert_eq!(highlighted(&state), 0);
+}
+
+/// Fork (companion browser): the tab menu names the session's page (◉ while
+/// it needs the user) and the row opens the Browser overlay; no row without
+/// a session.
+#[test]
+fn the_tab_menu_names_the_browser_page_and_opens_the_overlay() {
+    let mut state = active_state_with(ClientShellConfig::from_config(&tabs_config()));
+    open_tab_menu(&mut state, "t_work");
+    assert!(!menu_items(&state)
+        .iter()
+        .any(|item| item.action == ClientContextMenuAction::BrowserOpenOverlay));
+
+    state.browser.info = Some(crate::api::schema::BrowserGetInfo {
+        enabled: true,
+        sessions: vec![crate::api::schema::BrowserSessionInfo {
+            tab_id: "t_work".into(),
+            title: "Pull request #42".into(),
+            url: "https://example.test/pr/42".into(),
+            pages: 2,
+            needs_you: true,
+            host: "companion".into(),
+        }],
+        ..Default::default()
+    });
+    open_tab_menu(&mut state, "t_work");
+    let index = index_of(&state, ClientContextMenuAction::BrowserOpenOverlay);
+    let item = &menu_items(&state)[index];
+    assert_eq!(item.label, "Pull request #42");
+    assert_eq!(item.look.glyph, "\u{25C9}");
+
+    let mut outcome = ClientShellInput::default();
+    state.activate_context_menu_item(index, &mut outcome);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Browser(_))
+    ));
 }

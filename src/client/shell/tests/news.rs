@@ -538,7 +538,7 @@ fn a_click_on_the_row_without_a_tab_opens_news_and_its_menu_works() {
             ));
             menu.items()
                 .iter()
-                .map(|item| item.label)
+                .map(|item| item.label.to_string())
                 .collect::<Vec<_>>()
         }
         other => panic!("expected the News menu, got {other:?}"),
@@ -669,7 +669,7 @@ fn the_row_focuses_on_click_and_its_menu_runs_opens_and_pauses() {
             ));
             menu.items()
                 .iter()
-                .map(|item| item.label)
+                .map(|item| item.label.to_string())
                 .collect::<Vec<_>>()
         }
         other => panic!("expected the News menu, got {other:?}"),

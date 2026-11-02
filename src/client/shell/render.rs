@@ -252,6 +252,9 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) browser_row: Option<super::browser::BrowserRow>,
     /// Herdr tabs whose panes used the browser recently: the `◎` marker.
     pub(super) browser_marked_tabs: HashSet<String>,
+    /// Fork (companion browser): herdr tabs whose browser pages need the
+    /// user: the `◉` marker (attention color) instead of `◎`.
+    pub(super) browser_attention_tabs: HashSet<String>,
     /// Fork: the `tabs` layout's pinned coordinator row (the bottom-most).
     pub(super) coordinator_row: Option<super::coordinator::CoordinatorRow>,
     /// Fork: the active endpoint's teams (group header mark, member rows).

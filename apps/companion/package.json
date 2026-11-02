@@ -1,0 +1,18 @@
+{
+  "name": "herdr-companion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "herdr+ companion browser: an Electron browser host driven by herdr",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "mock": "node test/mock-herdr.mjs",
+    "spike": "node spike/driver.mjs",
+    "e2e": "node test/e2e.mjs"
+  },
+  "devDependencies": {
+    "electron": "45.2.1",
+    "playwright-core": "1.63.0"
+  }
+}

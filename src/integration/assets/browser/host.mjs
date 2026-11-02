@@ -14,7 +14,9 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, SELECT_BUDGET_MS, describe, probePages } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER } from './activity.mjs';
+import { pathToFileURL } from 'node:url';
+import nodePath from 'node:path';
 /** Kept out of the connect for the post-timeout diagnosis (the page probe: a 1 s list fetch, 1 s probes). */
 const ATTACH_DIAG_RESERVE_MS = 2500;
 
@@ -32,6 +34,10 @@ const HTML_CAP = 200 * 1024;
 const SCREENSHOT_STALL_MS = 5000;
 
 const profiles = new Map(); // name -> Profile
+// Fork (companion browser): file watches of HTML views (`show`, `watch`).
+const watches = new ViewWatches({ watchFn: (path, cb) => fs.watch(path, cb), log: (text) => log('debug', text) });
+/** An error message for a tab event: one line, capped. */
+const eventText = (text) => String(text == null ? '' : text).split('\n')[0].slice(0, 300);
 
 function send(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n');
@@ -93,6 +99,11 @@ class Profile {
     this.companion = new Companion(this);
     this.companion.log = (text) => log('debug', text);
     this.chain = Promise.resolve();
+    // Fork (companion browser): `companion` for a registered browser host
+    // (driven through its control page), else a herdr-launched Chromium.
+    this.kind = 'chromium';
+    this.control = null;
+    this.hostDetail = '';
   }
   // One at a time per profile (tab creation and its extension-tab adoption must not interleave).
   serial(fn) {
@@ -106,7 +117,8 @@ class Profile {
 // Attach and tracking
 
 async function targetIdOf(profile, page) {
-  const session = await profile.ctx.newCDPSession(page);
+  // the page's own context (a companion's views may live in several)
+  const session = await (page.context ? page.context() : profile.ctx).newCDPSession(page);
   try {
     const { targetInfo } = await session.send('Target.getTargetInfo');
     return { targetId: targetInfo.targetId, session };
@@ -118,6 +130,7 @@ async function targetIdOf(profile, page) {
 
 async function track(profile, page, initiator) {
   if (page.url() === NUDGE_URL) return null; // the companion's wake-up tab: never a herdr tab
+  if (isFurnitureUrl(page.url())) return null; // the companion browser's own pages (control page, strip)
   if (profile.pending.has(page)) return profile.pending.get(page);
   const promise = (async () => {
     const { targetId, session } = await targetIdOf(profile, page);
@@ -136,11 +149,11 @@ async function track(profile, page, initiator) {
       const loc = msg.location() || {};
       const level = msg.type();
       state.pushConsole({ ts: Date.now(), level, text: msg.text().slice(0, TEXT_CAP), url: loc.url || '', line: loc.lineNumber });
-      if (level === 'error') event('tab', { profile: profile.name, target: targetId, kind: 'console_error' });
+      if (level === 'error') event('tab', { profile: profile.name, target: targetId, kind: 'console_error', text: eventText(msg.text()) });
     });
     page.on('pageerror', (err) => {
       state.pushConsole({ ts: Date.now(), level: 'pageerror', text: String(err && err.message || err).slice(0, TEXT_CAP), url: '', line: undefined });
-      event('tab', { profile: profile.name, target: targetId, kind: 'console_error' });
+      event('tab', { profile: profile.name, target: targetId, kind: 'page_error', text: eventText(err && err.message || err) });
     });
     page.on('request', (req) => { state.requests.set(req, { start: Date.now() }); });
     page.on('requestfinished', async (req) => {
@@ -152,6 +165,12 @@ async function track(profile, page, initiator) {
     page.on('requestfailed', (req) => {
       const started = state.requests.get(req); state.requests.delete(req);
       const failure = req.failure();
+      // a main-frame load that failed (not one the user or a new navigation stopped, nor our
+      // own network block of an html view); a
+      // companion reports its own views' failed loads and crashes (one source, one message)
+      if (profile.kind !== 'companion' && req.isNavigationRequest() && req.frame() === page.mainFrame() && failure && !/ERR_ABORTED|ERR_BLOCKED_BY_CLIENT/.test(failure.errorText)) {
+        event('tab', { profile: profile.name, target: targetId, kind: 'load_failed', text: eventText(`${failure.errorText} ${req.url()}`) });
+      }
       state.pushNetwork({ ts: Date.now(), method: req.method(), url: req.url().slice(0, TEXT_CAP), type: req.resourceType(), status: null, failed: true, failure: failure ? failure.errorText : 'failed', duration_ms: started ? Date.now() - started.start : 0, bytes: 0 });
     });
     page.on('framenavigated', (frame) => {
@@ -167,14 +186,20 @@ async function track(profile, page, initiator) {
     });
     page.on('close', () => {
       state.closed = true;
+      watches.disarm(targetId);
+      if (profile.control) profile.control.forget(targetId);
       state.overlay.dispose();
       profile.companion.forget(targetId);
       profile.pages.delete(targetId);
       profile.pending.delete(page);
       event('tab', { profile: profile.name, target: targetId, kind: 'closed' });
     });
-    page.on('crash', () => event('tab', { profile: profile.name, target: targetId, kind: 'crashed' }));
-    page.on('response', (res) => { if (res.request().isNavigationRequest() && res.frame() === page.mainFrame()) state.lastStatus = res.status(); });
+    page.on('crash', () => { if (profile.kind !== 'companion') event('tab', { profile: profile.name, target: targetId, kind: 'crashed' }); });
+    page.on('response', (res) => {
+      if (!res.request().isNavigationRequest() || res.frame() !== page.mainFrame()) return;
+      state.lastStatus = res.status();
+      if (res.status() >= 500) event('tab', { profile: profile.name, target: targetId, kind: 'load_failed', text: eventText(`HTTP ${res.status()} ${res.url()}`) });
+    });
     if (initiator) {
       event('tab', { profile: profile.name, target: targetId, kind: 'opened', url: page.url(), title: '', initiator });
     }
@@ -231,26 +256,8 @@ async function attach(profile, port, deadlineMs, pinDashboard) {
   const ctx = browser.contexts()[0];
   if (!ctx) fail('browser_start_failed', 'the browser has no default context');
   profile.ctx = ctx;
-  // No-op recording dialog listener: without any listener Playwright auto-dismisses
-  // every dialog, including the user's. With it the dialog stays open for the user.
-  ctx.on('dialog', async (dialog) => {
-    const page = dialog.page();
-    let state = null;
-    for (const s of profile.pages.values()) if (s.page === page) state = s;
-    if (!state) { try { state = await track(profile, page, null); } catch { return; } }
-    state.dialog = dialog;
-    event('dialog', { profile: profile.name, target: state.target, type: dialog.type(), message: dialog.message().slice(0, 500), state: 'open' });
-  });
-  ctx.on('page', (page) => {
-    track(profile, page, 'other').catch((err) => log('warn', `track failed: ${err.message}`));
-  });
-  browser.on('disconnected', () => {
-    profile.browser = null;
-    profile.ctx = null;
-    profile.companion.close();
-    for (const [target] of profile.pages) profile.pages.delete(target);
-    event('browser', { profile: profile.name, kind: 'disconnected', detail: 'CDP connection closed' });
-  });
+  wireContext(profile, ctx);
+  wireBrowser(profile, browser);
   await Promise.all(ctx.pages().map(page => track(profile, page, null).catch((err) => log('warn', `track failed: ${err.message}`))));
   log('debug', `${stamp()} tracked in ${Date.now() - t0} ms`);
   event('browser', { profile: profile.name, kind: 'attached', detail: browser.version() });
@@ -269,9 +276,129 @@ async function attach(profile, port, deadlineMs, pinDashboard) {
   return Object.assign(await tabs(profile), { companion });
 }
 
+// No-op recording dialog listener: without any listener Playwright auto-dismisses
+// every dialog, including the user's. With it the dialog stays open for the user.
+function wireContext(profile, ctx) {
+  ctx.on('dialog', async (dialog) => {
+    const page = dialog.page();
+    let state = null;
+    for (const s of profile.pages.values()) if (s.page === page) state = s;
+    if (!state) { try { state = await track(profile, page, null); } catch { return; } }
+    if (!state) return;
+    state.dialog = dialog;
+    event('dialog', { profile: profile.name, target: state.target, type: dialog.type(), message: dialog.message().slice(0, 500), state: 'open' });
+  });
+  ctx.on('page', (page) => {
+    track(profile, page, 'other').catch((err) => log('warn', `track failed: ${err.message}`));
+  });
+}
+function wireBrowser(profile, browser) {
+  browser.on('disconnected', () => {
+    profile.browser = null;
+    profile.ctx = null;
+    profile.companion.close();
+    for (const [target] of profile.pages) { watches.disarm(target); profile.pages.delete(target); }
+    // A detach herdr asked for is not a lost browser (it may already hold a new registration).
+    if (profiles.get(profile.name) !== profile) return;
+    event('browser', { profile: profile.name, kind: 'disconnected', detail: 'CDP connection closed' });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Fork (companion browser): a registered browser host. No extension sweep,
+// no dashboard, no new tab page: the control page answers the nonce, then
+// every page but the companion's own is tracked.
+
+const allPages = (profile) => (profile.browser ? profile.browser.contexts().flatMap((ctx) => ctx.pages()) : []);
+
+async function attachCompanion(profile, port, deadlineMs, nonce) {
+  profile.kind = 'companion';
+  profile.companion.state = 'host'; // never 'ready': the extension paths stay off
+  if (profile.browser && profile.browser.isConnected() && profile.port === port) {
+    await profile.control.verify(nonce);
+    return Object.assign(await tabs(profile), { companion: { state: 'host', detail: profile.hostDetail } });
+  }
+  if (profile.browser) { await profile.browser.close().catch(() => {}); profile.browser = null; }
+  profile.port = port;
+  const t0 = Date.now();
+  let browser;
+  try {
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { noDefaults: true, timeout: Math.max(1, deadlineMs - 1000) });
+  } catch (err) {
+    const message = String(err && err.message || err).split('\n')[0];
+    fail(/Timeout/i.test(message) ? 'attach_timeout' : 'host_unreachable', `the companion did not accept the CDP connection: ${message}`);
+  }
+  const ctx = browser.contexts()[0];
+  if (!ctx) { await browser.close().catch(() => {}); fail('browser_start_failed', 'the companion has no browser context'); }
+  profile.browser = browser;
+  profile.ctx = ctx;
+  profile.control = new ControlPage({ pages: () => allPages(profile), evaluate: (page, fn, arg) => page.evaluate(fn, arg) });
+  try {
+    await profile.control.verify(nonce);
+  } catch (err) {
+    profile.browser = null; profile.ctx = null; profile.control = null;
+    await browser.close().catch(() => {});
+    fail(err.code || 'host_verify_failed', err.message);
+  }
+  for (const context of browser.contexts()) wireContext(profile, context);
+  wireBrowser(profile, browser);
+  await trackAll(profile);
+  profile.hostDetail = `electron ${browser.version()}`;
+  log('debug', `attach ${profile.name}:${port} (companion) in ${Date.now() - t0} ms`);
+  event('browser', { profile: profile.name, kind: 'attached', detail: browser.version() });
+  return Object.assign(await tabs(profile), { companion: { state: 'host', detail: profile.hostDetail } });
+}
+
+/** Track every page of every context not tracked yet (a view another context created). */
+async function trackAll(profile) {
+  await Promise.all(allPages(profile).map((page) => track(profile, page, null).catch((err) => log('warn', `track failed: ${err.message}`))));
+}
+
+/** The target id of the companion view: as answered, else its marker URL / file URL. */
+async function viewTarget(profile, answer, matchUrl, deadlineAt) {
+  if (answer && answer.target_id) return String(answer.target_id);
+  while (Date.now() < deadlineAt) {
+    for (const page of allPages(profile)) {
+      if (matchUrl(page.url())) {
+        const { targetId, session } = await targetIdOf(profile, page);
+        await session.detach().catch(() => {});
+        return targetId;
+      }
+    }
+    await sleep(50);
+  }
+  fail('browser_start_failed', 'the companion created the view but it never showed up');
+}
+
+/** Wait until a target is tracked (a view of another context: track it ourselves). */
+async function waitTracked(profile, targetId, deadlineAt) {
+  let state = profile.pages.get(targetId);
+  let swept = false;
+  while (!state && Date.now() < deadlineAt) {
+    await sleep(50);
+    state = profile.pages.get(targetId);
+    if (!state && !swept && profile.kind === 'companion') { swept = true; await trackAll(profile); state = profile.pages.get(targetId); }
+  }
+  if (!state) fail('browser_start_failed', 'the new tab did not show up');
+  return state;
+}
+
+/** HTML views without network: http(s) aborted, WebSockets never reach a server. */
+async function blockNetwork(state) {
+  await state.page.route((url) => /^(https?|wss?):/i.test(String(url && url.href || url)), (route) => route.abort('blockedbyclient'));
+  if (typeof state.page.routeWebSocket === 'function') await state.page.routeWebSocket(/.*/, (ws) => ws.close()).catch(() => {});
+}
+
+async function reloadView(name, target) {
+  const profile = profiles.get(name);
+  const state = profile && profile.pages.get(target);
+  if (!state || state.closed) { watches.disarm(target); return; }
+  await state.page.reload({ waitUntil: 'domcontentloaded' });
+}
+
 async function tabs(profile) {
   // every tab asked at once: the per-tab caps no longer add up over many tabs
-  const states = [...profile.pages.values()].filter((state) => !state.closed);
+  const states = [...profile.pages.values()].filter((state) => !state.closed && !isFurnitureUrl(state.page.url()));
   const out = await Promise.all(states.map(async (state) => {
     let selected = false;
     let title = '';
@@ -307,6 +434,9 @@ async function dialogStillOpen(state) {
 }
 /** The companion's quiet tab selection for a page: true when it happened (never raises the window). */
 async function quietSelect(state) {
+  if (state.profile.kind === 'companion') {
+    return withTimeout(controlCall(state.profile, 'select', state.target), SELECT_BUDGET_MS, 'x', 'x').then(() => true).catch((err) => { log('debug', `quiet select: ${err.message}`); return false; });
+  }
   const companion = state.profile.companion;
   if (!companion || companion.state !== 'ready') return false;
   return withTimeout(companion.select(state), SELECT_BUDGET_MS, 'x', 'x').catch((err) => { log('debug', `quiet select: ${err.message}`); return false; });
@@ -352,6 +482,12 @@ async function guardDialog(state) {
 // ---------------------------------------------------------------------------
 // Operations
 
+/** A control page call for a target's view (companion profiles). */
+async function controlCall(profile, fn, target) {
+  const view = await profile.control.viewOf(target);
+  return profile.control.call(fn, view);
+}
+
 async function createTarget(profile, url, background) {
   const session = await profile.browser.newBrowserCDPSession();
   try {
@@ -377,12 +513,14 @@ const ops = {
   async attach({ profile: name, args, deadline_ms }) {
     let profile = profiles.get(name);
     if (!profile) { profile = new Profile(name); profiles.set(name, profile); }
+    if (args.kind === 'companion') return attachCompanion(profile, args.port, deadline_ms, String(args.nonce || ''));
     return attach(profile, args.port, deadline_ms, args.pin_dashboard);
   },
   async detach({ profile: name }) {
     const profile = profiles.get(name);
+    if (profile) for (const target of profile.pages.keys()) watches.disarm(target);
+    profiles.delete(name); // first: its close is no `disconnected` event
     if (profile && profile.browser) await profile.browser.close().catch(() => {});
-    profiles.delete(name);
     return {};
   },
   async close_browser({ profile: name }) {
@@ -406,16 +544,21 @@ const ops = {
     // tab is adopted by the companion (its extension tab id) while it is
     // still the newest blank tab.
     const targetId = await profile.serial(async () => {
+      if (profile.kind === 'companion') {
+        // the companion creates the view in the caller's group (else the shown one)
+        const answer = await profile.control.call('open', { tab_id: args.tab_id || null, url: 'about:blank', background: args.background !== false, opened_by: args.opened_by || undefined });
+        const viewId = answer && answer.view_id ? String(answer.view_id) : '';
+        const id = await viewTarget(profile, answer, (url) => viewId !== '' && url === VIEW_MARKER + viewId, Date.now() + Math.min(deadline_ms, 10000));
+        profile.control.remember(id, viewId);
+        return id;
+      }
       const id = await createTarget(profile, 'about:blank', args.background !== false);
       if (activity && activity.group && profile.companion.state === 'ready') {
         await withTimeout(profile.companion.adoptNew(id), 1500, 'x', 'x').catch((err) => log('debug', `companion adopt: ${err.message}`));
       }
       return id;
     });
-    const deadline = Date.now() + Math.min(deadline_ms, 10000);
-    let state = profile.pages.get(targetId);
-    while (!state && Date.now() < deadline) { await sleep(50); state = profile.pages.get(targetId); }
-    if (!state) fail('browser_start_failed', 'the new tab did not show up');
+    const state = await waitTracked(profile, targetId, Date.now() + Math.min(deadline_ms, 10000));
     state.inflight++;
     try {
       const response = await state.page.goto(args.url, { waitUntil, timeout: Math.max(1000, deadline_ms - 1000) })
@@ -472,7 +615,10 @@ const ops = {
   },
 
   async close({ profile: name, target }) {
-    const state = needPage(needProfile(name), target);
+    const profile = needProfile(name);
+    const state = needPage(profile, target);
+    // a companion view is destroyed by the companion (its strip follows)
+    if (profile.kind === 'companion') { await controlCall(profile, 'close', target); return {}; }
     await state.page.close({ runBeforeUnload: false });
     return {};
   },
@@ -480,8 +626,10 @@ const ops = {
   // The one op that raises the window: the login handoff to the user
   // (`browser focus`). Everything else selects tabs quietly (`select`).
   async focus({ profile: name, target }) {
-    const state = needPage(needProfile(name), target);
-    await state.page.bringToFront();
+    const profile = needProfile(name);
+    const state = needPage(profile, target);
+    if (profile.kind === 'companion') await controlCall(profile, 'focus', target);
+    else await state.page.bringToFront();
     return { result: {}, page: await pageInfo(state) };
   },
 
@@ -868,6 +1016,58 @@ const ops = {
     return { released: keys.filter((k) => !failed.has(k)), failed: [...failed] };
   },
 
+  // Fork (companion browser): a local HTML file in a sandboxed view (the
+  // companion's, in the caller's group) or a window tab; http(s) and ws(s)
+  // blocked unless allowed; the file and its directory watched.
+  async show({ profile: name, args, deadline_ms }) {
+    const profile = needProfile(name);
+    const file = String(args.file || '');
+    if (!nodePath.isAbsolute(file)) fail('invalid_request', 'show needs an absolute path');
+    if (!fs.existsSync(file)) fail('file_not_found', `no file ${file}`);
+    const url = pathToFileURL(file).href;
+    const allowNetwork = Boolean(args.allow_network);
+    const deadlineAt = Date.now() + Math.min(deadline_ms, 10000);
+    let viewId = null;
+    let targetId;
+    if (profile.kind === 'companion') {
+      const answer = await profile.serial(() => profile.control.call('show', { tab_id: args.tab_id || null, opened_by: args.opened_by || undefined, file, root: args.root || nodePath.dirname(file), allow_network: allowNetwork, focus: Boolean(args.focus), title: args.title || null }));
+      viewId = answer && answer.view_id ? String(answer.view_id) : null;
+      targetId = await viewTarget(profile, answer, (u) => u === url || (viewId && u === VIEW_MARKER + viewId), deadlineAt);
+      profile.control.remember(targetId, viewId);
+    } else {
+      targetId = await profile.serial(() => createTarget(profile, 'about:blank', !args.focus));
+    }
+    const state = await waitTracked(profile, targetId, deadlineAt);
+    if (!allowNetwork) await blockNetwork(state).catch((err) => log('debug', `show: network block: ${err.message}`));
+    state.inflight++;
+    try {
+      if (profile.kind === 'companion') await state.page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+      else {
+        const response = await state.page.goto(url, { waitUntil: 'domcontentloaded', timeout: Math.max(1000, deadline_ms - 1000) })
+          .catch((err) => { const failure = new OpError('navigation_failed', err.message.split('\n')[0]); failure.target = targetId; throw failure; });
+        if (response) state.lastStatus = response.status();
+      }
+    } finally { state.inflight--; }
+    if (args.focus && profile.kind !== 'companion') await quietSelect(state);
+    let watching = false;
+    if (args.watch !== false) {
+      try { watching = watches.arm(targetId, file, () => reloadView(name, targetId)); }
+      catch (err) { log('debug', `show: watch: ${err.message}`); }
+    }
+    return { result: { target: targetId, view_id: viewId, watching }, page: await pageInfo(state) };
+  },
+
+  // A restored HTML view (herdr asks after the companion recreated it).
+  async watch({ profile: name, target, args }) {
+    needPage(needProfile(name), target);
+    const file = String(args.file || '');
+    if (!nodePath.isAbsolute(file)) fail('invalid_request', 'watch needs an absolute path');
+    return { watching: watches.arm(target, file, () => reloadView(name, target)) };
+  },
+  async unwatch({ target }) {
+    return { removed: watches.disarm(String(target || '')) };
+  },
+
   async dialog({ profile: name, target, args }) {
     const state = needPage(needProfile(name), target);
     if (!(await dialogStillOpen(state))) fail('no_dialog', 'no dialog is open on this tab');
@@ -992,7 +1192,7 @@ async function handle(req) {
     if (out && typeof out === 'object' && 'result' in out && 'page' in out) send({ id: req.id, ok: true, result: out.result, page: out.page });
     else send({ id: req.id, ok: true, result: out || {} });
   } catch (err) {
-    const code = err instanceof OpError ? err.code : (/Target closed|has been closed/i.test(err.message) ? 'tab_closed' : 'browser_error');
+    const code = err instanceof OpError || (err && err.herdr && typeof err.code === 'string') ? err.code : (/Target closed|has been closed/i.test(err.message) ? 'tab_closed' : 'browser_error');
     const error = { code, message: String(err && err.message || err).split('\n')[0].slice(0, 500) };
     if (err && err.target) error.target = String(err.target);
     send({ id: req.id, ok: false, error });

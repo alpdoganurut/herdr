@@ -993,6 +993,10 @@ fn restore_tab(
                 muted: snap.muted,
                 dnd: snap.dnd,
                 dnd_by_agent: snap.dnd && snap.dnd_by_agent,
+                browser: snap
+                    .browser
+                    .clone()
+                    .and_then(crate::browser::session::TabBrowser::restored),
                 number,
                 root_pane,
                 layout,
@@ -2208,6 +2212,7 @@ mod tests {
                     muted: false,
                     dnd: false,
                     dnd_by_agent: false,
+                    browser: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -2408,6 +2413,7 @@ mod tests {
                     muted: false,
                     dnd: false,
                     dnd_by_agent: false,
+                    browser: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -2534,6 +2540,7 @@ mod tests {
                     muted: false,
                     dnd: false,
                     dnd_by_agent: false,
+                    browser: None,
                     layout: LayoutSnapshot::Pane(5),
                     panes: HashMap::from([(5, pane)]),
                     zoomed: false,
@@ -2642,6 +2649,7 @@ mod tests {
                     muted: false,
                     dnd: false,
                     dnd_by_agent: false,
+                    browser: None,
                     layout: LayoutSnapshot::Split {
                         direction: super::super::snapshot::DirectionSnapshot::Horizontal,
                         ratio: 0.5,
@@ -2778,6 +2786,7 @@ mod tests {
                         muted: false,
                         dnd: false,
                         dnd_by_agent: false,
+                        browser: None,
                         layout: LayoutSnapshot::Pane(10),
                         panes: HashMap::from([pane_snap("10")]),
                         zoomed: false,
@@ -2794,6 +2803,7 @@ mod tests {
                         muted: false,
                         dnd: false,
                         dnd_by_agent: false,
+                        browser: None,
                         layout: LayoutSnapshot::Pane(11),
                         panes: HashMap::from([pane_snap("11")]),
                         zoomed: false,
@@ -2810,6 +2820,7 @@ mod tests {
                         muted: false,
                         dnd: false,
                         dnd_by_agent: false,
+                        browser: None,
                         layout: LayoutSnapshot::Pane(12),
                         panes: HashMap::from([pane_snap("12")]),
                         zoomed: false,
@@ -2826,6 +2837,7 @@ mod tests {
                         muted: false,
                         dnd: false,
                         dnd_by_agent: false,
+                        browser: None,
                         layout: LayoutSnapshot::Pane(13),
                         panes: HashMap::from([(13, final_pane)]),
                         zoomed: false,
@@ -2893,6 +2905,7 @@ mod tests {
                 muted: false,
                 dnd: false,
                 dnd_by_agent: false,
+                browser: None,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
                     ratio: 0.5,
@@ -2941,6 +2954,7 @@ mod tests {
                     muted: false,
                     dnd: false,
                     dnd_by_agent: false,
+                    browser: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes: HashMap::from([(
                         0,
@@ -3565,6 +3579,7 @@ mod tests {
                     muted: false,
                     dnd: false,
                     dnd_by_agent: false,
+                    browser: None,
                     layout: LayoutSnapshot::Pane(0),
                     panes,
                     zoomed: false,
@@ -3601,6 +3616,7 @@ mod tests {
             muted: false,
             dnd: false,
             dnd_by_agent: false,
+            browser: None,
             layout: LayoutSnapshot::Pane(0),
             panes: HashMap::from([(
                 0,
