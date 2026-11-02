@@ -166,6 +166,9 @@ pub struct AgentRestartResume {
     pub give_up_at: Instant,
     /// The next time the pane is probed for an available shell prompt.
     pub next_check: Instant,
+    /// Fork (force suspend): a forced restart (`agent.restart_force`): it
+    /// relaunches once the process is gone, even after `SIGKILL`.
+    pub forced: bool,
 }
 
 impl SuspendedAgent {
@@ -2987,11 +2990,12 @@ impl TerminalState {
     }
 
     /// Owe the parked agent an automatic relaunch (`agent.restart`), probed
-    /// from `now` until `give_up_at`.
+    /// from `now` until `give_up_at`; `forced` for `agent.restart_force`.
     pub fn mark_suspended_agent_resume_pending(
         &mut self,
         now: Instant,
         give_up_at: Instant,
+        forced: bool,
     ) -> bool {
         let Some(record) = self.suspended_agent.as_mut() else {
             return false;
@@ -2999,6 +3003,7 @@ impl TerminalState {
         record.resume_pending = Some(AgentRestartResume {
             give_up_at,
             next_check: now,
+            forced,
         });
         self.revision = self.revision.saturating_add(1);
         true

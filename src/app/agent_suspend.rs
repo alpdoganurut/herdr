@@ -679,7 +679,7 @@ impl App {
             .map_err(AgentRestartError::Suspend)?;
         let now = Instant::now();
         if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
-            terminal.mark_suspended_agent_resume_pending(now, now + RESTART_RESUME_TIMEOUT);
+            terminal.mark_suspended_agent_resume_pending(now, now + RESTART_RESUME_TIMEOUT, force);
             if let (Some(by), Some(record)) = (by, terminal.suspended_agent.as_mut()) {
                 record.suspended_by = Some(by);
             }
@@ -695,7 +695,9 @@ impl App {
     /// A restart is abandoned (the agent stays suspended, with a warning)
     /// when the exit escalation had to `SIGKILL` the agent, when activation
     /// fails for any reason other than the pane not being ready yet, or when
-    /// [`RESTART_RESUME_TIMEOUT`] passes first.
+    /// [`RESTART_RESUME_TIMEOUT`] passes first. Fork (force suspend): a
+    /// forced restart is not abandoned for the `SIGKILL`: it still waits for
+    /// the observed exit and an available shell prompt, within the timeout.
     pub(crate) fn start_pending_agent_restarts(&mut self, now: Instant) -> bool {
         let pending: Vec<_> = self
             .state
@@ -715,7 +717,7 @@ impl App {
             .collect();
         let mut changed = false;
         for (terminal_id, agent, resume, escalation, exit_observed) in pending {
-            let abandon = if escalation == SuspendExitEscalation::Killed {
+            let abandon = if escalation == SuspendExitEscalation::Killed && !resume.forced {
                 Some("the agent had to be killed; leaving it suspended".to_string())
             } else if now >= resume.give_up_at {
                 Some(if exit_observed {
@@ -3303,6 +3305,97 @@ mod tests {
             force_restart(&mut app, "reviewer")["error"]["code"],
             "agent_suspended"
         );
+    }
+
+    #[tokio::test]
+    async fn a_forced_restart_relaunches_even_after_sigkill() {
+        let mut app = test_app();
+        let (terminal_id, mut rx) = live_claude(&mut app, AgentState::Idle);
+        let typed_at = Instant::now();
+        let response = force_restart(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_restarted", "{response}");
+        assert_eq!(&next_input(&mut rx).await[..], b"/exit");
+        assert_eq!(&next_input(&mut rx).await[..], b"\r");
+        let resume = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .and_then(|record| record.resume_pending())
+            .expect("owes the relaunch");
+        assert!(resume.forced);
+        escalation_reaches_kill(&mut app, &terminal_id, typed_at);
+        let record = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .expect("parked");
+        assert_eq!(record.escalation(), SuspendExitEscalation::Killed);
+
+        // Killed, but not abandoned: it waits for the observed exit.
+        assert!(!app.start_pending_agent_restarts(Instant::now()));
+        assert!(app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .and_then(|record| record.resume_pending())
+            .is_some());
+        observe_exit(&mut app);
+        assert!(app.start_pending_agent_restarts(Instant::now()));
+        let terminal = &app.state.terminals[&terminal_id];
+        assert!(terminal.suspended_agent.is_none(), "relaunched");
+        assert!(terminal.managed_agent_launch_pending());
+        let sent = String::from_utf8(next_input(&mut rx).await.to_vec()).unwrap();
+        assert!(sent.starts_with(&resume_command()), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn a_killed_forced_restart_whose_exit_never_shows_stays_suspended() {
+        let mut app = test_app();
+        let (terminal_id, mut rx) = live_claude(&mut app, AgentState::Idle);
+        let typed_at = Instant::now();
+        let response = force_restart(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_restarted", "{response}");
+        let _ = next_input(&mut rx).await;
+        escalation_reaches_kill(&mut app, &terminal_id, typed_at);
+        let give_up_at = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .and_then(|record| record.resume_pending())
+            .expect("owes the relaunch")
+            .give_up_at;
+        assert!(!app.start_pending_agent_restarts(give_up_at - Duration::from_millis(1)));
+        assert!(app.start_pending_agent_restarts(give_up_at));
+        let record = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .expect("still parked");
+        assert!(record.resume_pending().is_none(), "given up");
+        assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
+    }
+
+    #[tokio::test]
+    async fn a_plain_restart_still_gives_up_after_sigkill() {
+        let mut app = test_app();
+        let (terminal_id, mut rx) = live_claude(&mut app, AgentState::Idle);
+        let typed_at = Instant::now();
+        assert_eq!(
+            restart(&mut app, "reviewer")["result"]["type"],
+            "agent_restarted"
+        );
+        let _ = next_input(&mut rx).await;
+        assert!(
+            !app.state.terminals[&terminal_id]
+                .suspended_agent
+                .as_ref()
+                .and_then(|record| record.resume_pending())
+                .expect("owes the relaunch")
+                .forced
+        );
+        escalation_reaches_kill(&mut app, &terminal_id, typed_at);
+        observe_exit(&mut app);
+        assert!(app.start_pending_agent_restarts(Instant::now()));
+        let record = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .expect("still parked");
+        assert!(record.resume_pending().is_none(), "abandoned for the kill");
     }
 
     #[tokio::test]

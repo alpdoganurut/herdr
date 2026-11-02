@@ -2339,8 +2339,11 @@ mod tests {
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(crate::detect::Agent::Claude), AgentState::Idle);
         terminal.begin_agent_suspend(session.clone(), now + std::time::Duration::from_secs(5));
-        assert!(terminal
-            .mark_suspended_agent_resume_pending(now, now + std::time::Duration::from_secs(30)));
+        assert!(terminal.mark_suspended_agent_resume_pending(
+            now,
+            now + std::time::Duration::from_secs(30),
+            false
+        ));
         assert!(terminal.suspended_agent_resume_deadline().is_some());
         let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
 

@@ -624,6 +624,7 @@ src/client/shell/tests/force_notice.rs
 | ShellRenderState | info_pane_open | false |
 | ClientConnection | shell_notes_reveal_sent | None |
 | SuspendedAgent | forced_exit | None |
+| AgentRestartResume | forced | false |
 | App | request_from_client_shell | false |
 | ClientVisibleEndpointNotice | force | None |
 | ShellHitMap | notification_toast_action | Rect::default() |
@@ -1404,6 +1405,8 @@ src/app/closed_sessions.rs  additive: dnd provenance: ClosedSessionInfo.dnd_by_a
 src/persist/closed_sessions.rs  additive: dnd provenance: `dnd_by_agent: false` after `dnd: false` in the test literal
 src/cli/tab_closed.rs  additive: dnd provenance: `dnd_by_agent: false` after `dnd: false` in the test literal
 src/client/shell/tests/settings_closed.rs  additive: dnd provenance: `dnd_by_agent: false` after `dnd: false` in the ClosedSessionInfo literal
+src/terminal/state.rs  additive: forced restart: AgentRestartResume.forced last; mark_suspended_agent_resume_pending takes `forced: bool` last (agent_suspend.rs passes restart_agent_with's `force`; restore.rs's test passes false)
+src/persist/restore.rs  additive: forced restart: the restored-record test's mark_suspended_agent_resume_pending call passes `false` last
 
 
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
@@ -1697,6 +1700,7 @@ src/client/shell/overlays.rs  mid-logic: menu design: render_context_menu (re-si
 src/client/shell/tab_remind_menu.rs  mid-logic: menu design: the selector's columns sit on a six-cell pitch from SELECTOR_LABEL_CELLS (8) and the current interval is yellow; the row is drawn three cells in, after the `◷` glyph
 src/server/headless.rs  mid-logic: force suspend: request_from_client_shell = client_local in handle_api_request_with_shutdown_check_inner is the only gate on agent.suspend_force / agent.restart_force; a new upstream path into App::handle_api_request that skips it refuses them (safe), but one that passes client_local = true for a public request would let agents force
 src/client/shell/mouse.rs  mid-logic: force suspend: the force button's press is taken before the endpoint notice's dismiss-on-press; an upstream reorder there would dismiss instead of forcing
+src/app/agent_suspend.rs  mid-logic: forced restart: start_pending_agent_restarts abandons on SuspendExitEscalation::Killed only when !resume.forced; a forced restart still needs the observed exit and an available shell prompt before give_up_at (RESTART_RESUME_TIMEOUT), else it is abandoned with today's warnings
 
 
 ## 9. Identifier watch-list (any hit in the incoming upstream diff = deny "upstream collision")
@@ -2768,6 +2772,7 @@ A user-facing feature or fix that changes what herdr+ offers also updates the sh
 - herdr browser, activity overlay (`[browser] show_activity = true`): the tabs an agent pane opens or acts on sit in a Chrome tab group named `<agent> · <herdr tab>` in a stable colour per pane (a bundled MV3 companion extension loaded with `--load-extension`, driven over the DevTools port; expanded while the pane is active, collapsed after `active_glyph_secs`, dissolved when the pane is gone; tabs the user opened are never grouped and a tab the user pulls out stays out), and a purple glow frame with a macOS-style cursor is injected into the page (isolated world, closed shadow root, no pointer events) while an operation runs and for the `active_glyph_secs` window after (originally 3 s); the cursor glides to the element before click/type/fill/select/press/hover and ripples on click; batches take `animate: false` (`--no-animate`); screenshots hide the overlay; `browser status` / `doctor` report the companion (`ready`, `missing`).
 - Agents can mute and put each other in do not disturb: the herdr_agents tools `agents_mute` (`muted=false` unmutes) and `agents_dnd` (`on=false` ends it) take one target or several comma-separated (a team lead quiets every member but the ones it still needs in one call) and answer one outcome line per target; `herdr tab mute|unmute <target>...` and `herdr tab dnd <on|off> <target>...` do the same from the CLI (a tab id, pane id, agent name or tab label). Both go through the new `agents.set_quiet`, checked like suspend: free on the caller's own tab and its team's tabs, refused elsewhere (`outside_team`) and on the coordinator's tab, the coordinator in its user's turn, the user always; every change is in the agents action log as `set_quiet`. Mute and DND behave exactly as the tab menu's items.
 ### Fixed
+- Force restart always relaunches: a forced restart (`Force restart` on a refused restart's notice, `agent.restart_force`) whose agent had to be killed (`SIGKILL`) now relaunches it once the process is gone and the shell prompt is back, within the usual 30 s; if the shell never comes back it stays suspended with the usual warning. A plain restart still leaves a killed agent suspended.
 - Opening the info pane no longer moves the keyboard: `keys.toggle_info_pane` (alt+n), the menus' Info pane and the new toolbar button leave the focus on the session (and on the sidebar search field when it has it); a click into the pane still focuses it.
 - herdr's own toasts no longer cover the info (notes) pane: while the focused tab's dock is open, a right-anchored toast (`ui.toast.herdr.position` top-right or bottom-right, a per-event right position, the sticky stack and its `+N more` line, and machine notices) is laid out left of the dock with one blank column before it, same top or bottom anchor; a toast wider than that room keeps its old place, and left-anchored toasts are unchanged. Clicks follow the moved cards. Agent cards already sat left of the dock.
 - Agent state times survive a restart and a live handoff: the tabs sidebar's `◷` recency filter and the Active block's times no longer treat every idle tab as just active afterwards. The pane snapshot saves when its agent entered its state, with that state and agent (`agent_state_since` in session.json, also carried by the handoff manifest's snapshot; an older build ignores it); when the agent comes back in the same state the saved time is kept and pushed under the agent's current state change seq, at once when restore already knows the state (a resumed agent, a handed-off hook status), else at its first state change within 2 minutes. A different first state, another agent or a later change starts the time anew, and a saved time in the future counts as now. After a crash the saved time can be older than the last state change since the previous save.
