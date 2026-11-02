@@ -21,6 +21,7 @@ apps/companion/src/herdr-api.js
 apps/companion/src/host.js
 apps/companion/src/main.js
 apps/companion/src/preload/control.js
+apps/companion/src/preload/nonet.js
 apps/companion/src/preload/strip.js
 apps/companion/src/ui/control.html
 apps/companion/src/ui/strip.css

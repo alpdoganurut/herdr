@@ -61,7 +61,8 @@ let child = null;
 const logFile = path.join(tmp, 'companion.log');
 function startCompanion() {
   const out = fs.openSync(logFile, 'a');
-  child = spawn(electronBin, [appDir, '--socket', sock, '--profile-dir', profile, '--headless'], {
+  // fake media devices: getUserMedia reaches the permission prompt in a headless run
+  child = spawn(electronBin, [appDir, '--socket', sock, '--profile-dir', profile, '--headless', '--use-fake-device-for-media-stream'], {
     env: { ...process.env, HERDR_COMPANION_HEADLESS: '1', HERDR_SOCKET_PATH: '' },
     stdio: ['ignore', out, out],
   });
@@ -157,6 +158,8 @@ try {
   // strip actions through the strip page (same IPC the buttons use)
   const strip = stripPage();
   check('strip page is a herdr-companion: furniture page', !!strip);
+  const sendbarShown = await strip.evaluate(() => getComputedStyle(document.getElementById('sendbar')).display);
+  check('the send form starts hidden', sendbarShown === 'none', sendbarShown);
   await strip.evaluate(() => window.stripBridge.action('new_tab'));
   await strip.evaluate((u) => window.stripBridge.action('navigate', u), `127.0.0.1:${webPort}/x`);
   const nav = await waitFor(() => mock.state.reports.find((r) => r.action === 'navigate' && r.url.includes(String(webPort))), 3000);
@@ -188,6 +191,31 @@ try {
   await strip.evaluate(() => document.getElementById('permallow').click());
   const geo = await Promise.race([allowP, sleep(6000).then(() => 'timeout')]);
   check('Allow once lets that request through (not denied)', geo !== 'denied' && geo !== 'timeout', geo);
+  // a microphone grant is not a camera grant
+  const media = (c) => wp.evaluate((c) => navigator.mediaDevices.getUserMedia(c).then((st) => { st.getTracks().forEach((t) => t.stop()); return 'granted'; }, (e) => e.name), c);
+  const micP = media({ audio: true });
+  const bar3 = await waitFor(permBar, 3000);
+  check('a microphone request is asked in the strip', bar3 && /microphone/.test(bar3.text), bar3);
+  await strip.evaluate(() => document.getElementById('permallow').click());
+  const mic = await Promise.race([micP, sleep(6000).then(() => 'timeout')]);
+  check('Allow once lets the microphone through', mic !== 'NotAllowedError' && mic !== 'timeout', mic);
+  const camP = media({ video: true });
+  const bar4 = await waitFor(permBar, 3000);
+  check('a camera request after a microphone grant is asked again', bar4 && /camera/.test(bar4.text), bar4);
+  if (bar4) await strip.evaluate(() => document.getElementById('permdeny').click());
+  const cam = await Promise.race([camP, sleep(6000).then(() => 'timeout')]);
+  check('denying it refuses the camera', cam === 'NotAllowedError', cam);
+  // a page cannot open a data: tab
+  const nViews = (await ctl('__herdrCompanion.views()')).length;
+  await wp.evaluate(() => window.open('data:text/html,<title>pop</title>pop'));
+  await sleep(600);
+  check('a data: popup opens no tab', (await ctl('__herdrCompanion.views()')).length === nViews);
+  // selecting a tab in the strip is the user looking at it
+  const sel = (await ctl('__herdrCompanion.views()')).find((v) => v.tab_id === 'w1:t2');
+  const shownBefore = mock.state.reports.filter((r) => r.action === 'shown').length;
+  await strip.evaluate((id) => window.stripBridge.action('select', id), sel.view_id);
+  const shownSel = await waitFor(() => mock.state.reports.slice(0).filter((r) => r.action === 'shown').length > shownBefore && mock.state.reports.findLast((r) => r.action === 'shown'), 3000);
+  check('a strip select reports shown (clears needs-you)', shownSel && shownSel.view_id === sel.view_id, shownSel);
   const before = (await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2').length;
   const active = (await ctl('__herdrCompanion.views()')).find((v) => v.tab_id === 'w1:t2' && v.active);
   await strip.evaluate((id) => window.stripBridge.action('close', id), active.view_id);
@@ -233,11 +261,24 @@ try {
   check('html view cannot read outside its directory or through a symlink', fb !== 'OUTSIDE' && fc !== 'OUTSIDE', { fb, fc });
   const netRes = await hp.evaluate((u) => fetch(u).then(() => 'ok', () => 'blocked'), `http://127.0.0.1:${webPort}/n`);
   check('html view network is blocked by default', netRes === 'blocked' && hits === hitsBefore, { netRes, hits: hits - hitsBefore });
+  const rtc = async (pg) => [await pg.evaluate(() => typeof RTCPeerConnection), ...(await Promise.all(pg.frames().slice(1).map((f) => f.evaluate(() => typeof RTCPeerConnection).catch((e) => e.message))))];
+  const rtcNoNet = await rtc(hp);
+  check('a no-network html view has no WebRTC (page and frames)', rtcNoNet.every((t) => t === 'undefined'), rtcNoNet);
   const shn = await ctl(`__herdrCompanion.show({tab_id:'w1:t2', file:${JSON.stringify(path.join(site, 'inside.html'))}, allow_network:true})`);
   const hpn = await waitFor(() => pageForTarget(shn.target_id), 5000);
   await hpn.waitForLoadState('load').catch(() => {});
   const netOk = await hpn.evaluate((u) => fetch(u, { mode: 'no-cors' }).then(() => 'ok', (e) => String(e)), `http://127.0.0.1:${webPort}/n2`);
   check('allow_network lets an html view reach the network', netOk === 'ok', netOk);
+  check('a network-allowed html view keeps WebRTC', (await hpn.evaluate(() => typeof RTCPeerConnection)) === 'function');
+  // an explicit title stays; a view's script navigation opens a tab on the agent's behalf
+  fs.writeFileSync(path.join(site, 'nav.html'), `<title>page title</title><script>setTimeout(() => { location.href = 'http://127.0.0.1:${webPort}/fromview'; }, 300)</script>`);
+  const newTabsBefore = mock.state.reports.filter((r) => r.action === 'new_tab').length;
+  const shf = await ctl(`__herdrCompanion.show({tab_id:'w1:t2', file:${JSON.stringify(path.join(site, 'nav.html'))}, title:'Fixed', opened_by:'agent:w1:p9'})`);
+  const fromView = await waitFor(() => mock.state.tabs.get('w1:t2').browser.entries.find((e) => e.url.includes('/fromview')), 6000);
+  check('a view\'s script navigation opens a web tab for the view\'s opener', fromView && fromView.opened_by === 'agent:w1:p9', fromView);
+  check('it is not reported as a user new_tab', mock.state.reports.filter((r) => r.action === 'new_tab').length === newTabsBefore);
+  const fixed = mock.state.tabs.get('w1:t2').browser.entries.find((e) => e.view_id === shf.view_id);
+  check('an explicit --title is not replaced by the page title', fixed && fixed.title === 'Fixed', fixed);
   const missing = await ctl(`__herdrCompanion.show({tab_id:'w1:t2', file:'/nonexistent/x.html'})`);
   check('show of a missing file answers file_not_found', missing && missing.error && missing.error.code === 'file_not_found', missing);
   const synced = await waitFor(() => mock.state.tabs.get('w1:t2').browser.entries.find((e) => e.kind === 'html_view' && e.file), 3000);

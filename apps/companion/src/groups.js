@@ -73,6 +73,7 @@ class GroupStore {
       root: entry.root || null,
       allow_network: !!entry.allow_network,
       opened_by: entry.opened_by || 'user',
+      title_fixed: !!entry.title_fixed, // runtime only: a restored view loses it
     };
     if (index === undefined || index < 0 || index > g.entries.length) g.entries.push(e);
     else g.entries.splice(index, 0, e);
@@ -112,6 +113,7 @@ class GroupStore {
     const e = hit.entry;
     let changed = false;
     for (const [k, v0] of Object.entries(patch)) {
+      if (k === 'title' && e.title_fixed) continue;
       const v = k === 'url' ? clip(v0, MAX_URL) : k === 'title' ? clip(v0, MAX_TITLE) : v0;
       if (e[k] !== v) {
         e[k] = v;
@@ -204,39 +206,57 @@ class GroupStore {
   }
 
   // Builds the next browser.host_sync payload for the dirty groups, or null.
-  // Placeholders are synced too (full replace per group).
-  takeSync(leaseId, { all = false } = {}) {
+  // Placeholders are synced too (full replace per group). With `maxBytes`, whole groups are
+  // taken until the payload's groups would pass it (always at least one; one over it alone
+  // gets its titles cut); the rest stay dirty for the next sync, which gets its own seq.
+  takeSync(leaseId, { all = false, maxBytes = Infinity } = {}) {
     const ids = all ? [...this.groups.keys()] : [...this.dirty].filter((id) => this.groups.has(id));
-    this.dirty.clear();
+    for (const id of [...this.dirty]) if (!this.groups.has(id)) this.dirty.delete(id);
     if (!ids.length) return null;
-    const groups = ids.map((id) => {
-      const g = this.groups.get(id);
-      const active = g.entries.find((e) => e.view_id === g.active);
-      const out = {
-        tab_id: g.tab_id,
-        active: active ? active.id || active.view_id : null,
-        entries: g.entries.map((e) => {
-          const x = { view_id: e.view_id, kind: e.kind, url: e.url, title: e.title };
-          if (e.id) x.id = e.id;
-          if (e.target) x.target = e.target;
-          if (e.kind === 'html_view') {
-            x.file = e.file;
-            x.allow_network = !!e.allow_network;
-          }
-          if (e.opened_by) x.opened_by = e.opened_by;
-          return x;
-        }),
-      };
-      if (g.key) out.key = g.key;
-      return out;
-    });
+    const groups = [];
+    let bytes = 2; // the array's brackets
+    for (const id of ids) {
+      const out = this.syncGroup(this.groups.get(id));
+      let size = Buffer.byteLength(JSON.stringify(out)) + 1;
+      if (!groups.length && size > maxBytes) {
+        for (const x of out.entries) x.title = x.title.slice(0, 80);
+        size = Buffer.byteLength(JSON.stringify(out)) + 1;
+      }
+      if (groups.length && bytes + size > maxBytes) break;
+      groups.push(out);
+      bytes += size;
+      this.dirty.delete(id);
+    }
+    if (all) for (const id of ids.slice(groups.length)) this.dirty.add(id);
     this.seq += 1;
     return { lease_id: leaseId, seq: this.seq, groups };
   }
 
-  // Applies browser.host_synced: minted keys and entry ids; drops unknown tabs.
+  syncGroup(g) {
+    const active = g.entries.find((e) => e.view_id === g.active);
+    const out = {
+      tab_id: g.tab_id,
+      active: active ? active.id || active.view_id : null,
+      entries: g.entries.map((e) => {
+        const x = { view_id: e.view_id, kind: e.kind, url: e.url, title: e.title };
+        if (e.id) x.id = e.id;
+        if (e.target) x.target = e.target;
+        if (e.kind === 'html_view') {
+          x.file = e.file;
+          x.allow_network = !!e.allow_network;
+        }
+        if (e.opened_by) x.opened_by = e.opened_by;
+        return x;
+      }),
+    };
+    if (g.key) out.key = g.key;
+    return out;
+  }
+
+  // Applies browser.host_synced: minted keys and entry ids. Returns the tab ids herdr did
+  // not know: never dropped here (a cross-workspace move renames the tab, and the views are
+  // live); the caller re-reads host_state, which follows the group's key or drops it.
   applySynced(result) {
-    const dropped = [];
     for (const [k, v] of Object.entries(result.keys || {})) {
       const slash = k.lastIndexOf('/'); // "<tab_id>/<view_id>": view ids never hold a slash
       if (slash < 0) {
@@ -250,12 +270,7 @@ class GroupStore {
         if (e) e.id = v;
       }
     }
-    for (const tabId of result.unknown_tabs || []) {
-      if (this.tabs.has(tabId)) this.tabs.delete(tabId);
-      const g = this.dropGroup(tabId);
-      if (g) dropped.push(g);
-    }
-    return dropped;
+    return (result.unknown_tabs || []).filter((tabId) => this.groups.has(tabId));
   }
 
   // A new lease restarts seq and requires a full resync.

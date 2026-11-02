@@ -4,10 +4,12 @@
 const { WebContentsView, session, net } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 
 const WEB_PARTITION = 'persist:herdr-companion';
 const NETWORK_URLS = ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'];
+const NONET_PRELOAD = path.join(__dirname, 'preload', 'nonet.js');
 
 function within(root, p) {
   return p === root || p.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
@@ -27,14 +29,40 @@ function originOf(url) {
   }
 }
 
-// html_view sandbox: file:// limited to `root` (canonicalized, no symlink escape),
-// network blocked unless allowed, every permission denied.
-function htmlSession(viewId, root, allowNetwork) {
-  const ses = session.fromPartition(`herdr-view-${viewId}`); // no "persist:" => in memory
-  let rootReal = root;
-  try {
-    rootReal = fs.realpathSync(root);
-  } catch {}
+// The directory an html view may read: `root` resolved, else (the file is not inside it,
+// e.g. a symlink to another folder) the directory the file really lives in.
+function viewRoot(root, file) {
+  const real = (p) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return p ? path.resolve(p) : p;
+    }
+  };
+  const fileReal = file ? real(file) : null;
+  const rootReal = real(root || (file ? path.dirname(file) : '/'));
+  if (fileReal && !within(rootReal, fileReal)) return path.dirname(fileReal);
+  return rootReal;
+}
+
+// The partition of html views reading `rootReal` with or without network. Electron never
+// frees a session, so views of the same directory and policy share one (in memory).
+function viewPartition(rootReal, allowNetwork) {
+  const h = crypto.createHash('sha256').update(rootReal).digest('hex').slice(0, 16);
+  return `herdr-view-${h}-${allowNetwork ? 'net' : 'nonet'}`;
+}
+
+// A web proxy nothing answers: what still tries the network (WebRTC over TCP) gets nowhere.
+const DEAD_PROXY = { proxyRules: 'http://127.0.0.1:9', proxyBypassRules: '<-loopback>' };
+
+// html_view sandbox: file:// limited to `rootReal` (canonicalized, no symlink escape),
+// network blocked unless allowed, every permission denied. Set up once per partition.
+const htmlSessions = new Map(); // partition -> {ses, rootReal, ready}
+function htmlSession(rootReal, allowNetwork) {
+  const partition = viewPartition(rootReal, allowNetwork);
+  const have = htmlSessions.get(partition);
+  if (have) return have;
+  const ses = session.fromPartition(partition); // no "persist:" => in memory
   ses.protocol.handle('file', async (req) => {
     let p;
     try {
@@ -45,12 +73,26 @@ function htmlSession(viewId, root, allowNetwork) {
     if (!within(rootReal, p)) return new Response('outside the view directory', { status: 403 });
     return net.fetch(pathToFileURL(p).toString(), { bypassCustomProtocolHandlers: true });
   });
+  let ready = Promise.resolve();
   if (!allowNetwork) {
     ses.webRequest.onBeforeRequest({ urls: NETWORK_URLS }, (_d, cb) => cb({ cancel: true }));
+    ready = ses.setProxy(DEAD_PROXY).catch(() => {});
   }
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   ses.setPermissionCheckHandler(() => false);
-  return { ses, rootReal };
+  const out = { ses, rootReal, ready, partition };
+  htmlSessions.set(partition, out);
+  return out;
+}
+
+// A permission request's grant keys: one per media type (a microphone grant is not a camera
+// grant), else one for the permission.
+function grantKeys(origin, permission, details = {}) {
+  if (permission !== 'media') return [`${origin}|${permission}`];
+  const types = (details.mediaTypes && details.mediaTypes.length ? details.mediaTypes : [details.mediaType]).filter(
+    (t) => t === 'audio' || t === 'video',
+  );
+  return types.length ? [...new Set(types)].sort().map((t) => `${origin}|media:${t}`) : [`${origin}|media:unknown`];
 }
 
 async function targetIdOf(wc) {
@@ -107,7 +149,8 @@ class ViewManager {
       const origin = originOf(details.requestingUrl || (wc && wc.getURL()) || '');
       if (!origin || origin === 'null') return cb(false);
       const rec = this.live.get(viewId);
-      if (rec.grants.has(`${origin}|${permission}`)) return cb(true);
+      const keys = grantKeys(origin, permission, details);
+      if (keys.every((k) => rec.grants.has(k))) return cb(true);
       let label = permission;
       if (permission === 'media') {
         const t = details.mediaTypes || [];
@@ -115,17 +158,17 @@ class ViewManager {
       } else if (permission === 'clipboard-read') label = 'read the clipboard';
       else if (permission === 'notifications') label = 'show notifications';
       else if (permission === 'geolocation') label = 'know your location';
-      this.hooks.onPermission(viewId, { permission, label, origin }, (allow) => {
-        if (allow && this.live.get(viewId) === rec) rec.grants.add(`${origin}|${permission}`);
+      this.hooks.onPermission(viewId, { permission, label, origin, keys }, (allow) => {
+        if (allow && this.live.get(viewId) === rec) for (const k of keys) rec.grants.add(k);
         cb(!!allow);
       });
     });
-    ses.setPermissionCheckHandler((wc, permission, requestingOrigin) => {
+    ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details = {}) => {
       if (ALLOWED.has(permission)) return true;
       if (!PROMPTED.has(permission)) return false;
       const viewId = this.viewIdOf(wc);
       const rec = viewId && this.live.get(viewId);
-      return !!(rec && rec.grants.has(`${originOf(requestingOrigin)}|${permission}`));
+      return !!(rec && grantKeys(originOf(requestingOrigin), permission, details).every((k) => rec.grants.has(k)));
     });
     return ses;
   }
@@ -141,9 +184,10 @@ class ViewManager {
     const isHtml = entry.kind === 'html_view';
     let ses;
     let rootReal = null;
+    let sesReady = null;
+    const noNetwork = isHtml && !entry.allow_network;
     if (isHtml) {
-      const root = entry.root || path.dirname(entry.file);
-      ({ ses, rootReal } = htmlSession(entry.view_id, root, entry.allow_network));
+      ({ ses, rootReal, ready: sesReady } = htmlSession(viewRoot(entry.root, entry.file), entry.allow_network));
     } else {
       ses = this._webSession();
     }
@@ -155,8 +199,15 @@ class ViewManager {
         nodeIntegration: false,
         backgroundThrottling: false,
         webSecurity: true,
+        // no network: WebRTC removed in every frame (the preload runs in subframes too)
+        ...(noNetwork ? { preload: NONET_PRELOAD, nodeIntegrationInSubFrames: true } : {}),
       },
     });
+    if (noNetwork) {
+      try {
+        view.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+      } catch {}
+    }
     const rec = { view, entry, rootReal, target: null, ready: null, grants: new Set() };
     this.live.set(entry.view_id, rec);
     view.setVisible(false);
@@ -164,6 +215,7 @@ class ViewManager {
     this._wire(rec);
     rec.ready = (async () => {
       // Never leave a target unloaded: an unloaded webContents stalls connectOverCDP (spike S1).
+      if (sesReady) await sesReady;
       await view.webContents.loadURL(`about:blank#herdr-view=${entry.view_id}`).catch(() => {});
       rec.target = await targetIdOf(view.webContents);
       const url = isHtml ? pathToFileURL(entry.file).toString() : entry.url;
@@ -214,12 +266,14 @@ class ViewManager {
           return;
         }
         e.preventDefault();
-        if (/^https?:/i.test(url)) this.hooks.onOpen(id, url, 'background-tab');
+        // a web tab the view's page asked for: on behalf of whoever opened the view
+        if (/^https?:/i.test(url)) this.hooks.onOpen(id, url, 'background-tab', { opened_by: entry.opened_by || 'agent', fromView: true });
       });
     } else {
       // window.open / target=_blank / cmd+click: a new view in the same group, never a window.
       wc.setWindowOpenHandler(({ url, disposition }) => {
-        if (/^(https?|about|data):/i.test(url)) this.hooks.onOpen(id, url, disposition);
+        // never data: (loaded from here it would skip Chromium's top-level data: block)
+        if (/^(https?|about):/i.test(url)) this.hooks.onOpen(id, url, disposition);
         return { action: 'deny' };
       });
     }
@@ -256,4 +310,4 @@ class ViewManager {
   }
 }
 
-module.exports = { ViewManager, WEB_PARTITION, within, PROMPTED, ALLOWED };
+module.exports = { ViewManager, WEB_PARTITION, within, PROMPTED, ALLOWED, grantKeys, viewRoot, viewPartition };

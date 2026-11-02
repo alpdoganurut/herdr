@@ -111,11 +111,12 @@ class HerdrLink extends EventEmitter {
     // Events first, host_state after (in the app), buffering in between: no tab.focused is lost.
     this.buffer = [];
     const ev = new Connection(this.opts.socketPath, { prefix: 'e' });
+    // Before connect: a failed connect emits `error`, and an unheard one throws.
+    ev.on('error', () => {});
     try {
       await ev.connect();
       ev.on('event', (e) => this._onEvent(e));
       ev.on('close', () => gen === this.gen && this._lost('events stream closed'));
-      ev.on('error', () => {});
       this.events = ev;
       await ev.request('events.subscribe', { subscriptions: EVENT_KINDS.map((type) => ({ type })) }, { stream: true });
     } catch (e) {

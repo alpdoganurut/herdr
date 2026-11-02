@@ -15,7 +15,8 @@ const VERSION = require('../package.json').version;
 const UI_DIR = path.join(__dirname, 'ui');
 const SCHEME = 'herdr-companion';
 const SYNC_MIN_INTERVAL_MS = 250; // ≤ 4 syncs/s (contract §2.3)
-const SYNC_MAX_BYTES = 256 * 1024;
+const SYNC_MAX_BYTES = 256 * 1024; // herdr's cap on a sync's groups
+const SYNC_BUDGET_BYTES = Number(process.env.HERDR_COMPANION_SYNC_BUDGET) || SYNC_MAX_BYTES - 8 * 1024;
 const REPORT_FLUSH_MS = 250;
 const REPORT_BATCH = 50;
 const REPORT_RATE = 20; // events/s
@@ -100,11 +101,12 @@ class Companion {
     this.tokensAt = Date.now();
     this.refreshTimer = null;
     this.focusTimer = null;
+    this.selfRaiseUntil = 0; // window focus events before this are our own raise
     this.views = new ViewManager({
       onNav: (id, patch) => this.onNav(id, patch),
       onState: (id) => this.onViewState(id),
       onError: (id, kind, text) => this.onPageError(id, kind, text),
-      onOpen: (from, url, disposition) => this.onWindowOpen(from, url, disposition),
+      onOpen: (from, url, disposition, opts) => this.onWindowOpen(from, url, disposition, opts),
       onKey: () => false,
       onPermission: (id, req, done) => this.onPermission(id, req, done),
       onLeave: (id, origin) => this.onLeave(id, origin),
@@ -146,6 +148,7 @@ class Companion {
       },
     });
     this.win.on('resize', () => this.layout());
+    this.win.on('focus', () => this.onWindowFocus());
     this.win.on('closed', () => {
       this.win = null;
       app.quit();
@@ -350,6 +353,18 @@ class Companion {
     if ((changed || focusMoved) && reason === 'follow' && e) this.report('user_action', 'shown', e, g);
   }
 
+  // The user brought the window up: they see the shown group (needs-you clears). A raise
+  // the companion did itself for an agent's focus() is not the user looking.
+  onWindowFocus() {
+    if (Date.now() < this.selfRaiseUntil) return;
+    const g = this.shownGroup();
+    const e = this.activeEntry(g);
+    if (!e) return;
+    e.attention = false;
+    this.report('user_action', 'shown', e, g);
+    this.pushStrip();
+  }
+
   layout() {
     if (!this.win) return;
     const [w, h] = this.win.getContentSize();
@@ -425,19 +440,26 @@ class Companion {
     });
   }
 
-  onWindowOpen(fromId, url, disposition) {
+  // A page opened a tab (window.open, target=_blank; an html view's script navigation:
+  // `fromView`, on behalf of whoever opened the view, not a user action).
+  onWindowOpen(fromId, url, disposition, { opened_by = 'user', fromView = false } = {}) {
     const hit = this.store.findView(fromId);
     if (!hit) return;
     const background = disposition !== 'foreground-tab' && disposition !== 'new-window';
-    this.openEntry(hit.group.tab_id, { url, opened_by: 'user' }, { background })
-      .then((e) => this.report('user_action', 'new_tab', e, hit.group))
+    this.openEntry(hit.group.tab_id, { url, opened_by }, { background })
+      .then((e) => {
+        if (!fromView) this.report('user_action', 'new_tab', e, hit.group);
+      })
       .catch((err) => this.say('warn', err.message));
   }
 
   // ---------- permission prompts (web pages: allow once / deny in the strip) ----------
 
   onPermission(viewId, req, done) {
-    const same = this.prompts.find((p) => p.view_id === viewId && p.permission === req.permission && p.origin === req.origin);
+    const keyOf = (x) => (x.keys || [x.permission]).join(',');
+    const same = this.prompts.find(
+      (p) => p.view_id === viewId && p.permission === req.permission && p.origin === req.origin && keyOf(p) === keyOf(req),
+    );
     if (same) {
       same.dones.push(done);
       return;
@@ -529,6 +551,7 @@ class Companion {
     hit.entry.attention = true; // the strip dot; cleared when the user selects it or herdr focus shows it
     this.pushStrip();
     if (!HEADLESS && this.win) {
+      this.selfRaiseUntil = Date.now() + 1000;
       this.win.show();
       this.win.focus();
     } else log('focus: window raise suppressed (headless)');
@@ -557,6 +580,7 @@ class Companion {
         allow_network: !!a.allow_network,
         url: pathToFileURL(file).toString(),
         title: a.title || path.basename(file),
+        title_fixed: !!a.title, // an explicit --title: the page's <title> never replaces it
         opened_by: a.opened_by || 'agent',
       },
       { background: !a.focus },
@@ -676,6 +700,9 @@ class Companion {
         if (hit) {
           hit.entry.attention = false;
           this.report('user_action', 'select', hit.entry, hit.group);
+          // the user looks at it: herdr clears the group's needs-you (an agent's focus() on
+          // the tab herdr already shows sends no follow `shown`)
+          this.report('user_action', 'shown', hit.entry, hit.group);
           this.pushStrip();
         }
         return;
@@ -821,21 +848,22 @@ class Companion {
 
   async doSync() {
     if (!this.link || !this.link.lease) return; // a new lease resyncs everything
-    const payload = this.store.takeSync(this.link.lease.lease_id);
+    // Byte-bounded: the groups left over stay dirty and go in the next sync (its own seq).
+    const payload = this.store.takeSync(this.link.lease.lease_id, { maxBytes: SYNC_BUDGET_BYTES });
     if (!payload) return;
-    if (Buffer.byteLength(JSON.stringify(payload)) > SYNC_MAX_BYTES) {
-      log('sync payload over 256 KiB, titles truncated');
-      for (const gr of payload.groups) for (const x of gr.entries) x.title = x.title.slice(0, 80);
-    }
     this.syncing = true;
     this.syncAgain = false;
     this.lastSyncAt = Date.now();
     try {
       const { lease_id: _l, ...rest } = payload;
       const res = await this.link.call('browser.host_sync', rest);
-      const dropped = this.store.applySynced(res);
-      for (const g of dropped) this.destroyGroupViews(g);
-      if (dropped.length) this.pushStrip();
+      const unknown = this.store.applySynced(res);
+      // A tab herdr does not know may have moved (new tab id, same key): re-read after the
+      // same grace as tab.closed; host_state follows the key or drops a tab that is gone.
+      if (unknown.length) {
+        log('sync named unknown tabs', unknown.join(','), '- re-reading host state');
+        this.refreshSoon(1000);
+      }
     } catch (e) {
       if (e.code !== 'stale_seq') {
         log('host_sync failed', e.code || e.message);

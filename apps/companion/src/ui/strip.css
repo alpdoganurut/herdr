@@ -33,6 +33,7 @@ button.icon:hover:not(:disabled) { background: var(--bg2); }
 #url, #note { flex: 1; height: 28px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg2); color: var(--fg); padding: 0 10px; font: inherit; outline: none; }
 #url:focus, #note:focus { border-color: var(--accent); }
 #sendbar { display: flex; gap: 6px; padding: 0 8px 6px; }
+#sendbar[hidden] { display: none; }
 #status { padding: 4px 10px; color: var(--dim); border-top: 1px solid var(--border); }
 #status.warn { color: var(--attention); }
 #status.ok { color: #7bd88f; }
