@@ -151,6 +151,7 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
         return ok(id, { type: 'browser_host_reported', accepted: accepted.length, dropped: events.length - accepted.length });
       }
       case 'browser.send_page': {
+        if (!leaseOk(params)) return err(id, 'lease_unknown', 'no such lease');
         const t = state.tabs.get(params.tab_id);
         if (!t) return err(id, 'tab_not_found', `tab ${params.tab_id} not found`);
         if (t.no_agent) return err(id, 'no_agent_in_tab', 'no agent in this tab');

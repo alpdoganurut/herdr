@@ -44,6 +44,11 @@ fn sync(
 }
 
 fn send_page(app: &mut App, tab_id: &str) -> Value {
+    leased("L-send");
+    send_page_as(app, tab_id, Some("L-send"))
+}
+
+fn send_page_as(app: &mut App, tab_id: &str, lease: Option<&str>) -> Value {
     call(
         app,
         Method::BrowserSendPage(BrowserSendPageParams {
@@ -52,7 +57,7 @@ fn send_page(app: &mut App, tab_id: &str) -> Value {
             title: "Docs ```".into(),
             selection: Some("selected words".into()),
             note: Some("look at this".into()),
-            lease_id: None,
+            lease_id: lease.map(str::to_string),
         }),
     )
 }
@@ -273,4 +278,30 @@ fn shown_is_never_starved_by_the_report_rate_limit() {
     assert_eq!(code(&burst), "ok", "{burst}");
     assert_eq!(burst["result"]["accepted"], 21, "{burst}");
     assert_eq!(burst["result"]["dropped"], 20, "{burst}");
+}
+
+#[test]
+fn send_page_needs_the_live_companion_lease() {
+    let mut app = model_app();
+    let tab_id = app.public_tab_id(1, 1).unwrap();
+    // under do not disturb a sent page is stored quietly (no live terminal needed)
+    let dnd = call(
+        &mut app,
+        Method::TabSetDnd(TabSetDndParams {
+            tab_id: tab_id.clone(),
+            dnd: true,
+        }),
+    );
+    assert_eq!(code(&dnd), "ok", "{dnd}");
+    leased("L-live");
+    assert_eq!(
+        code(&send_page_as(&mut app, &tab_id, None)),
+        "lease_unknown"
+    );
+    assert_eq!(
+        code(&send_page_as(&mut app, &tab_id, Some("L-other"))),
+        "lease_unknown"
+    );
+    let sent = send_page_as(&mut app, &tab_id, Some("L-live"));
+    assert_eq!(code(&sent), "ok", "{sent}");
 }

@@ -307,12 +307,22 @@ impl App {
     }
 
     /// `browser.send_page`: the page, the user's selection and note, as a
-    /// message from "you (browser)" to an agent of the tab.
+    /// message from "you (browser)" to an agent of the tab. Needs the live
+    /// companion lease (`lease_unknown` otherwise).
     pub(super) fn handle_browser_send_page(
         &mut self,
         id: String,
         params: BrowserSendPageParams,
     ) -> String {
+        // The message says it is from the user ("you (browser)"): only the companion that
+        // holds the live lease may send it.
+        if !params
+            .lease_id
+            .as_deref()
+            .is_some_and(|lease| hub().lease_matches(lease))
+        {
+            return error(id, crate::browser::hub::lease_unknown());
+        }
         let body = params.url.len()
             + params.title.len()
             + params.selection.as_ref().map_or(0, String::len)
