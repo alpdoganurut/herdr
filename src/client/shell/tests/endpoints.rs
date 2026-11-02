@@ -2093,6 +2093,58 @@ fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
 }
 
 #[test]
+fn tabs_layout_machine_sidebar_local_workspace_click_focuses_it() {
+    let (mut state, _) = state_with_remote();
+    state.config = ClientShellConfig::from_config(&Config::default());
+    assert_eq!(
+        state.config.sidebar_layout,
+        crate::config::SidebarLayoutConfig::Tabs
+    );
+    let mut local = snapshot();
+    let mut second = local.workspaces[0].clone();
+    second.workspace_id = "ws_2".into();
+    second.number = 2;
+    second.label = "second-space".into();
+    second.focused = false;
+    local.workspaces.push(second);
+    state.set_snapshot(Box::new(local));
+    state.compose(100, 28).unwrap();
+    let rect = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.endpoint_id.is_local() && hit.workspace_id == "ws_2")
+        .expect("local workspace row in the machine sidebar")
+        .rect;
+    let outcome = state.handle_raw_events(vec![
+        RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x + 5,
+            row: rect.y,
+            modifiers: KeyModifiers::empty(),
+        }),
+        RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: rect.x + 5,
+            row: rect.y,
+            modifiers: KeyModifiers::empty(),
+        }),
+    ]);
+    assert!(
+        state.collapsed_groups.is_empty(),
+        "the machine sidebar has no group headers to fold"
+    );
+    assert!(
+        matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint {
+            endpoint_id: ClientEndpointId::Local,
+            target: Some(ClientEndpointFocusTarget::Workspace(id)),
+        }] if id == "ws_2"),
+        "a Local workspace row click focuses that space: {:?}",
+        outcome.actions
+    );
+}
+
+#[test]
 fn reconnecting_local_selection_still_reaches_the_runtime() {
     let (mut state, _) = state_with_remote();
     state.mark_endpoint_disconnected(&ClientEndpointId::Local);
