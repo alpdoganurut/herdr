@@ -64,7 +64,7 @@ fn plus_commands_survive_snapshots_and_reload_for_both_keybinding_sources() {
 
 #[test]
 fn shell_new_controls_use_the_same_client_action_routes_as_keybinds() {
-    let mut config = Config::default();
+    let mut config = spaces_config();
     config.ui.prompt_new_workspace_name = false;
     config.ui.prompt_new_tab_name = true;
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
@@ -268,7 +268,7 @@ fn tab_bar_renders_endpoint_status_ellipses_and_clamps_to_useful_scroll() {
             remind_every: None,
         });
     }
-    let mut config = ClientShellConfig::from_config(&Config::default());
+    let mut config = ClientShellConfig::from_config(&spaces_config());
     config.mobile_width_threshold = 0;
     let mut state = ClientShellState::new(config);
     state.set_snapshot(Box::new(projected));
@@ -322,7 +322,7 @@ fn inactive_auto_named_tab_label_does_not_stack_terminal_faint() {
         important: false,
         remind_every: None,
     });
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     let frame = state.compose(106, 20).expect("tab bar frame");
@@ -936,7 +936,7 @@ fn help_overlay_restores_released_search_scroll_and_custom_binding_behavior() {
 
 #[test]
 fn resize_mode_reuses_endpoint_resize_and_stays_active_until_done() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
 

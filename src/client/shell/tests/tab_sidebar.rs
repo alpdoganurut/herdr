@@ -167,7 +167,7 @@ fn tabs_layout_rows_focus_on_click_and_open_the_tab_menu_on_right_click() {
 
 #[test]
 fn spaces_layout_registers_no_sidebar_tab_rows() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(two_space_snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");
@@ -178,6 +178,9 @@ fn spaces_layout_registers_no_sidebar_tab_rows() {
 #[test]
 fn live_config_reload_switches_sidebar_layout() {
     let mut shell = ClientShellConfig::from_config(&Config::default());
+    assert_eq!(shell.sidebar_layout, SidebarLayoutConfig::Tabs);
+    let diagnostics = shell.apply_live_config(&spaces_config(), &[], &[]);
+    assert!(diagnostics.is_empty());
     assert_eq!(shell.sidebar_layout, SidebarLayoutConfig::Spaces);
     let diagnostics = shell.apply_live_config(&tabs_config(), &[], &[]);
     assert!(diagnostics.is_empty());
@@ -196,7 +199,7 @@ fn tabs_layout_drops_the_horizontal_tab_bar() {
     assert!(layout.tab_bar.is_empty());
     assert_eq!(layout.pane_surface.height, 20);
 
-    let spaces = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let spaces = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     assert!(!spaces.layout(106, 20).tab_bar.is_empty());
 }
 
@@ -244,7 +247,7 @@ fn tabs_layout_cycles_next_and_previous_across_spaces() {
     );
 
     // The spaces layout keeps cycling inside the focused space.
-    let mut spaces = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut spaces = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     spaces.set_snapshot(Box::new(snapshot));
     spaces.set_pane_surface(surface());
     spaces.compose(106, 20).expect("composed frame");
@@ -625,7 +628,7 @@ fn suspended_pane_shows_a_card_instead_of_the_shell_and_hides_the_cursor() {
     // The spaces layout leaves the pane alone.
     let mut snapshot = two_space_snapshot();
     snapshot.agents = vec![agent("pane_1", "tab_1", AgentStatus::Suspended)];
-    let mut spaces = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut spaces = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     spaces.set_snapshot(Box::new(snapshot));
     spaces.set_pane_surface(wide_surface());
     let frame = spaces.compose(106, 20).expect("composed frame");
@@ -803,7 +806,7 @@ fn tabs_layout_switch_tab_indexes_the_whole_list() {
     );
     assert_eq!(tab_action(&mut state, KeybindAction::SwitchTab(7)), None);
 
-    let mut spaces = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut spaces = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     spaces.set_snapshot(Box::new(two_space_snapshot()));
     spaces.set_pane_surface(surface());
     spaces.compose(106, 20).expect("composed frame");
@@ -1820,7 +1823,7 @@ fn move_prompt_treats_current_group_as_no_op_bucket_name_as_ungroup_and_skips_wo
 
 #[test]
 fn group_keys_do_nothing_outside_the_tabs_layout() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(three_space_snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 24).expect("composed frame");
@@ -1956,7 +1959,7 @@ fn tab_color_maps_every_name_to_a_fixed_color_and_ignores_unknown() {
 #[test]
 fn spaces_layout_tints_unfocused_tab_bar_labels_only() {
     use crate::protocol::color_to_u32;
-    let (state, frame) = colored_tabs_state(&Config::default());
+    let (state, frame) = colored_tabs_state(&spaces_config());
     let palette = &state.config.palette;
     let rect = |tab_id: &str| {
         state
@@ -2591,7 +2594,7 @@ fn tabs_sidebar_footer_never_hides_the_last_tab() {
 
 #[test]
 fn spaces_layout_keeps_the_status_in_the_tab_bar() {
-    let (state, frame) = composed(&Config::default(), status_snapshot());
+    let (state, frame) = composed(&spaces_config(), status_snapshot());
     let rows = frame_rows(&frame);
     assert!(rows[0].contains("host · 12:00"), "{:?}", rows[0]);
     assert_eq!(
@@ -2812,7 +2815,7 @@ fn tabs_sidebar_footer_joins_its_lines_below_30_rows_in_their_colors() {
 
 #[test]
 fn spaces_tab_bar_shows_a_multi_line_segment_as_its_last_line_without_escapes() {
-    let (_, frame) = composed(&Config::default(), multi_line_status_snapshot());
+    let (_, frame) = composed(&spaces_config(), multi_line_status_snapshot());
     let rows = frame_rows(&frame);
     assert!(rows[0].contains("host · err norm"), "{:?}", rows[0]);
     assert!(

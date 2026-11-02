@@ -553,7 +553,7 @@ fn startup_config_diagnostics_are_client_rendered_and_persist_until_replaced() {
 
 #[test]
 fn config_diagnostic_offsets_only_the_pane_rows_it_overlaps() {
-    let mut config = ClientShellConfig::from_config(&Config::default());
+    let mut config = ClientShellConfig::from_config(&spaces_config());
     config.toast_delay_seconds = 0;
     let mut state = ClientShellState::new(config);
     let mut endpoint_snapshot = snapshot();
@@ -1041,7 +1041,7 @@ fn coalesced_release_notes_open_and_mouse_uses_current_geometry() {
 
 #[test]
 fn outdated_integration_badges_launcher_settings_and_settings_tab() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     let mut endpoint_snapshot = snapshot();
     endpoint_snapshot.integration_updates_available = true;
     state.set_snapshot(Box::new(endpoint_snapshot));

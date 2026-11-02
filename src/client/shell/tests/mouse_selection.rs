@@ -321,7 +321,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
 
 #[test]
 fn disabled_mouse_chrome_keeps_tab_wheel_but_removes_split_drag_hits() {
-    let mut config = Config::default();
+    let mut config = spaces_config();
     config.ui.mouse_capture = false;
     let mut projected = snapshot();
     let mut second_tab = projected.tabs[0].clone();
@@ -1038,7 +1038,7 @@ fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
         tab.focused = false;
         projected.tabs.push(tab);
     }
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("three tabs");
@@ -1122,7 +1122,7 @@ fn tab_drag_clears_its_drop_target_after_leaving_the_tab_row() {
         tab.focused = false;
         projected.tabs.push(tab);
     }
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("three tabs");
@@ -1165,7 +1165,7 @@ fn tab_drag_clears_its_drop_target_after_leaving_the_tab_row() {
 
 #[test]
 fn tab_wheel_switches_tabs_without_changing_overflow_scroll() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("tab bar");
@@ -1193,7 +1193,7 @@ fn tab_wheel_switches_tabs_without_changing_overflow_scroll() {
 
 #[test]
 fn context_menu_keyboard_and_outside_click_are_client_owned() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");

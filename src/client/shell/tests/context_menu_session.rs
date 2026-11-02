@@ -45,7 +45,7 @@ fn pane(pane_id: &str, focused: bool) -> ClientShellPane {
 fn state_with(agents: Vec<ClientShellAgent>) -> ClientShellState {
     let mut projected = snapshot();
     projected.agents = agents;
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");

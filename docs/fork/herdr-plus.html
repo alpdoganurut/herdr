@@ -382,7 +382,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
         </div>
         <ul>
           <li><code>⏶</code> folds every group, <code>⏷</code> opens them all again.</li>
-          <li><code>‹</code> <code>›</code> go back and forward through the tabs you focused, like a browser; lit when there is somewhere to go. Keys <code>cmd+[</code> / <code>cmd+]</code> where your terminal passes Cmd.</li>
+          <li><code>‹</code> <code>›</code> go back and forward through the tabs you focused, like a browser; lit when there is somewhere to go. Keys <code>cmd+[</code> / <code>cmd+]</code> where your terminal passes Cmd, else <code>alt+,</code> / <code>alt+.</code>.</li>
           <li><code>⌕</code> filters the tabs as you type (<code>prefix+f</code>); <code>◷</code> keeps only recently active tabs (click forward, right-click back).</li>
           <li><code>◧</code> opens or closes the focused tab's notes pane; lit while it is open.</li>
           <li><code>+</code> moves the focused tab into a group, new or existing, by name.</li>
@@ -495,7 +495,7 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
     <div class="card"><h3><span class="g">◈</span>Better detection</h3><p>Codex voice mode shows on the tab. A Claude whose turn ended while background agents run reads idle, not working.</p></div>
     <div class="card"><h3><span class="g">⌁</span>Claude's own status</h3><p>Claude Code reports its own status to herdr: working, blocked on a question, done, and each background subagent. Screen detection still decides; <code>herdr agent explain</code> shows both side by side. Turn it off with <code>[agents] program_status = false</code>.</p></div>
     <div class="card"><h3><span class="g">⎘</span>Copy session ID</h3><p>Tab and pane menus copy the Claude Code session ID or Codex thread ID, for <code>--resume</code> elsewhere.</p></div>
-    <div class="card"><h3><span class="g">⇆</span><kbd>cmd</kbd>+<kbd>[</kbd> / <kbd>cmd</kbd>+<kbd>]</kbd> tab history</h3><p>Back and forward through the tabs you focused, like a browser. Closed tabs are skipped. The <code>‹</code> <code>›</code> buttons at the start of the tabs toolbar do the same.</p></div>
+    <div class="card"><h3><span class="g">⇆</span><kbd>cmd</kbd>+<kbd>[</kbd> / <kbd>cmd</kbd>+<kbd>]</kbd> tab history</h3><p>Back and forward through the tabs you focused, like a browser. Closed tabs are skipped. <kbd>alt</kbd>+<kbd>,</kbd> / <kbd>alt</kbd>+<kbd>.</kbd> work too, and so do the <code>‹</code> <code>›</code> buttons at the start of the tabs toolbar.</p></div>
     <div class="card"><h3><span class="g">⤧</span>Drag &amp; drop and resize fixes</h3><p>Drops land where the marker shows. Resizing the window is smoother and the sidebar no longer flickers.</p></div>
     <div class="card"><h3><span class="g">◎</span>Built-in browser</h3><p>herdr runs its own Chromium for agents (<code>herdr-browser</code> MCP): tabs grouped per agent, a glow and cursor while an agent acts, password fields protected, never pulls the window forward.</p></div>
     <div class="card"><h3><span class="g">⏸</span>Suspend, activate, restart</h3><p>Suspend an idle agent to free resources and bring it back later in the same pane and session. If it's still busy (working, a subagent, a background shell, a <code>/loop</code>), suspend is refused and the notice offers <b>Force suspend</b> or <b>Force restart</b>. Only you can force it, not agents.</p></div>

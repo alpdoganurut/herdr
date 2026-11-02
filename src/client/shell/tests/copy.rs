@@ -346,7 +346,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
 
 #[test]
 fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {

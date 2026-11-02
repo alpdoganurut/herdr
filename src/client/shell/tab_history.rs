@@ -1,5 +1,5 @@
 //! Fork (sidebar v3): browser-style tab history for `keys.tab_history_back` /
-//! `keys.tab_history_forward` (default `cmd+[` / `cmd+]`).
+//! `keys.tab_history_forward` (default `cmd+[` or `alt+,` / `cmd+]` or `alt+.`).
 //!
 //! TUI navigation state, like `previous_pane_id`: client-only, per attached
 //! client, for the active endpoint only, never sent to the server. Pure data,

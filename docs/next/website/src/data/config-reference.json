@@ -484,14 +484,14 @@
         {
           "key": "update.version_check",
           "type": "boolean",
-          "default": "true",
-          "description": "Check herdr.dev for new Herdr versions in the background."
+          "default": "false",
+          "description": "Check herdr.dev for new Herdr versions in the background. herdr+ turns it off by default: herdr.dev announces upstream releases, and installing one replaces this build. Set it to true to get the notices anyway."
         },
         {
           "key": "update.manifest_check",
           "type": "boolean",
-          "default": "true",
-          "description": "Check herdr.dev for remote agent-detection manifest updates in the background. Bundled manifests and local overrides still apply."
+          "default": "false",
+          "description": "Check herdr.dev for remote agent-detection manifest updates in the background. Bundled manifests and local overrides still apply. herdr+ turns it off by default, so a remote manifest never replaces the bundled agent-detection rules; set it to true to opt in."
         }
       ]
     },
@@ -796,13 +796,13 @@
         {
           "key": "keys.tab_history_back",
           "type": "keybinding",
-          "default": "\"cmd+[\"",
-          "description": "Focus the tab you focused before, browser-style: back through every tab focus change (clicks, keys, agents' tab.focus, notification jumps), skipping closed tabs. A back or forward jump does not add a new entry; focusing another tab after going back drops the forward entries. The history is per client and forgets a restarted server. cmd is the super modifier; the terminal must pass it through (in Ghostty: keybind = super+[=csi:91;9u, or keybind = super+[=unbind). Inside a multiplexer that drops Cmd, bind another key, for example tab_history_back = \"alt+,\" and tab_history_forward = \"alt+.\"."
+          "default": "[\"cmd+[\", \"alt+,\"]",
+          "description": "Focus the tab you focused before, browser-style: back through every tab focus change (clicks, keys, agents' tab.focus, notification jumps), skipping closed tabs. A back or forward jump does not add a new entry; focusing another tab after going back drops the forward entries. The history is per client and forgets a restarted server. cmd is the super modifier; the terminal must pass it through (in Ghostty: keybind = super+[=csi:91;9u, or keybind = super+[=unbind). The default alt+, (and alt+. for keys.tab_history_forward) works where Cmd does not reach herdr, for example inside a multiplexer that drops it."
         },
         {
           "key": "keys.tab_history_forward",
           "type": "keybinding",
-          "default": "\"cmd+]\"",
+          "default": "[\"cmd+]\", \"alt+.\"]",
           "description": "Focus the next tab again after keys.tab_history_back, skipping closed tabs. In Ghostty: keybind = super+]=csi:93;9u, or keybind = super+]=unbind."
         },
         {
@@ -1004,8 +1004,8 @@
         {
           "key": "ui.sidebar_layout",
           "type": "enum",
-          "default": "spaces",
-          "description": "Expanded sidebar composition. \"spaces\" stacks the space panel over the agent panel; \"tabs\" lists one row per tab across every space, in tab order.",
+          "default": "tabs",
+          "description": "Expanded sidebar composition. \"tabs\" lists one row per tab across every space, in tab order; \"spaces\" stacks the space panel over the agent panel.",
           "values": [
             "spaces",
             "tabs"

@@ -7,12 +7,7 @@ What you can turn on or off in herdr+, what it starts as, and where to change it
 - **Reload after a hand edit:** `prefix+shift+r` (`reload_config`).
 - **Default column:** **on** = opt-out (it works until you turn it off), **off** = opt-in.
 
-Most fork sidebar features need the `tabs` sidebar layout. Turn that on first:
-
-```toml
-[ui]
-sidebar_layout = "tabs"   # default "spaces"
-```
+Most fork sidebar features need the `tabs` sidebar layout. It is the default; `[ui] sidebar_layout = "spaces"` goes back to upstream's space and agent panels.
 
 ## Agents (`[agents]`)
 
@@ -54,7 +49,7 @@ Before a Claude agent's context is compacted, herdr has it write a handoff, save
 
 | Feature | Default | Where to change | In Settings? |
 |---|---|---|---|
-| Tabs sidebar layout (needed by the rows below) | off (`"spaces"`) | `[ui] sidebar_layout = "tabs"` | Only as the one-way hint row in coordinator settings |
+| Tabs sidebar layout (needed by the rows below) | on (`"tabs"`; upstream's default is `"spaces"`) | `[ui] sidebar_layout = "spaces"` | Only under `spaces`, as the one-way hint row in coordinator settings that switches to `tabs` |
 | Active block (blocked, working, finished agents) | on | `[ui] sidebar_active_agents = false` | Yes, indicators |
 | Pinned block | on | `[ui] sidebar_pinned_agents = false` | Yes, indicators |
 | Scheduled block (tabs with a reminder) | on | `[ui] sidebar_scheduled_agents = false` | Yes, indicators |
@@ -62,7 +57,7 @@ Before a Claude agent's context is compacted, herdr has it write a handoff, save
 | Context use (`NN%` from 75 %) | on | `[ui] sidebar_context_usage = false` | No, config only |
 | Sidebar search (type to filter tabs; Esc clears, Enter focuses the first match) | available | Key `sidebar_search` (default `prefix+f`) or click the toolbar field | n/a, not saved |
 | Recency filter (`◷` chip: off, 15m, 30m, 1h, 6h, 1d) | off | Click the chip (shift-click or right-click steps back). No config key | n/a, not saved |
-| Tab history back / forward | available | The toolbar's `‹` `›` buttons; keys `tab_history_back` (`cmd+[`), `tab_history_forward` (`cmd+]`) | n/a |
+| Tab history back / forward | available | The toolbar's `‹` `›` buttons; keys `tab_history_back` (`cmd+[`, `alt+,`), `tab_history_forward` (`cmd+]`, `alt+.`) | n/a |
 
 The search query and recency chip belong to the client only. They are never saved: a restart or a new client lists every tab again.
 
@@ -73,7 +68,7 @@ The top row of the tabs sidebar, left to right: `⏶ ‹ ›  ⌕ search  ◷ 1h
 | Control | What it does | Shown when | Key / setting |
 |---|---|---|---|
 | `⏶` / `⏷` fold toggle | `⏶` folds every group, `⏷` (once all are folded) expands them all. The group holding the focused tab always stays open. Does nothing while a search or recency filter is on | There is a group that can fold | `toggle_groups_folded` (unbound) |
-| `‹` `›` tab history | Back to the previously focused tab, forward again after going back (browser-style). Lit while there is a tab that way; a dim one does nothing | Always, from 24 columns; below that they drop first | `tab_history_back` (`cmd+[`), `tab_history_forward` (`cmd+]`), see the Cmd note under Keybinds |
+| `‹` `›` tab history | Back to the previously focused tab, forward again after going back (browser-style). Lit while there is a tab that way; a dim one does nothing | Always, from 24 columns; below that they drop first | `tab_history_back` (`cmd+[`, `alt+,`), `tab_history_forward` (`cmd+]`, `alt+.`), see the note under Keybinds |
 | `⌕ search` field | Click to type a filter (Esc clears and leaves, Enter focuses the first match, the query stays). Dim placeholder when empty, accent `⌕` with a query, highlighted with a caret while typing | On toolbar hover, or while the field has the keyboard, holds a query or the recency chip is on; from 20 columns | `sidebar_search` (`prefix+f`) |
 | `◷` recency chip | Click steps forward through off, 15m, 30m, 1h, 6h, 1d and round again; shift-click or right-click steps back. Dim `◷` while off, accent `◷ 1h` while on | Same as the search field | None, not saved |
 | `◧` notes button | Opens or closes the focused tab's notes pane, without moving the keyboard to it. Lit while that pane is open | Always | `toggle_info_pane` (unbound) |
@@ -155,10 +150,10 @@ Legacy keys: `wrap_agents` is only read as a fallback for `[agents] wrap` (a Set
 
 | Feature | Default | Where to change | In Settings? |
 |---|---|---|---|
-| Version check | on | `[update] version_check = false` | No, config only |
-| Agent detection manifest check | on | `[update] manifest_check = false` | No, config only |
+| Version check | off (upstream's default is on) | `[update] version_check = true` | No, config only |
+| Agent detection manifest check | off (upstream's default is on) | `[update] manifest_check = true` | No, config only |
 
-**Turn both off on a herdr+ build.** `version_check` polls `herdr.dev/latest.json` in the background, so upstream releases show up as "update available" on a fork binary; the check itself only notifies. Do not follow that prompt: `herdr update` ignores `version_check`, fetches the same upstream manifest, and when upstream's version is newer than the fork's it downloads the upstream binary, verifies its checksum and renames it over the herdr+ binary on disk (`current_exe`). It refuses inside herdr and on Homebrew, mise or Nix installs. Before installing it asks to stop or live-hand-off running servers, and a handoff relaunches them on the upstream binary. After that you run upstream herdr, not herdr+. `manifest_check` downloads `herdr.dev/agent-detection/index.toml`. A remote manifest at the bundled version or newer replaces the fork's bundled detection rules; only the fork's signal rules survive.
+**Both are off on a herdr+ build, and should stay off.** `version_check` polls `herdr.dev/latest.json` in the background, so upstream releases show up as "update available" on a fork binary; the check itself only notifies. Do not follow that prompt: `herdr update` ignores `version_check`, fetches the same upstream manifest, and when upstream's version is newer than the fork's it downloads the upstream binary, verifies its checksum and renames it over the herdr+ binary on disk (`current_exe`). It refuses inside herdr and on Homebrew, mise or Nix installs. Before installing it asks to stop or live-hand-off running servers, and a handoff relaunches them on the upstream binary. After that you run upstream herdr, not herdr+. `manifest_check` downloads `herdr.dev/agent-detection/index.toml`. A remote manifest at the bundled version or newer replaces the fork's bundled detection rules; only the fork's signal rules survive.
 
 ## News (`[news]`)
 
@@ -166,12 +161,9 @@ There is an AI news desk. It is off by default (`[news] enabled = false`, with a
 
 ## config.toml examples
 
-Minimal teammate setup (agents wrapped with tools, tabs sidebar, no upstream update prompts):
+Minimal teammate setup (agents wrapped with tools; the tabs sidebar and no upstream update checks are already the defaults):
 
 ```toml
-[ui]
-sidebar_layout = "tabs"
-
 [ui.toast]
 delivery = "herdr"
 
@@ -179,18 +171,11 @@ delivery = "herdr"
 wrap = true
 tools = true
 instructions = true
-
-[update]
-version_check = false
-manifest_check = false
 ```
 
-Coordinator on:
+Coordinator on (its pinned row needs the default `tabs` layout):
 
 ```toml
-[ui]
-sidebar_layout = "tabs"   # the pinned coordinator row needs it
-
 [coordinator]
 enabled = true
 model = "sonnet"
@@ -220,7 +205,7 @@ enabled = false
 
 ## Keybinds (`[keys]`)
 
-Bind a key with `[keys] <action> = "prefix+x"` (the prefix is `ctrl+b`).
+Bind a key with `[keys] <action> = "prefix+x"` (the prefix is `ctrl+b`), or several with `<action> = ["cmd+[", "alt+,"]`. Setting an action replaces all of its default keys; `""` unbinds it.
 
 | Action | Default | What it does |
 |---|---|---|
@@ -229,8 +214,8 @@ Bind a key with `[keys] <action> = "prefix+x"` (the prefix is `ctrl+b`).
 | `open_notification_target` | `prefix+o` | Focuses the tab of the visible notification (upstream) |
 | `clear_pane` | unbound | Clears the focused pane (upstream) |
 | `sidebar_search` | `prefix+f` | Focuses or leaves the tabs sidebar search field |
-| `tab_history_back` | `cmd+[` | Previously focused tab, browser-style |
-| `tab_history_forward` | `cmd+]` | Forward again after going back |
+| `tab_history_back` | `cmd+[`, `alt+,` | Previously focused tab, browser-style |
+| `tab_history_forward` | `cmd+]`, `alt+.` | Forward again after going back |
 | `toggle_info_pane` | unbound | Shows or hides the focused tab's notes pane |
 | `toggle_agent_suspend` | unbound | Suspends the focused agent, or activates it again |
 | `handoff_compact` | unbound | The focused Claude agent writes a handoff, then `/compact` |
@@ -243,7 +228,31 @@ Bind a key with `[keys] <action> = "prefix+x"` (the prefix is `ctrl+b`).
 | `open_browser` | unbound | Opens the Browser overlay |
 | `open_news` | unbound | Focuses the News tab |
 
-`cmd+[` / `cmd+]` only work if your terminal passes Cmd through to herdr; most macOS terminals keep Cmd for themselves. The toolbar's `‹` `›` buttons always work, or bind keys any terminal sends, e.g. `tab_history_back = "alt+,"` and `tab_history_forward = "alt+."`. Example: Ghostty passes them on with `keybind = super+[=csi:91;9u` and `keybind = super+]=csi:93;9u`.
+`cmd+[` / `cmd+]` only work if your terminal passes Cmd through to herdr; most macOS terminals keep Cmd for themselves. That is why `alt+,` / `alt+.` are bound too: they reach herdr in any terminal that sends Option as Alt (Ghostty: `macos-option-as-alt = true`; iTerm2 and Terminal.app have the same setting). herdr takes them before the pane, so your shell no longer sees `alt+.` (insert last argument). The toolbar's `‹` `›` buttons always work. Ghostty passes Cmd on with `keybind = super+[=csi:91;9u` and `keybind = super+]=csi:93;9u`.
+
+### Suggested key set
+
+Everything else above stays unbound until you bind it. This is one full set, all on direct keys; copy what you like into `[keys]`:
+
+```toml
+[keys]
+toggle_info_pane = "alt+n"
+previous_tab = "alt+a"
+next_tab = "alt+d"
+move_tab_previous = "alt+i"
+move_tab_next = "alt+o"
+new_tab = "alt+t"
+rename_tab = "alt+r"
+toggle_agent_suspend = "alt+s"
+switch_tab = "alt+1..9"
+move_tab_to_group = "alt+g"
+toggle_groups_folded = "alt+e"
+cycle_tab_color = "alt+c"
+open_notification_target = "ctrl+space"
+tab_history_back = ["cmd+[", "ctrl+shift+space"]
+```
+
+`previous_tab`, `next_tab`, `new_tab`, `rename_tab`, `switch_tab` and `open_notification_target` replace their `prefix+...` defaults; add those back in a list to keep both, e.g. `next_tab = ["alt+d", "prefix+n"]`. `tab_history_back` here drops the default `alt+,`; `tab_history_forward` keeps its defaults. Alt-letter keys only reach herdr when the terminal sends Option as Alt, and herdr takes them before the pane, so they shadow your shell's word keys (`alt+d` deletes a word, `alt+t` swaps words, `alt+c` capitalizes one). Change any of them to keys you do not use there.
 
 ## Not configurable
 

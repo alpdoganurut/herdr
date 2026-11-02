@@ -2618,22 +2618,34 @@ width = "80%"
     }
 
     #[test]
-    fn default_tab_history_keys_are_cmd_brackets() {
-        let kb = Config::default().keybinds();
+    fn default_tab_history_keys_are_cmd_brackets_and_alt_comma_period() {
+        let config = Config::default();
+        assert!(config.collect_diagnostics().is_empty());
+        let kb = config.keybinds();
         assert_eq!(
             binding_triggers(&kb.tab_history_back),
-            vec![BindingTrigger::Direct((
-                KeyCode::Char('['),
-                KeyModifiers::SUPER
-            ))]
+            vec![
+                BindingTrigger::Direct((KeyCode::Char('['), KeyModifiers::SUPER)),
+                BindingTrigger::Direct((KeyCode::Char(','), KeyModifiers::ALT)),
+            ]
         );
         assert_eq!(
             binding_triggers(&kb.tab_history_forward),
-            vec![BindingTrigger::Direct((
-                KeyCode::Char(']'),
-                KeyModifiers::SUPER
-            ))]
+            vec![
+                BindingTrigger::Direct((KeyCode::Char(']'), KeyModifiers::SUPER)),
+                BindingTrigger::Direct((KeyCode::Char('.'), KeyModifiers::ALT)),
+            ]
         );
+        for (code, action) in [
+            (',', crate::input::KeybindAction::TabHistoryBack),
+            ('.', crate::input::KeybindAction::TabHistoryForward),
+        ] {
+            let key = TerminalKey::new(KeyCode::Char(code), KeyModifiers::ALT);
+            assert!(matches!(
+                crate::input::resolve_direct_binding(&kb, &key),
+                Some(crate::input::KeybindMatch::Action(found)) if found == action
+            ));
+        }
         let config: Config = toml::from_str(
             r#"
 [keys]
