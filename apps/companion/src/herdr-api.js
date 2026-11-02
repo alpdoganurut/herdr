@@ -142,4 +142,15 @@ class Connection extends EventEmitter {
   }
 }
 
-module.exports = { Connection, ApiError, LineParser, resolveSocketPath };
+// `fn` run one call at a time, in call order: each call waits for the previous one to settle
+// and resolves with its own run. A failed run is reported to `onError` and never blocks the next.
+function serialized(fn, onError = () => {}) {
+  let last = Promise.resolve();
+  return (...args) => {
+    const run = last.then(() => fn(...args));
+    last = run.catch((e) => onError(e));
+    return run;
+  };
+}
+
+module.exports = { serialized, Connection, ApiError, LineParser, resolveSocketPath };

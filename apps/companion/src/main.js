@@ -9,7 +9,7 @@ const { pathToFileURL } = require('node:url');
 const { GroupStore } = require('./groups.js');
 const { ViewManager, within } = require('./views.js');
 const { HerdrLink } = require('./host.js');
-const { resolveSocketPath } = require('./herdr-api.js');
+const { resolveSocketPath, serialized } = require('./herdr-api.js');
 
 const VERSION = require('../package.json').version;
 const UI_DIR = path.join(__dirname, 'ui');
@@ -100,6 +100,7 @@ class Companion {
     this.tokens = REPORT_RATE;
     this.tokensAt = Date.now();
     this.refreshTimer = null;
+    this.refreshSerial = serialized(() => this.readHostState(), (e) => log('host_state apply failed', e.message));
     this.focusTimer = null;
     this.selfRaiseUntil = 0; // window focus events before this are our own raise
     this.views = new ViewManager({
@@ -254,7 +255,15 @@ class Companion {
     this.scheduleSync(0);
   }
 
-  async refreshState() {
+  // One host_state read at a time, in order (serialized): each request runs on its own
+  // connection, so overlapping reads could answer out of order and an older full replace
+  // would drop a newer group (and destroy its views). A caller still gets a read that
+  // started after its call.
+  refreshState() {
+    return this.refreshSerial();
+  }
+
+  async readHostState() {
     let res;
     try {
       res = await this.link.call('browser.host_state', {});

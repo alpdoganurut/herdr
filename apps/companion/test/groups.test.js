@@ -221,3 +221,26 @@ test('an html view of a symlinked file reads the directory the file really lives
   assert.notEqual(viewPartition('/r', false), viewPartition('/r', true));
   fs.rmSync(d, { recursive: true, force: true });
 });
+
+test('serialized runs one call at a time in order; a failure does not block the next', async () => {
+  const { serialized } = require('../src/herdr-api.js');
+  const log = [];
+  let active = 0;
+  const errors = [];
+  const run = serialized(async (n, ms) => {
+    active++;
+    assert.equal(active, 1, 'never two at once');
+    log.push(`start ${n}`);
+    await new Promise((r) => setTimeout(r, ms));
+    active--;
+    log.push(`end ${n}`);
+    if (n === 2) throw new Error('two failed');
+    return n;
+  }, (e) => errors.push(e.message));
+  // the slow first read would answer last if they overlapped
+  const results = await Promise.allSettled([run(1, 40), run(2, 5), run(3, 1)]);
+  assert.deepEqual(log, ['start 1', 'end 1', 'start 2', 'end 2', 'start 3', 'end 3']);
+  assert.deepEqual(results.map((r) => r.status), ['fulfilled', 'rejected', 'fulfilled']);
+  assert.equal(results[2].value, 3);
+  assert.deepEqual(errors, ['two failed']);
+});
