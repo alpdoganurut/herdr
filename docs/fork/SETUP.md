@@ -158,22 +158,19 @@ Stop a running upstream server with the **old** binary (from a terminal outside 
 self-updater. They download upstream herdr and replace `~/.local/bin/herdr`, which drops the
 coordinator, agents tools and browser. herdr+ reports the same version as upstream (0.9.5),
 so once upstream ships a newer release herdr will offer an update. **Never run those
-commands**, and turn the checks off in config (section 4). Update herdr+ only as in section 9.
+commands**. herdr+ turns its background update checks off by default (`[update] version_check` and
+`manifest_check`); leave them off. Update herdr+ only as in section 9.
 
 ---
 
 ## 4. Minimal config and first run
 
 Write a fresh, minimal config. Do not start from `herdr --default-config` and append: its
-output already contains an `[update]` table, and a second one is a TOML error.
+output already contains `[agents]` and `[coordinator]` tables, and a second one is a TOML error.
 
 ```bash
 mkdir -p ~/.config/herdr
 [ -e ~/.config/herdr/config.toml ] && echo "config.toml exists: edit it by hand" || cat > ~/.config/herdr/config.toml <<'EOF'
-[update]
-version_check = false     # no upstream update notices
-manifest_check = false    # keep the fork's bundled agent-detection rules
-
 [agents]
 wrap = true               # route claude/codex in herdr panes through `herdr agent wrap`
 tools = true              # give agents the herdr_agents MCP tools
@@ -186,6 +183,10 @@ EOF
 ```
 
 If the file already exists, add or edit those keys inside the existing tables instead.
+
+No `[ui]` or `[update]` lines are needed: herdr+ already defaults to the `tabs` sidebar
+(`sidebar_layout = "tabs"`) and has upstream's update checks off (`version_check = false`,
+`manifest_check = false`). An older config that sets them to those values still works.
 
 Leave out: `[news]`, `[agents.handoff] command` (empty uses herdr's own handoff prompt),
 `ui.tab_bar_right`, and `[agents] context_window` unless your model really has that window.
@@ -451,7 +452,7 @@ Relaunch agents to pick up new tools or instructions. Never use `herdr update`.
 | herdr is upstream (no coordinator, no `herdr coordinator`) | Cloned `master`, or another herdr earlier on PATH | `git checkout fork`; `which -a herdr`; `brew uninstall herdr` |
 | herdr is killed at launch (Code Signature Invalid) | Binary overwritten in place | Use the `.new` + `codesign` + `mv -f` recipe |
 | "Stop the old server to use the new version" | Running server is upstream or an older protocol | `herdr server live-handoff`, else `herdr server stop` and `herdr` |
-| Update notice from upstream; herdr+ features gone after `herdr update` | Upstream updater | `[update] version_check = false`, `manifest_check = false`; reinstall from source |
+| Update notice from upstream; herdr+ features gone after `herdr update` | Upstream updater (or a config that sets `[update] version_check = true`) | Remove `version_check = true` / `manifest_check = true` (off is the default); reinstall from source |
 | Agents show no state, no handoff reports | `python3` missing or hooks not installed | `python3 --version`; `herdr integration install claude` / `codex` |
 | `herdr integration status --outdated-only` lists agents | Hooks older than this build | `herdr integration install <agent>` |
 | No `herdr_agents` tools in an agent | Wrap off, shell hook missing, non-zsh shell, or agent started earlier | `[agents] wrap/tools = true`; `herdr browser setup --shell`; new pane; relaunch agent |

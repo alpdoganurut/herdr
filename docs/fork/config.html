@@ -172,9 +172,9 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <span class="badge na">n/a</span>
     </div>
     <figure style="margin-top:1.6rem">
-      <figcaption><span>Most fork sidebar features need the <code>tabs</code> sidebar layout. Turn that on first:</span><span class="fn">config.toml</span></figcaption>
+      <figcaption><span>Most fork sidebar features need the <code>tabs</code> sidebar layout. It is the default; this goes back to upstream's space and agent panels:</span><span class="fn">config.toml</span></figcaption>
 <pre><span class="h">[ui]</span>
-<span class="kk">sidebar_layout</span> = <span class="v">"tabs"</span>   <span class="c"># default "spaces"</span></pre>
+<span class="kk">sidebar_layout</span> = <span class="v">"spaces"</span>   <span class="c"># default "tabs"</span></pre>
     </figure>
   </div>
   <div class="facts">
@@ -318,9 +318,9 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
     <div class="row">
       <div class="f"><h3>Tabs sidebar layout</h3><p>Needed by the rows below.</p></div>
-      <div class="d"><span class="pill off">off</span><small><code>"spaces"</code></small></div>
-      <div class="k"><code>[ui] sidebar_layout = "tabs"</code></div>
-      <div class="s"><span class="badge ro">hint only</span><small>Only as the one-way hint row in coordinator settings</small></div>
+      <div class="d"><span class="pill on">on</span><small><code>"tabs"</code>; upstream's default is <code>"spaces"</code></small></div>
+      <div class="k"><code>[ui] sidebar_layout = "spaces"</code></div>
+      <div class="s"><span class="badge ro">hint only</span><small>Only under <code>spaces</code>, as the one-way hint row in coordinator settings that switches to <code>tabs</code></small></div>
     </div>
     <div class="row">
       <div class="f"><h3>Active block</h3><p>Blocked, working, finished agents.</p></div>
@@ -367,7 +367,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="row">
       <div class="f"><h3>Tab history back / forward</h3></div>
       <div class="d"><span class="pill val">available</span></div>
-      <div class="k">The toolbar's <code>‹</code> <code>›</code> buttons; keys <code>tab_history_back</code> (<kbd>cmd</kbd>+<kbd>[</kbd>), <code>tab_history_forward</code> (<kbd>cmd</kbd>+<kbd>]</kbd>)</div>
+      <div class="k">The toolbar's <code>‹</code> <code>›</code> buttons; keys <code>tab_history_back</code> (<kbd>cmd</kbd>+<kbd>[</kbd>, <kbd>alt</kbd>+<kbd>,</kbd>), <code>tab_history_forward</code> (<kbd>cmd</kbd>+<kbd>]</kbd>, <kbd>alt</kbd>+<kbd>.</kbd>)</div>
       <div class="s"><span class="badge na">n/a</span></div>
     </div>
   </div>
@@ -387,7 +387,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="f"><h3><code>‹</code> <code>›</code> tab history</h3></div>
       <div class="d"><span class="pill val">always, from 24 columns</span><small>below that they drop first</small></div>
       <div class="k">Back to the previously focused tab, forward again after going back (browser-style)<small>Lit while there is a tab that way; a dim one does nothing</small></div>
-      <div class="s"><code>tab_history_back</code> <kbd>cmd</kbd>+<kbd>[</kbd><br><code>tab_history_forward</code> <kbd>cmd</kbd>+<kbd>]</kbd><small>see the Cmd note under <a href="#keys">Keybinds</a></small></div>
+      <div class="s"><code>tab_history_back</code> <kbd>cmd</kbd>+<kbd>[</kbd>, <kbd>alt</kbd>+<kbd>,</kbd><br><code>tab_history_forward</code> <kbd>cmd</kbd>+<kbd>]</kbd>, <kbd>alt</kbd>+<kbd>.</kbd><small>see the note under <a href="#keys">Keybinds</a></small></div>
     </div>
     <div class="row">
       <div class="f"><h3><code>⌕ search</code> field</h3></div>
@@ -707,19 +707,19 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
     <div class="row">
       <div class="f"><h3>Version check</h3></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[update] version_check = false</code></div>
+      <div class="d"><span class="pill off">off</span><small>upstream's default is on</small></div>
+      <div class="k"><code>[update] version_check = true</code></div>
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
       <div class="f"><h3>Agent detection manifest check</h3></div>
-      <div class="d"><span class="pill on">on</span></div>
-      <div class="k"><code>[update] manifest_check = false</code></div>
+      <div class="d"><span class="pill off">off</span><small>upstream's default is on</small></div>
+      <div class="k"><code>[update] manifest_check = true</code></div>
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
   </div>
   <div class="card warn" style="margin-top:14px">
-    <h3><span class="g">!</span>Turn both off on a herdr+ build.</h3>
+    <h3><span class="g">!</span>Both are off on a herdr+ build, and should stay off.</h3>
     <p><code>version_check</code> polls <code>herdr.dev/latest.json</code> in the background, so upstream releases show up as "update available" on a fork binary; the check itself only notifies. Do not follow that prompt: <code>herdr update</code> ignores <code>version_check</code>, fetches the same upstream manifest, and when upstream's version is newer than the fork's it downloads the upstream binary, verifies its checksum and renames it over the herdr+ binary on disk (<code>current_exe</code>). It refuses inside herdr and on Homebrew, mise or Nix installs. Before installing it asks to stop or live-hand-off running servers, and a handoff relaunches them on the upstream binary. After that you run upstream herdr, not herdr+.</p>
     <p style="margin-top:.5rem"><code>manifest_check</code> downloads <code>herdr.dev/agent-detection/index.toml</code>. A remote manifest at the bundled version or newer replaces the fork's bundled detection rules; only the fork's signal rules survive.</p>
   </div>
@@ -740,28 +740,18 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <h2>config.toml examples</h2>
   <div class="ex" style="margin-top:1rem">
     <figure>
-      <figcaption><span>Minimal teammate setup (agents wrapped with tools, tabs sidebar, no upstream update prompts)</span><span class="fn">config.toml</span></figcaption>
-<pre><span class="h">[ui]</span>
-<span class="kk">sidebar_layout</span> = <span class="v">"tabs"</span>
-
-<span class="h">[ui.toast]</span>
+      <figcaption><span>Minimal teammate setup (agents wrapped with tools; the tabs sidebar and no upstream update checks are already the defaults)</span><span class="fn">config.toml</span></figcaption>
+<pre><span class="h">[ui.toast]</span>
 <span class="kk">delivery</span> = <span class="v">"herdr"</span>
 
 <span class="h">[agents]</span>
 <span class="kk">wrap</span> = <span class="n">true</span>
 <span class="kk">tools</span> = <span class="n">true</span>
-<span class="kk">instructions</span> = <span class="n">true</span>
-
-<span class="h">[update]</span>
-<span class="kk">version_check</span> = <span class="n">false</span>
-<span class="kk">manifest_check</span> = <span class="n">false</span></pre>
+<span class="kk">instructions</span> = <span class="n">true</span></pre>
     </figure>
     <figure>
-      <figcaption><span>Coordinator on</span><span class="fn">config.toml</span></figcaption>
-<pre><span class="h">[ui]</span>
-<span class="kk">sidebar_layout</span> = <span class="v">"tabs"</span>   <span class="c"># the pinned coordinator row needs it</span>
-
-<span class="h">[coordinator]</span>
+      <figcaption><span>Coordinator on (its pinned row needs the default <code>tabs</code> layout)</span><span class="fn">config.toml</span></figcaption>
+<pre><span class="h">[coordinator]</span>
 <span class="kk">enabled</span> = <span class="n">true</span>
 <span class="kk">model</span> = <span class="v">"sonnet"</span>
 <span class="kk">wake_scope</span> = <span class="v">"teams"</span>
@@ -790,15 +780,15 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 <section id="keys">
   <p class="eyebrow">11 · keybinds</p>
   <h2>Keybinds <code>[keys]</code></h2>
-  <p class="lede">Bind a key with <code>[keys] &lt;action&gt; = "prefix+x"</code> (the prefix is <kbd>ctrl+b</kbd>).</p>
+  <p class="lede">Bind a key with <code>[keys] &lt;action&gt; = "prefix+x"</code> (the prefix is <kbd>ctrl+b</kbd>), or several with <code>&lt;action&gt; = ["cmd+[", "alt+,"]</code>. Setting an action replaces all of its default keys; <code>""</code> unbinds it.</p>
   <div class="keys">
     <div class="kb"><code>settings</code><span class="ks"><kbd>prefix</kbd>+<kbd>s</kbd></span><p>Opens the settings panel <span class="up">upstream</span></p></div>
     <div class="kb"><code>reload_config</code><span class="ks"><kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>r</kbd></span><p>Reloads <code>config.toml</code> <span class="up">upstream</span></p></div>
     <div class="kb"><code>open_notification_target</code><span class="ks"><kbd>prefix</kbd>+<kbd>o</kbd></span><p>Focuses the tab of the visible notification <span class="up">upstream</span></p></div>
     <div class="kb"><code>clear_pane</code><span class="ks"><span class="ub">unbound</span></span><p>Clears the focused pane <span class="up">upstream</span></p></div>
     <div class="kb"><code>sidebar_search</code><span class="ks"><kbd>prefix</kbd>+<kbd>f</kbd></span><p>Focuses or leaves the tabs sidebar search field</p></div>
-    <div class="kb"><code>tab_history_back</code><span class="ks"><kbd>cmd</kbd>+<kbd>[</kbd></span><p>Previously focused tab, browser-style</p></div>
-    <div class="kb"><code>tab_history_forward</code><span class="ks"><kbd>cmd</kbd>+<kbd>]</kbd></span><p>Forward again after going back</p></div>
+    <div class="kb"><code>tab_history_back</code><span class="ks"><kbd>cmd</kbd>+<kbd>[</kbd> <kbd>alt</kbd>+<kbd>,</kbd></span><p>Previously focused tab, browser-style</p></div>
+    <div class="kb"><code>tab_history_forward</code><span class="ks"><kbd>cmd</kbd>+<kbd>]</kbd> <kbd>alt</kbd>+<kbd>.</kbd></span><p>Forward again after going back</p></div>
     <div class="kb"><code>toggle_info_pane</code><span class="ks"><span class="ub">unbound</span></span><p>Shows or hides the focused tab's notes pane</p></div>
     <div class="kb"><code>toggle_agent_suspend</code><span class="ks"><span class="ub">unbound</span></span><p>Suspends the focused agent, or activates it again</p></div>
     <div class="kb"><code>handoff_compact</code><span class="ks"><span class="ub">unbound</span></span><p>The focused Claude agent writes a handoff, then <code>/compact</code></p></div>
@@ -811,7 +801,29 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="kb"><code>open_browser</code><span class="ks"><span class="ub">unbound</span></span><p>Opens the Browser overlay</p></div>
     <div class="kb"><code>open_news</code><span class="ks"><span class="ub">unbound</span></span><p>Focuses the News tab</p></div>
   </div>
-  <p class="note"><code>cmd+[</code> / <code>cmd+]</code> only work if your terminal passes Cmd through to herdr; most macOS terminals keep Cmd for themselves. The toolbar's <code>‹</code> <code>›</code> buttons always work, or bind keys any terminal sends, e.g. <code>tab_history_back = "alt+,"</code> and <code>tab_history_forward = "alt+."</code>. Example: Ghostty passes them on with <code>keybind = super+[=csi:91;9u</code> and <code>keybind = super+]=csi:93;9u</code>.</p>
+  <p class="note"><code>cmd+[</code> / <code>cmd+]</code> only work if your terminal passes Cmd through to herdr; most macOS terminals keep Cmd for themselves. That is why <code>alt+,</code> / <code>alt+.</code> are bound too: they reach herdr in any terminal that sends Option as Alt (Ghostty: <code>macos-option-as-alt = true</code>; iTerm2 and Terminal.app have the same setting). herdr takes them before the pane, so your shell no longer sees <code>alt+.</code> (insert last argument). The toolbar's <code>‹</code> <code>›</code> buttons always work. Ghostty passes Cmd on with <code>keybind = super+[=csi:91;9u</code> and <code>keybind = super+]=csi:93;9u</code>.</p>
+
+  <h4 id="suggested-keys">Suggested key set</h4>
+  <p class="lede" style="margin-bottom:.9rem">Everything else above stays unbound until you bind it. This is one full set, all on direct keys; copy what you like into <code>[keys]</code>:</p>
+  <figure>
+    <figcaption><span>Suggested key set</span><span class="fn">config.toml</span></figcaption>
+<pre><span class="h">[keys]</span>
+<span class="kk">toggle_info_pane</span> = <span class="v">"alt+n"</span>
+<span class="kk">previous_tab</span> = <span class="v">"alt+a"</span>
+<span class="kk">next_tab</span> = <span class="v">"alt+d"</span>
+<span class="kk">move_tab_previous</span> = <span class="v">"alt+i"</span>
+<span class="kk">move_tab_next</span> = <span class="v">"alt+o"</span>
+<span class="kk">new_tab</span> = <span class="v">"alt+t"</span>
+<span class="kk">rename_tab</span> = <span class="v">"alt+r"</span>
+<span class="kk">toggle_agent_suspend</span> = <span class="v">"alt+s"</span>
+<span class="kk">switch_tab</span> = <span class="v">"alt+1..9"</span>
+<span class="kk">move_tab_to_group</span> = <span class="v">"alt+g"</span>
+<span class="kk">toggle_groups_folded</span> = <span class="v">"alt+e"</span>
+<span class="kk">cycle_tab_color</span> = <span class="v">"alt+c"</span>
+<span class="kk">open_notification_target</span> = <span class="v">"ctrl+space"</span>
+<span class="kk">tab_history_back</span> = [<span class="v">"cmd+["</span>, <span class="v">"ctrl+shift+space"</span>]</pre>
+  </figure>
+  <p class="note"><code>previous_tab</code>, <code>next_tab</code>, <code>new_tab</code>, <code>rename_tab</code>, <code>switch_tab</code> and <code>open_notification_target</code> replace their <code>prefix+...</code> defaults; add those back in a list to keep both, e.g. <code>next_tab = ["alt+d", "prefix+n"]</code>. <code>tab_history_back</code> here drops the default <code>alt+,</code>; <code>tab_history_forward</code> keeps its defaults. Alt-letter keys only reach herdr when the terminal sends Option as Alt, and herdr takes them before the pane, so they shadow your shell's word keys (<code>alt+d</code> deletes a word, <code>alt+t</code> swaps words, <code>alt+c</code> capitalizes one). Change any of them to keys you do not use there.</p>
 </section>
 
 <!-- ============ LIMITS ============ -->
