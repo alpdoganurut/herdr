@@ -227,19 +227,24 @@ export function createMockHerdr({ socketPath, verifyCdp = false, log = () => {},
       state.sockets.add(sock);
       sock.on('close', () => state.sockets.delete(sock));
       sock.on('error', () => {});
+      // Like herdr's API server: one request per connection, closed after the answer
+      // (events.subscribe keeps it open as the stream).
       let buf = '';
+      let taken = false;
       sock.on('data', (d) => {
+        if (taken) return;
         buf += d;
-        let i;
-        while ((i = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, i); buf = buf.slice(i + 1);
-          if (!line.trim()) continue;
-          let req;
-          try { req = JSON.parse(line); } catch { sock.write(JSON.stringify(err('', 'invalid_json', 'bad json')) + '\n'); continue; }
-          log('<-', req.method, JSON.stringify(req.params || {}).slice(0, 160));
-          Promise.resolve(handle(req, sock)).then((res) => { if (!sock.destroyed) sock.write(JSON.stringify(res) + '\n'); })
-            .catch((e) => { if (!sock.destroyed) sock.write(JSON.stringify(err(req.id, 'internal', String(e))) + '\n'); });
-        }
+        const i = buf.indexOf('\n');
+        if (i < 0) return;
+        const line = buf.slice(0, i);
+        if (!line.trim()) return sock.end();
+        taken = true;
+        let req;
+        try { req = JSON.parse(line); } catch { sock.end(JSON.stringify(err('', 'invalid_json', 'bad json')) + '\n'); return; }
+        log('<-', req.method, JSON.stringify(req.params || {}).slice(0, 160));
+        const keep = req.method === 'events.subscribe';
+        const send = (res) => { if (sock.destroyed) return; const out = JSON.stringify(res) + '\n'; if (keep) sock.write(out); else sock.end(out); };
+        Promise.resolve(handle(req, sock)).then(send).catch((e) => send(err(req.id, 'internal', String(e))));
       });
     });
     return new Promise((r) => server.listen(socketPath, r));

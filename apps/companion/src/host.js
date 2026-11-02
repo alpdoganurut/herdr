@@ -2,7 +2,7 @@
 // reconnect with backoff after a server restart / live handoff (same instance).
 'use strict';
 const { EventEmitter } = require('node:events');
-const { Connection } = require('./herdr-api.js');
+const { Connection, ApiError } = require('./herdr-api.js');
 
 const EVENT_KINDS = [
   'tab.focused',
@@ -23,13 +23,16 @@ const SLOW = new Set(['host_in_use', 'browser_disabled', 'host_disabled', 'host_
 
 class HerdrLink extends EventEmitter {
   // opts: {socketPath, register: () => params, log}
+  // herdr's API server answers ONE request per connection and then closes it, so every
+  // request gets its own connection; only the events.subscribe stream stays open. The
+  // stream closing (server restart, live handoff) or a failed heartbeat means "lost".
   constructor(opts) {
     super();
     this.opts = opts;
     this.log = opts.log || (() => {});
-    this.conn = null;
     this.events = null;
     this.lease = null;
+    this.gen = 0; // bumped on every (re)connect and teardown: stale async results are ignored
     this.attempt = 0;
     this.stopped = false;
     this.hbTimer = null;
@@ -60,28 +63,33 @@ class HerdrLink extends EventEmitter {
     return ms;
   }
 
-  async _connect() {
-    if (this.stopped) return;
-    this._teardown();
-    const conn = new Connection(this.opts.socketPath, { prefix: 'c', timeoutMs: 15000 });
+  // One request on a fresh connection. Connect failures reject with code 'unreachable'.
+  async _rpc(method, params = {}, { timeoutMs = 15000 } = {}) {
+    const conn = new Connection(this.opts.socketPath, { prefix: 'c', timeoutMs });
+    conn.on('error', () => {});
     try {
       await conn.connect();
     } catch (e) {
-      this.setStatus('connecting', `herdr not reachable (${e.code || e.message}); retrying`);
-      return this._schedule(this._backoff());
+      throw new ApiError('unreachable', `herdr not reachable (${e.code || e.message})`);
     }
-    this.conn = conn;
-    conn.on('close', () => this._lost('connection closed'));
-    conn.on('error', () => {});
+    try {
+      return await conn.request(method, params, { timeoutMs });
+    } finally {
+      conn.close();
+    }
+  }
+
+  async _connect() {
+    if (this.stopped) return;
+    this._teardown();
+    const gen = this.gen;
     let lease;
     try {
       // The server attaches its sidecar before answering: up to 2×ATTACH_TIMEOUT (30 s).
-      const res = await conn.request('browser.host_register', this.opts.register(), { timeoutMs: 70000 });
+      const res = await this._rpc('browser.host_register', this.opts.register(), { timeoutMs: 70000 });
       lease = res.lease;
     } catch (e) {
-      if (this.conn === conn) this.conn = null;
-      conn.removeAllListeners('close');
-      conn.close();
+      if (gen !== this.gen) return;
       if (TERMINAL.has(e.code)) {
         this.setStatus(
           'too_old',
@@ -94,10 +102,10 @@ class HerdrLink extends EventEmitter {
         this.setStatus('refused', `${e.code}: ${e.message}`);
         return this._schedule(SLOW_RETRY_MS);
       }
-      this.setStatus('connecting', `register failed (${e.code || e.message}); retrying`);
+      this.setStatus('connecting', e.code === 'unreachable' ? `${e.message}; retrying` : `register failed (${e.code || e.message}); retrying`);
       return this._schedule(this._backoff());
     }
-    if (this.conn !== conn || conn.closed) return;
+    if (gen !== this.gen || this.stopped) return;
     this.lease = lease;
     this.attempt = 0;
     // Events first, host_state after (in the app), buffering in between: no tab.focused is lost.
@@ -106,7 +114,7 @@ class HerdrLink extends EventEmitter {
     try {
       await ev.connect();
       ev.on('event', (e) => this._onEvent(e));
-      ev.on('close', () => this._lost('events stream closed'));
+      ev.on('close', () => gen === this.gen && this._lost('events stream closed'));
       ev.on('error', () => {});
       this.events = ev;
       await ev.request('events.subscribe', { subscriptions: EVENT_KINDS.map((type) => ({ type })) }, { stream: true });
@@ -115,6 +123,7 @@ class HerdrLink extends EventEmitter {
       ev.close();
       return this._lost('subscribe failed');
     }
+    if (gen !== this.gen) return;
     this._heartbeat();
     this.setStatus('registered', `attached as ${lease.profile}`);
     this.emit('lease', lease);
@@ -135,19 +144,21 @@ class HerdrLink extends EventEmitter {
   _heartbeat() {
     clearInterval(this.hbTimer);
     const every = Math.max(500, (this.lease && this.lease.heartbeat_ms) || 5000);
+    const gen = this.gen;
     this.hbTimer = setInterval(async () => {
-      if (!this.lease || !this.conn) return;
+      if (!this.lease || gen !== this.gen) return;
       try {
-        const res = await this.conn.request('browser.host_heartbeat', { lease_id: this.lease.lease_id }, { timeoutMs: every * 2 });
-        if (res && res.lease) this.lease = { ...this.lease, ...res.lease };
+        const res = await this._rpc('browser.host_heartbeat', { lease_id: this.lease.lease_id }, { timeoutMs: every * 2 });
+        if (gen === this.gen && res && res.lease) this.lease = { ...this.lease, ...res.lease };
       } catch (e) {
-        if (e.code === 'lease_unknown' || e.code === 'timeout') this._lost(`heartbeat: ${e.code}`);
+        if (gen !== this.gen) return;
+        if (e.code === 'lease_unknown' || e.code === 'timeout' || e.code === 'unreachable') this._lost(`heartbeat: ${e.code}`);
       }
     }, every);
   }
 
   _lost(why) {
-    if (!this.conn && !this.events && !this.lease) return;
+    if (!this.events && !this.lease) return;
     this.log('herdr link lost:', why);
     this._teardown();
     this.emit('lost', why);
@@ -158,49 +169,43 @@ class HerdrLink extends EventEmitter {
   }
 
   _teardown() {
+    this.gen += 1;
     clearInterval(this.hbTimer);
     this.hbTimer = null;
-    const c = this.conn;
     const ev = this.events;
-    this.conn = null;
     this.events = null;
     this.lease = null;
     this.buffer = null;
-    if (c) c.close();
     if (ev) ev.close();
   }
 
   // A request that needs a lease (lease_id added). Rejects with code 'no_lease' when detached.
   async call(method, params = {}) {
-    if (!this.conn || !this.lease) {
+    if (!this.lease) {
       const e = new Error('not attached to herdr');
       e.code = 'no_lease';
       throw e;
     }
+    const gen = this.gen;
     try {
-      return await this.conn.request(method, { lease_id: this.lease.lease_id, ...params });
+      return await this._rpc(method, { lease_id: this.lease.lease_id, ...params });
     } catch (e) {
-      if (e.code === 'lease_unknown') this._lost('lease_unknown');
+      if (e.code === 'lease_unknown' && gen === this.gen) this._lost('lease_unknown');
       throw e;
     }
   }
 
-  // Plain request on conn #1 (no lease), e.g. tab.focus.
+  // Plain request (no lease), e.g. tab.focus.
   async request(method, params = {}) {
-    if (!this.conn) {
-      const e = new Error('not connected to herdr');
-      e.code = 'no_lease';
-      throw e;
-    }
-    return this.conn.request(method, params);
+    return this._rpc(method, params);
   }
 
   async stop() {
     this.stopped = true;
     clearTimeout(this.retryTimer);
-    if (this.conn && this.lease) {
+    if (this.lease) {
       await Promise.race([
-        this.conn.request('browser.host_unregister', { lease_id: this.lease.lease_id }).catch(() => {}),
+        this._rpc('browser.host_unregister', { lease_id: this.lease.lease_id }).catch(() => {}),
         new Promise((r) => setTimeout(r, 1000)),
       ]);
     }

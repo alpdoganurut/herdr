@@ -41,16 +41,19 @@ async function waitFor(fn, ms = 10000, step = 100) {
   return null;
 }
 
-const mock = createMockHerdr({ socketPath: sock, verifyCdp: true, heartbeatMs: 1000, ttlMs: 3000 });
+const mock = createMockHerdr({ socketPath: sock, verifyCdp: true, heartbeatMs: 1000, ttlMs: 8000 });
 await mock.listen();
 
-let client;
+// One request per connection (the mock, like herdr, closes after answering).
 async function api(method, params) {
-  if (!client || client.closed) {
-    client = new Connection(sock, { prefix: 't' });
-    await client.connect();
+  const client = new Connection(sock, { prefix: 't' });
+  client.on('error', () => {});
+  await client.connect();
+  try {
+    return await client.request(method, params);
+  } finally {
+    client.close();
   }
-  return client.request(method, params);
 }
 const ctl = async (expr) => (await api('mock.control', { expression: expr })).value;
 
@@ -64,12 +67,27 @@ function startCompanion() {
   });
   child.exited = new Promise((r) => child.on('exit', (code) => r(code)));
 }
+// Quits through the control page: the mock's CDP link, else a direct CDP connection
+// to the port the companion wrote (never a signal).
+async function quitDirect() {
+  const { chromium } = require('playwright-core');
+  const port = Number(fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]);
+  const b = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 10000 });
+  try {
+    const p = b.contexts().flatMap((c) => c.pages()).find((x) => x.url().startsWith('herdr-companion://control/'));
+    if (p) await p.evaluate(() => globalThis.__herdrCompanion.quit());
+  } finally {
+    await b.close().catch(() => {});
+  }
+}
 async function quitCompanion() {
   if (!child) return true;
   try {
     await ctl('__herdrCompanion.quit()');
-  } catch {}
-  const code = await Promise.race([child.exited, sleep(10000).then(() => 'timeout')]);
+  } catch {
+    await quitDirect().catch((e) => console.log('direct quit failed:', e.message));
+  }
+  const code = await Promise.race([child.exited, sleep(30000).then(() => 'timeout')]);
   if (code === 'timeout') {
     console.log(`companion did not exit; abandoned pid ${child.pid}`);
     return false;
@@ -148,6 +166,28 @@ try {
   await strip.evaluate(() => window.stripBridge.action('send_page', { note: 'look' }));
   const sent = await waitFor(() => mock.state.sent[0], 3000);
   check('send to agent calls browser.send_page with tab, url and note', sent && sent.tab_id === 'w1:t2' && sent.note === 'look' && sent.url.includes(String(webPort)), sent);
+  // web page permissions are never auto-granted: asked in the strip (deny / allow once)
+  const permBar = () =>
+    strip.evaluate(() => {
+      const b = document.getElementById('permbar');
+      return !b.hidden && b.dataset.id ? { id: b.dataset.id, text: document.getElementById('permtext').textContent } : null;
+    });
+  const wv = (await ctl('__herdrCompanion.views()')).find((v) => v.tab_id === 'w1:t2' && v.active);
+  const wp = wv && (await waitFor(() => pageForTarget(wv.target_id), 3000));
+  const denyP = wp.evaluate(() => Notification.requestPermission());
+  const bar1 = await waitFor(permBar, 3000);
+  check('a notification request is not granted but asked in the strip', bar1 && /show notifications/.test(bar1.text), bar1);
+  await strip.evaluate(() => document.getElementById('permdeny').click());
+  const denied = await Promise.race([denyP, sleep(3000).then(() => 'timeout')]);
+  check('Deny answers the page with a refusal and hides the bar', denied !== 'granted' && denied !== 'timeout' && !(await permBar()), denied);
+  const allowP = wp.evaluate(
+    () => new Promise((r) => navigator.geolocation.getCurrentPosition(() => r('position'), (e) => r(e.code === 1 ? 'denied' : `error ${e.code}`), { timeout: 3000 })),
+  );
+  const bar2 = await waitFor(permBar, 3000);
+  check('a geolocation request is asked in the strip', bar2 && /know your location/.test(bar2.text), bar2);
+  await strip.evaluate(() => document.getElementById('permallow').click());
+  const geo = await Promise.race([allowP, sleep(6000).then(() => 'timeout')]);
+  check('Allow once lets that request through (not denied)', geo !== 'denied' && geo !== 'timeout', geo);
   const before = (await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2').length;
   const active = (await ctl('__herdrCompanion.views()')).find((v) => v.tab_id === 'w1:t2' && v.active);
   await strip.evaluate((id) => window.stripBridge.action('close', id), active.view_id);
@@ -209,7 +249,6 @@ try {
   // server restart / live handoff: same instance re-registers, full resync from seq 1
   const syncsBefore = mock.state.syncs.length;
   await api('mock.restart');
-  client = null;
   const relet = await waitFor(() => (mock.state.lease && mock.state.registers.length >= 2 ? mock.state.lease : null), 20000);
   check('re-registers after a server restart with the same instance', relet && relet.instance === instance1, relet && { instance: relet.instance });
   const resync = await waitFor(() => mock.state.syncs.slice(syncsBefore).find((s) => s.seq === 1 && s.groups.length >= 2), 5000);
@@ -248,7 +287,6 @@ try {
   check('no exception', false, e.stack);
   await quitCompanion();
 } finally {
-  if (client) client.close();
   await mock.close();
   web.close();
   console.log(`\n${results.length - failed}/${results.length} passed; log ${logFile}`);

@@ -238,7 +238,7 @@ class GroupStore {
   applySynced(result) {
     const dropped = [];
     for (const [k, v] of Object.entries(result.keys || {})) {
-      const slash = k.indexOf('/');
+      const slash = k.lastIndexOf('/'); // "<tab_id>/<view_id>": view ids never hold a slash
       if (slash < 0) {
         const g = this.groups.get(k);
         if (g) g.key = v;
