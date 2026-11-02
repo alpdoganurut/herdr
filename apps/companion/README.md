@@ -27,7 +27,9 @@ answers `unknown_method` and the strip says "this herdr is too old for the compa
 ## What it does
 
 * Registers as the `companion` browser host (lease + 5 s heartbeat), re-registers with the same
-  instance after a herdr restart or live handoff, unregisters on quit.
+  instance after a herdr restart or live handoff, unregisters on quit. herdr's API socket answers
+  one request per connection, so every request opens its own; only the `events.subscribe` stream
+  stays open (its close, or a failed heartbeat, means herdr went away).
 * `events.subscribe` (tab/workspace events) + `browser.host_state` at startup: shows the focused
   herdr tab's pages; other sessions' pages are created lazily when shown or targeted.
 * `browser.host_sync` (seq per lease, ≤ 4/s, changed groups only) keeps herdr's per-tab browser
@@ -44,6 +46,10 @@ answers `unknown_method` and the strip says "this herdr is too old for the compa
   directory (symlinks resolved), network blocked unless `allow_network`, all permissions denied,
   navigation outside the directory opens http(s) links as normal tabs.
 * Web pages use the persistent partition `persist:herdr-companion` (own profile, no cookie import).
+  Their permission requests are never granted on their own: geolocation, notifications,
+  camera/microphone and clipboard read are asked in the strip (Allow once / Deny; unanswered after
+  60 s or when the page leaves the origin = denied; "once" lasts until the page leaves the origin),
+  sanitized clipboard writes are allowed, everything else is denied.
 
 The DevTools port is loopback-only and unauthenticated (same exposure as the herdr+ window).
 
@@ -52,12 +58,32 @@ The DevTools port is loopback-only and unauthenticated (same exposure as the her
 ```sh
 npm test                 # unit tests (groups/sync logic, line parser, socket path), no Electron
 npm run e2e              # headless Electron against test/mock-herdr.mjs (headless; never shows a window)
+test/e2e-real-herdr.sh   # headless Electron against a REAL isolated herdr (target/release/herdr or $HERDR_BIN):
+                         # temp HOME/XDG dirs, no inherited HERDR_* vars, no Chromium window (fallback asserted by routing)
 npm run mock -- --socket /tmp/hc.sock --verify-cdp   # a mock herdr to point `npm start` at
 npm run spike            # P3.0 spike: Playwright over CDP against Electron views
 ```
 
 `test/mock-herdr.mjs` implements the contract's JSON shapes plus test-only `mock.*` methods
-(focus/create/close/rename tabs, restart = live handoff, control = evaluate on the control page).
+(focus/create/close/rename tabs, restart = live handoff, control = evaluate on the control page);
+like herdr it closes each connection after one answer.
+
+Try it visibly against an isolated herdr (its own HOME, config, state and socket; nothing shared
+with a running herdr). From `apps/companion`, after `cargo build --release` at the repo root:
+
+```sh
+T=$(mktemp -d /tmp/hcv-XXXXXX); H=$T/state/herdr/browser/host; mkdir -p $T/config/herdr $H
+printf '[browser]\nenabled = true\nhost = "auto"\n' > $T/config/herdr/config.toml
+ln -s "$PWD/node_modules" $H/node_modules     # the sidecar's playwright-core (same pin)
+printf '{"version":1,"node":"%s","playwright_core":"1.63.0","assets_sha256":"","installed_at":0}\n' "$(command -v node)" > $H/runtime.json
+# terminal 1: the isolated herdr TUI
+env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_PANE_ID HOME=$T XDG_CONFIG_HOME=$T/config XDG_STATE_HOME=$T/state ../../target/release/herdr
+# terminal 2 (same T): the companion window
+npm start -- --socket $T/config/herdr/herdr.sock --profile-dir $T/companion
+```
+
+Inside an isolated pane, `herdr browser open https://example.com` lands in the companion; switching
+herdr tabs swaps its pages. Quit the companion and the next `open` goes to the herdr+ window instead.
 
 ## Files
 
