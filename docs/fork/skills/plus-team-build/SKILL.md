@@ -114,7 +114,7 @@ Each layer sends ONE consolidated verdict per checkpoint, labelled `<layer>@<sha
 | When | Layer |
 |---|---|
 | per WP | the member's own Opus audit: cheap, catches in-lane bugs, blind to seams |
-| each assembled batch before merge; a single-lane merge that touches a seams.md row gets the same audit | cross-model audit (2 Claude + Codex + judge) with focus items for seams ("every press under a local refusal", "leave/reopen during a pending op") |
+| each assembled batch before merge; a single-lane merge that touches a seams.md row gets the same audit | cross-model audit (2 Claude + a second model such as Codex if installed, else per §0: 2 Opus auditors + judge) with focus items for seams ("every press under a local refusal", "leave/reopen during a pending op") |
 | continuous | 2 inspectors triggered by every announced TIP and every new ruling (10-min timer as fallback); they re-verify each fix as it lands, because fixes create the next bugs |
 | each side's state core complete (producer write path; consumer store/merge); final | architect GO/NO-GO, walks rerun through the code just completed. Freeze the tip for the review window, or send a delta list |
 | scripts at freeze (dry-run `NEEDS <WP>`); every merge batch from the first runnable slice. A drill run names its target sha and is void if the tip moved; test a sha in a detached temp worktree | drills: assert outcomes (rows, storage, request log, server log). Never assert on timing or event order; detect the order and branch on it |

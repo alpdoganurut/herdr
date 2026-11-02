@@ -3,7 +3,7 @@
 ## Before merge
 - [ ] Hand-off row in handoffs.md: WP ids, branch@sha, base TIP, rulings ≤ R-NNN (no affecting ruling missed), targeted exit codes, audit summary, foreign-file commits.
 - [ ] Branch is linear on the current tip (`merge-base --is-ancestor`), and `git cherry` shows only this lane's commits. Linear on the announced TIP it rebased onto; if the head moved by disjoint commits, integrator rebases `--onto` and confirms `git range-diff` patch-identical.
-- [ ] If this is an assembled batch (several lanes on a shared base), run a cross-model audit on the BATCH with seam focus items. Fix HIGH/MED first. seams.md rows touched by this batch have producer AND consumer at the tip.
+- [ ] If this is an assembled batch (several lanes on a shared base), run a cross-model audit on the BATCH (2 Claude + a second model such as Codex if installed, else per SKILL.md §0: 2 Opus auditors + judge) with seam focus items. Fix HIGH/MED first. seams.md rows touched by this batch have producer AND consumer at the tip.
 - [ ] No tests are running in the worktree you merge into, and no commit is included that wasn't handed off.
 
 ## Merge
