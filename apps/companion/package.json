@@ -8,7 +8,8 @@
     "start": "electron .",
     "test": "node --test test/*.test.js",
     "mock": "node test/mock-herdr.mjs",
-    "spike": "node spike/driver.mjs"
+    "spike": "node spike/driver.mjs",
+    "e2e": "node test/e2e.mjs"
   },
   "devDependencies": {
     "electron": "45.2.1",
