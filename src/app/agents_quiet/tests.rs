@@ -189,6 +189,17 @@ fn an_agents_or_the_coordinators_dnd_is_theirs_and_the_users_is_the_users() {
 }
 
 #[test]
+fn a_shell_pane_caller_is_the_user_for_dnd() {
+    let mut app = model_app();
+    let fixer = public(&app, 1, 1);
+    // The plain group's second tab is a shell: its caller acts as the user.
+    let shell = public(&app, 2, 1);
+    let out = set_quiet(&mut app, Some(&shell), &fixer, None, Some(true));
+    assert_eq!(code(&out), "ok", "{out}");
+    assert!(tab(&app, 1, 1).dnd && !tab(&app, 1, 1).dnd_by_agent);
+}
+
+#[test]
 fn a_request_without_a_change_or_target_is_invalid() {
     let mut app = model_app();
     let lead = public(&app, 1, 0);

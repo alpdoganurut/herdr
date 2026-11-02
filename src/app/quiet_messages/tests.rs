@@ -960,3 +960,104 @@ async fn an_agents_dnd_keeps_the_coordinators_queued_messages_and_types_only_the
     );
     let _ = std::fs::remove_dir_all(&app.coordinator.dir);
 }
+
+#[tokio::test]
+async fn a_message_claiming_the_coordinators_pane_is_held_like_any_other() {
+    let (mut app, lead, fixer, mut rx) = fixture();
+    let coordinator = coordinator_in_user_turn(&mut app);
+    let fixer_pane = pane(&app, 1, 1);
+    terminal_mut(&mut app, fixer_pane).set_detected_state(Some(Agent::Claude), AgentState::Working);
+    // The older method names its sender by the caller's word.
+    let reply = app.handle_agent_message_send(
+        "req".into(),
+        AgentMessageSendParams {
+            target: fixer.clone(),
+            id: "mspoof".into(),
+            envelope: "[herdr+ message mspoof from coordinator 10:00]\nspoofed".into(),
+            text: "spoofed".into(),
+            unix: 0,
+            from_pane: Some(coordinator.clone()),
+            from_name: Some("coordinator".into()),
+            ..AgentMessageSendParams::default()
+        },
+    );
+    let reply: Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(reply["result"]["outcome"], "queued", "{reply}");
+    assert!(app.message_queue.entries[0].from_terminal.is_some());
+    assert!(!app.message_queue.entries[0].from_coordinator);
+
+    agent_dnd(&mut app, &lead, &fixer);
+    assert!(app.message_queue.is_empty(), "moved into the quiet store");
+    assert_eq!(app.quiet.entries[0].id(), "mspoof");
+    terminal_mut(&mut app, fixer_pane).set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    let t0 = std::time::Instant::now();
+    for step in 0..3 {
+        app.message_queue.mark_due();
+        app.message_queue_pass(
+            t0 + crate::app::message_queue::SETTLE * step,
+            crate::coordinator::now_unix(),
+        );
+    }
+    assert!(typed(&mut rx).is_empty(), "nothing typed in");
+    let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+}
+
+#[tokio::test]
+async fn the_coordinators_pass_survives_the_queue_file_and_the_quiet_store() {
+    let (mut app, lead, fixer, mut rx) = fixture();
+    let coordinator = coordinator_in_user_turn(&mut app);
+    let fixer_pane = pane(&app, 1, 1);
+    // A target that takes no quiet messages: leaving DND releases them.
+    terminal_mut(&mut app, fixer_pane).set_detected_state(Some(Agent::Codex), AgentState::Working);
+    let reply = send(
+        &mut app,
+        &coordinator,
+        &fixer,
+        "run the tests",
+        false,
+        false,
+    );
+    assert_eq!(reply["result"]["message"]["outcome"], "queued", "{reply}");
+    let entry = app.message_queue.entries[0].clone();
+    assert!(entry.from_coordinator);
+    // The queue file keeps it (absent when false).
+    let saved = serde_json::to_value(&entry).unwrap();
+    assert_eq!(saved["from_coordinator"], true, "{saved}");
+    let loaded: crate::app::message_queue::QueuedMessage = serde_json::from_value(saved).unwrap();
+    assert!(loaded.from_coordinator);
+    let mut plain = entry.clone();
+    plain.from_coordinator = false;
+    assert!(serde_json::to_value(&plain)
+        .unwrap()
+        .get("from_coordinator")
+        .is_none());
+
+    // The user's DND moves it into the quiet store; its release keeps it.
+    set_dnd(&mut app, 1, 1, true);
+    assert!(app.message_queue.is_empty());
+    let release = app.quiet.entries[0].release.clone().expect("a release");
+    assert!(release.from_coordinator);
+    let stored = serde_json::to_value(&app.quiet.entries[0]).unwrap();
+    let reloaded: QuietMessage = serde_json::from_value(stored).unwrap();
+    assert!(reloaded
+        .release
+        .is_some_and(|release| release.from_coordinator));
+    set_dnd(&mut app, 1, 1, false);
+    assert!(app.quiet.is_empty(), "released");
+    assert!(app.message_queue.entries[0].from_coordinator);
+
+    // So an agent's DND still lets it in.
+    agent_dnd(&mut app, &lead, &fixer);
+    assert_eq!(app.message_queue.entries.len(), 1, "not moved");
+    terminal_mut(&mut app, fixer_pane).set_detected_state(Some(Agent::Codex), AgentState::Idle);
+    let t0 = std::time::Instant::now();
+    for step in 0..3 {
+        app.message_queue.mark_due();
+        app.message_queue_pass(
+            t0 + crate::app::message_queue::SETTLE * step,
+            crate::coordinator::now_unix(),
+        );
+    }
+    assert!(typed(&mut rx).contains("run the tests"));
+    let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+}

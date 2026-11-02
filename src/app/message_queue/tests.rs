@@ -476,6 +476,7 @@ fn only_agent_events_mark_a_non_empty_queue_due() {
         herdr_notice: false,
         attempts: 0,
         typed_unix: None,
+        from_coordinator: false,
     });
     app.note_message_queue_event(&EventKind::TabRenamed);
     assert!(!app.message_queue.due);
@@ -882,6 +883,7 @@ fn urgent_from(
         envelope,
         pointer,
         None,
+        false,
         now_unix(),
     )
 }
@@ -1642,6 +1644,7 @@ fn missing_target_entry(
         herdr_notice,
         attempts: 0,
         typed_unix: None,
+        from_coordinator: false,
     }
 }
 

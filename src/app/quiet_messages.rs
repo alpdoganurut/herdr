@@ -125,6 +125,10 @@ pub(crate) struct QuietRelease {
     pub(crate) pointer: Option<crate::agents_model::envelope::PointerFrom>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) from_terminal: Option<crate::terminal::TerminalId>,
+    /// Fork: [`super::message_queue::QueuedMessage::from_coordinator`],
+    /// kept for the queue it goes back to.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) from_coordinator: bool,
 }
 
 fn is_zero(value: &u8) -> bool {
@@ -603,12 +607,7 @@ impl App {
     /// Whether `pane_id` of workspace `ws_idx` sits in a tab in
     /// do-not-disturb.
     pub(crate) fn pane_in_dnd(&self, ws_idx: usize, pane_id: crate::layout::PaneId) -> bool {
-        self.state.workspaces.get(ws_idx).is_some_and(|workspace| {
-            workspace
-                .tabs
-                .iter()
-                .any(|tab| tab.dnd && tab.panes.contains_key(&pane_id))
-        })
+        self.pane_dnd_holds(ws_idx, pane_id, false)
     }
 
     /// Whether the agent of `target` takes quiet messages into its context
@@ -716,6 +715,7 @@ impl App {
             envelope: envelope.to_string(),
             pointer: None,
             from_terminal: None,
+            from_coordinator: false,
         };
         if let Err((code, text)) =
             self.store_quiet_message(target, message.clone(), true, Some(release), now_unix)
@@ -994,7 +994,7 @@ impl App {
                         .as_deref()
                         .is_some_and(|id| self.message_queue.delivery.submitting_id(id))
             })
-            .filter(|entry| !coordinator_passes || !self.queued_from_coordinator(entry))
+            .filter(|entry| !coordinator_passes || !entry.from_coordinator)
             .cloned()
             .collect();
         if moving.is_empty() {
@@ -1033,6 +1033,7 @@ impl App {
                         envelope: entry.envelope,
                         pointer: entry.pointer,
                         from_terminal: entry.from_terminal,
+                        from_coordinator: entry.from_coordinator,
                     }),
                     message: entry.message,
                     terminal_id: entry.terminal_id,
@@ -1089,6 +1090,7 @@ impl App {
                 envelope: fallback_envelope(&message),
                 pointer: None,
                 from_terminal: None,
+                from_coordinator: false,
             });
             self.message_queue
                 .requeue(super::message_queue::QueuedMessage {
@@ -1106,6 +1108,7 @@ impl App {
                     // (src/app/message_queue/submit.rs): never typed yet.
                     attempts: 0,
                     typed_unix: None,
+                    from_coordinator: release.from_coordinator,
                 });
         }
         self.sync_quiet_pending();

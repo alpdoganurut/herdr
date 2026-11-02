@@ -2487,7 +2487,7 @@ impl<A: Api> Session<A> {
         }
         let mut text = lines.join("\n");
         if on && quiet == Quiet::Dnd && applied {
-            text.push_str("\n(messages to them are stored quietly until do not disturb ends; urgent ones are refused `dnd`)");
+            text.push_str("\n(other agents' messages to them are stored quietly until do not disturb ends, urgent ones refused `dnd`; the coordinator's still go in unless the user set it)");
         }
         Ok(Reply::new(
             text,
@@ -3689,7 +3689,7 @@ pub fn tools() -> Vec<Value> {
                 "target": quiet_targets.clone(),
                 "muted": { "type": "boolean", "description": "Default true; false unmutes" },
             }), &["target"]) }),
-        json!({ "name": "agents_dnd", "description": "Turn do not disturb on (or with on=false off) for agents' tabs: other agents' messages to them are stored quietly (\"in DND, queued\"; a Claude agent gets them at its next prompt, the rest once it ends), messages already queued move there too, urgent messages are refused `dnd`, and herdr types nothing in; their user's typing is untouched. Several at once: comma-separated targets. Same rights as agents_mute. One outcome line per target.",
+        json!({ "name": "agents_dnd", "description": "Turn do not disturb on (or with on=false off) for agents' tabs: other agents' messages to them are stored quietly (\"in DND, queued\"; the coordinator's still go in unless the user turned it on; a Claude agent gets them at its next prompt, the rest once it ends), messages already queued move there too, urgent messages are refused `dnd`, and herdr types nothing in; their user's typing is untouched. Several at once: comma-separated targets. Same rights as agents_mute. One outcome line per target.",
             "inputSchema": schema(json!({
                 "target": quiet_targets,
                 "on": { "type": "boolean", "description": "Default true; false ends do not disturb" },

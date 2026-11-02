@@ -668,6 +668,7 @@ fn queue_urgent(app: &mut App, id: &str) {
         Some(pointer),
         false,
         None,
+        false,
         now_unix(),
     );
     app.message_queue.push_at(entry, true);
@@ -971,6 +972,31 @@ async fn dnd_on_after_an_empty_box_holds_the_recovery_until_dnd_is_off() {
         count(&app, "ma1", crate::coordinator::messages::OUTCOME_QUIET),
         0
     );
+}
+
+/// A coordinator message typed with no Enter known (`typed_unix`) under a
+/// do-not-disturb an agent turned on is not held: its recovery still runs
+/// and the Enter goes in.
+#[tokio::test]
+async fn a_typed_coordinator_message_recovers_through_an_agents_dnd() {
+    let mut app = app();
+    let mut rx = rev(&mut app, AgentState::Idle);
+    reader(&mut app);
+    send(&mut app, "ma1", "hello");
+    let first = written(&mut rx);
+    let window = SUBMIT_WINDOW + Duration::from_millis(100);
+    assert!(pass(&mut app, window));
+    assert!(app.message_queue.entries[0].typed_unix.is_some());
+    app.message_queue.entries[0].from_coordinator = true;
+
+    assert!(app.set_tab_dnd(0, 0, true, true));
+    assert!(app.quiet.is_empty(), "a typed batch is never moved");
+    let (again, at) = pass_until_written(&mut app, &mut rx, window + SETTLE);
+    assert_eq!(again, first, "the recovery types the same line");
+    draw_box(&app, &again);
+    pass(&mut app, at + Duration::from_millis(300));
+    assert_eq!(written(&mut rx), "\r");
+    assert_eq!(count(&app, "ma1", OUTCOME_DELIVERED), 1);
 }
 
 /// Every hold is a wait: the batch in flight, DND and the OSC 7501

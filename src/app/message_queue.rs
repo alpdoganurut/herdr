@@ -220,6 +220,11 @@ pub(crate) struct QueuedMessage {
     /// once delivered).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) typed_unix: Option<u64>,
+    /// Fork: sent by the coordinator (`agents.send_message` as
+    /// `Actor::Coordinator`, server-resolved, never from a caller's word): a
+    /// do-not-disturb an agent turned on lets it through (src/app/tab_dnd.rs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) from_coordinator: bool,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -1006,6 +1011,7 @@ impl App {
         pointer: Option<PointerFrom>,
         legacy: bool,
         from_terminal: Option<crate::terminal::TerminalId>,
+        from_coordinator: bool,
         now_unix: u64,
     ) -> QueuedMessage {
         let session = self
@@ -1027,6 +1033,7 @@ impl App {
             herdr_notice: false,
             attempts: 0,
             typed_unix: None,
+            from_coordinator,
         }
     }
 
@@ -1117,6 +1124,8 @@ impl App {
             params.envelope,
             pointer,
             from_terminal,
+            // Never from the caller's word (`from_pane`).
+            false,
             now_unix,
         ) {
             Ok(MessageDelivery::Sent) => encode_success(
@@ -1159,14 +1168,6 @@ impl App {
         MessageCheck(self.message_check_from(target, true, true))
     }
 
-    /// Fork: whether `entry` was sent by the running coordinator.
-    pub(crate) fn queued_from_coordinator(&self, entry: &QueuedMessage) -> bool {
-        entry
-            .from_terminal
-            .as_ref()
-            .is_some_and(|from| self.state.coordinator_terminal_id.as_ref() == Some(from))
-    }
-
     /// The one delivery path for an agent message (`agent.message_send` and
     /// `agents.send_message`): typed in now when the target can take it
     /// (guarded) and nothing is queued for it, else queued. `message` is its
@@ -1183,6 +1184,7 @@ impl App {
         envelope: String,
         pointer: PointerFrom,
         from: Option<crate::terminal::TerminalId>,
+        from_coordinator: bool,
         now_unix: u64,
     ) -> Result<MessageDelivery, MessageRefused> {
         let message_id = message.id.clone().unwrap_or_default();
@@ -1266,6 +1268,7 @@ impl App {
                             Some(pointer),
                             false,
                             from,
+                            from_coordinator,
                             now_unix,
                         );
                         if submit.is_some() {
@@ -1312,6 +1315,7 @@ impl App {
             Some(pointer),
             false,
             from,
+            from_coordinator,
             now_unix,
         );
         self.message_queue.push(entry);
@@ -1465,6 +1469,7 @@ impl App {
         envelope: String,
         pointer: PointerFrom,
         from: Option<crate::terminal::TerminalId>,
+        from_coordinator: bool,
         now_unix: u64,
     ) -> Result<(MessageDelivery, bool), MessageRefused> {
         let free = matches!(
@@ -1477,7 +1482,15 @@ impl App {
         if free || check.0 == Check::Missing {
             return self
                 .deliver_agent_message(
-                    request_id, target, check, message, envelope, pointer, from, now_unix,
+                    request_id,
+                    target,
+                    check,
+                    message,
+                    envelope,
+                    pointer,
+                    from,
+                    from_coordinator,
+                    now_unix,
                 )
                 .map(|delivery| (delivery, false));
         }
@@ -1528,6 +1541,7 @@ impl App {
             Some(pointer),
             false,
             from,
+            from_coordinator,
             now_unix,
         );
         self.message_queue.push_at(entry, true);
@@ -1843,7 +1857,16 @@ impl App {
             id: message_id.or_else(|| Some(messages::new_id())),
             ..AgentMessage::default()
         };
-        let entry = self.queued_message(&target, message, params.text, None, true, None, now_unix);
+        let entry = self.queued_message(
+            &target,
+            message,
+            params.text,
+            None,
+            true,
+            None,
+            false,
+            now_unix,
+        );
         self.message_queue.push(entry);
         tracing::info!(
             request = request_id,
@@ -1989,6 +2012,7 @@ impl App {
             Some(pointer),
             false,
             None,
+            false,
             now_unix,
         );
         // It waits for the agent as long as a message to a user-blocked
@@ -2259,9 +2283,8 @@ impl App {
         let coordinator_only = matches!(&check, Check::Wait(reason) if reason == super::tab_dnd::DND_WAIT_REASON)
             && self.message_queue.entries.iter().any(|entry| {
                 entry.terminal_id == terminal_id
-                    && entry.typed_unix.is_none()
                     && entry.attempts < submit::MAX_SUBMIT_ATTEMPTS
-                    && self.queued_from_coordinator(entry)
+                    && entry.from_coordinator
             });
         if coordinator_only {
             check = self.message_check_from(&target, true, true);
@@ -2399,7 +2422,7 @@ impl App {
             .filter(|entry| {
                 entry.typed_unix.is_none() && entry.attempts < submit::MAX_SUBMIT_ATTEMPTS
             })
-            .filter(|entry| !coordinator_only || self.queued_from_coordinator(entry))
+            .filter(|entry| !coordinator_only || entry.from_coordinator)
         {
             if !items.is_empty()
                 && (items.len() >= max_combined
@@ -3082,6 +3105,7 @@ impl App {
             envelope,
             pointer,
             None,
+            false,
             now_unix,
         ) {
             Ok(MessageDelivery::Sent) => {

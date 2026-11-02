@@ -11,7 +11,7 @@
 
 use super::agents_model::{ModelError, ModelResult};
 use super::App;
-use crate::agents_model::policy::{self, Action};
+use crate::agents_model::policy::{self, Action, Actor};
 use crate::api::schema::agents_model::{error_code, AgentsActionOutcome, AgentsSetQuietParams};
 use crate::api::schema::{Method, ResponseResult, TabInfo, TabSetMutedParams};
 
@@ -76,9 +76,13 @@ impl App {
             }
         }
         // Fork: `tab.set_dnd`'s own path, recording that an agent (or the
-        // coordinator) turned it on, so the coordinator gets through it.
+        // coordinator) turned it on, so the coordinator gets through it; a
+        // caller acting as the user (a shell pane) is the user.
+        let by_agent = caller
+            .as_ref()
+            .is_some_and(|caller| !matches!(caller.actor, Actor::User));
         if let Some(dnd) = params.dnd {
-            if !self.set_tab_dnd(target.ws_idx, target.tab_idx, dnd, caller.is_some()) {
+            if !self.set_tab_dnd(target.ws_idx, target.tab_idx, dnd, by_agent) {
                 line.code = Some(error_code::NOT_FOUND.to_string());
                 self.log_model_action(caller.as_ref(), AgentsActionOutcome::Failed, line);
                 return Err(ModelError::new(error_code::NOT_FOUND, "tab not found"));

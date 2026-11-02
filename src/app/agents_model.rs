@@ -2503,6 +2503,7 @@ impl App {
                         envelope: typed.clone(),
                         pointer: Some(pointer.clone()),
                         from_terminal: Some(caller.terminal_id.clone()),
+                        from_coordinator,
                     },
                     id,
                     line,
@@ -2528,6 +2529,7 @@ impl App {
                 typed,
                 pointer,
                 Some(caller.terminal_id.clone()),
+                from_coordinator,
                 now,
             ) {
                 Ok((delivery, interrupted)) => (Ok(delivery), interrupted),
@@ -2542,6 +2544,7 @@ impl App {
                 typed,
                 pointer,
                 Some(caller.terminal_id.clone()),
+                from_coordinator,
                 now,
             );
             (delivered, false)

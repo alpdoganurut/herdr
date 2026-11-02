@@ -96,6 +96,11 @@ impl App {
                 self.message_queue.mark_due();
             }
         } else if claimed_by_user {
+            tracing::info!(
+                event = "tab.set_dnd",
+                tab_id = %tab_id,
+                "the user took over an agent's do-not-disturb"
+            );
             self.schedule_session_save();
             self.move_queued_into_quiet(ws_idx, tab_idx);
         }
