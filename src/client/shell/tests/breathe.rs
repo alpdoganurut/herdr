@@ -237,7 +237,7 @@ fn frames_are_scheduled_only_while_something_breathes() {
     assert!(!state.tick_breathing(Instant::now() + Duration::from_secs(5)));
 
     // The spaces layout draws no agent glyphs, so nothing breathes there.
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(working_snapshot(WORKING)));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");

@@ -16,7 +16,7 @@ fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
         important: false,
         remind_every: None,
     }));
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(snapshot));
     state.set_pane_surface(surface());
     state.compose(80, 20).expect("overflow tab bar");
@@ -79,7 +79,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
             remind_every: None,
         })
         .collect();
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     for number in [8, 7, 8] {
         let tab_id = format!("tab_{number}");
         projected.focused_tab_id = Some(tab_id.clone());
@@ -165,7 +165,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
         })
         .collect();
 
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(initial));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("full sidebar");
@@ -199,7 +199,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
 
 #[test]
 fn client_owned_sidebar_dividers_resize_live() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 30).expect("expanded sidebar");
@@ -302,7 +302,7 @@ fn client_owned_sidebar_dividers_resize_live() {
 
 #[test]
 fn context_menus_capture_stable_targets_and_route_actions() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");

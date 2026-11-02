@@ -1030,7 +1030,7 @@ fn the_news_settings_section_shows_the_desk_and_edits_the_config() {
 
 #[test]
 fn the_spaces_layout_keeps_the_news_tab_in_its_list() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(news_snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");

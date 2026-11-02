@@ -7,6 +7,14 @@ use crate::protocol::{
 use crossterm::event::MouseEvent;
 mod text_editing;
 
+/// Fork: `Config::default()` with upstream's `spaces` sidebar layout, for tests
+/// written against the space and agent panels (herdr+ defaults to `tabs`).
+pub(super) fn spaces_config() -> Config {
+    let mut config = Config::default();
+    config.ui.sidebar_layout = crate::config::SidebarLayoutConfig::Spaces;
+    config
+}
+
 pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: "boot-1".into(),

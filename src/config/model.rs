@@ -51,8 +51,8 @@ impl Default for UpdateConfig {
     fn default() -> Self {
         Self {
             channel: default_update_channel(),
-            version_check: true,
-            manifest_check: true,
+            version_check: false,
+            manifest_check: false,
         }
     }
 }
@@ -244,10 +244,11 @@ pub fn tab_agent_glyph_color_diagnostics(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarLayoutConfig {
-    /// Space panel above the agent panel (the default).
-    #[default]
+    /// Space panel above the agent panel.
     Spaces,
-    /// One row per tab across every space, in tab order, with the tab's agent status.
+    /// One row per tab across every space, in tab order, with the tab's agent status
+    /// (the default).
+    #[default]
     Tabs,
 }
 
@@ -556,9 +557,9 @@ pub struct KeysConfig {
     pub open_coordinator: BindingConfig,
     /// Show or hide the focused tab's info pane (notes). Unset by default.
     pub toggle_info_pane: BindingConfig,
-    /// Focus the previously focused tab (browser-style back). Default: "cmd+[".
+    /// Focus the previously focused tab (browser-style back). Default: ["cmd+[", "alt+,"].
     pub tab_history_back: BindingConfig,
-    /// Focus the next tab again after going back. Default: "cmd+]".
+    /// Focus the next tab again after going back. Default: ["cmd+]", "alt+."].
     pub tab_history_forward: BindingConfig,
     /// Focus the `tabs` sidebar's search field, or let go of it. Default:
     /// "prefix+f".
@@ -1155,7 +1156,7 @@ pub struct UiConfig {
     pub sidebar_start_collapsed: bool,
     /// Collapsed sidebar presentation. Default: compact.
     pub sidebar_collapsed_mode: SidebarCollapsedModeConfig,
-    /// Expanded sidebar composition. Saved values are "spaces" or "tabs". Default: "spaces".
+    /// Expanded sidebar composition. Saved values are "spaces" or "tabs". Default: "tabs".
     pub sidebar_layout: SidebarLayoutConfig,
     /// Glyph at the right edge of a tab row in the "tabs" sidebar layout, keyed by canonical
     /// agent id, plus "other" (any other agent) and "shell" (no agent). Keys you omit keep
@@ -1416,8 +1417,8 @@ impl Default for KeysConfig {
             open_browser: BindingConfig::default(),
             open_coordinator: BindingConfig::default(),
             toggle_info_pane: BindingConfig::default(),
-            tab_history_back: BindingConfig::one("cmd+["),
-            tab_history_forward: BindingConfig::one("cmd+]"),
+            tab_history_back: BindingConfig::Many(vec!["cmd+[".into(), "alt+,".into()]),
+            tab_history_forward: BindingConfig::Many(vec!["cmd+]".into(), "alt+.".into()]),
             sidebar_search: BindingConfig::one("prefix+f"),
             copy_mode: BindingConfig::one("prefix+["),
             focus_pane_left: BindingConfig::one("prefix+h"),
@@ -1464,7 +1465,7 @@ impl Default for UiConfig {
             sidebar_max_width: 36,
             sidebar_start_collapsed: false,
             sidebar_collapsed_mode: SidebarCollapsedModeConfig::Compact,
-            sidebar_layout: SidebarLayoutConfig::Spaces,
+            sidebar_layout: SidebarLayoutConfig::Tabs,
             tab_agent_glyphs: std::collections::BTreeMap::new(),
             tab_agent_glyph_colors: std::collections::BTreeMap::new(),
             idle_reminder_minutes: DEFAULT_IDLE_REMINDER_MINUTES,
@@ -1696,19 +1697,27 @@ mod tests {
     fn update_config_defaults_and_parses() {
         let default_config = Config::default();
         assert_eq!(default_config.update.channel, default_update_channel());
-        assert!(default_config.update.version_check);
-        assert!(default_config.update.manifest_check);
+        // Fork: both background checks are off unless a config turns them on.
+        assert!(!default_config.update.version_check);
+        assert!(!default_config.update.manifest_check);
+        let empty: Config = toml::from_str("").unwrap();
+        assert!(!empty.update.version_check);
+        assert!(!empty.update.manifest_check);
 
         let toml = r#"
 [update]
 channel = "preview"
-version_check = false
-manifest_check = false
+version_check = true
+manifest_check = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.update.channel, UpdateChannelConfig::Preview);
         assert_eq!(config.update.channel.as_str(), "preview");
-        assert!(!config.update.version_check);
+        assert!(config.update.version_check);
+        assert!(config.update.manifest_check);
+
+        let config: Config = toml::from_str("[update]\nversion_check = true\n").unwrap();
+        assert!(config.update.version_check);
         assert!(!config.update.manifest_check);
     }
 
@@ -2084,18 +2093,20 @@ sidebar_collapsed_mode = "hidden"
     }
 
     #[test]
-    fn sidebar_layout_defaults_spaces_and_parses_tabs() {
+    fn sidebar_layout_defaults_tabs_and_parses_spaces() {
         let default_config = Config::default();
-        assert_eq!(
-            default_config.ui.sidebar_layout,
-            SidebarLayoutConfig::Spaces
-        );
+        assert_eq!(default_config.ui.sidebar_layout, SidebarLayoutConfig::Tabs);
+        assert_eq!(SidebarLayoutConfig::default(), SidebarLayoutConfig::Tabs);
+        let empty: Config = toml::from_str("[ui]\n").unwrap();
+        assert_eq!(empty.ui.sidebar_layout, SidebarLayoutConfig::Tabs);
 
         let toml = r#"
 [ui]
-sidebar_layout = "tabs"
+sidebar_layout = "spaces"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.sidebar_layout, SidebarLayoutConfig::Spaces);
+        let config: Config = toml::from_str("[ui]\nsidebar_layout = \"tabs\"\n").unwrap();
         assert_eq!(config.ui.sidebar_layout, SidebarLayoutConfig::Tabs);
     }
 

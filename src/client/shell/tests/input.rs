@@ -174,7 +174,7 @@ fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
 
 #[test]
 fn client_shell_graphics_follow_final_shell_origin_and_local_overlay_visibility() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     let key = crate::protocol::SurfaceGraphicsAssetKey {
@@ -838,7 +838,7 @@ fn help_overlay_uses_live_keymap_and_owns_filter_state() {
 fn rename_pane_empty_value_is_preserved_as_a_clear_request() {
     let mut snapshot = snapshot();
     snapshot.panes[0].label = Some("build".into());
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(snapshot));
     let mut open = ClientShellInput::default();
     state.record_binding(

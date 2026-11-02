@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn mouse_hits_use_stable_workspace_tab_and_pane_ids() {
-    let config = ClientShellConfig::from_config(&Config::default());
+    let config = ClientShellConfig::from_config(&spaces_config());
     let mut state = ClientShellState::new(config);
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
@@ -51,7 +51,7 @@ fn mouse_hits_use_stable_workspace_tab_and_pane_ids() {
 
 #[test]
 fn collapsed_workspace_jitter_remains_a_click() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.sidebar_collapsed = true;
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
@@ -91,7 +91,7 @@ fn collapsed_workspace_jitter_remains_a_click() {
 
 #[test]
 fn grouped_worktrees_render_parent_branch_and_indented_child() {
-    let config = ClientShellConfig::from_config(&Config::default());
+    let config = ClientShellConfig::from_config(&spaces_config());
     let mut state = ClientShellState::new(config);
     let mut snapshot = snapshot();
     snapshot.workspaces[0].worktree = Some(ClientShellWorktree {
@@ -194,7 +194,7 @@ fn duplicate_repo_parents_remain_visible_and_focusable_when_collapsed() {
             projected.workspaces.push(child);
         }
 
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
         state.set_snapshot(Box::new(projected));
         state.set_pane_surface(surface());
         for collapsed in [false, true] {
@@ -306,7 +306,7 @@ fn workspace_click_waits_for_release_and_drag_reorders_by_stable_id() {
         workspace.focused = false;
         projected.workspaces.push(workspace);
     }
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.compose(106, 24).expect("three workspaces");
@@ -398,7 +398,7 @@ fn duplicate_repo_parent_drag_does_not_target_its_own_move_block() {
     duplicate.workspace_id = "ws_duplicate".into();
     duplicate.focused = false;
     projected.workspaces.extend([other, duplicate]);
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state
@@ -461,7 +461,7 @@ fn workspace_drag_moves_parent_worktree_as_one_block_and_rejects_child() {
     other.worktree = None;
     projected.workspaces.extend([child, other]);
 
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.compose(106, 24).expect("worktree workspaces");
@@ -521,7 +521,7 @@ fn workspace_drag_moves_parent_worktree_as_one_block_and_rejects_child() {
     duplicate.workspace_id = "ws_duplicate".into();
     duplicate.focused = false;
     projected.workspaces.push(duplicate);
-    state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state
@@ -608,7 +608,7 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
             subagents: 0,
         },
     ];
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(initial.clone()));
 
     let mut cycle = ClientShellInput::default();
@@ -700,7 +700,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
             subagents: 0,
         },
     ];
-    let mut config = Config::default();
+    let mut config = spaces_config();
     config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
     config.ui.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
     config.ui.sidebar.agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
@@ -823,7 +823,7 @@ fn muted_agent_sidebar_rows_do_not_stack_terminal_faint() {
         focused: true,
         subagents: 0,
     }];
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     let frame = state.compose(106, 30).expect("agent sidebar frame");
@@ -844,7 +844,7 @@ fn muted_agent_sidebar_rows_do_not_stack_terminal_faint() {
 fn workspace_state_text_does_not_stack_terminal_faint() {
     use crate::config::SpaceSidebarToken;
 
-    let mut config = Config::default();
+    let mut config = spaces_config();
     config.ui.sidebar.spaces.rows = vec![
         vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
         vec![SpaceSidebarToken::StateText],
@@ -928,7 +928,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
     ];
     projected.agent_view_label = Some("review".into());
     projected.agent_order = vec!["pane_2".into(), "pane_3".into()];
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.compose(106, 30).expect("filtered agent sidebar");
@@ -1001,7 +1001,7 @@ fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
         subagents: 0,
     });
     let config =
-        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone());
+        ClientShellConfig::from_config(&spaces_config()).with_preferences_path(path.clone());
     let mut state = ClientShellState::new(config);
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
@@ -1021,7 +1021,7 @@ fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
     );
     assert!(click.actions.is_empty());
     let reloaded_config =
-        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone());
+        ClientShellConfig::from_config(&spaces_config()).with_preferences_path(path.clone());
     let reloaded = ClientShellState::new(reloaded_config);
     assert_eq!(
         reloaded.config.agent_panel_sort,

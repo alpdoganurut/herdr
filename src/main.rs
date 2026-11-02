@@ -138,11 +138,13 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # so existing preview installs stay there until explicitly switched.
 # channel = "stable"
 
-# Check herdr.dev for new Herdr versions in the background.
-# version_check = true
+# Check herdr.dev for new Herdr versions in the background. Off by default on herdr+:
+# herdr.dev announces upstream releases, which would replace this build.
+# version_check = false
 
-# Check herdr.dev for remote agent-detection manifest updates in the background.
-# manifest_check = true
+# Check herdr.dev for remote agent-detection manifest updates in the background. Off by
+# default on herdr+, so the bundled agent-detection rules stay in effect.
+# manifest_check = false
 
 [keys]
 # Prefix key to enter prefix mode (default: "ctrl+b")
@@ -198,8 +200,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # open_browser = ""                 # unbound; opens the Browser overlay (the herdr browser's tabs and who uses them)
 # open_coordinator = ""             # unbound; focuses the coordinator tab, creating it when gone
 # toggle_info_pane = ""             # unbound; shows or hides the focused tab's info pane (notes)
-# tab_history_back = "cmd+["        # previously focused tab, browser-style (Ghostty: keybind = super+[=csi:91;9u)
-# tab_history_forward = "cmd+]"     # forward again (Ghostty: keybind = super+]=csi:93;9u); no Cmd? e.g. "alt+," / "alt+."
+# tab_history_back = ["cmd+[", "alt+,"]     # previously focused tab, browser-style (Ghostty: keybind = super+[=csi:91;9u)
+# tab_history_forward = ["cmd+]", "alt+."]  # forward again (Ghostty: keybind = super+]=csi:93;9u)
 # sidebar_search = "prefix+f"       # "tabs" layout: type to filter the tab list (Esc clears, Enter focuses the first match)
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
@@ -276,9 +278,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Collapsed sidebar presentation: "compact" keeps the narrow status rail, "hidden" uses zero width.
 # sidebar_collapsed_mode = "compact"
 
-# Expanded sidebar composition: "spaces" stacks the space panel over the agent panel;
-# "tabs" lists one row per tab across every space, in tab order.
-# sidebar_layout = "spaces"
+# Expanded sidebar composition: "tabs" lists one row per tab across every space, in tab order;
+# "spaces" stacks the space panel over the agent panel.
+# sidebar_layout = "tabs"
 
 # Tab-row agent glyphs for the "tabs" layout, keyed by canonical agent id plus
 # "other" (any other agent) and "shell" (no agent). Omitted keys keep their defaults.
