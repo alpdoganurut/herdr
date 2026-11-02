@@ -165,9 +165,10 @@ async function track(profile, page, initiator) {
     page.on('requestfailed', (req) => {
       const started = state.requests.get(req); state.requests.delete(req);
       const failure = req.failure();
-      // a main-frame load that failed (not one the user or a new navigation stopped); a
+      // a main-frame load that failed (not one the user or a new navigation stopped, nor our
+      // own network block of an html view); a
       // companion reports its own views' failed loads and crashes (one source, one message)
-      if (profile.kind !== 'companion' && req.isNavigationRequest() && req.frame() === page.mainFrame() && failure && !/ERR_ABORTED/.test(failure.errorText)) {
+      if (profile.kind !== 'companion' && req.isNavigationRequest() && req.frame() === page.mainFrame() && failure && !/ERR_ABORTED|ERR_BLOCKED_BY_CLIENT/.test(failure.errorText)) {
         event('tab', { profile: profile.name, target: targetId, kind: 'load_failed', text: eventText(`${failure.errorText} ${req.url()}`) });
       }
       state.pushNetwork({ ts: Date.now(), method: req.method(), url: req.url().slice(0, TEXT_CAP), type: req.resourceType(), status: null, failed: true, failure: failure ? failure.errorText : 'failed', duration_ms: started ? Date.now() - started.start : 0, bytes: 0 });
