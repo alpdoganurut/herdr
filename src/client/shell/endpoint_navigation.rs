@@ -35,7 +35,10 @@ impl ClientShellState {
         press: ClientWorkspacePress,
         outcome: &mut ClientShellInput,
     ) {
+        // Workspace rows are group headers only in the one-machine tabs
+        // sidebar; the machine sidebar draws real workspace rows.
         if self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+            && self.endpoints.len() == 1
             && press.endpoint_id.is_local()
         {
             // A group header click folds or unfolds that group. The focused
