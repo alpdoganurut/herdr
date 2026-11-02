@@ -21,6 +21,7 @@ const REPORT_BATCH = 50;
 const REPORT_RATE = 20; // events/s
 const SELECTION_MAX = 8000;
 const NOTE_MAX = 2000;
+const PROMPT_TIMEOUT_MS = 60000; // an unanswered permission prompt is denied
 
 // ---------- arguments and process switches (before ready) ----------
 
@@ -105,7 +106,11 @@ class Companion {
       onError: (id, kind, text) => this.onPageError(id, kind, text),
       onOpen: (from, url, disposition) => this.onWindowOpen(from, url, disposition),
       onKey: () => false,
+      onPermission: (id, req, done) => this.onPermission(id, req, done),
+      onLeave: (id, origin) => this.onLeave(id, origin),
     });
+    this.prompts = []; // pending permission prompts {id, view_id, permission, label, origin, dones[], timer}
+    this.nextPrompt = 1;
   }
 
   async start() {
@@ -262,7 +267,7 @@ class Companion {
     // Re-show only when herdr focus moved (or nothing valid is shown): a page an agent raised
     // with focus() stays up across unrelated tab/workspace events.
     const focus = this.store.focusedTabId;
-    if (focus && (focus !== prevFocus || !this.shownTab)) await this.showGroup(focus, { reason: 'follow' });
+    if (focus && (focus !== prevFocus || !this.shownTab)) await this.showGroup(focus, { reason: 'follow', focusMoved: focus !== prevFocus });
     else {
       this.layout();
       this.pushStrip();
@@ -282,8 +287,9 @@ class Companion {
         clearTimeout(this.focusTimer);
         this.focusTimer = setTimeout(() => {
           if (!this.store.tabs.has(d.tab_id)) return this.refreshSoon(0);
+          const moved = this.store.focusedTabId !== d.tab_id;
           this.store.focusedTabId = d.tab_id;
-          this.showGroup(d.tab_id, { reason: 'follow' });
+          this.showGroup(d.tab_id, { reason: 'follow', focusMoved: moved });
         }, 50);
         break;
       case 'tab.renamed': {
@@ -324,7 +330,10 @@ class Companion {
     return target;
   }
 
-  async showGroup(tabId, { reason } = {}) {
+  // reason 'follow' (herdr focus) | 'agent'. `focusMoved`: herdr focus just moved to this tab,
+  // so the user is looking at it: report `shown` (clears needs-you) even when the companion
+  // already showed this group (an agent's focus() switched to it first).
+  async showGroup(tabId, { reason, focusMoved = false } = {}) {
     const changed = this.shownTab !== tabId;
     this.shownTab = tabId;
     const g = this.store.group(tabId);
@@ -338,7 +347,7 @@ class Companion {
     }
     this.layout();
     this.pushStrip();
-    if (changed && reason === 'follow' && e) this.report('user_action', 'shown', e, g);
+    if ((changed || focusMoved) && reason === 'follow' && e) this.report('user_action', 'shown', e, g);
   }
 
   layout() {
@@ -423,6 +432,37 @@ class Companion {
     this.openEntry(hit.group.tab_id, { url, opened_by: 'user' }, { background })
       .then((e) => this.report('user_action', 'new_tab', e, hit.group))
       .catch((err) => this.say('warn', err.message));
+  }
+
+  // ---------- permission prompts (web pages: allow once / deny in the strip) ----------
+
+  onPermission(viewId, req, done) {
+    const same = this.prompts.find((p) => p.view_id === viewId && p.permission === req.permission && p.origin === req.origin);
+    if (same) {
+      same.dones.push(done);
+      return;
+    }
+    const p = { id: `p${this.nextPrompt++}`, view_id: viewId, ...req, dones: [done] };
+    p.timer = setTimeout(() => this.answerPrompt(p.id, false), PROMPT_TIMEOUT_MS);
+    this.prompts.push(p);
+    log('permission asked', viewId, req.permission, req.origin);
+    this.pushStrip();
+  }
+
+  answerPrompt(id, allow) {
+    const i = this.prompts.findIndex((p) => p.id === id);
+    if (i < 0) return false;
+    const [p] = this.prompts.splice(i, 1);
+    clearTimeout(p.timer);
+    for (const d of p.dones) d(!!allow);
+    log('permission', allow ? 'allowed once' : 'denied', p.view_id, p.permission, p.origin);
+    this.pushStrip();
+    return true;
+  }
+
+  // The view navigated to `origin` (null: it closed): its other origins' prompts are denied.
+  onLeave(viewId, origin) {
+    for (const p of [...this.prompts]) if (p.view_id === viewId && p.origin !== origin) this.answerPrompt(p.id, false);
   }
 
   // ---------- control page API (contract §1.4) ----------
@@ -676,6 +716,8 @@ class Companion {
         return this.goToTab();
       case 'send_page':
         return this.sendPage((a && a.note) || '');
+      case 'permission':
+        return a && this.answerPrompt(String(a.id), a.allow === true);
       default:
     }
   }
@@ -704,6 +746,10 @@ class Companion {
         : [],
       active: active ? { view_id: active.view_id, url: active.url, title: active.title, kind: active.kind } : null,
       nav: active ? this.views.navState(active.view_id) : {},
+      prompt: (() => {
+        const p = active && this.prompts.find((x) => x.view_id === active.view_id);
+        return p ? { id: p.id, label: p.label, origin: p.origin, permission: p.permission } : null;
+      })(),
       attached: status.state === 'registered',
       status: line,
     };

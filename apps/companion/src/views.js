@@ -13,14 +13,18 @@ function within(root, p) {
   return p === root || p.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
 }
 
-let webSessionReady = false;
-function webSession() {
-  const ses = session.fromPartition(WEB_PARTITION);
-  if (!webSessionReady) {
-    webSessionReady = true;
-    // Same policy as a normal browser for the user's own pages; nothing special.
+// Web page permissions: never auto-granted (Electron's default grants everything).
+// These four are asked in the strip (allow once / deny); everything else is denied.
+const PROMPTED = new Set(['geolocation', 'notifications', 'media', 'clipboard-read']);
+// Granted without asking, as Chromium does for a page the user is on.
+const ALLOWED = new Set(['clipboard-sanitized-write']);
+
+function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '';
   }
-  return ses;
 }
 
 // html_view sandbox: file:// limited to `root` (canonicalized, no symlink escape),
@@ -71,7 +75,8 @@ async function targetIdOf(wc) {
 }
 
 class ViewManager {
-  // hooks: {onNav(viewId, patch), onState(viewId), onError(viewId, kind, text), onOpen(fromViewId, url, disposition), onKey(input) -> bool}
+  // hooks: {onNav(viewId, patch), onState(viewId), onError(viewId, kind, text), onOpen(fromViewId, url, disposition), onKey(input) -> bool,
+  //         onPermission(viewId, {permission,label,origin}, done(allow)), onLeave(viewId, newOrigin|null)}
   constructor(hooks) {
     this.hooks = hooks;
     this.live = new Map(); // view_id -> {view, entry, rootReal}
@@ -79,6 +84,50 @@ class ViewManager {
 
   get(viewId) {
     return this.live.get(viewId) || null;
+  }
+
+  // The view whose webContents is `wc`, or null.
+  viewIdOf(wc) {
+    if (!wc) return null;
+    for (const [id, rec] of this.live) if (rec.view.webContents === wc) return id;
+    return null;
+  }
+
+  // The persistent web partition with the permission policy: PROMPTED permissions go to
+  // hooks.onPermission(viewId, {permission, label, origin}, cb) (main asks in the strip;
+  // allow once grants this request and the page's checks until it leaves the origin).
+  _webSession() {
+    const ses = session.fromPartition(WEB_PARTITION);
+    if (this.webSessionReady) return ses;
+    this.webSessionReady = true;
+    ses.setPermissionRequestHandler((wc, permission, cb, details = {}) => {
+      if (ALLOWED.has(permission)) return cb(true);
+      const viewId = this.viewIdOf(wc);
+      if (!PROMPTED.has(permission) || !viewId || !this.hooks.onPermission) return cb(false);
+      const origin = originOf(details.requestingUrl || (wc && wc.getURL()) || '');
+      if (!origin || origin === 'null') return cb(false);
+      const rec = this.live.get(viewId);
+      if (rec.grants.has(`${origin}|${permission}`)) return cb(true);
+      let label = permission;
+      if (permission === 'media') {
+        const t = details.mediaTypes || [];
+        label = t.includes('video') && t.includes('audio') ? 'use your camera and microphone' : t.includes('video') ? 'use your camera' : 'use your microphone';
+      } else if (permission === 'clipboard-read') label = 'read the clipboard';
+      else if (permission === 'notifications') label = 'show notifications';
+      else if (permission === 'geolocation') label = 'know your location';
+      this.hooks.onPermission(viewId, { permission, label, origin }, (allow) => {
+        if (allow && this.live.get(viewId) === rec) rec.grants.add(`${origin}|${permission}`);
+        cb(!!allow);
+      });
+    });
+    ses.setPermissionCheckHandler((wc, permission, requestingOrigin) => {
+      if (ALLOWED.has(permission)) return true;
+      if (!PROMPTED.has(permission)) return false;
+      const viewId = this.viewIdOf(wc);
+      const rec = viewId && this.live.get(viewId);
+      return !!(rec && rec.grants.has(`${originOf(requestingOrigin)}|${permission}`));
+    });
+    return ses;
   }
 
   has(viewId) {
@@ -96,7 +145,7 @@ class ViewManager {
       const root = entry.root || path.dirname(entry.file);
       ({ ses, rootReal } = htmlSession(entry.view_id, root, entry.allow_network));
     } else {
-      ses = webSession();
+      ses = this._webSession();
     }
     const view = new WebContentsView({
       webPreferences: {
@@ -108,7 +157,7 @@ class ViewManager {
         webSecurity: true,
       },
     });
-    const rec = { view, entry, rootReal, target: null, ready: null };
+    const rec = { view, entry, rootReal, target: null, ready: null, grants: new Set() };
     this.live.set(entry.view_id, rec);
     view.setVisible(false);
     win.contentView.addChildView(view);
@@ -133,6 +182,9 @@ class ViewManager {
     const nav = () => {
       const url = wc.getURL();
       if (url.startsWith('about:blank#herdr-view=')) return;
+      const origin = originOf(url);
+      for (const g of [...rec.grants]) if (!g.startsWith(origin + '|')) rec.grants.delete(g);
+      if (this.hooks.onLeave) this.hooks.onLeave(id, origin);
       this.hooks.onNav(id, { url });
     };
     wc.on('did-navigate', nav);
@@ -177,6 +229,7 @@ class ViewManager {
     const rec = this.live.get(viewId);
     if (!rec) return;
     this.live.delete(viewId);
+    if (this.hooks.onLeave) this.hooks.onLeave(viewId, null);
     try {
       win.contentView.removeChildView(rec.view);
     } catch {}
@@ -203,4 +256,4 @@ class ViewManager {
   }
 }
 
-module.exports = { ViewManager, WEB_PARTITION, within };
+module.exports = { ViewManager, WEB_PARTITION, within, PROMPTED, ALLOWED };

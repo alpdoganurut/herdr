@@ -39,3 +39,6 @@ button.icon:hover:not(:disabled) { background: var(--bg2); }
 #empty { position: fixed; top: 120px; left: 0; right: 0; text-align: center; color: var(--dim); }
 #empty .hint { font-size: 11px; }
 #empty[hidden] { display: none; }
+#permbar { display: flex; align-items: center; gap: 6px; padding: 0 8px 6px; }
+#permbar[hidden] { display: none; }
+#permtext { flex: 1; color: var(--attention); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

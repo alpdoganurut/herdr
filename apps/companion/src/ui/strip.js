@@ -65,6 +65,15 @@ function render() {
   $('newtab').disabled = !state.session;
   if (!urlEditing) $('url').value = state.active ? state.active.url : '';
   $('url').disabled = !state.session;
+  const pb = $('permbar');
+  if (state.prompt) {
+    pb.hidden = false;
+    pb.dataset.id = state.prompt.id;
+    $('permtext').textContent = `${state.prompt.origin} wants to ${state.prompt.label}`;
+  } else {
+    pb.hidden = true;
+    delete pb.dataset.id;
+  }
   const st = $('status');
   if (state.status && state.status.text) {
     st.hidden = false;
@@ -136,6 +145,8 @@ $('note').addEventListener('keydown', (e) => {
     reportHeight();
   }
 });
+$('permallow').addEventListener('click', () => act('permission', { id: $('permbar').dataset.id, allow: true }));
+$('permdeny').addEventListener('click', () => act('permission', { id: $('permbar').dataset.id, allow: false }));
 // Shortcuts (⌘T/W/L/R/[/]) are application-menu accelerators in main.js.
 new ResizeObserver(reportHeight).observe($('chrome'));
 act('ready');
