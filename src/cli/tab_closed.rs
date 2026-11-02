@@ -218,6 +218,7 @@ mod tests {
             pinned: false,
             muted: false,
             dnd: false,
+            dnd_by_agent: false,
             space_id: "w_1".into(),
             space_name: "leap".into(),
             cwd: "/home/me/src/herdr".into(),

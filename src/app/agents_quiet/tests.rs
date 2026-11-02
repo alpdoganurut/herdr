@@ -154,6 +154,41 @@ fn the_coordinator_needs_its_users_turn_and_the_user_needs_nothing() {
 }
 
 #[test]
+fn an_agents_or_the_coordinators_dnd_is_theirs_and_the_users_is_the_users() {
+    let mut app = model_app();
+    let (lead, fixer) = (public(&app, 1, 0), public(&app, 1, 1));
+    let out = set_quiet(&mut app, Some(&lead), &fixer, None, Some(true));
+    assert_eq!(code(&out), "ok", "{out}");
+    assert!(tab(&app, 1, 1).dnd && tab(&app, 1, 1).dnd_by_agent);
+    assert!(
+        out["result"]["tab"].get("dnd_by_agent").is_none(),
+        "not in TabInfo"
+    );
+    // Off clears who turned it on.
+    let out = set_quiet(&mut app, Some(&lead), &fixer, None, Some(false));
+    assert_eq!(code(&out), "ok", "{out}");
+    assert!(!tab(&app, 1, 1).dnd && !tab(&app, 1, 1).dnd_by_agent);
+
+    let coordinator = with_coordinator(&mut app);
+    let coordinator_pane = pane(&app, 0, 0);
+    user_turn(&mut app, coordinator_pane);
+    let out = set_quiet(&mut app, Some(&coordinator), &fixer, None, Some(true));
+    assert_eq!(code(&out), "ok", "{out}");
+    assert!(
+        tab(&app, 1, 1).dnd_by_agent,
+        "the coordinator's counts as an agent's"
+    );
+
+    // The user (no caller, the CLI as the user) takes it over.
+    let out = set_quiet(&mut app, None, &fixer, None, Some(true));
+    assert_eq!(code(&out), "ok", "{out}");
+    assert!(tab(&app, 1, 1).dnd && !tab(&app, 1, 1).dnd_by_agent);
+    let out = set_quiet(&mut app, None, &lead, None, Some(true));
+    assert_eq!(code(&out), "ok", "{out}");
+    assert!(tab(&app, 1, 0).dnd && !tab(&app, 1, 0).dnd_by_agent);
+}
+
+#[test]
 fn a_request_without_a_change_or_target_is_invalid() {
     let mut app = model_app();
     let lead = public(&app, 1, 0);

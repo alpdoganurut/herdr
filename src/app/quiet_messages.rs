@@ -971,6 +971,9 @@ impl App {
             .values()
             .map(|pane| pane.attached_terminal_id.to_string())
             .collect();
+        // Fork: the coordinator's messages get through a do-not-disturb an
+        // agent turned on (src/app/tab_dnd.rs); they stay queued.
+        let coordinator_passes = tab.dnd_by_agent;
         let moving: Vec<super::message_queue::QueuedMessage> = self
             .message_queue
             .entries
@@ -991,6 +994,7 @@ impl App {
                         .as_deref()
                         .is_some_and(|id| self.message_queue.delivery.submitting_id(id))
             })
+            .filter(|entry| !coordinator_passes || !self.queued_from_coordinator(entry))
             .cloned()
             .collect();
         if moving.is_empty() {

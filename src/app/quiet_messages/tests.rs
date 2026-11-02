@@ -790,3 +790,173 @@ async fn a_quiet_message_wakes_an_auto_suspended_claude() {
         assert!(!text.contains("fyi: merged"), "never typed in");
     }
 }
+
+/// The bucket's first tab hosts the coordinator, in a turn its user started.
+fn coordinator_in_user_turn(app: &mut App) -> String {
+    app.coordinator.dir = std::env::temp_dir().join(format!(
+        "herdr-quiet-coordinator-{}-{}",
+        std::process::id(),
+        crate::coordinator::launch::new_uuid()
+    ));
+    std::fs::create_dir_all(&app.coordinator.dir).expect("the coordinator dir");
+    let coordinator = pane(app, 0, 0);
+    terminal_mut(app, coordinator).set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    app.state.coordinator_terminal_id = Some(
+        app.state.workspaces[0]
+            .pane_state(coordinator)
+            .unwrap()
+            .attached_terminal_id
+            .clone(),
+    );
+    user_turn(app, coordinator);
+    public(app, 0, 0)
+}
+
+/// `caller` (an agent) puts `target`'s tab in do-not-disturb.
+fn agent_dnd(app: &mut App, caller: &str, target: &str) {
+    let reply = call(
+        app,
+        Method::AgentsSetQuiet(crate::api::schema::agents_model::AgentsSetQuietParams {
+            caller_pane: Some(caller.into()),
+            target: target.into(),
+            muted: None,
+            dnd: Some(true),
+        }),
+    );
+    assert_eq!(reply["result"]["tab"]["dnd"], true, "{reply}");
+}
+
+#[tokio::test]
+async fn the_coordinator_gets_through_a_dnd_an_agent_turned_on() {
+    let (mut app, lead, fixer, mut rx) = fixture();
+    let coordinator = coordinator_in_user_turn(&mut app);
+    agent_dnd(&mut app, &lead, &fixer);
+    assert!(app.state.workspaces[1].tabs[1].dnd_by_agent);
+
+    // Another agent is still held.
+    let reply = send(&mut app, &lead, &fixer, "from the lead", false, false);
+    assert_eq!(reply["result"]["message"]["quiet"], true, "{reply}");
+    assert_eq!(reply["result"]["message"]["reason"], DND_REASON, "{reply}");
+    let lead_pane = pane(&app, 1, 0);
+    user_turn(&mut app, lead_pane);
+    let reply = send(&mut app, &lead, &fixer, "stop!", false, true);
+    assert_eq!(code(&reply), DND_CODE, "{reply}");
+    assert!(typed(&mut rx).is_empty(), "nothing of theirs typed in");
+
+    // The coordinator's message goes in as without DND.
+    let reply = send(
+        &mut app,
+        &coordinator,
+        &fixer,
+        "run the tests",
+        false,
+        false,
+    );
+    assert_eq!(reply["result"]["message"]["outcome"], "sent", "{reply}");
+    assert!(reply["result"]["message"].get("quiet").is_none(), "{reply}");
+    assert!(typed(&mut rx).contains("run the tests"));
+    assert_eq!(app.quiet.entries.len(), 1, "only the lead's is stored");
+    let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+}
+
+#[tokio::test]
+async fn the_coordinators_urgent_message_gets_through_a_dnd_an_agent_turned_on() {
+    let (mut app, lead, fixer, mut rx) = fixture();
+    let coordinator = coordinator_in_user_turn(&mut app);
+    agent_dnd(&mut app, &lead, &fixer);
+    let reply = send(&mut app, &coordinator, &fixer, "stop now", false, true);
+    assert_eq!(code(&reply), "ok", "{reply}");
+    assert_eq!(reply["result"]["message"]["outcome"], "sent", "{reply}");
+    assert!(typed(&mut rx).contains("URGENT"));
+    assert!(app.quiet.entries.is_empty());
+    let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+}
+
+#[tokio::test]
+async fn the_users_dnd_still_holds_the_coordinator() {
+    let (mut app, _lead, fixer, mut rx) = fixture();
+    let coordinator = coordinator_in_user_turn(&mut app);
+    set_dnd(&mut app, 1, 1, true);
+    assert!(!app.state.workspaces[1].tabs[1].dnd_by_agent);
+    let reply = send(
+        &mut app,
+        &coordinator,
+        &fixer,
+        "run the tests",
+        false,
+        false,
+    );
+    assert_eq!(reply["result"]["message"]["quiet"], true, "{reply}");
+    assert_eq!(reply["result"]["message"]["reason"], DND_REASON, "{reply}");
+    let reply = send(&mut app, &coordinator, &fixer, "stop now", false, true);
+    assert_eq!(code(&reply), DND_CODE, "{reply}");
+    assert!(typed(&mut rx).is_empty());
+    assert_eq!(app.quiet.entries.len(), 1);
+    let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+}
+
+#[tokio::test]
+async fn an_agents_dnd_keeps_the_coordinators_queued_messages_and_types_only_them() {
+    let (mut app, lead, fixer, mut rx) = fixture();
+    let coordinator = coordinator_in_user_turn(&mut app);
+    let fixer_pane = pane(&app, 1, 1);
+    terminal_mut(&mut app, fixer_pane).set_detected_state(Some(Agent::Claude), AgentState::Working);
+    let reply = send(&mut app, &lead, &fixer, "from the lead", false, false);
+    assert_eq!(reply["result"]["message"]["outcome"], "queued", "{reply}");
+    let reply = send(
+        &mut app,
+        &coordinator,
+        &fixer,
+        "from the coordinator",
+        false,
+        false,
+    );
+    assert_eq!(reply["result"]["message"]["outcome"], "queued", "{reply}");
+    // A herdr notice queued for it waits for the do-not-disturb.
+    let target = app.resolve_agent_target(&fixer).unwrap();
+    let mut notice = app.message_queue.entries[0].clone();
+    notice.message.id = Some("notice1".into());
+    notice.envelope = "[herdr notice] a held notice".into();
+    notice.pointer = None;
+    notice.from_terminal = None;
+    notice.herdr_notice = true;
+    app.message_queue.entries.push(notice);
+
+    agent_dnd(&mut app, &lead, &fixer);
+    assert_eq!(app.quiet.entries.len(), 1, "the lead's moved");
+    assert_eq!(app.quiet.entries[0].message.text, "from the lead");
+    assert_eq!(
+        app.message_queue.entries.len(),
+        2,
+        "the coordinator's and the notice stay"
+    );
+
+    terminal_mut(&mut app, fixer_pane).set_detected_state(Some(Agent::Claude), AgentState::Idle);
+    assert_eq!(
+        app.agent_message_check(&target).status(),
+        crate::app::tab_dnd::DND_WAIT_REASON,
+        "the rest still waits"
+    );
+    let t0 = std::time::Instant::now();
+    app.message_queue.mark_due();
+    app.message_queue_pass(t0, crate::coordinator::now_unix());
+    app.message_queue.mark_due();
+    app.message_queue_pass(
+        t0 + crate::app::message_queue::SETTLE,
+        crate::coordinator::now_unix(),
+    );
+    let text = typed(&mut rx);
+    assert!(text.contains("from the coordinator"), "{text:?}");
+    assert!(
+        !text.contains("from the lead") && !text.contains("held notice"),
+        "{text:?}"
+    );
+    assert!(
+        app.message_queue
+            .entries
+            .iter()
+            .any(|entry| entry.message.id.as_deref() == Some("notice1")),
+        "the notice still waits"
+    );
+    let _ = std::fs::remove_dir_all(&app.coordinator.dir);
+}

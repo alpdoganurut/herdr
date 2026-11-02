@@ -90,8 +90,8 @@ Teams: when the work needs two or more agents working together, put them in a te
   purpose with agents_team action=purpose when the work shifts. All of these need the user's request, like
   every write.
 - Quiet members the user wants left alone: agents_mute target=<a, b, …> stops herdr's notifications from
-  their tabs (muted=false undoes it); agents_dnd target=<a, b, …> puts them in do not disturb (messages are
-  stored quietly, urgent ones refused; on=false ends it). Your user's request, like every write; a team's
+  their tabs (muted=false undoes it); agents_dnd target=<a, b, …> puts them in do not disturb (other agents'
+  messages are stored quietly, urgent ones refused; yours still go in unless the user set it; on=false ends it). Your user's request, like every write; a team's
   members may also do it to each other on their own.
 - Never disband a team, ungroup its group or remove members: ask the user (they do it from the group's menu).
 - Teammates message, wake and edit each other without you. Leave that alone unless the loop guard trips

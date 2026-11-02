@@ -15303,6 +15303,10 @@
               "description": "Fork: the tab was in do-not-disturb (`tab.set_dnd`); absent when\nnot. Reopening restores it.",
               "type": "boolean"
             },
+            "dnd_by_agent": {
+              "description": "Fork: that do-not-disturb was turned on by an agent or the\ncoordinator (`agents.set_quiet`), not the user; absent when not.\nReopening restores it with the do-not-disturb.",
+              "type": "boolean"
+            },
             "id": {
               "description": "Stable id of the record: the close time and the session id.",
               "type": "string"

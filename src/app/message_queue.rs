@@ -805,6 +805,18 @@ impl App {
         target: &super::terminal_targets::TerminalTarget,
         handoff_hold: bool,
     ) -> Check {
+        self.message_check_from(target, handoff_hold, false)
+    }
+
+    /// [`Self::message_check_with`] for a message from the coordinator
+    /// (`from_coordinator`): a do-not-disturb an agent turned on does not
+    /// hold it (src/app/tab_dnd.rs).
+    fn message_check_from(
+        &self,
+        target: &super::terminal_targets::TerminalTarget,
+        handoff_hold: bool,
+        from_coordinator: bool,
+    ) -> Check {
         let Some(pane) = self.public_pane_id(target.ws_idx, target.pane_id) else {
             return Check::Missing;
         };
@@ -872,8 +884,9 @@ impl App {
             return Check::Wait("voice mode".into());
         }
         // Fork: a tab in do-not-disturb (src/app/tab_dnd.rs) gets nothing
-        // typed in; the user's own handoff still goes.
-        if handoff_hold && self.pane_in_dnd(target.ws_idx, target.pane_id) {
+        // typed in; the user's own handoff still goes, and the coordinator's
+        // messages through a do-not-disturb an agent turned on.
+        if handoff_hold && self.pane_dnd_holds(target.ws_idx, target.pane_id, from_coordinator) {
             return Check::Wait(super::tab_dnd::DND_WAIT_REASON.into());
         }
         // Fork (agent handoff): nothing lands between the handoff turn,
@@ -1135,6 +1148,23 @@ impl App {
         target: &super::terminal_targets::TerminalTarget,
     ) -> MessageCheck {
         MessageCheck(self.message_check(target))
+    }
+
+    /// Fork: [`Self::agent_message_check`] for a message from the
+    /// coordinator (`agents.send_message` by `Actor::Coordinator`).
+    pub(crate) fn coordinator_message_check(
+        &self,
+        target: &super::terminal_targets::TerminalTarget,
+    ) -> MessageCheck {
+        MessageCheck(self.message_check_from(target, true, true))
+    }
+
+    /// Fork: whether `entry` was sent by the running coordinator.
+    pub(crate) fn queued_from_coordinator(&self, entry: &QueuedMessage) -> bool {
+        entry
+            .from_terminal
+            .as_ref()
+            .is_some_and(|from| self.state.coordinator_terminal_id.as_ref() == Some(from))
     }
 
     /// The one delivery path for an agent message (`agent.message_send` and
@@ -2223,7 +2253,20 @@ impl App {
             self.message_queue.save();
         }
         let terminal_id = target.terminal_id.clone();
-        let (pane, coordinator, hook_ended) = match self.message_check(&target) {
+        let mut check = self.message_check(&target);
+        // Fork: a do-not-disturb an agent turned on holds the rest, not the
+        // coordinator's messages (src/app/tab_dnd.rs): those go alone.
+        let coordinator_only = matches!(&check, Check::Wait(reason) if reason == super::tab_dnd::DND_WAIT_REASON)
+            && self.message_queue.entries.iter().any(|entry| {
+                entry.terminal_id == terminal_id
+                    && entry.typed_unix.is_none()
+                    && entry.attempts < submit::MAX_SUBMIT_ATTEMPTS
+                    && self.queued_from_coordinator(entry)
+            });
+        if coordinator_only {
+            check = self.message_check_from(&target, true, true);
+        }
+        let (pane, coordinator, hook_ended) = match check {
             Check::Missing => return self.target_missing(&terminal_id, now, now_unix, next),
             Check::Wait(reason) => {
                 self.message_queue.missing_since.remove(&terminal_id);
@@ -2356,6 +2399,7 @@ impl App {
             .filter(|entry| {
                 entry.typed_unix.is_none() && entry.attempts < submit::MAX_SUBMIT_ATTEMPTS
             })
+            .filter(|entry| !coordinator_only || self.queued_from_coordinator(entry))
         {
             if !items.is_empty()
                 && (items.len() >= max_combined

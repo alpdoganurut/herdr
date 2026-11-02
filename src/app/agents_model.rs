@@ -2359,9 +2359,10 @@ impl App {
         let for_user = matches!(caller.actor, Actor::Coordinator) && facts.user_turn;
         let now = now_unix();
         // Fork: a tab in do-not-disturb (src/app/tab_dnd.rs) takes messages
-        // quietly and refuses urgent ones; the coordinator does not break
-        // through.
-        let dnd = self.pane_in_dnd(target.ws_idx, pane);
+        // quietly and refuses urgent ones; the coordinator breaks through
+        // only one an agent turned on, never the user's.
+        let from_coordinator = matches!(caller.actor, Actor::Coordinator);
+        let dnd = self.pane_dnd_holds(target.ws_idx, pane, from_coordinator);
         if params.urgent && dnd {
             let hint = format!(
                 "{to_name} is in do not disturb: urgent messages are refused; send it without urgent and it is stored for them"
@@ -2457,7 +2458,11 @@ impl App {
                 format!("{to_name} is not running"),
             ));
         };
-        let check = self.agent_message_check(&queue_target);
+        let check = if from_coordinator {
+            self.coordinator_message_check(&queue_target)
+        } else {
+            self.agent_message_check(&queue_target)
+        };
         let sender = crate::agents_model::envelope::EnvelopeSender {
             name: caller.name.clone(),
             pane: caller.public.clone(),
