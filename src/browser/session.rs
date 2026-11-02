@@ -259,6 +259,24 @@ impl TabBrowser {
         Some(copy)
     }
 
+    /// The HTML views (target, file) a sync gave a new target that `before`
+    /// already had by id: restored views the host recreated, whose file
+    /// watch must be armed again. A new entry comes from a `show` this run,
+    /// which armed its own watch (or was asked not to: `--no-watch`).
+    pub fn recreated_html_views(&self, before: &TabBrowser) -> Vec<(String, String)> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.kind == TabBrowserKind::HtmlView)
+            .filter_map(|entry| {
+                let old = before.entries.iter().find(|old| old.id == entry.id)?;
+                let target = entry.target.clone()?;
+                (old.target.as_deref() != Some(target.as_str()))
+                    .then(|| Some((target, entry.file.clone()?)))
+                    .flatten()
+            })
+            .collect()
+    }
+
     /// A restored group: targets unknown until the host syncs, ids and
     /// sizes re-checked (a hand-edited session.json).
     pub fn restored(mut self) -> Option<TabBrowser> {
@@ -448,5 +466,41 @@ mod tests {
         assert_eq!(back.entries[0].id, "b1");
         assert_eq!(back.entries[1].id, "b2");
         assert!(TabBrowser::new(None).for_snapshot().is_none());
+    }
+
+    #[test]
+    fn only_restored_html_views_the_host_recreated_are_watched_again() {
+        let html = |id: Option<&str>, view: &str| BrowserHostEntry {
+            kind: TabBrowserKind::HtmlView,
+            file: Some(format!("/r/{view}.html")),
+            ..wire(id, view, &format!("file:///r/{view}.html"))
+        };
+        let mut browser = TabBrowser::new(None);
+        // a fresh `show` (a new entry): its own watch, or none with --no-watch
+        let before = browser.clone();
+        browser.apply_sync(
+            "w1:t1",
+            &group(None, vec![html(None, "v1")]),
+            &mut BTreeMap::new(),
+        );
+        assert!(browser.recreated_html_views(&before).is_empty());
+        // the same view synced again (a title change): nothing to re-arm
+        let before = browser.clone();
+        let mut again = group(None, vec![html(Some("b1"), "v1")]);
+        again.entries[0].title = "renamed".into();
+        browser.apply_sync("w1:t1", &again, &mut BTreeMap::new());
+        assert!(browser.recreated_html_views(&before).is_empty());
+        // restored (targets unknown), then recreated by the host: watched again
+        let mut restored = browser.for_snapshot().unwrap().restored().unwrap();
+        let before = restored.clone();
+        restored.apply_sync(
+            "w1:t1",
+            &group(None, vec![html(Some("b1"), "v9")]),
+            &mut BTreeMap::new(),
+        );
+        assert_eq!(
+            restored.recreated_html_views(&before),
+            vec![("T-v9".to_string(), "/r/v9.html".to_string())]
+        );
     }
 }

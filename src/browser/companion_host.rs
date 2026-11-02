@@ -433,6 +433,18 @@ impl BrowserHub {
     /// set to `status`. `Tab.browser` state is kept (the restore source).
     pub(super) fn drop_registration(&self, status: ProfileStatus, detach: bool) {
         self.inner.companion_host.lock().unwrap().take();
+        self.release_registration(status, detach);
+    }
+
+    /// [`Self::drop_registration`] after the lease slot was emptied.
+    fn release_registration(&self, status: ProfileStatus, detach: bool) {
+        // The companion's views go with it (the sidecar's disconnect path
+        // emits no `closed` for them).
+        self.inner
+            .html_views
+            .lock()
+            .unwrap()
+            .retain(|key| !is_companion(&key.profile));
         if detach {
             self.detach_companion();
         }
@@ -471,19 +483,22 @@ impl BrowserHub {
 
     /// Supervisor: a lease past its expiry goes (the companion is gone).
     pub(super) fn expire_host_lease(&self, now: Instant) {
-        let expired = self
-            .inner
-            .companion_host
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|lease| !lease.live(now));
-        if expired {
+        // The check and the take under one guard: a register that lands
+        // in between replaces the slot and is never dropped here.
+        let expired = {
+            let mut slot = self.inner.companion_host.lock().unwrap();
+            if slot.as_ref().is_some_and(|lease| !lease.live(now)) {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if expired.is_some() {
             tracing::info!(
                 event = "browser.host.expired",
                 "companion lease (or pending registration) expired"
             );
-            self.drop_registration(
+            self.release_registration(
                 ProfileStatus::Crashed {
                     at: unix_now(),
                     detail: "companion gone".into(),
@@ -547,6 +562,18 @@ impl BrowserHub {
             report_tokens: REPORT_RATE_PER_S,
             report_refill: now,
         });
+    }
+
+    /// Tests: how many known HTML views `profile` has.
+    #[cfg(test)]
+    pub fn html_views_for_test(&self, profile: &str) -> usize {
+        self.inner
+            .html_views
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|key| key.profile == profile)
+            .count()
     }
 
     /// Tests: the lease runs out now (the next supervisor pass drops it).
@@ -644,8 +671,13 @@ impl BrowserHub {
     > {
         let path = check_show_file(show.file)?;
         let file = path.display().to_string();
-        let root = path
-            .parent()
+        // The companion resolves symlinks for the root and every file it
+        // serves: the root is the directory the file really lives in.
+        let root = std::fs::canonicalize(&path)
+            .ok()
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .or_else(|| path.parent())
             .map(|dir| dir.display().to_string())
             .unwrap_or_default();
         let basename = path
@@ -895,8 +927,20 @@ impl BrowserHub {
 
     /// After a restart the companion recreated its HTML views: watch them
     /// again (off the caller's thread).
+    /// A target already known as an HTML view (a `show` this run, which
+    /// armed its own watch or was asked not to) is never re-armed.
     pub fn rewatch_html_views(&self, views: Vec<(String, String)>) {
         if views.is_empty() || self.inner.host.lock().unwrap().is_none() {
+            return;
+        }
+        let views: Vec<(String, String)> = {
+            let mut known = self.inner.html_views.lock().unwrap();
+            views
+                .into_iter()
+                .filter(|(target, _)| known.insert(super::TabKey::new(COMPANION_PROFILE, target)))
+                .collect()
+        };
+        if views.is_empty() {
             return;
         }
         let hub = self.clone();
@@ -904,8 +948,6 @@ impl BrowserHub {
             .name("herdr-browser-watch".into())
             .spawn(move || {
                 for (target, file) in views {
-                    let key = super::TabKey::new(COMPANION_PROFILE, &target);
-                    hub.inner.html_views.lock().unwrap().insert(key);
                     if let Err(err) = hub.request(
                         "watch",
                         Some(COMPANION_PROFILE),

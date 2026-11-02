@@ -25,6 +25,9 @@ pub const PANE_PUSHES: usize = 20;
 pub const PANE_PUSH_WINDOW: Duration = Duration::from_secs(3600);
 /// One error's text in a batch.
 pub const ERROR_TEXT_CHARS: usize = 300;
+/// At most this many dedupe entries per tab (bounded memory under a
+/// chatty page; past it, repeats are no longer recognised).
+pub const SEEN_PER_TAB: usize = 64;
 
 /// One error event, as the hub saw it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +68,8 @@ struct Pending {
 #[derive(Debug, Default)]
 pub struct PageErrorQueue {
     pending: BTreeMap<(String, TabKey), Pending>,
-    seen: HashMap<(TabKey, String, String), Instant>,
+    /// Per tab: (kind, first chars) -> when it was last queued.
+    seen: HashMap<TabKey, HashMap<(String, String), Instant>>,
     tab_pushes: HashMap<TabKey, VecDeque<Instant>>,
     pane_pushes: HashMap<String, VecDeque<Instant>>,
 }
@@ -94,7 +98,9 @@ fn prune(times: &mut VecDeque<Instant>, window: Duration, now: Instant) {
 }
 
 impl PageErrorQueue {
-    /// Queue one error for `pane` (deduped).
+    /// Queue one error for `pane` (deduped). An error that cannot reach
+    /// the agent (the batch is full, the tab's or pane's push cap is
+    /// spent) is only counted: it never enters the dedupe map.
     pub fn note(
         &mut self,
         pane: &str,
@@ -104,16 +110,30 @@ impl PageErrorQueue {
         text: &str,
         now: Instant,
     ) {
+        let spent = |times: Option<&VecDeque<Instant>>, cap: usize, window: Duration| {
+            times.is_some_and(|times| {
+                times
+                    .iter()
+                    .filter(|at| now.saturating_duration_since(**at) <= window)
+                    .count()
+                    >= cap
+            })
+        };
+        if spent(self.tab_pushes.get(key), TAB_PUSHES, TAB_PUSH_WINDOW)
+            || spent(self.pane_pushes.get(pane), PANE_PUSHES, PANE_PUSH_WINDOW)
+        {
+            return;
+        }
         let head: String = text.chars().take(DEDUPE_CHARS).collect();
-        let dedupe = (key.clone(), kind.to_string(), head);
+        let dedupe = (kind.to_string(), head);
         if self
             .seen
-            .get(&dedupe)
+            .get(key)
+            .and_then(|seen| seen.get(&dedupe))
             .is_some_and(|at| now.saturating_duration_since(*at) <= DEDUPE_WINDOW)
         {
             return;
         }
-        self.seen.insert(dedupe, now);
         let pending = self
             .pending
             .entry((pane.to_string(), key.clone()))
@@ -124,13 +144,20 @@ impl PageErrorQueue {
                 more: 0,
             });
         pending.tab = tab;
-        if pending.errors.len() < BATCH_MAX_ERRORS {
-            pending.errors.push(PageError {
-                kind: kind.to_string(),
-                text: clip(text, ERROR_TEXT_CHARS),
-            });
-        } else {
+        if pending.errors.len() >= BATCH_MAX_ERRORS {
             pending.more = pending.more.saturating_add(1);
+            return;
+        }
+        pending.errors.push(PageError {
+            kind: kind.to_string(),
+            text: clip(text, ERROR_TEXT_CHARS),
+        });
+        let seen = self.seen.entry(key.clone()).or_default();
+        if seen.len() >= SEEN_PER_TAB {
+            seen.retain(|_, at| now.saturating_duration_since(*at) <= DEDUPE_WINDOW);
+        }
+        if seen.len() < SEEN_PER_TAB {
+            seen.insert(dedupe, now);
         }
     }
 
@@ -167,8 +194,10 @@ impl PageErrorQueue {
                 more: pending.more,
             });
         }
-        self.seen
-            .retain(|_, at| now.saturating_duration_since(*at) <= DEDUPE_WINDOW);
+        for seen in self.seen.values_mut() {
+            seen.retain(|_, at| now.saturating_duration_since(*at) <= DEDUPE_WINDOW);
+        }
+        self.seen.retain(|_, seen| !seen.is_empty());
         self.tab_pushes.retain(|_, times| !times.is_empty());
         self.pane_pushes.retain(|_, times| !times.is_empty());
         out
@@ -231,5 +260,62 @@ mod tests {
         let text = due[0].message_text();
         assert!(text.contains("untrusted") && text.contains("```text\npage_error: boom"));
         assert!(queue.is_empty());
+    }
+
+    fn seen_len(queue: &PageErrorQueue) -> usize {
+        queue.seen.values().map(HashMap::len).sum()
+    }
+
+    #[test]
+    fn errors_past_the_batch_cap_are_counted_but_never_remembered() {
+        let mut queue = PageErrorQueue::default();
+        let key = TabKey::new("companion", "T1");
+        let t0 = Instant::now();
+        for n in 0..1000 {
+            queue.note("w1:p1", &key, tab(), "console_error", &format!("e{n}"), t0);
+        }
+        assert_eq!(seen_len(&queue), BATCH_MAX_ERRORS);
+        let due = queue.take_due(t0 + BATCH_WINDOW);
+        assert_eq!(due[0].errors.len(), BATCH_MAX_ERRORS);
+        assert_eq!(due[0].more as usize, 1000 - BATCH_MAX_ERRORS);
+    }
+
+    #[test]
+    fn a_tab_whose_pushes_are_spent_queues_and_remembers_nothing() {
+        let mut queue = PageErrorQueue::default();
+        let key = TabKey::new("companion", "T1");
+        let mut now = Instant::now();
+        for n in 0..TAB_PUSHES {
+            queue.note("w1:p1", &key, tab(), "page_error", &format!("p{n}"), now);
+            now += BATCH_WINDOW;
+            assert_eq!(queue.take_due(now).len(), 1);
+        }
+        let before = seen_len(&queue);
+        for n in 0..500 {
+            queue.note("w1:p1", &key, tab(), "page_error", &format!("late{n}"), now);
+        }
+        assert!(queue.is_empty());
+        assert_eq!(seen_len(&queue), before);
+    }
+
+    #[test]
+    fn the_dedupe_map_is_capped_per_tab() {
+        let mut queue = PageErrorQueue::default();
+        let key = TabKey::new("companion", "T1");
+        let now = Instant::now();
+        // many panes erroring on one tab, each with a full batch pending
+        for pane in 0..20 {
+            for n in 0..BATCH_MAX_ERRORS {
+                queue.note(
+                    &format!("w1:p{pane}"),
+                    &key,
+                    tab(),
+                    "page_error",
+                    &format!("{pane}-{n}"),
+                    now,
+                );
+            }
+        }
+        assert_eq!(queue.seen[&key].len(), SEEN_PER_TAB);
     }
 }

@@ -2822,7 +2822,10 @@ fn a_show_outside_the_companion_opens_in_the_window_with_network_routed_off() {
             .unwrap();
         assert_eq!(op.2["allow_network"], false, "network routed off");
         assert_eq!(op.2["watch"], true);
-        assert_eq!(op.2["root"], home.display().to_string());
+        assert_eq!(
+            op.2["root"],
+            std::fs::canonicalize(&home).unwrap().display().to_string()
+        );
     }
     // The cursor moved to the view.
     let read = hub
@@ -2881,4 +2884,81 @@ fn a_show_outside_the_companion_opens_in_the_window_with_network_routed_off() {
         .unwrap();
     assert_eq!(op.1, None);
     assert_eq!(op.2["tab_id"], "w2:tD");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_show_file_gets_the_directory_it_really_lives_in_as_root() {
+    let (hub, shared, _stream, home) = hub("show-symlink");
+    let real = home.join("real");
+    let links = home.join("links");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::create_dir_all(&links).unwrap();
+    std::fs::write(real.join("report.html"), "<h1>hi</h1>").unwrap();
+    let link = links.join("report.html");
+    std::os::unix::fs::symlink(real.join("report.html"), &link).unwrap();
+    hub.run(
+        &pane("w2:pD"),
+        params(BrowserOp::Show {
+            file: link.display().to_string(),
+            allow_network: false,
+            watch: true,
+            focus: false,
+            title: None,
+        }),
+    )
+    .expect("show");
+    let state = shared.lock().unwrap();
+    let op = state
+        .ops
+        .iter()
+        .rev()
+        .find(|(op, _, _)| op == "show")
+        .unwrap();
+    assert_eq!(
+        op.2["root"],
+        std::fs::canonicalize(&real).unwrap().display().to_string()
+    );
+    assert_eq!(
+        op.2["file"],
+        link.display().to_string(),
+        "the file as given"
+    );
+}
+
+#[test]
+fn a_companion_that_goes_takes_its_html_views_with_it() {
+    let (hub, _shared, _stream, home) = hub("companion-html-views");
+    let lease = hub
+        .host_register(&register_params("a"))
+        .expect("registered");
+    let file = home.join("v.html");
+    std::fs::write(&file, "<p>v</p>").unwrap();
+    let shown = hub
+        .run(
+            &pane("w2:pD"),
+            params(BrowserOp::Show {
+                file: file.display().to_string(),
+                allow_network: false,
+                watch: true,
+                focus: false,
+                title: None,
+            }),
+        )
+        .expect("show");
+    assert_eq!(shown.data["host"], "companion");
+    assert_eq!(hub.html_views_for_test("companion"), 1);
+    hub.host_unregister(&lease.lease_id).expect("unregistered");
+    assert_eq!(hub.html_views_for_test("companion"), 0);
+}
+
+#[test]
+fn a_supervisor_pass_never_drops_a_live_lease() {
+    let (hub, _shared, _stream, _home) = hub("companion-expiry");
+    hub.install_test_lease("L1");
+    hub.supervise();
+    assert!(hub.companion_live(), "a live lease stays");
+    hub.expire_host_lease_for_test();
+    hub.supervise();
+    assert!(!hub.companion_live(), "an expired one goes");
 }

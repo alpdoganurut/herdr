@@ -17,7 +17,7 @@ use super::App;
 use crate::api::schema::{
     BrowserHostReportKind, BrowserHostReportParams, BrowserHostStateInfo, BrowserHostStateParams,
     BrowserHostSyncParams, BrowserHostTabState, BrowserSendPageParams, BrowserSessionInfo,
-    ResponseResult, TabBrowserKind,
+    ResponseResult,
 };
 use crate::browser::hub::COMPANION_PROFILE;
 use crate::browser::session::TabBrowser;
@@ -163,22 +163,11 @@ impl App {
             if group.key.as_deref() != Some(browser.key.as_str()) {
                 keys.insert(group.tab_id.clone(), browser.key.clone());
             }
-            let had_target: Vec<String> = browser
-                .entries
-                .iter()
-                .filter_map(|entry| entry.target.clone())
-                .collect();
+            let before = browser.clone();
             let change = browser.apply_sync(&group.tab_id, group, &mut keys);
             save |= change.persisted;
             changed |= change.any;
-            rewatch.extend(
-                browser
-                    .entries
-                    .iter()
-                    .filter(|entry| entry.kind == TabBrowserKind::HtmlView)
-                    .filter_map(|entry| Some((entry.target.clone()?, entry.file.clone()?)))
-                    .filter(|(target, _)| !had_target.contains(target)),
-            );
+            rewatch.extend(browser.recreated_html_views(&before));
         }
         if save {
             self.schedule_session_save();

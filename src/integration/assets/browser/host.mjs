@@ -165,8 +165,9 @@ async function track(profile, page, initiator) {
     page.on('requestfailed', (req) => {
       const started = state.requests.get(req); state.requests.delete(req);
       const failure = req.failure();
-      // a main-frame load that failed (not one the user or a new navigation stopped)
-      if (req.isNavigationRequest() && req.frame() === page.mainFrame() && failure && !/ERR_ABORTED/.test(failure.errorText)) {
+      // a main-frame load that failed (not one the user or a new navigation stopped); a
+      // companion reports its own views' failed loads and crashes (one source, one message)
+      if (profile.kind !== 'companion' && req.isNavigationRequest() && req.frame() === page.mainFrame() && failure && !/ERR_ABORTED/.test(failure.errorText)) {
         event('tab', { profile: profile.name, target: targetId, kind: 'load_failed', text: eventText(`${failure.errorText} ${req.url()}`) });
       }
       state.pushNetwork({ ts: Date.now(), method: req.method(), url: req.url().slice(0, TEXT_CAP), type: req.resourceType(), status: null, failed: true, failure: failure ? failure.errorText : 'failed', duration_ms: started ? Date.now() - started.start : 0, bytes: 0 });
@@ -192,7 +193,7 @@ async function track(profile, page, initiator) {
       profile.pending.delete(page);
       event('tab', { profile: profile.name, target: targetId, kind: 'closed' });
     });
-    page.on('crash', () => event('tab', { profile: profile.name, target: targetId, kind: 'crashed' }));
+    page.on('crash', () => { if (profile.kind !== 'companion') event('tab', { profile: profile.name, target: targetId, kind: 'crashed' }); });
     page.on('response', (res) => {
       if (!res.request().isNavigationRequest() || res.frame() !== page.mainFrame()) return;
       state.lastStatus = res.status();
@@ -296,6 +297,8 @@ function wireBrowser(profile, browser) {
     profile.ctx = null;
     profile.companion.close();
     for (const [target] of profile.pages) { watches.disarm(target); profile.pages.delete(target); }
+    // A detach herdr asked for is not a lost browser (it may already hold a new registration).
+    if (profiles.get(profile.name) !== profile) return;
     event('browser', { profile: profile.name, kind: 'disconnected', detail: 'CDP connection closed' });
   });
 }
@@ -515,8 +518,8 @@ const ops = {
   async detach({ profile: name }) {
     const profile = profiles.get(name);
     if (profile) for (const target of profile.pages.keys()) watches.disarm(target);
+    profiles.delete(name); // first: its close is no `disconnected` event
     if (profile && profile.browser) await profile.browser.close().catch(() => {});
-    profiles.delete(name);
     return {};
   },
   async close_browser({ profile: name }) {
