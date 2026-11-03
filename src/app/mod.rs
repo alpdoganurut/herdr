@@ -12,6 +12,7 @@ mod agent_suspend_tests;
 mod agent_transcripts;
 pub(crate) mod agent_view;
 mod agent_wrap_settings;
+pub(crate) use agent_suspend::RelaunchFailureNotice;
 #[cfg(unix)]
 pub(crate) use agent_suspend::SUSPEND_GRACEFUL_EXIT_GRACE;
 mod agents;
@@ -215,6 +216,9 @@ pub struct App {
     /// client shell lane (the user at herdr's interface); set by the server
     /// only while it runs.
     pub(crate) request_from_client_shell: bool,
+    /// Fork (restart screen): toasts for relaunches that never started,
+    /// queued by the scheduler for the server to send (runtime only).
+    pub(crate) relaunch_failure_notices: Vec<RelaunchFailureNotice>,
     /// The AI news desk: schedule, tab and run in flight (`news.*`).
     pub(crate) news: news::NewsState,
     /// The coordinator (fork): lifecycle, tab, worker and read model.
@@ -826,6 +830,7 @@ impl App {
             agent_handoff: agent_handoff::AgentHandoffRuntime::default(),
             agent_autosuspend: agent_autosuspend::AutosuspendState::default(),
             request_from_client_shell: false,
+            relaunch_failure_notices: Vec::new(),
             #[cfg(not(test))]
             server_hangup_probe: crate::platform::server_hangup_is_recent,
             // Real SIGHUP evidence is process-global; tests opt in per App.

@@ -166,6 +166,10 @@ pub struct AgentResuming {
     pub agent: Option<Agent>,
     /// Past this instant the relaunch counts as failed.
     pub detect_by: Instant,
+    /// When the scheduler next probes whether the pane is back at its shell
+    /// prompt with no agent (the relaunch never started). `None` when the
+    /// relaunch was not typed into a live shell (a cold restored pane).
+    pub probe_at: Option<Instant>,
 }
 
 /// Fork (restart screen): what a parked agent's relaunch is for: a restart
@@ -3171,12 +3175,14 @@ impl TerminalState {
         kind: AgentResumeKind,
         agent: Option<Agent>,
         detect_by: Instant,
+        probe_at: Option<Instant>,
     ) {
         self.agent_resume_failed = None;
         self.agent_resuming = Some(AgentResuming {
             kind,
             agent,
             detect_by,
+            probe_at,
         });
     }
 
@@ -3200,14 +3206,16 @@ impl TerminalState {
     }
 
     /// Fork (restart screen): drop a lapsed wake or failed mark; a relaunch
-    /// not detected by its deadline fails (shown for `failed_ttl`). Returns
-    /// whether a mark changed.
+    /// not detected by its deadline ends, and only on a parked record is it
+    /// shown failed (for `failed_ttl`). Returns whether a mark changed and
+    /// the kind of a relaunch that lapsed undetected.
     pub fn expire_suspended_agent_resume_marks(
         &mut self,
         now: Instant,
         failed_ttl: Duration,
-    ) -> bool {
+    ) -> (bool, Option<AgentResumeKind>) {
         let mut changed = false;
+        let mut lapsed = None;
         if let Some(record) = self.suspended_agent.as_mut() {
             if record.waking_until.is_some_and(|until| now >= until) {
                 record.waking_until = None;
@@ -3225,10 +3233,32 @@ impl TerminalState {
             .agent_resuming
             .filter(|resuming| now >= resuming.detect_by)
         {
-            self.fail_agent_resume(resuming.kind, now + failed_ttl);
+            if self.suspended_agent.is_some() {
+                self.fail_agent_resume(resuming.kind, now + failed_ttl);
+            } else {
+                self.agent_resuming = None;
+            }
+            lapsed = Some(resuming.kind);
             changed = true;
         }
-        changed
+        (changed, lapsed)
+    }
+
+    /// Fork (restart screen): the relaunch whose shell probe is due at
+    /// `now`, outside a parked record.
+    pub fn agent_resuming_probe_due(&self, now: Instant) -> Option<AgentResuming> {
+        if self.suspended_agent.is_some() {
+            return None;
+        }
+        self.agent_resuming
+            .filter(|resuming| resuming.probe_at.is_some_and(|at| now >= at))
+    }
+
+    /// Fork (restart screen): the relaunch's next shell probe is at `at`.
+    pub fn defer_agent_resuming_probe(&mut self, at: Instant) {
+        if let Some(resuming) = self.agent_resuming.as_mut() {
+            resuming.probe_at = Some(at);
+        }
     }
 
     /// When the pending relaunch next needs the scheduler: the probe instant
@@ -3249,6 +3279,11 @@ impl TerminalState {
             .into_iter()
             .chain(record.and_then(|record| record.waking_until))
             .chain(self.agent_resuming.map(|resuming| resuming.detect_by))
+            .chain(
+                self.agent_resuming
+                    .filter(|_| record.is_none())
+                    .and_then(|resuming| resuming.probe_at),
+            )
             .chain(self.agent_resume_failed.map(|(_, until)| until))
             .min()
     }
