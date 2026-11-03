@@ -2950,6 +2950,47 @@ fn a_symlinked_show_file_gets_the_directory_it_really_lives_in_as_root() {
 }
 
 #[test]
+fn show_takes_a_file_url_and_decodes_its_path() {
+    let (hub, shared, _stream, home) = hub("show-file-url");
+    let file = home.join("my report.html");
+    std::fs::write(&file, "<h1>hi</h1>").unwrap();
+    let path = file.display().to_string();
+    let show = |file: String| {
+        hub.run(
+            &pane("w2:pD"),
+            params(BrowserOp::Show {
+                file,
+                allow_network: false,
+                watch: false,
+                focus: false,
+                title: None,
+            }),
+        )
+    };
+    for url in [
+        format!("file://{}", path.replace(' ', "%20")),
+        format!("FILE://localhost{}#top", path.replace(' ', "%20")),
+    ] {
+        show(url.clone()).expect(&url);
+        let state = shared.lock().unwrap();
+        let op = state
+            .ops
+            .iter()
+            .rev()
+            .find(|(op, _, _)| op == "show")
+            .unwrap();
+        assert_eq!(op.2["file"], path, "{url}");
+    }
+    let err = show(format!("file://elsewhere{path}")).unwrap_err();
+    assert_eq!(
+        err.code, "invalid_request",
+        "another host is not a local file"
+    );
+    let err = show(format!("file://{}.htm", path)).unwrap_err();
+    assert_eq!(err.code, "file_not_found");
+}
+
+#[test]
 fn a_companion_that_goes_takes_its_html_views_with_it() {
     let (hub, _shared, _stream, home) = hub("companion-html-views");
     let lease = hub

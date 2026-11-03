@@ -3,7 +3,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=16
+# HERDR_INTEGRATION_VERSION=17
 
 set -eu
 
@@ -13,7 +13,7 @@ trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
 
 case "$action" in
-  session|subagent|stop|turn|precompact) ;;
+  session|subagent|stop|turn|precompact|browser) ;;
   *) exit 0 ;;
 esac
 
@@ -21,11 +21,21 @@ esac
 [ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
 [ -n "${HERDR_PANE_ID:-}" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
+# The browser steering (PreToolUse) runs only in launches `herdr agent wrap`
+# marked, and skips python for tool calls that cannot open a page.
+if [ "$action" = "browser" ]; then
+  [ -n "${HERDR_BROWSER_STEER_STATE:-}" ] || exit 0
+  [ -n "${HERDR_BROWSER_STEER_CONFIG:-}" ] || exit 0
+  grep -Eq 'WebFetch|mcp__|open|webbrowser|osascript|sensible-browser|x-www-browser' "$hook_input_file" 2>/dev/null || exit 0
+fi
 
 HERDR_ACTION="$action" HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+import hashlib
 import json
 import os
 import random
+import re
+import shlex
 import socket
 import sys
 import time
@@ -153,6 +163,262 @@ def add_context(event, parts):
     except Exception:
         return False
 
+
+# herdr+ browser steering (PreToolUse): a WebFetch, a shell command that
+# opens a web page or a local HTML file in another browser, or another
+# browser automation MCP server is denied once with what to use instead
+# (the herdr-browser tools). The same call again within STEER_RETRY_SECONDS
+# runs (the user asked for it); each allowed retry keeps the window open.
+# Only in launches `herdr agent wrap` marked (HERDR_BROWSER_STEER_STATE and
+# _CONFIG), and never with `[browser] enabled = false`, `steer_agents =
+# false` or no herdr-browser server in Claude's user-scope MCP store. Any
+# error allows the call.
+STEER_RETRY_SECONDS = 120
+BROWSER_MCP_SERVER = re.compile(
+    r"playwright|puppeteer|chrome|browsermcp|browserbase|browser-use|browser_use", re.I
+)
+OPEN_LAUNCHERS = {"xdg-open", "sensible-browser", "x-www-browser", "gnome-open", "kde-open", "wslview"}
+# `open` options that edit or reveal the file instead of viewing it.
+OPEN_NOT_VIEWING = {"-e", "-t", "-f", "-R", "--reveal", "-h", "--header"}
+OPEN_VALUE_OPTIONS = {"-a", "-b", "--env", "--stdin", "--stdout", "--stderr"}
+COMMAND_WRAPPERS = {"command", "exec", "nohup", "env"}
+
+
+def web_target(arg):
+    lower = arg.lower()
+    if lower.startswith(("http://", "https://", "file://")):
+        return True
+    path = re.split(r"[?#]", arg, maxsplit=1)[0].lower()
+    return path.endswith((".html", ".htm"))
+
+
+def shell_commands(text):
+    for line in text.splitlines():
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            tokens = list(lexer)
+        except ValueError:
+            continue
+        current = []
+        for token in tokens:
+            if token.startswith("#") and not current:
+                break
+            if token and set(token) <= set(";&|()"):
+                if current:
+                    yield current
+                current = []
+            else:
+                current.append(token)
+        if current:
+            yield current
+
+
+def first_web_positional(args, value_options=()):
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if arg in value_options:
+            skip = True
+            continue
+        if arg.startswith("-"):
+            continue
+        if web_target(arg):
+            return arg
+    return None
+
+
+def shell_open_target(text):
+    for words in shell_commands(text):
+        while words and (
+            re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]) or words[0] in COMMAND_WRAPPERS
+        ):
+            words = words[1:]
+        if not words:
+            continue
+        name = os.path.basename(words[0])
+        args = words[1:]
+        target = None
+        if name == "open":
+            if "--args" in args:
+                args = args[: args.index("--args")]
+            if not any(arg in OPEN_NOT_VIEWING for arg in args):
+                target = first_web_positional(args, OPEN_VALUE_OPTIONS)
+        elif name in OPEN_LAUNCHERS:
+            target = first_web_positional(args)
+        elif name == "gio" and args[:1] == ["open"]:
+            target = first_web_positional(args[1:])
+        elif re.match(r"^python[0-9.]*$", name) and "-m" in args:
+            at = args.index("-m")
+            if args[at + 1 : at + 2] == ["webbrowser"]:
+                target = first_web_positional(args[at + 2 :])
+        elif name == "osascript":
+            found = re.search(r"open location\s+\"([^\"]+)\"", " ".join(args))
+            if found and web_target(found.group(1)):
+                target = found.group(1)
+        if target:
+            return target
+    return None
+
+
+def browser_call(tool_name, tool_input):
+    if tool_name == "WebFetch":
+        url = tool_input.get("url")
+        return ("fetch", url) if isinstance(url, str) and url else None
+    if tool_name.startswith("mcp__"):
+        parts = tool_name.split("__")
+        server = parts[1] if len(parts) >= 3 else ""
+        if server and server != "herdr-browser" and BROWSER_MCP_SERVER.search(server):
+            return ("mcp", server)
+        return None
+    if tool_name == "Bash":
+        command = tool_input.get("command")
+        if isinstance(command, str):
+            target = shell_open_target(command)
+            if target:
+                return ("open", target)
+    return None
+
+
+# `[browser] enabled` or `steer_agents` set to false (a line scan: the
+# values are plain booleans). A missing file is the defaults (both on).
+def browser_steering_off(config_path):
+    try:
+        with open(config_path, encoding="utf-8") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return False
+    section = ""
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        header = re.match(r"^\[\s*([^\[\]]+?)\s*\]$", line)
+        if header:
+            section = header.group(1).replace(" ", "")
+            continue
+        if line.startswith("["):
+            section = "\0"
+            continue
+        pair = re.match(r"^([A-Za-z0-9_.\-]+)\s*=\s*(\S+)$", line)
+        if not pair:
+            continue
+        key = pair.group(1) if not section else section + "." + pair.group(1)
+        if key in ("browser.enabled", "browser.steer_agents") and pair.group(2) == "false":
+            return True
+    return False
+
+
+def herdr_browser_registered():
+    claude_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    store = (
+        os.path.join(os.path.expanduser(claude_dir), ".claude.json")
+        if claude_dir
+        else os.path.join(os.path.expanduser("~"), ".claude.json")
+    )
+    with open(store, "rb") as handle:
+        return b'"herdr-browser"' in handle.read()
+
+
+# True when this call is the user's retry (a denial for the same session
+# and target within the window; the window restarts). Otherwise records the
+# denial and answers False; an error raises, which allows the call.
+def steer_retried(state_dir, session, target):
+    os.makedirs(state_dir, exist_ok=True)
+    key = hashlib.sha256(f"{session}\0{target}".encode("utf-8", "replace")).hexdigest()[:32]
+    marker = os.path.join(state_dir, key)
+    now = time.time()
+    try:
+        recent = now - os.stat(marker).st_mtime <= STEER_RETRY_SECONDS
+    except FileNotFoundError:
+        recent = False
+    with open(marker, "w", encoding="utf-8") as handle:
+        handle.write(str(int(now)))
+    if recent:
+        return True
+    for name in os.listdir(state_dir):
+        path = os.path.join(state_dir, name)
+        try:
+            if path != marker and now - os.stat(path).st_mtime > STEER_RETRY_SECONDS:
+                os.remove(path)
+        except OSError:
+            pass
+    return False
+
+
+def steer_reason(kind, target):
+    retry = (
+        " Only if the user asked for this, run the same call again within 2 minutes"
+        " and it will be allowed."
+    )
+    if kind == "fetch":
+        return (
+            f"herdr+: read web pages with the herdr browser, not WebFetch: browser_open {target}"
+            " then browser_read (or browser_find), herdr-browser MCP." + retry
+        )
+    if kind == "mcp":
+        return (
+            f"herdr+: use the herdr-browser tools (browser_open, browser_read, browser_snapshot,"
+            f" browser_click, browser_fill, browser_screenshot, ...) instead of {target}; the herdr"
+            " browser is the one the user watches and signs in to." + retry
+        )
+    if target.lower().startswith(("http://", "https://")):
+        return (
+            f"herdr+: open {target} in the herdr browser, which the user sees: browser_open {target}"
+            " (browser_focus brings it to the front), then browser_read to read it, herdr-browser"
+            " MCP." + retry
+        )
+    path = target
+    if not path.lower().startswith("file://") and not os.path.isabs(path):
+        cwd = hook_input.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            path = os.path.normpath(os.path.join(cwd, path))
+    return (
+        f"herdr+: show local HTML to the user with browser_show (herdr-browser MCP; file: {path});"
+        " to read it yourself, browser_open it then browser_read." + retry
+    )
+
+
+def steer_browser():
+    if hook_event_name != "PreToolUse":
+        return
+    state_dir = os.environ.get("HERDR_BROWSER_STEER_STATE")
+    config_path = os.environ.get("HERDR_BROWSER_STEER_CONFIG")
+    tool_name = hook_input.get("tool_name")
+    tool_input = hook_input.get("tool_input")
+    if not state_dir or not config_path or not isinstance(tool_name, str):
+        return
+    if not isinstance(tool_input, dict):
+        return
+    call_ = browser_call(tool_name, tool_input)
+    if call_ is None:
+        return
+    kind, target = call_
+    if browser_steering_off(config_path) or not herdr_browser_registered():
+        return
+    session = hook_input.get("session_id")
+    session = session if isinstance(session, str) else ""
+    if steer_retried(state_dir, session, f"{kind}:{target}"):
+        return
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": steer_reason(kind, target),
+        }
+    }))
+    sys.stdout.flush()
+
+
+if action == "browser":
+    try:
+        steer_browser()
+    except Exception:
+        pass
+    raise SystemExit(0)
 
 if action == "precompact":
     if hook_event_name == "PreCompact" and not hook_input.get("agent_id"):

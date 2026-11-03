@@ -979,7 +979,11 @@ fn install_claude_writes_hook_and_updates_settings() {
             .map(Vec::len),
         (!cfg!(windows)).then_some(1)
     );
-    assert!(settings["hooks"].get("PreToolUse").is_none());
+    // Fork (browser steering): one PreToolUse entry, the browser action.
+    assert_eq!(
+        settings["hooks"]["PreToolUse"].as_array().map(Vec::len),
+        (!cfg!(windows)).then_some(1)
+    );
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
@@ -1070,7 +1074,11 @@ fn install_claude_is_idempotent_for_hook_entries() {
             .map(Vec::len),
         (!cfg!(windows)).then_some(1)
     );
-    assert!(settings["hooks"].get("PreToolUse").is_none());
+    // Fork (browser steering): one PreToolUse entry, the browser action.
+    assert_eq!(
+        settings["hooks"]["PreToolUse"].as_array().map(Vec::len),
+        (!cfg!(windows)).then_some(1)
+    );
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
@@ -1085,6 +1093,84 @@ fn install_claude_is_idempotent_for_hook_entries() {
         (!cfg!(windows)).then_some(1)
     );
     assert!(settings["hooks"].get("SessionEnd").is_none());
+
+    std::env::remove_var("HOME");
+    let _ = fs::remove_dir_all(base);
+}
+
+// Fork (browser steering, v17): reinstalling over a v16 install adds the
+// PreToolUse browser entry once and leaves every other hook as it was.
+#[cfg(unix)]
+#[test]
+fn install_claude_over_v16_adds_the_browser_steering_hook_once() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let home = base.join("home");
+    let claude_dir = home.join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    std::env::set_var("HOME", &home);
+
+    let installed = install_claude().unwrap();
+    let mut v16: Value =
+        serde_json::from_str(&fs::read_to_string(&installed.settings_path).unwrap()).unwrap();
+    v16["hooks"].as_object_mut().unwrap().remove("PreToolUse");
+    v16["hooks"]["PreToolUse"] = serde_json::json!([
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo mine"}]}
+    ]);
+    fs::write(
+        &installed.settings_path,
+        serde_json::to_string_pretty(&v16).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        &installed.hook_path,
+        CLAUDE_HOOK_ASSET.replace(
+            "HERDR_INTEGRATION_VERSION=17",
+            "HERDR_INTEGRATION_VERSION=16",
+        ),
+    )
+    .unwrap();
+
+    install_claude().unwrap();
+    let first = fs::read_to_string(&installed.settings_path).unwrap();
+    let settings: Value = serde_json::from_str(&first).unwrap();
+    let pre_tool_use = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(pre_tool_use.len(), 2, "{pre_tool_use:?}");
+    assert_eq!(pre_tool_use[0]["hooks"][0]["command"], "echo mine");
+    assert_eq!(
+        pre_tool_use[1]["matcher"],
+        super::claude_subagent_hooks::BROWSER_STEER_MATCHER
+    );
+    assert!(pre_tool_use[1]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with(" browser"));
+    for (event, _, _) in super::claude_subagent_hooks::SUBAGENT_HOOKS {
+        if event != "PreToolUse" {
+            assert_eq!(settings["hooks"][event], v16["hooks"][event], "{event}");
+        }
+    }
+    assert!(fs::read_to_string(&installed.hook_path)
+        .unwrap()
+        .contains("HERDR_INTEGRATION_VERSION=17"));
+
+    install_claude().unwrap();
+    assert_eq!(
+        fs::read_to_string(&installed.settings_path).unwrap(),
+        first,
+        "idempotent"
+    );
+
+    let uninstalled = uninstall_claude().unwrap();
+    assert!(uninstalled.updated_settings);
+    let settings: Value =
+        serde_json::from_str(&fs::read_to_string(&installed.settings_path).unwrap()).unwrap();
+    assert_eq!(
+        settings["hooks"]["PreToolUse"],
+        serde_json::json!([
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo mine"}]}
+        ])
+    );
 
     std::env::remove_var("HOME");
     let _ = fs::remove_dir_all(base);
@@ -1166,7 +1252,11 @@ fn install_claude_removes_deprecated_completion_hooks_and_preserves_user_hooks()
             .map(Vec::len),
         (!cfg!(windows)).then_some(1)
     );
-    assert!(settings["hooks"].get("PreToolUse").is_none());
+    // Fork (browser steering): one PreToolUse entry, the browser action.
+    assert_eq!(
+        settings["hooks"]["PreToolUse"].as_array().map(Vec::len),
+        (!cfg!(windows)).then_some(1)
+    );
     // Fork: the main agent's Stop runs the asset's snapshot action.
     assert_eq!(
         settings["hooks"]["Stop"].as_array().map(Vec::len),
@@ -1200,7 +1290,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
 
     assert_eq!(claude.path, hook_path);
     assert_eq!(claude.installed_version, Some(9));
-    assert_eq!(claude.expected_version, 16);
+    assert_eq!(claude.expected_version, 17);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     install_claude().unwrap();
@@ -1209,7 +1299,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
         hook_path,
         CLAUDE_INTEGRATION_VERSION,
     );
-    assert_eq!(status.installed_version, Some(16));
+    assert_eq!(status.installed_version, Some(17));
     assert_eq!(status.state, IntegrationStatusKind::Current);
 
     std::env::remove_var("HOME");
@@ -1239,7 +1329,7 @@ fn claude_v2_integration_status_is_outdated() {
 
     assert_eq!(claude.path, hook_path);
     assert_eq!(claude.installed_version, Some(2));
-    assert_eq!(claude.expected_version, 16);
+    assert_eq!(claude.expected_version, 17);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     std::env::remove_var("HOME");

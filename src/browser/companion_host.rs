@@ -780,9 +780,42 @@ pub(super) struct ShowRequest<'a> {
     pub title: Option<&'a str>,
 }
 
-/// The file `show` may open: absolute, existing, `.html` / `.htm`.
+/// A `file://` URL's path (`file:///a%20b.html`, `file://localhost/x`),
+/// percent-decoded; None for anything else or another host.
+fn file_url_path(file: &str) -> Option<String> {
+    let rest = file
+        .get(..7)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("file://"))
+        .map(|_| &file[7..])?;
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !rest.starts_with('/') {
+        return None;
+    }
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let bytes = rest.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        match (bytes[i], bytes.get(i + 1), bytes.get(i + 2)) {
+            (b'%', Some(&hi), Some(&lo)) if hex(hi).is_some() && hex(lo).is_some() => {
+                out.push((hex(hi).unwrap_or(0) * 16 + hex(lo).unwrap_or(0)) as u8);
+                i += 3;
+            }
+            (byte, _, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The file `show` may open: absolute (or a `file://` URL), existing,
+/// `.html` / `.htm`.
 pub fn check_show_file(file: &str) -> Result<std::path::PathBuf, BrowserError> {
-    let path = std::path::Path::new(file.trim());
+    let decoded = file_url_path(file.trim());
+    let path = std::path::Path::new(decoded.as_deref().unwrap_or(file.trim()));
     if !path.is_absolute() {
         return Err(BrowserError::new(
             "invalid_request",

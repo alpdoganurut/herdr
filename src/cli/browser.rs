@@ -589,7 +589,10 @@ pub(crate) fn build_op(verb: &str, args: &[String]) -> Result<(BrowserOp, Common
                 usage("show FILE.html [--allow-network] [--no-watch] [--focus] [--title T]")
             })?;
             let path = std::path::Path::new(&file);
-            let file = if path.is_absolute() {
+            let file_url = file
+                .get(..7)
+                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("file://"));
+            let file = if path.is_absolute() || file_url {
                 file
             } else {
                 std::env::current_dir()

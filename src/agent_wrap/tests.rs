@@ -1377,3 +1377,27 @@ fn a_codex_launch_carries_the_recall_in_its_developer_instructions() {
     assert!(!codex_wants_recall(&notes_off, &[]));
     assert!(codex_wants_recall(&team_plan(""), &[]));
 }
+
+#[test]
+fn the_browser_steering_env_marks_only_steered_claude_launches() {
+    let on = plan(&config("[agents]\nwrap = true\n"), &env());
+    let vars = browser_steer_env("claude", &on, &config("[agents]\nwrap = true\n"))
+        .expect("a wrapped claude launch steers");
+    assert_eq!(vars[0].0, BROWSER_STEER_CONFIG_ENV);
+    assert_eq!(vars[0].1, crate::config::config_path());
+    assert_eq!(vars[1].0, BROWSER_STEER_STATE_ENV);
+    assert!(vars[1].1.ends_with("browser-steer"));
+    // Codex has no such hook.
+    assert!(browser_steer_env("codex", &on, &config("[agents]\nwrap = true\n")).is_none());
+    // `[browser] steer_agents = false`, the browser off, the wrap off or an
+    // opted-out launch: no steering.
+    let no_steer = config("[agents]\nwrap = true\n[browser]\nsteer_agents = false\n");
+    assert!(browser_steer_env("claude", &plan(&no_steer, &env()), &no_steer).is_none());
+    let disabled = config("[agents]\nwrap = true\n[browser]\nenabled = false\n");
+    assert!(browser_steer_env("claude", &plan(&disabled, &env()), &disabled).is_none());
+    let unwrapped = config("[agents]\nwrap = false\n");
+    assert!(browser_steer_env("claude", &plan(&unwrapped, &env()), &unwrapped).is_none());
+    let mut opted_out = on.clone();
+    opted_out.disable();
+    assert!(browser_steer_env("claude", &opted_out, &config("[agents]\nwrap = true\n")).is_none());
+}
