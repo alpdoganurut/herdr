@@ -39,7 +39,9 @@ const count = (a) => Number(a.count) || 0;
 
 // The window `wid` among all windows, on screen or not: `IncludingWindow` alone lists no
 // off-screen window of a tab group (a Ghostty tab that is not the selected one), so the full
-// list tells "off screen" from "gone". Only while the window is off screen (the dock is hidden).
+// list tells "off screen" from "gone". Only while the window is off screen (the dock is hidden),
+// and then only every <every> samples (a walk of every window through the bridge): the last
+// answer serves in between (a stale frame or a late "gone" is harmless while hidden).
 function findWindow(wid) {
   const all = list($.kCGWindowListOptionAll | $.kCGWindowListExcludeDesktopElements, 0);
   for (let i = 0, n = count(all); i < n; i++) {
@@ -59,6 +61,8 @@ function run(argv) {
   const emit = (obj) => stdout.writeData($(JSON.stringify(obj) + '\n').dataUsingEncoding($.NSUTF8StringEncoding));
   let tick = 0;
   let last = null;
+  let offTick = 0; // samples answered by findWindow's cadence since the window was last on screen
+  let found = null; // findWindow's last answer (a target record, or null: gone)
   for (;;) {
     const sample = { t: Date.now(), wid };
     if (wid) {
@@ -67,6 +71,8 @@ function run(argv) {
       const n = count(above);
       const last = n ? above.objectAtIndex(n - 1) : null;
       if (last && last.objectForKey('kCGWindowNumber').js === wid) {
+        offTick = 0;
+        found = null;
         sample.target = windowInfo(last);
         sample.above = [];
         for (let i = 0; i < n - 1; i++) {
@@ -78,8 +84,15 @@ function run(argv) {
       } else {
         // off screen (the above-list of an off-screen window is every on-screen window)
         const one = list($.kCGWindowListOptionIncludingWindow, wid);
-        const d = count(one) ? one.objectAtIndex(0) : findWindow(wid);
-        sample.target = d ? { ...windowInfo(d), on: false } : null;
+        if (count(one)) sample.target = { ...windowInfo(one.objectAtIndex(0)), on: false };
+        else {
+          if (offTick % every === 0) {
+            const d = findWindow(wid);
+            found = d ? { ...windowInfo(d), on: false } : null;
+          }
+          offTick += 1;
+          sample.target = found;
+        }
         sample.above = [];
       }
     }
