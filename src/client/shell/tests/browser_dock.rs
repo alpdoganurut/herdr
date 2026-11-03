@@ -55,7 +55,19 @@ fn companion(state: &str) -> BrowserGetInfo {
 }
 
 fn dock_state() -> ClientShellState {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    dock_state_with(&Config::default())
+}
+
+/// The spaces layout keeps the view strip (the tabs layout's header
+/// carries its controls).
+fn spaces_config() -> Config {
+    let mut config = Config::default();
+    config.ui.sidebar_layout = crate::config::SidebarLayoutConfig::Spaces;
+    config
+}
+
+fn dock_state_with(config: &Config) -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
     state.set_snapshot(Box::new(two_tab_snapshot("tab_1")));
     state.set_pane_surface(surface());
     state.browser.info = Some(companion("running"));
@@ -143,9 +155,10 @@ fn fork_smoke_the_dock_takes_45_percent_on_the_right_and_reports_the_narrower_su
     assert_eq!(layout.pane_surface.right(), band.x);
     let after = state.surface_size(COLS, ROWS);
     assert_eq!(after.cols, before.cols - band.width);
-    // the strip appears with the dock (one row)
-    assert_eq!(layout.view_strip.height, 1);
-    assert_eq!(after.rows, before.rows - 1);
+    // the tabs layout's header carries the view controls: no strip row
+    assert_eq!(layout.session_header.height, 1);
+    assert!(layout.view_strip.is_empty());
+    assert_eq!(after.rows, before.rows);
     // the divider is the band's first column
     assert_eq!(state.hits.browser_dock.divider.x, band.x);
     // the other tab is untouched: switching to it reflows that tab alone
@@ -210,7 +223,14 @@ fn the_divider_drag_is_remembered_and_a_double_click_resets_it() {
 
 #[test]
 fn the_dock_and_the_info_pane_share_the_right_edge_and_the_terminal_keeps_30_columns() {
-    let config = ClientShellConfig::from_config(&Config::default());
+    // Fork (session header): the tabs layout has one dock slot, the band holds it.
+    let tabs = ClientShellConfig::from_config(&Config::default());
+    let one = tabs.layout_with_browser(COLS, ROWS, false, 1, 26, Some(44), Some(45), false);
+    assert_eq!(one.browser_band.right(), COLS);
+    assert!(one.info_dock.is_empty(), "{one:?}");
+    assert_eq!(one.pane_surface.right(), one.browser_band.x);
+    // the spaces layout keeps both
+    let config = ClientShellConfig::from_config(&spaces_config());
     // both docks: the band outermost, the info dock left of it
     let both = config.layout_with_browser(COLS, ROWS, false, 1, 26, Some(44), Some(45), true);
     assert_eq!(both.browser_band.right(), COLS);
@@ -432,7 +452,7 @@ fn fork_smoke_pastes_and_text_commits_in_browser_view_never_reach_the_hidden_pan
 
 #[test]
 fn the_view_strip_shows_only_for_tabs_with_pages_or_a_browser_view() {
-    let mut state = dock_state();
+    let mut state = dock_state_with(&spaces_config());
     assert!(!state.browser_view_strip_for_focused_tab());
     assert!(state.layout(COLS, ROWS).view_strip.is_empty());
     // an agent opened the tab's first page: the strip appears (one row)
@@ -455,7 +475,7 @@ fn the_view_strip_shows_only_for_tabs_with_pages_or_a_browser_view() {
     recompose(&mut state);
     assert!(state.layout(COLS, ROWS).view_strip.is_empty());
     // `ui.browser_view_strip = "off"`: never drawn
-    let mut config = Config::default();
+    let mut config = spaces_config();
     config.ui.browser_view_strip = "off".into();
     let mut off = ClientShellState::new(ClientShellConfig::from_config(&config));
     off.set_snapshot(Box::new(two_tab_snapshot("tab_1")));
@@ -470,7 +490,7 @@ fn the_view_strip_shows_only_for_tabs_with_pages_or_a_browser_view() {
     off.compose(COLS, ROWS);
     assert!(off.layout(COLS, ROWS).view_strip.is_empty());
     // a click on the strip's Browser segment opens Browser view
-    let mut state = dock_state();
+    let mut state = dock_state_with(&spaces_config());
     toggle_dock(&mut state);
     let (rect, _) = state
         .hits
@@ -889,7 +909,9 @@ fn fork_smoke_browser_view_shows_notices_and_toasts_on_its_strip_not_under_the_p
         KeyModifiers::empty(),
     ))]);
     let frame = recompose(&mut state).expect("frame");
-    let strip = state.layout(COLS, ROWS).view_strip;
+    // Fork (session header): the tabs layout's header carries the line.
+    let strip = state.layout(COLS, ROWS).session_header;
+    assert!(state.layout(COLS, ROWS).view_strip.is_empty());
     let toast = state.hits.notification_toast;
     assert!(!toast.is_empty(), "drawn");
     assert_eq!((toast.y, toast.height), (strip.y, 1), "on the strip");
@@ -900,7 +922,7 @@ fn fork_smoke_browser_view_shows_notices_and_toasts_on_its_strip_not_under_the_p
     let line = row_text(&frame, strip.y);
     assert!(line.contains("Click the page to type there"), "{line}");
     assert!(
-        line.contains("Terminal") && line.contains("Browser") && line.contains("◨"),
+        line.contains("Terminal") && line.contains("Browser") && line.contains("◧"),
         "the switch and the dock toggle stay: {line}"
     );
     // a toast (an agent finished): the strip's line too, clickable

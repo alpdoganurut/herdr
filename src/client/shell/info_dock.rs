@@ -884,7 +884,16 @@ impl ClientShellState {
             .last_composed_size
             .map(|(cols, rows)| self.surface_size(cols, rows));
         let focused = self.info_dock_focused_tab() == Some(tab_id.as_str());
-        let key = (self.active_endpoint_id.clone(), tab_id);
+        let endpoint = self.active_endpoint_id.clone();
+        // Fork (session header): one dock slot in the tabs layout.
+        if !self
+            .info_dock
+            .as_deref()
+            .is_some_and(|dock| dock.open_tabs.contains(&(endpoint.clone(), tab_id.clone())))
+        {
+            self.free_dock_slot_of_browser(&endpoint, &tab_id);
+        }
+        let key = (endpoint, tab_id);
         let dock = self.info_dock.get_or_insert_with(Box::default);
         let opened = if dock.open_tabs.remove(&key) {
             if focused {
@@ -966,8 +975,39 @@ impl ClientShellState {
             dock.open_tabs.insert(key);
             dock.focused = false;
             dock.dragging = false;
+            self.free_dock_slot_of_browser(endpoint_id, &payload.tab_id);
         }
         outcome
+    }
+
+    /// Fork (session header): the tabs layout has one dock slot, so the
+    /// browser dock opening closes `tab_id`'s notes dock (state only; the
+    /// caller resizes), committing its editor. Returns whether it was open.
+    pub(crate) fn free_dock_slot_of_notes(
+        &mut self,
+        endpoint: &ClientEndpointId,
+        tab_id: &str,
+    ) -> bool {
+        if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs {
+            return false;
+        }
+        let focused =
+            self.info_dock_focused_tab() == Some(tab_id) && *endpoint == self.active_endpoint_id;
+        let Some(dock) = self.info_dock.as_deref_mut() else {
+            return false;
+        };
+        if !dock
+            .open_tabs
+            .remove(&(endpoint.clone(), tab_id.to_owned()))
+        {
+            return false;
+        }
+        if focused {
+            dock.commit_editor(true);
+            dock.focused = false;
+            dock.dragging = false;
+        }
+        true
     }
 
     /// Whether `tab_id` of the active endpoint has its dock open while the

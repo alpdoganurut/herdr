@@ -494,6 +494,7 @@ impl ClientShellConfig {
                 info_dock: Rect::default(),
                 browser_band: Rect::default(),
                 view_strip: Rect::default(),
+                session_header: Rect::default(),
             };
         }
 
@@ -539,9 +540,21 @@ impl ClientShellConfig {
             ),
         };
 
+        // Fork (session header): the tabs layout's header takes the pane
+        // area's top row, in place of the view strip (whose controls it
+        // carries); the spaces layout keeps the strip.
+        let tabs_layout = self.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs;
+        let session_header = if tabs_layout && pane_surface.height > 2 {
+            let header = Rect::new(pane_surface.x, pane_surface.y, pane_surface.width, 1);
+            pane_surface.y += 1;
+            pane_surface.height -= 1;
+            header
+        } else {
+            Rect::default()
+        };
         // Fork (companion launcher): the view strip takes the pane area's
         // top row; the browser band the right edge of what remains.
-        let view_strip = if view_strip && pane_surface.height > 2 {
+        let view_strip = if view_strip && !tabs_layout && pane_surface.height > 2 {
             let strip = Rect::new(pane_surface.x, pane_surface.y, pane_surface.width, 1);
             pane_surface.y += 1;
             pane_surface.height -= 1;
@@ -572,6 +585,9 @@ impl ClientShellConfig {
 
         // Fork: the info dock is carved from the right of the pane surface,
         // and only when both it and the terminal keep their minimum width.
+        // Fork (session header): the tabs layout has one dock slot; a
+        // browser band holds it.
+        let info_dock_width = info_dock_width.filter(|_| !tabs_layout || browser_band.is_empty());
         let info_dock = match info_dock_width {
             Some(width)
                 if pane_surface.width
@@ -600,6 +616,7 @@ impl ClientShellConfig {
             info_dock,
             browser_band,
             view_strip,
+            session_header,
         }
     }
 

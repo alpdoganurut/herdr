@@ -518,6 +518,18 @@ impl ClientShellState {
             // The info dock is under the browser too.
             self.hits.info_dock = super::info_dock::InfoDockHits::default();
         }
+        // Fork (session header): the tabs layout's header row.
+        if !layout.session_header.is_empty() {
+            let hits = self.session_header_view().map(|header| {
+                super::session_header::render(
+                    &mut buffer,
+                    layout.session_header,
+                    &header,
+                    &self.config.palette,
+                )
+            });
+            self.hits.session_header = hits.unwrap_or_default();
+        }
         self.hits.panes = surface
             .panes
             .iter()
@@ -756,8 +768,12 @@ impl ClientShellState {
         // Fork (companion launcher): in Browser view the companion covers
         // the tab; the notice, a toast or the agent cards show as one line
         // on the view strip instead (else the tab bar).
-        let browser_banner =
-            super::browser_dock::banner_area(&layout, browser_view, &self.hits.browser_dock);
+        let browser_banner = super::browser_dock::banner_area(
+            &layout,
+            browser_view,
+            &self.hits.browser_dock,
+            &self.hits.session_header,
+        );
         let has_config_diagnostic = self.config_diagnostic.is_some();
         let active_lifecycle = self
             .endpoints

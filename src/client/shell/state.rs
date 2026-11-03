@@ -105,6 +105,10 @@ pub(super) struct ClientShellLayout {
     /// Fork (companion launcher): the focused tab's [Terminal | Browser]
     /// strip, the pane area's top row (empty when not shown).
     pub view_strip: Rect,
+    /// Fork (session header): the `tabs` layout's one-row header on top of
+    /// the session area (empty in the spaces layout, on mobile, or when the
+    /// area is too short).
+    pub session_header: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +178,8 @@ pub(super) struct ShellHitMap {
     /// Fork (companion launcher): the browser band, view strip, Browser
     /// view placeholder and the Browser row's `◨`.
     pub(super) browser_dock: super::browser_dock::BrowserDockHits,
+    /// Fork (session header): the tabs layout's header row.
+    pub(super) session_header: super::session_header::SessionHeaderHits,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
@@ -1494,6 +1500,8 @@ pub(crate) struct ClientShellState {
     /// Fork (companion launcher): the browser dock and Browser view
     /// (`browser_dock.rs`).
     pub(super) browser_dock: super::browser_dock::ClientBrowserDockState,
+    /// Fork (session header): the hovered header control.
+    pub(super) header_hover: Option<super::session_header::HeaderTarget>,
     /// Tabs with a scheduled reminder, keyed like `idle_reminders`.
     pub(super) scheduled_reminders:
         HashMap<(ClientEndpointId, String), super::idle_reminders::ClientScheduledReminder>,
@@ -1749,6 +1757,7 @@ impl ClientShellState {
                 browser_dock_percent,
                 browser_dock_default,
             ),
+            header_hover: None,
             reminder_epochs: HashMap::new(),
             reminder_local_time: None,
             reminder_daily_minutes: None,

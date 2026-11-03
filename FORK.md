@@ -384,6 +384,9 @@ src/client/shell/tests/context_menu_look.rs
 src/server/headless/notes_reveal.rs
 src/client/shell/force_notice.rs
 src/client/shell/tests/force_notice.rs
+src/client/shell/session_header.rs
+src/client/shell/tests/session_header.rs
+src/client/shell/tests/golden/session_header.txt
 
 
 ## 2. Owned fields on upstream structs (E0063 in upstream-authored literals: insert the default)
@@ -783,8 +786,12 @@ src/client/shell/tests/force_notice.rs
 | Keybinds | focus_browser | crate::config::ActionKeybinds::default() |
 | BrowserRow (fork-owned type) | dock | None |
 | BrowserGetInfo (fork-owned type; listed for the schema artifact) | placements | Vec::new() |
+| ClientShellLayout | session_header | Rect::default() |
+| ShellHitMap | session_header | Default::default() |
+| ClientShellState | header_hover | None |
 
 Companion launcher, phase B: ClientShellLayout's two fields come from `ClientShellConfig::layout_with_browser` (the upstream `layout` keeps its signature and passes no band and no strip); an upstream literal of ClientShellLayout (E0063) takes `Rect::default()` for both.
+Session header: ClientShellLayout.session_header is carved by `layout_with_browser` in the `tabs` layout only (the pane area's top row, before the view strip, which that layout no longer draws); an upstream literal takes `Rect::default()`.
 
 
 ## 3. Removed or re-signatured upstream symbols (E0425/E0061 at a new upstream call site = deny)
@@ -1707,6 +1714,12 @@ src/client/shell/state.rs  additive: tab menu groups: ClientContextMenuAction::M
 src/client/shell/tests/graphics.rs  additive: tab menu groups: its ClientContextMenuTarget::Tab literal carries `grouped: None` after browser_page
 src/client/shell/overlay_input.rs  additive: tab menu groups: open_move_tab_to_group_overlay finds the focused tab and calls open_move_tab_to_group_overlay_for(tab_id), which builds the prompt for any tab
 src/client/shell/context_menu_look.rs  additive: tab menu groups: item_binding maps MoveToGroup to keys.move_tab_to_group directly after Important
+src/client/shell.rs  additive: session header: `mod session_header;` (with its doc line) directly after `mod scroll;`
+src/client/shell/tests/mod.rs  additive: session header: `mod session_header;` directly after `mod quiet;`
+src/client/shell/state.rs  additive: session header: ClientShellLayout.session_header last after view_strip; ShellHitMap.session_header directly after browser_dock; ClientShellState.header_hover directly after browser_dock (and in new())
+src/client/shell/config.rs  additive: session header: layout_with_browser carves session_header from the pane area's top row in the `tabs` layout (directly before the view strip, which that layout skips) and drops the info dock there while a browser band holds the one dock slot; both ClientShellLayout literals carry session_header last
+src/client/shell/composition.rs  additive: session header: after the browser compose, the header render (session_header_view, session_header::render into hits.session_header) while layout.session_header is drawn; the Browser view clears hits.info_dock only when full_area covers the info dock; the info dock's DockComposeInput passes title_bar; banner_area gets &self.hits.session_header last
+src/client/shell/mouse.rs  additive: session header: session_header_press directly before info_dock_press in the left press; update_header_hover directly after update_sidebar_hover on a move
 ## 8. Extended surfaces (upstream touch forces human review in the report, even when green)
 src/client/shell/notifications.rs  mid-logic: render_notification_card (and the fork's fold line) narrows `area` through toast_area_beside_dock directly after its content width, so a right-anchored toast that fits ends one column left of an open info dock; render_visible_notification and render_mobile_notification_banner swap the drawn `●` for notification_glyph (reminder marker, `✓` finished, `×` needs attention) via put_notification_glyph after the upstream render; render_notification_card and render_mobile_notice_banner are unchanged; Finished uses palette.green (was blue)
 src/terminal/state.rs  mid-logic: set_detected_state_with_screen_signals_at (suspend reconcile, hook-clear durable session, name kept on exit), clear_full_lifecycle_hook_suppression_for_detected_agent (replacement sessions), set_agent_session_ref_for_session_start (launch-session identity), release_agent_with_mutation, managed_agent_launch_pending, managed_agent_interactive_ready, managed_agent_kind, reconcile_managed_agent_at, clear_agent_name, clear_agent_runtime_identity_after_respawn; active_subagents (with subagent_snapshot_seen) is forgotten in recompute_effective_state on an agent label change (before the early return; before the first snapshot an Idle state also clears the set, the older Claude rule; a session other than subagent_session clears it too), release_agent_with_mutation, begin_agent_suspend and clear_agent_runtime_identity_after_respawn; a turn end and an Unknown with the same label keep it; the set never changes the status (recompute_effective_state uses the detected state as upstream does; background subagents are not a turn); report_subagents_with_mutation (start / stop / snapshot through the effective state) is the only path the API uses; active_subagent_count is len() in any state, 0 while suspended Agents v2: TerminalState carries agent_meta (persisted through PaneSnapshot.agent_meta), turn (runtime only; mark_restored makes a restored or handed-off terminal start Unknown) and created_unix; SuspendedAgent.suspended_by.

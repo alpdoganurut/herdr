@@ -55,6 +55,8 @@ mod preferences;
 mod quiet;
 mod render;
 mod scroll;
+/// Fork (session header): the tabs layout's header row.
+mod session_header;
 mod settings;
 mod settings_agents;
 mod settings_browser;

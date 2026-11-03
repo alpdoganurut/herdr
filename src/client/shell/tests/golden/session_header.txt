@@ -1,0 +1,155 @@
+== terminal view, working, facts @ 110
+00| ● header-design-and-navigation  82% ⚭3 ✉1                                             Terminal  Browser ◧  ▤ |
+   00-00 -/sidebar_chrome_bg
+   01-01 yellow/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-30 text/sidebar_chrome_bg/b
+   31-32 -/sidebar_chrome_bg
+   33-35 yellow/sidebar_chrome_bg
+   36-36 -/sidebar_chrome_bg
+   37-38 subtext0/sidebar_chrome_bg
+   39-39 -/sidebar_chrome_bg
+   40-41 overlay1/sidebar_chrome_bg
+   42-86 -/sidebar_chrome_bg
+   87-94 accent/sidebar_chrome_bg
+   95-96 -/sidebar_chrome_bg
+   97-103 overlay0/sidebar_chrome_bg
+   104-104 -/sidebar_chrome_bg
+   105-105 overlay0/sidebar_chrome_bg
+   106-107 -/sidebar_chrome_bg
+   108-108 overlay0/sidebar_chrome_bg
+   109-109 -/sidebar_chrome_bg
+== terminal view, working, facts @ 60
+00| ● header-design-and-na…  82% ⚭3 ✉1  Terminal  Browser ◧  ▤ |
+   00-00 -/sidebar_chrome_bg
+   01-01 yellow/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-23 text/sidebar_chrome_bg/b
+   24-25 -/sidebar_chrome_bg
+   26-28 yellow/sidebar_chrome_bg
+   29-29 -/sidebar_chrome_bg
+   30-31 subtext0/sidebar_chrome_bg
+   32-32 -/sidebar_chrome_bg
+   33-34 overlay1/sidebar_chrome_bg
+   35-36 -/sidebar_chrome_bg
+   37-44 accent/sidebar_chrome_bg
+   45-46 -/sidebar_chrome_bg
+   47-53 overlay0/sidebar_chrome_bg
+   54-54 -/sidebar_chrome_bg
+   55-55 overlay0/sidebar_chrome_bg
+   56-57 -/sidebar_chrome_bg
+   58-58 overlay0/sidebar_chrome_bg
+   59-59 -/sidebar_chrome_bg
+== terminal view, working, facts @ 44
+00| ● header-design-and…  82% ⚭3 ✉1  T  B ◧  ▤ |
+   00-00 -/sidebar_chrome_bg
+   01-01 yellow/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-20 text/sidebar_chrome_bg/b
+   21-22 -/sidebar_chrome_bg
+   23-25 yellow/sidebar_chrome_bg
+   26-26 -/sidebar_chrome_bg
+   27-28 subtext0/sidebar_chrome_bg
+   29-29 -/sidebar_chrome_bg
+   30-31 overlay1/sidebar_chrome_bg
+   32-33 -/sidebar_chrome_bg
+   34-34 accent/sidebar_chrome_bg
+   35-36 -/sidebar_chrome_bg
+   37-37 overlay0/sidebar_chrome_bg
+   38-38 -/sidebar_chrome_bg
+   39-39 overlay0/sidebar_chrome_bg
+   40-41 -/sidebar_chrome_bg
+   42-42 overlay0/sidebar_chrome_bg
+   43-43 -/sidebar_chrome_bg
+== terminal view, working, facts @ 36
+00| ● header-de…  82% ⚭3 ✉1  T  B ◧  ▤ |
+   00-00 -/sidebar_chrome_bg
+   01-01 yellow/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-12 text/sidebar_chrome_bg/b
+   13-14 -/sidebar_chrome_bg
+   15-17 yellow/sidebar_chrome_bg
+   18-18 -/sidebar_chrome_bg
+   19-20 subtext0/sidebar_chrome_bg
+   21-21 -/sidebar_chrome_bg
+   22-23 overlay1/sidebar_chrome_bg
+   24-25 -/sidebar_chrome_bg
+   26-26 accent/sidebar_chrome_bg
+   27-28 -/sidebar_chrome_bg
+   29-29 overlay0/sidebar_chrome_bg
+   30-30 -/sidebar_chrome_bg
+   31-31 overlay0/sidebar_chrome_bg
+   32-33 -/sidebar_chrome_bg
+   34-34 overlay0/sidebar_chrome_bg
+   35-35 -/sidebar_chrome_bg
+== terminal view, working, facts @ 26
+00| ● head…  82% ⚭3 ✉1  ◧  ▤ |
+   00-00 -/sidebar_chrome_bg
+   01-01 yellow/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-07 text/sidebar_chrome_bg/b
+   08-09 -/sidebar_chrome_bg
+   10-12 yellow/sidebar_chrome_bg
+   13-13 -/sidebar_chrome_bg
+   14-15 subtext0/sidebar_chrome_bg
+   16-16 -/sidebar_chrome_bg
+   17-18 overlay1/sidebar_chrome_bg
+   19-20 -/sidebar_chrome_bg
+   21-21 overlay0/sidebar_chrome_bg
+   22-23 -/sidebar_chrome_bg
+   24-24 overlay0/sidebar_chrome_bg
+   25-25 -/sidebar_chrome_bg
+== terminal view, working, facts @ 12
+00| ● h…  ◧  ▤ |
+   00-00 -/sidebar_chrome_bg
+   01-01 yellow/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-04 text/sidebar_chrome_bg/b
+   05-06 -/sidebar_chrome_bg
+   07-07 overlay0/sidebar_chrome_bg
+   08-09 -/sidebar_chrome_bg
+   10-10 overlay0/sidebar_chrome_bg
+   11-11 -/sidebar_chrome_bg
+== browser view, notes docked @ 80
+00| ○ header-design                                         Terminal  Browser ◧  ▤ |
+   00-00 -/sidebar_chrome_bg
+   01-01 green/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-15 text/sidebar_chrome_bg/b
+   16-56 -/sidebar_chrome_bg
+   57-64 overlay0/sidebar_chrome_bg
+   65-66 -/sidebar_chrome_bg
+   67-73 accent/sidebar_chrome_bg
+   74-74 -/sidebar_chrome_bg
+   75-75 overlay0/sidebar_chrome_bg
+   76-77 -/sidebar_chrome_bg
+   78-78 accent/sidebar_chrome_bg
+   79-79 -/sidebar_chrome_bg
+== blocked, browser docked, notes hovered @ 60
+00| ◉ endpoint-compatibility-…  82% ✉1  Terminal  Browser ◧  ▤ |
+   00-00 -/sidebar_chrome_bg
+   01-01 red/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-26 text/sidebar_chrome_bg/b
+   27-28 -/sidebar_chrome_bg
+   29-31 yellow/sidebar_chrome_bg
+   32-32 -/sidebar_chrome_bg
+   33-34 overlay1/sidebar_chrome_bg
+   35-36 -/sidebar_chrome_bg
+   37-44 accent/sidebar_chrome_bg
+   45-46 -/sidebar_chrome_bg
+   47-53 overlay0/sidebar_chrome_bg
+   54-54 -/sidebar_chrome_bg
+   55-55 accent/sidebar_chrome_bg
+   56-57 -/sidebar_chrome_bg
+   58-58 text/sidebar_chrome_bg
+   59-59 -/sidebar_chrome_bg
+== shell, no companion @ 60
+00| · zsh                                                    ▤ |
+   00-00 -/sidebar_chrome_bg
+   01-01 overlay0/sidebar_chrome_bg
+   02-02 -/sidebar_chrome_bg
+   03-05 text/sidebar_chrome_bg/b
+   06-57 -/sidebar_chrome_bg
+   58-58 overlay0/sidebar_chrome_bg
+   59-59 -/sidebar_chrome_bg

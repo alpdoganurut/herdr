@@ -290,6 +290,7 @@ mod news;
 mod notification_format;
 mod popup_focus_projection;
 mod quiet;
+mod session_header;
 mod settings_agents;
 mod settings_backups;
 mod settings_browser;

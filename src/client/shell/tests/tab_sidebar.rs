@@ -197,7 +197,13 @@ fn tabs_layout_drops_the_horizontal_tab_bar() {
     assert_eq!(state.hits.new_tab, ratatui::layout::Rect::default());
     let layout = state.layout(106, 20);
     assert!(layout.tab_bar.is_empty());
-    assert_eq!(layout.pane_surface.height, 20);
+    // Fork (session header): the header row takes the tab bar's place.
+    assert_eq!(
+        layout.session_header,
+        ratatui::layout::Rect::new(26, 0, 80, 1)
+    );
+    assert_eq!(layout.pane_surface.y, 1);
+    assert_eq!(layout.pane_surface.height, 19);
 
     let spaces = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
     assert!(!spaces.layout(106, 20).tab_bar.is_empty());

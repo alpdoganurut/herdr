@@ -391,9 +391,14 @@ pub(super) fn banner_area(
     layout: &ClientShellLayout,
     browser_view: bool,
     hits: &BrowserDockHits,
+    header: &super::session_header::SessionHeaderHits,
 ) -> Option<Rect> {
     if !browser_view {
         return None;
+    }
+    // Fork (session header): the header's gap before the view tabs.
+    if !layout.session_header.is_empty() {
+        return (!header.banner.is_empty()).then_some(header.banner);
     }
     let strip = layout.view_strip;
     if !strip.is_empty() {
@@ -656,6 +661,11 @@ impl ClientShellState {
             .last_composed_size
             .map(|(cols, rows)| self.surface_size(cols, rows));
         let focused = self.browser_dock_focused_tab() == Some(tab_id.as_str());
+        // Fork (session header): one dock slot in the tabs layout.
+        if !self.browser_dock_open_for(&tab_id) {
+            let endpoint = self.active_endpoint_id.clone();
+            self.free_dock_slot_of_notes(&endpoint, &tab_id);
+        }
         let opened = if unlist_tab(
             &mut self.browser_dock.docked,
             &self.active_endpoint_id,
@@ -699,6 +709,24 @@ impl ClientShellState {
                 "The window is too narrow for the browser dock; it appears once the window is wider.",
             );
         }
+    }
+
+    /// Fork (session header): the tabs layout has one dock slot, so the
+    /// notes dock opening closes `tab_id`'s browser dock (state only; the
+    /// caller resizes). Returns whether it was open.
+    pub(crate) fn free_dock_slot_of_browser(
+        &mut self,
+        endpoint: &ClientEndpointId,
+        tab_id: &str,
+    ) -> bool {
+        if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs {
+            return false;
+        }
+        let closed = unlist_tab(&mut self.browser_dock.docked, endpoint, tab_id);
+        if closed {
+            self.browser_dock.dragging = false;
+        }
+        closed
     }
 
     /// The `toggle_browser_dock` keybind: the focused tab.

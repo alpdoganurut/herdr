@@ -2183,6 +2183,10 @@ impl ClientShellState {
                 // Fork (sidebar filters): a press away from the search field
                 // lets go of the keyboard.
                 self.sidebar_search_pressed_elsewhere(point, outcome);
+                // Fork (session header): the header row, before any pane hit.
+                if self.session_header_press(point, outcome) {
+                    return;
+                }
                 // Fork: the info dock, before any pane hit, so a dock press
                 // never starts a pane gesture or a selection.
                 if self.info_dock_press(point, outcome) {
@@ -2624,6 +2628,8 @@ impl ClientShellState {
             MouseEventKind::Moved => {
                 // Fork (sidebar v2): the hovered tabs sidebar row.
                 self.update_sidebar_hover(point, outcome);
+                // Fork (session header): the hovered header control.
+                self.update_header_hover(point, outcome);
                 if let Some(hit) = self
                     .hits
                     .panes
