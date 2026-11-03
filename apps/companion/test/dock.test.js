@@ -233,6 +233,66 @@ test('a move hides the dock until the window settles; off screen hides it', () =
   assert.equal(report(d, 'p1').state, 'hidden');
 });
 
+// Ghostty's native tabs are windows of their own at the same frame; only the selected tab's
+// is on screen. Another tab selected: the bound window goes off screen (the probe still finds
+// it), the dock hides and stays bound (not rebound to the sibling, which is the only on-screen
+// candidate); the tab selected again: covering, raised again with Ghostty frontmost. A click
+// into the terminal meanwhile does not take it off the raised level.
+test('another Ghostty tab selected: hidden while its window is off screen, back when selected again', () => {
+  const c = covering();
+  c.setFront(GHOSTTY, 0);
+  const tab = (t, on) => c.onSample({ t, wid: 11, target: win(11, 100, 200, { on }), above: [], ...(t % 500 === 0 ? { candidates: on ? [win(11)] : [win(12)] } : {}) }, t);
+  tab(100, true);
+  let d = c.decide(101);
+  assert.equal(report(d, 'p1').state, 'covering');
+  assert.equal(d.level, 'raised');
+  // tab 2 selected: window 11 off screen, its sibling 12 (same frame) the only candidate
+  for (const t of [200, 300, 400, 500, 600]) {
+    tab(t, false);
+    d = c.decide(t + 1);
+    assert.equal(d.show, false, `t=${t}`);
+    assert.equal(report(d, 'p1').state, 'hidden');
+    assert.equal(c.bound.wid, 11, 'still bound to its own tab');
+  }
+  // back on tab 1
+  tab(1000, true);
+  d = c.decide(1001);
+  assert.equal(report(d, 'p1').state, 'covering');
+  assert.equal(d.show, true);
+  assert.equal(d.level, 'raised');
+  assert.equal(c.bound.wid, 11);
+  // clicks into the terminal: stays raised, shown
+  for (let i = 1; i <= 5; i++) {
+    c.setFront(GHOSTTY, 1000 + i * 100);
+    tab(1000 + i * 100 + 10, true);
+    d = c.decide(1000 + i * 100 + 20);
+    assert.ok(d.show && d.level === 'raised' && !d.raise, JSON.stringify(d.reports));
+  }
+});
+
+test('the probe down or the window gone: hidden, never shown where the window was', () => {
+  const c = covering();
+  c.setFront(GHOSTTY, 0);
+  at(c, 100, []);
+  assert.equal(c.decide(101).show, true);
+  // the probe died: no samples until it is back
+  c.onSample({ t: 200, lost: true }, 200);
+  let d = c.decide(201);
+  assert.equal(d.show, false);
+  assert.equal(report(d, 'p1').state, 'hidden');
+  at(c, 300, []);
+  assert.equal(c.decide(301).show, true, 'back with the next sample');
+  // the probe watching window 11 says it is gone: not shown at its last frame
+  c.onSample({ t: 400, wid: 11, target: null, above: [] }, 400);
+  d = c.decide(401);
+  assert.equal(d.show, false);
+  assert.notEqual(report(d, 'p1').state, 'covering');
+  // a sample of a probe still watching another window (wid 0, just restarted) does not count
+  const c2 = covering();
+  c2.onSample({ t: 10, wid: 0, candidates: [win(11)] }, 10);
+  assert.equal(c2.decide(11).show, true);
+});
+
 test('several same-size windows: unbound until the client focuses or the user clicks', () => {
   const c = core();
   const p = placement('p1');

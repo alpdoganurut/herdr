@@ -34,6 +34,9 @@ const VARIANTS = {
   hidden: { args: ['--macos-titlebar-style=hidden'], cols: 140, rows: 40, config: { titlebarStyle: 'hidden' } },
   // the defaults, then the z-order across "clicks" (clickSequence below)
   clicks: { args: [], cols: 120, rows: 36, config: {}, clicks: true },
+  // the defaults, then a second native tab and switches between the tabs (tabSequence below);
+  // the second tab runs cat, not a shell
+  tabs: { args: ['--command=/bin/cat'], cols: 120, rows: 36, config: {}, tabs: true },
 };
 
 const env = {
@@ -144,6 +147,56 @@ if args.first == "list" {
     spec.setDescriptor(NSAppleEventDescriptor(typeCode: code("GFWn")), forKeyword: AEKeyword(keyAEKeyData))
     spec.setDescriptor(NSAppleEventDescriptor.null(), forKeyword: AEKeyword(keyAEContainer))
     ev.setParam(spec, forKeyword: AEKeyword(keyDirectObject))
+    out = ["ok": (try? ev.sendEvent(options: [.waitForReply], timeout: 5)) != nil]
+} else if args.first == "vis", args.count > 4, let term = Int(args[1]), let dock = Int(args[2]),
+          let ms = Double(args[3]), let seconds = Double(args[4]) {
+    // Who is on screen every <ms> for <seconds>: per sample [ms since 1970, the terminal
+    // window on screen (0/1), the dock on screen (0/1), the dock's layer (-1: off screen),
+    // the dock above the terminal (0/1)].
+    var samples: [[Double]] = []
+    let end = Date().timeIntervalSince1970 + seconds
+    while Date().timeIntervalSince1970 < end {
+        let on = windows([.optionOnScreenOnly], kCGNullWindowID)
+        let t = Date().timeIntervalSince1970 * 1000
+        let nums = on.map { number($0, kCGWindowNumber) ?? 0 }
+        let ti = nums.firstIndex(of: term)
+        let di = nums.firstIndex(of: dock)
+        let layer = di.map { Double(number(on[$0], kCGWindowLayer) ?? 0) } ?? -1
+        samples.append([t, ti == nil ? 0 : 1, di == nil ? 0 : 1, layer, (ti != nil && di != nil && di! < ti!) ? 1 : 0])
+        Thread.sleep(forTimeInterval: ms / 1000)
+    }
+    out = samples
+} else if (args.first == "newtab" || args.first == "action"), args.count > 1, let pid = Int32(args[1]) {
+    // Ghostty's "new tab" (in the front window), or "perform action <args[2]>" on the focused
+    // terminal of the selected tab of the front window, for the instance <pid> only (its
+    // scripting dictionary; only with Automation already allowed, never prompts).
+    let target = NSAppleEventDescriptor(processIdentifier: pid)
+    guard AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, false) == noErr else {
+        FileHandle.standardError.write(Data("no automation permission for Ghostty\\n".utf8)); exit(3)
+    }
+    func code(_ s: String) -> FourCharCode { s.utf8.reduce(0) { ($0 << 8) | FourCharCode($1) } }
+    func prop(_ c: String, _ container: NSAppleEventDescriptor) -> NSAppleEventDescriptor {
+        let spec = NSAppleEventDescriptor.record().coerce(toDescriptorType: DescType(typeObjectSpecifier))!
+        spec.setDescriptor(NSAppleEventDescriptor(typeCode: DescType(typeProperty)), forKeyword: AEKeyword(keyAEDesiredClass))
+        spec.setDescriptor(NSAppleEventDescriptor(enumCode: OSType(formPropertyID)), forKeyword: AEKeyword(keyAEKeyForm))
+        spec.setDescriptor(NSAppleEventDescriptor(typeCode: code(c)), forKeyword: AEKeyword(keyAEKeyData))
+        spec.setDescriptor(container, forKeyword: AEKeyword(keyAEContainer))
+        return spec
+    }
+    let ev: NSAppleEventDescriptor
+    if args.first == "newtab" {
+        ev = NSAppleEventDescriptor(eventClass: code("Ghst"), eventID: code("NTab"), targetDescriptor: target, returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+    } else {
+        ev = NSAppleEventDescriptor(eventClass: code("Ghst"), eventID: code("PfAc"), targetDescriptor: target, returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+        ev.setParam(NSAppleEventDescriptor(string: args.count > 2 ? args[2] : ""), forKeyword: AEKeyword(keyDirectObject))
+        ev.setParam(prop("GTfT", prop("GWsT", prop("GFWn", NSAppleEventDescriptor.null()))), forKeyword: code("GonT"))
+    }
+    out = ["ok": (try? ev.sendEvent(options: [.waitForReply], timeout: 5)) != nil]
+} else if args.first == "quit", args.count > 1, let pid = Int32(args[1]) {
+    // the standard "quit" Apple Event to the instance <pid> (its windows close without asking:
+    // the instance runs with confirm-close-surface=false)
+    let target = NSAppleEventDescriptor(processIdentifier: pid)
+    let ev = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEQuitApplication), targetDescriptor: target, returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
     out = ["ok": (try? ev.sendEvent(options: [.waitForReply], timeout: 5)) != nil]
 } else if args.first == "top" {
     // the six frontmost normal windows: [number, pid]
@@ -366,6 +419,7 @@ async function measureVariant(name, v, out) {
   say(`error per edge (device px): left ${err.left * 2}, top ${err.top * 2}, right ${err.right * 2}, bottom ${err.bottom * 2}`);
   say(`z-order: directly above the Ghostty window: ${out.directlyAbove} (dock layer ${out.dockLayer}); probe CPU ${out.probeCpuPct}% of a core`);
   if (v.clicks) out.clicks = await clickSequence({ ghostty, term, dock, debug });
+  if (v.tabs) out.tabs = await tabSequence({ ghostty, term, dock, debug });
   await cdp.close().catch(() => {});
   return out;
 }
@@ -465,12 +519,101 @@ async function clickSequence({ ghostty, term, dock, debug }) {
   return res;
 }
 
+// Ghostty's native tabs: each tab is a window of its own at the same frame, only the selected
+// one on screen. A second tab (Ghostty's "new tab", Apple Events to the test instance only;
+// skipped when Automation is not already allowed: never prompts), then switches between the
+// two ("goto_tab:N") and clicks into tab 1, while a watcher samples which windows are on
+// screen every 2 ms. Must hold: the dock never on screen while the terminal's tab is not
+// (beyond the probe's sample period), back on screen once tab 1 is selected again, and above
+// the terminal whenever both are on screen.
+async function tabSequence({ ghostty, term, dock, debug }) {
+  if (MEASURE !== 'swift') throw new Error('the tabs need the compiled Swift reader (swiftc)');
+  const res = { events: [] };
+  const send = (...args) => {
+    try {
+      return JSON.parse(execFileSync(CGWIN, args.map(String), { encoding: 'utf8', timeout: 10000 })).ok;
+    } catch (e) {
+      return `failed (${String(e.stderr || e.message).trim()})`;
+    }
+  };
+  const ev = (what, fn) => res.events.push({ t: Date.now(), what, r: fn() });
+  const watchSeconds = 16;
+  let watchOut = '';
+  const watcher = spawn(CGWIN, ['vis', term.num, dock.num, 2, watchSeconds].map(String), { stdio: ['ignore', 'pipe', 'ignore'] });
+  watcher.stdout.on('data', (d) => (watchOut += d));
+  await sleep(500);
+  ev('new tab', () => send('newtab', ghostty));
+  await sleep(2000);
+  for (let i = 0; i < 3; i++) {
+    ev('tab 1', () => send('action', ghostty, 'goto_tab:1'));
+    await sleep(1200);
+    ev('click', () => send('click', ghostty));
+    await sleep(800);
+    ev('tab 2', () => send('action', ghostty, 'goto_tab:2'));
+    await sleep(1500);
+  }
+  ev('tab 1', () => send('action', ghostty, 'goto_tab:1'));
+  await waitFor(() => watcher.exitCode !== null, (watchSeconds + 5) * 1000, 100);
+  const after = await debug();
+  let samples = [];
+  try {
+    samples = JSON.parse(watchOut);
+  } catch {}
+  fs.writeFileSync(`${REPORT}.tabs.json`, JSON.stringify({ term: term.num, dock: dock.num, events: res.events, samples }));
+  const first = res.events[0].t;
+  // runs of the terminal's tab off screen: how long the dock stayed on screen into each, and
+  // how long it took to come back after each
+  let overOther = 0; // samples with the dock on screen while the terminal is not
+  let below = 0; // both on screen, the dock not above the terminal
+  const hideLag = [];
+  const showLag = [];
+  let prev = null;
+  let since = null; // when the terminal's last on/off change happened
+  let pending = null; // 'hide' | 'show': waiting for the dock to follow
+  for (const [t, termOn, dockOn, , dockAbove] of samples) {
+    if (t < first) continue;
+    if (prev !== null && termOn !== prev) {
+      since = t;
+      pending = termOn ? 'show' : 'hide';
+    }
+    prev = termOn;
+    if (!termOn && dockOn) overOther += 1;
+    if (termOn && dockOn && !dockAbove) below += 1;
+    if (pending === 'hide' && !dockOn) {
+      hideLag.push(Math.round(t - since));
+      pending = null;
+    } else if (pending === 'show' && dockOn) {
+      showLag.push(Math.round(t - since));
+      pending = null;
+    }
+  }
+  res.samples = samples.filter(([t]) => t >= first).length;
+  res.offRuns = hideLag.length + (pending === 'hide' ? 1 : 0);
+  res.hideLag = hideLag;
+  res.showLag = showLag;
+  res.overOther = overOther;
+  res.below = below;
+  res.shownAfter = after.shown;
+  const failed = res.events.filter((e) => e.r !== true);
+  res.ok = !failed.length && res.samples > 1000 && hideLag.length >= 3 && showLag.length >= 3 && pending === null && Math.max(...hideLag) <= 250 && Math.max(...showLag) <= 500 && below === 0 && after.shown;
+  say(`tabs: ${res.events.map((e) => `${e.what}=${e.r}`).join(', ')}; ${res.samples} on-screen samples every 2 ms`);
+  say(`tabs: the dock left the screen ${hideLag.length} times after its tab did (lag ms ${hideLag.join('/')}), came back ${showLag.length} times (lag ms ${showLag.join('/')}); on screen without its tab in ${overOther} samples; below the terminal in ${below}; shown at the end ${after.shown}`);
+  return res;
+}
+
 async function stopServer(server, ghostty, out) {
   out.stopped = true;
   spawnSyncLike(BIN, ['server', 'stop']);
   await waitFor(() => server.exitCode !== null, 15000);
   if (!ghostty) return;
-  const gone = await waitFor(() => !alive(ghostty), 20000);
+  let gone = await waitFor(() => !alive(ghostty), out.tabs ? 5000 : 20000);
+  // the tabs variant's second tab (cat) keeps the instance: asked to quit, its own instance only
+  if (!gone && out.tabs && MEASURE === 'swift' && execFileSync('/bin/ps', ['-o', 'args=', '-p', String(ghostty)], { encoding: 'utf8' }).includes(T)) {
+    try {
+      execFileSync(CGWIN, ['quit', ghostty], { timeout: 10000 });
+    } catch {}
+    gone = await waitFor(() => !alive(ghostty), 15000);
+  }
   out.ghosttyQuit = !!gone;
   say(gone ? `Ghostty ${ghostty} quit after its window closed` : `Ghostty ${ghostty} still running (not killed; quit it from its Dock icon)`);
 }
@@ -487,5 +630,5 @@ for (const r of results) {
 }
 fs.writeFileSync(REPORT, lines.join('\n') + '\n');
 console.log(`\nreport: ${REPORT}`);
-const bad = results.filter((r) => r.error || r.maxErrPt > 1 || !r.directlyAbove || (r.clicks && !r.clicks.ok));
+const bad = results.filter((r) => r.error || r.maxErrPt > 1 || !r.directlyAbove || (r.clicks && !r.clicks.ok) || (r.tabs && !r.tabs.ok));
 process.exit(bad.length ? 1 : 0);

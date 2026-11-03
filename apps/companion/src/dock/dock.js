@@ -8,7 +8,9 @@
 // newer than that), follows it, and says when the dock window shows and where
 // (dock/geometry.js), and what to report to herdr:
 //   covering    over the area
-//   hidden      not now (the placement is not shown, or the window is off screen)
+//   hidden      not now (the placement is not shown, or the window is off screen: minimised,
+//               another Space, or a Ghostty tab that is not the selected one; or the probe
+//               is down, so where the window is is not known)
 //   moving      the window moves or resizes: hidden until it settles (120 ms)
 //   unbound     several terminal windows could be this client's: one click binds it
 //   unsupported with a reason the user can act on
@@ -250,8 +252,15 @@ class DockCore {
     const why = this._bind(target);
     if (why) return say(why.state, why.reason);
     out.watch.wid = this.bound.wid;
+    // The probe is down (restarting): where the window is is not known, so not shown.
+    if (this.sample && this.sample.lost) return say('hidden');
     const t = this.sample && this.sample.target;
+    // Off screen: minimised, another Space, the app hidden, or another tab of its tab group
+    // selected (a Ghostty tab is a window of its own; only the selected one is on screen).
     if (t && t.num === this.bound.wid && t.on === false) return say('hidden');
+    // The probe watching the window finds it nowhere (closed): not shown where it was; the
+    // next candidate list without it binds again.
+    if (this.sample && this.sample.wid === this.bound.wid && !t) return say('hidden');
     if (!this.frame) return say('hidden');
     if (this.frameSince && now - this.frameSince < SETTLE_MS) {
       out.recheckAt = this.frameSince + SETTLE_MS;
@@ -356,6 +365,12 @@ class DockController {
     });
     probe.on('sample', (s) => {
       this.core.onSample(s, Date.now());
+      this.apply();
+    });
+    // The probe died (restarting after a pause): no samples meanwhile, so the dock hides
+    // rather than staying where the window was.
+    probe.on('lost', () => {
+      this.core.onSample({ t: Date.now(), lost: true }, Date.now());
       this.apply();
     });
   }

@@ -2,7 +2,9 @@
 // One JSON line per sample on stdout, from CGWindowListCopyWindowInfo through the ObjC
 // bridge: no Accessibility, no Screen Recording (bounds, owner pid, layer, number and
 // on-screen are there without it; names are not, and none is read).
-//   target      the window `wid` (with `on`: false when minimised, hidden, on another Space)
+//   wid         the window asked about (0: none)
+//   target      the window `wid` (with `on`: false when minimised, hidden, on another Space,
+//               or a Ghostty tab that is not the selected one); null: the window is gone
 //   above       the windows above it, front to back: [number, pid, layer]
 //   candidates  every N samples (and while nothing is bound): on-screen layer-0 windows of
 //               `pids`, front to back
@@ -32,6 +34,21 @@ function list(options, wid) {
   return ObjC.castRefToObject($.CGWindowListCopyWindowInfo(options, wid));
 }
 
+// The bridge gives an array's count as a string ("0" is truthy): always a number.
+const count = (a) => Number(a.count) || 0;
+
+// The window `wid` among all windows, on screen or not: `IncludingWindow` alone lists no
+// off-screen window of a tab group (a Ghostty tab that is not the selected one), so the full
+// list tells "off screen" from "gone". Only while the window is off screen (the dock is hidden).
+function findWindow(wid) {
+  const all = list($.kCGWindowListOptionAll | $.kCGWindowListExcludeDesktopElements, 0);
+  for (let i = 0, n = count(all); i < n; i++) {
+    const d = all.objectAtIndex(i);
+    if (d.objectForKey('kCGWindowNumber').js === wid) return d;
+  }
+  return null;
+}
+
 function run(argv) {
   const pids = (argv[0] || '').split(',').map(Number).filter((n) => n > 0);
   const wid = Number(argv[1] || 0);
@@ -43,11 +60,11 @@ function run(argv) {
   let tick = 0;
   let last = null;
   for (;;) {
-    const sample = { t: Date.now() };
+    const sample = { t: Date.now(), wid };
     if (wid) {
       // the window and the ones above it, front to back (it is last)
       const above = list($.kCGWindowListOptionOnScreenAboveWindow | $.kCGWindowListOptionIncludingWindow, wid);
-      const n = above.count;
+      const n = count(above);
       const last = n ? above.objectAtIndex(n - 1) : null;
       if (last && last.objectForKey('kCGWindowNumber').js === wid) {
         sample.target = windowInfo(last);
@@ -59,15 +76,17 @@ function run(argv) {
           if (layer === 0) sample.above.push([d.objectForKey('kCGWindowNumber').js, d.objectForKey('kCGWindowOwnerPID').js, 0]);
         }
       } else {
+        // off screen (the above-list of an off-screen window is every on-screen window)
         const one = list($.kCGWindowListOptionIncludingWindow, wid);
-        sample.target = one.count ? { ...windowInfo(one.objectAtIndex(0)), on: false } : null;
+        const d = count(one) ? one.objectAtIndex(0) : findWindow(wid);
+        sample.target = d ? { ...windowInfo(d), on: false } : null;
         sample.above = [];
       }
     }
     if (pids.length && (!wid || tick % every === 0)) {
       const all = list($.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, 0);
       sample.candidates = [];
-      for (let i = 0; i < all.count; i++) {
+      for (let i = 0, n = count(all); i < n; i++) {
         const d = all.objectAtIndex(i);
         const pid = d.objectForKey('kCGWindowOwnerPID').js;
         if (!pids.includes(pid) || d.objectForKey('kCGWindowLayer').js !== 0) continue;

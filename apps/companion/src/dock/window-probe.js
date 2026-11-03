@@ -5,7 +5,8 @@
 //
 // `watch({pids, wid})` (re)starts the source for the windows of `pids` and the bound window
 // `wid`; `stop()` ends it. Samples arrive as 'sample' events:
-//   {t, target?: {num, pid, x, y, w, h, on}, above?: [[num, pid, layer]], candidates?: [...]}
+//   {t, wid, target?: {num, pid, x, y, w, h, on} | null (gone), above?: [[num, pid, layer]], candidates?: [...]}
+// A 'lost' event says the probe died (no samples until it is back).
 // A probe that exits by itself is started again for the same windows after a pause that
 // doubles while it keeps dying young (restartDelay).
 
@@ -88,6 +89,7 @@ class WindowProbe extends EventEmitter {
       this.child = null;
       this.delay = restartDelay(this.delay, Date.now() - startedAt);
       this.log(`window probe ${why}; restarting in ${this.delay / 1000} s`);
+      this.emit('lost');
       const key = this.args;
       this.restartTimer = setTimeout(() => {
         this.restartTimer = null;
@@ -110,7 +112,7 @@ class WindowProbe extends EventEmitter {
         doc = { windows: [] };
       }
       const windows = doc.windows || [];
-      const sample = { t: Date.now() };
+      const sample = { t: Date.now(), wid: wid || 0 };
       if (wid) {
         const i = windows.findIndex((w) => w.num === wid);
         sample.target = i >= 0 ? { layer: 0, on: true, ...windows[i] } : null;

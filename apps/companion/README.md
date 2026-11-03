@@ -120,7 +120,9 @@ covering, hidden, moving, unbound, unsupported, elsewhere), which herdr's placeh
   split) is refused with the fix.
 * `src/dock/dock.js` — the core (bind the placement to its terminal window by the client's
   ancestry; with several windows the frontmost when the client's focus flips or the user clicks the
-  placeholder; hide while the window moves and show again 120 ms after it settles; hide off screen)
+  placeholder; hide while the window moves and show again 120 ms after it settles; hide off screen:
+  minimised, another Space, or another Ghostty tab selected, since each tab is a window of its own
+  and only the selected one is on screen; hide while the window probe is down)
   and the Electron side: a second, frameless window over the area, one level above normal windows
   while the terminal's app (or the companion) is frontmost and nothing else is above the terminal
   (a click into the terminal orders its window front and would cover a same-level dock), else at
