@@ -394,6 +394,32 @@ try {
     now: (await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2').map((v) => [v.view_id, v.url.slice(0, 40)]),
     closed: active && active.view_id,
   });
+  // The user's click on the close button itself (DOM path, not the bridge): before the fix the
+  // tab's mousedown select re-rendered the strip and the button's click never fired.
+  {
+    const left = (await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2');
+    if (left.length > 0) {
+      const n0 = left.length;
+      // A real click with a human press length: hit testing decides where mouseup/click land,
+      // so a strip re-rendered between press and release swallows the click (the bug).
+      const box = await strip.evaluate(() => {
+        const b = document.querySelector('.tab.active .close') || document.querySelector('.tab .close');
+        if (!b) return null;
+        const r = b.getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      });
+      let clicked = false;
+      if (box) {
+        await strip.mouse.move(box.x, box.y);
+        await strip.mouse.down();
+        await new Promise((r) => setTimeout(r, 150));
+        await strip.mouse.up();
+        clicked = true;
+      }
+      const gone = await waitFor(async () => ((await ctl('__herdrCompanion.views()')).filter((v) => v.tab_id === 'w1:t2').length === n0 - 1 ? true : null), 3000);
+      check('a click on a tab close button closes that tab (DOM path)', clicked && gone, { clicked, n0 });
+    }
+  }
 
   // html view sandbox
   const site = path.join(tmp, 'site');

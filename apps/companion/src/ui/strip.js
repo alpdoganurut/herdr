@@ -80,8 +80,12 @@ function render() {
     close.className = 'close';
     close.append(icon('close', 'sm'));
     close.title = 'Close tab (⌘W)';
-    close.addEventListener('click', (e) => {
+    // Close acts on mousedown, like the tab's select: a select on the tab's mousedown re-renders
+    // the strip, which replaced this button before its click could fire (the close was lost).
+    close.addEventListener('mousedown', (e) => {
       e.stopPropagation();
+      if (e.button !== 0) return;
+      e.preventDefault();
       act('close', t.view_id);
     });
     el.append(title, close);
