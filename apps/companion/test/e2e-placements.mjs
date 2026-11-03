@@ -200,8 +200,11 @@ if (covering) {
   // tab's pages (no flash of the other tab's). The user's own focus brings that tab forward.
   const ctl = (fn, arg) => control.evaluate(([f, a]) => globalThis.__herdrCompanion[f](a), [fn, arg]);
   const shownTabs = async () => ((await ctl('views')) || []).filter((v) => v.shown).map((v) => v.tab_id);
+  // the docked tab shows a page of its own, so the dock's group is seen
+  const own = await ctl('open', { tab_id: docked, url: 'about:blank', background: false });
+  const ownShown = await waitFor(async () => ((await shownTabs()).includes(docked) ? true : null), 5000, 50);
   const other = await ctl('open', { tab_id: plain, url: 'about:blank' });
-  check('a page opens in the other herdr tab, in the background', other && other.view_id && !other.error && (await shownTabs()).every((t) => t === docked), other);
+  check('a page opens in the other herdr tab, in the background', own && own.view_id && ownShown && other && other.view_id && !other.error && (await shownTabs()).every((t) => t === docked), { own, other });
   if (other && other.view_id) {
     const answer = await ctl('focus', other.view_id);
     const seen = new Set();
@@ -209,7 +212,7 @@ if (covering) {
       for (const t of await shownTabs()) seen.add(t);
       await sleep(50);
     }
-    check("an agent's focus on another tab's page leaves the dock on the docked tab", answer && answer.ok && [...seen].every((t) => t === docked), { answer, seen: [...seen] });
+    check("an agent's focus on another tab's page leaves the dock on the docked tab's page", answer && answer.ok && seen.size === 1 && seen.has(docked), { answer, seen: [...seen] });
     const page = ((await ctl('views')) || []).find((v) => v.view_id === other.view_id);
     check('the page is selected in its own group', page && page.active && page.tab_id === plain, page);
     started = Date.now();
@@ -220,6 +223,7 @@ if (covering) {
     }, 5000, 50);
     check("the user's own focus brings that herdr tab forward (no dock there: the dock hides)", !!followed, followed || (await debug().catch((e) => e.message)));
     await ctl('close', other.view_id);
+    if (own && own.view_id) await ctl('close', own.view_id);
     await api('tab.focus', { tab_id: docked });
     await waitFor(async () => ((await statusOf(target.id)) || {}).state === 'covering');
   }
