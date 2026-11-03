@@ -3123,6 +3123,11 @@ impl TerminalState {
             .map(|(kind, _)| kind)
     }
 
+    /// Fork (restart screen): whether a relaunch or failed mark is set on the pane.
+    pub fn has_resume_marks(&self) -> bool {
+        self.agent_resuming.is_some() || self.agent_resume_failed.is_some()
+    }
+
     /// Fork (restart screen): a wake of the parked agent is being retried
     /// until `until`. Ignored once a wake of this record failed. Returns
     /// whether the agent was not shown waking before.

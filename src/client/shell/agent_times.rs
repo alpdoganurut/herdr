@@ -129,7 +129,11 @@ impl ClientAgentTimesState {
 
     /// When `pane_id`'s agent entered its state, only while the push's seq
     /// is `seq` (the snapshot agent's `state_change_seq`).
+    /// Seq 0 (no state change: a pane listed only for its resume mark) never has one.
     pub(crate) fn since_of(&self, pane_id: &str, seq: u64) -> Option<Instant> {
+        if seq == 0 {
+            return None;
+        }
         self.panes
             .get(pane_id)
             .filter(|(pushed, _)| *pushed == seq)
@@ -235,6 +239,26 @@ mod tests {
         assert_eq!(state.since_of("w1:p1", 3), None, "a stale seq has no time");
         assert_eq!(state.since_of("w1:p2", 5), Some(received));
         assert_eq!(state.since_of("w9:p9", 1), None);
+
+        // Fork (restart screen): a pane listed only for its resume mark
+        // (seq 0) never yields a time, even for a snapshot agent at seq 0.
+        let marked = ClientAgentTimesState::from_payload(
+            AgentTimesPayload {
+                boot_id: "b".into(),
+                revision: 2,
+                server_now_unix_ms: 1_000_000,
+                panes: vec![AgentTimePane {
+                    pane_id: "w1:p3".into(),
+                    state_change_seq: 0,
+                    since_unix_ms: 1_000_000,
+                    resuming: Some("wake".into()),
+                    ..Default::default()
+                }],
+            },
+            received,
+        );
+        assert_eq!(marked.since_of("w1:p3", 0), None);
+        assert_eq!(marked.resume_mark("w1:p3"), Some(ClientResumeMark::Waking));
     }
 
     #[test]
