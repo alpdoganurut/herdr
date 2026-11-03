@@ -7,9 +7,10 @@
 // its windows front to back too (one per tab group), so the window is "front window" for
 // rank 1, else "window <rank>" only when Ghostty has exactly <onscreen> windows (none on
 // another Space or minimised to shift the count); otherwise nothing is done (exit 4).
-// Needs Automation for Ghostty (macOS asks once); refused: exit 5. Prints "ok".
+// Needs Automation for Ghostty (macOS asks once); refused: exit 5. A usage error: exit 2.
+// Prints "ok".
 ObjC.import('Foundation');
-ObjC.import('CoreServices');
+ObjC.import('stdlib'); // $.exit
 
 const code = (s) => s.split('').reduce((a, c) => a * 256 + c.charCodeAt(0), 0);
 
@@ -27,13 +28,17 @@ function send(target, cls, id, direct, extra) {
   const ev = $.NSAppleEventDescriptor.appleEventWithEventClassEventIDTargetDescriptorReturnIDTransactionID(code(cls), code(id), target, -1, 0);
   if (direct) ev.setParamDescriptorForKeyword(direct, code('----'));
   if (extra) for (const [k, v] of extra) ev.setParamDescriptorForKeyword(v, code(k));
-  const err = Ref();
+  // the NSError out-parameter: `$()` (reading a `Ref()` back crashes osascript)
+  const err = $();
   const reply = ev.sendEventWithOptionsTimeoutError($.NSAppleEventSendWaitForReply, 3, err);
-  if (reply.isNil()) {
-    const e = err[0];
-    const n = e && !e.isNil() ? Number(e.code) : -1;
-    throw new Error(`apple event ${cls}${id} failed (${n})`, { cause: n });
+  let n = 0;
+  if (reply.isNil()) n = err.isNil() ? -1 : Number(err.code);
+  else {
+    // an error the app answered with (its reply's errn)
+    const errn = reply.paramDescriptorForKeyword(code('errn'));
+    if (!errn.isNil()) n = Number(errn.int32Value);
   }
+  if (n) throw new Error(`apple event ${cls}${id} failed (${Number.isFinite(n) ? n : -1})`, { cause: n });
   return reply;
 }
 
@@ -41,7 +46,10 @@ function run(argv) {
   const pid = Number(argv[0]);
   const rank = Number(argv[1]);
   const onscreen = Number(argv[2]);
-  if (!(pid > 0) || !(rank > 0)) return 'usage: front.jxa.js <pid> <rank> <onscreen>';
+  if (!(pid > 0) || !(rank > 0)) {
+    $.NSFileHandle.fileHandleWithStandardError.writeData($('usage: front.jxa.js <pid> <rank> <onscreen>\n').dataUsingEncoding($.NSUTF8StringEncoding));
+    $.exit(2);
+  }
   const target = $.NSAppleEventDescriptor.descriptorWithProcessIdentifier(pid);
   const app = $.NSAppleEventDescriptor.nullDescriptor;
   let win;

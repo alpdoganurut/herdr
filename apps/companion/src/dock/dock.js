@@ -69,11 +69,12 @@ const geometryKey = (placement) => {
 
 // The terminal's geometry settings for `pid`: Ghostty's config files and its own flags (they
 // win; `ps`, no permission); another terminal is read as evenly padded (best effort).
+// `ghostty`: whether the terminal is Ghostty (only its window can come along, front.jxa.js).
 function readTerminalSettings(pid, fake, done) {
   execFile('/bin/ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000 }, (err, stdout) => {
     const args = err ? '' : String(stdout || '').trim();
-    const ghostty = fake || /ghostty/i.test(args.split(/\s+/)[0] || '');
-    done(ghostty ? readGhosttyConfig({ argv: args.split(/\s+/).slice(1) }) : { symmetric: true, sources: [] });
+    const ghostty = !!fake || /ghostty/i.test(args.split(/\s+/)[0] || '');
+    done(ghostty ? { ...readGhosttyConfig({ argv: args.split(/\s+/).slice(1) }), ghostty } : { symmetric: true, sources: [], ghostty });
   });
 }
 
@@ -134,7 +135,7 @@ class DockCore {
     this.dockWid = null; // our dock window's number (z-order upkeep)
     this.front = null; // {pid, at}: the frontmost app (null: not known yet)
     this.pairedFor = null; // the activation (front.at) the terminal's window was asked for
-    this.pairAt = 0; // when
+    this.pairAt = 0; // when (0: no ask in flight or it did not bring the window: no raised hold)
     this.pairOff = false; // the terminal's app refused (no Automation), or it missed: never asked again
     this.pairMissed = false; // an ask took the terminal's window off screen
   }
@@ -320,33 +321,55 @@ class DockCore {
     const f = this.front;
     if (!f || !this.bound || (f.pid !== this.bound.pid && f.pid !== this.env.selfPid)) return false;
     if (!above.some((w) => w[0] !== this.dockWid)) return true;
-    if (f.pid === this.env.selfPid && this.pairedFor === f.at && now - this.pairAt < PAIR_MS) return true;
+    if (f.pid === this.env.selfPid && this.pairedFor === f.at && this.pairAt && now - this.pairAt < PAIR_MS) return true;
     const t = this.sample && typeof this.sample.t === 'number' ? this.sample.t : 0;
     return t < f.at + FRONT_SETTLE_MS;
   }
 
   // The companion came to the front with other windows above the terminal: the terminal's
   // window, to come along ({pid, rank, onscreen}: its place among its app's on-screen windows,
-  // front to back, from the last candidate list), once per activation; else null.
+  // front to back: the rank from this sample's above-list, the count from the last candidate
+  // list), once per activation; else null. Ghostty only (its scripting does it).
   _pair(above, now) {
     const f = this.front;
     if (this.pairOff || !f || f.pid !== this.env.selfPid || !this.bound || !this.dockWid) return null;
     if (this.pairedFor === f.at || !above.some((w) => w[0] !== this.dockWid)) return null;
+    const cfg = this.env.configFor(this.bound.pid);
+    if (!cfg || cfg === CONFIG_PENDING || !cfg.ghostty) return null;
     const mine = (this.candidates || []).filter((w) => w.pid === this.bound.pid);
-    const i = mine.findIndex((w) => w.num === this.bound.wid);
-    if (i < 0) return null;
+    if (!mine.some((w) => w.num === this.bound.wid)) return null;
     this.pairedFor = f.at;
     this.pairAt = now;
-    return { pid: this.bound.pid, rank: i + 1, onscreen: mine.length };
+    return { pid: this.bound.pid, rank: 1 + above.filter((w) => w[1] === this.bound.pid).length, onscreen: mine.length };
+  }
+
+  // The ask for the terminal's window came back (`status`, orderFrontTerminal): when it did not
+  // come along, the dock does not stay raised over the other windows for the rest of PAIR_MS.
+  // 'denied': never asked again.
+  pairDone(status) {
+    if (status === 'ok') return;
+    this.pairAt = 0;
+    if (status === 'denied') this.pairOff = true;
   }
 }
 
-// The terminal's window to the front with the companion (front.jxa.js); `done(status)`:
-// 'ok', 'skipped' (not sure which window it is), 'denied' (no Automation), 'failed'.
+// front.jxa.js's exit as a status (`err`: execFile's error, null for exit 0): 'ok',
+// 'skipped' (4: not sure which window it is), 'denied' (5: no Automation), else 'failed'
+// (another exit, a signal, a timeout kill, a spawn error).
+function pairStatus(err) {
+  if (!err) return 'ok';
+  if (err.signal || err.killed) return 'failed';
+  return err.code === 4 ? 'skipped' : err.code === 5 ? 'denied' : 'failed';
+}
+
+// The first ask may wait for the user to answer macOS's Automation prompt.
+const FRONT_TIMEOUT_MS = 30000;
+
+// The terminal's window to the front with the companion (front.jxa.js); `done(status, why)`
+// (pairStatus).
 function orderFrontTerminal({ pid, rank, onscreen }, done) {
-  execFile('/usr/bin/osascript', ['-l', 'JavaScript', FRONT, String(pid), String(rank), String(onscreen)], { encoding: 'utf8', timeout: 5000 }, (err, stdout, stderr) => {
-    const code = err ? err.code : 0;
-    done(code === 0 ? 'ok' : code === 4 ? 'skipped' : code === 5 ? 'denied' : 'failed', String(stderr || '').trim());
+  execFile('/usr/bin/osascript', ['-l', 'JavaScript', FRONT, String(pid), String(rank), String(onscreen)], { encoding: 'utf8', timeout: FRONT_TIMEOUT_MS }, (err, stdout, stderr) => {
+    done(pairStatus(err), String(stderr || '').trim());
   });
 }
 
@@ -522,7 +545,7 @@ class DockController {
     if (d.pair && this.orderFront) {
       this.orderFront(d.pair, (status, why) => {
         if (status !== 'ok') this.log(`dock: the terminal's window did not come along (${status}${why ? `: ${why}` : ''})`);
-        if (status === 'denied') this.core.pairOff = true;
+        this.core.pairDone(status);
         if (!this.stopped) this.apply();
       });
     }
@@ -669,4 +692,4 @@ class DockController {
   }
 }
 
-module.exports = { DockCore, DockController, SETTLE_MS, RESETTLE_MS, FRONT_SETTLE_MS, PAIR_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, geometryKey, activatedPid };
+module.exports = { DockCore, DockController, SETTLE_MS, RESETTLE_MS, FRONT_SETTLE_MS, PAIR_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, FRONT_TIMEOUT_MS, geometryKey, activatedPid, pairStatus };
