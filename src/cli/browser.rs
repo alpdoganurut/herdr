@@ -722,10 +722,21 @@ pub(crate) fn format_status(status: &BrowserStatusInfo, now: u64) -> String {
         status.default_profile,
         if status.autostart { "on" } else { "off" }
     ));
-    match (&status.executable, &status.executable_error) {
-        (Some(exe), _) => out.push_str(&format!("executable: {exe}\n")),
-        (None, Some(err)) => out.push_str(&format!("executable: missing ({err})\n")),
-        _ => {}
+    // Fork (companion launcher): the companion app, then the window (off by default).
+    if let Some(companion) = get.companion_app.as_ref() {
+        out.push_str(&format!(
+            "{}\n",
+            browser_companion::status_line(companion, now)
+        ));
+    }
+    if get.window_off {
+        out.push_str("window: off ([browser] window = false)\n");
+    } else {
+        match (&status.executable, &status.executable_error) {
+            (Some(exe), _) => out.push_str(&format!("executable: {exe}\n")),
+            (None, Some(err)) => out.push_str(&format!("executable: missing ({err})\n")),
+            _ => {}
+        }
     }
     out.push_str(&format!(
         "sidecar: {}{}{}\n",

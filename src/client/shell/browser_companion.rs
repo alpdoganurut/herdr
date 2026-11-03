@@ -58,7 +58,11 @@ pub(crate) fn companion_row_state(
     let window_runs = info.profiles.iter().any(|profile| {
         profile.name != COMPANION && (profile.state == "running" || profile.state == "starting")
     });
-    if window_runs && matches!(companion.state.as_str(), "stopped" | "not_installed") {
+    // a companion that is not running says less than the herdr+ window
+    // while that window is on (or still runs)
+    if (window_runs || !info.window_off)
+        && matches!(companion.state.as_str(), "stopped" | "not_installed")
+    {
         return None;
     }
     if info.tabs.iter().any(|tab| tab.dialog_open) {

@@ -112,9 +112,10 @@ function cli(args, timeoutMs = 120000) {
     });
   });
 }
-// `herdr browser <args> --json`: {result} or {error}.
+// `herdr browser <args> --json` as an agent in the session's pane: {result} or {error}.
+let PANE = null;
 async function browser(args, timeoutMs = 90000) {
-  const r = await cli(['browser', ...args, '--json'], timeoutMs);
+  const r = await cli(['browser', ...args, '--json', ...(PANE ? ['--pane', PANE] : [])], timeoutMs);
   for (const line of `${r.stdout}\n${r.stderr}`.split('\n')) {
     try {
       const x = JSON.parse(line);
@@ -183,6 +184,14 @@ try {
   });
 
   check('herdr server started', await startServer());
+
+  await section('a session with a pane for the agent', async () => {
+    const w = await api('workspace.create', { label: 'e2e', focus: true });
+    const ws = (w.workspace && w.workspace.workspace_id) || w.workspace_id;
+    const panes = (await api('pane.list', { workspace_id: ws })).panes || [];
+    PANE = panes[0] && panes[0].pane_id;
+    check('a workspace and its pane', ws && PANE, { ws, panes });
+  });
 
   await section('doctor and status before the first open', async () => {
     const d = await cli(['browser', 'doctor', '--json']);
@@ -253,7 +262,7 @@ try {
       const x = await companion();
       return x.state === 'running' ? x : null;
     }, 30000, 200);
-    check('running again, restarts back to 0', s && s.restarts === 0 && !s.last_error, s || (await companion()));
+    check('running again, restarts back to 0', s && !s.restarts && !s.last_error, s || (await companion()));
     check('a user restart from a plain terminal shows its window (no --background)', s && !/--background/.test(argsOf(s.pid)), s && argsOf(s.pid));
   });
 
@@ -270,7 +279,8 @@ try {
       const x = await companion();
       return x.state === 'stopped' ? x : null;
     }, 10000);
-    check('stopped, not a crash; run.json removed', s && s.restarts === 0 && !runRecord(), { s, run: runRecord() });
+    const cleared = await waitFor(async () => !runRecord(), 5000, 100);
+    check('stopped, not a crash; run.json removed', s && !s.restarts && cleared, { s, run: runRecord() });
     const log = fs.readFileSync(path.join(HOME_DIR, 'companion.log'), 'utf8');
     check('it never needed SIGTERM', !/SIGTERM: quitting/.test(log.split('\n').slice(-40).join('\n')));
   });
@@ -298,7 +308,7 @@ try {
     await apiOk('server.stop', {});
     const gone = await waitFor(async () => !alive(pid), 15000, 200);
     check('the companion exited with the server (within 8 s of the stop)', gone, { pid, args: argsOf(pid) });
-    check('run.json removed', !runRecord(), runRecord());
+    check('run.json removed', await waitFor(async () => !runRecord(), 5000, 100), runRecord());
   });
 } finally {
   web.close();

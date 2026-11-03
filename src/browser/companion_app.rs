@@ -1361,11 +1361,17 @@ impl BrowserHub {
             pid,
             "companion did not exit after SIGKILL"
         );
+        let token = launcher.lock().token.clone();
         launcher.lock().abandon(
             generation,
             format!("pid {pid} did not exit after SIGKILL"),
             unix_now(),
         );
+        // a process SIGKILL cannot end is nothing a next server should adopt
+        clear_run_record(&self.companion_home(), token.as_deref());
+        if let Some(token) = token.as_deref() {
+            self.drop_companion_lease_for(token, false);
+        }
         self.companion_changed();
     }
 

@@ -240,6 +240,26 @@ fn no_registration_in_60_s_and_a_lost_lease_stop_it_with_term_then_kill() {
     );
 }
 
+#[test]
+fn uptimes_and_countdowns_read_short() {
+    assert_eq!(duration_text(0), "0s");
+    assert_eq!(duration_text(45), "45s");
+    assert_eq!(duration_text(180), "3m");
+    assert_eq!(duration_text(185), "3m 5s");
+    assert_eq!(duration_text(2 * 3600 + 3 * 60 + 9), "2h 3m");
+    assert_eq!(duration_text(26 * 3600), "1d 2h");
+    assert_eq!(
+        ExitInfo {
+            code: None,
+            signal: Some(9),
+            known: true
+        }
+        .describe(),
+        "killed by signal 9"
+    );
+    assert_eq!(ExitInfo::unknown().describe(), "exited (status unknown)");
+}
+
 // ----- the hub's side --------------------------------------------------------
 
 /// A spawner that starts nothing: pids are numbers, `register` makes the
