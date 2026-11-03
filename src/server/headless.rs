@@ -653,6 +653,15 @@ impl HeadlessServer {
                     needs_render,
                     self.git_refresh_scheduled(),
                 )
+                // Fork (frame pacing): wake early for a frame deadline so OS timer
+                // slack does not land on the frame (frame_pacing::wake_at).
+                .map(|deadline| {
+                    if needs_render && self.app.render_pacer.due_at() == Some(deadline) {
+                        crate::app::frame_pacing::wake_at(now, deadline)
+                    } else {
+                        deadline
+                    }
+                })
                 .map(|deadline| deadline.min(now + CLIENT_ACCEPT_POLL_INTERVAL))
                 .or(Some(now + CLIENT_ACCEPT_POLL_INTERVAL));
             let next_deadline = self

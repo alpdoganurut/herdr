@@ -25,6 +25,10 @@ pub const MAX_INFO_PANE_WIDTH: u16 = 120;
 pub const DEFAULT_BROWSER_DOCK_WIDTH: u16 = 45;
 pub const MIN_BROWSER_DOCK_WIDTH: u16 = 20;
 pub const MAX_BROWSER_DOCK_WIDTH: u16 = 80;
+/// Fork (frame pacing): `ui.render_fps` default and bounds (frames per second).
+pub const DEFAULT_RENDER_FPS: u16 = 60;
+pub const MIN_RENDER_FPS: u16 = 30;
+pub const MAX_RENDER_FPS: u16 = 240;
 pub const DEFAULT_DAILY_REMINDER_TIME: &str = "09:30";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -1209,6 +1213,10 @@ pub struct UiConfig {
     /// "auto" shows it while the tab has browser pages, the dock or Browser view; "off"
     /// never draws it (the keys and menus still work). Default: "auto".
     pub browser_view_strip: String,
+    /// Fork (frame pacing): the rate herdr paces frames to, in frames per second; set it
+    /// to your display's refresh rate (e.g. 120 on a ProMotion display). 30 through 240.
+    /// Default: 60.
+    pub render_fps: u16,
     /// Show the Active block (blocked, voice, working, running-subagent and finished agents)
     /// under the tab list in the "tabs" sidebar layout. The block hides itself while nothing is active.
     /// Default: true.
@@ -1509,6 +1517,7 @@ impl Default for UiConfig {
             info_pane_width: DEFAULT_INFO_PANE_WIDTH,
             browser_dock_width: DEFAULT_BROWSER_DOCK_WIDTH,
             browser_view_strip: "auto".into(),
+            render_fps: DEFAULT_RENDER_FPS,
             sidebar_active_agents: true,
             sidebar_pinned_agents: true,
             sidebar_scheduled_agents: true,
@@ -1617,6 +1626,22 @@ impl UiConfig {
             ));
         }
         diagnostics
+    }
+
+    /// Fork (frame pacing): `render_fps` clamped to 30..=240.
+    pub fn effective_render_fps(&self) -> u16 {
+        self.render_fps.clamp(MIN_RENDER_FPS, MAX_RENDER_FPS)
+    }
+
+    /// Fork (frame pacing): an out-of-range `render_fps`.
+    pub fn render_fps_diagnostic(&self) -> Option<String> {
+        (!(MIN_RENDER_FPS..=MAX_RENDER_FPS).contains(&self.render_fps)).then(|| {
+            format!(
+                "ui.render_fps must be between {MIN_RENDER_FPS} and {MAX_RENDER_FPS} (got {}); using {}",
+                self.render_fps,
+                self.effective_render_fps()
+            )
+        })
     }
 
     pub fn info_pane_width_diagnostic(&self) -> Option<String> {

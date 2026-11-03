@@ -1072,6 +1072,12 @@
           "description": "The [▣ Terminal | ◎ Browser · N] strip at the top of a tab, with the ◨ dock button at its right end: \"auto\" shows it while the tab has browser pages, the dock or Browser view (one row of the tab, taken when its first page opens); \"off\" never draws it (keys.toggle_browser_view and the menus still work). Any other value is a config warning and reads as \"auto\"."
         },
         {
+          "key": "ui.render_fps",
+          "type": "integer",
+          "default": "60",
+          "description": "Frames per second herdr paces screen updates to while output changes. Frames land on a fixed grid at this rate, so set it to your display's refresh rate (for example 120 on a ProMotion display); 60 also stays smooth on a 120 Hz display. 30 through 240; a value outside that range is a config warning and is clamped. Applies live."
+        },
+        {
           "key": "ui.sidebar_active_agents",
           "type": "boolean",
           "default": "true",

@@ -184,6 +184,12 @@ While the browser is not over its area, the area says why: starting (a spinner),
 
 Legacy keys: `wrap_agents` is only read as a fallback for `[agents] wrap` (a Settings change to wrap removes it), and `shell_hook` is inert. The commented default file still says `stop_with_server` is not honoured; it is.
 
+## Rendering (`[ui]`)
+
+| Feature | Default | Where to change | In Settings? |
+|---|---|---|---|
+| Frame rate (scrolling output is paced to a fixed grid at this rate, in step with the display; 60 is also smooth on a 120 Hz display; applies live) | 60 fps | `[ui] render_fps = 30..240`, e.g. 120 on a ProMotion display | No, config only |
+
 ## Updates (`[update]`, upstream)
 
 | Feature | Default | Where to change | In Settings? |

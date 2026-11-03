@@ -52,6 +52,8 @@ pub(crate) mod agent_handoff;
 pub(crate) mod agent_times;
 mod creation;
 mod custom_commands;
+/// Fork: deadline-based render pacing (`ui.render_fps`).
+pub(crate) mod frame_pacing;
 mod git_refresh;
 mod hook_turn;
 mod ids;
@@ -264,10 +266,12 @@ pub struct App {
     /// Parsed `ui.window_title` plus the hostname resolved when it was applied.
     window_title_template: Option<(crate::config::WindowTitleTemplate, String)>,
     pub(crate) persist_pane_history: bool,
-    /// Last render-loop attempt, including a throttled hidden-only PTY skip.
-    pub(crate) last_render_at: Option<Instant>,
-    /// Last attempt that could update a connected presentation surface.
-    pub(crate) last_presentation_at: Option<Instant>,
+    /// Fork: render-loop cadence, including a throttled hidden-only PTY skip
+    /// (deadline-based; replaces upstream's `last_render_at`).
+    pub(crate) render_pacer: frame_pacing::FramePacer,
+    /// Fork: cadence of attempts that could update a connected presentation
+    /// surface (replaces upstream's `last_presentation_at`).
+    pub(crate) presentation_pacer: frame_pacing::FramePacer,
     pub render_notify: Arc<Notify>,
     pub(crate) render_dirty: Arc<crate::render_signal::RenderSignal>,
     pub(crate) full_redraw_pending: bool,
@@ -843,8 +847,12 @@ impl App {
             next_tab_bar_datetime_refresh: None,
             window_title_template: None,
             persist_pane_history: config.experimental.pane_history,
-            last_render_at: None,
-            last_presentation_at: None,
+            render_pacer: frame_pacing::FramePacer::new(frame_pacing::render_interval(
+                config.ui.effective_render_fps(),
+            )),
+            presentation_pacer: frame_pacing::FramePacer::new(frame_pacing::render_interval(
+                config.ui.effective_render_fps(),
+            )),
             api_rx,
             event_hub,
             last_focus,
@@ -1121,6 +1129,8 @@ impl App {
                 self.state.sidebar_spaces = config.ui.sidebar.spaces.clone();
                 self.state.sound = config.ui.sound.clone();
                 self.state.toast_config = config.ui.toast.clone();
+                // Fork: `ui.render_fps` applies at the next frame.
+                self.set_render_fps(config.ui.effective_render_fps());
             }
         }
 
