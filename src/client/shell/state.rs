@@ -1113,6 +1113,11 @@ pub(super) enum PendingEndpointKind {
         target: String,
         restart: bool,
     },
+    /// Fork (toolbar new tab): the toolbar `+`'s loose `tab.create`; its
+    /// reply moves the new tab to the top (`sidebar_filter.rs`).
+    ToolbarNewTab,
+    /// Fork (toolbar new tab): that follow-up `tab.move`; never a notice.
+    ToolbarNewTabMove,
 }
 
 pub(super) struct PendingEndpointRequest {

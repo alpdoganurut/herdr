@@ -39,6 +39,11 @@
 //! toolbar of an unfiltered sidebar looks exactly as before. Their hit
 //! rectangles are registered either way: a click on the empty toolbar
 //! between the fold toggle and `+` focuses the field.
+//!
+//! Fork (toolbar new tab): `+` opens a plain shell tab, loose (in the
+//! ungrouped bucket, the first space) and first in the list, and focuses it:
+//! `tab.create`, then a `tab.move` to index 0 of the tab the reply names.
+//! Grouping stays with `keys.move_tab_to_group` and tab drag.
 
 use std::time::Duration;
 
@@ -476,6 +481,71 @@ fn display_width(text: &str) -> u16 {
 }
 
 impl ClientShellState {
+    /// Fork (toolbar new tab): the toolbar `+` opens a plain shell tab in the
+    /// ungrouped bucket (the first space, never the focused tab's group) and
+    /// focuses it; its reply moves it to the top (`complete_toolbar_new_tab`).
+    pub(super) fn toolbar_new_tab(&mut self, outcome: &mut ClientShellInput) {
+        let Some(bucket) = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.workspaces.first())
+            .map(|workspace| workspace.workspace_id.clone())
+        else {
+            return;
+        };
+        self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::TabCreate(crate::api::schema::TabCreateParams {
+                workspace_id: Some(bucket),
+                cwd: None,
+                focus: true,
+                label: None,
+                env: Default::default(),
+            }),
+            PendingEndpointKind::ToolbarNewTab,
+            outcome,
+        );
+    }
+
+    /// The toolbar `+`'s replies: a created tab (only the one the reply
+    /// names) moves to index 0 of its space; the move's reply, success or
+    /// failure, ends quietly (the tab stays where it landed). `None` hands a
+    /// failed create (and every other kind) to the usual handling.
+    pub(super) fn complete_toolbar_new_tab(
+        &mut self,
+        kind: &PendingEndpointKind,
+        result: &Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> Option<(bool, Vec<ClientShellAction>)> {
+        match (kind, result) {
+            (PendingEndpointKind::ToolbarNewTabMove, _) => Some((false, Vec::new())),
+            (
+                PendingEndpointKind::ToolbarNewTab,
+                Ok(crate::api::schema::ResponseResult::TabCreated { tab, .. }),
+            ) => {
+                let method =
+                    crate::api::schema::Method::TabMove(crate::api::schema::TabMoveParams {
+                        tab_id: tab.tab_id.clone(),
+                        insert_index: 0,
+                    });
+                // An unadvertised or unreachable move would raise a notice
+                // before sending: skip it, the tab stays where it landed.
+                if !self.supports_endpoint_method(&method)
+                    || !self.endpoint_is_online(&self.active_endpoint_id)
+                {
+                    return Some((false, Vec::new()));
+                }
+                let mut outcome = ClientShellInput::default();
+                self.push_endpoint_method_with_kind(
+                    method,
+                    PendingEndpointKind::ToolbarNewTabMove,
+                    &mut outcome,
+                );
+                Some((outcome.repaint, outcome.actions))
+            }
+            (PendingEndpointKind::ToolbarNewTab, Ok(_)) => Some((false, Vec::new())),
+            _ => None,
+        }
+    }
+
     /// The search field has the keyboard: it is focused and the expanded
     /// `tabs` sidebar of one machine draws it.
     pub(super) fn sidebar_search_focused(&self) -> bool {

@@ -565,7 +565,9 @@ impl ClientShellState {
                 | PendingEndpointKind::PaneLinkResolve { .. }
                 | PendingEndpointKind::CopyMotion { .. }
                 | PendingEndpointKind::CopySearch { .. }
-                | PendingEndpointKind::ForceableAgentStop { .. },
+                | PendingEndpointKind::ForceableAgentStop { .. }
+                | PendingEndpointKind::ToolbarNewTab
+                | PendingEndpointKind::ToolbarNewTabMove,
                 Err(_),
             ) => true,
         }

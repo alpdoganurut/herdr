@@ -72,7 +72,7 @@ The top row of the tabs sidebar, left to right: `⏶ ‹ ›  ⌕ search  ◷ 1h
 | `⌕ search` field | Click to type a filter (Esc clears and leaves, Enter focuses the first match, the query stays). Dim placeholder when empty, accent `⌕` with a query, highlighted with a caret while typing | On toolbar hover, or while the field has the keyboard, holds a query or the recency chip is on; from 20 columns | `sidebar_search` (`prefix+f`) |
 | `◷` recency chip | Click steps forward through off, 15m, 30m, 1h, 6h, 1d and round again; shift-click or right-click steps back. Dim `◷` while off, accent `◷ 1h` while on | Same as the search field | None, not saved |
 | `◧` notes button | Opens or closes the focused tab's notes pane, without moving the keyboard to it. Lit while that pane is open | Always | `toggle_info_pane` (unbound) |
-| `+` | Moves the focused tab to a group by name, creating the group when the name is new | Always | `move_tab_to_group` (unbound) |
+| `+` | Opens a new plain shell tab, loose (in no group) at the top of the list, and focuses it; no name prompt. To group a tab, drag it onto a group or use `move_tab_to_group`, which moves the focused tab to a group by name (creating it when the name is new) | Always | None; group with `move_tab_to_group` (unbound) or a drag |
 
 ## Per-tab toggles (tab menu)
 

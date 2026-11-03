@@ -1420,12 +1420,11 @@ fn move_tab_to_group_prompt_joins_an_existing_group_or_creates_one() {
     )));
 
     state.compose(106, 24).expect("composed frame");
-    let plus = state.hits.group_new;
-    state.handle_raw_events(vec![mouse(
-        MouseEventKind::Down(MouseButton::Left),
-        plus.x,
-        plus.y,
-    )]);
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        KeybindMatch::Action(KeybindAction::MoveTabToGroup),
+        &mut outcome,
+    );
     let outcome = state.handle_input_bytes(b"parked\r");
     assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
         method,
@@ -1436,6 +1435,182 @@ fn move_tab_to_group_prompt_joins_an_existing_group_or_creates_one() {
                     if label == "parked" && tab_label == "reviewer"
             )
     )));
+}
+
+fn created_tab(tab_id: &str, workspace_id: &str) -> crate::api::schema::ResponseResult {
+    crate::api::schema::ResponseResult::TabCreated {
+        tab: crate::api::schema::TabInfo {
+            tab_id: tab_id.into(),
+            workspace_id: workspace_id.into(),
+            number: 9,
+            label: "9".into(),
+            focused: true,
+            pane_count: 1,
+            agent_status: AgentStatus::Unknown,
+            color: None,
+            important: false,
+            remind_every: None,
+            pinned: false,
+            muted: false,
+            dnd: false,
+        },
+        root_pane: crate::api::schema::PaneInfo {
+            pane_id: "pane_9".into(),
+            terminal_id: "term_9".into(),
+            workspace_id: workspace_id.into(),
+            tab_id: tab_id.into(),
+            focused: true,
+            cwd: None,
+            foreground_cwd: None,
+            restore_error: None,
+            label: None,
+            agent: None,
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            display_agent: None,
+            agent_status: AgentStatus::Unknown,
+            state_labels: Default::default(),
+            tokens: Default::default(),
+            agent_session: None,
+            scroll: None,
+            revision: 0,
+        },
+    }
+}
+
+/// Click the toolbar `+` and return the single endpoint request it sends.
+fn click_plus(state: &mut ClientShellState) -> crate::api::schema::Request {
+    let plus = state.hits.group_new;
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        plus.x,
+        plus.y,
+    )]);
+    assert!(state.overlay.is_none(), "no prompt");
+    let requests = outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some((**request).clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [request] = &requests[..] else {
+        panic!("one request from +: {requests:?}");
+    };
+    request.clone()
+}
+
+#[test]
+fn the_toolbar_plus_opens_a_loose_shell_tab_at_the_top_even_from_a_group() {
+    let mut snapshot = three_space_snapshot();
+    // The focused tab sits in the "api" group: new_tab would land there.
+    snapshot.focused_workspace_id = Some("ws_2".into());
+    snapshot.focused_tab_id = Some("tab_3".into());
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == "tab_3";
+    }
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot.clone()));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("composed frame");
+
+    let create = click_plus(&mut state);
+    let crate::api::schema::Method::TabCreate(params) = &create.method else {
+        panic!("+ sends tab.create: {:?}", create.method);
+    };
+    assert_eq!(
+        params,
+        &crate::api::schema::TabCreateParams {
+            workspace_id: Some("ws_1".into()),
+            cwd: None,
+            focus: true,
+            label: None,
+            env: Default::default(),
+        },
+        "a plain shell tab in the ungrouped bucket, focused"
+    );
+
+    let (_, actions) = state.handle_endpoint_result(
+        &snapshot.boot_id,
+        &create.id,
+        Ok(created_tab("tab_9", "ws_1")),
+    );
+    let moves = actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(&request.method),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        matches!(
+            &moves[..],
+            [crate::api::schema::Method::TabMove(params)]
+                if params.tab_id == "tab_9" && params.insert_index == 0
+        ),
+        "only the created tab moves to the top: {moves:?}"
+    );
+
+    // The server's next snapshot: the new tab loose, first and focused.
+    snapshot.focused_workspace_id = Some("ws_1".into());
+    snapshot.focused_tab_id = Some("tab_9".into());
+    for tab in &mut snapshot.tabs {
+        tab.focused = false;
+    }
+    snapshot
+        .tabs
+        .insert(0, tab("tab_9", "ws_1", 3, "9", true, AgentStatus::Unknown));
+    state.set_snapshot(Box::new(snapshot));
+    state.compose(106, 24).expect("composed frame");
+    assert_eq!(listed_tab_ids(&state)[0], "tab_9");
+}
+
+#[test]
+fn a_failed_top_move_after_plus_raises_no_notice_but_a_failed_create_does() {
+    let mut state = grouped_state();
+    let boot_id = state
+        .snapshot
+        .as_deref()
+        .map(|snapshot| snapshot.boot_id.clone())
+        .expect("snapshot");
+    let create = click_plus(&mut state);
+    let (_, actions) =
+        state.handle_endpoint_result(&boot_id, &create.id, Ok(created_tab("tab_9", "ws_1")));
+    let [ClientShellAction::Endpoint {
+        request: tab_move, ..
+    }] = &actions[..]
+    else {
+        panic!("one tab.move: {actions:?}");
+    };
+    let (repaint, actions) = state.handle_endpoint_result(
+        &boot_id,
+        &tab_move.id,
+        Err(ClientShellEndpointError {
+            code: Some("tab_not_found".into()),
+            message: "tab tab_9 not found".into(),
+        }),
+    );
+    assert!(!repaint && actions.is_empty());
+    assert!(
+        state.visible_endpoint_notice.is_none(),
+        "the tab stays where it landed, quietly"
+    );
+
+    let create = click_plus(&mut state);
+    state.handle_endpoint_result(
+        &boot_id,
+        &create.id,
+        Err(ClientShellEndpointError {
+            code: Some("tab_create_failed".into()),
+            message: "no shell".into(),
+        }),
+    );
+    assert!(
+        state.visible_endpoint_notice.is_some(),
+        "a failed create shows"
+    );
 }
 
 #[test]
