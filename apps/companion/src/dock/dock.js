@@ -34,6 +34,27 @@ const CONFIG_PENDING = Symbol('config pending');
 // A geometry that reads as a split may be a settings change instead (a Ghostty config reload
 // changes the padding): the settings are read again, at most this often per terminal.
 const CONFIG_RECHECK_MS = 5000;
+// The placement's terminal extent or cell size changed (a resize, a font change, or a config
+// reload: a changed vertical padding still gives a valid rect, only a wrong one): the
+// settings are read again, at most this often per terminal.
+const CONFIG_FOLLOW_MS = 1000;
+
+// What a terminal's settings were checked against: the placement's pixel extent and cell size.
+const geometryKey = (placement) => {
+  const e = placement.extent_px || {};
+  const c = placement.cell_px || {};
+  return `${e.width}x${e.height}/${c.width}x${c.height}`;
+};
+
+// The terminal's geometry settings for `pid`: Ghostty's config files and its own flags (they
+// win; `ps`, no permission); another terminal is read as evenly padded (best effort).
+function readTerminalSettings(pid, fake, done) {
+  execFile('/bin/ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000 }, (err, stdout) => {
+    const args = err ? '' : String(stdout || '').trim();
+    const ghostty = fake || /ghostty/i.test(args.split(/\s+/)[0] || '');
+    done(ghostty ? readGhosttyConfig({ argv: args.split(/\s+/).slice(1) }) : { symmetric: true, sources: [] });
+  });
+}
 
 const NO_WINDOW = 'Docking needs herdr directly in a terminal window (not inside tmux or ssh)';
 const NOT_MAC = 'Docking is macOS only for now';
@@ -42,7 +63,8 @@ const sameFrame = (a, b) => !!a && !!b && a.x === b.x && a.y === b.y && a.w === 
 
 class DockCore {
   // env: {platform, scaleFor(frame) -> number, displayFor(frame) -> {x,y,width,height},
-  //       configFor(pid) -> ghostty config | CONFIG_PENDING,
+  //       configFor(pid, key) -> ghostty config | CONFIG_PENDING (`key`: the placement's
+  //         extent and cell size, geometryKey),
   //       configSuspect?(pid, updatedUnix) -> whether the settings are being read again}
   constructor(env) {
     this.env = env;
@@ -97,7 +119,7 @@ class DockCore {
   // The geometry of `placement` over the window `win` (a probe window record); `pending`
   // while the window's terminal settings are still being read.
   rectFor(placement, win) {
-    const config = this.env.configFor(win.pid);
+    const config = this.env.configFor(win.pid, geometryKey(placement));
     if (config === CONFIG_PENDING) return { ok: false, pending: true, model: {} };
     const frame = { x: win.x, y: win.y, w: win.w, h: win.h };
     return placementRect({ placement, frame, scale: this.env.scaleFor(frame), config });
@@ -215,15 +237,19 @@ class DockCore {
 
 // The Electron side. `host` is the companion (main.js): views, windows, strip, groups.
 class DockController {
-  constructor({ host, feed, probe, log = () => {}, headless = false, platform = process.platform, electron }) {
+  // `readSettings(pid, fake, done)`: the terminal's settings (tests replace it).
+  constructor({ host, feed, probe, log = () => {}, headless = false, platform = process.platform, electron, readSettings = readTerminalSettings }) {
     this.host = host;
     this.feed = feed;
     this.probe = probe;
     this.log = log;
     this.headless = headless;
     this.electron = electron;
+    this.readSettings = readSettings;
     const { screen } = electron;
-    this.configs = new Map(); // pid -> {cfg, at, reading}: the terminal's geometry settings
+    // pid -> {cfg, at, reading, key: the geometryKey they were read for, seen: the last one
+    // asked about, timer: a re-read waiting for CONFIG_FOLLOW_MS}: the terminal's settings
+    this.configs = new Map();
     this.core = new DockCore({
       platform,
       fake: !!probe.fakeFile,
@@ -242,7 +268,7 @@ class DockController {
           return null;
         }
       },
-      configFor: (pid) => this.configFor(pid),
+      configFor: (pid, key) => this.configFor(pid, key),
       configSuspect: (pid, updatedUnix) => this.configSuspect(pid, updatedUnix),
     });
     this.docked = false;
@@ -263,14 +289,34 @@ class DockController {
     });
   }
 
-  // The terminal's geometry settings: Ghostty's config files and its own flags (they win;
-  // `ps`, no permission); another terminal is read as evenly padded (best effort). Read
-  // in the background: CONFIG_PENDING until then (the dock waits).
-  configFor(pid) {
+  // The terminal's geometry settings (readTerminalSettings), read in the background:
+  // CONFIG_PENDING until then (the dock waits). `key` (geometryKey): when the placement's
+  // extent or cell size is not the one they were read for, they are read again, at most every
+  // CONFIG_FOLLOW_MS; the old ones serve until the read lands, which decides again.
+  configFor(pid, key = null) {
     const entry = this.configs.get(pid);
-    if (entry && entry.cfg) return entry.cfg;
-    this.readConfig(pid);
+    if (entry && entry.cfg) {
+      if (key !== null) {
+        entry.seen = key;
+        if (entry.key !== key) this.followConfig(pid, entry);
+      }
+      return entry.cfg;
+    }
+    this.readConfig(pid, key);
     return CONFIG_PENDING;
+  }
+
+  // A re-read for a changed extent: now, or once CONFIG_FOLLOW_MS passed since the last one
+  // (then the decision is made again, and asks with the extent of that moment).
+  followConfig(pid, entry) {
+    if (entry.reading || entry.timer) return;
+    const wait = entry.at + CONFIG_FOLLOW_MS - Date.now();
+    if (wait <= 0) return this.readConfig(pid);
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      this.apply();
+    }, wait);
+    if (entry.timer.unref) entry.timer.unref();
   }
 
   // A split reason for `pid`'s window: when the placement changed after the settings were
@@ -286,20 +332,22 @@ class DockController {
     return entry.reading;
   }
 
-  readConfig(pid) {
+  // Read `pid`'s settings for the extent last asked about (`key`, else the entry's): one read
+  // at a time, whichever asked (a changed extent, a split reason).
+  readConfig(pid, key = null) {
     let entry = this.configs.get(pid);
     if (!entry) {
-      entry = { cfg: null, at: 0, reading: false };
+      entry = { cfg: null, at: 0, reading: false, key: null, seen: null, timer: null };
       this.configs.set(pid, entry);
     }
+    if (key !== null) entry.seen = key;
     if (entry.reading) return;
     entry.reading = true;
-    execFile('/bin/ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000 }, (err, stdout) => {
+    entry.key = entry.seen;
+    this.readSettings(pid, !!this.probe.fakeFile, (cfg) => {
       entry.reading = false;
       if (this.stopped || this.configs.get(pid) !== entry) return;
-      const args = err ? '' : String(stdout || '').trim();
-      const ghostty = this.probe.fakeFile || /ghostty/i.test(args.split(/\s+/)[0] || '');
-      entry.cfg = ghostty ? readGhosttyConfig({ argv: args.split(/\s+/).slice(1) }) : { symmetric: true, sources: [] };
+      entry.cfg = cfg;
       entry.at = Date.now();
       this.apply();
     });
@@ -418,8 +466,9 @@ class DockController {
     this.stopped = true;
     clearTimeout(this.settleTimer);
     clearTimeout(this.policyTimer);
+    for (const entry of this.configs.values()) clearTimeout(entry.timer);
     this.probe.stop();
   }
 }
 
-module.exports = { DockCore, DockController, SETTLE_MS, RESETTLE_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING };
+module.exports = { DockCore, DockController, SETTLE_MS, RESETTLE_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, geometryKey };

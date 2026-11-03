@@ -4,7 +4,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { DockCore, DockController, SETTLE_MS, RESETTLE_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING } = require('../src/dock/dock.js');
+const { DockCore, DockController, SETTLE_MS, RESETTLE_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, geometryKey } = require('../src/dock/dock.js');
 const { chooseTarget, anyDockPlacement } = require('../src/dock/placements.js');
 const { REASONS } = require('../src/dock/geometry.js');
 
@@ -272,4 +272,82 @@ test('the controller decides again once a moving window settled, and only then',
   feed.emit('placements', []);
   probe.emit('sample', {});
   assert.equal(decisions, 3, 'and nothing decides after stop()');
+});
+
+// A changed vertical padding (a Ghostty config reload) changes the extent but can still give
+// a valid rect, only a wrong one: the settings are read again whenever the placement's
+// extent or cell size is not the one they were read for, one read per change, at most once
+// a second, the old settings serving until the read lands.
+test('the terminal settings are read again when the extent or cell size changes', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 });
+  const asked = [];
+  const c = core('darwin', {
+    configFor: (pid, key) => {
+      asked.push([pid, key]);
+      return null;
+    },
+  });
+  c.setPlacements([placement('p1')]);
+  c.onSample({ t: 0, candidates: [win(11)] }, 0);
+  c.decide(1);
+  assert.deepEqual(asked.at(-1), [GHOSTTY, '1928x1240/16x34'], 'the core asks with the extent and cell size');
+  c.setPlacements([placement('p1', { extent_px: { width: 1928, height: 1224 } })]);
+  c.decide(2);
+  assert.deepEqual(asked.at(-1), [GHOSTTY, '1928x1224/16x34']);
+  assert.equal(geometryKey({ extent_px: { width: 1, height: 2 }, cell_px: { width: 3, height: 4 } }), '1x2/3x4');
+
+  // the controller: one read per change, at most every CONFIG_FOLLOW_MS
+  const reads = [];
+  const feed = Object.assign(new EventEmitter(), { report() {} });
+  const probe = Object.assign(new EventEmitter(), { watch() {}, stop() {}, fakeFile: null });
+  const host = { dockWindow: () => null, dockShowsTab() {}, enterDocked() {}, leaveDocked() {}, layout() {} };
+  const electron = { screen: { getDisplayMatching: () => ({ scaleFactor: 2, bounds: { x: 0, y: 0, width: 100, height: 100 } }) }, app: {} };
+  const ctl = new DockController({ host, feed, probe, headless: true, platform: 'darwin', electron, readSettings: (pid, fake, done) => reads.push(done) });
+  let decisions = 0;
+  ctl.apply = () => {
+    decisions += 1;
+  };
+  assert.equal(ctl.configFor(GHOSTTY, 'A'), CONFIG_PENDING);
+  assert.equal(reads.length, 1);
+  ctl.configFor(GHOSTTY, 'A');
+  assert.equal(reads.length, 1, 'one read at a time');
+  reads[0]({ paddingY: [2, 2] });
+  assert.equal(decisions, 1, 'a landed read decides again');
+  assert.deepEqual(ctl.configFor(GHOSTTY, 'A').paddingY, [2, 2]);
+  assert.equal(reads.length, 1, 'the extent they were read for: no read');
+  // padding-y 2 -> 10, reloaded a while later: read again at once, the old ones meanwhile
+  t.mock.timers.tick(5000);
+  assert.deepEqual(ctl.configFor(GHOSTTY, 'B').paddingY, [2, 2]);
+  assert.equal(reads.length, 2);
+  ctl.configFor(GHOSTTY, 'B');
+  assert.equal(reads.length, 2, 'one read per change');
+  reads[1]({ paddingY: [10, 10] });
+  assert.deepEqual(ctl.configFor(GHOSTTY, 'B').paddingY, [10, 10]);
+  assert.equal(reads.length, 2);
+  // a split reason's re-read counts for the extent of that moment (no second read after it)
+  t.mock.timers.tick(CONFIG_FOLLOW_MS);
+  ctl.configFor(GHOSTTY, 'C');
+  assert.equal(reads.length, 3);
+  ctl.readConfig(GHOSTTY);
+  assert.equal(reads.length, 3, 'already reading');
+  reads[2]({ paddingY: [10, 10] });
+  ctl.configFor(GHOSTTY, 'C');
+  assert.equal(reads.length, 3);
+  // changes within a second of a read: none now, one once the second is over (it decides
+  // again and asks with the extent of then)
+  ctl.configFor(GHOSTTY, 'D');
+  ctl.configFor(GHOSTTY, 'E');
+  assert.equal(reads.length, 3);
+  const before = decisions;
+  t.mock.timers.tick(CONFIG_FOLLOW_MS);
+  assert.equal(decisions, before + 1);
+  ctl.configFor(GHOSTTY, 'E');
+  assert.equal(reads.length, 4);
+  reads[3]({ paddingY: [10, 10] });
+  // stop() drops a waiting re-read
+  ctl.configFor(GHOSTTY, 'F');
+  const stopped = decisions;
+  ctl.stop();
+  t.mock.timers.tick(10 * CONFIG_FOLLOW_MS);
+  assert.equal(decisions, stopped);
 });

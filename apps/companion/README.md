@@ -96,7 +96,9 @@ size, its process ancestry); the companion long-polls every placement (`browser.
 the target (the foreground client's) and reports what it does (`browser.placement_report`:
 covering, hidden, moving, unbound, unsupported, elsewhere), which herdr's placeholder shows.
 
-* `src/dock/placements.js` — the long poll, the reports, the target choice.
+* `src/dock/placements.js` — the long poll, the reports (one in flight per placement, the latest
+  change after it: each request has its own connection, so two could land out of order), the
+  target choice.
 * `src/dock/window-probe.js` + `probe.jxa.js` — the window source: a persistent `osascript`
   reading CGWindowList through the JXA ObjC bridge (bounds, owner pid, layer, on-screen; no
   Accessibility, no Screen Recording), 10 Hz for the bound window and the windows above it (20 Hz
@@ -104,8 +106,10 @@ covering, hidden, moving, unbound, unsupported, elsewhere), which herdr's placeh
   nothing while not docked. `HERDR_COMPANION_FAKE_WINDOWS=<json>` (test hooks only) replaces it.
 * `src/dock/geometry.js` + `ghostty-config.js` — where the area is on screen, from the window frame,
   the display scale, the pty's pixel extent and Ghostty's padding / balance / titlebar settings (its
-  config files and its own command line); an area that reaches the grid's edge runs to the window's
-  edge. A window that does not match the client's grid (a Ghostty split) is refused with the fix.
+  config files and its own command line, read again when the placement's pixel extent or cell size
+  changes, at most once a second: a reload that changes the padding); an area that reaches the
+  grid's edge runs to the window's edge. A window that does not match the client's grid (a Ghostty
+  split) is refused with the fix.
 * `src/dock/dock.js` — the core (bind the placement to its terminal window by the client's
   ancestry; with several windows the frontmost when the client's focus flips or the user clicks the
   placeholder; hide while the window moves and show again 120 ms after it settles; hide off screen)
@@ -114,7 +118,9 @@ covering, hidden, moving, unbound, unsupported, elsewhere), which herdr's placeh
   pages re-parented into it, the main window hidden while docked, accessory activation policy (out of
   ⌘-Tab and the Dock; needed to join a full-screen Space, where `visibleOnFullScreen` is set). The
   docked bar is always Dusk, without traffic lights or a drag region. ⌘⎋ gives the keyboard back to
-  the terminal; ⌘T/W/L/R/[/] and ⌘⇧S work without the menu bar.
+  the terminal; ⌘T/W/L/R/[/] and ⌘⇧S work without the menu bar. Docked, a focus on another herdr
+  tab's page keeps the dock on its tab: an agent's selects and marks the page there, the user's own
+  focuses that herdr tab (the dock follows where that tab has it).
 * The bar's count pill (`3 · 12`: pages in this session · in every session; `src/info.js`) lists
   every session with pages and focuses the herdr tab you pick; the window title carries the count.
 

@@ -781,6 +781,9 @@ class Companion {
   // `focus(view_id)` or `focus({view_id, user})`: an agent's focus (the login handoff) selects
   // the page, marks it and orders the window front without taking the keyboard; the user's
   // own (herdr's overlay, `browser focus` from a terminal) activates the window.
+  // Docked over another herdr tab, the dock keeps that tab's pages (it would switch back on
+  // its next decision): the page is selected in its own group and marked; the user's own
+  // focus brings its herdr tab forward instead, and the dock follows where that tab has it.
   async ctlFocus(a) {
     const viewId = a && typeof a === 'object' ? a.view_id : a;
     const user = !!(a && typeof a === 'object' && a.user);
@@ -788,7 +791,15 @@ class Companion {
     if (!hit) return errOut('view_not_found', `no view ${viewId}`);
     this.store.select(viewId);
     this.scheduleSync();
-    await this.showGroup(hit.group.tab_id, { reason: 'agent' });
+    const tabId = hit.group.tab_id;
+    if (this.docked && this.dockTab && tabId !== this.dockTab) {
+      if (user) {
+        if (this.link) this.link.request('tab.focus', { tab_id: tabId }).catch((e) => this.say('warn', `could not focus the herdr tab: ${e.message}`));
+      } else hit.entry.attention = true; // herdr's ◉ and notice bring the user
+      this.pushStrip();
+      return { ok: true, view_id: viewId };
+    }
+    await this.showGroup(tabId, { reason: 'agent' });
     if (!user) hit.entry.attention = true; // the strip dot; cleared when the user selects it or herdr focus shows it
     this.pushStrip();
     this.raise({ user });

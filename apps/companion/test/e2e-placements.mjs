@@ -6,9 +6,10 @@
 // Covered: prefix+B docks the browser and the client publishes its placement; the companion
 // binds the terminal window, covers the band where the geometry model puts it and reports
 // `covering` (herdr's browser.get shows it); a window that no longer fits the grid is
-// `unsupported` with the reason; off screen is `hidden`; Browser view (prefix+Z) is a `full`
-// placement over the pane area; undocking clears it and the companion leaves docked mode;
-// docking again is reported anew.
+// `unsupported` with the reason; off screen is `hidden`; a focus on another herdr tab's page
+// keeps the dock on the docked tab (the user's own brings that tab forward); Browser view
+// (prefix+Z) is a `full` placement over the pane area; undocking clears it and the companion
+// leaves docked mode; docking again is reported anew.
 import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -193,6 +194,35 @@ if (covering) {
     return d && d.shown && d.decision.target && d.decision.target.placement.tab_id === docked ? { ms: Date.now() - started } : null;
   }, 5000, 50);
   check('and back on the docked tab the dock covers it again at once', !!back && back.ms < 1200, back || (await debug().catch((e) => e.message)));
+
+  // ---------- a focus on another herdr tab's page while docked ----------
+  // An agent's focus (the login handoff) selects and marks the page; the dock keeps the docked
+  // tab's pages (no flash of the other tab's). The user's own focus brings that tab forward.
+  const ctl = (fn, arg) => control.evaluate(([f, a]) => globalThis.__herdrCompanion[f](a), [fn, arg]);
+  const shownTabs = async () => ((await ctl('views')) || []).filter((v) => v.shown).map((v) => v.tab_id);
+  const other = await ctl('open', { tab_id: plain, url: 'about:blank' });
+  check('a page opens in the other herdr tab, in the background', other && other.view_id && !other.error && (await shownTabs()).every((t) => t === docked), other);
+  if (other && other.view_id) {
+    const answer = await ctl('focus', other.view_id);
+    const seen = new Set();
+    for (let i = 0; i < 12; i++) {
+      for (const t of await shownTabs()) seen.add(t);
+      await sleep(50);
+    }
+    check("an agent's focus on another tab's page leaves the dock on the docked tab", answer && answer.ok && [...seen].every((t) => t === docked), { answer, seen: [...seen] });
+    const page = ((await ctl('views')) || []).find((v) => v.view_id === other.view_id);
+    check('the page is selected in its own group', page && page.active && page.tab_id === plain, page);
+    started = Date.now();
+    await ctl('focus', { view_id: other.view_id, user: true });
+    const followed = await waitFor(async () => {
+      const s = await statusOf(target.id);
+      return s && s.state === 'hidden' ? { ms: Date.now() - started } : null;
+    }, 5000, 50);
+    check("the user's own focus brings that herdr tab forward (no dock there: the dock hides)", !!followed, followed || (await debug().catch((e) => e.message)));
+    await ctl('close', other.view_id);
+    await api('tab.focus', { tab_id: docked });
+    await waitFor(async () => ((await statusOf(target.id)) || {}).state === 'covering');
+  }
 
   // ---------- Browser view: prefix+Z ----------
   type('02 5a');

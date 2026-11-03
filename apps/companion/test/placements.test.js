@@ -75,12 +75,18 @@ test('an answer to a poll from before stop() or a new lease is dropped', async (
 test('a placement that left the board and came back is reported again', async () => {
   const link = fakeLink();
   const feed = new PlacementFeed({ link });
+  // each report answered at once (the next one waits for it)
+  const answered = async () => {
+    link.take('browser.placement_report').resolve({});
+    await settle();
+  };
   feed.start();
   link.take('browser.placements').resolve({ boot_id: 'b', rev: 1, placements: [info('p1')] });
   await settle();
   feed.report('p1', 'covering');
   feed.report('p1', 'covering');
   assert.equal(link.count('browser.placement_report'), 1, 'a report goes once');
+  await answered();
   // undocked (herdr drops its report with the placement), then docked again
   link.take('browser.placements').resolve({ boot_id: 'b', rev: 2, placements: [] });
   await settle();
@@ -88,11 +94,13 @@ test('a placement that left the board and came back is reported again', async ()
   await settle();
   feed.report('p1', 'covering');
   assert.equal(link.count('browser.placement_report'), 2, 'reported anew');
+  await answered();
   // it left and came back between two answers (rev 3 -> 5): reported anew too
   link.take('browser.placements').resolve({ boot_id: 'b', rev: 5, placements: [info('p1')] });
   await settle();
   feed.report('p1', 'covering');
   assert.equal(link.count('browser.placement_report'), 3);
+  await answered();
   // the next change alone: no repeat
   link.take('browser.placements').resolve({ boot_id: 'b', rev: 6, placements: [info('p1')] });
   await settle();
@@ -104,4 +112,48 @@ test('a placement that left the board and came back is reported again', async ()
   feed.report('p1', 'covering');
   assert.equal(link.count('browser.placement_report'), 4);
   feed.stop();
+});
+
+// Every request has its own connection: two reports in flight could land in either order
+// and leave herdr on the older one. One goes at a time; the latest change follows it.
+test('reports on a placement go one at a time, the latest after the one in flight', async () => {
+  const link = fakeLink();
+  const feed = new PlacementFeed({ link });
+  const states = () => link.calls.filter((c) => c.method === 'browser.placement_report').map((c) => c.params.state);
+  feed.report('p1', 'covering');
+  feed.report('p1', 'hidden');
+  feed.report('p1', 'unbound');
+  assert.deepEqual(states(), ['covering'], 'one in flight');
+  link.take('browser.placement_report').resolve({});
+  await settle();
+  assert.deepEqual(states(), ['covering', 'unbound'], 'then only the latest');
+  // a change and back while one is in flight: nothing more goes
+  feed.report('p1', 'moving');
+  feed.report('p1', 'unbound');
+  link.take('browser.placement_report').resolve({});
+  await settle();
+  assert.deepEqual(states(), ['covering', 'unbound']);
+  // a failed report: the latest still follows, and an unchanged one is tried again
+  feed.report('p1', 'covering');
+  feed.report('p1', 'hidden');
+  link.take('browser.placement_report').reject(Object.assign(new Error('gone'), { code: 'unreachable' }));
+  await settle();
+  assert.deepEqual(states(), ['covering', 'unbound', 'covering', 'hidden']);
+  link.take('browser.placement_report').reject(Object.assign(new Error('gone'), { code: 'unreachable' }));
+  await settle();
+  feed.report('p1', 'hidden');
+  assert.equal(states().length, 5, 'tried again');
+  link.take('browser.placement_report').resolve({});
+  await settle();
+  // placements report on their own
+  feed.report('p2', 'elsewhere');
+  feed.report('p1', 'covering');
+  assert.deepEqual(states().slice(5), ['elsewhere', 'covering']);
+  // stop(): what waits never goes
+  feed.report('p1', 'moving');
+  feed.stop();
+  link.take('browser.placement_report').resolve({});
+  link.take('browser.placement_report').resolve({});
+  await settle();
+  assert.equal(states().length, 7);
 });
