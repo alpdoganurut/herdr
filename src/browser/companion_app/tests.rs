@@ -260,6 +260,29 @@ fn uptimes_and_countdowns_read_short() {
     assert_eq!(ExitInfo::unknown().describe(), "exited (status unknown)");
 }
 
+#[test]
+fn a_crash_reads_only_the_end_of_a_long_log() {
+    let dir = temp_home("log-tail");
+    let log = dir.join("companion.log");
+    // short: the whole file
+    std::fs::write(&log, "one\n\n  two  \nthree\nfour\n").unwrap();
+    assert_eq!(log_tail(&log, 3), ["two", "three", "four"]);
+    assert_eq!(log_tail(&log, 9), ["one", "two", "three", "four"]);
+    // long: its last 64 KiB, which begin mid-line (that piece is no line)
+    let mut text = "x".repeat(70 * 1024);
+    text.push_str("\nthe last words\ncrashed\n");
+    std::fs::write(&log, &text).unwrap();
+    assert_eq!(log_tail(&log, 5), ["the last words", "crashed"]);
+    let mut text = String::new();
+    for i in 0..20_000 {
+        text.push_str(&format!("line {i}\n"));
+    }
+    std::fs::write(&log, &text).unwrap();
+    assert_eq!(log_tail(&log, 2), ["line 19998", "line 19999"]);
+    assert!(log_tail(&dir.join("missing.log"), 3).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ----- the hub's side --------------------------------------------------------
 
 /// A spawner that starts nothing: pids are numbers, `register` makes the

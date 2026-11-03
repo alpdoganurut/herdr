@@ -28,6 +28,7 @@
 //! apart from a later process that reuses the pid.
 
 use std::collections::VecDeque;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -76,6 +77,8 @@ const KILL_FLOOR: Duration = Duration::from_millis(250);
 const START_SLACK_SECS: u64 = 15;
 /// `companion.log` moves to `companion.log.1` at a launch beyond this size.
 pub const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
+/// What [`log_tail`] reads from the end of the log.
+const LOG_TAIL_BYTES: u64 = 64 * 1024;
 /// The variables a managed companion never inherits from the server.
 pub const ENV_REMOVED: [&str; 7] = [
     "HERDR_SOCKET_PATH",
@@ -898,10 +901,27 @@ pub fn duration_text(secs: u64) -> String {
     }
 }
 
-/// The last `n` non-empty lines of the log (a crash's error).
+/// The last `n` non-empty lines of the log (a crash's error), from its
+/// last [`LOG_TAIL_BYTES`] only.
 pub fn log_tail(log: &Path, n: usize) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(log) else {
+    let Ok(mut file) = std::fs::File::open(log) else {
         return Vec::new();
+    };
+    let start = file
+        .metadata()
+        .map_or(0, |meta| meta.len().saturating_sub(LOG_TAIL_BYTES));
+    let mut bytes = Vec::new();
+    if file.seek(SeekFrom::Start(start)).is_err()
+        || file.take(LOG_TAIL_BYTES).read_to_end(&mut bytes).is_err()
+    {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    // a read that starts mid-file starts mid-line: that piece is no line
+    let text = if start > 0 {
+        text.split_once('\n').map_or("", |(_, rest)| rest)
+    } else {
+        &text
     };
     let lines: Vec<String> = text
         .lines()
