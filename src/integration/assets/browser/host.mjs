@@ -629,9 +629,10 @@ const ops = {
     const profile = needProfile(name);
     const state = needPage(profile, target);
     // companion: the user's focus takes the keyboard, an agent's only orders the window front
+    // (an older companion reads only the bare view id: ControlPage.focusView)
     if (profile.kind === 'companion') {
       const view = await profile.control.viewOf(target);
-      await profile.control.call('focus', { view_id: view, user: Boolean(args && args.user) });
+      await profile.control.focusView(view, Boolean(args && args.user));
     } else await state.page.bringToFront();
     return { result: {}, page: await pageInfo(state) };
   },
@@ -647,7 +648,7 @@ const ops = {
   async control_raise({ profile: name, args }) {
     const profile = needProfile(name);
     if (profile.kind !== 'companion') fail('invalid_request', 'control_raise is for the companion host');
-    await profile.control.call('raise', { user: Boolean(args && args.user) });
+    await profile.control.raise(Boolean(args && args.user));
     return {};
   },
 

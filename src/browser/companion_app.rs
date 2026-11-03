@@ -1473,7 +1473,8 @@ impl BrowserHub {
                     json!({ "user": user }),
                     Duration::from_secs(3),
                 ) {
-                    tracing::debug!(event = "browser.companion.focus", code = %err.code, "companion raise failed");
+                    // e.g. companion_outdated: a companion from before raise()
+                    tracing::warn!(event = "browser.companion.focus", code = %err.code, message = %err.message, "companion raise failed");
                 }
             })
             .map_err(|err| BrowserError::unavailable(err.to_string()))?;
