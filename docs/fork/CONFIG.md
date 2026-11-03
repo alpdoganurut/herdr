@@ -138,7 +138,7 @@ The browser herdr runs for agents: the herdr+ companion browser (`herdr browser 
 | Activity overlay (tab groups, glow, cursor) | on | `[browser] show_activity = false` | Yes, browser |
 | Activity color | `#aa6eff` | `[browser] activity_color = "#rrggbb"` | Yes (5 presets) |
 | Pinned dashboard tab | on | `[browser] pin_dashboard = false` | Yes, browser |
-| Steer agents to the herdr browser | on | `[browser] steer_agents = false` | Yes, browser |
+| Steer agents to the herdr browser (the MCP and wrap instructions, and the Claude integration's PreToolUse hook: a WebFetch, an `open`/`xdg-open` of a URL or local HTML file, or another browser MCP is denied once with the herdr-browser tool to use; the same call again within 2 minutes runs) | on | `[browser] steer_agents = false` | Yes, browser |
 | Turn off agents' own browsers (while `wrap` is on) | on | `[browser] disable_native_browser = false` | Yes, browser |
 | MCP registration | claude and codex | `[browser] mcp_agents = ["claude"]` | Yes (both / claude / codex / none) |
 | `eval`, act family, typing into password fields | on, on, off | `[browser] allow_eval`, `allow_act`, `type_into_password_fields` | No, config only |
