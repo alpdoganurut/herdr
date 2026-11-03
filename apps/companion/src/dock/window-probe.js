@@ -89,13 +89,15 @@ class WindowProbe extends EventEmitter {
       this.child = null;
       this.delay = restartDelay(this.delay, Date.now() - startedAt);
       this.log(`window probe ${why}; restarting in ${this.delay / 1000} s`);
-      this.emit('lost');
       const key = this.args;
       this.restartTimer = setTimeout(() => {
         this.restartTimer = null;
         if (this.args === key && !this.child) this._spawn(pids, wid);
       }, this.delay);
       if (this.restartTimer.unref) this.restartTimer.unref();
+      // after the pause is set: a listener that watches the same windows again (the dock's
+      // decision does) waits for it instead of respawning at once
+      this.emit('lost');
     };
     child.on('error', (e) => died(`failed (${e.code || e.message})`));
     child.on('exit', (code, signal) => died(`exited (${signal || code})`));

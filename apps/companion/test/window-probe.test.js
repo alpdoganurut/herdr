@@ -74,6 +74,35 @@ test('a probe that exits is started again for the same windows after its pause, 
   assert.equal(children.length, 5);
 });
 
+test("a probe that dies says 'lost'; a listener watching the same windows again waits for the pause", (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const { spawn, children } = fakeSpawn();
+  const probe = new WindowProbe({ platform: 'darwin', spawn });
+  let lost = 0;
+  // the dock's controller: decides again on 'lost', which watches the same windows
+  probe.on('lost', () => {
+    lost += 1;
+    probe.watch({ pids: [7], wid: 3 });
+  });
+  probe.watch({ pids: [7], wid: 3 });
+  children[0].emit('exit', 1, null);
+  assert.equal(lost, 1);
+  assert.equal(children.length, 1, 'no respawn from inside the listener');
+  t.mock.timers.tick(RESTART.first - 1);
+  assert.equal(children.length, 1);
+  t.mock.timers.tick(1);
+  assert.equal(children.length, 2);
+  // a stop or a watch for other windows ends the probe without 'lost'
+  probe.watch({ pids: [7], wid: 4 });
+  assert.equal(children[1].killed, true);
+  children[1].emit('exit', null, 'SIGTERM');
+  probe.stop();
+  children[2].emit('exit', null, 'SIGTERM');
+  assert.equal(lost, 1);
+  t.mock.timers.tick(10 * RESTART.max);
+  assert.equal(children.length, 3);
+});
+
 test("a stopped probe's last output is not a sample", () => {
   const { spawn, children } = fakeSpawn();
   const probe = new WindowProbe({ platform: 'darwin', spawn });
