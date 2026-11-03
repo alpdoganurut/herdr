@@ -466,6 +466,86 @@ fn each_dock_type_keeps_its_own_width_across_a_swap() {
 }
 
 #[test]
+fn the_browser_dock_title_bar_promotes_and_closes() {
+    let mut state = browser_state();
+    state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    let frame = state.compose(COLS, ROWS).expect("frame").frame;
+    let band = state.layout(COLS, ROWS).browser_band;
+    let title: String = (band.x..band.right())
+        .map(|x| {
+            frame.cells[usize::from(band.y) * usize::from(COLS) + usize::from(x)]
+                .symbol
+                .clone()
+        })
+        .collect();
+    assert!(title.contains("◧ herdr+ preview"), "{title}");
+    assert!(title.trim_end().ends_with("⤢  ✕"), "{title}");
+    // the companion covers the band below its title bar
+    let spec = state
+        .take_browser_placement_request(std::time::Instant::now())
+        .and_then(|message| match message {
+            crate::protocol::ClientMessage::ClientShellEndpointRequest { request, .. } => {
+                serde_json::from_str::<crate::api::schema::Request>(&request).ok()
+            }
+            _ => None,
+        })
+        .and_then(|request| match request.method {
+            crate::api::schema::Method::BrowserPlacementSet(params) => params.placement,
+            _ => None,
+        })
+        .expect("a placement");
+    assert_eq!(
+        (spec.area.y, spec.area.height),
+        (band.y + 1, band.height - 1)
+    );
+    let target = |state: &ClientShellState, wanted| {
+        state
+            .hits
+            .browser_dock
+            .targets
+            .iter()
+            .find(|(_, target)| *target == wanted)
+            .map(|(rect, _)| *rect)
+            .expect("drawn")
+    };
+    use super::super::browser_dock::BrowserDockTarget;
+    // ⤢: Browser view, the dock slot freed
+    let promote = target(&state, BrowserDockTarget::Promote);
+    click(&mut state, promote);
+    assert!(state.browser_view_open_for("tab_1"));
+    assert!(!state.browser_dock_open_for("tab_1"));
+    // ✕ closes
+    press(&mut state, |hits| hits.terminal);
+    press(&mut state, |hits| hits.browser_dock);
+    assert!(state.browser_dock_open_for("tab_1"));
+    let close = target(&state, BrowserDockTarget::Close);
+    click(&mut state, close);
+    assert!(!state.browser_dock_open_for("tab_1"));
+}
+
+#[test]
+fn browser_view_keeps_the_notes_dock_beside_the_page() {
+    let mut state = browser_state();
+    let mut outcome = ClientShellInput::default();
+    state.toggle_info_pane("tab_1".into(), &mut outcome);
+    state.set_browser_view("tab_1".into(), true, &mut outcome);
+    state.compose(COLS, ROWS);
+    let layout = state.layout(COLS, ROWS);
+    let full = super::super::browser_dock::full_area(&layout);
+    assert!(!layout.info_dock.is_empty());
+    assert!(
+        !full.intersects(layout.info_dock),
+        "{full:?} {:?}",
+        layout.info_dock
+    );
+    assert_eq!(full.right(), layout.info_dock.x);
+    assert!(
+        !state.hits.info_dock.area.is_empty(),
+        "the notes dock stays clickable"
+    );
+}
+
+#[test]
 fn the_spaces_layout_keeps_its_view_strip_and_has_no_header() {
     let mut state = header_state(&spaces_config());
     state.browser.info = Some(companion_info());

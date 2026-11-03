@@ -1103,7 +1103,7 @@ BrowserPlacementKind {Side, Full, Unknown}   [src/api/schema/browser_placement.r
 ClientChromeDrag::BrowserDockWidth   [src/client/shell/state.rs, last after InfoDockWidth; the browser band's divider; internal]
 ClientContextMenuAction::BrowserToggleDock, ClientContextMenuAction::BrowserToggleView   [src/client/shell/state.rs, after BrowserCompanion (MoveToGroup, RemoveFromGroup follow); the tab menu's Dock browser / Browser view and the Browser row's Dock browser here; internal]
 KeybindAction::ToggleBrowserDock, KeybindAction::ToggleBrowserView, KeybindAction::FocusBrowser   [src/input/keybindings.rs, directly after ToggleInfoPane in that order; client-only actions; internal]
-BrowserDockTarget {ViewTerminal, ViewBrowser, ToggleDock, Start, Restart, Nudge}, PlaceholderTone {Title, Body, Dim, Error}   [src/client/shell/browser_dock.rs, fork-owned, internal]
+BrowserDockTarget {ViewTerminal, ViewBrowser, ToggleDock, Start, Restart, Nudge, Promote, Close}, PlaceholderTone {Title, Body, Dim, Error}   [src/client/shell/browser_dock.rs, fork-owned, internal]
 BrowserOverlayRow::Companion, CompanionNote   [src/client/shell/browser.rs, fork-owned enum, after Empty; the Browser overlay's companion line and detail lines; internal]
 
 ## 5. Owned API methods and digests

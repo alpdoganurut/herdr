@@ -65,6 +65,11 @@ pub(crate) enum BrowserDockTarget {
     Restart,
     /// The unbound placeholder: bind to the frontmost terminal window.
     Nudge,
+    /// Fork (session header): the dock title bar's `⤢`: Browser view, the
+    /// dock slot freed.
+    Promote,
+    /// Fork (session header): the dock title bar's `✕`.
+    Close,
 }
 
 /// What the band, strip and placeholder drew (the mouse's targets).
@@ -319,10 +324,16 @@ fn client_pids() -> Vec<u32> {
 
 /// The Browser view's area: everything right of the sidebar below the
 /// strip (the pane surface, the info dock and the band), so a toggle never
-/// resizes the panes.
+/// resizes the panes. Fork (session header): in the tabs layout the info
+/// dock is the dock slot and stays beside the Browser view.
 pub(super) fn full_area(layout: &ClientShellLayout) -> Rect {
     let mut area = layout.pane_surface;
-    for rect in [layout.info_dock, layout.browser_band] {
+    let info_dock = if layout.session_header.is_empty() {
+        layout.info_dock
+    } else {
+        Rect::default()
+    };
+    for rect in [info_dock, layout.browser_band] {
         if !rect.is_empty() {
             area = area.union(rect);
         }
@@ -337,6 +348,9 @@ pub(crate) struct BrowserDockView {
     pub(crate) strip: Option<ViewStrip>,
     pub(crate) placeholder: Option<Placeholder>,
     pub(crate) dragging: bool,
+    /// Fork (session header): the band's title bar (the tabs layout): the
+    /// focused tab's page title, else its URL, else `Browser`.
+    pub(crate) title: Option<String>,
 }
 
 /// Draw `view` into the chrome buffer and record its targets in `hits` (the
@@ -370,6 +384,7 @@ pub(super) fn compose(
                 buffer,
                 layout.browser_band,
                 view.dragging,
+                view.title.as_deref(),
                 placeholder,
                 hits,
             );
@@ -450,7 +465,31 @@ impl ClientShellState {
             placeholder: (browser_view || !layout.browser_band.is_empty())
                 .then(|| self.browser_placeholder(Instant::now())),
             dragging: matches!(self.chrome_drag, Some(ClientChromeDrag::BrowserDockWidth)),
+            title: (!layout.session_header.is_empty() && !layout.browser_band.is_empty())
+                .then(|| self.browser_dock_title()),
         }
+    }
+
+    /// Fork (session header): the browser dock's title: the focused tab's
+    /// active page (`browser.get` `sessions`), its title else its URL, else
+    /// `Browser`.
+    fn browser_dock_title(&self) -> String {
+        self.browser_dock_focused_tab()
+            .and_then(|tab_id| {
+                self.browser
+                    .info
+                    .as_ref()?
+                    .sessions
+                    .iter()
+                    .find(|session| session.tab_id == tab_id)
+            })
+            .and_then(|session| {
+                [session.title.trim(), session.url.trim()]
+                    .into_iter()
+                    .find(|text| !text.is_empty())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "Browser".to_owned())
     }
 
     fn browser_dock_focused_tab(&self) -> Option<&str> {
@@ -944,6 +983,15 @@ impl ClientShellState {
                 self.browser_dock.nudge = self.browser_dock.nudge.wrapping_add(1);
                 outcome.repaint = true;
             }
+            BrowserDockTarget::Promote => {
+                if let Some(tab_id) = tab_id {
+                    self.set_browser_view(tab_id.clone(), true, outcome);
+                    if self.browser_view_open_for(&tab_id) && self.browser_dock_open_for(&tab_id) {
+                        self.toggle_browser_dock(tab_id, outcome);
+                    }
+                }
+            }
+            BrowserDockTarget::Close => self.toggle_browser_dock_for_focused_tab(outcome),
         }
         true
     }
@@ -1249,11 +1297,13 @@ impl ClientShellState {
             (BrowserPlacementKind::Full, area, !area.is_empty())
         } else if !layout.browser_band.is_empty() {
             let band = layout.browser_band;
+            // Fork (session header): below the band's title bar.
+            let top = u16::from(!layout.session_header.is_empty()).min(band.height);
             let area = Rect::new(
                 band.x.saturating_add(1),
-                band.y,
+                band.y + top,
                 band.width.saturating_sub(1),
-                band.height,
+                band.height - top,
             );
             (BrowserPlacementKind::Side, area, !area.is_empty())
         } else {

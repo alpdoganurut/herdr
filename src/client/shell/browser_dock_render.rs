@@ -172,11 +172,13 @@ fn render_placeholder(
 }
 
 /// The band: the divider in column 0, the page colour and the placeholder
-/// in the rest.
+/// in the rest. Fork (session header): with a `title`, row 0 is the title
+/// bar, `◧ <title>` left and `⤢  ✕` flush right, the placeholder under it.
 pub(crate) fn render_band(
     buffer: &mut Buffer,
     band: Rect,
     dragging: bool,
+    title: Option<&str>,
     placeholder: &Placeholder,
     hits: &mut BrowserDockHits,
 ) {
@@ -201,8 +203,49 @@ pub(crate) fn render_band(
     for y in band.top()..band.bottom() {
         buffer.set_string(band.x, y, edge, edge_style);
     }
-    let area = Rect::new(band.x + 1, band.y, band.width - 1, band.height);
+    let mut area = Rect::new(band.x + 1, band.y, band.width - 1, band.height);
+    if let Some(title) = title {
+        render_title_bar(buffer, area, title, hits);
+        area = Rect::new(
+            area.x,
+            area.y + 1,
+            area.width,
+            area.height.saturating_sub(1),
+        );
+    }
     render_placeholder(buffer, area, placeholder, hits);
+}
+
+/// Fork (session header): the band's title bar on `area`'s first row.
+fn render_title_bar(buffer: &mut Buffer, area: Rect, title: &str, hits: &mut BrowserDockHits) {
+    const PROMOTE: &str = "\u{2922}"; // ⤢
+    const CLOSE: &str = "\u{2715}"; // ✕
+    if area.width < 4 || area.height == 0 {
+        return;
+    }
+    let y = area.y;
+    let x = area.x + 1;
+    let right = area.right().saturating_sub(1);
+    let page = |color: Color| Style::default().fg(color).bg(DUSK.page);
+    buffer.set_string(
+        x,
+        y,
+        super::session_header::BROWSER_DOCK_GLYPH,
+        page(DUSK.accent),
+    );
+    // `⤢  ✕` with a one-cell margin.
+    let actions_x = right.saturating_sub(4);
+    let title_x = x + 2;
+    if actions_x > title_x + 1 {
+        let room = actions_x - title_x - 1;
+        super::render::put_truncated(buffer, title_x, y, room, title, page(DUSK.ink));
+        buffer.set_string(actions_x, y, PROMOTE, page(DUSK.body));
+        hits.targets
+            .push((Rect::new(actions_x, y, 1, 1), BrowserDockTarget::Promote));
+        buffer.set_string(actions_x + 3, y, CLOSE, page(DUSK.body));
+        hits.targets
+            .push((Rect::new(actions_x + 3, y, 1, 1), BrowserDockTarget::Close));
+    }
 }
 
 /// The Browser view's area: the page colour and the placeholder.

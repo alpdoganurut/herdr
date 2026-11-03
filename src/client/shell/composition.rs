@@ -498,6 +498,7 @@ impl ClientShellState {
                     &super::info_dock::DockComposeInput {
                         tab_label,
                         sized_elsewhere: surface.frame.width != layout.pane_surface.width,
+                        title_bar: !layout.session_header.is_empty(),
                     },
                 );
             }
@@ -514,7 +515,7 @@ impl ClientShellState {
             &self.config.palette,
             &mut self.hits.browser_dock,
         );
-        if browser_view {
+        if browser_view && super::browser_dock::full_area(&layout).intersects(layout.info_dock) {
             // The info dock is under the browser too.
             self.hits.info_dock = super::info_dock::InfoDockHits::default();
         }

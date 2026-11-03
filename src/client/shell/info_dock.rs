@@ -403,6 +403,9 @@ impl Default for ClientInfoDockState {
 pub(super) struct DockComposeInput<'a> {
     pub(super) tab_label: &'a str,
     pub(super) sized_elsewhere: bool,
+    /// Fork (session header): the tabs layout's title bar in place of the
+    /// Notes strip.
+    pub(super) title_bar: bool,
 }
 
 /// The local UTC offset in seconds (the one in effect now).
@@ -704,7 +707,11 @@ impl ClientInfoDockState {
         key: &str,
     ) -> InfoDockHits {
         let width = usize::from(area.width.saturating_sub(2));
-        let strip = model::tab_strip(width);
+        let strip = if input.title_bar {
+            model::title_bar(width, self.editing())
+        } else {
+            model::tab_strip(width)
+        };
         let conflict = self.editor.as_ref().and_then(|editor| {
             editor.conflict.as_ref().map(|theirs| {
                 model::theirs_added(
@@ -1210,10 +1217,24 @@ impl ClientShellState {
         now: Instant,
         outcome: &mut ClientShellInput,
     ) {
+        if target == InfoDockTarget::Close {
+            self.toggle_info_pane_for_focused_tab(outcome);
+            return;
+        }
         let Some(dock) = self.info_dock.as_deref_mut() else {
             return;
         };
         match target {
+            InfoDockTarget::Close => {}
+            InfoDockTarget::Edit => {
+                if dock.editing() {
+                    dock.commit_editor(true);
+                    dock.bump_editor();
+                } else if dock.start_edit(None, now) {
+                    let key = dock.ui_key();
+                    dock.ui_for(&key).follow = true;
+                }
+            }
             InfoDockTarget::Task { line, revision } => dock_tick_task(dock, line, &revision, now),
             InfoDockTarget::EditAt {
                 line,
