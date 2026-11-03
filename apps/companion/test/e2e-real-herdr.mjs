@@ -470,6 +470,31 @@ try {
     check('an agent open after the restart lands in the companion again', o.result && o.result.data && o.result.data.host === 'companion', o.error || o.result.data);
   });
 
+  await section('page dialogs across a server restart: a page sitting in a prompt never stalls the attach', async () => {
+    // the page is blocked in its sync dialog call while herdr (and its sidecar) restart; its
+    // renderer answers no CDP until then, which would stall the new sidecar's attach (seen:
+    // connectOverCDP timed out twice, host_unavailable): the companion cancels it first
+    await browser(['eval', `setTimeout(() => { window.__r = JSON.stringify(prompt('across a restart', 'k')); }, 1500); 'armed'`], p1);
+    const before = await waitFor(async () => {
+      const r = await browser(['read', '--format', 'text'], p1);
+      return r.error && r.error.code === 'dialog_open' ? r.error : null;
+    }, 8000, 300);
+    check('the prompt is open before the restart', before, before);
+    await apiOk('server.stop', {});
+    await waitFor(async () => !fs.existsSync(SOCK), 20000);
+    check('server restarted with the prompt open', await startServer());
+    const t0 = Date.now();
+    const back = await waitFor(companionLive, 40000, 500);
+    check('the companion re-registers at once (no attach stall)', back && Date.now() - t0 < 15000, { ms: Date.now() - t0, sessions: await sessions() });
+    const panes = await panesOf();
+    p1 = (panes.find((p) => p.tab_id === t1) || {}).pane_id || p1;
+    const got = await waitFor(async () => {
+      const r = await browser(['eval', 'window.__r'], p1);
+      return !r.error && /null/.test(text(r)) ? text(r) : null;
+    }, 10000, 300);
+    check('the prompt was cancelled (the page got null) and the agent works on its tab', got, got);
+  });
+
   await section('live handoff: groups survive, the companion stays attached', async () => {
     const before = await sessions();
     const h = await apiOk('server.live_handoff', { import_exe: BIN }, 60000);
@@ -481,6 +506,33 @@ try {
     check('browser sessions carried over', after.length === before.length && after.every((s) => before.some((b) => b.tab_id === s.tab_id && b.pages === s.pages)), { before, after });
     const r = await browser(['read', '--format', 'text'], p1);
     check('the agent keeps working on its tab after the handoff', !r.error && /E/.test(text(r)), r.error || text(r).slice(0, 100));
+  });
+
+  await section('a live handoff while a page sits in a prompt', async () => {
+    await browser(['eval', `setTimeout(() => { window.__r = JSON.stringify(prompt('across a handoff', 'k')); }, 1500); 'armed'`], p1);
+    const before = await waitFor(async () => {
+      const r = await browser(['read', '--format', 'text'], p1);
+      return r.error && r.error.code === 'dialog_open' ? r.error : null;
+    }, 8000, 300);
+    check('the prompt is open before the handoff', before, before);
+    const t0 = Date.now();
+    const h = await apiOk('server.live_handoff', { import_exe: BIN }, 60000);
+    check('server.live_handoff answers with the prompt open', !h.error, h.error);
+    await sleep(2000);
+    const back = await waitFor(() => companionLive({ newLease: false }), 40000, 500);
+    check('the companion is attached after it', back, await sessions());
+    const r = await browser(['read', '--format', 'text'], p1, 90000);
+    const seen = r.error && r.error.code === 'dialog_open' && /across a handoff/.test(r.error.message);
+    check('the new sidecar sees the open prompt or the page is free (no stall)', (seen || !r.error) && Date.now() - t0 < 45000, { ms: Date.now() - t0, r: r.error || text(r).slice(0, 120) });
+    if (seen) {
+      const d = await browser(['dialog', 'accept', 'z'], p1);
+      check('… and answers it', !d.error, d.error);
+    }
+    const free = await waitFor(async () => {
+      const x = await browser(['eval', 'window.__r'], p1);
+      return !x.error && /"z"|null/.test(text(x)) ? text(x) : null;
+    }, 8000, 300);
+    check('the page got its answer', free, free);
   });
 
   await section('page dialogs after a handoff: the new sidecar still sees and answers them', async () => {

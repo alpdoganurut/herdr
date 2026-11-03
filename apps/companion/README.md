@@ -99,14 +99,27 @@ answers `unknown_method` and the strip says "this herdr is too old for the compa
   holding the default value selected (a "Copy this:" fallback can be copied at once), OK/Cancel;
   Enter = OK, Esc = Cancel. The page is blocked until it is answered and gets what a browser
   returns (alert nothing, confirm a boolean, prompt the text or null). One card per page; a
-  second dialog of the page (a cross-origin frame) waits behind it. The card belongs to its page:
+  second dialog of the page (a cross-origin frame) waits behind it. A frame's dialog reads "An
+  embedded page at <origin>" ("An embedded page" for an opaque origin: sandboxed, `data:`,
+  `srcdoc`), never as the page's own. A long message scrolls inside the card, so the field and
+  the buttons stay on screen in a short window. The card belongs to its page:
   another herdr tab's page keeps its dialog (and what was typed) until it shows again (its tab in
-  the bar is marked). A navigation, a reload, closing the page or a quit cancels it (null /
-  false). `src/dialogs.js` keeps the books. Agents see and answer them as before: the companion
+  the bar is marked). A navigation (of the page, of the frame that asked or of a frame around
+  it), a frame that goes away (removed, crashed, replaced), a reload, closing the page, a quit
+  or the companion registering with herdr again (a server restart: herdr's sidecar attach would
+  stall on a page blocked in its dialog, whose renderer answers no CDP) cancels it (null /
+  false). Dialogs asked while a page leaves (`beforeunload`, `pagehide`, `unload`) are answered
+  at once and never shown, as in Chromium. Electron assigns its own throwing `prompt()` in
+  subframes after their preload; the override survives it (an accessor that keeps ours for a
+  native function and takes the page's own assignment). `src/dialogs.js` keeps the books.
+  Agents see and answer them as before: the companion
   pushes its open dialogs to herdr's sidecar (a binding on the control page) and answers
   `dialog({view_id, accept, text})`, so `herdr browser dialog accept [text] | dismiss`, the
   `dialog_open` guard and herdr's needs-you work as with CDP dialogs (an accept without text keeps
-  what the field holds).
+  what the field holds; `accept ""` answers an empty text).
+  Known limitation: a sandboxed iframe without `allow-modals` can still show a card (Chromium
+  would block its dialogs; the override cannot read the frame's sandbox flags). Its card is
+  labelled as an embedded page, so it never passes for the page.
 
 The DevTools port is loopback-only and unauthenticated (same exposure as the herdr+ window).
 
