@@ -280,7 +280,25 @@ fn a_crash_reads_only_the_end_of_a_long_log() {
     std::fs::write(&log, &text).unwrap();
     assert_eq!(log_tail(&log, 2), ["line 19998", "line 19999"]);
     assert!(log_tail(&dir.join("missing.log"), 3).is_empty());
+    // Chromium's task_policy_set chatter is never a crash's reason
+    std::fs::write(
+        &log,
+        "test hook: crashing\n[70481:1103/192833.869959:ERROR:base/process/process_mac.cc:45] task_policy_set TASK_CATEGORY_POLICY: (os/kern) invalid argument (4)\n[70481:1103/192833.869989:ERROR:base/process/process_mac.cc:90] task_policy_set TASK_SUPPRESSION_POLICY: (os/kern) invalid argument (4)\n",
+    )
+    .unwrap();
+    assert_eq!(log_tail(&log, 3), ["test hook: crashing"]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn without_node_for_the_helper_the_error_names_node_and_the_setting() {
+    assert_eq!(
+        sidecar_error(&SidecarProblem::NoNode, false).message,
+        "the browser helper the companion browser registers through needs node, and none was found; ask the user to install Node.js 22+ (nvm, Homebrew) or set [browser] node, then run \"herdr browser doctor\""
+    );
+    assert!(sidecar_error(&SidecarProblem::NoNode, true)
+        .message
+        .contains("; install Node.js 22+"));
 }
 
 // ----- the hub's side --------------------------------------------------------

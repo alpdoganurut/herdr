@@ -2912,6 +2912,12 @@ impl BrowserHub {
                 });
             }
         }
+        // Fork (companion launcher): the helper runs on node (once per
+        // launch, not on a render path).
+        let config = self.config();
+        if super::node::discover_default(config.node(), Some(Path::new(&runtime.node))).is_none() {
+            return Some(SidecarProblem::NoNode);
+        }
         None
     }
 

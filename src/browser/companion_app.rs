@@ -105,6 +105,8 @@ pub enum SidecarProblem {
     Missing,
     /// Its node_modules predate this herdr's pinned playwright-core.
     Outdated { installed: String },
+    /// No node binary to run it with (none configured, recorded or found).
+    NoNode,
 }
 
 /// Why this config keeps the companion off: the browser is disabled, or
@@ -935,8 +937,14 @@ pub fn duration_text(secs: u64) -> String {
     }
 }
 
+/// Chromium's harmless macOS chatter (`task_policy_set … (os/kern) invalid
+/// argument` on every renderer start): never a crash's reason.
+fn is_chromium_noise(line: &str) -> bool {
+    line.contains("task_policy_set")
+}
+
 /// The last `n` non-empty lines of the log (a crash's error), from its
-/// last [`LOG_TAIL_BYTES`] only.
+/// last [`LOG_TAIL_BYTES`] only, Chromium's chatter left out.
 pub fn log_tail(log: &Path, n: usize) -> Vec<String> {
     let Ok(mut file) = std::fs::File::open(log) else {
         return Vec::new();
@@ -960,7 +968,7 @@ pub fn log_tail(log: &Path, n: usize) -> Vec<String> {
     let lines: Vec<String> = text
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !line.is_empty() && !is_chromium_noise(line))
         .map(|line| line.chars().take(200).collect())
         .collect();
     lines[lines.len().saturating_sub(n)..].to_vec()
@@ -1111,6 +1119,10 @@ fn sidecar_error(problem: &SidecarProblem, user: bool) -> BrowserError {
             SidecarProblem::Outdated { installed } => format!(
                 "the browser helper is outdated (playwright-core {installed}, this herdr needs {}); {run} \"herdr browser setup\" in a terminal",
                 crate::integration::browser_assets::PLAYWRIGHT_CORE_VERSION
+            ),
+            SidecarProblem::NoNode => format!(
+                "the browser helper the companion browser registers through needs node, and none was found; {} Node.js 22+ (nvm, Homebrew) or set [browser] node, then run \"herdr browser doctor\"",
+                if user { "install" } else { "ask the user to install" }
             ),
         },
     )

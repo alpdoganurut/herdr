@@ -527,7 +527,15 @@ fn the_placeholder_names_why_the_companion_is_not_covering() {
     )));
     // not installed: the setup command
     state.browser.info = Some(companion("not_installed"));
-    assert!(text(&mut state).contains("herdr browser setup --companion"));
+    let missing = text(&mut state);
+    assert!(
+        missing.contains("herdr browser setup --companion"),
+        "{missing}"
+    );
+    assert!(
+        missing.lines().all(|line| line.trim() != "terminal"),
+        "no word stranded on its own line: {missing}"
+    );
     // failed: the launcher's give-up rule, in its own words
     state.browser.info = Some(companion("failed"));
     let failed = text(&mut state);

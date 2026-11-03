@@ -1065,10 +1065,9 @@ impl ClientShellState {
         match companion.state.as_str() {
             "not_installed" => Placeholder::say(vec![
                 title("The companion is not installed".into()),
-                (
-                    "run \"herdr browser setup --companion\" in a terminal".into(),
-                    PlaceholderTone::Body,
-                ),
+                // Two short lines: a ~50-column band never strands a word.
+                body("In a terminal, run"),
+                body("herdr browser setup --companion"),
                 (
                     format!(
                         "(it downloads Electron, {})",
