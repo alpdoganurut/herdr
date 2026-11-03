@@ -4,7 +4,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { DockCore, DockController, SETTLE_MS, RESETTLE_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, geometryKey } = require('../src/dock/dock.js');
+const { DockCore, DockController, SETTLE_MS, RESETTLE_MS, FRONT_SETTLE_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, geometryKey, activatedPid } = require('../src/dock/dock.js');
 const { chooseTarget, anyDockPlacement } = require('../src/dock/placements.js');
 const { REASONS } = require('../src/dock/geometry.js');
 
@@ -55,6 +55,161 @@ test('one terminal window: bound at once, the dock covers the band', () => {
   assert.equal(c.decide(4).raise, false); // directly above it
   c.onSample({ t: 5, target: win(11, 100, 200, { on: true }), above: [[99, 5, 0], [55, 9, 0]] }, 5);
   assert.equal(c.decide(6).raise, true, 'another window got between: back directly above');
+});
+
+// The dock is another app's window: while the terminal's app (or the companion) is frontmost
+// and nothing else is above the terminal it sits above normal windows, so a click into the
+// terminal cannot cover it; another app in front, or another window above the terminal,
+// puts it back directly above the terminal at the normal level.
+const SELF = 900;
+const OTHER = 555;
+function covering(env = {}) {
+  const c = core('darwin', { selfPid: SELF, ...env });
+  c.setPlacements([placement('p1')]);
+  c.onSample({ t: 1, candidates: [win(11)] }, 1);
+  c.dockWid = 99;
+  return c;
+}
+const at = (c, t, above) => c.onSample({ t, target: win(11, 100, 200, { on: true }), above }, t);
+
+test('the terminal frontmost: raised; another app frontmost: normal, directly above the terminal', () => {
+  const c = covering();
+  at(c, 10, [[99, SELF, 0]]);
+  let d = c.decide(11);
+  assert.equal(report(d, 'p1').state, 'covering');
+  assert.equal(d.level, 'normal', 'the frontmost app not known yet: as before');
+  assert.equal(d.raise, false);
+  c.setFront(GHOSTTY, 20);
+  d = c.decide(21);
+  assert.equal(d.level, 'raised');
+  assert.equal(d.raise, false, 'raised: never ordered relative to the terminal');
+  // raised, the dock is not a normal window: the above-list is empty
+  at(c, 120, []);
+  assert.equal(c.decide(121).level, 'raised');
+  // the user clicks the dock: the companion is frontmost, still raised
+  c.setFront(SELF, 200);
+  at(c, 300, []);
+  assert.equal(c.decide(301).level, 'raised');
+  // another app comes to the front: normal at once (the sample is from before it)
+  c.setFront(OTHER, 400);
+  d = c.decide(401);
+  assert.equal(d.level, 'normal');
+  // its window above the terminal, the dock right under it: not ordered again
+  at(c, 500, [[77, OTHER, 0], [99, SELF, 0]]);
+  d = c.decide(501);
+  assert.equal(d.level, 'normal');
+  assert.equal(d.raise, false);
+});
+
+test('another normal window above the terminal keeps the dock at the normal level', () => {
+  const c = covering();
+  c.setFront(GHOSTTY, 0);
+  at(c, 100, [[12, GHOSTTY, 0]]); // another Ghostty window in front of the bound one
+  let d = c.decide(101);
+  assert.equal(d.level, 'normal');
+  assert.equal(d.raise, true, 'directly above the terminal, under that window');
+  at(c, 200, [[12, GHOSTTY, 0], [99, SELF, 0]]);
+  assert.equal(c.decide(201).raise, false);
+  // that window goes: raised again
+  at(c, 300, []);
+  assert.equal(c.decide(301).level, 'raised');
+  // windows above normal ones (menus, panels) do not count
+  at(c, 400, [[5, OTHER, 25]]);
+  assert.equal(c.decide(401).level, 'raised');
+});
+
+test('the terminal clicked from another app: raised at once, a later sample still decides', () => {
+  const c = covering();
+  c.setFront(OTHER, 0);
+  at(c, 100, [[77, OTHER, 0], [99, SELF, 0]]);
+  assert.equal(c.decide(101).level, 'normal');
+  // the click: Ghostty comes to the front; the last sample is from before it
+  c.setFront(GHOSTTY, 150);
+  assert.equal(c.decide(151).level, 'raised', 'no wait for a sample: the terminal would cover the dock until then');
+  at(c, 150 + FRONT_SETTLE_MS - 1, [[77, OTHER, 0]]);
+  assert.equal(c.decide(150 + FRONT_SETTLE_MS).level, 'raised', 'a sample from right after the switch may predate the reorder');
+  // a later sample with a window still above the terminal (another app's window kept in front)
+  at(c, 300, [[77, OTHER, 0]]);
+  const d = c.decide(301);
+  assert.equal(d.level, 'normal');
+  assert.equal(d.raise, true);
+});
+
+test('clicks into the terminal: the dock stays shown at one level, never hidden or reordered', () => {
+  const c = covering();
+  c.setFront(GHOSTTY, 0);
+  const seen = [];
+  for (let i = 1; i <= 20; i++) {
+    // each click re-activates Ghostty (no change) and the samples see nothing above it
+    if (i % 4 === 0) c.setFront(GHOSTTY, i * 100);
+    at(c, i * 100 + 10, []);
+    const d = c.decide(i * 100 + 20);
+    seen.push([d.show, d.level, d.raise, report(d, 'p1').state]);
+  }
+  assert.ok(seen.every(([show, level, raise, state]) => show && level === 'raised' && !raise && state === 'covering'), JSON.stringify(seen));
+});
+
+test('the pid of a workspace activation notice', () => {
+  assert.equal(activatedPid({ NSWorkspaceApplicationKey: '<NSRunningApplication: 0x1240002c8d0 (com.mitchellh.ghostty - 659) LSASN:{hi=0x0;lo=0xf047038}>' }), 659);
+  assert.equal(activatedPid({ NSWorkspaceApplicationKey: '<NSRunningApplication: 0x1 (com.github.Electron - 94763)>' }), 94763);
+  assert.equal(activatedPid({}), null);
+  assert.equal(activatedPid(null), null);
+  assert.equal(activatedPid({ NSWorkspaceApplicationKey: 'garbage' }), null);
+});
+
+// The adapter: one level change per decision change, the drop back to normal ordered
+// directly above the terminal in the same step, nothing hidden or shown again.
+test('the controller changes the level only when it changes, and orders the dock on the way down', () => {
+  const feed = Object.assign(new EventEmitter(), { report() {} });
+  const probe = Object.assign(new EventEmitter(), { watch() {}, stop() {}, fakeFile: null });
+  const calls = [];
+  const dockWin = {
+    getBounds: () => ({ x: 1, y: 2, width: 3, height: 4 }),
+    setBounds() {},
+    showInactive: () => calls.push('show'),
+    hide: () => calls.push('hide'),
+    setAlwaysOnTop: (on, level, rel) => calls.push(on ? `level ${level}+${rel}` : 'level normal'),
+    moveAbove: (id) => calls.push(`above ${id}`),
+    getMediaSourceId: () => 'window:99:0',
+    setVisibleOnAllWorkspaces: () => calls.push('spaces'),
+  };
+  const host = { dockWindow: () => dockWin, dockShowsTab() {}, enterDocked() {}, leaveDocked() {}, layout() {} };
+  let sub = null;
+  const electron = {
+    screen: { getDisplayMatching: () => ({ scaleFactor: 2, bounds: { x: 0, y: 0, width: 100, height: 100 } }) },
+    app: {},
+    systemPreferences: {
+      subscribeWorkspaceNotification: (name, cb) => ((sub = { name, cb }), 7),
+      unsubscribeWorkspaceNotification: (id) => calls.push(`unsub ${id}`),
+    },
+  };
+  const ctl = new DockController({ host, feed, probe, headless: false, platform: 'darwin', electron, readFront: () => {}, selfPid: SELF });
+  assert.equal(sub.name, 'NSWorkspaceDidActivateApplicationNotification');
+  ctl.docked = true; // entered (enter() touches the app's Dock icon)
+  const rect = { x: 1, y: 2, width: 3, height: 4 };
+  let next = { docked: true, show: true, rect, fullScreen: false, level: 'normal', raise: true, watch: {}, reports: [] };
+  ctl.core = { decide: () => next, setPlacements() {}, onSample() {}, setFront(pid) { this.front = pid; }, bound: { wid: 11 }, dockWid: null };
+  ctl.apply();
+  assert.deepEqual(calls, ['show', 'above window:11:0']);
+  calls.length = 0;
+  // Ghostty frontmost (the notice): raised, nothing else
+  next = { ...next, level: 'raised', raise: false };
+  sub.cb('NSWorkspaceDidActivateApplicationNotification', { NSWorkspaceApplicationKey: '<NSRunningApplication: 0x1 (com.mitchellh.ghostty - 700)>' });
+  assert.equal(ctl.core.front, 700);
+  assert.deepEqual(calls, ['level normal+1']);
+  calls.length = 0;
+  for (let i = 0; i < 10; i++) ctl.apply(); // clicks, samples
+  ctl.onBlur();
+  assert.deepEqual(calls, [], 'no level change, no reorder, no hide/show');
+  // another app: normal, then directly above the terminal in the same step
+  next = { ...next, level: 'normal', raise: false };
+  ctl.apply();
+  assert.deepEqual(calls, ['level normal', 'above window:11:0']);
+  calls.length = 0;
+  ctl.apply();
+  assert.deepEqual(calls, []);
+  ctl.stop();
+  assert.deepEqual(calls, ['unsub 7']);
 });
 
 test('a move hides the dock until the window settles; off screen hides it', () => {

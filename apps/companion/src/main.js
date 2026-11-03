@@ -527,7 +527,7 @@ class Companion {
     this.dockWin = win;
     win.on('resize', () => this.layout());
     win.on('focus', () => this.onWindowFocus());
-    // A click into the terminal orders it front: back above it at once.
+    // The keyboard went elsewhere (a click into the terminal): the dock's level and order again.
     win.on('blur', () => this.dock && this.dock.onBlur());
     win.on('closed', () => {
       if (this.dockWin === win) this.dockWin = null;
