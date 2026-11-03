@@ -128,7 +128,7 @@ A server-run Claude agent in a pinned `coordinator` tab that watches other agent
 
 ## Browser (`[browser]`)
 
-The herdr-owned Chromium the server runs for agents. It starts on first use.
+The browser herdr runs for agents: the herdr+ companion browser (`herdr browser setup --companion` installs it; the first page an agent opens starts it; `herdr browser companion status|start|stop|restart|focus|log`, the Browser row's menu and the Browser overlay control it). The herdr+ Chromium window is off unless `[browser] window = true`.
 
 | Feature | Default | Where to change | In Settings? |
 |---|---|---|---|
@@ -143,9 +143,10 @@ The herdr-owned Chromium the server runs for agents. It starts on first use.
 | MCP registration | claude and codex | `[browser] mcp_agents = ["claude"]` | Yes (both / claude / codex / none) |
 | `eval`, act family, typing into password fields | on, on, off | `[browser] allow_eval`, `allow_act`, `type_into_password_fields` | No, config only |
 | Restore tabs on relaunch | on | `[browser] restore_tabs = false` | No, config only |
-| Where `open` / `show` go (the companion browser while it runs, else the herdr+ window) | `"auto"` | `[browser] host = "companion"` or `"window"` | No, config only |
+| Where `open` / `show` go (the companion browser, started on demand) | `"companion"` | `[browser] host = "auto"` (the companion while it runs, else the herdr+ window when it is on) or `"window"` | No, config only |
 | Page errors of a tab an agent uses, stored quietly for that Claude agent | `"agent"` | `[browser] page_errors = "off"` | No, config only |
 | Start the companion browser with the server (else on the first page an agent opens) | off | `[browser] companion_autostart = true` | No, config only |
+| The herdr+ Chromium window (off: agents use the companion; a window profile answers `window_disabled`) | off | `[browser] window = true` | No, config only |
 
 The companion browser is the Electron app in `apps/companion`; `apps/companion/scripts/try.sh` tries it against a throwaway herdr in one command (run it in a plain terminal).
 

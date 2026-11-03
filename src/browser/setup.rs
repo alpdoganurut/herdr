@@ -960,8 +960,18 @@ pub fn checks(
 ) -> Vec<BrowserCheckInfo> {
     let mut out = Vec::with_capacity(CHECK_IDS.len());
 
-    // executable
-    out.push(
+    // executable (fork, companion launcher: not used while the window is off)
+    let window_off = |id: &str| {
+        check(
+            id,
+            true,
+            "not used ([browser] window = false)",
+            BrowserFixKind::None,
+        )
+    };
+    out.push(if !config.window {
+        window_off("executable")
+    } else {
         match super::launch::resolve_executable(&config.executable, env.home.as_deref()) {
             Ok(exe) => check(
                 "executable",
@@ -970,8 +980,8 @@ pub fn checks(
                 BrowserFixKind::None,
             ),
             Err(err) => check("executable", false, err.message, BrowserFixKind::None),
-        },
-    );
+        }
+    });
 
     // helper
     let host_dir = env.host_dir();
@@ -1048,6 +1058,7 @@ pub fn checks(
             .find(|p| p.name == config.default_profile() && p.state == "running")
     });
     out.push(match running {
+        _ if !config.window => window_off("extension"),
         Some(profile) => match profile.companion.as_deref() {
             Some(state) if state.contains("expects") => {
                 let idle = profile.agents == 0;
@@ -1483,6 +1494,8 @@ mod tests {
             mcp_agents: mcp.iter().map(|s| s.to_string()).collect(),
             shell_hook: legacy_hook,
             executable: "/nonexistent/Chromium.app".into(),
+            // the window's checks (fork, companion launcher: off by default)
+            window: true,
             ..BrowserConfig::default()
         }
     }

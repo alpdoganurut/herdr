@@ -35,7 +35,9 @@ use crate::integration::browser_assets;
 #[path = "companion_host.rs"]
 mod companion_host;
 use companion_host::ShowRequest;
-pub use companion_host::{is_companion, lease_unknown, COMPANION_PROFILE, REPORT_MAX_EVENTS};
+pub use companion_host::{
+    is_companion, lease_unknown, window_disabled, COMPANION_PROFILE, REPORT_MAX_EVENTS,
+};
 
 /// Grace the hub adds to the sidecar's own deadline before giving up on a reply.
 pub const REPLY_GRACE: Duration = Duration::from_secs(5);
@@ -341,6 +343,7 @@ impl BrowserHub {
         info.setup_needed = self.setup_needed();
         // Fork (companion launcher): always current (not seq-gated).
         info.companion_app = Some(self.companion_app_info());
+        info.window_off = !config.window;
         info
     }
 
@@ -596,11 +599,41 @@ impl BrowserHub {
     pub fn setup_info(&self) -> BrowserSettingsInfo {
         let config = self.config();
         let info = self.get(None);
-        let profile = config.default_profile().to_string();
+        // Fork (companion launcher): with the window off the section's
+        // open · stop row is the companion's.
+        let profile = if config.window {
+            config.default_profile().to_string()
+        } else {
+            COMPANION_PROFILE.to_string()
+        };
         let running_profile = info
             .profiles
             .iter()
             .find(|p| p.name == profile && (p.state == "running" || p.state == "starting"));
+        let companion_status = (!config.window).then(|| {
+            let companion = info.companion_app.clone().unwrap_or_default();
+            match companion.state.as_str() {
+                "not_installed" => {
+                    "companion not installed · herdr browser setup --companion".to_string()
+                }
+                "running" | "external" => match running_profile {
+                    Some(p) => format!(
+                        "companion running · {} tab{} · {} agent{}",
+                        p.tabs,
+                        if p.tabs == 1 { "" } else { "s" },
+                        p.agents,
+                        if p.agents == 1 { "" } else { "s" }
+                    ),
+                    None => "companion running".to_string(),
+                },
+                "" => "companion stopped".to_string(),
+                other => format!("companion {other}"),
+            }
+        });
+        let running_companion = info
+            .companion_app
+            .as_ref()
+            .is_some_and(|c| matches!(c.state.as_str(), "running" | "external" | "starting"));
         let status = match running_profile {
             Some(p) if p.state == "starting" => format!("starting · profile {profile}"),
             Some(p) => format!(
@@ -612,6 +645,11 @@ impl BrowserHub {
             ),
             None if !config.enabled => "off".to_string(),
             None => format!("stopped · profile {profile}"),
+        };
+        let status = if config.enabled {
+            companion_status.unwrap_or(status)
+        } else {
+            status
         };
         let setup = self.inner.setup.lock().unwrap();
         BrowserSettingsInfo {
@@ -626,8 +664,8 @@ impl BrowserHub {
             mcp_agents: config.mcp_agents.clone(),
             // legacy and inert: the hook lives in Settings → Agents
             shell_hook: config.shell_hook,
+            running: running_profile.is_some() || (!config.window && running_companion),
             profile,
-            running: running_profile.is_some(),
             status,
             checks: setup.checks.clone(),
             checked_at: setup.checked_unix,
@@ -1012,6 +1050,9 @@ impl BrowserHub {
         if !config.enabled {
             return Err(BrowserError::disabled());
         }
+        if !config.window && profile.is_some_and(|name| !is_companion(name.trim())) {
+            return Err(window_disabled());
+        }
         let name = self.profile_name(profile, None, &config)?;
         // Fork (companion launcher): the companion is launched by herdr.
         if is_companion(&name) {
@@ -1076,7 +1117,14 @@ impl BrowserHub {
         if !config.enabled {
             return Err(BrowserError::disabled());
         }
-        let default_profile = profile.unwrap_or(config.default_profile()).to_string();
+        // Fork (companion launcher): with the window off, the companion's tabs.
+        let default_profile = profile
+            .unwrap_or(if config.window {
+                config.default_profile()
+            } else {
+                COMPANION_PROFILE
+            })
+            .to_string();
         let record = {
             let state = self.inner.state.lock().unwrap();
             state
@@ -1086,6 +1134,9 @@ impl BrowserHub {
         };
         if !record.is_open() {
             return Err(BrowserError::tab_closed(&record.id()));
+        }
+        if !config.window && !is_companion(&record.profile) {
+            return Err(window_disabled());
         }
         let hub = self.clone();
         std::thread::Builder::new()
@@ -1176,6 +1227,33 @@ impl BrowserHub {
             (Some(explicit), _) => Some(explicit),
             (None, prefix) => prefix,
         };
+        // Fork (companion launcher): a window profile while the window is
+        // off, before `new` would create one.
+        if !config.window && explicit_profile.is_some_and(|name| !is_companion(name)) {
+            return Err(window_disabled());
+        }
+        // Fork (companion launcher): with the window off, an op that needs
+        // the pane's current tab and has none in the companion (none at
+        // all, or a cursor left on a window tab) answers no_current_tab
+        // before anything starts.
+        if !config.window
+            && params.tab.is_none()
+            && explicit_profile.is_none()
+            && !Self::op_follows_host(&params.op)
+            && !matches!(params.op, BrowserOp::Tabs { .. } | BrowserOp::Batch { .. })
+        {
+            let companion_cursor = pane.as_deref().is_some_and(|pane| {
+                self.inner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .cursor_profile(pane)
+                    .is_some_and(is_companion)
+            });
+            if !companion_cursor {
+                return Err(BrowserError::no_current_tab());
+            }
+        }
         // Fork (companion browser): a page-creating op without a profile
         // follows `[browser] host`; everything else the pane's cursor.
         let profile = match explicit_profile {
@@ -1184,6 +1262,9 @@ impl BrowserHub {
             }
             _ => self.profile_name(explicit_profile, pane.as_deref(), &config)?,
         };
+        if !config.window && !is_companion(&profile) {
+            return Err(window_disabled());
+        }
         self.ensure_running(&profile)?;
         let deadline = Duration::from_millis(match &params.op {
             BrowserOp::Wait { timeout_s, .. } => timeout_s.unwrap_or(30).clamp(1, 300) * 1000 + 500,
@@ -1319,10 +1400,19 @@ impl BrowserHub {
         }
         if let Some(pane) = pane {
             if let Some(profile) = self.inner.state.lock().unwrap().cursor_profile(pane) {
-                return Ok(profile.to_string());
+                // Fork (companion launcher): a cursor on a window tab while
+                // the window is off is ignored (its next op answers
+                // no_current_tab, not window_disabled).
+                if config.window || is_companion(profile) {
+                    return Ok(profile.to_string());
+                }
             }
         }
-        Ok(config.default_profile().to_string())
+        Ok(if config.window {
+            config.default_profile().to_string()
+        } else {
+            COMPANION_PROFILE.to_string()
+        })
     }
 
     fn resolve_target(
@@ -2475,6 +2565,10 @@ impl BrowserHub {
             return self.ensure_companion_attached();
         }
         let config = self.config();
+        // Fork (companion launcher): the herdr+ window is off.
+        if !config.window {
+            return Err(window_disabled());
+        }
         let profile_dir = self.inner.profiles.dir(name);
         let log_path = self.inner.profiles.log_path(name);
 

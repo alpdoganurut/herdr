@@ -17,7 +17,7 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 /// Let Claude keep a large `read`/`snapshot` result inline instead of diverting it to a file.
 const MAX_RESULT_SIZE_CHARS: u64 = 120_000;
 
-pub const INSTRUCTIONS: &str = "herdr-browser drives a Chromium window that herdr owns and the user can see and use too; other agents share it. \
+pub const INSTRUCTIONS: &str = "herdr-browser drives the browser herdr runs (the herdr+ companion browser; the herdr+ window when [browser] window = true), which the user can see and use too; other agents share it. \
 The user logs in by hand: when a page needs a login, call browser_focus and ask them, then retry. \
 Read loop: browser_open (page card) → browser_read (paged markdown; follow `next:` offsets) or browser_find; \
 browser_snapshot only when you need structure (refs like e12); browser_screenshot to see the rendering. \
@@ -409,7 +409,7 @@ pub fn tools() -> Vec<Value> {
         json!({ "name": "browser_use", "description": "Make a tab (yours or the user's) your current tab.", "inputSchema": schema(json!({}), &["tab"]) }),
         json!({ "name": "browser_close", "description": "Close the current (or given) tab. Close tabs you opened when the whole task is done, unless the user may want to look at them.", "inputSchema": schema(json!({}), &[]) }),
         json!({ "name": "browser_show", "description": "Show a local HTML file (a report, a chart, a prototype you wrote) to the user in a sandboxed tab of your session: the companion browser when it runs, else the herdr+ window. The network is blocked unless allow_network; it reloads when the file changes (watch, default true). The tab becomes your current tab. `file` must be an absolute path to an .html/.htm file.", "inputSchema": schema(json!({ "file": { "type": "string" }, "allow_network": { "type": "boolean" }, "watch": { "type": "boolean" }, "focus": { "type": "boolean" }, "title": { "type": "string" } }), &["file"]) }),
-        json!({ "name": "browser_focus", "description": "Bring the browser window up for the user with the current (or given) tab selected, e.g. to ask them to log in or look at something. The only call that raises the window.", "inputSchema": schema(json!({}), &[]) }),
+        json!({ "name": "browser_focus", "description": "Bring the browser window up for the user with the current (or given) tab selected and marked for them, e.g. to ask them to log in or look at something. The only call that brings the window forward; it never takes the user's keyboard.", "inputSchema": schema(json!({}), &[]) }),
         json!({ "name": "browser_click", "description": "Click an element of the current tab by aria ref (from browser_snapshot) or CSS selector. Works on background tabs. A stale ref answers stale_ref: re-run browser_snapshot.", "inputSchema": schema(target_props(json!({})), &[]) }),
         json!({ "name": "browser_type", "description": "Type text key by key into an element (ref or selector); `clear` empties it first, `submit` presses Enter after. Password fields are refused: ask the user to type it (browser_focus).", "inputSchema": schema(target_props(json!({ "text": { "type": "string" }, "submit": { "type": "boolean" }, "clear": { "type": "boolean" } })), &["text"]) }),
         json!({ "name": "browser_fill", "description": "Set an input's value at once (ref or selector). Password fields are refused: ask the user.", "inputSchema": schema(target_props(json!({ "text": { "type": "string" } })), &["text"]) }),

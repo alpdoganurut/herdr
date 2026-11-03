@@ -46,6 +46,7 @@ cat > "$T/config/herdr/config.toml" <<EOF
 [browser]
 enabled = true
 autostart = false
+window = true
 host = "auto"
 page_errors = "agent"
 executable = "$T/no-chromium/herdr-e2e-chromium"

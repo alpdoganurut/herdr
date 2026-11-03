@@ -236,6 +236,10 @@ pub(crate) fn browser_overlay_rows(info: &BrowserGetInfo, now: u64) -> Vec<Brows
         ));
         rows.extend(companion_tab_rows(info, now));
         profiles.retain(|name| *name != "companion");
+        // the herdr+ window's profiles only while it is on
+        if info.window_off {
+            profiles.clear();
+        }
         if profiles.is_empty() && info.sessions.is_empty() {
             return rows;
         }

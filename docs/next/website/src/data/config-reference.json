@@ -1845,14 +1845,20 @@
         {
           "key": "browser.host",
           "type": "string",
-          "default": "\"auto\"",
-          "description": "Fork (companion browser): where `herdr browser open` and `herdr browser show` without `--profile` go. `auto` uses the companion browser (the Electron app, `apps/companion`) while it is registered and the herdr+ window otherwise; `companion` only the companion (`host_unavailable` without it); `window` only the herdr+ window. Every other operation follows the pane's current tab, wherever it lives. Applies live after `herdr server reload-config`; an unknown value reports a config diagnostic and reads as `auto`."
+          "default": "\"companion\"",
+          "description": "Fork (companion browser): where `herdr browser open` and `herdr browser show` without `--profile` go. `companion` (the default) uses the companion browser (the Electron app herdr installs with `herdr browser setup --companion`), starting it when it is not running and waiting up to 45 s for it; without an install the agent gets `host_unavailable` naming the setup command. `auto` uses the companion while it is registered and otherwise the herdr+ window, but only while `browser.window` is on (with the window off it behaves like `companion`); `window` only the herdr+ window, which needs `browser.window = true` (else a config diagnostic and `window_disabled`). Every other operation follows the pane's current tab, wherever it lives. Applies live after `herdr server reload-config`; an unknown value reports a config diagnostic and reads as `companion`."
         },
         {
           "key": "browser.page_errors",
           "type": "string",
           "default": "\"agent\"",
           "description": "Fork (companion browser): uncaught page errors, console errors, failed loads and crashes of a tab an agent opened or used recently are stored quietly for that agent when it is a Claude agent (batched, deduplicated and capped; never typed in, never a wake-up); other agents read them with `herdr browser console`. `off` keeps them pull-only. An unknown value reports a config diagnostic and reads as `agent`."
+        },
+        {
+          "key": "browser.window",
+          "type": "boolean",
+          "default": "false",
+          "description": "Fork (companion launcher): the herdr+ Chromium window (every browser profile but the companion). Off by default: agents use the companion browser, an operation on a window profile (`--profile main`, a tab like `main:t3`, `herdr browser start --profile main`) answers `window_disabled` naming this key, a pane's current tab left on a window tab is ignored (its next operation answers `no_current_tab`), `browser.autostart` is ignored, and the doctor reports the window's checks as not used. `true` brings the window back exactly as before (with `browser.host = \"auto\"` for the old fallback). Applies live after `herdr server reload-config`."
         },
         {
           "key": "browser.companion_autostart",

@@ -553,15 +553,19 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # The agents `herdr browser setup` (and settings → browser) keep the herdr-browser MCP server
 # registered for: "claude" (Claude Code, user scope) and/or "codex" (~/.codex/config.toml).
 # mcp_agents = ["claude", "codex"]
-# Where `open` / `show` without a profile go: "auto" (the companion browser while it runs,
-# else the herdr+ window), "companion" (only the companion) or "window".
-# host = "auto"
+# Where `open` / `show` without a profile go: "companion" (the companion browser, started on
+# demand), "auto" (the companion while it runs, else the herdr+ window when it is on) or
+# "window" (needs window = true).
+# host = "companion"
 # Page errors of a tab an agent uses: "agent" (stored quietly for that Claude agent; other
 # agents read them with `herdr browser console`) or "off".
 # page_errors = "agent"
 # Start the installed companion browser with the server (in the background) instead of on
 # the first page an agent opens. Install it with `herdr browser setup --companion`.
 # companion_autostart = false
+# The herdr+ Chromium window (every profile but the companion). Off: agents use the companion
+# browser and a window profile answers window_disabled; true brings the window back as before.
+# window = false
 
 [coordinator]
 # Run the coordinator agent (a Claude session that watches your agents) in a

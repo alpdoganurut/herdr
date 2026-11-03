@@ -626,7 +626,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 <section id="browser">
   <p class="eyebrow">07 · browser</p>
   <h2>Browser <code>[browser]</code></h2>
-  <p class="lede">The herdr-owned Chromium the server runs for agents. It starts on first use.</p>
+  <p class="lede">The browser herdr runs for agents: the herdr+ companion browser. <code>herdr browser setup --companion</code> installs it; the first page an agent opens starts it; <code>herdr browser companion</code>, the Browser row's menu and the Browser overlay start, stop, restart and focus it. The herdr+ Chromium window is off unless <code>[browser] window = true</code>.</p>
   <div class="rows">
     <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
     <div class="row">
@@ -696,9 +696,9 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
-      <div class="f"><h3>Where <code>open</code> / <code>show</code> go</h3><p>The companion browser while it runs, else the herdr+ window.</p></div>
-      <div class="d"><span class="pill val">"auto"</span></div>
-      <div class="k"><code>[browser] host = "companion"</code> or <code>"window"</code></div>
+      <div class="f"><h3>Where <code>open</code> / <code>show</code> go</h3><p>The companion browser, started on demand. <code>"auto"</code>: the companion while it runs, else the herdr+ window when it is on.</p></div>
+      <div class="d"><span class="pill val">"companion"</span></div>
+      <div class="k"><code>[browser] host = "auto"</code> or <code>"window"</code></div>
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
@@ -711,6 +711,12 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="f"><h3>Start the companion with the server</h3><p>In the background; else it starts on the first page an agent opens.</p></div>
       <div class="d"><span class="pill off">off</span></div>
       <div class="k"><code>[browser] companion_autostart = true</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>The herdr+ Chromium window</h3><p>Off: agents use the companion browser; a window profile answers <code>window_disabled</code>.</p></div>
+      <div class="d"><span class="pill off">off</span></div>
+      <div class="k"><code>[browser] window = true</code></div>
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
   </div>

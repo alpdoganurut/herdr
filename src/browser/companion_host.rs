@@ -107,7 +107,9 @@ impl BrowserHub {
         if !config.enabled {
             return Err(BrowserError::disabled());
         }
-        if config.host_mode() == BrowserHostMode::Window {
+        // Fork (companion launcher): only a herdr whose window is on and
+        // chosen refuses hosts.
+        if config.window && config.host_mode() == BrowserHostMode::Window {
             return Err(BrowserError::new(
                 "host_disabled",
                 "this herdr uses only its own browser window ([browser] host = \"window\")",
@@ -356,6 +358,17 @@ impl BrowserHub {
     /// Fork (companion launcher): the companion without a live lease is
     /// started and waited for (on the caller's connection thread).
     pub(super) fn host_profile(&self, config: &BrowserConfig) -> Result<String, BrowserError> {
+        // Fork (companion launcher): with the herdr+ window off every page
+        // goes to the companion (`auto` falls back only to an enabled window).
+        if !config.window {
+            if config.host_mode() == BrowserHostMode::Window {
+                return Err(window_disabled());
+            }
+            if !self.companion_live() {
+                self.ensure_companion(self.companion_register_wait())?;
+            }
+            return Ok(COMPANION_PROFILE.into());
+        }
         match config.host_mode() {
             BrowserHostMode::Window => Ok(config.default_profile().to_string()),
             BrowserHostMode::Auto if self.companion_live() => Ok(COMPANION_PROFILE.into()),
@@ -738,7 +751,16 @@ pub fn lease_unknown() -> BrowserError {
 pub fn host_unavailable() -> BrowserError {
     BrowserError::new(
         "host_unavailable",
-        "the companion browser is not running; start it, or set [browser] host = \"auto\" to use the herdr+ window",
+        "the herdr+ companion browser is not running; `herdr browser companion start` starts it (or set [browser] window = true and host = \"auto\" for the herdr+ window)",
+    )
+}
+
+/// Fork (companion launcher): an op on a window profile while the herdr+
+/// window is off (`[browser] window = false`).
+pub fn window_disabled() -> BrowserError {
+    BrowserError::new(
+        "window_disabled",
+        "the herdr+ browser window is off ([browser] window = false); agents use the companion browser. Set [browser] window = true to use the window again.",
     )
 }
 

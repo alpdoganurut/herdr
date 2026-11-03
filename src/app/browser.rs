@@ -22,7 +22,8 @@ impl App {
         if self.policy.persist_session {
             hub.enable_persistence(&crate::session::data_dir());
         }
-        if config.enabled && config.autostart {
+        // `[browser] autostart` is the herdr+ window's (ignored while it is off).
+        if config.enabled && config.autostart && config.window {
             let _ = hub.start(None);
         }
         // Fork (companion launcher): the companion the last server started

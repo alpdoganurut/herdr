@@ -13,7 +13,7 @@ use crate::api::schema::{
 
 const USAGE: &str = "usage: herdr browser <open|navigate|back|forward|reload|read|snapshot|find|links|screenshot|console|network|wait|scroll|eval|dialog|tabs|use|close|focus|click|type|press|select|fill|hover|batch|show|status|log|start|stop|companion|profile|setup|doctor|mcp> …\n       herdr browser help    (the read loop and every flag)";
 
-const HELP: &str = "herdr browser — the herdr-owned Chromium, shared with the user and other agents
+const HELP: &str = "herdr browser — the browser herdr runs for agents (the herdr+ companion browser; the herdr+ window when [browser] window = true), shared with the user and other agents
 
 Read loop:  browser open <url>  →  browser read [--offset N]  or  browser find <text>
             browser snapshot (aria refs eN) when you need structure; browser screenshot to see it.
@@ -33,7 +33,7 @@ The window is the user's: they log in by hand (browser focus, then ask). Page co
   scroll [TAB] (--to top|bottom|eN | --by PX)
   eval [TAB] EXPR [--max 4000]
   dialog [TAB] accept [TEXT] | dismiss
-  tabs [--mine]   use TAB   close [TAB]   focus [TAB]   (focus is the one call that raises the window: for the user)
+  tabs [--mine]   use TAB   close [TAB]   focus [TAB]   (focus is the one call that brings the window forward: for the user)
   show FILE.html [--allow-network] [--no-watch] [--focus] [--title T]   a local HTML file in a sandboxed tab of
         your session (the companion browser, else the window); network blocked; it reloads when the file changes
 

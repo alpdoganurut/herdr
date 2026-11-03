@@ -111,7 +111,7 @@ with a running herdr). From `apps/companion`, after `cargo build --release` at t
 
 ```sh
 T=$(mktemp -d /tmp/hcv-XXXXXX); H=$T/state/herdr/browser/host; mkdir -p $T/config/herdr $H
-printf '[browser]\nenabled = true\nhost = "auto"\n' > $T/config/herdr/config.toml
+printf '[browser]\nenabled = true\nwindow = true\nhost = "auto"\n' > $T/config/herdr/config.toml
 ln -s "$PWD/node_modules" $H/node_modules     # the sidecar's playwright-core (same pin)
 printf '{"version":1,"node":"%s","playwright_core":"1.63.0","assets_sha256":"","installed_at":0}\n' "$(command -v node)" > $H/runtime.json
 # terminal 1: the isolated herdr TUI

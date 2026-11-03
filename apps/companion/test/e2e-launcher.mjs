@@ -278,6 +278,7 @@ try {
   await section('a live handoff keeps the same process', async () => {
     const o = await browser(['open', `${W}/c`]);
     check('an open starts it again', o.result && o.result.data && o.result.data.host === 'companion', o.error);
+    const tab = o.result && (o.result.tab || (o.result.data && o.result.data.tab));
     const before = await companion();
     const h = await apiOk('server.live_handoff', { import_exe: BIN }, 60000);
     check('server.live_handoff answers', !h.error, h.error);
@@ -288,8 +289,8 @@ try {
     }, 30000, 250);
     check('the new server adopted it: same pid, managed, running', after && after.pid === before.pid, { before, after: after || (await companion()) });
     check('run.json still names it', (runRecord() || {}).pid === before.pid, runRecord());
-    const r = await browser(['read', '--format', 'text']);
-    check('agents keep working on its pages', !r.error, r.error);
+    const r = await browser(['read', tab || 'companion:t1', '--format', 'text']);
+    check('agents keep working on its pages', !r.error && /\/c/.test(JSON.stringify(r.result)), r.error || r.result);
   });
 
   await section('the companion goes with the server', async () => {
