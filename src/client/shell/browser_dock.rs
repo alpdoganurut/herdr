@@ -147,6 +147,14 @@ pub(crate) struct ViewStrip {
     pub(crate) stopped: Option<&'static str>,
 }
 
+/// A herdr tab's browser facts for the tab row and the detail strip: its
+/// pages and the view it is in (`docked`, `browser view`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TabBrowserMark {
+    pub(crate) pages: u32,
+    pub(crate) view: Option<&'static str>,
+}
+
 /// The last placement sent, for the server boot it went to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SentPlacement {
@@ -410,6 +418,41 @@ impl ClientShellState {
                     .find(|session| session.tab_id == tab_id)
             })
             .map_or(0, |session| session.pages)
+    }
+
+    /// Tabs with browser pages, or the dock or Browser view (the dim `◎`
+    /// and the detail strip's chips): one map per compose, O(sessions).
+    pub(crate) fn browser_page_tabs(&self) -> HashMap<String, TabBrowserMark> {
+        let mut tabs = HashMap::new();
+        if let Some(info) = self.browser.info.as_ref() {
+            for session in info.sessions.iter().filter(|session| session.pages > 0) {
+                tabs.insert(
+                    session.tab_id.clone(),
+                    TabBrowserMark {
+                        pages: session.pages,
+                        view: None,
+                    },
+                );
+            }
+        }
+        let endpoint = &self.active_endpoint_id;
+        for (view, set) in [
+            ("browser view", &self.browser_dock.viewing),
+            ("docked", &self.browser_dock.docked),
+        ] {
+            for (on, tab_id) in set.iter() {
+                if on != endpoint {
+                    continue;
+                }
+                let mark = tabs.entry(tab_id.clone()).or_insert(TabBrowserMark {
+                    pages: 0,
+                    view: None,
+                });
+                // Browser view wins over the dock (it covers it)
+                mark.view.get_or_insert(view);
+            }
+        }
+        tabs
     }
 
     /// The focused tab shows its view strip: `ui.browser_view_strip =

@@ -14,6 +14,7 @@ const { parseManaged, registerFields, startupWindow, watchdogFor, onQuitSignals 
 const { PlacementFeed, anyDockPlacement } = require('./dock/placements.js');
 const { WindowProbe } = require('./dock/window-probe.js');
 const { DockController } = require('./dock/dock.js');
+const { sessionCounts, sessionMenuItems } = require('./info.js');
 
 const VERSION = require('../package.json').version;
 const APP_NAME = 'herdr+ companion'; // the macOS menu bar, Dock and window titles
@@ -459,10 +460,13 @@ class Companion {
     if (this.dockWindow()) this.dockWin.setTitle(title);
   }
 
-  // `herdr+ companion — <label>`: the shown session.
+  // `herdr+ companion — <label> (3)`: the shown session and its page count.
   windowTitle() {
     if (!this.shownTab) return APP_NAME;
-    return `${APP_NAME} — ${this.store.label(this.shownTab)}`;
+    const label = this.store.label(this.shownTab);
+    const g = this.shownGroup();
+    const n = g ? g.entries.length : 0;
+    return `${APP_NAME} — ${label}${n ? ` (${n})` : ''}`;
   }
 
   // ---------- docked mode (launcher design §3.4; dock/dock.js decides) ----------
@@ -966,6 +970,8 @@ class Companion {
         }
         return;
       }
+      case 'sessions_menu':
+        return this.openSessionsMenu(dock);
       case 'select': {
         const hit = this.selectView(a);
         if (hit) {
@@ -1059,6 +1065,7 @@ class Companion {
     return {
       inset: process.platform === 'darwin' && !dock,
       docked: dock,
+      info: this.sessionInfo(),
       session: this.shownTab
         ? {
             tab_id: this.shownTab,
@@ -1088,6 +1095,37 @@ class Companion {
       status: line,
       update: this.update ? { version: this.update, restarting: this.restarting } : null,
     };
+  }
+
+  // The bar's count pill: pages in the shown session, pages and sessions in all of herdr.
+  sessionInfo() {
+    return sessionCounts(this.store, this.shownTab);
+  }
+
+  // The pill's menu: one item per herdr tab with pages; choosing one focuses it in herdr
+  // (the companion follows, docked or not).
+  openSessionsMenu(dock) {
+    const items = sessionMenuItems(this.store, this.shownTab);
+    const template = items.length
+      ? [
+          { label: 'Sessions with pages', enabled: false },
+          { type: 'separator' },
+          ...items.map((it) => ({
+            label: it.label,
+            sublabel: it.pages,
+            type: 'checkbox',
+            checked: it.current,
+            click: () => {
+              if (!this.link) return;
+              this.link.request('tab.focus', { tab_id: it.tab_id }).catch((e) => this.say('warn', `could not focus the herdr tab: ${e.message}`));
+            },
+          })),
+        ]
+      : [{ label: 'No session has pages yet', enabled: false }];
+    const win = dock ? this.dockWindow() : this.win;
+    if (!win || HEADLESS) return template.length;
+    Menu.buildFromTemplate(template).popup({ window: win });
+    return template.length;
   }
 
   pushStrip() {

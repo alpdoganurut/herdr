@@ -115,6 +115,8 @@ covering, hidden, moving, unbound, unsupported, elsewhere), which herdr's placeh
   ⌘-Tab and the Dock; needed to join a full-screen Space, where `visibleOnFullScreen` is set). The
   docked bar is always Dusk, without traffic lights or a drag region. ⌘⎋ gives the keyboard back to
   the terminal; ⌘T/W/L/R/[/] and ⌘⇧S work without the menu bar.
+* The bar's count pill (`3 · 12`: pages in this session · in every session; `src/info.js`) lists
+  every session with pages and focuses the herdr tab you pick; the window title carries the count.
 
 `test/e2e-placements.sh` runs the whole path headless against a real isolated herdr (a TUI client in
 a pty presses prefix+⇧B and prefix+⇧Z; a fake window plays Ghostty);
@@ -123,7 +125,7 @@ a pty presses prefix+⇧B and prefix+⇧Z; a fake window plays Ghostty);
 ## Develop
 
 ```sh
-npm test                 # unit tests (groups/sync logic, line parser, socket path, managed mode, dock geometry/core), no Electron
+npm test                 # unit tests (groups/sync logic, line parser, socket path, managed mode, dock geometry/core, info), no Electron
 npm run e2e              # headless Electron against test/mock-herdr.mjs (headless; never shows a window)
 test/e2e-real-herdr.sh   # headless Electron against a REAL isolated herdr (target/release/herdr or $HERDR_BIN):
                          # temp HOME/XDG dirs, no inherited HERDR_* vars, no Chromium window (fallback asserted by routing)
@@ -169,6 +171,7 @@ herdr tabs swaps its pages. Quit the companion and the next `open` goes to the h
 | `src/groups.js` | herdr tab → group bookkeeping, host_state merge, host_sync payloads (pure) |
 | `src/views.js` | WebContentsView per page, partitions, html sandbox, CDP target id, re-parenting (docked) |
 | `src/dock/` | docked mode: placements feed, window probe (JXA), geometry model, Ghostty config, the dock core and its Electron side |
+| `src/info.js` | the count pill and the sessions menu (pure) |
 | `src/preload/control.js`, `src/preload/strip.js` | context bridges |
 | `src/ui/` | strip page (bar variant A, light/dark follows the system) and control page; `icons/` = icon set A masters |
 | `assets/icon/` | eye-plus app icon: PNGs (window/dock), `eye-plus.icns` for packaging (`make-icns.sh` rebuilds it) |

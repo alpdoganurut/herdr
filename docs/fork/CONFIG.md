@@ -162,7 +162,7 @@ The companion browser can sit inside herdr's window: docked on the right of a ta
 | The view strip (`▣ Terminal  ◎ Browser · 3 … ◨`) | `"auto"`: while the tab has pages, the dock or Browser view | `[ui] browser_view_strip = "off"` | No, config only |
 | Give the companion the keyboard | unbound | `[keys] focus_browser` | No, config only |
 
-While the browser is not over its area, the area says why: starting (a spinner), not running (`[ Start companion ]`), not installed (the setup command), stopped after 5 crashes (`[ Restart ]`), "Click here once to dock the browser to this window" (several terminal windows could be this one), or the reason it cannot dock here.
+While the browser is not over its area, the area says why: starting (a spinner), not running (`[ Start companion ]`), not installed (the setup command), stopped after 5 crashes (`[ Restart ]`), "Click here once to dock the browser to this window" (several terminal windows could be this one), or the reason it cannot dock here. Tabs with browser pages wear a dim `◎` on their row (lit while an agent uses the browser, `◉` while a page needs you); the detail strip says `◎ 3 pages` and `docked` / `browser view`. In the companion's bar, the count pill (`3 · 12`: pages in this session · in all sessions) lists every session with pages; picking one focuses that herdr tab.
 
 Legacy keys: `wrap_agents` is only read as a fallback for `[agents] wrap` (a Settings change to wrap removes it), and `shell_hook` is inert. The commented default file still says `stop_with_server` is not honoured; it is.
 

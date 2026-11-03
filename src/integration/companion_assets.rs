@@ -53,6 +53,10 @@ pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../apps/companion/src/host.js"),
     ),
     (
+        "src/info.js",
+        include_bytes!("../../apps/companion/src/info.js"),
+    ),
+    (
         "src/main.js",
         include_bytes!("../../apps/companion/src/main.js"),
     ),

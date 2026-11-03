@@ -153,6 +153,8 @@ impl ClientShellState {
         let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
         let browser_attention_tabs = self.browser_attention_tabs();
+        // Fork (companion launcher): tabs with browser pages (one map, O(sessions)).
+        let browser_page_tabs = self.browser_page_tabs();
         let active_view = self.active_view();
         let pins_view = self.pins_view();
         let scheduled_view = self.scheduled_view();
@@ -175,6 +177,7 @@ impl ClientShellState {
             browser_row,
             browser_marked_tabs,
             browser_attention_tabs,
+            browser_page_tabs,
             coordinator_row,
             teams: super::teams::active_teams_of(
                 &self.teams,
@@ -378,6 +381,8 @@ impl ClientShellState {
         let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
         let browser_attention_tabs = self.browser_attention_tabs();
+        // Fork (companion launcher): tabs with browser pages (one map, O(sessions)).
+        let browser_page_tabs = self.browser_page_tabs();
         let pending_workspace_highlight =
             self.pending_workspace_highlight.as_ref().filter(|pending| {
                 self.mode != ClientShellMode::Navigate
@@ -412,6 +417,7 @@ impl ClientShellState {
                 browser_row,
                 browser_marked_tabs,
                 browser_attention_tabs,
+                browser_page_tabs,
                 coordinator_row,
                 teams: super::teams::active_teams_of(
                     &self.teams,

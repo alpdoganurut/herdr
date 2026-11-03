@@ -28,6 +28,14 @@ function render() {
   if (!state) return;
   document.body.classList.toggle('noinset', !state.inset);
   if (state.docked) document.body.classList.add('docked');
+  const pill = $('count');
+  const info = state.info;
+  if (info && info.total > 0) {
+    pill.hidden = false;
+    pill.textContent = `${info.here} · ${info.total}`;
+    const pages = (n) => `${n} page${n === 1 ? '' : 's'}`;
+    pill.title = `${pages(info.here)} in this session · ${pages(info.total)} in ${info.sessions} session${info.sessions === 1 ? '' : 's'}\nClick for every session with pages`;
+  } else pill.hidden = true;
   const sess = $('session');
   sess.textContent = '';
   if (state.session) {
@@ -180,6 +188,7 @@ $('note').addEventListener('keydown', (e) => {
   }
 });
 $('update').addEventListener('click', () => act('restart_update'));
+$('count').addEventListener('click', () => act('sessions_menu'));
 $('permallow').addEventListener('click', () => act('permission', { id: $('permbar').dataset.id, allow: true }));
 $('permdeny').addEventListener('click', () => act('permission', { id: $('permbar').dataset.id, allow: false }));
 // Shortcuts (⌘T/W/L/R/[/]) are application-menu accelerators in main.js.

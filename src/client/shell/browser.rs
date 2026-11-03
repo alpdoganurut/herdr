@@ -220,8 +220,13 @@ pub(super) fn age(then: u64, now: u64) -> String {
 }
 
 /// The overlay's rows for `info`: a header per profile, its open tabs
-/// newest activity first.
-pub(crate) fn browser_overlay_rows(info: &BrowserGetInfo, now: u64) -> Vec<BrowserOverlayRow> {
+/// newest activity first. Fork (companion launcher): each session's line
+/// says its view on this client (`docked`, `browser view`).
+pub(crate) fn browser_overlay_rows_with_views(
+    info: &BrowserGetInfo,
+    now: u64,
+    views: &std::collections::HashMap<String, super::browser_dock::TabBrowserMark>,
+) -> Vec<BrowserOverlayRow> {
     let mut rows = Vec::new();
     let mut profiles: Vec<&str> = info.profiles.iter().map(|p| p.name.as_str()).collect();
     for tab in &info.tabs {
@@ -263,8 +268,13 @@ pub(crate) fn browser_overlay_rows(info: &BrowserGetInfo, now: u64) -> Vec<Brows
             } else {
                 session.title.as_str()
             };
+            let view = views
+                .get(&session.tab_id)
+                .and_then(|mark| mark.view)
+                .map(|view| format!(" · {view}"))
+                .unwrap_or_default();
             rows.push(BrowserOverlayRow::Empty(format!(
-                "  {} {} · {} · {} page{}",
+                "  {} {} · {} · {} page{}{view}",
                 if session.needs_you {
                     TAB_BROWSER_ATTENTION_MARKER
                 } else {
@@ -606,11 +616,12 @@ impl ClientShellState {
     /// The Browser overlay, filled from the last `browser.get`; a fresh pull
     /// follows at once.
     pub(crate) fn open_browser_overlay(&mut self, outcome: &mut ClientShellInput) {
+        let views = self.browser_page_tabs();
         let rows = self
             .browser
             .info
             .as_ref()
-            .map(|info| browser_overlay_rows(info, unix_now()))
+            .map(|info| browser_overlay_rows_with_views(info, unix_now(), &views))
             .unwrap_or_default();
         let cursor = rows
             .iter()
@@ -640,10 +651,11 @@ impl ClientShellState {
     }
 
     fn sync_browser_overlay(&mut self) {
+        let views = self.browser_page_tabs();
         let Some(info) = self.browser.info.as_ref() else {
             return;
         };
-        let rows = browser_overlay_rows(info, unix_now());
+        let rows = browser_overlay_rows_with_views(info, unix_now(), &views);
         if let Some(ClientShellOverlay::Browser(overlay)) = self.overlay.as_mut() {
             let selected = overlay.rows.get(overlay.cursor).cloned();
             let cursor = selected

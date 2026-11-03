@@ -255,6 +255,10 @@ pub(super) struct ShellRenderState<'a> {
     /// Fork (companion browser): herdr tabs whose browser pages need the
     /// user: the `◉` marker (attention color) instead of `◎`.
     pub(super) browser_attention_tabs: HashSet<String>,
+    /// Fork (companion launcher): herdr tabs with browser pages (a dim `◎`
+    /// below the lit and `◉` marks), their page count and the tab's view
+    /// (`docked`, `browser view`) for the detail chips.
+    pub(super) browser_page_tabs: HashMap<String, super::browser_dock::TabBrowserMark>,
     /// Fork: the `tabs` layout's pinned coordinator row (the bottom-most).
     pub(super) coordinator_row: Option<super::coordinator::CoordinatorRow>,
     /// Fork: the active endpoint's teams (group header mark, member rows).

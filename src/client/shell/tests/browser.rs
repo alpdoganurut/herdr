@@ -1090,3 +1090,70 @@ pub(crate) mod fork_smoke {
         assert_eq!(cell.symbol, "◎");
     }
 }
+
+/// Fork (companion launcher): a tab with browser pages wears a dim `◎`
+/// (overlay0) on its row; an agent using the browser lights it (accent) and
+/// a page that needs the user turns it into `◉` (yellow), in that priority.
+/// The detail strip says how many pages and the tab's view.
+#[test]
+fn tabs_with_pages_wear_a_dim_browser_mark_below_activity_and_attention() {
+    let mut snapshot = browser_snapshot();
+    snapshot.tabs.push(tab("tab_3", "scratch", false));
+    let mut state = tabs_state(snapshot);
+    state.compose(106, 20).expect("composed frame");
+    let mut info = running_info(1, now());
+    info.sessions = vec![
+        crate::api::schema::BrowserSessionInfo {
+            tab_id: "tab_1".into(),
+            pages: 1,
+            ..Default::default()
+        },
+        crate::api::schema::BrowserSessionInfo {
+            tab_id: "tab_2".into(),
+            pages: 3,
+            needs_you: true,
+            ..Default::default()
+        },
+        crate::api::schema::BrowserSessionInfo {
+            tab_id: "tab_3".into(),
+            pages: 2,
+            ..Default::default()
+        },
+    ];
+    deliver(&mut state, info);
+    let frame = state.compose(106, 20).expect("composed frame");
+    let mark = |tab_id: &str| {
+        let rect = state
+            .hits
+            .sidebar_tabs
+            .iter()
+            .find(|(_, id)| id == tab_id)
+            .map(|(rect, _)| *rect)
+            .expect("row");
+        (rect.x..rect.right())
+            .map(|x| &frame.cells[(rect.y * frame.width + x) as usize])
+            .find(|cell| cell.symbol == "◎" || cell.symbol == "◉")
+            .map(|cell| (cell.symbol.clone(), cell.fg))
+    };
+    let color = crate::protocol::color_to_u32;
+    let palette = &state.config.palette;
+    // tab_1: an agent used the browser just now (running_info): lit
+    assert_eq!(
+        mark("tab_1"),
+        Some(("◎".to_string(), color(palette.accent)))
+    );
+    // tab_2: a page needs the user
+    assert_eq!(
+        mark("tab_2"),
+        Some(("◉".to_string(), color(palette.yellow)))
+    );
+    // tab_3: only pages: dim
+    assert_eq!(
+        mark("tab_3"),
+        Some(("◎".to_string(), color(palette.overlay0)))
+    );
+    // the page counts and the views for the detail strip
+    let marks = state.browser_page_tabs();
+    assert_eq!(marks["tab_2"].pages, 3);
+    assert_eq!(marks["tab_3"].view, None);
+}

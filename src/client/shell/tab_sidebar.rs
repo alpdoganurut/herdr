@@ -1586,6 +1586,9 @@ fn push_reminder_marks(
         marks.push(super::browser::TAB_BROWSER_ATTENTION_MARKER, palette.yellow);
     } else if state.browser_marked_tabs.contains(&tab.tab_id) {
         marks.push(super::browser::TAB_BROWSER_MARKER, palette.accent);
+    } else if state.browser_page_tabs.contains_key(&tab.tab_id) {
+        // Fork (companion launcher): the tab has browser pages.
+        marks.push(super::browser::TAB_BROWSER_MARKER, palette.overlay0);
     }
     let remind_every = tab
         .remind_every

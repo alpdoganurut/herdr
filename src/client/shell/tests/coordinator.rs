@@ -893,6 +893,7 @@ fn render_sidebar(
         browser_row: None,
         browser_marked_tabs: HashSet::new(),
         browser_attention_tabs: HashSet::new(),
+        browser_page_tabs: HashMap::new(),
         voice: None,
         coordinator_row: None,
         teams: None,
