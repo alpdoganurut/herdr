@@ -31,7 +31,9 @@ apps/companion/scripts/try-launcher.sh
 apps/companion/scripts/try.sh
 apps/companion/spike/driver.mjs
 apps/companion/spike/main.js
+apps/companion/src/context-menu.js
 apps/companion/src/dock/dock.js
+apps/companion/src/dock/front.jxa.js
 apps/companion/src/dock/geometry.js
 apps/companion/src/dock/ghostty-config.js
 apps/companion/src/dock/placements.js
@@ -62,6 +64,7 @@ apps/companion/src/ui/strip.css
 apps/companion/src/ui/strip.html
 apps/companion/src/ui/strip.js
 apps/companion/src/views.js
+apps/companion/test/context-menu.test.js
 apps/companion/test/dock.test.js
 apps/companion/test/e2e-launcher.mjs
 apps/companion/test/e2e-launcher.sh
