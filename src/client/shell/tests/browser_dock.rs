@@ -272,6 +272,50 @@ fn a_modal_over_the_band_unshows_the_placement() {
     assert!(sent_placement(&mut state, later + std::time::Duration::from_secs(2)).is_none());
 }
 
+/// A placement that waits for its gap wakes the tick once per gap, even
+/// when the tick cannot send it (the runtime takes it only while the
+/// endpoint is online and no activation is pending), and needs no frame.
+/// A snapshot that moves the focused tab changes the placement without any
+/// input (the runtime sends it with the snapshot).
+#[test]
+fn a_waiting_placement_wakes_the_tick_once_per_gap_and_follows_a_tab_switch() {
+    let mut state = dock_state();
+    toggle_dock(&mut state);
+    let t0 = std::time::Instant::now();
+    let first = sent_placement(&mut state, t0).expect("sent").expect("spec");
+    assert!(first.shown);
+    // a change inside the gap waits for it
+    state.browser_dock.nudge += 1;
+    assert!(sent_placement(&mut state, t0 + std::time::Duration::from_millis(5)).is_none());
+    let gap = std::time::Duration::from_millis(33);
+    assert!(state.next_browser_dock_deadline(t0).expect("waiting") >= t0 + gap);
+    // a tick that could not send it: the next wake is a gap later, no frame
+    let t1 = t0 + std::time::Duration::from_millis(40);
+    let mut outcome = ClientShellInput::default();
+    state.tick_browser_dock(t1, &mut outcome);
+    assert!(!outcome.repaint, "a waiting placement needs no frame");
+    assert!(
+        state.next_browser_dock_deadline(t1).expect("still waiting") >= t1 + gap,
+        "never a busy loop"
+    );
+    // once the runtime can send it, it goes, and nothing waits any more
+    let nudged = sent_placement(&mut state, t1).expect("sent").expect("spec");
+    assert_eq!(nudged.nudge, first.nudge + 1);
+    assert!(state.next_browser_dock_deadline(t1).is_none());
+    // the server shows the other tab (no input): the placement says so
+    state.set_snapshot(Box::new(two_tab_snapshot("tab_2")));
+    recompose(&mut state);
+    let switched = sent_placement(&mut state, t1 + std::time::Duration::from_secs(1))
+        .expect("sent with the snapshot")
+        .expect("spec");
+    assert_eq!(switched.tab_id, "tab_2");
+    assert!(
+        !switched.shown,
+        "tab_2 has no dock: reserved elsewhere, not covered"
+    );
+    assert_eq!(switched.kind, BrowserPlacementKind::Side);
+}
+
 #[test]
 fn fork_smoke_browser_view_covers_the_pane_area_without_resizing_the_panes() {
     let mut state = dock_state();

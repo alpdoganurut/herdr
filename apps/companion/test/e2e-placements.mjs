@@ -168,6 +168,31 @@ if (covering) {
   writeWindows([ghostty]);
   await waitFor(async () => ((await statusOf(target.id)) || {}).state === 'covering');
 
+  // ---------- a tab switch without input (an agent's or the companion's tab.focus) ----------
+  // The client re-publishes its placement with the snapshot that moves its tab (no key, no
+  // mouse: the pty types nothing), well inside the 2 s browser refresh that would otherwise
+  // carry it.
+  const docked = target.tab_id;
+  const created = await api('tab.create', { label: 'plain', focus: false });
+  const plain = (created.tab && created.tab.tab_id) || created.tab_id;
+  await sleep(300);
+  let started = Date.now();
+  await api('tab.focus', { tab_id: plain });
+  const away = await waitFor(async () => {
+    const d = await debug();
+    const p = d && d.decision && d.decision.target;
+    const s = await statusOf(target.id);
+    return !p && d && !d.shown && s && s.state === 'hidden' ? { ms: Date.now() - started } : null;
+  }, 5000, 50);
+  check('a tab.focus to a tab without the dock unshows the placement at once', !!away && away.ms < 1200, away || (await debug().catch((e) => e.message)));
+  started = Date.now();
+  await api('tab.focus', { tab_id: docked });
+  const back = await waitFor(async () => {
+    const d = await debug();
+    return d && d.shown && d.decision.target && d.decision.target.placement.tab_id === docked ? { ms: Date.now() - started } : null;
+  }, 5000, 50);
+  check('and back on the docked tab the dock covers it again at once', !!back && back.ms < 1200, back || (await debug().catch((e) => e.message)));
+
   // ---------- Browser view: prefix+Z ----------
   type('02 5a');
   const full = await waitFor(async () => {

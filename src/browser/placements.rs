@@ -254,7 +254,10 @@ impl PlacementBoard {
 
     /// Every placement, at once when the board is newer than `since_rev`
     /// (or it is `None`), else after the next change, `timeout` (capped at
-    /// [`MAX_WAIT`]) or the server stopping (`running` false).
+    /// [`MAX_WAIT`]) or the server stopping (`running` false). A
+    /// `since_rev` this board never reached is another server process's (a
+    /// host that outlived a live handoff): at once too, with the new
+    /// `boot_id`.
     pub fn wait(
         &self,
         since_rev: Option<u64>,
@@ -264,7 +267,7 @@ impl PlacementBoard {
         let deadline = Instant::now() + timeout.min(MAX_WAIT);
         let mut board = self.lock();
         loop {
-            let newer = since_rev.is_none_or(|since| board.rev > since);
+            let newer = since_rev.is_none_or(|since| board.rev != since);
             let now = Instant::now();
             if newer || now >= deadline || !running.load(Ordering::Relaxed) {
                 return Self::snapshot_locked(&board);
@@ -389,6 +392,12 @@ mod tests {
         // the same placement again changes nothing
         assert!(!board.set(7, Some(spec("pl1", "t1")), facts(true, true), 101));
         assert_eq!(board.snapshot().rev, 1);
+        // a rev from another server process (ahead of this board) answers at
+        // once: a host that outlived a live handoff starts over
+        let started = Instant::now();
+        let other_boot = board.wait(Some(57), Duration::from_secs(10), &running);
+        assert_eq!(other_boot.rev, 1);
+        assert!(started.elapsed() < Duration::from_secs(2));
         // the server stopping ends a wait
         running.store(false, Ordering::Relaxed);
         let started = Instant::now();

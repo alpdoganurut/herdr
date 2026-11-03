@@ -184,6 +184,10 @@ pub(crate) struct ClientBrowserDockState {
     first_sent_at: Option<Instant>,
     /// A changed placement waits for the gap after the last one.
     pending: bool,
+    /// The last tick that found a placement waiting: the next waits a gap
+    /// too (a tick that cannot send, the endpoint offline or an activation
+    /// pending, never turns into a busy loop).
+    pending_ticked_at: Option<Instant>,
     /// Bumped by a click on the unbound placeholder.
     pub(crate) nudge: u32,
     guard_toasts: HashMap<String, Instant>,
@@ -227,6 +231,7 @@ impl ClientBrowserDockState {
             sent_at: None,
             first_sent_at: None,
             pending: false,
+            pending_ticked_at: None,
             nudge: 0,
             guard_toasts: HashMap::new(),
             test_view: match std::env::var("HERDR_TEST_BROWSER_VIEW").as_deref() {
@@ -1147,12 +1152,14 @@ impl ClientShellState {
     }
 
     /// When the tick loop must wake for the dock: a placement waiting for
-    /// its gap, the placeholder's next spinner frame.
+    /// its gap (a gap after the last send and after the last tick that
+    /// found it waiting), the placeholder's next spinner frame.
     pub(crate) fn next_browser_dock_deadline(&self, now: Instant) -> Option<Instant> {
         let pending = self.browser_dock.pending.then(|| {
-            self.browser_dock
-                .sent_at
-                .map_or(now, |at| (at + PLACEMENT_GAP).max(now))
+            let gap_after = |at: Option<Instant>| at.map_or(now, |at| at + PLACEMENT_GAP);
+            gap_after(self.browser_dock.sent_at)
+                .max(gap_after(self.browser_dock.pending_ticked_at))
+                .max(now)
         });
         let spin = self.browser_placeholder_spins().then(|| now + SPIN_EVERY);
         match (pending, spin) {
@@ -1161,9 +1168,13 @@ impl ClientShellState {
         }
     }
 
-    /// The tick: a spinning placeholder repaints; the smoke's test view
-    /// opens once docking is offered.
-    pub(crate) fn tick_browser_dock(&mut self, _now: Instant, outcome: &mut ClientShellInput) {
+    /// The tick: a spinning placeholder repaints; a waiting placement goes
+    /// out after it (the runtime takes it, no frame needed); the smoke's
+    /// test view opens once docking is offered.
+    pub(crate) fn tick_browser_dock(&mut self, now: Instant, outcome: &mut ClientShellInput) {
+        if self.browser_dock.pending {
+            self.browser_dock.pending_ticked_at = Some(now);
+        }
         if self.browser_dock.test_view.is_some() && self.browser_dock_offered() {
             if let Some(tab_id) = self.browser_dock_focused_tab().map(str::to_owned) {
                 match self.browser_dock.test_view.take() {
@@ -1175,7 +1186,7 @@ impl ClientShellState {
                 }
             }
         }
-        if self.browser_placeholder_spins() || self.browser_dock.pending {
+        if self.browser_placeholder_spins() {
             outcome.repaint = true;
         }
     }
