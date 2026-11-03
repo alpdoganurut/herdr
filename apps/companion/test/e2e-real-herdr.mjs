@@ -154,7 +154,7 @@ async function inspector() {
   const port = await waitFor(() => Number(fs.readFileSync(path.join(PROFILE, 'DevToolsActivePort'), 'utf8').split('\n')[0]) || null, 20000);
   const b = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 20000 });
   const find = (prefix) => b.contexts().flatMap((c) => c.pages()).find((p) => p.url().startsWith(prefix));
-  insp = { browser: b, control: () => find('herdr-companion://control/'), strip: () => find('herdr-companion://ui/') };
+  insp = { browser: b, control: () => find('herdr-companion://control/'), strip: () => find('herdr-companion://ui/strip.html') };
   return insp;
 }
 const views = () => within(insp.control().evaluate(() => globalThis.__herdrCompanion.views()), 10000, 'views()');
@@ -256,6 +256,70 @@ try {
     const s = await browser(['screenshot', '--out', path.join(T, 'shot.png')], p1);
     const size = fs.existsSync(path.join(T, 'shot.png')) ? fs.statSync(path.join(T, 'shot.png')).size : 0;
     check('screenshot of the (hidden-or-shown) view', !s.error && size > 1000, s.error || { bytes: size });
+  });
+
+  await section('page dialogs: an agent sees and answers alert / confirm / prompt', async () => {
+    // a dialog blocks the page: arm it from a timer, so the eval and its after-checks finish first
+    const arm = (expr) => browser(['eval', `setTimeout(() => { window.__r = JSON.stringify(${expr}); }, 1500); 'armed'`], p1);
+    const result = async () => {
+      const r = await browser(['eval', 'window.__r'], p1);
+      return r.error ? null : text(r);
+    };
+    const blocked = async () => {
+      const r = await browser(['read', '--format', 'text'], p1);
+      return r.error && r.error.code === 'dialog_open' ? r.error : null;
+    };
+    let a = await arm(`prompt('Copy this:', 'the text')`);
+    check('a page prompt is armed', !a.error, a.error);
+    let b = await waitFor(blocked, 8000, 300);
+    check('herdr sees the open prompt (ops answer dialog_open with its message)', b && /prompt/.test(b.message) && /Copy this:/.test(b.message), b);
+    const tabsR = await browser(['tabs'], p1);
+    check('tabs lists the dialog', /dialog/.test(text(tabsR)), text(tabsR).slice(0, 300));
+    const card = await waitFor(async () => {
+      const p = insp.browser.contexts().flatMap((c) => c.pages()).find((x) => x.url().startsWith('herdr-companion://ui/dialog.html'));
+      return p && (await p.evaluate(() => !document.getElementById('card').hidden && document.getElementById('field').value));
+    }, 5000);
+    check('the companion shows its card with the default', card === 'the text', card);
+    let d = await browser(['dialog', 'accept', 'x'], p1);
+    check('herdr browser dialog accept "x" answers it', !d.error && /prompt/.test(text(d)), d.error || text(d).slice(0, 200));
+    let got = await waitFor(async () => ((v) => (v && /"x"/.test(v) ? v : null))(await result()), 5000, 300);
+    check('the page sees "x"', got, got);
+    a = await arm(`prompt('again', 'dflt')`);
+    await waitFor(blocked, 8000, 300);
+    d = await browser(['dialog', 'accept'], p1);
+    got = await waitFor(async () => ((v) => (v && /"dflt"/.test(v) ? v : null))(await result()), 5000, 300);
+    check('accept without text returns the default', !d.error && got, d.error || got);
+    a = await arm(`prompt('cancel me', 'dflt')`);
+    await waitFor(blocked, 8000, 300);
+    d = await browser(['dialog', 'dismiss'], p1);
+    got = await waitFor(async () => ((v) => (v && /null/.test(v) ? v : null))(await result()), 5000, 300);
+    check('dismiss returns null', !d.error && got, d.error || got);
+    a = await arm(`confirm('sure?')`);
+    b = await waitFor(blocked, 8000, 300);
+    check('a confirm is seen', b && /confirm/.test(b.message), b);
+    d = await browser(['dialog', 'accept'], p1);
+    got = await waitFor(async () => ((v) => (v && /true/.test(v) ? v : null))(await result()), 5000, 300);
+    check('accepting it returns true', !d.error && got, d.error || got);
+    a = await arm(`(alert('hello'), 'after alert')`);
+    b = await waitFor(blocked, 8000, 300);
+    check('an alert is seen', b && /alert/.test(b.message), b);
+    d = await browser(['dialog', 'accept'], p1);
+    got = await waitFor(async () => ((v) => (v && /after alert/.test(v) ? v : null))(await result()), 5000, 300);
+    check('accepting it lets the page go on', !d.error && got, d.error || got);
+    const none = await browser(['dialog', 'accept'], p1);
+    check('no dialog open: no_dialog', none.error && none.error.code === 'no_dialog', none.error || none.result);
+    // the user answers in the card: herdr's dialog state follows
+    a = await arm(`prompt('user answers', 'u')`);
+    await waitFor(blocked, 8000, 300);
+    const cp = insp.browser.contexts().flatMap((c) => c.pages()).find((x) => x.url().startsWith('herdr-companion://ui/dialog.html'));
+    await within(cp.evaluate(() => document.getElementById('ok').click()), 5000, 'card OK');
+    const free = await waitFor(async () => {
+      const r = await browser(['read', '--format', 'text'], p1);
+      return !r.error;
+    }, 5000, 300);
+    check('a dialog the user answered no longer blocks the agent', free);
+    got = await result();
+    check('… and the page got the user\'s answer', got && /"u"/.test(got), got);
   });
 
   await section('focus following (tab.focused)', async () => {
@@ -417,6 +481,21 @@ try {
     check('browser sessions carried over', after.length === before.length && after.every((s) => before.some((b) => b.tab_id === s.tab_id && b.pages === s.pages)), { before, after });
     const r = await browser(['read', '--format', 'text'], p1);
     check('the agent keeps working on its tab after the handoff', !r.error && /E/.test(text(r)), r.error || text(r).slice(0, 100));
+  });
+
+  await section('page dialogs after a handoff: the new sidecar still sees and answers them', async () => {
+    await browser(['eval', `setTimeout(() => { window.__r = JSON.stringify(prompt('after handoff', 'h')); }, 1500); 'armed'`], p1);
+    const b = await waitFor(async () => {
+      const r = await browser(['read', '--format', 'text'], p1);
+      return r.error && r.error.code === 'dialog_open' ? r.error : null;
+    }, 8000, 300);
+    check('the prompt is seen after the handoff', b, b);
+    const d = await browser(['dialog', 'accept', 'y'], p1);
+    const got = await waitFor(async () => {
+      const r = await browser(['eval', 'window.__r'], p1);
+      return !r.error && /"y"/.test(text(r)) ? text(r) : null;
+    }, 5000, 300);
+    check('… and answered', !d.error && got, d.error || got);
   });
 
   await section('cross-workspace move: the moved tab keeps its live views', async () => {

@@ -886,6 +886,61 @@ export class ControlPage {
   }
 }
 
+/** Fork (companion dialogs): a page's alert / confirm / prompt in the
+ *  companion. Electron has no prompt() and the companion shows all three in
+ *  its own card, so no CDP Page.javascriptDialogOpening comes; the companion
+ *  pushes its open dialogs (`{seq, dialogs: [{id, view_id, target_id, type,
+ *  message, default_value}]}`) to a binding on its control page and answers
+ *  through `dialog({view_id, id, accept, text})`. This stands in for
+ *  Playwright's Dialog, so the sidecar's dialog paths (events, guard,
+ *  `browser dialog accept|dismiss [text]`) stay as they are. An accept
+ *  without text keeps what the field holds (the default unless the user
+ *  typed). */
+export const DIALOG_BINDING = '__herdrDialogs';
+export class CompanionDialog {
+  constructor(control, d, onAnswer = () => {}) {
+    this.control = control;
+    this.companion = true;
+    this.id = String(d.id);
+    this.viewId = String(d.view_id);
+    this._type = ['alert', 'confirm', 'prompt'].includes(d.type) ? d.type : 'alert';
+    this._message = String(d.message == null ? '' : d.message);
+    this._default = String(d.default_value == null ? '' : d.default_value);
+    this.onAnswer = onAnswer;
+  }
+  type() { return this._type; }
+  message() { return this._message; }
+  defaultValue() { return this._default; }
+  accept(text) { return this._answer(true, text); }
+  dismiss() { return this._answer(false); }
+  async _answer(accept, text) {
+    this.onAnswer(this.id);
+    const arg = { view_id: this.viewId, id: this.id, accept };
+    if (typeof text === 'string') arg.text = text;
+    await this.control.call('dialog', arg);
+  }
+}
+
+/** What a companion dialog push changes for the tracked pages: `current`
+ *  is target -> the page's CompanionDialog (or null), `list` the pushed
+ *  dialogs; `answered` the ids already answered here (a push from before the
+ *  answer must not bring one back). Answers `{ open: [[target, d]], close:
+ *  [target] }`. */
+export function reconcileDialogs(current, list, answered = new Set()) {
+  const pushed = new Map();
+  for (const d of Array.isArray(list) ? list : []) {
+    if (d && d.target_id && d.id && !answered.has(String(d.id))) pushed.set(String(d.target_id), d);
+  }
+  const open = [];
+  const close = [];
+  for (const [target, have] of current) {
+    const d = pushed.get(target);
+    if (d && (!have || have.id !== String(d.id))) open.push([target, d]);
+    else if (!d && have) close.push(target);
+  }
+  return { open, close };
+}
+
 /** File watches for HTML views: the file and its directory (not
  *  recursive), debounced, then `reload()`. At most `max` views. `watchFn`
  *  is `fs.watch`. */

@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, DIALOG_BINDING } from './activity.mjs';
 import { pathToFileURL } from 'node:url';
 import nodePath from 'node:path';
 /** Kept out of the connect for the post-timeout diagnosis (the page probe: a 1 s list fetch, 1 s probes). */
@@ -104,6 +104,10 @@ class Profile {
     this.kind = 'chromium';
     this.control = null;
     this.hostDetail = '';
+    // Fork (companion dialogs): the companion's last pushed dialogs, target -> dialog
+    this.dialogSeq = 0;
+    this.dialogs = new Map();
+    this.dialogsAnswered = new Set();
   }
   // One at a time per profile (tab creation and its extension-tab adoption must not interleave).
   serial(fn) {
@@ -137,6 +141,7 @@ async function track(profile, page, initiator) {
     const state = new PageState(profile, page, targetId);
     profile.pages.set(targetId, state);
     state.session = session;
+    if (profile.kind === 'companion') syncCompanionDialogs(profile); // one it pushed before the page was tracked
     // Page events are per session: without Page.enable on ours, javascriptDialogClosed never arrives.
     await session.send('Page.enable').catch(() => {});
     session.on('Page.javascriptDialogClosed', () => {
@@ -343,10 +348,56 @@ async function attachCompanion(profile, port, deadlineMs, nonce) {
   for (const context of browser.contexts()) wireContext(profile, context);
   wireBrowser(profile, browser);
   await trackAll(profile);
+  await watchCompanionDialogs(profile);
   profile.hostDetail = `electron ${browser.version()}`;
   log('debug', `attach ${profile.name}:${port} (companion) in ${Date.now() - t0} ms`);
   event('browser', { profile: profile.name, kind: 'attached', detail: browser.version() });
   return Object.assign(await tabs(profile), { companion: { state: 'host', detail: profile.hostDetail } });
+}
+
+/** Fork (companion dialogs): pages' alert / confirm / prompt live in the
+ *  companion (no CDP dialog events). Its pushes reach a binding on the
+ *  control page; the current list is read once at attach (one opened before,
+ *  or across a herdr restart). A companion without dialogs() just never
+ *  pushes. */
+async function watchCompanionDialogs(profile) {
+  profile.dialogSeq = 0;
+  profile.dialogs = new Map();
+  profile.dialogsAnswered = new Set();
+  const page = profile.control && profile.control.find();
+  if (!page) return;
+  try {
+    await page.exposeBinding(DIALOG_BINDING, (_source, payload) => applyCompanionDialogs(profile, payload));
+  } catch (err) { log('debug', `dialog binding: ${String(err && err.message).split('\n')[0]}`); }
+  const now = await withTimeout(profile.control.call('dialogs'), 2000, 'x', 'x').catch(() => null);
+  if (now) applyCompanionDialogs(profile, now);
+}
+function applyCompanionDialogs(profile, payload) {
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.dialogs) || profile.kind !== 'companion') return;
+  const seq = Number(payload.seq) || 0;
+  if (seq < profile.dialogSeq) return; // an older answer (the attach read) after a newer push
+  profile.dialogSeq = seq;
+  profile.dialogs = new Map(payload.dialogs.filter((d) => d && d.target_id).map((d) => [String(d.target_id), d]));
+  syncCompanionDialogs(profile);
+}
+function syncCompanionDialogs(profile) {
+  if (!profile.control) return;
+  const current = new Map();
+  for (const [target, state] of profile.pages) {
+    if (state.closed) continue;
+    current.set(target, state.dialog && state.dialog.companion ? state.dialog : null);
+  }
+  const { open, close } = reconcileDialogs(current, [...profile.dialogs.values()], profile.dialogsAnswered);
+  for (const [target, d] of open) {
+    const state = profile.pages.get(target);
+    state.dialog = new CompanionDialog(profile.control, d, (id) => profile.dialogsAnswered.add(id));
+    event('dialog', { profile: profile.name, target, type: state.dialog.type(), message: state.dialog.message().slice(0, 500), state: 'open' });
+  }
+  for (const target of close) {
+    const state = profile.pages.get(target);
+    state.dialog = null;
+    event('dialog', { profile: profile.name, target, state: 'closed' });
+  }
 }
 
 /** Track every page of every context not tracked yet (a view another context created). */
@@ -425,6 +476,7 @@ function needPage(profile, target) {
 // resolving means the dialog is gone (belt and braces next to Page.javascriptDialogClosed).
 async function dialogStillOpen(state) {
   if (!state.dialog) return false;
+  if (state.dialog.companion) return true; // the companion pushes its close (a frame's dialog leaves the page answering)
   const gone = await withTimeout(state.page.evaluate('1').then(() => true), 300, 'x', 'x').catch(() => false);
   if (gone) {
     state.dialog = null;

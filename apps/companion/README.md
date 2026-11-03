@@ -83,7 +83,7 @@ answers `unknown_method` and the strip says "this herdr is too old for the compa
 * Strip actions and page load failures/crashes go to herdr as `browser.host_report` events
   (in-page clicks and typing are never reported).
 * Hidden control page `herdr-companion://control/` exposes `window.__herdrCompanion`
-  (`nonce/open/select/focus/close/show/views`) for herdr's sidecar.
+  (`nonce/open/select/focus/close/show/views/dialogs/dialog`) for herdr's sidecar.
 * HTML views (`show`): sandboxed, one in-memory partition each, `file://` limited to the file's
   directory (symlinks resolved), network blocked unless `allow_network`, all permissions denied,
   navigation outside the directory opens http(s) links as normal tabs.
@@ -92,6 +92,21 @@ answers `unknown_method` and the strip says "this herdr is too old for the compa
   camera/microphone and clipboard read are asked in the strip (Allow once / Deny; unanswered after
   60 s or when the page leaves the origin = denied; "once" lasts until the page leaves the origin),
   sanitized clipboard writes are allowed, everything else is denied.
+* Page dialogs: Electron has no `prompt()` and shows `alert()` / `confirm()` as native sheets, so
+  every page view's preload (`src/preload/page.js`, every frame) replaces the three with a
+  synchronous call to the main process, which shows the companion's own card (`src/ui/dialog.*`,
+  the bar's look, light/dark, Dusk docked) at the top of the page: the message, a prompt's field
+  holding the default value selected (a "Copy this:" fallback can be copied at once), OK/Cancel;
+  Enter = OK, Esc = Cancel. The page is blocked until it is answered and gets what a browser
+  returns (alert nothing, confirm a boolean, prompt the text or null). One card per page; a
+  second dialog of the page (a cross-origin frame) waits behind it. The card belongs to its page:
+  another herdr tab's page keeps its dialog (and what was typed) until it shows again (its tab in
+  the bar is marked). A navigation, a reload, closing the page or a quit cancels it (null /
+  false). `src/dialogs.js` keeps the books. Agents see and answer them as before: the companion
+  pushes its open dialogs to herdr's sidecar (a binding on the control page) and answers
+  `dialog({view_id, accept, text})`, so `herdr browser dialog accept [text] | dismiss`, the
+  `dialog_open` guard and herdr's needs-you work as with CDP dialogs (an accept without text keeps
+  what the field holds).
 
 The DevTools port is loopback-only and unauthenticated (same exposure as the herdr+ window).
 
@@ -151,7 +166,7 @@ a pty presses prefix+⇧B and prefix+⇧Z; a fake window plays Ghostty);
 ## Develop
 
 ```sh
-npm test                 # unit tests (groups/sync logic, line parser, socket path, managed mode, dock geometry/core, info), no Electron
+npm test                 # unit tests (groups/sync logic, line parser, socket path, managed mode, dock geometry/core, info, dialogs), no Electron
 npm run e2e              # headless Electron against test/mock-herdr.mjs (headless; never shows a window)
 test/e2e-real-herdr.sh   # headless Electron against a REAL isolated herdr (target/release/herdr or $HERDR_BIN):
                          # temp HOME/XDG dirs, no inherited HERDR_* vars, no Chromium window (fallback asserted by routing)
@@ -197,10 +212,12 @@ herdr tabs swaps its pages. Quit the companion and the next `open` goes to the h
 | `src/groups.js` | herdr tab → group bookkeeping, host_state merge, host_sync payloads (pure) |
 | `src/context-menu.js` | a page's context menu: what it offers for what was right-clicked (pure) |
 | `src/views.js` | WebContentsView per page, partitions, html sandbox, CDP target id, re-parenting (docked) |
+| `src/dialogs.js` | pages' alert/confirm/prompt: per-view queue, answers, cancels (pure) |
 | `src/dock/` | docked mode: placements feed, window probe (JXA), geometry model, Ghostty config, the dock core and its Electron side |
 | `src/info.js` | the count pill and the sessions menu (pure) |
-| `src/preload/control.js`, `src/preload/strip.js` | context bridges |
-| `src/ui/` | strip page (bar variant A, light/dark follows the system) and control page; `icons/` = icon set A masters |
+| `src/preload/control.js`, `src/preload/strip.js`, `src/preload/dialog.js` | context bridges |
+| `src/preload/page.js` | every page view's preload: alert/confirm/prompt through the companion; no WebRTC in no-network html views |
+| `src/ui/` | strip page (bar variant A, light/dark follows the system), the dialog card and control page; `icons/` = icon set A masters |
 | `assets/icon/` | eye-plus app icon: PNGs (window/dock), `eye-plus.icns` for packaging (`make-icns.sh` rebuilds it) |
 | `test/` | unit tests, mock herdr, e2e |
 | `install/` | the Electron runtime's npm manifest and pinned lock (`herdr browser setup --companion` runs `npm ci` with it) |

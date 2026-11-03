@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>herdr companion dialog</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+<link rel="stylesheet" href="strip.css">
+<link rel="stylesheet" href="dialog.css">
+</head>
+<body class="dialog">
+  <!-- A page's alert / confirm / prompt (src/dialogs.js): one card at the top of the page. -->
+  <form id="card" role="dialog" aria-modal="true" aria-labelledby="origin" aria-describedby="message" autocomplete="off" hidden>
+    <div id="origin"></div>
+    <div id="message"></div>
+    <input id="field" type="text" spellcheck="false" aria-label="Answer">
+    <div class="buttons">
+      <button id="cancel" class="tb ghost" type="button">Cancel</button>
+      <button id="ok" class="tb primary" type="submit">OK</button>
+    </div>
+  </form>
+  <script src="dialog.js"></script>
+</body>
+</html>

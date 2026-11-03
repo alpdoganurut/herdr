@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('__herdrCompanion', {
   close: (viewId) => call('close', viewId),
   show: (args) => call('show', args),
   views: () => call('views'),
+  dialogs: () => call('dialogs'), // {seq, dialogs: [{id, view_id, target_id, type, message, default_value, queued}]}
+  dialog: (args) => call('dialog', args), // {view_id, id?, accept, text?}: answers the view's shown dialog
   raise: (args) => call('raise', args), // {user}: herdr's "focus companion"
   quit: () => call('quit'), // herdr's stop of a managed companion, or a headless test run; refused otherwise
   // test hooks (HERDR_COMPANION_TEST_HOOKS=1 only; unknown_op otherwise)

@@ -7,7 +7,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { GroupStore } = require('./groups.js');
-const { ViewManager, within } = require('./views.js');
+const { ViewManager, within, frameKey } = require('./views.js');
+const { DialogBook } = require('./dialogs.js');
 const { HerdrLink } = require('./host.js');
 const { resolveSocketPath, serialized } = require('./herdr-api.js');
 const { parseManaged, registerFields, startupWindow, watchdogFor, onQuitSignals } = require('./managed.js');
@@ -136,7 +137,13 @@ class Companion {
       onPermission: (id, req, done) => this.onPermission(id, req, done),
       onLeave: (id, origin) => this.onLeave(id, origin),
       onContextMenu: (id, params) => this.openPageMenu(id, params),
+      onDialogsEnd: (id, frame) => this.dialogs.dismissView(id, { frame }),
     });
+    // pages' alert / confirm / prompt (src/dialogs.js), shown in the dialog card over the page
+    this.dialogs = new DialogBook({ onChange: () => this.onDialogsChanged() });
+    this.dialogView = null;
+    this.dialogShown = null; // {id, host, focus} of the card on screen
+    this.dialogHeight = 150; // the card's height (it reports it)
     this.prompts = []; // pending permission prompts {id, view_id, permission, label, origin, dones[], timer}
     this.nextPrompt = 1;
     // Docked mode (launcher design §3.4): a frameless window over herdr's band.
@@ -155,6 +162,10 @@ class Companion {
     ipcMain.handle('herdr-companion:control', (e, op, a) => {
       if (!this.control || e.sender !== this.control.webContents) return errOut('forbidden', 'not the control page');
       return this.controlCall(op, a);
+    });
+    ipcMain.on('herdr-companion:dialog', (e, req) => this.onPageDialog(e, req));
+    ipcMain.on('herdr-companion:dialog-ui', (e, kind, a) => {
+      if (this.dialogView && e.sender === this.dialogView.webContents) this.onDialogUi(kind, a || {});
     });
     ipcMain.handle('herdr-companion:strip', (e, name, a) => {
       const dock = !!(this.dockWindow() && e.sender === this.dockWin.webContents);
@@ -208,6 +219,7 @@ class Companion {
     this.control.setBounds({ x: 0, y: 0, width: 1, height: 1 });
     this.control.setVisible(false);
     await this.control.webContents.loadURL(`${SCHEME}://control/`);
+    this.createDialogView();
 
     this.installMenu();
 
@@ -462,6 +474,7 @@ class Companion {
   // The user brought the window up: they see the shown group (needs-you clears). A raise
   // the companion did itself for an agent's focus() is not the user looking.
   onWindowFocus() {
+    this.focusDialog();
     if (Date.now() < this.selfRaiseUntil) return;
     const g = this.shownGroup();
     const e = this.activeEntry(g);
@@ -478,6 +491,7 @@ class Companion {
     const top = host === this.dockWin ? this.dockChromeHeight : this.chromeHeight;
     const e = this.activeEntry();
     this.views.layout(e ? e.view_id : null, { x: 0, y: top, width: w, height: Math.max(0, h - top) });
+    this.layoutDialog();
     const title = this.windowTitle();
     if (this.win) this.win.setTitle(title);
     if (this.dockWindow()) this.dockWin.setTitle(title);
@@ -730,6 +744,175 @@ class Companion {
     for (const p of [...this.prompts]) if (p.view_id === viewId && p.origin !== origin) this.answerPrompt(p.id, false);
   }
 
+  // ---------- page dialogs (alert / confirm / prompt; src/dialogs.js) ----------
+
+  // The card: one transparent view above the pages (it moves with them into the dock).
+  createDialogView() {
+    const view = new WebContentsView({
+      webPreferences: {
+        session: session.fromPartition('herdr-ui'),
+        preload: path.join(__dirname, 'preload', 'dialog.js'),
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        backgroundThrottling: false,
+      },
+    });
+    view.setBackgroundColor('#00000000');
+    view.setVisible(false);
+    view.webContents.on('before-input-event', (e, input) => {
+      if (this.dockKey(input)) e.preventDefault();
+    });
+    this.dialogView = view;
+    this.views.addOverlay(view, this.win);
+    view.webContents.loadURL(`${SCHEME}://ui/dialog.html`).catch((e) => log('dialog card failed to load', e.message));
+  }
+
+  // A page's preload asked (sync IPC): the page waits for e.returnValue.
+  onPageDialog(e, req) {
+    const viewId = this.views.viewIdOf(e.sender);
+    let frame = null;
+    let origin = '';
+    let embedded = false;
+    try {
+      const f = e.senderFrame;
+      frame = frameKey(f);
+      origin = f ? f.origin : '';
+      embedded = !!(f && f.parent);
+    } catch {}
+    let answered = false;
+    const reply = (value) => {
+      if (answered) return;
+      answered = true;
+      try {
+        e.returnValue = value;
+      } catch {}
+    };
+    if (!viewId || !this.store.findView(viewId)) return reply(null);
+    const d = this.dialogs.open(viewId, req, reply, { frame, info: { origin: origin && origin !== 'null' ? origin : '', embedded } });
+    if (!d) return;
+    log('dialog', d.id, d.type, viewId);
+    const hit = this.store.findView(viewId);
+    // a page of another session (or not the shown one) asks: the strip marks it
+    if (hit && !(hit.group.tab_id === this.shownTab && hit.group.active === viewId)) {
+      hit.entry.attention = true;
+      this.pushStrip();
+    }
+  }
+
+  onDialogsChanged() {
+    this.layoutDialog();
+    this.pushDialogs();
+  }
+
+  // herdr's sidecar follows the open dialogs (its dialog events, `browser dialog`): the whole
+  // list each time, to a binding it put on the control page (absent: nobody listens).
+  dialogState() {
+    return { seq: this.dialogs.seq, dialogs: this.dialogs.list((v) => (this.views.has(v) ? this.views.get(v).target : null)) };
+  }
+
+  pushDialogs() {
+    const wc = this.control && this.control.webContents;
+    if (!wc || wc.isDestroyed()) return;
+    const js = `globalThis.__herdrDialogs && globalThis.__herdrDialogs(${JSON.stringify(this.dialogState())})`;
+    wc.executeJavaScript(js, false).catch(() => {});
+  }
+
+  // Shows the card over the shown page when it has a dialog (layout() calls it too).
+  layoutDialog() {
+    const view = this.dialogView;
+    if (!view) return;
+    const host = this.docked && this.dockWindow() ? this.dockWin : this.win;
+    const e = this.activeEntry();
+    const d = host && e ? this.dialogs.top(e.view_id) : null;
+    if (!d) {
+      view.setVisible(false);
+      if (this.dialogShown) {
+        const hadFocus = view.webContents.isFocused();
+        this.dialogShown = null;
+        view.webContents.send('dialog:show', null);
+        // the keyboard goes back to the page
+        if (hadFocus && e && this.views.has(e.view_id)) this.views.get(e.view_id).view.webContents.focus();
+      }
+      return;
+    }
+    const [w, h] = host.getContentSize();
+    const top = host === this.dockWin ? this.dockChromeHeight : this.chromeHeight;
+    const width = Math.max(200, Math.min(480, w - 24));
+    const height = Math.max(60, Math.min(this.dialogHeight, h - top));
+    view.setBounds({ x: Math.round((w - width) / 2), y: top, width, height });
+    const fresh = !this.dialogShown || this.dialogShown.id !== d.id || this.dialogShown.host !== host;
+    const focus = !HEADLESS && host.isFocused();
+    if (fresh) {
+      this.dialogShown = { id: d.id, host };
+      view.webContents.send('dialog:show', {
+        id: d.id,
+        type: d.type,
+        message: d.message,
+        value: d.value,
+        origin: d.origin ? (d.embedded ? `An embedded page at ${d.origin}` : d.origin) : '',
+        docked: host === this.dockWin,
+        focus,
+      });
+      this.views.raiseOverlays(host);
+    }
+    view.setVisible(true);
+    if (fresh && focus) view.webContents.focus();
+  }
+
+  // The keyboard to the card (the window came up with a dialog on screen).
+  focusDialog() {
+    const view = this.dialogView;
+    if (!view || !this.dialogShown || HEADLESS) return;
+    view.webContents.focus();
+    view.webContents.send('dialog:focus');
+  }
+
+  onDialogUi(kind, a) {
+    switch (kind) {
+      case 'ready':
+        this.dialogShown = null;
+        return this.layoutDialog();
+      case 'size': {
+        const h = Math.max(0, Math.min(2000, Number(a.height) || 0));
+        if (h && h !== this.dialogHeight) {
+          this.dialogHeight = h;
+          this.layoutDialog();
+        }
+        return;
+      }
+      case 'input': {
+        const v = this.dialogs.viewOf(String(a.id));
+        if (v) this.dialogs.setValue(v, String(a.id), a.value);
+        return;
+      }
+      case 'answer': {
+        const v = this.dialogs.viewOf(String(a.id));
+        if (!v) return;
+        const d = this.dialogs.answer(v, { id: String(a.id), accept: !!a.accept, text: typeof a.value === 'string' ? a.value : undefined });
+        if (d) log('dialog answered', d.id, a.accept ? 'ok' : 'cancel');
+        return;
+      }
+      default:
+    }
+  }
+
+  // Before a navigation or a close the user asked for: the shown dialogs are cancelled (the
+  // page's blocked call returns), as a browser does.
+  endDialogs(viewId) {
+    if (viewId) this.dialogs.dismissView(viewId);
+  }
+
+  // herdr's sidecar answers a dialog (`browser dialog accept|dismiss [text]`).
+  ctlDialog(a) {
+    const viewId = a && a.view_id ? String(a.view_id) : null;
+    const d = viewId && this.dialogs.top(viewId);
+    if (!d || (a.id && a.id !== d.id)) return errOut('no_dialog', `no dialog is open on view ${viewId}`);
+    this.dialogs.answer(viewId, { id: d.id, accept: !!a.accept, text: typeof a.text === 'string' ? a.text : undefined });
+    log('dialog answered by herdr', d.id, a.accept ? 'accept' : 'dismiss');
+    return { ok: true, view_id: viewId, id: d.id, type: d.type, message: d.message };
+  }
+
   // ---------- control page API (contract §1.4) ----------
 
   async controlCall(op, a) {
@@ -755,6 +938,10 @@ class Companion {
           return await this.ctlShow(a || {});
         case 'views':
           return this.listViews();
+        case 'dialogs':
+          return this.dialogState();
+        case 'dialog':
+          return this.ctlDialog(a || {});
         case 'raise':
           return this.raise({ user: !!(a && a.user) });
         case 'quit':
@@ -938,18 +1125,21 @@ class Companion {
         return this.focusUrl();
       case 'r':
         if (wc) {
+          this.endDialogs(e.view_id);
           wc.reload();
           this.report('user_action', 'reload', e, g);
         }
         return;
       case '[':
         if (wc && wc.navigationHistory.canGoBack()) {
+          this.endDialogs(e.view_id);
           wc.navigationHistory.goBack();
           this.report('user_action', 'back', e, g);
         }
         return;
       case ']':
         if (wc && wc.navigationHistory.canGoForward()) {
+          this.endDialogs(e.view_id);
           wc.navigationHistory.goForward();
           this.report('user_action', 'forward', e, g);
         }
@@ -1038,8 +1228,10 @@ class Companion {
         const url = normalizeUrl(String(a || ''));
         if (!this.shownTab) return;
         if (!e || e.kind === 'html_view') return this.newTab(url);
-        if (wc) wc.loadURL(url).catch(() => {});
-        else {
+        if (wc) {
+          this.endDialogs(e.view_id);
+          wc.loadURL(url).catch(() => {});
+        } else {
           this.store.updateEntry(e.view_id, { url }); // a placeholder: its view loads the new url
           this.ensureLive(e, g.tab_id).catch(() => {});
         }
@@ -1052,6 +1244,7 @@ class Companion {
         return this.handleKey(name === 'back' ? '[' : name === 'forward' ? ']' : 'r');
       case 'stop':
         if (wc) {
+          this.endDialogs(e.view_id);
           wc.stop();
           this.report('user_action', 'stop', e, g);
         }
@@ -1352,6 +1545,7 @@ class Companion {
   }
 
   async shutdown() {
+    this.dialogs.dismissAll(); // no page stays blocked on a dialog while the app quits
     if (this.watchdog) this.watchdog.stop();
     if (this.dock) this.dock.stop();
     if (this.feed) this.feed.stop();
