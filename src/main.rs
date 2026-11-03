@@ -559,6 +559,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Page errors of a tab an agent uses: "agent" (stored quietly for that Claude agent; other
 # agents read them with `herdr browser console`) or "off".
 # page_errors = "agent"
+# Start the installed companion browser with the server (in the background) instead of on
+# the first page an agent opens. Install it with `herdr browser setup --companion`.
+# companion_autostart = false
 
 [coordinator]
 # Run the coordinator agent (a Claude session that watches your agents) in a

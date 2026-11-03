@@ -1026,6 +1026,17 @@ impl ClientShellState {
                 occlusion.cover(rendered.area);
                 self.hits.global_menu_rows = rendered.menu_rows;
                 None
+            } else if let ClientShellOverlay::Browser(browser) = overlay {
+                // Fork (companion launcher): the Browser overlay and its chips.
+                let rendered = super::browser_overlay::render_browser_overlay(
+                    &mut composed,
+                    browser,
+                    &self.config.palette,
+                )?;
+                occlusion.cover(rendered.area);
+                self.hits.browser_overlay_popup = rendered.area;
+                self.hits.browser_overlay = rendered.hits;
+                None
             } else if let ClientShellOverlay::TeamInfo(team) = overlay {
                 // Fork: the Team info overlay (`team_overlay.rs`).
                 let rendered = super::team_overlay::render_team_overlay(

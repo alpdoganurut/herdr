@@ -77,6 +77,8 @@ fn running_info(seq: u64, touched_at: u64) -> BrowserGetInfo {
         host: Default::default(),
         setup_needed: false,
         sessions: vec![],
+        companion_app: None,
+        window_off: false,
         profiles: vec![BrowserProfileInfo {
             name: "main".into(),
             state: "running".into(),
@@ -717,8 +719,310 @@ fn with_room_for_one_pinned_row_news_keeps_it() {
     assert!(seen_single, "no height showed exactly one pinned row");
 }
 
+/// Fork (companion launcher): a server that runs the companion.
+fn companion_info(seq: u64, state: &str) -> BrowserGetInfo {
+    let running = state == "running";
+    BrowserGetInfo {
+        seq,
+        unchanged: false,
+        enabled: true,
+        profiles: if running {
+            vec![BrowserProfileInfo {
+                name: "companion".into(),
+                state: "running".into(),
+                tabs: 3,
+                agents: 2,
+                ..Default::default()
+            }]
+        } else {
+            Vec::new()
+        },
+        companion_app: Some(crate::api::schema::BrowserCompanionAppInfo {
+            state: state.into(),
+            managed: running,
+            pid: running.then_some(51234),
+            version: running.then(|| "0.2.0".to_string()),
+            installed: Some("0.2.0".into()),
+            started_unix: running.then(|| now() - (2 * 3600 + 3 * 60)),
+            log: Some("/var/herdr/companion-app/companion.log".into()),
+            ..Default::default()
+        }),
+        window_off: true,
+        ..Default::default()
+    }
+}
+
+fn menu_labels(state: &ClientShellState) -> Vec<String> {
+    match &state.overlay {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .iter()
+            .map(|item| item.label.to_string())
+            .collect(),
+        other => panic!("expected a menu, got {other:?}"),
+    }
+}
+
+fn companion_request(outcome: &ClientShellInput) -> crate::api::schema::BrowserCompanionAction {
+    match &endpoint_requests(outcome)[..] {
+        [(_, Method::BrowserCompanion(params))] => {
+            assert!(params.caller.is_none(), "the TUI acts as the user");
+            params.action
+        }
+        other => panic!("expected one browser.companion, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_overlay_companion_block_shows_pid_uptime_restarts_update_and_last_error() {
+    use crate::api::schema::BrowserCompanionAction as Action;
+    use crate::input::TerminalKey;
+    let mut state = tabs_state(browser_snapshot());
+    state.compose(110, 30).expect("composed frame");
+    let mut info = companion_info(1, "running");
+    if let Some(companion) = info.companion_app.as_mut() {
+        companion.installed = Some("0.2.1".into());
+        companion.update_ready = true;
+        companion.restarts = 1;
+        companion.last_error = Some("exited with status 1 — boom".into());
+    }
+    deliver(&mut state, info);
+    let mut outcome = ClientShellInput::default();
+    state.open_browser_overlay(&mut outcome);
+    let frame = state.compose(110, 30).expect("composed frame");
+    let text = frame_text(&frame);
+    assert!(
+        text.contains("companion  ● running · pid 51234 · up 2h 3m · v0.2.0"),
+        "{text}"
+    );
+    assert!(text.contains("[Focus] [Restart] [Stop]"), "{text}");
+    assert!(
+        text.contains("1 restart in 5 min · /var/herdr/companion-app/companion.log"),
+        "{text}"
+    );
+    assert!(
+        text.contains("update ready: 0.2.1 — Restart applies it"),
+        "{text}"
+    );
+    assert!(
+        text.contains("last error: exited with status 1 — boom"),
+        "{text}"
+    );
+    assert!(
+        text.contains("r restart"),
+        "the hint names the keys: {text}"
+    );
+    assert!(
+        !text.contains("companion · running"),
+        "no profile header for it: {text}"
+    );
+
+    // the chips are mouse targets
+    let restart = state
+        .hits
+        .browser_overlay
+        .iter()
+        .find(|(_, hit)| {
+            *hit == crate::client::shell::browser_overlay::BrowserOverlayHit::Companion(
+                Action::Restart,
+            )
+        })
+        .map(|(rect, _)| *rect)
+        .expect("a Restart chip");
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: restart.x + 1,
+        row: restart.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert_eq!(companion_request(&outcome), Action::Restart);
+    assert!(
+        matches!(state.overlay, Some(ClientShellOverlay::Browser(_))),
+        "a chip keeps it open"
+    );
+
+    // keys on the companion line (the cursor starts on it)
+    let key = |code: crossterm::event::KeyCode| TerminalKey::new(code, KeyModifiers::empty());
+    for (code, action) in [
+        (crossterm::event::KeyCode::Enter, Action::Focus),
+        (crossterm::event::KeyCode::Char('s'), Action::Stop),
+        (crossterm::event::KeyCode::Char('r'), Action::Restart),
+    ] {
+        let mut outcome = ClientShellInput::default();
+        state.route_overlay_key(&key(code), &mut outcome);
+        assert_eq!(companion_request(&outcome), action, "{code:?}");
+    }
+
+    // stopped: one Start chip, and `s` starts it
+    deliver_unchanged_companion(&mut state, companion_info(1, "stopped"));
+    let frame = state.compose(110, 30).expect("composed frame");
+    let text = frame_text(&frame);
+    assert!(text.contains("companion  ● stopped · v0.2.0"), "{text}");
+    assert!(
+        text.contains("[Start]") && !text.contains("[Stop]"),
+        "{text}"
+    );
+    let mut outcome = ClientShellInput::default();
+    state.route_overlay_key(&key(crossterm::event::KeyCode::Char('s')), &mut outcome);
+    assert_eq!(companion_request(&outcome), Action::Start);
+
+    // not installed: the setup command, no chips
+    deliver_unchanged_companion(&mut state, companion_info(1, "not_installed"));
+    let frame = state.compose(110, 30).expect("composed frame");
+    let text = frame_text(&frame);
+    assert!(
+        text.contains(
+            "run \"herdr browser setup --companion\" in a terminal (downloads Electron, ~115 MB)"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("[Start]"), "{text}");
+}
+
+/// A pull answered `unchanged` still carries the companion's state.
+fn deliver_unchanged_companion(state: &mut ClientShellState, info: BrowserGetInfo) {
+    let mut unchanged = BrowserGetInfo {
+        seq: info.seq,
+        unchanged: true,
+        enabled: true,
+        companion_app: info.companion_app,
+        window_off: info.window_off,
+        ..Default::default()
+    };
+    unchanged.setup_needed = false;
+    state.browser.refresh_due = true;
+    deliver(state, unchanged);
+}
+
 pub(crate) mod fork_smoke {
     use super::*;
+
+    /// Fork (companion launcher): while the server runs the companion the
+    /// pinned row is its: state, counts and an update; its menu starts,
+    /// stops, restarts and focuses it; the herdr+ window's items show only
+    /// while that window is on.
+    #[test]
+    fn the_browser_row_shows_the_companion_state_and_offers_start_stop_restart_focus() {
+        use crate::api::schema::BrowserCompanionAction as Action;
+        let mut state = tabs_state(browser_snapshot());
+        state.compose(106, 20).expect("composed frame");
+        deliver(&mut state, companion_info(1, "running"));
+        let row = state.browser_row().expect("the row");
+        assert_eq!(
+            row.state,
+            crate::client::shell::browser::BrowserRowState::Running
+        );
+        assert_eq!(row.status, "companion · 3 tabs · 2 agents");
+        let frame = state.compose(106, 20).expect("composed frame");
+        let rect = state.hits.browser_row;
+        let text = row_text(&frame, rect);
+        assert!(text.trim_start().starts_with("◎ Browser"), "{text:?}");
+
+        state.open_browser_context_menu(rect.x, rect.y);
+        assert_eq!(
+            menu_labels(&state),
+            [
+                "Focus companion",
+                "Restart companion",
+                "Stop companion",
+                "Open overlay"
+            ]
+        );
+        for (index, action) in [(0, Action::Focus), (1, Action::Restart), (2, Action::Stop)] {
+            state.open_browser_context_menu(rect.x, rect.y);
+            let mut outcome = ClientShellInput::default();
+            state.activate_context_menu_item(index, &mut outcome);
+            assert_eq!(companion_request(&outcome), action);
+        }
+        // its reply lands at once; a note (a companion started by hand) shows
+        let mut stopped = companion_info(1, "stopped").companion_app.unwrap();
+        stopped.state = "external".into();
+        state.handle_browser_companion_result(Ok(ResponseResult::BrowserCompanion {
+            companion: stopped,
+            note: Some("this companion was not started by herdr; quit it from its window".into()),
+        }));
+        assert_eq!(
+            state.endpoint_error.as_deref(),
+            Some("this companion was not started by herdr; quit it from its window")
+        );
+
+        // stopped: Start
+        deliver_unchanged_companion(&mut state, companion_info(1, "stopped"));
+        let row = state.browser_row().unwrap();
+        assert_eq!(row.status, "companion stopped");
+        assert_eq!(row.state.glyph(), "◌");
+        state.open_browser_context_menu(rect.x, rect.y);
+        assert_eq!(menu_labels(&state), ["Start companion", "Open overlay"]);
+        let mut outcome = ClientShellInput::default();
+        state.activate_context_menu_item(0, &mut outcome);
+        assert_eq!(companion_request(&outcome), Action::Start);
+
+        // restarting after a crash: the countdown; failed: the red ×; an update
+        let mut crashed = companion_info(1, "crashed");
+        if let Some(c) = crashed.companion_app.as_mut() {
+            c.next_retry_unix = Some(now() + 4);
+        }
+        deliver_unchanged_companion(&mut state, crashed);
+        let row = state.browser_row().unwrap();
+        assert!(
+            row.status.starts_with("companion restarting · "),
+            "{}",
+            row.status
+        );
+        assert_eq!(row.state.glyph(), "◐");
+        deliver_unchanged_companion(&mut state, companion_info(1, "failed"));
+        let row = state.browser_row().unwrap();
+        assert_eq!(
+            (row.state.glyph(), row.status.as_str()),
+            ("×", "companion failed")
+        );
+        state.open_browser_context_menu(rect.x, rect.y);
+        assert_eq!(menu_labels(&state), ["Restart companion", "Open overlay"]);
+        deliver_unchanged_companion(&mut state, companion_info(1, "not_installed"));
+        assert_eq!(
+            state.browser_row().unwrap().status,
+            "companion not installed"
+        );
+        let mut update = companion_info(2, "running");
+        if let Some(c) = update.companion_app.as_mut() {
+            c.update_ready = true;
+        }
+        state.browser.refresh_due = true;
+        deliver(&mut state, update);
+        assert_eq!(
+            state.browser_row().unwrap().status,
+            "companion · 3 tabs · 2 agents · update"
+        );
+
+        // the herdr+ window on: its items in their own section
+        let mut window_on = companion_info(3, "running");
+        window_on.window_off = false;
+        window_on.profiles.push(BrowserProfileInfo {
+            name: "main".into(),
+            state: "stopped".into(),
+            ..Default::default()
+        });
+        state.browser.refresh_due = true;
+        deliver(&mut state, window_on);
+        state.open_browser_context_menu(rect.x, rect.y);
+        assert_eq!(
+            menu_labels(&state),
+            [
+                "Focus companion",
+                "Restart companion",
+                "Stop companion",
+                "Start profile",
+                "Open overlay"
+            ]
+        );
+        state.open_browser_context_menu(rect.x, rect.y);
+        let mut outcome = ClientShellInput::default();
+        state.activate_context_menu_item(3, &mut outcome);
+        assert!(matches!(
+            &endpoint_requests(&outcome)[..],
+            [(_, Method::BrowserStart(params))] if params.profile.as_deref() == Some("main")
+        ));
+    }
 
     /// The pinned Browser row reaches the tabs sidebar above the footer with
     /// the running state's glyph, count and the agent lighting it up.

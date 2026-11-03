@@ -145,6 +145,7 @@ The herdr-owned Chromium the server runs for agents. It starts on first use.
 | Restore tabs on relaunch | on | `[browser] restore_tabs = false` | No, config only |
 | Where `open` / `show` go (the companion browser while it runs, else the herdr+ window) | `"auto"` | `[browser] host = "companion"` or `"window"` | No, config only |
 | Page errors of a tab an agent uses, stored quietly for that Claude agent | `"agent"` | `[browser] page_errors = "off"` | No, config only |
+| Start the companion browser with the server (else on the first page an agent opens) | off | `[browser] companion_autostart = true` | No, config only |
 
 The companion browser is the Electron app in `apps/companion`; `apps/companion/scripts/try.sh` tries it against a throwaway herdr in one command (run it in a plain terminal).
 

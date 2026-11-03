@@ -994,6 +994,8 @@ impl BrowserState {
             setup_needed: false,
             // the App fills this in from the herdr tabs (companion browser)
             sessions: Vec::new(),
+            companion_app: None,
+            window_off: false,
         }
     }
 

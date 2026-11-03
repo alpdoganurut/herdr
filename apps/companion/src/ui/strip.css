@@ -52,6 +52,13 @@ body.noinset #tabsrow { padding-left: 8px; }
 .tab .close:hover { background: var(--rule); color: var(--ink); }
 .tab .close .ico { width: 12px; height: 12px; stroke-width: 1.75; }
 
+/* the update chip (herdr installed newer companion files): accent pill at the row's end */
+.chip { -webkit-app-region: no-drag; display: inline-flex; align-items: center; gap: 4px; height: 18px; padding: 0 9px; border-radius: 9px; font-size: 11px; color: var(--accent); background: var(--accent-tint); flex: none; white-space: nowrap; }
+.chip .dot { opacity: .55; }
+.chip .go { font-weight: 600; }
+.chip:hover { box-shadow: inset 0 0 0 1px var(--accent); }
+.chip:disabled { opacity: .55; box-shadow: none; }
+
 /* 24x24 ghost icon buttons (20x20 in the tabs row) */
 .ib { width: 24px; height: 24px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; color: var(--body); flex: none; }
 .ib:hover:not(:disabled) { background: var(--hover); color: var(--ink); }

@@ -40,10 +40,10 @@ fn params(op: BrowserOp) -> BrowserRunParams {
 
 /// What the fake host saw and how it should behave.
 #[derive(Default)]
-struct FakeHostState {
-    ops: Vec<(String, Option<String>, Value)>,
+pub(crate) struct FakeHostState {
+    pub(crate) ops: Vec<(String, Option<String>, Value)>,
     /// Ops the host must never answer.
-    silent: Vec<String>,
+    pub(crate) silent: Vec<String>,
     /// Ops answered with this error.
     errors: Vec<(String, String, String)>,
     /// Extra lines pushed before the next reply (events).
@@ -57,9 +57,9 @@ struct FakeHostState {
     ntp: Vec<Value>,
 }
 
-type Shared = Arc<Mutex<FakeHostState>>;
+pub(crate) type Shared = Arc<Mutex<FakeHostState>>;
 
-fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
+pub(crate) fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
     let (ours, theirs) = UnixStream::pair().unwrap();
     let shared: Shared = Arc::new(Mutex::new(FakeHostState {
         next_target: 1,
@@ -197,7 +197,8 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                         "navigate" | "history" | "focus" | "select" => {
                             json!({ "id": id, "ok": true, "result": {}, "page": { "url": args["url"].as_str().unwrap_or("https://site.test/after"), "title": "After", "status": 200 } })
                         }
-                        "close" | "close_browser" | "detach" | "watch" | "unwatch" => {
+                        "close" | "close_browser" | "detach" | "watch" | "unwatch"
+                        | "control_quit" | "control_raise" => {
                             json!({ "id": id, "ok": true, "result": {} })
                         }
                         // Fork (companion browser): an HTML view.
@@ -2461,6 +2462,8 @@ fn register_params(instance: &str) -> crate::api::schema::BrowserHostRegisterPar
         version: "0.1.0".into(),
         protocol: 1,
         capabilities: vec!["views".into()],
+        launch_token: None,
+        managed: false,
     }
 }
 

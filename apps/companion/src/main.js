@@ -10,8 +10,10 @@ const { GroupStore } = require('./groups.js');
 const { ViewManager, within } = require('./views.js');
 const { HerdrLink } = require('./host.js');
 const { resolveSocketPath, serialized } = require('./herdr-api.js');
+const { parseManaged, registerFields, startupWindow, watchdogFor, onQuitSignals } = require('./managed.js');
 
 const VERSION = require('../package.json').version;
+const APP_NAME = 'herdr+ companion'; // the macOS menu bar, Dock and window titles
 const UI_DIR = path.join(__dirname, 'ui');
 const ICON_DIR = path.join(__dirname, '..', 'assets', 'icon'); // eye-plus app icon (eye-plus.icns for packaging)
 const CHROME_HEIGHT = 56; // strip.css: tabs row 26 + nav row 30; extra rows add to it (reported by the strip)
@@ -37,6 +39,8 @@ function argValue(name) {
   return eq ? eq.slice(name.length + 1) : null;
 }
 const HEADLESS = process.argv.includes('--headless') || process.env.HERDR_COMPANION_HEADLESS === '1';
+// herdr's launcher started it (`--managed --launch-token … [--background]`): see managed.js.
+const MANAGED = parseManaged(process.argv, process.env);
 const explicitSocket = argValue('--socket') || process.env.HERDR_SOCKET_PATH || null;
 const SOCKET = explicitSocket || (process.argv.includes('--default-socket') ? resolveSocketPath([], process.env) : null);
 const log = (...a) => console.log(`[companion ${new Date().toISOString().slice(11, 23)}]`, ...a);
@@ -50,7 +54,9 @@ if (!SOCKET) {
 }
 
 const profileDir = argValue('--profile-dir');
-if (profileDir) app.setPath('userData', path.resolve(profileDir));
+// Without --profile-dir the profile keeps its old home (productName would move it).
+app.setPath('userData', profileDir ? path.resolve(profileDir) : path.join(app.getPath('appData'), 'herdr-companion'));
+app.setName(APP_NAME);
 // Chromium writes DevToolsActivePort only when user-data-dir is a switch (spike S1).
 app.commandLine.appendSwitch('user-data-dir', app.getPath('userData'));
 app.commandLine.appendSwitch('remote-debugging-port', '0');
@@ -146,7 +152,7 @@ class Companion {
       height: 820,
       minWidth: 480,
       minHeight: 300,
-      title: 'herdr companion',
+      title: APP_NAME,
       backgroundColor: chromeBackground(),
       icon: path.join(ICON_DIR, 'eye-plus-512.png'),
       paintWhenInitiallyHidden: true,
@@ -203,6 +209,7 @@ class Companion {
         version: VERSION,
         protocol: 1,
         capabilities: ['views', 'html_view', 'send_page', 'user_actions'],
+        ...registerFields(MANAGED),
       }),
     });
     this.link.on('status', (s) => {
@@ -210,12 +217,20 @@ class Companion {
       this.pushStrip();
     });
     this.link.on('lease', (lease) => this.onLease(lease));
+    this.link.on('heartbeat', (lease) => this.onUpdateNote(lease));
     this.link.on('lost', () => this.pushStrip());
     this.link.on('event', (ev) => this.onEvent(ev));
     this.link.start();
     setInterval(() => this.flushReports(), REPORT_FLUSH_MS).unref();
 
-    if (!HEADLESS) this.win.show();
+    // A managed companion started for an agent, by autostart or a crash restart never
+    // shows itself; one the user started shows without taking the keyboard.
+    const show = startupWindow(MANAGED, HEADLESS);
+    if (show === 'inactive') this.win.showInactive();
+    else if (show === 'show') this.win.show();
+    // managed: herdr gone for good (a crash, kill -9; a handoff's gap is far shorter) quits it
+    this.watchdog = watchdogFor(MANAGED, { socketPath: SOCKET, log, onGone: () => app.quit() });
+    if (this.watchdog) this.watchdog.start();
     this.layout();
     this.pushStrip();
   }
@@ -263,10 +278,20 @@ class Companion {
   async onLease(lease) {
     log('lease', lease.lease_id, lease.state, 'features', (lease.server_features || []).join(','));
     this.features = new Set(lease.server_features || []);
+    this.onUpdateNote(lease);
     this.store.resetLease();
     await this.refreshState();
     if (this.link) this.link.releaseEvents();
     this.scheduleSync(0);
+  }
+
+  // herdr installed newer app files than this process runs (managed): the bar's chip.
+  onUpdateNote(lease) {
+    const update = (lease && lease.update) || null;
+    if (update !== this.update) {
+      this.update = update;
+      this.pushStrip();
+    }
   }
 
   // One host_state read at a time, in order (serialized): each request runs on its own
@@ -395,7 +420,7 @@ class Companion {
     const e = this.activeEntry();
     this.views.layout(e ? e.view_id : null, { x: 0, y: top, width: w, height: Math.max(0, h - top) });
     const label = this.shownTab ? this.store.label(this.shownTab) : null;
-    this.win.setTitle(label ? `herdr · ${label}` : 'herdr companion');
+    this.win.setTitle(label ? `${APP_NAME} — ${label}` : APP_NAME);
   }
 
   async openEntry(tabId, spec, { background = true } = {}) {
@@ -535,9 +560,22 @@ class Companion {
           return await this.ctlShow(a || {});
         case 'views':
           return this.listViews();
+        case 'raise':
+          return this.raise({ user: !!(a && a.user) });
         case 'quit':
-          if (!HEADLESS) return errOut('refused', 'quit through the control page is for headless runs only');
+          // herdr's stop of the companion it started (managed), or a headless test run
+          if (!HEADLESS && !MANAGED.managed) return errOut('refused', 'quit through the control page is for headless or managed runs only');
           setTimeout(() => app.quit(), 20);
+          return { ok: true };
+        case '__crash':
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op __crash');
+          log('test hook: crashing');
+          setTimeout(() => process.exit(70), 20);
+          return { ok: true };
+        case '__hang':
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op __hang');
+          log('test hook: no more heartbeats');
+          if (this.link) this.link.hang();
           return { ok: true };
         default:
           return errOut('unknown_op', `unknown control op ${op}`);
@@ -565,20 +603,39 @@ class Companion {
     return { view_id: e.view_id, target_id: e.target, tab_id: tabId };
   }
 
-  async ctlFocus(viewId) {
+  // `focus(view_id)` or `focus({view_id, user})`: an agent's focus (the login handoff) selects
+  // the page, marks it and orders the window front without taking the keyboard; the user's
+  // own (herdr's overlay, `browser focus` from a terminal) activates the window.
+  async ctlFocus(a) {
+    const viewId = a && typeof a === 'object' ? a.view_id : a;
+    const user = !!(a && typeof a === 'object' && a.user);
     const hit = this.store.findView(viewId);
     if (!hit) return errOut('view_not_found', `no view ${viewId}`);
     this.store.select(viewId);
     this.scheduleSync();
     await this.showGroup(hit.group.tab_id, { reason: 'agent' });
-    hit.entry.attention = true; // the strip dot; cleared when the user selects it or herdr focus shows it
+    if (!user) hit.entry.attention = true; // the strip dot; cleared when the user selects it or herdr focus shows it
     this.pushStrip();
-    if (!HEADLESS && this.win) {
-      this.selfRaiseUntil = Date.now() + 1000;
+    this.raise({ user });
+    return { ok: true, view_id: viewId };
+  }
+
+  // Bring the window up: `user` activates it (the keyboard goes to it); otherwise it is
+  // ordered front without activation (no keyboard theft).
+  raise({ user = false } = {}) {
+    if (HEADLESS || !this.win) {
+      log('raise suppressed (headless)');
+      return { ok: true, raised: false };
+    }
+    if (user) {
       this.win.show();
       this.win.focus();
-    } else log('focus: window raise suppressed (headless)');
-    return { ok: true, view_id: viewId };
+      if (process.platform === 'darwin') app.focus({ steal: true });
+    } else {
+      this.selfRaiseUntil = Date.now() + 1000;
+      this.win.showInactive();
+    }
+    return { ok: true, raised: true };
   }
 
   async ctlShow(a) {
@@ -766,9 +823,22 @@ class Companion {
         return this.goToTab();
       case 'send_page':
         return this.sendPage((a && a.note) || '');
+      case 'restart_update':
+        return this.restartForUpdate();
       case 'permission':
         return a && this.answerPrompt(String(a.id), a.allow === true);
       default:
+    }
+  }
+
+  // The bar's update chip: herdr restarts this process with the installed app files.
+  async restartForUpdate() {
+    if (!this.link) return;
+    this.say('ok', `Restarting into ${this.update || 'the new version'}…`, 15000);
+    try {
+      await this.link.request('browser.companion', { action: 'restart' });
+    } catch (e) {
+      this.say('warn', e.code === 'unknown_method' ? 'This herdr cannot restart the companion' : `Restart failed: ${e.message}`);
     }
   }
 
@@ -808,6 +878,7 @@ class Companion {
       })(),
       attached: status.state === 'registered',
       status: line,
+      update: this.update ? { version: this.update } : null,
     };
   }
 
@@ -950,6 +1021,7 @@ class Companion {
   }
 
   async shutdown() {
+    if (this.watchdog) this.watchdog.stop();
     if (this.link) await this.link.stop();
   }
 }
@@ -970,6 +1042,12 @@ if (SOCKET) {
       companion.shutdown().finally(() => app.quit());
     });
     app.on('window-all-closed', () => app.quit());
+    // herdr's stop (after the control page's quit) and a terminal's ^C: a clean quit that
+    // unregisters first (before-quit above)
+    onQuitSignals(process, (signal) => {
+      log(`${signal}: quitting`);
+      app.quit();
+    });
     app.on('second-instance', () => {
       if (!HEADLESS && companion.win) {
         companion.win.show();

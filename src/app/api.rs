@@ -1425,6 +1425,10 @@ impl App {
                 return self.handle_browser_settings_set(request.id, params)
             }
             Method::BrowserFix(params) => return self.handle_browser_fix(request.id, params),
+            // Fork (companion launcher).
+            Method::BrowserCompanion(params) => {
+                return self.handle_browser_companion(request.id, params)
+            }
             Method::NotesGet(params) => return self.handle_notes_get(request.id, params),
             Method::NotesSet(params) => return self.handle_notes_set(request.id, params),
             Method::NotesAppend(params) => return self.handle_notes_append(request.id, params),

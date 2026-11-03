@@ -3638,6 +3638,41 @@
           ],
           "type": "object"
         },
+        "BrowserCompanionAction": {
+          "description": "Fork (companion launcher): what `browser.companion` does. The values are\ninside the method's frozen digest (a new action needs a new method name);\n`Unknown` is the serde fallback (answered `invalid_request`).",
+          "enum": [
+            "status",
+            "start",
+            "stop",
+            "restart",
+            "focus",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "BrowserCompanionParams": {
+          "description": "Fork (companion launcher): `browser.companion`, the controls of the\ncompanion app herdr runs (the CLI, the Browser row and overlay).",
+          "properties": {
+            "action": {
+              "$ref": "#/schemas/request/$defs/BrowserCompanionAction"
+            },
+            "caller": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/BrowserCaller"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The pane a CLI call came from (`HERDR_PANE_ID`): its starts run in\nthe background and its focus never takes the keyboard."
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
         "BrowserFixParams": {
           "description": "`browser.fix`: the checks to fix; empty = every failing fixable check.",
           "properties": {
@@ -3777,6 +3812,17 @@
             "kind": {
               "$ref": "#/schemas/request/$defs/BrowserHostKind",
               "default": "companion"
+            },
+            "launch_token": {
+              "description": "Fork (companion launcher): the token herdr's launcher gave this\nprocess (`--launch-token`); it makes the lease managed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "managed": {
+              "description": "Fork (companion launcher): the app says it runs managed\n(informational: only the token counts).",
+              "type": "boolean"
             },
             "nonce": {
               "description": "The control page answers it (`window.__herdrCompanion.nonce()`).",
@@ -11405,6 +11451,23 @@
           "type": "object"
         },
         {
+          "description": "Fork (companion launcher): the companion app herdr runs — status,\nstart, stop, restart, focus (App lane; the Browser row and overlay).",
+          "properties": {
+            "method": {
+              "const": "browser.companion",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserCompanionParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "agent.prompt",
@@ -14898,6 +14961,107 @@
           ],
           "type": "object"
         },
+        "BrowserCompanionAppInfo": {
+          "description": "Fork (companion launcher): the companion browser app herdr manages\n(`browser.companion`, `browser.get`). Timestamps are Unix seconds; the\nclient computes uptimes and countdowns from them.",
+          "properties": {
+            "autostart": {
+              "description": "`[browser] companion_autostart`.",
+              "type": "boolean"
+            },
+            "electron": {
+              "description": "The installed Electron version.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "installed": {
+              "description": "The installed app version (`herdr browser setup --companion`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "last_error": {
+              "description": "The last failure: how it exited and its last log lines.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "log": {
+              "description": "The managed process's log file.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "managed": {
+              "description": "herdr started this process (its registration carried the launch token).",
+              "type": "boolean"
+            },
+            "next_retry_unix": {
+              "description": "`crashed`: when the next start is due.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "restarts": {
+              "description": "Crashes within the crash window (5 minutes).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "since_unix": {
+              "description": "When the current state was entered.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "started_unix": {
+              "description": "When the running process started.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "state": {
+              "description": "`not_installed`, `stopped`, `starting`, `running`, `reconnecting`,\n`stopping`, `crashed` (a restart is scheduled), `failed` (herdr gave\nup restarting it) or `external` (started by hand: herdr routes to it\nbut never stops or restarts it).",
+              "type": "string"
+            },
+            "update_ready": {
+              "description": "Newer app files are installed than the running process uses: a\nrestart applies them (nothing restarts by itself).",
+              "type": "boolean"
+            },
+            "version": {
+              "description": "The version the running process registered with.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
         "BrowserFixKind": {
           "description": "How a failing check gets fixed: `safe` fixes (the sidecar's assets and\n`npm ci`, the companion) also run automatically after a herdr update;\n`edits_files` fixes (`~/.zshrc`, `~/.claude.json`, Codex's config.toml)\nonly on an explicit request (`browser.fix`, `herdr browser setup`).",
           "enum": [
@@ -14929,6 +15093,17 @@
         },
         "BrowserGetInfo": {
           "properties": {
+            "companion_app": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/BrowserCompanionAppInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fork (companion launcher): the companion app herdr installs and runs.\nAbsent from an older server."
+            },
             "enabled": {
               "type": "boolean"
             },
@@ -14977,6 +15152,10 @@
               "type": "array"
             },
             "unchanged": {
+              "type": "boolean"
+            },
+            "window_off": {
+              "description": "Fork (companion launcher): the herdr+ window is off (`[browser]\nwindow = false`): clients hide its profiles. An older server never\nsays so (its window is on).",
               "type": "boolean"
             }
           },
@@ -15117,6 +15296,13 @@
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "update": {
+              "description": "Fork (companion launcher): a managed companion runs older app files\nthan are installed: the installed version (a restart applies it).",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -15566,6 +15752,17 @@
               "default": false,
               "type": "boolean"
             },
+            "companion_app": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/BrowserCompanionAppInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fork (companion launcher): the companion app herdr installs and runs.\nAbsent from an older server."
+            },
             "default_profile": {
               "default": "",
               "type": "string"
@@ -15666,6 +15863,10 @@
               "type": "array"
             },
             "unchanged": {
+              "type": "boolean"
+            },
+            "window_off": {
+              "description": "Fork (companion launcher): the herdr+ window is off (`[browser]\nwindow = false`): clients hide its profiles. An older server never\nsays so (its window is on).",
               "type": "boolean"
             }
           },
@@ -20909,6 +21110,29 @@
                 "outcome",
                 "to_pane",
                 "message_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork (companion launcher): `browser.companion`'s answer, the state\nafter the action started; `note` explains a refusal-free no-op (a\ncompanion started by hand is never stopped by herdr).",
+              "properties": {
+                "companion": {
+                  "$ref": "#/schemas/success_response/$defs/BrowserCompanionAppInfo"
+                },
+                "note": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "browser_companion",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "companion"
               ],
               "type": "object"
             },

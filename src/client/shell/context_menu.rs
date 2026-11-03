@@ -337,26 +337,63 @@ impl ClientContextMenuOverlay {
             ClientContextMenuTarget::Coordinator { items } => {
                 super::coordinator_shell::coordinator_menu_items(items)
             }
-            ClientContextMenuTarget::Browser { running, local, .. } => {
+            ClientContextMenuTarget::Browser {
+                running,
+                local,
+                companion,
+                window,
+                ..
+            } => {
                 let mut items = Vec::new();
                 if *local {
-                    if *running {
-                        items.push(lead(
-                            "Focus window",
-                            Action::BrowserFocusWindow,
-                            GLYPH_FOCUS,
-                        ));
-                        items.push(lead(
-                            "Stop profile",
-                            Action::BrowserToggleProfile,
-                            GLYPH_STOP,
-                        ));
-                    } else {
-                        items.push(lead(
-                            "Start profile",
-                            Action::BrowserToggleProfile,
-                            GLYPH_ACTIVATE,
-                        ));
+                    // Fork (companion launcher): the companion's items lead;
+                    // the herdr+ window's follow in their own section while
+                    // it is on.
+                    if let Some(state) = companion.as_deref() {
+                        for (label, action, glyph) in super::browser::companion_menu_items(state) {
+                            items.push(item(
+                                label,
+                                Action::BrowserCompanion(action),
+                                glyph,
+                                Section::Lead,
+                                if action == crate::api::schema::BrowserCompanionAction::Stop {
+                                    Kind::Danger
+                                } else {
+                                    Kind::Action
+                                },
+                            ));
+                        }
+                    }
+                    if companion.is_none() || *window {
+                        let section = if companion.is_some() {
+                            Section::Titled("Window")
+                        } else {
+                            Section::Lead
+                        };
+                        if *running {
+                            items.push(item(
+                                "Focus window",
+                                Action::BrowserFocusWindow,
+                                GLYPH_FOCUS,
+                                section,
+                                Kind::Action,
+                            ));
+                            items.push(item(
+                                "Stop profile",
+                                Action::BrowserToggleProfile,
+                                GLYPH_STOP,
+                                section,
+                                Kind::Action,
+                            ));
+                        } else {
+                            items.push(item(
+                                "Start profile",
+                                Action::BrowserToggleProfile,
+                                GLYPH_ACTIVATE,
+                                section,
+                                Kind::Action,
+                            ));
+                        }
                     }
                 }
                 items.push(lead("Open overlay", Action::BrowserOpenOverlay, GLYPH_OPEN));

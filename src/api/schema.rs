@@ -256,6 +256,9 @@ operations::define_operations! {
     BrowserHostSync(BrowserHostSyncParams) => "browser.host_sync", false, false;
     BrowserHostReport(BrowserHostReportParams) => "browser.host_report", false, false;
     BrowserSendPage(BrowserSendPageParams) => "browser.send_page", false, false;
+    /// Fork (companion launcher): the companion app herdr runs — status,
+    /// start, stop, restart, focus (App lane; the Browser row and overlay).
+    BrowserCompanion(BrowserCompanionParams) => "browser.companion", false, true;
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;

@@ -625,12 +625,30 @@ const ops = {
 
   // The one op that raises the window: the login handoff to the user
   // (`browser focus`). Everything else selects tabs quietly (`select`).
-  async focus({ profile: name, target }) {
+  async focus({ profile: name, target, args }) {
     const profile = needProfile(name);
     const state = needPage(profile, target);
-    if (profile.kind === 'companion') await controlCall(profile, 'focus', target);
-    else await state.page.bringToFront();
+    // companion: the user's focus takes the keyboard, an agent's only orders the window front
+    if (profile.kind === 'companion') {
+      const view = await profile.control.viewOf(target);
+      await profile.control.call('focus', { view_id: view, user: Boolean(args && args.user) });
+    } else await state.page.bringToFront();
     return { result: {}, page: await pageInfo(state) };
+  },
+
+  // Fork (companion launcher): the managed companion quits through its control page
+  // (herdr's stop, before SIGTERM); and raises its window (`user`: with the keyboard).
+  async control_quit({ profile: name }) {
+    const profile = needProfile(name);
+    if (profile.kind !== 'companion') fail('invalid_request', 'control_quit is for the companion host');
+    await profile.control.call('quit');
+    return {};
+  },
+  async control_raise({ profile: name, args }) {
+    const profile = needProfile(name);
+    if (profile.kind !== 'companion') fail('invalid_request', 'control_raise is for the companion host');
+    await profile.control.call('raise', { user: Boolean(args && args.user) });
+    return {};
   },
 
   // The tab becomes the active tab of its window without the app coming

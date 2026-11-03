@@ -106,6 +106,9 @@ function render() {
     st.textContent = state.status.text;
     st.className = state.status.level || '';
   } else st.hidden = true;
+  const up = $('update');
+  up.hidden = !state.update;
+  if (state.update) up.title = `herdr installed companion ${state.update.version}; Restart applies it (your pages come back)`;
   $('empty').hidden = !!state.active;
   $('emptytext').textContent = state.session ? 'No pages in this session.' : 'Waiting for herdr…';
   reportHeight();
@@ -170,6 +173,10 @@ $('note').addEventListener('keydown', (e) => {
     $('sendbar').hidden = true;
     reportHeight();
   }
+});
+$('update').addEventListener('click', () => {
+  $('update').disabled = true;
+  act('restart_update');
 });
 $('permallow').addEventListener('click', () => act('permission', { id: $('permbar').dataset.id, allow: true }));
 $('permdeny').addEventListener('click', () => act('permission', { id: $('permbar').dataset.id, allow: false }));

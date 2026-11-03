@@ -789,6 +789,8 @@ pub(super) fn facts(
         ("browser", line("executable")),
         ("helper", line("helper")),
         ("extension", line("extension")),
+        // Fork (companion launcher): the companion app herdr runs.
+        ("companion", line("companion_app")),
         ("MCP", mcp),
     ];
     if !info.fixes.is_empty() {

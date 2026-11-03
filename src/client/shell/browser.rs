@@ -12,8 +12,16 @@ use std::collections::HashSet;
 
 use super::*;
 use crate::api::schema::{
-    BrowserGetInfo, BrowserGetParams, BrowserProfileTarget, BrowserStopParams, BrowserTabTarget,
-    Method,
+    BrowserCompanionAction, BrowserGetInfo, BrowserGetParams, BrowserProfileTarget,
+    BrowserStopParams, BrowserTabTarget, Method,
+};
+
+// Fork (companion launcher): the companion app's row state, menu items and
+// overlay block.
+#[path = "browser_companion.rs"]
+pub(crate) mod browser_companion;
+pub(crate) use browser_companion::{
+    companion_menu_items, CompanionChip, CompanionOverlayRow, CompanionTone,
 };
 
 /// The pull cadence while a profile is running or starting.
@@ -88,6 +96,9 @@ pub(crate) struct BrowserRow {
     /// The profile the row's menu acts on (a running one, else the first).
     pub(crate) profile: String,
     pub(crate) running: bool,
+    /// Fork (companion launcher): the companion's state on a server that
+    /// runs it (the menu's companion items).
+    pub(crate) companion: Option<String>,
 }
 
 /// The row's state and status text for `info`; a failing check only an
@@ -168,11 +179,21 @@ pub(crate) enum BrowserOverlayRow {
         active: bool,
     },
     Empty(String),
+    /// Fork (companion launcher): the companion app's line (selectable;
+    /// chips for the mouse) and its detail lines.
+    Companion(CompanionOverlayRow),
+    CompanionNote {
+        text: String,
+        tone: CompanionTone,
+    },
 }
 
 impl BrowserOverlayRow {
     fn selectable(&self) -> bool {
-        matches!(self, Self::Tab { .. } | Self::Profile { .. })
+        matches!(
+            self,
+            Self::Tab { .. } | Self::Profile { .. } | Self::Companion(_)
+        )
     }
 }
 
@@ -202,6 +223,21 @@ pub(crate) fn browser_overlay_rows(info: &BrowserGetInfo, now: u64) -> Vec<Brows
     for tab in &info.tabs {
         if !profiles.contains(&tab.profile.as_str()) {
             profiles.push(tab.profile.as_str());
+        }
+    }
+    // Fork (companion launcher): the companion app first; its tabs follow
+    // it (no `companion` profile header of their own).
+    if let Some(companion) = info.companion_app.as_ref() {
+        let home = std::env::var("HOME").ok();
+        rows.extend(browser_companion::companion_overlay_rows(
+            companion,
+            now,
+            home.as_deref(),
+        ));
+        rows.extend(companion_tab_rows(info, now));
+        profiles.retain(|name| *name != "companion");
+        if profiles.is_empty() && info.sessions.is_empty() {
+            return rows;
         }
     }
     if profiles.is_empty() {
@@ -265,34 +301,57 @@ pub(crate) fn browser_overlay_rows(info: &BrowserGetInfo, now: u64) -> Vec<Brows
             }));
         }
         for tab in tabs {
-            let short = tab
-                .id
-                .rsplit_once(':')
-                .map(|(_, short)| short.to_string())
-                .unwrap_or_else(|| tab.id.clone());
-            let last = match &tab.last {
-                Some(touch) => format!(
-                    "{} {} {}",
-                    touch.actor.label(),
-                    touch.op,
-                    age(touch.at, now)
-                ),
-                None if tab.last_actor.is_user() => "you".into(),
-                None => String::new(),
-            };
-            rows.push(BrowserOverlayRow::Tab {
-                profile: profile.to_string(),
-                short,
-                title: tab.title.clone(),
-                url: tab.url.clone(),
-                opener: tab.opened_by.label(),
-                last,
-                dialog: tab.dialog_open,
-                active: tab.active,
-            });
+            rows.push(tab_row(profile, tab, now));
         }
     }
     rows
+}
+
+/// One tab line of the overlay.
+fn tab_row(profile: &str, tab: &crate::api::schema::BrowserTabInfo, now: u64) -> BrowserOverlayRow {
+    let short = tab
+        .id
+        .rsplit_once(':')
+        .map(|(_, short)| short.to_string())
+        .unwrap_or_else(|| tab.id.clone());
+    let last = match &tab.last {
+        Some(touch) => format!(
+            "{} {} {}",
+            touch.actor.label(),
+            touch.op,
+            age(touch.at, now)
+        ),
+        None if tab.last_actor.is_user() => "you".into(),
+        None => String::new(),
+    };
+    BrowserOverlayRow::Tab {
+        profile: profile.to_string(),
+        short,
+        title: tab.title.clone(),
+        url: tab.url.clone(),
+        opener: tab.opened_by.label(),
+        last,
+        dialog: tab.dialog_open,
+        active: tab.active,
+    }
+}
+
+/// Fork (companion launcher): the companion's open tabs, newest activity first.
+fn companion_tab_rows(info: &BrowserGetInfo, now: u64) -> Vec<BrowserOverlayRow> {
+    let mut tabs: Vec<_> = info
+        .tabs
+        .iter()
+        .filter(|tab| tab.profile == "companion")
+        .collect();
+    tabs.sort_by(|a, b| {
+        let at = |tab: &crate::api::schema::BrowserTabInfo| {
+            tab.last.as_ref().map(|touch| touch.at).unwrap_or(0)
+        };
+        at(b).cmp(&at(a)).then_with(|| a.id.cmp(&b.id))
+    });
+    tabs.into_iter()
+        .map(|tab| tab_row("companion", tab, now))
+        .collect()
 }
 
 impl ClientShellState {
@@ -304,8 +363,37 @@ impl ClientShellState {
         if !info.enabled && info.profiles.is_empty() && !self.browser.seen_running {
             return None;
         }
-        let (state, status) = browser_row_state(info);
         let active = info.tabs.iter().any(|tab| tab.active);
+        // Fork (companion launcher): a server that runs the companion shows it.
+        if let Some(companion) = info.companion_app.as_ref() {
+            if let Some((state, mut status)) =
+                browser_companion::companion_row_state(info, companion, unix_now())
+            {
+                if info.setup_needed
+                    && matches!(state, BrowserRowState::Running | BrowserRowState::Stopped)
+                {
+                    status.push_str(" !");
+                }
+                // the menu's Window section acts on the herdr+ window's profile
+                let window = info
+                    .profiles
+                    .iter()
+                    .filter(|p| p.name != "companion")
+                    .find(|p| p.state == "running" || p.state == "starting")
+                    .or_else(|| info.profiles.iter().find(|p| p.name != "companion"));
+                return Some(BrowserRow {
+                    state,
+                    status,
+                    active,
+                    profile: window
+                        .map(|p| p.name.clone())
+                        .unwrap_or_else(|| "main".into()),
+                    running: window.is_some_and(|p| p.state == "running" || p.state == "starting"),
+                    companion: Some(companion.state.clone()),
+                });
+            }
+        }
+        let (state, status) = browser_row_state(info);
         let running = info
             .profiles
             .iter()
@@ -320,6 +408,7 @@ impl ClientShellState {
             active,
             profile,
             running: running.is_some(),
+            companion: info.companion_app.as_ref().map(|c| c.state.clone()),
         })
     }
 
@@ -542,7 +631,10 @@ impl ClientShellState {
                     BrowserOverlayRow::Profile { name, .. } => rows.iter().position(|row| {
                         matches!(row, BrowserOverlayRow::Profile { name: n, .. } if *n == name)
                     }),
-                    BrowserOverlayRow::Empty(_) => None,
+                    BrowserOverlayRow::Companion(_) => rows
+                        .iter()
+                        .position(|row| matches!(row, BrowserOverlayRow::Companion(_))),
+                    BrowserOverlayRow::Empty(_) | BrowserOverlayRow::CompanionNote { .. } => None,
                 })
                 .or_else(|| rows.iter().position(BrowserOverlayRow::selectable))
                 .unwrap_or(0);
@@ -598,6 +690,10 @@ impl ClientShellState {
                 if !overlay.local {
                     return true;
                 }
+                if let Some(BrowserOverlayRow::Companion(_)) = overlay.rows.get(overlay.cursor) {
+                    self.request_browser_companion(BrowserCompanionAction::Focus, outcome);
+                    return true;
+                }
                 if let Some(BrowserOverlayRow::Tab { profile, short, .. }) =
                     overlay.rows.get(overlay.cursor).cloned()
                 {
@@ -611,8 +707,32 @@ impl ClientShellState {
                     );
                 }
             }
+            // Fork (companion launcher): restart the companion.
+            KeyCode::Char('r') => {
+                if overlay.local && self.browser_companion().is_some() {
+                    self.request_browser_companion(BrowserCompanionAction::Restart, outcome);
+                }
+            }
             KeyCode::Char('s') => {
                 if !overlay.local {
+                    return true;
+                }
+                // Fork (companion launcher): on the companion line (or when
+                // only the companion is listed) `s` starts or stops it.
+                let has_companion = overlay
+                    .rows
+                    .iter()
+                    .any(|row| matches!(row, BrowserOverlayRow::Companion(_)));
+                let on_companion = matches!(
+                    overlay.rows.get(overlay.cursor),
+                    Some(BrowserOverlayRow::Companion(_))
+                ) || (has_companion
+                    && !overlay
+                        .rows
+                        .iter()
+                        .any(|row| matches!(row, BrowserOverlayRow::Profile { .. })));
+                if on_companion {
+                    self.toggle_browser_companion(outcome);
                     return true;
                 }
                 let target = match overlay.rows.get(overlay.cursor).cloned() {
@@ -632,6 +752,76 @@ impl ClientShellState {
             _ => return false,
         }
         true
+    }
+
+    /// Fork (companion launcher): a left press while the overlay is open: a
+    /// chip acts, a row is selected, a press outside the panel closes it.
+    pub(super) fn route_browser_overlay_click(
+        &mut self,
+        point: (u16, u16),
+        outcome: &mut ClientShellInput,
+    ) {
+        let hit = self
+            .hits
+            .browser_overlay
+            .iter()
+            .find(|(rect, _)| super::contains(*rect, point))
+            .map(|(_, hit)| *hit);
+        match hit {
+            Some(super::browser_overlay::BrowserOverlayHit::Companion(action)) => {
+                self.request_browser_companion(action, outcome);
+            }
+            Some(super::browser_overlay::BrowserOverlayHit::Row(index)) => {
+                if let Some(ClientShellOverlay::Browser(overlay)) = self.overlay.as_mut() {
+                    if overlay
+                        .rows
+                        .get(index)
+                        .is_some_and(BrowserOverlayRow::selectable)
+                    {
+                        overlay.cursor = index;
+                        outcome.repaint = true;
+                    }
+                }
+            }
+            None if !super::contains(self.hits.browser_overlay_popup, point) => {
+                self.overlay = None;
+                outcome.repaint = true;
+            }
+            None => {}
+        }
+    }
+
+    /// The wheel over the overlay moves the selection.
+    pub(super) fn move_browser_overlay_cursor(
+        &mut self,
+        delta: i32,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(ClientShellOverlay::Browser(overlay)) = self.overlay.as_mut() else {
+            return;
+        };
+        let next = if delta < 0 {
+            overlay
+                .rows
+                .iter()
+                .enumerate()
+                .take(overlay.cursor)
+                .rev()
+                .find(|(_, row)| row.selectable())
+                .map(|(index, _)| index)
+        } else {
+            overlay
+                .rows
+                .iter()
+                .enumerate()
+                .skip(overlay.cursor + 1)
+                .find(|(_, row)| row.selectable())
+                .map(|(index, _)| index)
+        };
+        if let Some(next) = next {
+            overlay.cursor = next;
+            outcome.repaint = true;
+        }
     }
 
     /// `browser.stop` for a running profile, `browser.start` otherwise.
@@ -666,11 +856,18 @@ impl ClientShellState {
         let Some(row) = self.browser_row() else {
             return;
         };
+        let window = self
+            .browser
+            .info
+            .as_ref()
+            .is_some_and(|info| !info.window_off);
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Browser {
                 profile: row.profile,
                 running: row.running,
                 local: self.active_endpoint_id.is_local(),
+                companion: row.companion,
+                window,
             },
             x,
             y,
@@ -714,6 +911,10 @@ impl ClientShellState {
             ClientContextMenuAction::BrowserOpenOverlay => {
                 self.open_browser_overlay(outcome);
             }
+            // Fork (companion launcher).
+            ClientContextMenuAction::BrowserCompanion(action) => {
+                self.request_browser_companion(action, outcome);
+            }
             _ => {}
         }
     }
@@ -735,6 +936,11 @@ impl ClientShellState {
                                 info.enabled = browser.enabled;
                                 // the `!` hint travels with every reply, changed or not
                                 info.setup_needed = browser.setup_needed;
+                                // Fork (companion launcher): so does the companion's state
+                                if browser.companion_app.is_some() {
+                                    info.companion_app = browser.companion_app;
+                                }
+                                info.window_off = browser.window_off;
                             }
                         } else {
                             if browser
@@ -757,6 +963,12 @@ impl ClientShellState {
                         self.clear_browser_overlay_loading();
                     }
                 }
+                self.sync_browser_overlay();
+                (true, Vec::new())
+            }
+            // Fork (companion launcher).
+            PendingEndpointKind::BrowserCompanion => {
+                self.handle_browser_companion_result(result);
                 self.sync_browser_overlay();
                 (true, Vec::new())
             }

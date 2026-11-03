@@ -1853,6 +1853,12 @@
           "type": "string",
           "default": "\"agent\"",
           "description": "Fork (companion browser): uncaught page errors, console errors, failed loads and crashes of a tab an agent opened or used recently are stored quietly for that agent when it is a Claude agent (batched, deduplicated and capped; never typed in, never a wake-up); other agents read them with `herdr browser console`. `off` keeps them pull-only. An unknown value reports a config diagnostic and reads as `agent`."
+        },
+        {
+          "key": "browser.companion_autostart",
+          "type": "boolean",
+          "default": "false",
+          "description": "Fork (companion launcher): start the installed companion browser with the server, in the background (no window, no focus), instead of on the first page an agent opens. `herdr browser setup --companion` installs it; herdr restarts it after a crash (after 1, 2, 4 and 8 s; it gives up after 5 crashes in 5 minutes until you restart it), stops it with the server (not on a live handoff: the new server takes it over) and offers start, stop, restart and focus in `herdr browser companion`, the Browser row's menu and the Browser overlay. Applies at the next server start."
         }
       ]
     },

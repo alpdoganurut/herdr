@@ -4,6 +4,27 @@ An Electron browser window that herdr drives as its browser host: one group of p
 the window follows the focused herdr tab, and agents' `herdr browser …` / MCP ops act on the same
 views over CDP. Contract: `.local/prd/companion/contract.md` (not in git).
 
+## Installed and run by herdr
+
+```
+herdr browser setup --companion        # asks before downloading Electron 45.2.1 (~115 MB); --yes answers yes
+```
+
+installs this app under herdr's browser home (`<state dir>/browser/companion-app/`: the app files of
+this herdr, Electron, and on macOS a "herdr+ companion" app with the eye-plus icon). herdr then runs
+it: the first page an agent opens starts it in the background (`[browser] companion_autostart = true`
+starts it with the server), a crash restarts it (after 1, 2, 4, 8 s; it gives up after 5 crashes in
+5 minutes), it quits with the server and survives a live handoff. `herdr browser companion
+status|start|stop|restart|focus|log`, the Browser row's menu and the Browser overlay control it.
+A rerun of setup only updates what changed; after a herdr update the server refreshes the app files
+(a restart applies them: the bar shows "Update ready · Restart").
+
+Managed mode (what herdr passes): `--managed --launch-token <hex>` (the registration carries the token,
+so herdr knows the lease is its process), `--background` (never shown, never activated: an agent's
+start), `HERDR_COMPANION_MANAGED=1`. Managed, it quits when SIGTERM'd or when herdr's socket stays
+unreachable for 30 s, and its control page's `quit()` / `raise({user})` serve herdr's stop and focus.
+`HERDR_COMPANION_TEST_HOOKS=1` adds `__crash()` / `__hang()` to the control page (tests only).
+
 ## Try it (one command)
 
 ```
@@ -69,10 +90,13 @@ The DevTools port is loopback-only and unauthenticated (same exposure as the her
 ## Develop
 
 ```sh
-npm test                 # unit tests (groups/sync logic, line parser, socket path), no Electron
+npm test                 # unit tests (groups/sync logic, line parser, socket path, managed mode), no Electron
 npm run e2e              # headless Electron against test/mock-herdr.mjs (headless; never shows a window)
 test/e2e-real-herdr.sh   # headless Electron against a REAL isolated herdr (target/release/herdr or $HERDR_BIN):
                          # temp HOME/XDG dirs, no inherited HERDR_* vars, no Chromium window (fallback asserted by routing)
+test/e2e-launcher.sh     # herdr's launcher against a REAL isolated herdr: setup --companion (cloning this
+                         # node_modules/electron/dist, no download), on-demand start, crash backoff and give-up,
+                         # restart, clean stop, live handoff survival, the stop with the server (headless)
 npm run mock -- --socket /tmp/hc.sock --verify-cdp   # a mock herdr to point `npm start` at
 npm run spike            # P3.0 spike: Playwright over CDP against Electron views
 npx electron test/ui-shots.cjs <dir>   # bar screenshots (light/dark, fixed states) from a hidden window
@@ -104,6 +128,7 @@ herdr tabs swaps its pages. Quit the companion and the next `open` goes to the h
 | file | job |
 |---|---|
 | `src/main.js` | process switches, window, control page, strip IPC, focus following, sync/report writers, send page |
+| `src/managed.js` | managed mode: the launcher's flags, register fields, the startup window rule, quit signals, the socket watchdog |
 | `src/host.js` | herdr link: register, heartbeat, events stream, reconnect |
 | `src/herdr-api.js` | newline-JSON socket client, socket path resolution |
 | `src/groups.js` | herdr tab → group bookkeeping, host_state merge, host_sync payloads (pure) |
@@ -112,4 +137,5 @@ herdr tabs swaps its pages. Quit the companion and the next `open` goes to the h
 | `src/ui/` | strip page (bar variant A, light/dark follows the system) and control page; `icons/` = icon set A masters |
 | `assets/icon/` | eye-plus app icon: PNGs (window/dock), `eye-plus.icns` for packaging (`make-icns.sh` rebuilds it) |
 | `test/` | unit tests, mock herdr, e2e |
+| `install/` | the Electron runtime's npm manifest and pinned lock (`herdr browser setup --companion` runs `npm ci` with it) |
 | `spike/` | P3.0 spike |

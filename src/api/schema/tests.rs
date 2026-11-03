@@ -2082,3 +2082,53 @@ fn new_browser_host_methods_are_not_client_shell_and_old_digests_hold() {
         matches!(request.method, Method::BrowserHostRegister(ref p) if p.kind == BrowserHostKind::Companion)
     );
 }
+
+/// Fork (companion launcher): `browser.companion` is a client-shell method
+/// (the Browser row and overlay) that changes nothing the TUI draws by
+/// itself; its params are frozen by the endpoint shape digest
+/// (`server::client_commands::tests::advertised_client_shell_method_shapes_stay_at_the_v1_contract`,
+/// FORK §5); an action this server does not know reads as `Unknown`.
+#[test]
+fn browser_companion_is_a_client_shell_method_with_a_frozen_digest() {
+    let operation = Method::OPERATIONS
+        .iter()
+        .find(|operation| operation.name == "browser.companion")
+        .expect("browser.companion is a method");
+    assert!(operation.client_shell);
+    assert!(!operation.changes_ui);
+    assert!(super::operations::client_shell_method_names().contains(&"browser.companion"));
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "id": "c1",
+        "method": "browser.companion",
+        "params": { "action": "restart", "caller": { "pane_id": "w1:p2" } }
+    }))
+    .expect("parses");
+    match request.method {
+        Method::BrowserCompanion(params) => {
+            assert_eq!(params.action, BrowserCompanionAction::Restart);
+            assert_eq!(
+                params.caller.map(|caller| caller.pane_id).as_deref(),
+                Some("w1:p2")
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let later: Request = serde_json::from_value(serde_json::json!({
+        "id": "c2", "method": "browser.companion", "params": { "action": "dock" }
+    }))
+    .expect("an unknown action still parses");
+    assert!(matches!(
+        later.method,
+        Method::BrowserCompanion(BrowserCompanionParams {
+            action: BrowserCompanionAction::Unknown,
+            caller: None
+        })
+    ));
+    // the caller is omitted when absent (an old server never sees it)
+    let plain = serde_json::to_value(BrowserCompanionParams {
+        action: BrowserCompanionAction::Status,
+        caller: None,
+    })
+    .unwrap();
+    assert_eq!(plain, serde_json::json!({ "action": "status" }));
+}

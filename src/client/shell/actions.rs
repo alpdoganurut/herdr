@@ -910,7 +910,8 @@ impl ClientShellState {
             kind @ (PendingEndpointKind::BrowserGet
             | PendingEndpointKind::BrowserFocus
             | PendingEndpointKind::BrowserStart
-            | PendingEndpointKind::BrowserStop) => {
+            | PendingEndpointKind::BrowserStop
+            | PendingEndpointKind::BrowserCompanion) => {
                 return self.handle_browser_endpoint_result(kind, result);
             }
             PendingEndpointKind::BrowserSettings

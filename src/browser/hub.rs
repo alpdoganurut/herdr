@@ -35,9 +35,7 @@ use crate::integration::browser_assets;
 #[path = "companion_host.rs"]
 mod companion_host;
 use companion_host::ShowRequest;
-pub use companion_host::{
-    host_unavailable, is_companion, lease_unknown, COMPANION_PROFILE, REPORT_MAX_EVENTS,
-};
+pub use companion_host::{is_companion, lease_unknown, COMPANION_PROFILE, REPORT_MAX_EVENTS};
 
 /// Grace the hub adds to the sidecar's own deadline before giving up on a reply.
 pub const REPLY_GRACE: Duration = Duration::from_secs(5);
@@ -138,6 +136,10 @@ struct Inner {
     page_errors: Mutex<super::page_errors::PageErrorQueue>,
     /// Fork (companion browser): the tabs `show` opened (HTML views).
     html_views: Mutex<HashSet<TabKey>>,
+    /// Fork (companion launcher): the companion app herdr starts and watches.
+    launcher: super::companion_app::Launcher,
+    /// Fork (companion launcher): tests shorten the routing wait (0 = the default).
+    companion_wait_ms: AtomicU64,
 }
 
 /// The new tab page's snapshot goes out at most this often.
@@ -208,8 +210,20 @@ impl BrowserHub {
                 companion_host: Mutex::new(None),
                 page_errors: Mutex::new(Default::default()),
                 html_views: Mutex::new(HashSet::new()),
+                launcher: super::companion_app::Launcher::new(),
+                companion_wait_ms: AtomicU64::new(0),
             }),
         }
+    }
+
+    /// Fork (companion launcher): the companion app's launcher.
+    pub(crate) fn launcher(&self) -> &super::companion_app::Launcher {
+        &self.inner.launcher
+    }
+
+    /// The browser home this hub works in.
+    pub(crate) fn home_dir(&self) -> &Path {
+        &self.inner.home
     }
 
     pub fn config(&self) -> BrowserConfig {
@@ -325,6 +339,8 @@ impl BrowserHub {
         }
         drop(companion);
         info.setup_needed = self.setup_needed();
+        // Fork (companion launcher): always current (not seq-gated).
+        info.companion_app = Some(self.companion_app_info());
         info
     }
 
@@ -997,9 +1013,10 @@ impl BrowserHub {
             return Err(BrowserError::disabled());
         }
         let name = self.profile_name(profile, None, &config)?;
-        // Fork (companion browser): the companion starts itself.
-        if is_companion(&name) && !self.companion_live() {
-            return Err(host_unavailable());
+        // Fork (companion launcher): the companion is launched by herdr.
+        if is_companion(&name) {
+            self.companion_start(super::companion_app::StartReason::User)?;
+            return Ok(self.get(None));
         }
         {
             let mut state = self.inner.state.lock().unwrap();
@@ -1074,12 +1091,14 @@ impl BrowserHub {
         std::thread::Builder::new()
             .name("herdr-browser-focus".into())
             .spawn(move || {
+                // Fork (companion launcher): the user's focus may take the
+                // keyboard; an agent's never does.
                 let ok = hub
                     .request(
                         "focus",
                         Some(&record.profile),
                         Some(&record.target_id),
-                        Value::Null,
+                        json!({ "user": true }),
                         Duration::from_secs(3),
                     )
                     .is_ok();
@@ -2020,7 +2039,7 @@ impl BrowserHub {
                             "focus",
                             Some(profile),
                             Some(target),
-                            Value::Null,
+                            json!({ "user": actor.is_user() }),
                             deadline,
                         )?;
                         // Fork (companion browser): an agent hands the tab to
@@ -2388,6 +2407,8 @@ impl BrowserHub {
         if !self.config().stop_with_server {
             return;
         }
+        // Fork (companion launcher): the companion stops with the server on
+        // its own terms (`stop_companion_with_server`).
         let names: Vec<String> = self
             .inner
             .state
@@ -2395,8 +2416,9 @@ impl BrowserHub {
             .unwrap()
             .profiles
             .iter()
-            .filter(|(_, status)| {
-                status.is_running() || matches!(status, ProfileStatus::Starting { .. })
+            .filter(|(name, status)| {
+                !is_companion(name)
+                    && (status.is_running() || matches!(status, ProfileStatus::Starting { .. }))
             })
             .map(|(name, _)| name.clone())
             .collect();
@@ -2680,10 +2702,13 @@ impl BrowserHub {
     /// shutdown path passes false: it never starts a sidecar or attaches, it
     /// only closes what is attached and terminates the recorded live pid.
     fn stop_profile_with(&self, name: &str, attach: bool) {
-        // Fork (companion browser): stopping the companion detaches it and
-        // drops its lease; the app is never signalled (it re-registers).
+        // Fork (companion launcher): herdr's own companion quits (control
+        // page, SIGTERM, SIGKILL); one started by hand is only detached and
+        // its lease dropped (it re-registers).
         if is_companion(name) {
-            self.drop_registration(ProfileStatus::Stopped, true);
+            if let Err(err) = self.companion_stop() {
+                tracing::warn!(event = "browser.companion.stop", code = %err.code, message = %err.message, "companion stop failed");
+            }
             return;
         }
         // Only a live browser is attached to (a Running state whose process is

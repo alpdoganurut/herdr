@@ -1839,6 +1839,26 @@ impl ClientShellState {
             }
             return;
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::Browser(_))) {
+            // Fork (companion launcher): the Browser overlay's chips and rows.
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.route_browser_overlay_click(point, outcome);
+                }
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    self.move_browser_overlay_cursor(
+                        if mouse.kind == MouseEventKind::ScrollUp {
+                            -1
+                        } else {
+                            1
+                        },
+                        outcome,
+                    );
+                }
+                _ => {}
+            }
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::TeamInfo(_))) {
             // Fork: the Team info overlay (`team_overlay.rs`).
             match mouse.kind {

@@ -2973,3 +2973,64 @@ async fn tab_browser_state_survives_a_live_handoff() {
     );
     assert!(restored.entries.iter().all(|entry| entry.target.is_none()));
 }
+
+/// Fork (companion launcher): the companion herdr started quits with the
+/// server (through its control page, a signal only if it must), but a live
+/// handoff leaves it running for the replacement to adopt (`run.json`). A
+/// temporary hub and a fake spawner: no Electron, no real home.
+#[cfg(unix)]
+#[test]
+fn the_managed_companion_stops_with_the_server_but_not_on_a_live_handoff() {
+    use crate::browser::companion_app::tests::{companion_hub, wait_for, FakeSpawner};
+    use crate::browser::companion_app::{read_run_record, StartReason};
+    use std::time::Duration;
+
+    let (hub, home, shared) = companion_hub("server-exit", true);
+    let spawner = FakeSpawner::new(&hub, true);
+    hub.companion_start(StartReason::User).expect("start");
+    wait_for("the registration", Duration::from_secs(5), || {
+        hub.companion_app_info().state == "running"
+    });
+    let run = read_run_record(&hub.companion_home()).expect("run.json");
+
+    // a live handoff: nothing stops, the record stays for the next server
+    crate::server::headless::stop_browsers_at_exit(&hub, true);
+    assert_eq!(hub.companion_app_info().state, "running");
+    assert!(spawner.signals().is_empty());
+    assert!(read_run_record(&hub.companion_home()).is_some());
+
+    // the fake app quits when its control page is asked to
+    let watcher = {
+        let shared = shared.clone();
+        let spawner = spawner.clone();
+        let pid = run.pid;
+        std::thread::spawn(move || {
+            for _ in 0..200 {
+                let quit = shared
+                    .lock()
+                    .unwrap()
+                    .ops
+                    .iter()
+                    .any(|(op, _, _)| op == "control_quit");
+                if quit {
+                    spawner.alive.lock().unwrap().remove(&pid);
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        })
+    };
+    // a plain exit: it goes with the server, quietly
+    crate::server::headless::stop_browsers_at_exit(&hub, false);
+    assert!(watcher.join().unwrap(), "asked through the control page");
+    let info = hub.companion_app_info();
+    assert_eq!(info.state, "stopped");
+    assert_eq!(info.restarts, 0, "not a crash");
+    assert!(spawner.signals().is_empty(), "no signal was needed");
+    assert!(
+        read_run_record(&hub.companion_home()).is_none(),
+        "run.json removed"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}

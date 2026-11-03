@@ -150,7 +150,11 @@ class HerdrLink extends EventEmitter {
       if (!this.lease || gen !== this.gen) return;
       try {
         const res = await this._rpc('browser.host_heartbeat', { lease_id: this.lease.lease_id }, { timeoutMs: every * 2 });
-        if (gen === this.gen && res && res.lease) this.lease = { ...this.lease, ...res.lease };
+        if (gen === this.gen && res && res.lease) {
+          // `update` is absent when there is none: an old note must not linger
+          this.lease = { ...this.lease, update: undefined, ...res.lease };
+          this.emit('heartbeat', this.lease);
+        }
       } catch (e) {
         if (gen !== this.gen) return;
         if (e.code === 'lease_unknown' || e.code === 'timeout' || e.code === 'unreachable') this._lost(`heartbeat: ${e.code}`);
@@ -199,6 +203,14 @@ class HerdrLink extends EventEmitter {
   // Plain request (no lease), e.g. tab.focus.
   async request(method, params = {}) {
     return this._rpc(method, params);
+  }
+
+  // Test hook (`__hang`): stop heartbeating and never re-register, as a wedged app would.
+  hang() {
+    this.stopped = true;
+    clearTimeout(this.retryTimer);
+    clearInterval(this.hbTimer);
+    this.hbTimer = null;
   }
 
   async stop() {

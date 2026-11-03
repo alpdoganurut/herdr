@@ -194,6 +194,10 @@ pub(super) struct ShellHitMap {
     /// panel (`team_overlay.rs`).
     pub(super) team_overlay: Vec<(Rect, super::team_overlay::TeamOverlayHit)>,
     pub(super) team_overlay_popup: Rect,
+    /// Fork (companion launcher): the Browser overlay's targets (the
+    /// companion chips, then the rows) and its panel.
+    pub(super) browser_overlay: Vec<(Rect, super::browser_overlay::BrowserOverlayHit)>,
+    pub(super) browser_overlay_popup: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
     /// The tab menu's swatch row: one hit per swatch, indexed like `tab_color::picker_choices`.
@@ -818,6 +822,9 @@ pub(super) enum ClientContextMenuAction {
     /// Fork, tab menu: turn the tab's do-not-disturb on or off
     /// (`tab.set_dnd`).
     Dnd,
+    /// Fork (companion launcher), Browser row menu: `browser.companion`
+    /// (Focus / Start / Restart / Stop companion).
+    BrowserCompanion(crate::api::schema::BrowserCompanionAction),
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -926,6 +933,12 @@ pub(super) enum ClientContextMenuTarget {
         profile: String,
         running: bool,
         local: bool,
+        /// Fork (companion launcher): the companion's state on a server
+        /// that runs it (its items lead the menu).
+        companion: Option<String>,
+        /// Fork (companion launcher): the herdr+ window is on (its items
+        /// show in a "Window" section).
+        window: bool,
     },
     /// Fork: the `tabs` layout's pinned coordinator row, with its items as
     /// they were when the menu opened.
@@ -1042,6 +1055,8 @@ pub(super) enum PendingEndpointKind {
     BrowserSettings,
     BrowserSettingsSet,
     BrowserFix,
+    /// Fork (companion launcher): `browser.companion`.
+    BrowserCompanion,
     /// Fork: `agents.settings` / `agents.settings.set` / `agents.fix`
     /// (`settings_agents.rs`).
     AgentsSettings,

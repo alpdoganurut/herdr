@@ -311,6 +311,8 @@ mod tests {
             ],
             setup_needed: false,
             sessions: vec![],
+            companion_app: None,
+            window_off: false,
         };
         let config = BrowserConfig {
             active_glyph_secs: 60,
@@ -376,6 +378,8 @@ mod tests {
             recent_panes: vec![],
             setup_needed: false,
             sessions: vec![],
+            companion_app: None,
+            window_off: false,
         };
         let snap = snapshot(&empty, &config, 5);
         assert_eq!(snap["agents"].as_array().unwrap().len(), 0);

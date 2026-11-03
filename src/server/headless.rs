@@ -212,6 +212,18 @@ enum AltScreenReadConflict {
 }
 
 /// The headless server — runs the herdr event loop without a real terminal.
+/// The browsers at server exit: `[browser] stop_with_server` and, fork
+/// (companion launcher), the managed companion. Never on a live handoff:
+/// the replacement reattaches to the window and adopts the companion from
+/// its run record.
+pub(crate) fn stop_browsers_at_exit(hub: &crate::browser::hub::BrowserHub, handoff: bool) {
+    if handoff {
+        return;
+    }
+    hub.stop_with_server_if_configured();
+    hub.stop_companion_with_server();
+}
+
 pub struct HeadlessServer {
     app: app::App,
     #[cfg(unix)]
@@ -722,9 +734,7 @@ impl HeadlessServer {
         }
         // [browser] stop_with_server: close the browsers this server launched,
         // never on a live handoff (the replacement reattaches to them).
-        if !self.handoff_in_progress {
-            crate::browser::hub().stop_with_server_if_configured();
-        }
+        stop_browsers_at_exit(crate::browser::hub(), self.handoff_in_progress);
 
         info!("headless server exiting");
         Ok(())

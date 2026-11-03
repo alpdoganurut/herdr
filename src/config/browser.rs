@@ -125,6 +125,10 @@ pub struct BrowserConfig {
     /// (`off`). Anything else is a diagnostic and reads as `agent`.
     /// Default: `agent`.
     pub page_errors: String,
+    /// Fork (companion launcher): start the installed companion with the
+    /// server (in the background) instead of on the first `open` routed to
+    /// it. Default: false.
+    pub companion_autostart: bool,
     /// Not a key: the effective `[agents] wrap` (`Config::agents_wrap`),
     /// filled in by the config loaders so the browser hub, which only
     /// receives this section, reports and applies the resolved value.
@@ -215,6 +219,7 @@ impl Default for BrowserConfig {
             shell_hook: true,
             host: BrowserHostMode::Auto.as_str().into(),
             page_errors: PAGE_ERRORS_AGENT.into(),
+            companion_autostart: false,
             effective_wrap: false,
         }
     }

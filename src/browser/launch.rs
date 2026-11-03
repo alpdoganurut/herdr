@@ -635,6 +635,16 @@ pub fn terminate(pid: u32) {
     let _ = pid;
 }
 
+/// Fork (companion launcher): SIGKILL, the companion stop's last step.
+pub fn kill_hard(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

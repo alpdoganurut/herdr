@@ -8,9 +8,10 @@
 use super::api::responses::{encode_error, encode_success};
 use super::App;
 use crate::api::schema::{
-    BrowserActor, BrowserCaller, BrowserFixParams, BrowserGetParams, BrowserLogParams,
-    BrowserProfileCreateParams, BrowserProfileName, BrowserProfileTarget, BrowserSettingsSetParams,
-    BrowserStopParams, BrowserTabTarget, ResponseResult,
+    BrowserActor, BrowserCaller, BrowserCompanionAction, BrowserCompanionParams, BrowserFixParams,
+    BrowserGetParams, BrowserLogParams, BrowserProfileCreateParams, BrowserProfileName,
+    BrowserProfileTarget, BrowserSettingsSetParams, BrowserStopParams, BrowserTabTarget,
+    ResponseResult,
 };
 use crate::browser::{hub, BrowserError};
 
@@ -23,6 +24,13 @@ impl App {
         }
         if config.enabled && config.autostart {
             let _ = hub.start(None);
+        }
+        // Fork (companion launcher): the companion the last server started
+        // (a live handoff, a restart) is adopted; else `companion_autostart`.
+        // Never in tests (it would read the real browser home).
+        if !cfg!(test) && config.enabled {
+            hub.adopt_companion();
+            hub.companion_autostart();
         }
         // The checks behind the Browser row's `setup needed` hint, off this
         // thread (not under cfg(test): every test process would probe the
@@ -312,6 +320,70 @@ impl App {
     pub(super) fn handle_browser_stop(&mut self, id: String, params: BrowserStopParams) -> String {
         match hub().stop(params.profile.as_deref(), params.all) {
             Ok(browser) => encode_success(id, ResponseResult::BrowserGet { browser }),
+            Err(err) => encode_error(id, err.code(), err.message()),
+        }
+    }
+
+    /// Fork (companion launcher): `browser.companion`. Every action answers
+    /// at once (starts and stops run on hub threads) with the state after it
+    /// began, and lands in the activity ledger as `companion:<action>`. A
+    /// caller pane (the CLI in a pane: an agent, or the user typing there)
+    /// starts it in the background and its focus never takes the keyboard.
+    pub(super) fn handle_browser_companion(
+        &mut self,
+        id: String,
+        params: BrowserCompanionParams,
+    ) -> String {
+        use crate::browser::companion_app::StartReason;
+        let pane = params
+            .caller
+            .as_ref()
+            .map(|caller| caller.pane_id.trim().to_string())
+            .filter(|pane| !pane.is_empty());
+        let reason = if pane.is_some() {
+            StartReason::Agent
+        } else {
+            StartReason::User
+        };
+        let hub = hub();
+        let (name, outcome) = match params.action {
+            BrowserCompanionAction::Status => ("status", Ok(None)),
+            BrowserCompanionAction::Start => ("start", hub.companion_start(reason).map(|()| None)),
+            BrowserCompanionAction::Stop => ("stop", hub.companion_stop()),
+            BrowserCompanionAction::Restart => ("restart", hub.companion_restart(reason)),
+            BrowserCompanionAction::Focus => {
+                ("focus", hub.companion_focus(pane.is_none()).map(|()| None))
+            }
+            BrowserCompanionAction::Unknown => (
+                "unknown",
+                Err(BrowserError::new(
+                    "invalid_request",
+                    "unknown browser.companion action; use status, start, stop, restart or focus",
+                )),
+            ),
+        };
+        if name != "status" && name != "unknown" {
+            let actor = pane
+                .as_deref()
+                .and_then(|pane| self.browser_actor_for_pane(pane))
+                .unwrap_or(match pane {
+                    Some(raw) => BrowserActor::External { raw: Some(raw) },
+                    None => BrowserActor::User,
+                });
+            let detail = match &outcome {
+                Ok(note) => note.clone().unwrap_or_default(),
+                Err(err) => format!("{}: {}", err.code(), err.message()),
+            };
+            hub.record_companion_action(&actor, name, outcome.is_ok(), &detail);
+        }
+        match outcome {
+            Ok(note) => encode_success(
+                id,
+                ResponseResult::BrowserCompanion {
+                    companion: hub.companion_app_info(),
+                    note,
+                },
+            ),
             Err(err) => encode_error(id, err.code(), err.message()),
         }
     }
