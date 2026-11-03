@@ -143,7 +143,7 @@ The browser herdr runs for agents: the herdr+ companion browser (`herdr browser 
 | MCP registration | claude and codex | `[browser] mcp_agents = ["claude"]` | Yes (both / claude / codex / none) |
 | `eval`, act family, typing into password fields | on, on, off | `[browser] allow_eval`, `allow_act`, `type_into_password_fields` | No, config only |
 | Restore tabs on relaunch | on | `[browser] restore_tabs = false` | No, config only |
-| Where `open` / `show` go (the companion browser, started on demand) | `"companion"` | `[browser] host = "auto"` (the companion while it runs, else the herdr+ window when it is on) or `"window"` | No, config only |
+| Where `open` / `show` go (the companion browser, started on demand) | `"companion"` | `[browser] host = "auto"` (the companion while it runs, else the herdr+ window when it is on) or `"window"` (with the window on, herdr never starts the companion and offers no dock or Browser view) | No, config only |
 | Page errors of a tab an agent uses, stored quietly for that Claude agent | `"agent"` | `[browser] page_errors = "off"` | No, config only |
 | Start the companion browser with the server (else on the first page an agent opens) | off | `[browser] companion_autostart = true` | No, config only |
 | The herdr+ Chromium window (off: agents use the companion; a window profile answers `window_disabled`) | off | `[browser] window = true` | No, config only |

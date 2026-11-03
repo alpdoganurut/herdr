@@ -741,3 +741,77 @@ fn a_dock_closed_inside_the_send_gap_leaves_nothing_pending() {
     assert!(state.take_browser_placement_request(at(60)).is_none());
     assert_eq!(state.next_browser_dock_deadline(at(60)), None);
 }
+
+/// Fork (companion launcher, audit 3): a server whose config keeps the
+/// companion off (the browser disabled, `host = "window"` with the window
+/// on) answers `browser.get` without it: no dock or strip is offered, and
+/// opening one says why instead of carving an empty band; one already open
+/// still closes.
+#[test]
+fn fork_smoke_without_the_companion_nothing_docks_and_the_notice_says_why() {
+    let mut state = dock_state();
+    toggle_dock(&mut state);
+    assert!(state.browser_dock_open_for("tab_1"));
+    // host = "window": browser.get has no companion_app; the tab has pages
+    let window_only = BrowserGetInfo {
+        seq: 2,
+        enabled: true,
+        window_off: false,
+        sessions: vec![BrowserSessionInfo {
+            tab_id: "tab_2".into(),
+            pages: 2,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    state.browser.info = Some(window_only.clone());
+    recompose(&mut state);
+    assert!(!state.browser_dock_offered());
+    // the open dock still closes
+    toggle_dock(&mut state);
+    assert!(!state.browser_dock_open_for("tab_1"));
+    assert!(state.visible_endpoint_notice.is_none());
+    // and does not open again
+    let outcome = toggle_dock(&mut state);
+    assert!(!state.browser_dock_open_for("tab_1"));
+    assert!(!outcome.resize);
+    let notice = state.visible_endpoint_notice.take().expect("says why");
+    assert_eq!(notice.title, "Browser dock");
+    assert!(notice.body.contains("host = \"window\""), "{}", notice.body);
+    toggle_view(&mut state);
+    assert!(!state.browser_view_open_for("tab_1"));
+    let notice = state.visible_endpoint_notice.take().expect("says why");
+    assert_eq!(notice.title, "Browser view");
+    // pages alone show no view strip
+    state.set_snapshot(Box::new(two_tab_snapshot("tab_2")));
+    recompose(&mut state);
+    assert!(!state.browser_view_strip_for_focused_tab());
+    assert!(state.layout(COLS, ROWS).view_strip.is_empty());
+    // the browser disabled
+    state.browser.info = Some(BrowserGetInfo {
+        enabled: false,
+        ..window_only
+    });
+    toggle_dock(&mut state);
+    assert!(!state.browser_dock_open_for("tab_2"));
+    let notice = state.visible_endpoint_notice.take().expect("says why");
+    assert!(notice.body.contains("enabled = false"), "{}", notice.body);
+    // a `disabled` reply (`browser.companion status`) reads as no companion
+    state.browser.info = Some(companion("stopped"));
+    assert!(state.browser_dock_offered());
+    state.handle_browser_companion_result(Ok(
+        crate::api::schema::ResponseResult::BrowserCompanion {
+            companion: BrowserCompanionAppInfo {
+                state: crate::browser::companion_app::DISABLED_STATE.into(),
+                ..Default::default()
+            },
+            note: Some("the companion browser is off".into()),
+        },
+    ));
+    assert!(state.browser_companion().is_none());
+    assert!(!state.browser_dock_offered());
+    // before the first browser.get nothing is refused (the answer follows)
+    state.browser.info = None;
+    toggle_dock(&mut state);
+    assert!(state.browser_dock_open_for("tab_2"));
+}

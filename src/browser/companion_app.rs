@@ -41,6 +41,7 @@ use super::companion_install::{self, InstallProblem, InstallRecord};
 use super::hub::{BrowserHub, COMPANION_PROFILE};
 use super::{unix_now, BrowserError};
 use crate::api::schema::BrowserCompanionAppInfo;
+use crate::config::{BrowserConfig, BrowserHostMode};
 
 /// The run record's file under the companion home.
 pub const RUN_FILE: &str = "run.json";
@@ -92,6 +93,39 @@ pub const ENV_REMOVED: [&str; 7] = [
 /// The driver's pace while a process is watched, and while nothing is.
 const WATCH_INTERVAL: Duration = Duration::from_millis(500);
 const IDLE_INTERVAL: Duration = Duration::from_secs(30);
+/// `browser.companion status`'s state while the config keeps the companion
+/// off and nothing of it runs; `browser.get` leaves `companion_app` out then.
+pub const DISABLED_STATE: &str = "disabled";
+
+/// Why the browser helper (the sidecar a companion registers through)
+/// cannot start now ([`BrowserHub::sidecar_problem`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidecarProblem {
+    /// Not installed (`herdr browser setup` never ran, or it was removed).
+    Missing,
+    /// Its node_modules predate this herdr's pinned playwright-core.
+    Outdated { installed: String },
+}
+
+/// Why this config keeps the companion off: the browser is disabled, or
+/// the herdr+ window is on and chosen (`host = "window"`: every
+/// registration is refused). `None`: it can run. `user`: the user's own
+/// call (an agent is told to ask the user).
+pub fn companion_off_by_config(config: &BrowserConfig, user: bool) -> Option<BrowserError> {
+    if !config.enabled {
+        return Some(BrowserError::disabled());
+    }
+    if config.window && config.host_mode() == BrowserHostMode::Window {
+        return Some(BrowserError::new(
+            "host_disabled",
+            format!(
+                "the companion browser is off: this herdr uses only its own browser window ([browser] host = \"window\"); {} [browser] host = \"companion\" to use it",
+                if user { "set" } else { "ask the user to set" }
+            ),
+        ));
+    }
+    None
+}
 
 // ---------------------------------------------------------------------------
 // The run record
@@ -1064,6 +1098,36 @@ fn install_error(problem: InstallProblem, user: bool) -> BrowserError {
     )
 }
 
+/// The browser helper is missing or outdated: a companion started now could
+/// never register (it registers through it).
+fn sidecar_error(problem: &SidecarProblem, user: bool) -> BrowserError {
+    let run = run_it(user);
+    BrowserError::new(
+        "host_unavailable",
+        match problem {
+            SidecarProblem::Missing => format!(
+                "the browser helper the companion browser registers through is not installed; {run} \"herdr browser setup\" in a terminal"
+            ),
+            SidecarProblem::Outdated { installed } => format!(
+                "the browser helper is outdated (playwright-core {installed}, this herdr needs {}); {run} \"herdr browser setup\" in a terminal",
+                crate::integration::browser_assets::PLAYWRIGHT_CORE_VERSION
+            ),
+        },
+    )
+}
+
+/// Neither the companion nor the browser helper is installed: both commands.
+fn nothing_installed_error(user: bool) -> BrowserError {
+    BrowserError::new(
+        "host_unavailable",
+        format!(
+            "the companion browser and the browser helper are not installed; {} \"herdr browser setup\" and \"herdr browser setup --companion\" (downloads Electron, {})",
+            run_it(user),
+            companion_install::DOWNLOAD_SIZE
+        ),
+    )
+}
+
 fn failed_error(last: Option<&str>, user: bool) -> BrowserError {
     BrowserError::new(
         "host_unavailable",
@@ -1176,6 +1240,29 @@ impl BrowserHub {
         self.note_session_change();
     }
 
+    /// What a launch needs in place, checked before it begins (never under
+    /// the core's lock): the companion's install and the browser helper it
+    /// registers through. Without the helper a launched companion never
+    /// registers: the agent's `open` would wait out its whole wait and the
+    /// launcher kill it as a crash, again and again.
+    fn companion_launchable(&self, home: &Path, user: bool) -> Result<(), BrowserError> {
+        let helper = self.sidecar_problem();
+        match (companion_install::resolve(home), helper) {
+            (Err(InstallProblem::NotInstalled), Some(SidecarProblem::Missing)) => {
+                Err(nothing_installed_error(user))
+            }
+            (Err(problem), _) => Err(install_error(problem, user)),
+            (Ok(_), Some(problem)) => Err(sidecar_error(&problem, user)),
+            (Ok(_), None) => Ok(()),
+        }
+    }
+
+    /// `browser.companion status`'s note while the config keeps the
+    /// companion off (it says why, and how to turn it on).
+    pub fn companion_off_note(&self) -> Option<String> {
+        companion_off_by_config(&self.config(), true).map(|err| err.message)
+    }
+
     /// A live run record of another herdr session (its socket).
     fn companion_other_session(&self, home: &Path) -> Option<String> {
         let ours = self.launcher().socket();
@@ -1217,6 +1304,10 @@ impl BrowserHub {
         if self.companion_live() {
             return Ok(());
         }
+        // a companion this config refuses to register is never started
+        if let Some(err) = companion_off_by_config(&self.config(), user) {
+            return Err(err);
+        }
         let home = self.companion_home();
         let launcher = self.launcher();
         let deadline = Instant::now() + wait;
@@ -1248,11 +1339,10 @@ impl BrowserHub {
                         return Err(exited_error(&companion_install::log_path(&home), user));
                     }
                     // checked before each launch, never under the core's lock
-                    companion_install::resolve(&home)
-                        .map_err(|problem| install_error(problem, user))?;
                     if let Some(socket) = self.companion_other_session(&home) {
                         return Err(other_session_error(&socket));
                     }
+                    self.companion_launchable(&home, user)?;
                     let ticket = launcher.lock().begin_spawn(
                         StartReason::OnDemand,
                         Instant::now(),
@@ -1286,19 +1376,19 @@ impl BrowserHub {
     /// answers at once; the launch runs on its own thread. The backoff
     /// counter and `failed` are reset.
     pub fn companion_start(&self, reason: StartReason) -> Result<(), BrowserError> {
-        if !self.config().enabled {
-            return Err(BrowserError::disabled());
+        let user = reason == StartReason::User;
+        if let Some(err) = companion_off_by_config(&self.config(), user) {
+            return Err(err);
         }
         let facts = self.companion_lease_facts();
         if facts.live && !self.lease_is_managed(&facts) {
             return Ok(()); // a companion started by hand runs: nothing to start
         }
         let home = self.companion_home();
-        companion_install::resolve(&home)
-            .map_err(|problem| install_error(problem, reason == StartReason::User))?;
         if let Some(socket) = self.companion_other_session(&home) {
             return Err(other_session_error(&socket));
         }
+        self.companion_launchable(&home, user)?;
         let ticket = {
             let mut core = self.launcher().lock();
             core.reset_backoff(unix_now());
@@ -1335,13 +1425,17 @@ impl BrowserHub {
     /// Stop, then start again (backoff reset; the installed app files: an
     /// update applies), on its own thread.
     pub fn companion_restart(&self, reason: StartReason) -> Result<Option<String>, BrowserError> {
+        let user = reason == StartReason::User;
+        // nothing is stopped for a start that cannot follow
+        if let Some(err) = companion_off_by_config(&self.config(), user) {
+            return Err(err);
+        }
         let facts = self.companion_lease_facts();
         if facts.live && !self.lease_is_managed(&facts) {
             return Ok(Some(EXTERNAL_NOTE.into()));
         }
         let home = self.companion_home();
-        companion_install::resolve(&home)
-            .map_err(|problem| install_error(problem, reason == StartReason::User))?;
+        self.companion_launchable(&home, user)?;
         let hub = self.clone();
         std::thread::Builder::new()
             .name("herdr-companion-restart".into())
@@ -1791,7 +1885,10 @@ impl BrowserHub {
     /// background) when it is installed and nothing was adopted.
     pub fn companion_autostart(&self) {
         let config = self.config();
-        if !config.enabled || !config.companion_autostart || self.launcher().lock().busy() {
+        if !config.companion_autostart
+            || companion_off_by_config(&config, false).is_some()
+            || self.launcher().lock().busy()
+        {
             return;
         }
         if companion_install::resolve(&self.companion_home()).is_err() {
@@ -1830,6 +1927,10 @@ impl BrowserHub {
         let external = facts.live && !managed;
         let state = if external {
             "external".to_string()
+        } else if !core.busy() && !facts.live && companion_off_by_config(&config, true).is_some() {
+            // nothing of it runs and nothing will start it: one still
+            // running after a config change keeps its state (and its Stop)
+            DISABLED_STATE.to_string()
         } else if core.phase == Phase::Stopped && !installed && !core.busy() {
             "not_installed".to_string()
         } else {
@@ -1894,6 +1995,14 @@ impl BrowserHub {
         for action in actions {
             match action {
                 Action::Respawn => {
+                    // the config turned the companion off since the crash:
+                    // the scheduled restart goes (a launched one could
+                    // never register)
+                    if companion_off_by_config(&self.config(), false).is_some() {
+                        launcher.lock().reset_backoff(unix_now());
+                        self.companion_changed();
+                        continue;
+                    }
                     let ticket = launcher.lock().begin_spawn(
                         StartReason::CrashRestart,
                         Instant::now(),

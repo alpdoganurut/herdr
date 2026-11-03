@@ -1363,3 +1363,204 @@ fn the_users_own_start_says_what_to_run_an_agents_says_to_ask_the_user() {
     assert_eq!(spawner.spawns(), 0);
     let _ = std::fs::remove_dir_all(&home);
 }
+
+// ----- what a launch needs (audit 3) ----------------------------------------
+
+/// A hub on a temporary home without any sidecar (not even the fake one):
+/// the browser helper is whatever its home holds.
+fn helperless_hub(name: &str, config: BrowserConfig) -> (BrowserHub, PathBuf) {
+    let home = temp_home(name);
+    let hub = BrowserHub::with_home(config, home.clone());
+    hub.launcher().set_socket(home.join("herdr-test.sock"));
+    hub.set_companion_register_wait_for_test(Duration::from_secs(10));
+    (hub, home)
+}
+
+/// The browser helper's runtime under `home`: its record and a
+/// playwright-core of `version`; `current`: this herdr's scripts.
+fn install_helper(home: &Path, version: &str, current: bool) {
+    use crate::integration::browser_assets;
+    let host_dir = home.join(browser_assets::HOST_DIR);
+    let playwright = host_dir.join("node_modules").join("playwright-core");
+    std::fs::create_dir_all(&playwright).unwrap();
+    std::fs::write(
+        playwright.join("package.json"),
+        format!("{{\"version\":\"{version}\"}}"),
+    )
+    .unwrap();
+    let runtime = crate::api::schema::BrowserRuntimeInfo {
+        version: 1,
+        node: "/usr/bin/true".into(),
+        assets_sha256: if current {
+            browser_assets::assets_sha256()
+        } else {
+            "older".into()
+        },
+        ..Default::default()
+    };
+    browser_assets::write_runtime(&host_dir, &runtime).unwrap();
+}
+
+#[test]
+fn fork_smoke_no_companion_starts_without_the_browser_helper_it_registers_through() {
+    let (hub, home) = helperless_hub("no-helper", companion_config());
+    // the launched companion would never register: nothing may spawn
+    let spawner = FakeSpawner::new(&hub, false);
+    assert_eq!(
+        hub.companion_start(StartReason::User).unwrap_err().message,
+        "the companion browser and the browser helper are not installed; run \"herdr browser setup\" and \"herdr browser setup --companion\" (downloads Electron, about 115 MB)"
+    );
+    install(&home);
+    let missing = |run: &str| {
+        format!("the browser helper the companion browser registers through is not installed; {run} \"herdr browser setup\" in a terminal")
+    };
+    let err = hub.companion_start(StartReason::User).unwrap_err();
+    assert_eq!(err.code, "host_unavailable");
+    assert_eq!(err.message, missing("run"));
+    assert_eq!(
+        hub.companion_restart(StartReason::User)
+            .unwrap_err()
+            .message,
+        missing("run")
+    );
+    assert_eq!(
+        hub.companion_focus(true).unwrap_err().message,
+        missing("run")
+    );
+    // an agent's open answers at once (no wait for a registration that
+    // cannot come) and names the command
+    let asked = Instant::now();
+    assert_eq!(
+        hub.run(&pane("w1:p1"), open("https://example.test/"))
+            .unwrap_err()
+            .message,
+        missing("ask the user to run")
+    );
+    assert!(asked.elapsed() < Duration::from_secs(2), "no wait");
+    // autostart says nothing and starts nothing
+    hub.apply_config(&BrowserConfig {
+        companion_autostart: true,
+        ..companion_config()
+    });
+    hub.companion_autostart();
+    assert_eq!(spawner.spawns(), 0);
+    // a helper older than this herdr's pin (its scripts outdated too)
+    install_helper(&home, "1.0.0", false);
+    assert_eq!(
+        hub.companion_start(StartReason::Agent).unwrap_err().message,
+        format!(
+            "the browser helper is outdated (playwright-core 1.0.0, this herdr needs {}); ask the user to run \"herdr browser setup\" in a terminal",
+            crate::integration::browser_assets::PLAYWRIGHT_CORE_VERSION
+        )
+    );
+    assert_eq!(spawner.spawns(), 0);
+    // with the helper in place it starts
+    install_helper(
+        &home,
+        crate::integration::browser_assets::PLAYWRIGHT_CORE_VERSION,
+        false,
+    );
+    hub.companion_start(StartReason::User).expect("start");
+    wait_for("the spawn", Duration::from_secs(5), || {
+        spawner.spawns() == 1
+    });
+    quick_stop(&hub);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn fork_smoke_a_config_that_keeps_the_companion_off_never_starts_it() {
+    // the herdr+ window on and chosen: every registration would be refused
+    let window = BrowserConfig {
+        window: true,
+        host: "window".into(),
+        companion_autostart: true,
+        ..BrowserConfig::default()
+    };
+    let (hub, home, _) = companion_hub("off-window", true);
+    hub.apply_config(&window);
+    let spawner = FakeSpawner::new(&hub, true);
+    let info = hub.companion_app_info();
+    assert_eq!(info.state, DISABLED_STATE);
+    assert!(
+        hub.get(None).companion_app.is_none(),
+        "browser.get leaves it out: nothing offers it"
+    );
+    let err = hub.companion_start(StartReason::User).unwrap_err();
+    assert_eq!(err.code, "host_disabled");
+    assert_eq!(
+        err.message,
+        "the companion browser is off: this herdr uses only its own browser window ([browser] host = \"window\"); set [browser] host = \"companion\" to use it"
+    );
+    assert_eq!(
+        hub.companion_start(StartReason::Agent).unwrap_err().message,
+        "the companion browser is off: this herdr uses only its own browser window ([browser] host = \"window\"); ask the user to set [browser] host = \"companion\" to use it"
+    );
+    assert_eq!(
+        hub.companion_restart(StartReason::User).unwrap_err().code,
+        "host_disabled"
+    );
+    assert_eq!(hub.companion_focus(true).unwrap_err().code, "host_disabled");
+    assert_eq!(
+        hub.ensure_companion(Duration::from_secs(5), false)
+            .unwrap_err()
+            .code,
+        "host_disabled"
+    );
+    hub.companion_autostart();
+    assert!(hub
+        .companion_off_note()
+        .is_some_and(|note| note.contains("host = \"window\"")));
+    // the browser disabled: the same, and a restart stops nothing
+    hub.apply_config(&BrowserConfig {
+        enabled: false,
+        ..companion_config()
+    });
+    assert_eq!(hub.companion_app_info().state, DISABLED_STATE);
+    assert!(hub.get(None).companion_app.is_none());
+    assert_eq!(
+        hub.companion_restart(StartReason::User).unwrap_err().code,
+        "browser_disabled"
+    );
+    assert_eq!(
+        hub.companion_start(StartReason::User).unwrap_err().code,
+        "browser_disabled"
+    );
+    assert_eq!(spawner.spawns(), 0);
+    // one still running when the config turned it off keeps its state (and Stop)
+    hub.apply_config(&companion_config());
+    hub.companion_start(StartReason::User).expect("start");
+    wait_for("the registration", Duration::from_secs(5), || {
+        hub.companion_app_info().state == "running"
+    });
+    hub.apply_config(&window);
+    assert_eq!(hub.companion_app_info().state, "running");
+    assert!(hub.get(None).companion_app.is_some());
+    quick_stop(&hub);
+    assert_eq!(hub.companion_app_info().state, DISABLED_STATE);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_crash_restart_due_after_the_config_turned_the_companion_off_does_not_launch() {
+    let (hub, home, _) = companion_hub("off-crashed", true);
+    let spawner = FakeSpawner::new(&hub, false);
+    {
+        let mut core = hub.launcher().lock();
+        core.phase = Phase::Crashed;
+        core.next_retry = Some(Instant::now());
+        core.last_error = Some("exited with status 1".into());
+    }
+    hub.apply_config(&BrowserConfig {
+        enabled: false,
+        ..companion_config()
+    });
+    // the driver finds the restart due
+    hub.ensure_companion_driver();
+    wait_for("the restart called off", Duration::from_secs(5), || {
+        hub.launcher().lock().phase == Phase::Stopped
+    });
+    assert_eq!(spawner.spawns(), 0);
+    assert_eq!(hub.companion_app_info().state, DISABLED_STATE);
+    let _ = std::fs::remove_dir_all(&home);
+}

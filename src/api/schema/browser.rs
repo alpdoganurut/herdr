@@ -585,7 +585,9 @@ pub struct BrowserGetInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<BrowserSessionInfo>,
     /// Fork (companion launcher): the companion app herdr installs and runs.
-    /// Absent from an older server.
+    /// Absent from an older server, and while the config keeps the
+    /// companion off (the browser disabled, or `[browser] host = "window"`
+    /// with the window on) and nothing of it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub companion_app: Option<BrowserCompanionAppInfo>,
     /// Fork (companion launcher): the herdr+ window is off (`[browser]
@@ -636,8 +638,9 @@ pub struct BrowserCompanionParams {
 pub struct BrowserCompanionAppInfo {
     /// `not_installed`, `stopped`, `starting`, `running`, `reconnecting`,
     /// `stopping`, `crashed` (a restart is scheduled), `failed` (herdr gave
-    /// up restarting it) or `external` (started by hand: herdr routes to it
-    /// but never stops or restarts it).
+    /// up restarting it), `external` (started by hand: herdr routes to it
+    /// but never stops or restarts it) or, in a `browser.companion` reply
+    /// only, `disabled` (the config keeps it off; the note says why).
     pub state: String,
     /// herdr started this process (its registration carried the launch token).
     #[serde(default, skip_serializing_if = "super::is_false")]

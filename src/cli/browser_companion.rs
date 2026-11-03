@@ -88,13 +88,17 @@ fn act(
     let note = response["result"]["note"].as_str();
     let now = crate::browser::unix_now();
     match (action, note) {
-        (_, Some(note)) => println!("{note}"),
-        (BrowserCompanionAction::Status, None) => {
+        // the status, then why the config keeps the companion off
+        (BrowserCompanionAction::Status, note) => {
             println!("{}", status_line(&info, now));
             for line in detail_lines(&info) {
                 println!("  {line}");
             }
+            if let Some(note) = note {
+                println!("  {note}");
+            }
         }
+        (_, Some(note)) => println!("{note}"),
         (BrowserCompanionAction::Start, None) => println!(
             "companion {}; `herdr browser companion status` follows it",
             if info.state == "running" || info.state == "external" {

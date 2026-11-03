@@ -304,7 +304,11 @@ impl ClientShellState {
         match result {
             Ok(crate::api::schema::ResponseResult::BrowserCompanion { companion, note }) => {
                 if let Some(info) = self.browser.info.as_mut() {
-                    info.companion_app = Some(companion);
+                    // `disabled` (the config keeps it off) reads as
+                    // `browser.get` shows it: no companion at all
+                    info.companion_app = (companion.state
+                        != crate::browser::companion_app::DISABLED_STATE)
+                        .then_some(companion);
                 }
                 if let Some(note) = note {
                     self.set_endpoint_error(note);

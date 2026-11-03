@@ -515,9 +515,10 @@ impl ClientShellState {
     }
 
     /// The focused tab shows its view strip: `ui.browser_view_strip =
-    /// "auto"`, docking works here, and the tab has pages, the dock or
-    /// Browser view (the lookups first, the sessions scan next, the
-    /// endpoint's method check last: this runs on every layout).
+    /// "auto"`, docking works here, and the tab has the dock, Browser view
+    /// or pages while the server runs the companion (the lookups first, the
+    /// sessions scan next, the endpoint's method check last: this runs on
+    /// every layout).
     pub(crate) fn browser_view_strip_for_focused_tab(&self) -> bool {
         if !self.config.browser_view_strip {
             return false;
@@ -527,7 +528,7 @@ impl ClientShellState {
         };
         (self.browser_dock_open_for(tab_id)
             || self.browser_view_open_for(tab_id)
-            || self.browser_tab_pages(tab_id) > 0)
+            || (self.browser_companion().is_some() && self.browser_tab_pages(tab_id) > 0))
             && self.browser_dock_available()
     }
 
@@ -547,6 +548,36 @@ impl ClientShellState {
         } else {
             "This herdr server cannot dock the browser yet; update and restart it."
         }
+    }
+
+    /// Why nothing docks although docking works here: the server answered
+    /// `browser.get` without the companion, which its config keeps off.
+    /// `None` before the first answer, or while the companion is there.
+    fn browser_companion_off_reason(&self) -> Option<&'static str> {
+        let info = self.browser.info.as_ref()?;
+        if info.companion_app.is_some() {
+            return None;
+        }
+        Some(if info.enabled {
+            "This herdr uses only its own browser window ([browser] host = \"window\")."
+        } else {
+            "The browser is off ([browser] enabled = false)."
+        })
+    }
+
+    /// A dock or Browser view about to open while the companion is off:
+    /// the notice says why, and nothing opens.
+    fn browser_dock_refused(&mut self, title: &str, outcome: &mut ClientShellInput) -> bool {
+        let Some(reason) = self.browser_companion_off_reason() else {
+            return false;
+        };
+        outcome.repaint |= self.push_endpoint_notice(
+            ClientEndpointNoticeKind::Rejected,
+            "browser_dock:off",
+            title,
+            reason,
+        );
+        true
     }
 
     /// A stopped companion starts when the user docks or opens Browser view.
@@ -570,6 +601,12 @@ impl ClientShellState {
                 "Browser dock",
                 reason,
             );
+            return;
+        }
+        // a dock always closes; it opens only while the server runs the companion
+        if !self.browser_dock_open_for(&tab_id)
+            && self.browser_dock_refused("Browser dock", outcome)
+        {
             return;
         }
         let size_before = self
@@ -644,6 +681,12 @@ impl ClientShellState {
                 "Browser view",
                 reason,
             );
+            return;
+        }
+        if on
+            && !self.browser_view_open_for(&tab_id)
+            && self.browser_dock_refused("Browser view", outcome)
+        {
             return;
         }
         let size_before = self

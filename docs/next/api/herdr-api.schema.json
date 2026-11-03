@@ -15362,7 +15362,7 @@
               ]
             },
             "state": {
-              "description": "`not_installed`, `stopped`, `starting`, `running`, `reconnecting`,\n`stopping`, `crashed` (a restart is scheduled), `failed` (herdr gave\nup restarting it) or `external` (started by hand: herdr routes to it\nbut never stops or restarts it).",
+              "description": "`not_installed`, `stopped`, `starting`, `running`, `reconnecting`,\n`stopping`, `crashed` (a restart is scheduled), `failed` (herdr gave\nup restarting it), `external` (started by hand: herdr routes to it\nbut never stops or restarts it) or, in a `browser.companion` reply\nonly, `disabled` (the config keeps it off; the note says why).",
               "type": "string"
             },
             "update_ready": {
@@ -15422,7 +15422,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Fork (companion launcher): the companion app herdr installs and runs.\nAbsent from an older server."
+              "description": "Fork (companion launcher): the companion app herdr installs and runs.\nAbsent from an older server, and while the config keeps the\ncompanion off (the browser disabled, or `[browser] host = \"window\"`\nwith the window on) and nothing of it runs."
             },
             "enabled": {
               "type": "boolean"
@@ -16265,7 +16265,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Fork (companion launcher): the companion app herdr installs and runs.\nAbsent from an older server."
+              "description": "Fork (companion launcher): the companion app herdr installs and runs.\nAbsent from an older server, and while the config keeps the\ncompanion off (the browser disabled, or `[browser] host = \"window\"`\nwith the window on) and nothing of it runs."
             },
             "default_profile": {
               "default": "",

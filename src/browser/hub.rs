@@ -29,6 +29,8 @@ use crate::api::schema::{
 };
 use crate::config::{valid_profile_name, BrowserConfig};
 use crate::integration::browser_assets;
+// Fork (companion launcher): the launcher asks about the sidecar before a launch.
+use super::companion_app::SidecarProblem;
 
 // Fork (companion browser): the browser host role, a child module so it
 // reaches the hub's private state.
@@ -341,8 +343,12 @@ impl BrowserHub {
         }
         drop(companion);
         info.setup_needed = self.setup_needed();
-        // Fork (companion launcher): always current (not seq-gated).
-        info.companion_app = Some(self.companion_app_info());
+        // Fork (companion launcher): always current (not seq-gated); left
+        // out while the config keeps the companion off and nothing of it
+        // runs (a client then offers no dock, Browser view or companion
+        // item, as for a server without the companion).
+        info.companion_app = Some(self.companion_app_info())
+            .filter(|companion| companion.state != super::companion_app::DISABLED_STATE);
         info.window_off = !config.window;
         // Fork (companion launcher): the host's reports on the clients'
         // placements, always current like the companion's state.
@@ -2874,6 +2880,39 @@ impl BrowserHub {
 
     fn host_dir(&self) -> PathBuf {
         self.inner.home.join(browser_assets::HOST_DIR)
+    }
+
+    /// Fork (companion launcher): what `ensure_host` would refuse before
+    /// starting a sidecar (its runtime missing, or outdated past an in-place
+    /// refresh), read without starting one or touching its files. `None`
+    /// while one runs (a test's fake one too) or it can start. The launcher
+    /// asks before a launch: a companion registers through the sidecar.
+    pub(crate) fn sidecar_problem(&self) -> Option<SidecarProblem> {
+        if self.inner.host.lock().unwrap().is_some() || self.inner.test_mode.load(Ordering::Relaxed)
+        {
+            return None;
+        }
+        let host_dir = self.host_dir();
+        let Some(runtime) = browser_assets::read_runtime(&host_dir) else {
+            return Some(SidecarProblem::Missing);
+        };
+        if !host_dir
+            .join("node_modules")
+            .join("playwright-core")
+            .is_dir()
+        {
+            return Some(SidecarProblem::Missing);
+        }
+        if runtime.assets_sha256 != browser_assets::assets_sha256() {
+            // the scripts refresh in place; node_modules only npm can
+            let installed = browser_assets::playwright_installed(&host_dir);
+            if installed.as_deref() != Some(browser_assets::PLAYWRIGHT_CORE_VERSION) {
+                return Some(SidecarProblem::Outdated {
+                    installed: installed.unwrap_or_else(|| "missing".into()),
+                });
+            }
+        }
+        None
     }
 
     /// Make sure a sidecar runs (spawn + `hello` when needed).

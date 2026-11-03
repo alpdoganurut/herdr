@@ -348,7 +348,8 @@ impl App {
         };
         let hub = hub();
         let (name, outcome) = match params.action {
-            BrowserCompanionAction::Status => ("status", Ok(None)),
+            // the note says why while the config keeps it off
+            BrowserCompanionAction::Status => ("status", Ok(hub.companion_off_note())),
             BrowserCompanionAction::Start => ("start", hub.companion_start(reason).map(|()| None)),
             BrowserCompanionAction::Stop => ("stop", hub.companion_stop()),
             BrowserCompanionAction::Restart => ("restart", hub.companion_restart(reason)),
