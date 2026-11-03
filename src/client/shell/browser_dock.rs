@@ -698,9 +698,20 @@ impl ClientShellState {
             .last_composed_size
             .map(|(cols, rows)| self.surface_size(cols, rows));
         let focused = self.browser_dock_focused_tab() == Some(tab_id.as_str());
-        // Fork (session header): one dock slot in the tabs layout.
+        // Fork (session header): one dock slot in the tabs layout; the
+        // notes give way only to a band that fits the window (else they
+        // stay and the notice says why).
         if !self.browser_dock_open_for(&tab_id) {
             let endpoint = self.active_endpoint_id.clone();
+            if focused && self.dock_slot_holds_notes(&tab_id) && !self.browser_band_fits_alone() {
+                outcome.repaint |= self.push_endpoint_notice(
+                    ClientEndpointNoticeKind::Rejected,
+                    "browser_dock:narrow",
+                    "Browser dock",
+                    "The window is too narrow for the browser dock; it appears once the window is wider.",
+                );
+                return;
+            }
             self.free_dock_slot_of_notes(&endpoint, &tab_id);
         }
         let opened = if unlist_tab(
@@ -764,6 +775,29 @@ impl ClientShellState {
             self.browser_dock.dragging = false;
         }
         closed
+    }
+
+    /// Fork (session header): whether the focused tab's band would be drawn
+    /// at the last composed size with no info dock beside it (`true`
+    /// before a frame: nothing to judge by).
+    pub(crate) fn browser_band_fits_alone(&self) -> bool {
+        let Some((cols, rows)) = self.last_composed_size else {
+            return true;
+        };
+        !self
+            .config
+            .layout_with_browser(
+                cols,
+                rows,
+                self.sidebar_collapsed,
+                self.focused_tab_count(),
+                self.sidebar_width,
+                None,
+                Some(self.browser_dock.percent),
+                self.browser_view_strip_for_focused_tab(),
+            )
+            .browser_band
+            .is_empty()
     }
 
     /// The `toggle_browser_dock` keybind: the focused tab.

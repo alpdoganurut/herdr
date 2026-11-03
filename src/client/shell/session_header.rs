@@ -12,7 +12,10 @@
 //! view and the open dock are accent; everything else is dim and a hovered
 //! control turns `text`: text colour only, no bars or boxes. Narrow: the
 //! name truncates first (to `MIN_NAME` cells), then the view tabs shrink to
-//! `T  B ◧`, then to `◧`; the dock toggles always stay.
+//! `T  B ◧`, then to `◧`; the dock toggles always stay. Once only `◧` is
+//! left the facts stay whole and the name keeps shrinking below `MIN_NAME`
+//! (`● head…  82% ⚭3 ✉1  ◧  ▤` at 26 columns); the facts drop only when
+//! not even one name cell fits beside them.
 //!
 //! Client presentation only. Built once per compose from snapshot borrows
 //! and static strings: one pass over the snapshot's agents for the focused

@@ -567,3 +567,80 @@ fn the_spaces_layout_keeps_its_view_strip_and_has_no_header() {
     let layout = state.layout(COLS, ROWS);
     assert!(!layout.info_dock.is_empty() && !layout.browser_band.is_empty());
 }
+
+/// Audit: a live switch from the spaces layout (both docks side by side) to
+/// the tabs layout leaves one dock per tab: the browser stays, the notes
+/// close.
+#[test]
+fn a_switch_to_the_tabs_layout_keeps_the_browser_and_closes_the_notes() {
+    let mut state = header_state(&spaces_config());
+    state.browser.info = Some(companion_info());
+    state.browser_dock.extent_for_test = Some((COLS, ROWS, 1600, 800));
+    state.compose(COLS, ROWS);
+    let mut outcome = ClientShellInput::default();
+    state.toggle_info_pane("tab_1".into(), &mut outcome);
+    state.toggle_browser_dock("tab_1".into(), &mut outcome);
+    assert!(state.info_dock_open_for_focused_tab() && state.browser_dock_open_for("tab_1"));
+    state.config.sidebar_layout = crate::config::SidebarLayoutConfig::Tabs;
+    state.reconcile_dock_slot();
+    assert!(
+        state.browser_dock_open_for("tab_1"),
+        "the browser keeps the slot"
+    );
+    assert!(!state.info_dock_open_for_focused_tab(), "the notes close");
+    state.compose(COLS, ROWS);
+    let layout = state.layout(COLS, ROWS);
+    assert!(!layout.browser_band.is_empty() && layout.info_dock.is_empty());
+}
+
+fn notice_key(state: &ClientShellState) -> Option<String> {
+    state
+        .visible_endpoint_notice
+        .as_ref()
+        .map(|notice| format!("{:?}", notice.key))
+}
+
+/// Audit: a swap gives the slot away only to a dock that fits the window;
+/// otherwise the open dock stays and the "too narrow" notice says why.
+#[test]
+fn a_swap_keeps_the_open_dock_when_the_other_does_not_fit() {
+    // 26-column sidebar, a 65-column pane area: the notes (28 + 30) fit,
+    // the band (40 + 30) does not.
+    let cols = 91;
+    let mut state = header_state(&Config::default());
+    state.browser.info = Some(companion_info());
+    state.browser_dock.extent_for_test = Some((cols, ROWS, 900, 800));
+    state.compose(cols, ROWS);
+    let mut outcome = ClientShellInput::default();
+    state.toggle_info_pane("tab_1".into(), &mut outcome);
+    state.compose(cols, ROWS);
+    assert!(!state.layout(cols, ROWS).info_dock.is_empty());
+    state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    assert!(state.info_dock_open_for_focused_tab(), "the notes stay");
+    assert!(!state.browser_dock_open_for("tab_1"));
+    assert!(
+        notice_key(&state).is_some_and(|key| key.contains("browser_dock:narrow")),
+        "{:?}",
+        notice_key(&state)
+    );
+
+    // The other way: a 50-column pane area keeps a docked browser listed
+    // (its band waits for room) and the notes (58) do not fit either.
+    let cols = 76;
+    let mut state = header_state(&Config::default());
+    state.browser.info = Some(companion_info());
+    state.browser_dock.extent_for_test = Some((cols, ROWS, 760, 800));
+    state.compose(cols, ROWS);
+    state.toggle_browser_dock("tab_1".into(), &mut ClientShellInput::default());
+    state.compose(cols, ROWS);
+    assert!(state.browser_dock_open_for("tab_1"));
+    state.visible_endpoint_notice = None;
+    state.toggle_info_pane("tab_1".into(), &mut ClientShellInput::default());
+    assert!(state.browser_dock_open_for("tab_1"), "the browser stays");
+    assert!(!state.info_dock_open_for_focused_tab());
+    assert!(
+        notice_key(&state).is_some_and(|key| key.contains("info_pane:narrow")),
+        "{:?}",
+        notice_key(&state)
+    );
+}

@@ -131,7 +131,6 @@ fn times(now: Instant, ago: &[Option<u64>]) -> ClientAgentTimesState {
                 Some((format!("pane_{}", index + 1), (1, at)))
             })
             .collect::<HashMap<_, _>>(),
-        auto_suspended: Default::default(),
         resume_marks: Default::default(),
     }
 }

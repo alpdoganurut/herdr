@@ -892,12 +892,27 @@ impl ClientShellState {
             .map(|(cols, rows)| self.surface_size(cols, rows));
         let focused = self.info_dock_focused_tab() == Some(tab_id.as_str());
         let endpoint = self.active_endpoint_id.clone();
-        // Fork (session header): one dock slot in the tabs layout.
+        // Fork (session header): one dock slot in the tabs layout; the
+        // browser gives way only to notes that fit the window (else it stays
+        // and the notice says why).
         if !self
             .info_dock
             .as_deref()
             .is_some_and(|dock| dock.open_tabs.contains(&(endpoint.clone(), tab_id.clone())))
         {
+            if focused
+                && self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+                && self.browser_dock_open_for(&tab_id)
+                && !self.info_dock_fits_alone()
+            {
+                outcome.repaint |= self.push_endpoint_notice(
+                    ClientEndpointNoticeKind::Rejected,
+                    "info_pane:narrow",
+                    "Info pane",
+                    "The window is too narrow for the info pane; it appears once the window is wider.",
+                );
+                return;
+            }
             self.free_dock_slot_of_browser(&endpoint, &tab_id);
         }
         let key = (endpoint, tab_id);
@@ -985,6 +1000,68 @@ impl ClientShellState {
             self.free_dock_slot_of_browser(endpoint_id, &payload.tab_id);
         }
         outcome
+    }
+
+    /// Fork (session header): whether the info dock would be drawn at the
+    /// last composed size with no browser band beside it (`true` before a
+    /// frame).
+    pub(crate) fn info_dock_fits_alone(&self) -> bool {
+        let Some((cols, rows)) = self.last_composed_size else {
+            return true;
+        };
+        !self
+            .config
+            .layout(
+                cols,
+                rows,
+                self.sidebar_collapsed,
+                self.focused_tab_count(),
+                self.sidebar_width,
+                Some(self.info_dock_width),
+            )
+            .info_dock
+            .is_empty()
+    }
+
+    /// Fork (session header): the focused tab's notes hold the tabs
+    /// layout's dock slot.
+    pub(crate) fn dock_slot_holds_notes(&self, tab_id: &str) -> bool {
+        self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
+            && self.info_dock.as_deref().is_some_and(|dock| {
+                dock.open_tabs
+                    .contains(&(self.active_endpoint_id.clone(), tab_id.to_owned()))
+            })
+    }
+
+    /// Fork (session header): a live switch to the tabs layout leaves one
+    /// dock per tab: a tab with both keeps the browser, its notes close
+    /// (the editor committed; the tick sends a dirty buffer's save even
+    /// with the dock closed).
+    pub(crate) fn reconcile_dock_slot(&mut self) {
+        if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs
+            || self.browser_dock.docked.is_empty()
+        {
+            return;
+        }
+        let both: Vec<(ClientEndpointId, String)> = self
+            .info_dock
+            .as_deref()
+            .map(|dock| {
+                dock.open_tabs
+                    .iter()
+                    .filter(|(endpoint, tab_id)| {
+                        self.browser_dock
+                            .docked
+                            .get(endpoint)
+                            .is_some_and(|tabs| tabs.contains(tab_id))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (endpoint, tab_id) in both {
+            self.free_dock_slot_of_notes(&endpoint, &tab_id);
+        }
     }
 
     /// Fork (session header): the tabs layout has one dock slot, so the

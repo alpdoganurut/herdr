@@ -108,6 +108,9 @@ impl ClientShellState {
                 if !self.browser_dock.percent_manual {
                     self.browser_dock.percent = self.config.browser_dock_width;
                 }
+                // Fork (session header): a switch to the tabs layout leaves
+                // one dock per tab.
+                self.reconcile_dock_slot();
                 self.rebalance_notification_cards(std::time::Instant::now());
                 if self.agent_panel_sort_manual {
                     self.config.agent_panel_sort = agent_panel_sort;

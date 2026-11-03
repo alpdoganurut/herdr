@@ -882,3 +882,79 @@ fn the_browser_row_menu_lives_on_as_rows_after_the_install_row() {
         ["open the Browser overlay…"]
     );
 }
+
+/// Audit: on a short terminal the section scrolls like Theme: the last live
+/// row is drawn while selected, and a click on it runs that row.
+#[test]
+fn a_short_terminal_scrolls_the_section_to_the_selected_live_row() {
+    use crate::api::schema::{BrowserCompanionAppInfo, BrowserGetInfo};
+    use crate::client::shell::settings_browser::ROWS;
+    let mut state = tabs_state();
+    state.browser.info = Some(BrowserGetInfo {
+        seq: 1,
+        enabled: true,
+        companion_app: Some(BrowserCompanionAppInfo {
+            state: "running".into(),
+            ..Default::default()
+        }),
+        window_off: true,
+        ..Default::default()
+    });
+    state.compose(110, 24).expect("composed frame");
+    let outcome = open_browser_section(&mut state);
+    let [(request_id, _)] = &endpoint_requests(&outcome)[..] else {
+        panic!("one pull");
+    };
+    reply(&mut state, request_id, info());
+    let last = state.browser_section_rows() - 1;
+    assert!(last >= ROWS, "live rows follow the section's own");
+    for _ in 0..last {
+        state.handle_input_bytes(b"\x1b[B");
+    }
+    assert_eq!(selected_row(&state), last);
+    let frame = state.compose(110, 24).expect("settings frame");
+    assert!(
+        frame_rows(&frame)
+            .join("\n")
+            .contains("open the Browser overlay…"),
+        "{}",
+        frame_rows(&frame).join("\n")
+    );
+    let (rect, _) = *state
+        .hits
+        .settings_choices
+        .iter()
+        .find(|(_, index)| *index == last)
+        .expect("the last row is hit-tested");
+    assert!(rect.bottom() <= 24);
+    // a click on a row higher up maps to that row
+    let (above, above_index) = *state
+        .hits
+        .settings_choices
+        .iter()
+        .find(|(_, index)| *index == last - 1)
+        .expect("the row above");
+    let click = |column: u16, row: u16| {
+        vec![
+            RawInputEvent::Mouse(MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::empty(),
+            }),
+            RawInputEvent::Mouse(MouseEvent {
+                kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::empty(),
+            }),
+        ]
+    };
+    assert_eq!(above.y + 1, rect.y);
+    let _ = above_index;
+    state.handle_raw_events(click(rect.x + 4, rect.y));
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Browser(_))
+    ));
+}

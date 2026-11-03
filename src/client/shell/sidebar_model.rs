@@ -49,9 +49,6 @@ pub(crate) struct TabFacts {
     pub(crate) workspace: Option<u32>,
     /// Some agent of the tab is parked (`Suspended`).
     pub(crate) parked: bool,
-    /// Fork (autosuspend): some parked agent of the tab was parked by herdr
-    /// for idling (the agent times push).
-    pub(crate) auto_parked: bool,
     /// Fork (sidebar v3): pinned (`tab.set_pinned`, the `endpoint.tab-pins.v1`
     /// push).
     pub(crate) pin: bool,
@@ -66,9 +63,6 @@ pub(crate) struct TabFacts {
     /// `endpoint.agent-context.v1` push); `None` while none is known or
     /// `ui.sidebar_context_usage` is off.
     pub(crate) context: Option<crate::agent_context::ContextUsage>,
-    /// Fork (agent handoff): the newest handoff saved by the tab's agents
-    /// before a compaction (unix seconds), from the same push.
-    pub(crate) handoff_unix: Option<u64>,
     /// Fork (sidebar filters): the tab passes the filters (always while
     /// none is set; never for a fixed tab).
     pub(crate) filter_match: bool,
@@ -90,13 +84,11 @@ impl Default for TabFacts {
             fixed: false,
             workspace: None,
             parked: false,
-            auto_parked: false,
             pin: false,
             muted: false,
             dnd: false,
             quiet: 0,
             context: None,
-            handoff_unix: None,
             filter_match: true,
             hidden: false,
         }
@@ -501,8 +493,6 @@ impl SidebarModel {
             facts.primary_agent = Some(agent_index as u32);
             facts.agents = facts.agents.saturating_add(1);
             facts.parked |= agent.agent_status == AgentStatus::Suspended;
-            facts.auto_parked |= agent.agent_status == AgentStatus::Suspended
-                && times.is_some_and(|times| times.auto_suspended(&agent.pane_id));
             if agent.subagents > 0 && shows_subagents(agent.agent_status) {
                 facts.subagents = facts.subagents.saturating_add(agent.subagents);
             }
@@ -511,9 +501,6 @@ impl SidebarModel {
             }
             if let Some(usage) = context.and_then(|context| context.usage_of(&agent.pane_id)) {
                 facts.context = Some(super::agent_context::fuller(facts.context, usage));
-            }
-            if let Some(at) = context.and_then(|context| context.handoff_of(&agent.pane_id)) {
-                facts.handoff_unix = Some(facts.handoff_unix.map_or(at, |newest| newest.max(at)));
             }
             if agent.agent_status == tab_status {
                 let seq = if agent.state_change_seq == 0 {

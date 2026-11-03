@@ -806,8 +806,21 @@ pub(super) fn render_browser_section(
     };
     let remote_label = browser.remote.then_some(browser.endpoint_label.as_str());
     let labels = row_labels(info, remote_label);
+    // Fork (session header): the rows scroll like the Theme section's so the
+    // selected one (a live row past the bottom on a short terminal) shows;
+    // the rule and the facts follow them.
+    let visible = usize::from(area.height.saturating_sub(3)).max(1);
+    let scroll = settings.selected.saturating_sub(visible - 1);
+    let row_y = |index: usize| -> Option<u16> {
+        let shown = index.checked_sub(scroll)?;
+        u16::try_from(shown)
+            .ok()
+            .map(|shown| area.y.saturating_add(3).saturating_add(shown))
+    };
     for (index, label) in labels.iter().enumerate() {
-        let y = area.y + 3 + index as u16;
+        let Some(y) = row_y(index) else {
+            continue;
+        };
         if y >= area.bottom() {
             break;
         }
@@ -849,7 +862,9 @@ pub(super) fn render_browser_section(
     // Fork (session header): the Browser row menu's actions.
     for (offset, row) in browser.actions.iter().enumerate() {
         let index = ROWS + offset;
-        let y = area.y + 3 + index as u16;
+        let Some(y) = row_y(index) else {
+            continue;
+        };
         if y >= area.bottom() {
             break;
         }
@@ -864,7 +879,7 @@ pub(super) fn render_browser_section(
         );
         hits.push((rect, index));
     }
-    let rule_y = area.y + 3 + (labels.len() + browser.actions.len()) as u16;
+    let rule_y = row_y(labels.len() + browser.actions.len()).unwrap_or(area.y + 3);
     if rule_y < area.bottom() {
         put_text(
             buffer,

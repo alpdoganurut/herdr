@@ -59,10 +59,6 @@ impl ClientAgentContextState {
     pub(crate) fn usage_of(&self, pane_id: &str) -> Option<ContextUsage> {
         self.panes.get(pane_id).copied()
     }
-
-    pub(crate) fn handoff_of(&self, pane_id: &str) -> Option<u64> {
-        self.handoffs.get(pane_id).copied()
-    }
 }
 
 /// The fuller of two uses (by percent, then by tokens in use).
