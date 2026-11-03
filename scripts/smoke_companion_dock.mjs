@@ -32,6 +32,8 @@ const VARIANTS = {
   balanced: { args: ['--window-padding-balance=true'], cols: 104, rows: 30, config: { balance: true } },
   native: { args: ['--macos-titlebar-style=native'], cols: 132, rows: 38, config: { titlebarStyle: 'native' } },
   hidden: { args: ['--macos-titlebar-style=hidden'], cols: 140, rows: 40, config: { titlebarStyle: 'hidden' } },
+  // the defaults, then the z-order across "clicks" (clickSequence below)
+  clicks: { args: [], cols: 120, rows: 36, config: {}, clicks: true },
 };
 
 const env = {
@@ -90,6 +92,7 @@ const jxa = (src, args = []) => execFileSync('/usr/bin/osascript', ['-l', 'JavaS
 // compiled into the temp dir, independent of the companion's own probe (JXA through
 // osascript). Without swiftc the JXA readers below measure instead (the report says so).
 const CGWIN_SWIFT = `import CoreGraphics
+import CoreServices
 import Foundation
 func windows(_ options: CGWindowListOption, _ relativeTo: CGWindowID) -> [[String: Any]] {
     (CGWindowListCopyWindowInfo(options, relativeTo) as? [[String: Any]]) ?? []
@@ -101,20 +104,91 @@ if args.first == "list" {
     let pids = Set(args.dropFirst().compactMap { Int($0) })
     var list: [[String: Any]] = []
     for d in windows([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) {
-        guard let pid = number(d, kCGWindowOwnerPID), pids.contains(pid), number(d, kCGWindowLayer) == 0,
+        guard let pid = number(d, kCGWindowOwnerPID), pids.contains(pid), [0, 1].contains(number(d, kCGWindowLayer) ?? -1),
               let num = number(d, kCGWindowNumber), let bounds = d[kCGWindowBounds as String] as? NSDictionary,
               let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { continue }
         list.append(["num": num, "pid": pid, "x": rect.origin.x, "y": rect.origin.y, "w": rect.size.width, "h": rect.size.height])
     }
     out = list
+} else if args.first == "watch", args.count > 5, let term = Int(args[1]), let dock = Int(args[2]), let helper = Int(args[3]),
+          let ms = Double(args[4]), let seconds = Double(args[5]) {
+    // The order around the terminal window every <ms> for <seconds>: per sample
+    // [ms since 1970, dock above the terminal (0/1), the dock's layer (-1: not above), helper
+    // above the terminal (0/1), helper in front of the dock (0/1)].
+    var samples: [[Double]] = []
+    let end = Date().timeIntervalSince1970 + seconds
+    while Date().timeIntervalSince1970 < end {
+        let above = windows([.optionOnScreenAboveWindow], CGWindowID(term))
+        let t = Date().timeIntervalSince1970 * 1000
+        let nums = above.map { number($0, kCGWindowNumber) ?? 0 }
+        let di = nums.firstIndex(of: dock)
+        let hi = nums.firstIndex(of: helper)
+        let layer = di.map { Double(number(above[$0], kCGWindowLayer) ?? 0) } ?? -1
+        samples.append([t, di == nil ? 0 : 1, layer, hi == nil ? 0 : 1, (hi != nil && (di == nil || hi! < di!)) ? 1 : 0])
+        Thread.sleep(forTimeInterval: ms / 1000)
+    }
+    out = samples
+} else if args.first == "click", args.count > 1, let pid = Int32(args[1]) {
+    // Ghostty's "activate window" on the front window of the instance <pid> (its scripting
+    // dictionary): the window ordered front and made key, its app active, as a click into it
+    // does. Only with Automation already allowed (never prompts).
+    let target = NSAppleEventDescriptor(processIdentifier: pid)
+    guard AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, false) == noErr else {
+        FileHandle.standardError.write(Data("no automation permission for Ghostty\\n".utf8)); exit(3)
+    }
+    func code(_ s: String) -> FourCharCode { s.utf8.reduce(0) { ($0 << 8) | FourCharCode($1) } }
+    let ev = NSAppleEventDescriptor(eventClass: code("Ghst"), eventID: code("AcWn"), targetDescriptor: target, returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+    let spec = NSAppleEventDescriptor.record().coerce(toDescriptorType: DescType(typeObjectSpecifier))!
+    spec.setDescriptor(NSAppleEventDescriptor(typeCode: DescType(typeProperty)), forKeyword: AEKeyword(keyAEDesiredClass))
+    spec.setDescriptor(NSAppleEventDescriptor(enumCode: OSType(formPropertyID)), forKeyword: AEKeyword(keyAEKeyForm))
+    spec.setDescriptor(NSAppleEventDescriptor(typeCode: code("GFWn")), forKeyword: AEKeyword(keyAEKeyData))
+    spec.setDescriptor(NSAppleEventDescriptor.null(), forKeyword: AEKeyword(keyAEContainer))
+    ev.setParam(spec, forKeyword: AEKeyword(keyDirectObject))
+    out = ["ok": (try? ev.sendEvent(options: [.waitForReply], timeout: 5)) != nil]
+} else if args.first == "top" {
+    // the six frontmost normal windows: [number, pid]
+    out = windows([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID).filter { number($0, kCGWindowLayer) == 0 }.prefix(6).map { [number($0, kCGWindowNumber) ?? 0, number($0, kCGWindowOwnerPID) ?? 0] }
 } else if args.first == "above", args.count > 1, let wid = UInt32(args[1]) {
-    out = windows([.optionOnScreenAboveWindow], CGWindowID(wid)).filter { number($0, kCGWindowLayer) == 0 }.compactMap { number($0, kCGWindowNumber) }
+    // [number, layer], front to back
+    out = windows([.optionOnScreenAboveWindow], CGWindowID(wid)).compactMap { d -> [Int]? in
+        guard let num = number(d, kCGWindowNumber) else { return nil }
+        return [num, number(d, kCGWindowLayer) ?? 0]
+    }
 } else {
     FileHandle.standardError.write(Data("usage: cgwin list <pid>... | cgwin above <wid>\\n".utf8))
     exit(2)
 }
 FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: out))
 `;
+// "Other app" for clickSequence: a plain AppKit window of its own process at a CG rect,
+// shown without activating; it ends on "quit" or when its stdin closes.
+const HELPER_SWIFT = `import AppKit
+let a = CommandLine.arguments.dropFirst().compactMap { Double($0) }
+let app = NSApplication.shared
+app.setActivationPolicy(.regular)
+let screen = NSScreen.screens[0].frame
+let win = NSWindow(contentRect: NSRect(x: a[0], y: screen.height - a[1] - a[3], width: a[2], height: a[3]), styleMask: [.titled], backing: .buffered, defer: false)
+win.title = "herdr dock smoke: another app"
+win.backgroundColor = .systemOrange
+win.isReleasedWhenClosed = false
+win.orderFront(nil)
+print(win.windowNumber)
+fflush(stdout)
+DispatchQueue.global().async {
+    while let line = readLine(), line != "quit" {
+        if line == "front" {
+            DispatchQueue.main.async {
+                NSApp.activate(ignoringOtherApps: true)
+                win.makeKeyAndOrderFront(nil)
+                win.orderFrontRegardless()
+            }
+        }
+    }
+    DispatchQueue.main.async { app.terminate(nil) }
+}
+app.run()
+`;
+
 const CGWIN = path.join(T, 'cgwin');
 let MEASURE = 'jxa';
 try {
@@ -123,12 +197,12 @@ try {
   MEASURE = 'swift';
 } catch {}
 const cgwin = (args) => JSON.parse(execFileSync(CGWIN, args.map(String), { encoding: 'utf8', timeout: 10000 }));
-// On-screen layer-0 windows of `pids`, front to back (CGWindowList: no permission).
+// On-screen windows of `pids` at the normal level or the raised dock's (0, 1), front to back (CGWindowList: no permission).
 function windowsOf(pids) {
   if (MEASURE === 'swift') return cgwin(['list', ...pids]);
   const src = `ObjC.import('CoreGraphics');
 function run(argv) { const pids = argv.map(Number); const a = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, 0)); const o = [];
-for (let i = 0; i < a.count; i++) { const d = a.objectAtIndex(i); const pid = d.objectForKey('kCGWindowOwnerPID').js; if (!pids.includes(pid) || d.objectForKey('kCGWindowLayer').js !== 0) continue;
+for (let i = 0; i < a.count; i++) { const d = a.objectAtIndex(i); const pid = d.objectForKey('kCGWindowOwnerPID').js; if (!pids.includes(pid) || d.objectForKey('kCGWindowLayer').js > 1) continue;
 const b = d.objectForKey('kCGWindowBounds'); o.push({ num: d.objectForKey('kCGWindowNumber').js, pid, x: b.objectForKey('X').js, y: b.objectForKey('Y').js, w: b.objectForKey('Width').js, h: b.objectForKey('Height').js }); }
 return JSON.stringify(o); }`;
   return JSON.parse(jxa(src, pids));
@@ -137,13 +211,15 @@ function aboveOf(wid) {
   if (MEASURE === 'swift') return cgwin(['above', wid]);
   const src = `ObjC.import('CoreGraphics');
 function run(argv) { const a = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenAboveWindow, Number(argv[0]))); const o = [];
-for (let i = 0; i < a.count; i++) { const d = a.objectAtIndex(i); if (d.objectForKey('kCGWindowLayer').js === 0) o.push(d.objectForKey('kCGWindowNumber').js); } return JSON.stringify(o); }`;
+for (let i = 0; i < a.count; i++) { const d = a.objectAtIndex(i); o.push([d.objectForKey('kCGWindowNumber').js, d.objectForKey('kCGWindowLayer').js]); } return JSON.stringify(o); }`;
   return JSON.parse(jxa(src, [wid]));
 }
-function activate(pid) {
+// Brings the app `pid` to the front, only when its executable is `exe` (a test instance's
+// Ghostty, the clicks helper): `options` 2 = ignoring other apps, 3 = and all its windows.
+function activate(pid, exe = GHOSTTY_EXE, options = 2) {
   const src = `ObjC.import('AppKit'); function run(argv) { const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(argv[0]));
-if (app.isNil()) return 'gone'; if (app.executableURL.path.js !== '${GHOSTTY_EXE}') return 'not ghostty'; return String(app.activateWithOptions($.NSApplicationActivateIgnoringOtherApps)); }`;
-  return jxa(src, [pid]);
+if (app.isNil()) return 'gone'; if (app.executableURL.path.js !== argv[1]) return 'not the test app'; return String(app.activateWithOptions(Number(argv[2]))); }`;
+  return jxa(src, [pid, exe, options]);
 }
 const ghosttyPids = () => {
   try {
@@ -271,7 +347,11 @@ async function measureVariant(name, v, out) {
   out.dividerRight = term.x + padL + placement.area.x * cellW;
   out.leftVsDivider = dock.x - out.dividerRight;
   const above = aboveOf(term.num);
-  out.directlyAbove = above.length > 0 && above[above.length - 1] === dock.num;
+  // directly above: the dock is above the terminal (at any level) with no normal window
+  // between them
+  const at = above.findIndex(([num]) => num === dock.num);
+  out.directlyAbove = at >= 0 && !above.slice(at + 1).some(([, layer]) => layer === 0);
+  out.dockLayer = at >= 0 ? above[at][1] : null;
   // the probe's CPU over 10 s, docked and idle
   if (d.probe_pid) {
     const c0 = cpuSeconds(d.probe_pid);
@@ -284,9 +364,105 @@ async function measureVariant(name, v, out) {
   say(`dock window ${dock.x},${dock.y} ${dock.w}x${dock.h} pt; expected ${model.rect.x},${model.rect.y} ${model.rect.width}x${model.rect.height}`);
   say(`error per edge (pt): left ${err.left}, top ${err.top}, right ${err.right}, bottom ${err.bottom}  → max ${out.maxErrPt} pt = ${out.maxErrPt * 2} px; left edge vs herdr's divider ${out.leftVsDivider.toFixed(2)} pt`);
   say(`error per edge (device px): left ${err.left * 2}, top ${err.top * 2}, right ${err.right * 2}, bottom ${err.bottom * 2}`);
-  say(`z-order: directly above the Ghostty window: ${out.directlyAbove}; probe CPU ${out.probeCpuPct}% of a core`);
+  say(`z-order: directly above the Ghostty window: ${out.directlyAbove} (dock layer ${out.dockLayer}); probe CPU ${out.probeCpuPct}% of a core`);
+  if (v.clicks) out.clicks = await clickSequence({ ghostty, term, dock, debug });
   await cdp.close().catch(() => {});
   return out;
+}
+
+// The z-order across "clicks". No permission posts input events here, so a click is what it
+// does to the window order: Ghostty's own "activate window" (Apple Events to the test instance
+// only; skipped when Automation is not already allowed: never prompts) orders the terminal's
+// window front and makes its app active, and another app (a helper window over half of the
+// dock) comes to the front by itself. A watcher samples the order every 2 ms. Must hold: the
+// dock above the terminal in every sample (no flicker, no hide/show), and the other app's
+// window in front of the dock once it is frontmost (other apps cover both).
+async function clickSequence({ ghostty, term, dock, debug }) {
+  if (MEASURE !== 'swift') throw new Error('the clicks need the compiled Swift reader (swiftc)');
+  const res = { events: [] };
+  const helperBin = path.join(T, 'helper');
+  fs.writeFileSync(`${helperBin}.swift`, HELPER_SWIFT);
+  execFileSync('/usr/bin/swiftc', ['-O', '-o', helperBin, `${helperBin}.swift`], { stdio: 'ignore', timeout: 180000 });
+  const hx = Math.round(dock.x + dock.w / 2);
+  const hy = Math.round(dock.y + 60);
+  const helper = spawn(helperBin, [hx, hy, 320, 220].map(String), { stdio: ['pipe', 'pipe', 'ignore'] });
+  let helperOut = '';
+  helper.stdout.on('data', (d) => (helperOut += d));
+  const helperWid = Number(await waitFor(() => helperOut.trim(), 5000, 50));
+  const helperDecl = helperWid ? null : 'no helper window';
+  const shownBefore = (await debug()).shown;
+  const ev = (what, fn) => {
+    const t = Date.now();
+    const r = fn();
+    res.events.push({ t, what, r });
+    setTimeout(() => {
+      try {
+        res.events.find((e) => e.t === t && e.what === what).top = cgwin(['top']);
+      } catch {}
+    }, 150);
+  };
+  const watchSeconds = 13;
+  let watchOut = '';
+  const watcher = spawn(CGWIN, ['watch', term.num, dock.num, helperWid || 0, 2, watchSeconds].map(String), { stdio: ['ignore', 'pipe', 'ignore'] });
+  watcher.stdout.on('data', (d) => (watchOut += d));
+  const click = () => {
+    try {
+      return JSON.parse(execFileSync(CGWIN, ['click', ghostty], { encoding: 'utf8', timeout: 10000 })).ok;
+    } catch (e) {
+      return `failed (${String(e.stderr || e.message).trim()})`;
+    }
+  };
+  await sleep(300);
+  for (let i = 0; i < 6; i++) {
+    ev('click', click);
+    await sleep(600);
+  }
+  for (let i = 0; i < 4; i++) {
+    ev('other app', () => (helper.stdin.write('front\n'), true));
+    await sleep(900);
+    ev('click', click);
+    await sleep(900);
+  }
+  await waitFor(() => watcher.exitCode !== null, (watchSeconds + 5) * 1000, 100);
+  helper.stdin.end('quit\n');
+  const shownAfter = (await debug()).shown;
+  let samples = [];
+  try {
+    samples = JSON.parse(watchOut);
+  } catch {}
+  // each sample against the last event before it
+  const first = res.events[0].t;
+  let below = 0;
+  let belowMs = 0;
+  let overOther = 0;
+  let overOtherEarly = 0;
+  const layers = new Set();
+  let prevT = null;
+  for (const [t, dockAbove, layer, , helperFront] of samples) {
+    if (t < first) continue;
+    const e = res.events.filter((x) => x.t <= t).at(-1);
+    if (!dockAbove) {
+      below += 1;
+      if (prevT !== null) belowMs += t - prevT;
+    } else layers.add(layer);
+    if (e && e.what === 'other app' && dockAbove && !helperFront) {
+      if (t - e.t > 300) overOther += 1;
+      else overOtherEarly += 1;
+    }
+    prevT = t;
+  }
+  fs.writeFileSync(`${REPORT}.clicks.json`, JSON.stringify({ term: term.num, dock: dock.num, helper: helperWid, events: res.events, samples }));
+  res.samples = samples.filter(([t]) => t >= first).length;
+  res.below = below;
+  res.belowMs = Math.round(belowMs);
+  res.overOther = overOther;
+  res.overOtherEarly = overOtherEarly;
+  res.layers = [...layers];
+  res.shown = { before: shownBefore, after: shownAfter };
+  res.ok = !helperDecl && res.samples > 1000 && below === 0 && overOther === 0 && shownBefore && shownAfter;
+  say(`clicks: ${res.events.length} activations (${res.events.map((e) => `${e.what}=${e.r}`).filter((x, i, a) => a.indexOf(x) === i).join(', ')}), ${res.samples} order samples every 2 ms${helperDecl ? `; ${helperDecl}` : ''}`);
+  say(`clicks: dock below the terminal in ${below} samples (~${res.belowMs} ms); dock in front of the frontmost other app's window in ${overOther} samples after 300 ms (${overOtherEarly} within 300 ms of its activation); dock layers seen ${res.layers.join('/')}; shown before/after ${shownBefore}/${shownAfter}`);
+  return res;
 }
 
 async function stopServer(server, ghostty, out) {
@@ -311,5 +487,5 @@ for (const r of results) {
 }
 fs.writeFileSync(REPORT, lines.join('\n') + '\n');
 console.log(`\nreport: ${REPORT}`);
-const bad = results.filter((r) => r.error || r.maxErrPt > 1 || !r.directlyAbove);
+const bad = results.filter((r) => r.error || r.maxErrPt > 1 || !r.directlyAbove || (r.clicks && !r.clicks.ok));
 process.exit(bad.length ? 1 : 0);

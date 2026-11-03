@@ -15,6 +15,15 @@
 //   elsewhere   another client's placement is the target
 // "Covered" is handled by z-order: the dock sits directly above the terminal window, so
 // whatever covers the terminal covers the dock the same way.
+// The dock is another app's window: at the same (normal) level, a click into the terminal
+// orders the terminal's window front, over the dock, until the dock is ordered back above it
+// (a visible flicker on every click). So while the terminal's app (or the companion) is the
+// frontmost app and no other normal window is above the terminal, the dock sits one level
+// above normal windows ("raised"): a click into the terminal cannot cover it, and it takes
+// neither focus nor activation. Once another app comes to the front (the workspace's
+// activation notice, at once) or another window gets above the terminal (the next sample),
+// it is back at the normal level directly above the terminal, so other windows cover both.
+// Windows of other processes cannot be parent and child (addChildWindow is in-process only).
 
 'use strict';
 
@@ -56,6 +65,32 @@ function readTerminalSettings(pid, fake, done) {
   });
 }
 
+// A sample taken this soon after the frontmost app changed may still show the order from
+// before: it does not take the dock off the raised level.
+const FRONT_SETTLE_MS = 50;
+// The level above normal windows: one above (other apps' floating panels stay above it).
+const RAISED = ['normal', 1];
+
+// The pid in a workspace activation notice's userInfo (Electron gives the
+// NSRunningApplication's description: "<NSRunningApplication: 0x… (com.mitchellh.ghostty - 659) …>").
+function activatedPid(userInfo) {
+  const app = userInfo && userInfo.NSWorkspaceApplicationKey;
+  const m = /\s-\s(\d+)\)/.exec(String(app || ''));
+  return m ? Number(m[1]) : null;
+}
+
+// The frontmost app's pid (`lsappinfo`, no permission), or null.
+function readFrontPid(done) {
+  execFile('/usr/bin/lsappinfo', ['front'], { encoding: 'utf8', timeout: 2000 }, (err, asn) => {
+    const id = err ? '' : String(asn || '').trim();
+    if (!/^ASN:/.test(id)) return done(null);
+    execFile('/usr/bin/lsappinfo', ['info', '-only', 'pid', id], { encoding: 'utf8', timeout: 2000 }, (err2, out) => {
+      const m = err2 ? null : /"pid"\s*=\s*(\d+)/.exec(String(out || ''));
+      done(m ? Number(m[1]) : null);
+    });
+  });
+}
+
 const NO_WINDOW = 'Docking needs herdr directly in a terminal window (not inside tmux or ssh)';
 const NOT_MAC = 'Docking is macOS only for now';
 
@@ -65,7 +100,8 @@ class DockCore {
   // env: {platform, scaleFor(frame) -> number, displayFor(frame) -> {x,y,width,height},
   //       configFor(pid, key) -> ghostty config | CONFIG_PENDING (`key`: the placement's
   //         extent and cell size, geometryKey),
-  //       configSuspect?(pid, updatedUnix) -> whether the settings are being read again}
+  //       configSuspect?(pid, updatedUnix) -> whether the settings are being read again,
+  //       selfPid?: the companion's pid}
   constructor(env) {
     this.env = env;
     this.placements = [];
@@ -81,6 +117,12 @@ class DockCore {
     this.frameSince = 0; // when it last changed
     this.movedAt = 0; // the last change (for RESETTLE_MS)
     this.dockWid = null; // our dock window's number (z-order upkeep)
+    this.front = null; // {pid, at}: the frontmost app (null: not known yet)
+  }
+
+  // The frontmost app changed (the workspace's notice, or read once at the start).
+  setFront(pid, now) {
+    this.front = pid ? { pid, at: now } : null;
   }
 
   setPlacements(list) {
@@ -180,12 +222,15 @@ class DockCore {
   }
 
   // What to do now. Returns
-  //   {docked, show, rect, fullScreen, raise, target, tabId, watch: {pids, wid},
+  //   {docked, show, rect, fullScreen, level, raise, target, tabId, watch: {pids, wid},
   //    reports: [{id, state, reason}], recheckAt}
+  // `level`: 'raised' (above normal windows: the terminal's app or the companion is frontmost
+  // and nothing else is above the terminal) or 'normal' (directly above the terminal; `raise`:
+  // ordered there again).
   // `recheckAt`: while the dock waits for a window to settle, when the decision changes
   // without a new sample or placement (null otherwise).
   decide(now) {
-    const out = { docked: anyDockPlacement(this.placements), show: false, rect: null, fullScreen: false, raise: false, target: null, tabId: null, watch: { pids: [], wid: 0 }, reports: [], recheckAt: null };
+    const out = { docked: anyDockPlacement(this.placements), show: false, rect: null, fullScreen: false, level: 'normal', raise: false, target: null, tabId: null, watch: { pids: [], wid: 0 }, reports: [], recheckAt: null };
     const target = chooseTarget(this.placements);
     out.target = target;
     for (const p of this.placements) {
@@ -230,15 +275,28 @@ class DockCore {
     // Directly above the terminal window: the last layer-0 window of its above-list.
     const above = ((this.sample && this.sample.above) || []).filter((w) => (w[2] || 0) === 0);
     const last = above.length ? above[above.length - 1][0] : null;
-    out.raise = this.dockWid === null || last !== this.dockWid;
+    out.level = this._raised(above) ? 'raised' : 'normal';
+    out.raise = out.level === 'normal' && (this.dockWid === null || last !== this.dockWid);
     return say('covering');
+  }
+
+  // Raised: the terminal's app or the companion is the frontmost app, and no other normal
+  // window is above the terminal (a sample from right after the app came to the front may
+  // still show the app before it: until a later one, the dock stays raised).
+  _raised(above) {
+    const f = this.front;
+    if (!f || !this.bound || (f.pid !== this.bound.pid && f.pid !== this.env.selfPid)) return false;
+    if (!above.some((w) => w[0] !== this.dockWid)) return true;
+    const t = this.sample && typeof this.sample.t === 'number' ? this.sample.t : 0;
+    return t < f.at + FRONT_SETTLE_MS;
   }
 }
 
 // The Electron side. `host` is the companion (main.js): views, windows, strip, groups.
 class DockController {
   // `readSettings(pid, fake, done)`: the terminal's settings (tests replace it).
-  constructor({ host, feed, probe, log = () => {}, headless = false, platform = process.platform, electron, readSettings = readTerminalSettings }) {
+  // `readFront(done)`: the frontmost app's pid (tests replace it).
+  constructor({ host, feed, probe, log = () => {}, headless = false, platform = process.platform, electron, readSettings = readTerminalSettings, readFront = readFrontPid, selfPid = process.pid }) {
     this.host = host;
     this.feed = feed;
     this.probe = probe;
@@ -246,6 +304,7 @@ class DockController {
     this.headless = headless;
     this.electron = electron;
     this.readSettings = readSettings;
+    this.readFront = readFront;
     const { screen } = electron;
     // pid -> {cfg, at, reading, key: the geometryKey they were read for, seen: the last one
     // asked about, timer: a re-read waiting for CONFIG_FOLLOW_MS}: the terminal's settings
@@ -270,6 +329,7 @@ class DockController {
       },
       configFor: (pid, key) => this.configFor(pid, key),
       configSuspect: (pid, updatedUnix) => this.configSuspect(pid, updatedUnix),
+      selfPid,
     });
     this.docked = false;
     this.shown = false;
@@ -279,6 +339,17 @@ class DockController {
     this.policyTimer = null;
     this.settleTimer = null;
     this.accessory = false;
+    this.level = 'normal'; // the dock window's level (decide().level)
+    this.frontSub = null;
+    // The frontmost app, the moment it changes (no permission needed).
+    const prefs = electron.systemPreferences;
+    if (!headless && platform === 'darwin' && prefs && typeof prefs.subscribeWorkspaceNotification === 'function') {
+      try {
+        this.frontSub = prefs.subscribeWorkspaceNotification('NSWorkspaceDidActivateApplicationNotification', (_event, userInfo) => this.onFront(activatedPid(userInfo)));
+      } catch (e) {
+        this.log('dock: no activation notices', e.message);
+      }
+    }
     feed.on('placements', (list) => {
       this.core.setPlacements(list);
       this.apply();
@@ -287,6 +358,13 @@ class DockController {
       this.core.onSample(s, Date.now());
       this.apply();
     });
+  }
+
+  // Another app is frontmost (`pid`): the dock's level follows at once.
+  onFront(pid) {
+    if (this.stopped || !pid) return;
+    this.core.setFront(pid, Date.now());
+    this.apply();
   }
 
   // The terminal's geometry settings (readTerminalSettings), read in the background:
@@ -387,34 +465,64 @@ class DockController {
         this.fullScreen = d.fullScreen;
         win.setVisibleOnAllWorkspaces(d.fullScreen, { visibleOnFullScreen: d.fullScreen, skipTransformProcessType: true });
       }
-      if (!this.shown) {
+      const dropped = this.setLevel(win, d.level) && d.level === 'normal';
+      const first = !this.shown;
+      if (first) {
         this.shown = true;
         if (!this.headless) win.showInactive();
-        this.raise(win);
-      } else if (d.raise) this.raise(win);
+        this.noteDockWid(win);
+      }
+      // back at the normal level: at its front, so directly above the terminal again at once
+      if (d.level === 'normal' && (first || dropped || d.raise)) this.raise(win);
     } else if (this.shown) {
       this.shown = false;
       if (!this.headless) win.hide();
     }
   }
 
+  // The dock window's level ('raised' or 'normal'); whether it changed. A level change can
+  // reset the window's Spaces behaviour: a full-screen dock gets it again.
+  setLevel(win, level) {
+    if (level === this.level) return false;
+    this.level = level;
+    if (this.headless) return true;
+    try {
+      if (level === 'raised') win.setAlwaysOnTop(true, ...RAISED);
+      else win.setAlwaysOnTop(false);
+      if (this.fullScreen) win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+    } catch (e) {
+      this.log('dock: level change failed', e.message);
+    }
+    return true;
+  }
+
+  // Directly above the terminal window (normal level only: raised, nothing can cover it).
   raise(win) {
-    if (this.headless || !this.core.bound) return;
+    if (this.headless || !this.core.bound || this.level === 'raised') return;
     try {
       win.moveAbove(`window:${this.core.bound.wid}:0`);
     } catch (e) {
       this.log('dock: moveAbove failed', e.message);
     }
-    if (this.core.dockWid === null) {
-      const id = String(win.getMediaSourceId() || '').split(':')[1];
-      if (id) this.core.dockWid = Number(id);
-    }
+    this.noteDockWid(win);
   }
 
-  // The dock's window was clicked away from (the terminal ordered front): back above it.
+  // Our dock window's number, so the core tells it from other windows above the terminal.
+  noteDockWid(win) {
+    if (this.headless || this.core.dockWid !== null) return;
+    try {
+      const id = String(win.getMediaSourceId() || '').split(':')[1];
+      if (id) this.core.dockWid = Number(id);
+    } catch {}
+  }
+
+  // The dock's window was clicked away from (the terminal ordered front): decided again, and
+  // at the normal level back above the terminal at once.
   onBlur() {
     const win = this.host.dockWindow();
-    if (win && this.shown) this.raise(win);
+    if (!win || !this.shown) return;
+    this.apply();
+    if (this.shown && this.level === 'normal') this.raise(win);
   }
 
   enter() {
@@ -426,6 +534,12 @@ class DockController {
       this.accessory = true;
       this.electron.app.dock.hide();
     }
+    // The frontmost app until the first activation notice.
+    if (!this.headless && process.platform === 'darwin') {
+      this.readFront((pid) => {
+        if (pid && !this.core.front && !this.stopped) this.onFront(pid);
+      });
+    }
     this.host.enterDocked();
   }
 
@@ -436,6 +550,7 @@ class DockController {
     this.core.dockWid = null;
     this.log('dock: window mode');
     const win = this.host.dockWindow();
+    if (win) this.setLevel(win, 'normal');
     if (win && !this.headless) win.hide();
     this.host.leaveDocked();
     clearTimeout(this.policyTimer);
@@ -459,6 +574,8 @@ class DockController {
       visible: win ? win.isVisible() : false,
       probe_pid: this.probe.pid,
       accessory: this.accessory,
+      level: this.level,
+      front: this.core.front,
     };
   }
 
@@ -467,8 +584,14 @@ class DockController {
     clearTimeout(this.settleTimer);
     clearTimeout(this.policyTimer);
     for (const entry of this.configs.values()) clearTimeout(entry.timer);
+    if (this.frontSub !== null) {
+      try {
+        this.electron.systemPreferences.unsubscribeWorkspaceNotification(this.frontSub);
+      } catch {}
+      this.frontSub = null;
+    }
     this.probe.stop();
   }
 }
 
-module.exports = { DockCore, DockController, SETTLE_MS, RESETTLE_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, geometryKey };
+module.exports = { DockCore, DockController, SETTLE_MS, RESETTLE_MS, FRONT_SETTLE_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, geometryKey, activatedPid };

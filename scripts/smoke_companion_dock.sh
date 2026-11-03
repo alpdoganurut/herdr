@@ -2,7 +2,7 @@
 # Live dock alignment smoke (launcher design §10.2): the companion's dock window over a real
 # Ghostty window, measured.
 #
-#   scripts/smoke_companion_dock.sh [--variants small,defaults,large,padding,balanced,native,hidden] [--report <file>] [--keep]
+#   scripts/smoke_companion_dock.sh [--variants small,defaults,large,padding,balanced,native,hidden,clicks] [--report <file>] [--keep]
 #
 # For each variant a SEPARATE background Ghostty instance (never the user's) runs an isolated
 # herdr client that docks the browser on its own (HERDR_TEST_BROWSER_VIEW=side); the companion
@@ -12,7 +12,11 @@
 # recomputes the band from the client's placement and Ghostty's measured frame
 # (apps/companion/src/dock/geometry.js) and records the error per edge in points and device
 # pixels, plus the window probe's CPU while docked and idle. small, defaults and large are the
-# default Ghostty config at three window sizes; the rest are geometry configs.
+# default Ghostty config at three window sizes; the rest are geometry configs. `clicks` is the
+# defaults plus the z-order across clicks into the terminal (Ghostty's own "activate window" over
+# Apple Events, to the test instance only and only when Automation is already allowed) and
+# another app's window coming to the front, sampled every 2 ms: the dock is never below the
+# terminal, and the other app's window covers it.
 #
 # Ghostty creates its first window only when the instance is activated: each variant brings its
 # own instance to the front for a few seconds (the user's windows are never touched, focused,

@@ -121,8 +121,11 @@ covering, hidden, moving, unbound, unsupported, elsewhere), which herdr's placeh
 * `src/dock/dock.js` — the core (bind the placement to its terminal window by the client's
   ancestry; with several windows the frontmost when the client's focus flips or the user clicks the
   placeholder; hide while the window moves and show again 120 ms after it settles; hide off screen)
-  and the Electron side: a second, frameless window over the area, ordered directly above the
-  terminal window (`moveAbove`, again on its `blur` and whenever another window gets between), the
+  and the Electron side: a second, frameless window over the area, one level above normal windows
+  while the terminal's app (or the companion) is frontmost and nothing else is above the terminal
+  (a click into the terminal orders its window front and would cover a same-level dock), else at
+  the normal level directly above the terminal window (`moveAbove`, again on its `blur` and
+  whenever another window gets between; the frontmost app from the workspace's activation notice), the
   pages re-parented into it, the main window hidden while docked, accessory activation policy (out of
   ⌘-Tab and the Dock; needed to join a full-screen Space, where `visibleOnFullScreen` is set). The
   docked bar is always Dusk, without traffic lights or a drag region. ⌘⎋ gives the keyboard back to
