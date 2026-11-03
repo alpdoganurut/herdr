@@ -1070,7 +1070,10 @@ impl ClientShellState {
                     PlaceholderTone::Body,
                 ),
                 (
-                    "(it downloads Electron, about 115 MB)".into(),
+                    format!(
+                        "(it downloads Electron, {})",
+                        crate::browser::companion_install::DOWNLOAD_SIZE
+                    ),
                     PlaceholderTone::Dim,
                 ),
             ]),

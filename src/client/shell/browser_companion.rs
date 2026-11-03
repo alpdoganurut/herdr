@@ -204,9 +204,16 @@ pub(crate) fn companion_overlay_rows(
     })];
     let note = |text: String, tone| BrowserOverlayRow::CompanionNote { text, tone };
     if state == "not_installed" {
+        // the dock placeholder's two lines (the size from the installer)
         rows.push(note(
-            "run \"herdr browser setup --companion\" in a terminal (downloads Electron, ~115 MB)"
-                .into(),
+            "run \"herdr browser setup --companion\" in a terminal".into(),
+            CompanionTone::Dim,
+        ));
+        rows.push(note(
+            format!(
+                "(it downloads Electron, {})",
+                crate::browser::companion_install::DOWNLOAD_SIZE
+            ),
             CompanionTone::Dim,
         ));
         return rows;

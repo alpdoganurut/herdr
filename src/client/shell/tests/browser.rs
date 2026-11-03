@@ -872,9 +872,14 @@ fn the_overlay_companion_block_shows_pid_uptime_restarts_update_and_last_error()
     let frame = state.compose(110, 30).expect("composed frame");
     let text = frame_text(&frame);
     assert!(
-        text.contains(
-            "run \"herdr browser setup --companion\" in a terminal (downloads Electron, ~115 MB)"
-        ),
+        text.contains("run \"herdr browser setup --companion\" in a terminal"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "(it downloads Electron, {})",
+            crate::browser::companion_install::DOWNLOAD_SIZE
+        )),
         "{text}"
     );
     assert!(!text.contains("[Start]"), "{text}");
