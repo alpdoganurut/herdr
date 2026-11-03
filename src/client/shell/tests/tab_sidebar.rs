@@ -638,6 +638,63 @@ fn suspended_pane_shows_a_card_instead_of_the_shell_and_hides_the_cursor() {
     assert!(text.contains("SHELL SCROLLBACK"), "{text}");
 }
 
+/// Fork (restart screen): the suspended card follows the pane's resume mark
+/// on the agent times push.
+#[test]
+fn suspended_card_shows_restarting_waking_and_a_failed_relaunch() {
+    let mut state = suspended_state();
+    let boot_id = state.snapshot.as_ref().expect("snapshot").boot_id.clone();
+    let mut revision = 0;
+    let mut card = |state: &mut ClientShellState, resuming: Option<&str>, failed: Option<&str>| {
+        revision += 1;
+        state.receive_agent_times(
+            &ClientEndpointId::Local,
+            crate::server::headless::agent_times::AgentTimesPayload {
+                boot_id: boot_id.clone(),
+                revision,
+                server_now_unix_ms: 10,
+                panes: vec![crate::app::agent_times::AgentTimePane {
+                    pane_id: "pane_1".into(),
+                    state_change_seq: 1,
+                    since_unix_ms: 1,
+                    resuming: resuming.map(str::to_string),
+                    resume_failed: failed.map(str::to_string),
+                    ..Default::default()
+                }],
+            },
+        );
+        let frame = state.compose(106, 20).expect("composed frame");
+        assert!(frame.cursor.is_none());
+        frame_text(&frame, state.hits.panes[0].inner_rect)
+    };
+
+    let text = card(&mut state, Some("restart"), None);
+    assert!(text.contains("↻ restarting"), "{text}");
+    assert!(text.contains("reviewer"), "{text}");
+    assert!(!text.contains("suspended"), "{text}");
+    assert!(!text.contains("to activate"), "no hint: {text}");
+    assert!(!text.contains("SHELL SCROLLBACK"), "{text}");
+
+    let text = card(&mut state, Some("wake"), None);
+    assert!(text.contains("↻ waking"), "{text}");
+    assert!(!text.contains("to activate"), "{text}");
+
+    let text = card(&mut state, None, Some("restart"));
+    assert!(text.contains("suspended"), "{text}");
+    assert!(
+        text.contains("restart didn't finish — alt+s to activate"),
+        "{text}"
+    );
+
+    let text = card(&mut state, None, Some("wake"));
+    assert!(text.contains("couldn't wake — alt+s to activate"), "{text}");
+
+    let text = card(&mut state, None, None);
+    assert!(text.contains("suspended"), "{text}");
+    assert!(text.contains("alt+s to activate"), "{text}");
+    assert!(!text.contains("didn't finish"), "{text}");
+}
+
 #[test]
 fn suspended_pane_swallows_input_but_the_toggle_binding_still_activates() {
     use crossterm::event::KeyCode;

@@ -6,9 +6,16 @@
 //! pane is dropped: the only way back is the `toggle_agent_suspend` binding
 //! or the tab menu, so a stray keystroke can never land in the parked shell.
 //! Everything here is client presentation; the server state is untouched.
+//!
+//! Fork (restart screen): the card follows the pane's resume mark on the
+//! endpoint's `endpoint.agent-times.v1` push (`ClientResumeMark`): a parked
+//! agent being restarted or woken reads "↻ restarting" / "↻ waking", and one
+//! whose restart or wake gave up keeps the suspended card with a line saying
+//! so in place of the hint. The pane stays locked either way.
 
 use ratatui::layout::Rect;
 
+use super::agent_times::ClientResumeMark;
 use super::*;
 use crate::protocol::{color_to_u32, CellData, FrameData};
 
@@ -61,6 +68,11 @@ impl ClientShellState {
         {
             return painted;
         }
+        let times = super::agent_times::active_agent_times_of(
+            &self.agent_times,
+            &self.active_endpoint_id,
+            Some(snapshot),
+        );
         for hit in &self.hits.panes {
             if hit.popup || !self.pane_suspended(&hit.pane_id) {
                 continue;
@@ -84,25 +96,35 @@ impl ClientShellState {
                 .unwrap_or("agent");
             let cwd = pane.and_then(|pane| pane.cwd.as_deref()).unwrap_or("");
             let key = self.config.keybinds.keybinds.toggle_agent_suspend.label();
-            let hint = match key.as_deref() {
-                Some(key) => format!("{key} to activate"),
-                None => "bind keys.toggle_agent_suspend to activate".to_string(),
-            };
             let palette = &self.config.palette;
+            let mark = times.and_then(|times| times.resume_mark(&hit.pane_id));
+            let (head, hint) = suspended_card_text(
+                mark,
+                key.as_deref(),
+                status_icon(
+                    crate::api::schema::AgentStatus::Suspended,
+                    self.config.status_indicators,
+                ),
+            );
             let lines: [(String, ratatui::style::Color); 4] = [
                 (
-                    format!(
-                        "{} suspended",
-                        status_icon(
-                            crate::api::schema::AgentStatus::Suspended,
-                            self.config.status_indicators
-                        )
-                    ),
-                    palette.text,
+                    head,
+                    if mark.is_some_and(ClientResumeMark::is_resuming) {
+                        palette.accent
+                    } else {
+                        palette.text
+                    },
                 ),
                 (title.to_string(), palette.subtext0),
                 (cwd.to_string(), palette.overlay0),
-                (hint, palette.accent),
+                (
+                    hint,
+                    if mark.is_some_and(ClientResumeMark::is_failed) {
+                        palette.yellow
+                    } else {
+                        palette.accent
+                    },
+                ),
             ];
             paint_card(frame, hit.inner_rect, &lines, palette);
             painted.push(hit.inner_rect);
@@ -117,6 +139,34 @@ impl ClientShellState {
             }
         }
         painted
+    }
+}
+
+/// Fork (restart screen): the card's first line and its hint line for the
+/// pane's resume mark; `key` is the `toggle_agent_suspend` binding, `icon`
+/// the suspended status icon. A restarting or waking card has no hint (an
+/// empty line is not painted).
+fn suspended_card_text(
+    mark: Option<ClientResumeMark>,
+    key: Option<&str>,
+    icon: &str,
+) -> (String, String) {
+    let activate = |prefix: &str| match key {
+        Some(key) => format!("{prefix}{key} to activate"),
+        None if prefix.is_empty() => "bind keys.toggle_agent_suspend to activate".to_string(),
+        None => format!("{prefix}activate from the tab menu"),
+    };
+    match mark {
+        Some(ClientResumeMark::Restarting) => ("↻ restarting".to_string(), String::new()),
+        Some(ClientResumeMark::Waking) => ("↻ waking".to_string(), String::new()),
+        Some(ClientResumeMark::RestartFailed) => (
+            format!("{icon} suspended"),
+            activate("restart didn't finish — "),
+        ),
+        Some(ClientResumeMark::WakeFailed) => {
+            (format!("{icon} suspended"), activate("couldn't wake — "))
+        }
+        None => (format!("{icon} suspended"), activate("")),
     }
 }
 
@@ -201,5 +251,53 @@ fn paint_card(
             }
             x += cells;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn card_text_follows_the_resume_mark() {
+        let text = |mark, key| suspended_card_text(mark, key, "⏸");
+        assert_eq!(
+            text(None, Some("alt+s")),
+            ("⏸ suspended".to_string(), "alt+s to activate".to_string())
+        );
+        assert_eq!(
+            text(None, None).1,
+            "bind keys.toggle_agent_suspend to activate"
+        );
+        for key in [Some("alt+s"), None] {
+            assert_eq!(
+                text(Some(ClientResumeMark::Restarting), key),
+                ("↻ restarting".to_string(), String::new()),
+                "no hint while it restarts"
+            );
+            assert_eq!(
+                text(Some(ClientResumeMark::Waking), key),
+                ("↻ waking".to_string(), String::new())
+            );
+        }
+        assert_eq!(
+            text(Some(ClientResumeMark::RestartFailed), Some("alt+s")),
+            (
+                "⏸ suspended".to_string(),
+                "restart didn't finish — alt+s to activate".to_string()
+            )
+        );
+        assert_eq!(
+            text(Some(ClientResumeMark::RestartFailed), None).1,
+            "restart didn't finish — activate from the tab menu"
+        );
+        assert_eq!(
+            text(Some(ClientResumeMark::WakeFailed), Some("alt+s")).1,
+            "couldn't wake — alt+s to activate"
+        );
+        assert_eq!(
+            text(Some(ClientResumeMark::WakeFailed), None).1,
+            "couldn't wake — activate from the tab menu"
+        );
     }
 }

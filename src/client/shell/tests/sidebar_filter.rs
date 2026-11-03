@@ -132,6 +132,7 @@ fn times(now: Instant, ago: &[Option<u64>]) -> ClientAgentTimesState {
             })
             .collect::<HashMap<_, _>>(),
         auto_suspended: Default::default(),
+        resume_marks: Default::default(),
     }
 }
 
