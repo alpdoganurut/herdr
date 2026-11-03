@@ -386,10 +386,25 @@ impl ClientShellState {
     /// `tabs` layout: move the focused tab to a group named in the prompt,
     /// creating the group when the name is new.
     pub(super) fn open_move_tab_to_group_overlay(&mut self) {
+        let Some(tab_id) = self.snapshot.as_deref().and_then(|snapshot| {
+            snapshot
+                .tabs
+                .iter()
+                .find(|tab| tab.focused)
+                .map(|tab| tab.tab_id.clone())
+        }) else {
+            return;
+        };
+        self.open_move_tab_to_group_overlay_for(&tab_id);
+    }
+
+    /// Fork (tab groups): the move-to-group prompt for `tab_id` (the tab
+    /// menu's tab, or the focused one).
+    pub(super) fn open_move_tab_to_group_overlay_for(&mut self, tab_id: &str) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
         };
-        let Some(tab) = snapshot.tabs.iter().find(|tab| tab.focused) else {
+        let Some(tab) = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id) else {
             return;
         };
         let Some(pane) = snapshot.panes.iter().find(|pane| pane.tab_id == tab.tab_id) else {

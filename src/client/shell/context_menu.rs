@@ -87,6 +87,7 @@ impl ClientContextMenuOverlay {
                 dnd,
                 dnd_supported,
                 browser_page,
+                grouped,
                 ..
             } => {
                 let agent_section = Section::Titled("Agent");
@@ -207,6 +208,26 @@ impl ClientContextMenuOverlay {
                         Kind::Action,
                     )),
                     None => {}
+                }
+                // Fork (tab groups): in the `tabs` layout only.
+                if let Some(grouped) = grouped {
+                    let group_section = Section::Titled("Group");
+                    items.push(item(
+                        "Move to group…",
+                        Action::MoveToGroup,
+                        GLYPH_GROUP,
+                        group_section,
+                        Kind::Action,
+                    ));
+                    if *grouped {
+                        items.push(item(
+                            "Remove from group",
+                            Action::RemoveFromGroup,
+                            GLYPH_UNGROUP,
+                            group_section,
+                            Kind::Action,
+                        ));
+                    }
                 }
                 // The toggles keep one label; the dot (the star) shows the
                 // state when the menu opened.
@@ -470,6 +491,7 @@ pub(super) const GLYPH_ROLE: &str = "\u{25C8}"; // ◈
 pub(super) const GLYPH_LEAVE: &str = "\u{2190}"; // ←
 pub(super) const GLYPH_JOIN: &str = "\u{2192}"; // →
 pub(super) const GLYPH_UNGROUP: &str = "\u{21F1}"; // ⇱
+pub(super) const GLYPH_GROUP: &str = "\u{21F2}"; // ⇲
 pub(super) const GLYPH_DISBAND: &str = "\u{2298}"; // ⊘
 pub(super) const GLYPH_DELETE: &str = "\u{2298}"; // ⊘
 pub(super) const GLYPH_TEAM: &str = "\u{25C6}"; // ◆
@@ -582,6 +604,14 @@ impl ClientShellState {
                 dnd: true,
             },
         ));
+        // Fork (tab groups): the grouping items' state (tabs layout only).
+        let grouped = (self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs)
+            .then(|| {
+                self.snapshot
+                    .as_deref()
+                    .and_then(|snapshot| snapshot.workspaces.first())
+                    .is_some_and(|bucket| bucket.workspace_id != tab.workspace_id)
+            });
         // Fork (companion browser): the session's active page, if any.
         let browser_page = self.browser.info.as_ref().and_then(|info| {
             info.sessions
@@ -614,6 +644,7 @@ impl ClientShellState {
                 dnd,
                 dnd_supported,
                 browser_page,
+                grouped,
             },
             x,
             y,
@@ -781,6 +812,22 @@ impl ClientShellState {
                 ClientContextMenuTarget::Tab { tab_id, .. },
             ) => {
                 self.toggle_info_pane(tab_id.clone(), outcome);
+                outcome.repaint = true;
+                return;
+            }
+            // Fork (tab groups): the move prompt for the menu's tab, and
+            // Remove from group (a pane.move into the bucket, like a drag),
+            // without focusing it first.
+            (ClientContextMenuAction::MoveToGroup, ClientContextMenuTarget::Tab { tab_id, .. }) => {
+                self.open_move_tab_to_group_overlay_for(tab_id);
+                outcome.repaint = true;
+                return;
+            }
+            (
+                ClientContextMenuAction::RemoveFromGroup,
+                ClientContextMenuTarget::Tab { tab_id, .. },
+            ) => {
+                self.remove_tab_from_group(tab_id, outcome);
                 outcome.repaint = true;
                 return;
             }
@@ -1227,6 +1274,26 @@ impl ClientShellState {
                 );
             }
             _ => {}
+        }
+    }
+
+    /// Fork (tab groups): the tab menu's Remove from group: the tab goes to
+    /// the ungrouped bucket (the first space), refused like a drag would be.
+    pub(super) fn remove_tab_from_group(&mut self, tab_id: &str, outcome: &mut ClientShellInput) {
+        let Some(bucket) = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.workspaces.first())
+            .map(|workspace| workspace.workspace_id.clone())
+        else {
+            return;
+        };
+        if let Some(reason) = self.tab_group_move_blocker(tab_id) {
+            self.notify_group_move_refused(reason);
+            return;
+        }
+        if let Some(method) = self.move_tab_to_workspace_method(tab_id, &bucket, true) {
+            self.push_endpoint_method(method, outcome);
         }
     }
 

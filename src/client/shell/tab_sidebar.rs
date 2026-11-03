@@ -10,7 +10,7 @@
 //! `space:<workspace id>` (`group_key`); the group holding the focused tab is
 //! always drawn open, so focus is never hidden.
 //!
-//! A toolbar row at the top offers fold all / unfold all / new group. Headers
+//! A toolbar row at the top offers fold all / unfold all / new tab. Headers
 //! also register as `hits.workspaces` so the space drag machinery reorders
 //! groups; tab rows register in `hits.sidebar_tabs`. The list reuses the
 //! agent panel's scroll state and hit rectangles (`agent_body`,
@@ -102,7 +102,7 @@ const RULE: &str = "\u{2500}"; // ─
 /// Toolbar glyphs: the fold toggle shows the action it will take.
 pub(super) const FOLD_ALL_LABEL: &str = "\u{23F6}"; // ⏶ black medium up-pointing triangle
 pub(super) const UNFOLD_ALL_LABEL: &str = "\u{23F7}"; // ⏷ black medium down-pointing triangle
-pub(super) const NEW_GROUP_LABEL: &str = "+";
+pub(super) const NEW_TAB_LABEL: &str = "+";
 /// A group header's fold marker.
 const GROUP_OPEN_MARKER: &str = "\u{25BE}"; // ▾
 const GROUP_FOLDED_MARKER: &str = "\u{25B8}"; // ▸
@@ -1380,9 +1380,9 @@ fn render_toolbar(
             hits.sidebar_notes = notes;
         }
     }
-    let new_width = display_width(NEW_GROUP_LABEL);
+    let new_width = display_width(NEW_TAB_LABEL);
     let new_x = content.right().saturating_sub(new_width + 1);
-    put_text(buffer, new_x, y, new_width, NEW_GROUP_LABEL, style);
+    put_text(buffer, new_x, y, new_width, NEW_TAB_LABEL, style);
     if config.mouse_capture {
         hits.group_new = Rect::new(new_x, y, new_width, 1);
     }

@@ -818,6 +818,12 @@ pub(super) enum ClientContextMenuAction {
     /// Fork, tab menu: turn the tab's do-not-disturb on or off
     /// (`tab.set_dnd`).
     Dnd,
+    /// Fork (tab groups), tab menu: the move-to-group name prompt for the
+    /// menu's tab.
+    MoveToGroup,
+    /// Fork (tab groups), tab menu of a grouped tab: move it to the
+    /// ungrouped bucket.
+    RemoveFromGroup,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -900,6 +906,10 @@ pub(super) enum ClientContextMenuTarget {
         /// opened (`browser.get` `sessions`): its active page's title (the
         /// URL without one) and whether a page needs the user.
         browser_page: Option<(String, bool)>,
+        /// Fork (tab groups): in the `tabs` layout, whether the tab sits in a
+        /// group (not the ungrouped bucket); `None` in another layout, where
+        /// the menu has no grouping items.
+        grouped: Option<bool>,
     },
     /// A space shown as a tab group in the `tabs` layout. Fork: `team` is
     /// the team items' state, `None` without `team.get` on the server.
@@ -1113,6 +1123,11 @@ pub(super) enum PendingEndpointKind {
         target: String,
         restart: bool,
     },
+    /// Fork (toolbar new tab): the toolbar `+`'s loose `tab.create`; its
+    /// reply moves the new tab to the top (`sidebar_filter.rs`).
+    ToolbarNewTab,
+    /// Fork (toolbar new tab): that follow-up `tab.move`; never a notice.
+    ToolbarNewTabMove,
 }
 
 pub(super) struct PendingEndpointRequest {

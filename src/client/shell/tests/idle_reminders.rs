@@ -748,8 +748,9 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
     snapshot.tabs[1].remind_every = Some(TabRemindInterval::H6);
     let mut state = tabs_state(snapshot);
     let items = open_tab_menu(&mut state, 1);
-    // Fork (menu design): the Team section's "Set role…", then the Alerts
-    // section: Important, the toggles, the selector and the swatches.
+    // Fork (menu design): the Team section's "Set role…", the Group
+    // section's "Move to group…" (tab groups), then the Alerts section:
+    // Important, the toggles, the selector and the swatches.
     let role = items
         .iter()
         .position(|item| item.action == ClientContextMenuAction::SetRole)
@@ -761,6 +762,7 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
             .collect::<Vec<_>>(),
         [
             ClientContextMenuAction::SetRole,
+            ClientContextMenuAction::MoveToGroup,
             ClientContextMenuAction::Important,
             ClientContextMenuAction::Pin,
             ClientContextMenuAction::Mute,
@@ -770,7 +772,7 @@ fn tab_menu_has_important_and_the_selector_before_the_swatches() {
             ClientContextMenuAction::Color
         ]
     );
-    let important = role + 1;
+    let important = role + 2;
     // A stable label; the star carries the state.
     assert_eq!(items[important].label, "Important");
     assert_eq!(

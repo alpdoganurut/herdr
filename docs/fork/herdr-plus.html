@@ -385,7 +385,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
           <li><code>‹</code> <code>›</code> go back and forward through the tabs you focused, like a browser; lit when there is somewhere to go. Keys <code>cmd+[</code> / <code>cmd+]</code> where your terminal passes Cmd, else <code>alt+,</code> / <code>alt+.</code>.</li>
           <li><code>⌕</code> filters the tabs as you type (<code>prefix+f</code>); <code>◷</code> keeps only recently active tabs (click forward, right-click back).</li>
           <li><code>◧</code> opens or closes the focused tab's notes pane; lit while it is open.</li>
-          <li><code>+</code> moves the focused tab into a group, new or existing, by name.</li>
+          <li><code>+</code> opens a new shell tab, loose at the top of the list, and focuses it. To group a tab, right-click it and pick <b>Move to group…</b> (or <b>Remove from group</b>); <code>move_tab_to_group</code> and dragging work too.</li>
         </ul>
         <p>On a narrow sidebar the history buttons drop out first, then the search controls. Other keys and widths: <a href="config.html#sidebar-toolbar">configuration page</a>.</p></div>
       <div class="card"><h3><span class="g">⌕</span>Search and recency filters</h3><p>Find a tab fast: <code>prefix+f</code> or the toolbar's <code>⌕</code> keeps tabs whose label, group or agent matches every word; Enter jumps to the first match, Esc clears. <code>◷</code> shows only tabs active in the last 15m to 1d; busy and pinned tabs always show. Previous/next tab keys skip hidden tabs.</p></div>
@@ -503,7 +503,7 @@ Flags go to the owner in <span class="t b">Turkish</span>, see <span class="pu" 
     <div class="card"><h3><span class="g">⌂</span>Removed worktree, session back</h3><p>If a pane's folder was deleted (say, a removed worktree), herdr recreates it empty after a restart so <code>--resume</code> still finds the session. You get one card, and the agent is told so it can warn you.</p></div>
     <div class="card"><h3><span class="g">⇢</span>Backgrounded Claude sessions</h3><p>When you background a Claude session it continues under a new ID. herdr follows it, so resume, restart and restore pick up the newest session and its tools still work as that pane.</p></div>
     <div class="card"><h3><span class="g">↺</span>Recently closed sessions</h3><p>Reopen a closed agent tab with its label, colour, group and reminders: <code>herdr tab closed</code> lists them, <code>herdr tab reopen</code> brings one back, or use Settings → Closed sessions.</p></div>
-    <div class="card"><h3><span class="g">■</span>Tab colours &amp; groups</h3><p>Colour tags, foldable groups, drag tabs and groups, move to group by name.</p></div>
+    <div class="card"><h3><span class="g">■</span>Tab colours &amp; groups</h3><p>Colour tags, foldable groups, drag tabs and groups, move a tab to a group from its menu.</p></div>
   </div>
 </section>
 
