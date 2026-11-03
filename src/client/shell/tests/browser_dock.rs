@@ -487,6 +487,17 @@ fn the_placeholder_names_why_the_companion_is_not_covering() {
     // not installed: the setup command
     state.browser.info = Some(companion("not_installed"));
     assert!(text(&mut state).contains("herdr browser setup --companion"));
+    // failed: the launcher's give-up rule, in its own words
+    state.browser.info = Some(companion("failed"));
+    let failed = text(&mut state);
+    assert!(
+        failed.contains(&format!(
+            "The companion stopped after {}",
+            crate::browser::companion_app::GIVE_UP_TEXT
+        )),
+        "{failed}"
+    );
+    assert!(failed.contains("[ Restart ]"), "{failed}");
     // starting: the tab's label and the spinner
     state.browser.info = Some(companion("starting"));
     let starting = text(&mut state);

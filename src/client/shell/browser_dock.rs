@@ -993,7 +993,10 @@ impl ClientShellState {
                 ..Placeholder::say(vec![title("The companion is not running".into())])
             },
             "failed" => {
-                let mut lines = vec![title("The companion stopped after 5 crashes".into())];
+                let mut lines = vec![title(format!(
+                    "The companion stopped after {}",
+                    crate::browser::companion_app::GIVE_UP_TEXT
+                ))];
                 if let Some(error) = companion.last_error.as_deref() {
                     let first = error.lines().next().unwrap_or(error);
                     lines.push((first.to_owned(), PlaceholderTone::Error));
