@@ -11,7 +11,9 @@
 //! endpoint's `endpoint.agent-times.v1` push (`ClientResumeMark`): a parked
 //! agent being restarted or woken reads "↻ restarting" / "↻ waking", and one
 //! whose restart or wake gave up keeps the suspended card with a line saying
-//! so in place of the hint. The pane stays locked either way.
+//! so in place of the hint. The restarting / waking card also covers (and
+//! locks) the pane after the relaunch, until the server reports the agent
+//! detected again (the mark leaves the push).
 
 use ratatui::layout::Rect;
 
@@ -44,9 +46,26 @@ impl ClientShellState {
     }
 
     /// Pane input is locked while the pane is suspended in the tabs layout.
+    /// Fork (restart screen): and while its agent restarts or wakes.
     pub(super) fn suspended_pane_locked(&self, pane_id: &str) -> bool {
         self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs
-            && self.pane_suspended(pane_id)
+            && (self.pane_suspended(pane_id) || self.pane_resuming(pane_id))
+    }
+
+    /// Fork (restart screen): whether the active endpoint's push marks
+    /// `pane_id`'s agent restarting or waking. One map lookup.
+    pub(super) fn pane_resuming(&self, pane_id: &str) -> bool {
+        self.resume_mark_of(pane_id)
+            .is_some_and(ClientResumeMark::is_resuming)
+    }
+
+    fn resume_mark_of(&self, pane_id: &str) -> Option<ClientResumeMark> {
+        super::agent_times::active_agent_times_of(
+            &self.agent_times,
+            &self.active_endpoint_id,
+            self.snapshot.as_deref(),
+        )
+        .and_then(|times| times.resume_mark(pane_id))
     }
 
     /// The tabs layout keeps one pane per tab: no splits, swaps, zoom, or resize.
@@ -63,9 +82,7 @@ impl ClientShellState {
         snapshot: &ClientShellSnapshot,
     ) -> Vec<Rect> {
         let mut painted = Vec::new();
-        if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs
-            || self.suspended_pane_ids.is_empty()
-        {
+        if self.config.sidebar_layout != crate::config::SidebarLayoutConfig::Tabs {
             return painted;
         }
         let times = super::agent_times::active_agent_times_of(
@@ -73,8 +90,15 @@ impl ClientShellState {
             &self.active_endpoint_id,
             Some(snapshot),
         );
+        if self.suspended_pane_ids.is_empty() && !times.is_some_and(|times| times.any_resuming()) {
+            return painted;
+        }
         for hit in &self.hits.panes {
-            if hit.popup || !self.pane_suspended(&hit.pane_id) {
+            let mark = times.and_then(|times| times.resume_mark(&hit.pane_id));
+            if hit.popup
+                || !(self.pane_suspended(&hit.pane_id)
+                    || mark.is_some_and(ClientResumeMark::is_resuming))
+            {
                 continue;
             }
             let agent = snapshot
@@ -97,7 +121,6 @@ impl ClientShellState {
             let cwd = pane.and_then(|pane| pane.cwd.as_deref()).unwrap_or("");
             let key = self.config.keybinds.keybinds.toggle_agent_suspend.label();
             let palette = &self.config.palette;
-            let mark = times.and_then(|times| times.resume_mark(&hit.pane_id));
             let (head, hint) = suspended_card_text(
                 mark,
                 key.as_deref(),

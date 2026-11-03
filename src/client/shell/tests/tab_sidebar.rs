@@ -695,6 +695,86 @@ fn suspended_card_shows_restarting_waking_and_a_failed_relaunch() {
     assert!(!text.contains("didn't finish"), "{text}");
 }
 
+/// Fork (restart screen): after the relaunch the pane is no longer
+/// suspended, but while the push still marks it restarting or waking the
+/// card covers it and its input stays locked; the card lifts with the mark.
+#[test]
+fn restarting_card_holds_after_the_relaunch_until_the_mark_goes() {
+    use crossterm::event::KeyCode;
+    let mut state = suspended_state();
+    let mut snapshot = state.snapshot.as_deref().expect("snapshot").clone();
+    snapshot.agents[0].agent_status = AgentStatus::Unknown;
+    let boot_id = snapshot.boot_id.clone();
+    state.set_snapshot(Box::new(snapshot));
+    let push = |state: &mut ClientShellState,
+                revision: u64,
+                resuming: Option<&str>,
+                failed: Option<&str>| {
+        state.receive_agent_times(
+            &ClientEndpointId::Local,
+            crate::server::headless::agent_times::AgentTimesPayload {
+                boot_id: boot_id.clone(),
+                revision,
+                server_now_unix_ms: 10,
+                panes: vec![crate::app::agent_times::AgentTimePane {
+                    pane_id: "pane_1".into(),
+                    state_change_seq: 1,
+                    since_unix_ms: 1,
+                    resuming: resuming.map(str::to_string),
+                    resume_failed: failed.map(str::to_string),
+                    ..Default::default()
+                }],
+            },
+        );
+    };
+    let typed_reaches_pane = |state: &mut ClientShellState| {
+        state
+            .handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+                KeyCode::Char('l'),
+                KeyModifiers::empty(),
+            ))])
+            .requests
+            .iter()
+            .any(|request| matches!(request, ClientMessage::ClientShellPaneInput { .. }))
+    };
+
+    push(&mut state, 1, Some("restart"), None);
+    let frame = state.compose(106, 20).expect("composed frame");
+    let text = frame_text(&frame, state.hits.panes[0].inner_rect);
+    assert!(text.contains("↻ restarting"), "{text}");
+    assert!(!text.contains("SHELL SCROLLBACK"), "{text}");
+    assert!(state.suspended_pane_locked("pane_1"));
+    assert!(!typed_reaches_pane(&mut state), "locked while restarting");
+
+    push(&mut state, 2, Some("wake"), None);
+    let frame = state.compose(106, 20).expect("composed frame");
+    let text = frame_text(&frame, state.hits.panes[0].inner_rect);
+    assert!(text.contains("↻ waking"), "{text}");
+
+    // Detected: the mark goes, the shell shows, input flows. A failed mark
+    // on a pane that is not suspended covers nothing.
+    for (revision, failed) in [(3, None), (4, Some("wake"))] {
+        push(&mut state, revision, None, failed);
+        let frame = state.compose(106, 20).expect("composed frame");
+        let text = frame_text(&frame, state.hits.panes[0].inner_rect);
+        assert!(text.contains("SHELL SCROLLBACK"), "{text}");
+        assert!(!state.suspended_pane_locked("pane_1"));
+        assert!(typed_reaches_pane(&mut state));
+    }
+
+    // The spaces layout never covers it.
+    let mut snapshot = two_space_snapshot();
+    snapshot.agents = vec![agent("pane_1", "tab_1", AgentStatus::Unknown)];
+    let mut spaces = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
+    spaces.set_snapshot(Box::new(snapshot));
+    spaces.set_pane_surface(wide_surface());
+    push(&mut spaces, 1, Some("restart"), None);
+    let frame = spaces.compose(106, 20).expect("composed frame");
+    let text = frame_text(&frame, spaces.hits.panes[0].inner_rect);
+    assert!(text.contains("SHELL SCROLLBACK"), "{text}");
+    assert!(!spaces.suspended_pane_locked("pane_1"));
+}
+
 #[test]
 fn suspended_pane_swallows_input_but_the_toggle_binding_still_activates() {
     use crossterm::event::KeyCode;

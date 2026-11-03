@@ -2089,10 +2089,7 @@ impl App {
                     let changed = if retrying {
                         terminal.mark_suspended_agent_waking(now, now + WAKE_MARK_TTL)
                     } else {
-                        terminal.fail_suspended_agent_resume(
-                            crate::terminal::AgentResumeKind::Wake,
-                            now + super::agent_suspend::RESUME_FAILED_MARK_TTL,
-                        )
+                        terminal.fail_suspended_agent_wake()
                     };
                     if changed {
                         self.note_agent_resume_marks_changed();
@@ -2159,10 +2156,7 @@ impl App {
         let reason = failure.reason.clone();
         // Fork (restart screen): a wake that failed this long gave up.
         if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
-            if terminal.fail_suspended_agent_resume(
-                crate::terminal::AgentResumeKind::Wake,
-                now + super::agent_suspend::RESUME_FAILED_MARK_TTL,
-            ) {
+            if terminal.fail_suspended_agent_wake() {
                 self.note_agent_resume_marks_changed();
             }
         }

@@ -2897,10 +2897,10 @@ async fn fork_smoke_an_idle_claude_off_screen_is_autosuspended_and_a_message_wak
 }
 
 /// Fork (restart screen): `agent.restart` reaches the client shell as the
-/// pane's `resuming: "restart"` on the agent times push, through the exit,
-/// and the relaunch clears it.
+/// pane's `resuming: "restart"` on the agent times push, through the exit
+/// and the relaunch, until detection reports the agent again.
 #[tokio::test]
-async fn fork_smoke_a_restart_is_pushed_as_restarting_and_the_relaunch_clears_it() {
+async fn fork_smoke_a_restart_is_pushed_as_restarting_until_the_relaunched_agent_is_detected() {
     const SESSION: &str = "6f1c7a8e-0d1b-4c4e-9a52-3c1f0b2d4e5f";
     let (mut server, mut rx) = server_with_claude(Some(SESSION));
     report_state(&mut server, AgentState::Idle);
@@ -2938,8 +2938,15 @@ async fn fork_smoke_a_restart_is_pushed_as_restarting_and_the_relaunch_clears_it
         .app
         .start_pending_agent_restarts(std::time::Instant::now()));
     server.render_and_stream();
-    assert_eq!(pushed(&control), None, "relaunched");
+    assert_eq!(
+        pushed(&control).as_deref(),
+        Some("restart"),
+        "relaunched, not detected yet"
+    );
     assert!(typed_so_far(&mut rx).contains(SESSION));
+    report_state(&mut server, AgentState::Idle);
+    server.render_and_stream();
+    assert_eq!(pushed(&control), None, "the relaunched agent is detected");
     shutdown_test_runtimes(&mut server);
 }
 

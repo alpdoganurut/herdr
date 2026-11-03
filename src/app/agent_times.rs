@@ -194,7 +194,7 @@ impl App {
         let mut panes = Vec::new();
         for (ws_idx, workspace) in self.state.workspaces.iter().enumerate() {
             for (pane_id, pane) in workspace.tabs.iter().flat_map(|tab| tab.panes.iter()) {
-                let Some((state_change_seq, since_unix_ms, record)) = self
+                let Some((state_change_seq, since_unix_ms, terminal)) = self
                     .state
                     .terminals
                     .get(&pane.attached_terminal_id)
@@ -202,7 +202,7 @@ impl App {
                         Some((
                             terminal.last_agent_state_change_seq?,
                             terminal.agent_state_since_unix_ms?,
-                            terminal.suspended_agent.as_ref(),
+                            terminal,
                         ))
                     })
                 else {
@@ -213,12 +213,15 @@ impl App {
                         pane_id: public,
                         state_change_seq,
                         since_unix_ms,
-                        auto_suspended: record.is_some_and(|record| record.auto),
-                        resuming: record
-                            .and_then(|record| record.resuming(now))
+                        auto_suspended: terminal
+                            .suspended_agent
+                            .as_ref()
+                            .is_some_and(|record| record.auto),
+                        resuming: terminal
+                            .resuming_mark(now)
                             .map(|kind| kind.name().to_string()),
-                        resume_failed: record
-                            .and_then(|record| record.resume_failed(now))
+                        resume_failed: terminal
+                            .resume_failed_mark(now)
                             .map(|kind| kind.name().to_string()),
                     });
                 }

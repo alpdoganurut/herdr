@@ -707,7 +707,7 @@ impl App {
         // Fork (restart screen): a lapsed wake or failed mark leaves the push.
         let mut expired = false;
         for terminal in self.state.terminals.values_mut() {
-            expired |= terminal.expire_suspended_agent_resume_marks(now);
+            expired |= terminal.expire_suspended_agent_resume_marks(now, RESUME_FAILED_MARK_TTL);
         }
         if expired {
             self.note_agent_resume_marks_changed();
@@ -807,7 +807,7 @@ impl App {
         if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
             terminal.clear_suspended_agent_resume_pending();
             // Fork (restart screen): the card says the restart didn't finish.
-            terminal.fail_suspended_agent_resume(
+            terminal.fail_agent_resume(
                 crate::terminal::AgentResumeKind::Restart,
                 Instant::now() + RESUME_FAILED_MARK_TTL,
             );
@@ -862,6 +862,12 @@ impl App {
             return Err(AgentActivateError::NotSuspended(target.to_string()));
         };
         let kind = crate::detect::parse_agent_label(&record.agent);
+        // Fork (restart screen): what the relaunch shows until it is detected.
+        let resume_kind = if record.resume_pending().is_some() {
+            crate::terminal::AgentResumeKind::Restart
+        } else {
+            crate::terminal::AgentResumeKind::Wake
+        };
 
         if let Some(runtime) = self.terminal_runtimes.get(&terminal_id) {
             // The shell can look available before detection publishes the
@@ -945,7 +951,15 @@ impl App {
 
         self.state.mark_session_dirty();
         self.schedule_session_save();
-        // Fork (restart screen): the record's resume marks went with it.
+        // Fork (restart screen): the pane shows restarting or waking until
+        // detection reports the agent again (or RESTART_RESUME_TIMEOUT).
+        if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+            terminal.begin_agent_resuming(
+                resume_kind,
+                kind,
+                Instant::now() + RESTART_RESUME_TIMEOUT,
+            );
+        }
         self.note_agent_resume_marks_changed();
         self.emit_agent_status_transition(resolved.ws_idx, resolved.pane_id);
         Ok(self
@@ -2257,7 +2271,12 @@ mod tests {
         );
         assert!(sent.ends_with('\r'));
         assert_ne!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
-        assert_eq!(app.state.next_suspended_agent_resume_deadline(), None);
+        // Fork (restart screen): only the detection timeout is left.
+        let detect_by = app.state.terminals[&terminal_id]
+            .agent_resuming
+            .map(|resuming| resuming.detect_by);
+        assert!(detect_by.is_some());
+        assert_eq!(app.state.next_suspended_agent_resume_deadline(), detect_by);
         assert!(!app.start_pending_agent_restarts(Instant::now()));
     }
 
@@ -3523,8 +3542,68 @@ mod tests {
         let rev = app.state.agent_times_view_rev;
         assert!(app.start_pending_agent_restarts(Instant::now()));
         assert!(app.state.agent_times_view_rev > rev);
-        assert_eq!(pushed_marks(&mut app), (None, None), "relaunched");
         assert_ne!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
+        // Relaunched but not detected yet: still restarting.
+        assert_eq!(pushed_marks(&mut app), restart_mark(), "until detected");
+        let rev = app.state.agent_times_view_rev;
+        report_agent_back(&mut app);
+        assert!(app.state.agent_times_view_rev > rev);
+        assert_eq!(pushed_marks(&mut app), (None, None), "detected");
+    }
+
+    /// Detection reports the relaunched Claude.
+    fn report_agent_back(app: &mut App) {
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        app.handle_internal_event(crate::events::AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Claude),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
+            process_exited: false,
+            observed_at: Instant::now() + Duration::from_millis(50),
+        });
+    }
+
+    #[tokio::test]
+    async fn a_relaunch_never_detected_is_pushed_as_failed() {
+        let mut app = test_app();
+        let (terminal_id, _rx) = live_claude(&mut app, AgentState::Idle);
+        assert_eq!(
+            suspend(&mut app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        observe_exit(&mut app);
+        assert_eq!(
+            activate(&mut app, "reviewer")["result"]["type"],
+            "agent_activated"
+        );
+        assert_eq!(pushed_marks(&mut app), (Some("wake".into()), None));
+        let detect_by = app.state.terminals[&terminal_id]
+            .agent_resuming
+            .expect("waits for detection")
+            .detect_by;
+        assert_eq!(
+            app.state.next_suspended_agent_resume_deadline(),
+            Some(detect_by),
+            "the scheduler wakes for the timeout"
+        );
+        assert!(!app.start_pending_agent_restarts(detect_by - Duration::from_millis(1)));
+        let rev = app.state.agent_times_view_rev;
+        assert!(app.start_pending_agent_restarts(detect_by));
+        assert!(app.state.agent_times_view_rev > rev);
+        assert_eq!(pushed_marks(&mut app), (None, Some("wake".into())));
+        // Detection afterwards changes nothing; the mark lapses.
+        report_agent_back(&mut app);
+        assert_eq!(pushed_marks(&mut app), (None, Some("wake".into())));
+        let lapse = app
+            .state
+            .next_suspended_agent_resume_deadline()
+            .expect("the lapse is scheduled");
+        assert!(app.start_pending_agent_restarts(lapse));
+        assert_eq!(pushed_marks(&mut app), (None, None));
+        assert_eq!(app.state.next_suspended_agent_resume_deadline(), None);
     }
 
     #[tokio::test]
@@ -3556,7 +3635,13 @@ mod tests {
         );
         observe_exit(&mut app);
         assert!(app.start_pending_agent_restarts(Instant::now()));
-        assert_eq!(pushed_marks(&mut app), (None, None), "relaunched");
+        assert_eq!(
+            pushed_marks(&mut app),
+            restart_mark(),
+            "relaunched, not detected"
+        );
+        report_agent_back(&mut app);
+        assert_eq!(pushed_marks(&mut app), (None, None), "detected");
     }
 
     #[tokio::test]
@@ -3594,10 +3679,7 @@ mod tests {
         assert!(app.state.agent_times_view_rev > rev);
         assert_eq!(app.state.next_suspended_agent_resume_deadline(), None);
         assert_eq!(
-            app.state.terminals[&terminal_id]
-                .suspended_agent
-                .as_ref()
-                .and_then(|record| record.resume_failed(Instant::now())),
+            app.state.terminals[&terminal_id].resume_failed_mark(Instant::now()),
             None
         );
 
@@ -3623,6 +3705,12 @@ mod tests {
             "agent_activated"
         );
         assert!(app.state.agent_times_view_rev > rev);
+        assert_eq!(
+            pushed_marks(&mut app),
+            (Some("wake".into()), None),
+            "the failed mark goes; the activation waits for detection"
+        );
+        report_agent_back(&mut app);
         assert_eq!(pushed_marks(&mut app), (None, None));
     }
 }

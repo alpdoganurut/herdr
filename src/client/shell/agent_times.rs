@@ -114,6 +114,11 @@ impl ClientAgentTimesState {
         !self.auto_suspended.is_empty() && self.auto_suspended.contains(pane_id)
     }
 
+    /// Fork (restart screen): whether any pane is marked restarting or waking.
+    pub(crate) fn any_resuming(&self) -> bool {
+        self.resume_marks.values().any(|mark| mark.is_resuming())
+    }
+
     /// Fork (restart screen): what the suspended card says about `pane_id`'s relaunch.
     pub(crate) fn resume_mark(&self, pane_id: &str) -> Option<ClientResumeMark> {
         if self.resume_marks.is_empty() {
