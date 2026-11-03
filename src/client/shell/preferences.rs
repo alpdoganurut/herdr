@@ -31,6 +31,10 @@ pub(super) struct ClientChromePreferences {
     /// Fork: the info dock's width, once dragged or stepped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) info_dock_width: Option<u16>,
+    /// Fork (companion launcher): the browser dock's width (percent of the
+    /// area right of the sidebar), once dragged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) browser_dock_percent: Option<u16>,
     /// Fork: the tabs sidebar's Active agents block, folded or open, once toggled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) active_agents_folded: Option<bool>,

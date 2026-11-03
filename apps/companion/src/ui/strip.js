@@ -4,6 +4,8 @@ const $ = (id) => document.getElementById(id);
 const bridge = window.stripBridge;
 let state = null;
 let urlEditing = false;
+// The dock's bar (`strip.html?mode=docked`): Dusk, no traffic-light inset, no drag region.
+if (new URLSearchParams(location.search).get('mode') === 'docked') document.body.classList.add('docked');
 
 const act = (name, args) => bridge.action(name, args);
 
@@ -25,6 +27,7 @@ function reportHeight() {
 function render() {
   if (!state) return;
   document.body.classList.toggle('noinset', !state.inset);
+  if (state.docked) document.body.classList.add('docked');
   const sess = $('session');
   sess.textContent = '';
   if (state.session) {

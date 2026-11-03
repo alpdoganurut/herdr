@@ -200,6 +200,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # open_browser = ""                 # unbound; opens the Browser overlay (the herdr browser's tabs and who uses them)
 # open_coordinator = ""             # unbound; focuses the coordinator tab, creating it when gone
 # toggle_info_pane = ""             # unbound; shows or hides the focused tab's info pane (notes)
+# toggle_browser_dock = "prefix+shift+b"  # docks the companion browser on the right of the focused tab, or undocks it
+# toggle_browser_view = "prefix+shift+z"  # the focused tab's Browser view: the companion browser over the whole tab
+# focus_browser = ""                # unbound; gives the companion browser the keyboard (cmd+esc in it gives it back)
 # tab_history_back = ["cmd+[", "alt+,"]     # previously focused tab, browser-style (Ghostty: keybind = super+[=csi:91;9u)
 # tab_history_forward = ["cmd+]", "alt+."]  # forward again (Ghostty: keybind = super+]=csi:93;9u)
 # sidebar_search = "prefix+f"       # "tabs" layout: type to filter the tab list (Esc clears, Enter focuses the first match)
@@ -301,6 +304,14 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Default width (columns) of a tab's info pane until you drag its divider; 28 through 120.
 # A dragged width is remembered by the client.
 # info_pane_width = 44
+
+# Default width of the browser dock (prefix+shift+b), in percent of the area right of the
+# sidebar, until you drag its divider; 20 through 80. A dragged width is remembered.
+# browser_dock_width = 45
+
+# The [Terminal | Browser] strip at the top of a tab: "auto" shows it while the tab has
+# browser pages, the dock or Browser view; "off" never draws it (keys and menus still work).
+# browser_view_strip = "auto"
 
 # Show the Active block (blocked, voice, working, running-subagent and finished
 # agents) under the tab list in the "tabs" sidebar layout; it hides while nothing is active.

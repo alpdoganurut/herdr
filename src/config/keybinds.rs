@@ -392,6 +392,9 @@ pub struct Keybinds {
     pub open_browser: ActionKeybinds,
     pub open_coordinator: ActionKeybinds,
     pub toggle_info_pane: ActionKeybinds,
+    pub toggle_browser_dock: ActionKeybinds,
+    pub toggle_browser_view: ActionKeybinds,
+    pub focus_browser: ActionKeybinds,
     pub tab_history_back: ActionKeybinds,
     pub tab_history_forward: ActionKeybinds,
     pub sidebar_search: ActionKeybinds,
@@ -589,6 +592,9 @@ impl Config {
             open_browser: empty_action!(),
             open_coordinator: empty_action!(),
             toggle_info_pane: empty_action!(),
+            toggle_browser_dock: empty_action!(),
+            toggle_browser_view: empty_action!(),
+            focus_browser: empty_action!(),
             tab_history_back: empty_action!(),
             tab_history_forward: empty_action!(),
             sidebar_search: empty_action!(),
@@ -751,6 +757,9 @@ impl Config {
             apply_action!(keybinds.open_browser, open_browser, source);
             apply_action!(keybinds.open_coordinator, open_coordinator, source);
             apply_action!(keybinds.toggle_info_pane, toggle_info_pane, source);
+            apply_action!(keybinds.toggle_browser_dock, toggle_browser_dock, source);
+            apply_action!(keybinds.toggle_browser_view, toggle_browser_view, source);
+            apply_action!(keybinds.focus_browser, focus_browser, source);
             apply_action!(keybinds.tab_history_back, tab_history_back, source);
             apply_action!(keybinds.tab_history_forward, tab_history_forward, source);
             apply_action!(keybinds.sidebar_search, sidebar_search, source);

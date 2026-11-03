@@ -3638,6 +3638,42 @@
           ],
           "type": "object"
         },
+        "BrowserCellRect": {
+          "description": "A rectangle of terminal cells, origin top left.",
+          "properties": {
+            "height": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "y": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
         "BrowserCompanionAction": {
           "description": "Fork (companion launcher): what `browser.companion` does. The values are\ninside the method's frozen digest (a new action needs a new method name);\n`Unknown` is the serde fallback (answered `invalid_request`).",
           "enum": [
@@ -3698,6 +3734,28 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "BrowserGridSize": {
+          "description": "The client's terminal grid.",
+          "properties": {
+            "cols": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rows": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "cols",
+            "rows"
+          ],
           "type": "object"
         },
         "BrowserHostCdp": {
@@ -4052,6 +4110,163 @@
           },
           "type": "object"
         },
+        "BrowserPlacementKind": {
+          "description": "How the area relates to the client's panes. The values are inside the\n`browser.placement.set` digest (a new kind needs a new method name);\n`Unknown` is the serde fallback (a host ignores such a placement).",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "side",
+              "description": "Beside the panes (they were narrowed for it).",
+              "type": "string"
+            },
+            {
+              "const": "full",
+              "description": "Over the panes (they keep their size underneath).",
+              "type": "string"
+            }
+          ]
+        },
+        "BrowserPlacementReportParams": {
+          "description": "`browser.placement_report` (browser host, connection lane): what the\nhost does with placement `id`: `covering`, `hidden`, `moving`,\n`unbound`, `unsupported` or `elsewhere`, with a reason for the user.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "lease_id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "lease_id",
+            "id",
+            "state"
+          ],
+          "type": "object"
+        },
+        "BrowserPlacementSetParams": {
+          "description": "`browser.placement.set` (client shell): this client's placement, `None`\nto clear it. Kept until replaced, cleared or the client disconnects.",
+          "properties": {
+            "placement": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/BrowserPlacementSpec"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "BrowserPlacementSpec": {
+          "description": "One client's placement.",
+          "properties": {
+            "area": {
+              "$ref": "#/schemas/request/$defs/BrowserCellRect",
+              "description": "Cells of the client's grid."
+            },
+            "cell_px": {
+              "$ref": "#/schemas/request/$defs/BrowserPxSize",
+              "default": {
+                "height": 0,
+                "width": 0
+              },
+              "description": "The terminal's cell size (`ws_xpixel / cols`, `ws_ypixel / rows`)."
+            },
+            "extent_px": {
+              "$ref": "#/schemas/request/$defs/BrowserPxSize",
+              "default": {
+                "height": 0,
+                "width": 0
+              },
+              "description": "The terminal's pixel extent (`ws_xpixel`, `ws_ypixel`)."
+            },
+            "grid": {
+              "$ref": "#/schemas/request/$defs/BrowserGridSize"
+            },
+            "id": {
+              "description": "Random per client process: the client finds the host's report on\nits placement by it (`browser.get` `placements`).",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/schemas/request/$defs/BrowserPlacementKind"
+            },
+            "nudge": {
+              "description": "Bumped when the user asks the host to bind this placement to the\nfrontmost terminal window.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pids": {
+              "description": "The client process and its ancestors, nearest first (at most 16):\na host on the same machine finds the terminal window by them.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "shown": {
+              "description": "`false`: reserved but not to be covered (something of the client's\nown is over it, or the shown tab has no area while another has).",
+              "type": "boolean"
+            },
+            "tab_id": {
+              "description": "The herdr tab the client shows; the area belongs to it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "tab_id",
+            "area",
+            "grid"
+          ],
+          "type": "object"
+        },
+        "BrowserPlacementsParams": {
+          "description": "`browser.placements` (browser host, connection lane): every placement,\nat once when the board is newer than `since_rev` (or it is absent),\notherwise after the next change or `wait_ms` (at most 25 000).",
+          "properties": {
+            "lease_id": {
+              "type": "string"
+            },
+            "since_rev": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "wait_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "lease_id"
+          ],
+          "type": "object"
+        },
         "BrowserProfileCreateParams": {
           "properties": {
             "name": {
@@ -4086,6 +4301,26 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "BrowserPxSize": {
+          "description": "A size in device pixels; zero when the terminal does not report it.",
+          "properties": {
+            "height": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height"
+          ],
           "type": "object"
         },
         "BrowserRunParams": {
@@ -11468,6 +11703,55 @@
           "type": "object"
         },
         {
+          "description": "Fork (companion launcher): the browser placement of an attached\nclient (client shell; the headless server's endpoint handler stores\nit, never the App), every client's placement for the browser host (a\nlong poll) and the host's report on one (both on the connection\nthread, src/browser/serve.rs).",
+          "properties": {
+            "method": {
+              "const": "browser.placement.set",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserPlacementSetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.placements",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserPlacementsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.placement_report",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserPlacementReportParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "agent.prompt",
@@ -14925,6 +15209,42 @@
             }
           ]
         },
+        "BrowserCellRect": {
+          "description": "A rectangle of terminal cells, origin top left.",
+          "properties": {
+            "height": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "y": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
         "BrowserCheckInfo": {
           "description": "One doctor check (`browser.settings`, `herdr browser doctor --json`).",
           "properties": {
@@ -15113,6 +15433,13 @@
                 "state": ""
               }
             },
+            "placements": {
+              "description": "Fork (companion launcher): the browser host's last report on each\nclient's placement (`browser.placement_report`), so a client can say\nwhy its area is empty. Always current, also on an `unchanged` answer.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserPlacementStatus"
+              },
+              "type": "array"
+            },
             "profiles": {
               "default": [],
               "items": {
@@ -15161,6 +15488,28 @@
           },
           "required": [
             "seq"
+          ],
+          "type": "object"
+        },
+        "BrowserGridSize": {
+          "description": "The client's terminal grid.",
+          "properties": {
+            "cols": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rows": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "cols",
+            "rows"
           ],
           "type": "object"
         },
@@ -15406,6 +15755,141 @@
           ],
           "type": "object"
         },
+        "BrowserPlacementInfo": {
+          "description": "A placement with the server's facts about its client.",
+          "properties": {
+            "focused": {
+              "description": "The client's terminal has the user's focus (its outer focus).",
+              "type": "boolean"
+            },
+            "foreground": {
+              "description": "The client the server treats as the one in front.",
+              "type": "boolean"
+            },
+            "placement": {
+              "$ref": "#/schemas/success_response/$defs/BrowserPlacementSpec"
+            },
+            "updated_unix": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "placement",
+            "updated_unix"
+          ],
+          "type": "object"
+        },
+        "BrowserPlacementKind": {
+          "description": "How the area relates to the client's panes. The values are inside the\n`browser.placement.set` digest (a new kind needs a new method name);\n`Unknown` is the serde fallback (a host ignores such a placement).",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "side",
+              "description": "Beside the panes (they were narrowed for it).",
+              "type": "string"
+            },
+            {
+              "const": "full",
+              "description": "Over the panes (they keep their size underneath).",
+              "type": "string"
+            }
+          ]
+        },
+        "BrowserPlacementSpec": {
+          "description": "One client's placement.",
+          "properties": {
+            "area": {
+              "$ref": "#/schemas/success_response/$defs/BrowserCellRect",
+              "description": "Cells of the client's grid."
+            },
+            "cell_px": {
+              "$ref": "#/schemas/success_response/$defs/BrowserPxSize",
+              "default": {
+                "height": 0,
+                "width": 0
+              },
+              "description": "The terminal's cell size (`ws_xpixel / cols`, `ws_ypixel / rows`)."
+            },
+            "extent_px": {
+              "$ref": "#/schemas/success_response/$defs/BrowserPxSize",
+              "default": {
+                "height": 0,
+                "width": 0
+              },
+              "description": "The terminal's pixel extent (`ws_xpixel`, `ws_ypixel`)."
+            },
+            "grid": {
+              "$ref": "#/schemas/success_response/$defs/BrowserGridSize"
+            },
+            "id": {
+              "description": "Random per client process: the client finds the host's report on\nits placement by it (`browser.get` `placements`).",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/BrowserPlacementKind"
+            },
+            "nudge": {
+              "description": "Bumped when the user asks the host to bind this placement to the\nfrontmost terminal window.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pids": {
+              "description": "The client process and its ancestors, nearest first (at most 16):\na host on the same machine finds the terminal window by them.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "shown": {
+              "description": "`false`: reserved but not to be covered (something of the client's\nown is over it, or the shown tab has no area while another has).",
+              "type": "boolean"
+            },
+            "tab_id": {
+              "description": "The herdr tab the client shows; the area belongs to it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "tab_id",
+            "area",
+            "grid"
+          ],
+          "type": "object"
+        },
+        "BrowserPlacementStatus": {
+          "description": "The host's last report on a placement (`browser.get` `placements`).",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "state"
+          ],
+          "type": "object"
+        },
         "BrowserProfileInfo": {
           "properties": {
             "agents": {
@@ -15514,6 +15998,26 @@
           },
           "required": [
             "name"
+          ],
+          "type": "object"
+        },
+        "BrowserPxSize": {
+          "description": "A size in device pixels; zero when the terminal does not report it.",
+          "properties": {
+            "height": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height"
           ],
           "type": "object"
         },
@@ -15809,6 +16313,13 @@
                 "string",
                 "null"
               ]
+            },
+            "placements": {
+              "description": "Fork (companion launcher): the browser host's last report on each\nclient's placement (`browser.placement_report`), so a client can say\nwhy its area is empty. Always current, also on an `unchanged` answer.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserPlacementStatus"
+              },
+              "type": "array"
             },
             "profiles": {
               "default": [],
@@ -21133,6 +21644,36 @@
               "required": [
                 "type",
                 "companion"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork (companion launcher): `browser.placements`: every attached\nclient's browser placement; `rev` grows with each change and\n`boot_id` is new with each server process (the host starts over).",
+              "properties": {
+                "boot_id": {
+                  "type": "string"
+                },
+                "placements": {
+                  "default": [],
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/BrowserPlacementInfo"
+                  },
+                  "type": "array"
+                },
+                "rev": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "browser_placements",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "boot_id",
+                "rev"
               ],
               "type": "object"
             },

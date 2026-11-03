@@ -797,6 +797,7 @@ fn the_coordinator_keeps_its_pinned_row_first_when_space_runs_short() {
         profile: "main".into(),
         running: true,
         companion: None,
+        dock: None,
     };
     let news = super::super::news::NewsRow {
         tab_id: None,

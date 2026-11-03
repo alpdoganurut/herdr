@@ -87,6 +87,7 @@ impl ClientContextMenuOverlay {
                 dnd,
                 dnd_supported,
                 browser_page,
+                browser_dock,
                 ..
             } => {
                 let agent_section = Section::Titled("Agent");
@@ -121,6 +122,25 @@ impl ClientContextMenuOverlay {
                             Kind::Action,
                         ),
                     });
+                }
+                // Fork (companion launcher): the tab's browser dock and
+                // Browser view, where the browser docks.
+                if let Some((docked, viewing)) = browser_dock {
+                    let browser = Section::Titled("Browser");
+                    items.push(item(
+                        "Dock browser",
+                        Action::BrowserToggleDock,
+                        if *docked { GLYPH_ON } else { GLYPH_OFF },
+                        browser,
+                        Kind::Toggle(*docked),
+                    ));
+                    items.push(item(
+                        "Browser view",
+                        Action::BrowserToggleView,
+                        if *viewing { GLYPH_ON } else { GLYPH_OFF },
+                        browser,
+                        Kind::Toggle(*viewing),
+                    ));
                 }
                 match agent {
                     Some(ClientTabMenuAgent {
@@ -342,6 +362,7 @@ impl ClientContextMenuOverlay {
                 local,
                 companion,
                 window,
+                dock,
                 ..
             } => {
                 let mut items = Vec::new();
@@ -363,6 +384,17 @@ impl ClientContextMenuOverlay {
                                 },
                             ));
                         }
+                    }
+                    // Fork (companion launcher): dock the browser on the
+                    // focused tab (the row's `◨` does the same).
+                    if let Some(docked) = dock {
+                        items.push(item(
+                            "Dock browser here",
+                            Action::BrowserToggleDock,
+                            if *docked { GLYPH_ON } else { GLYPH_OFF },
+                            Section::Lead,
+                            Kind::Toggle(*docked),
+                        ));
                     }
                     if companion.is_none() || *window {
                         let section = if companion.is_some() {
@@ -619,6 +651,13 @@ impl ClientShellState {
                 dnd: true,
             },
         ));
+        // Fork (companion launcher): the tab's dock and Browser view.
+        let browser_dock = self.browser_dock_offered().then(|| {
+            (
+                self.browser_dock_open_for(&tab_id),
+                self.browser_view_open_for(&tab_id),
+            )
+        });
         // Fork (companion browser): the session's active page, if any.
         let browser_page = self.browser.info.as_ref().and_then(|info| {
             info.sessions
@@ -651,6 +690,7 @@ impl ClientShellState {
                 dnd,
                 dnd_supported,
                 browser_page,
+                browser_dock,
             },
             x,
             y,
@@ -818,6 +858,33 @@ impl ClientShellState {
                 ClientContextMenuTarget::Tab { tab_id, .. },
             ) => {
                 self.toggle_info_pane(tab_id.clone(), outcome);
+                outcome.repaint = true;
+                return;
+            }
+            // Fork (companion launcher): the tab menu's dock and Browser
+            // view items act on that tab without focusing it; the Browser
+            // row's on the focused tab.
+            (
+                ClientContextMenuAction::BrowserToggleDock,
+                ClientContextMenuTarget::Tab { tab_id, .. },
+            ) => {
+                self.toggle_browser_dock(tab_id.clone(), outcome);
+                outcome.repaint = true;
+                return;
+            }
+            (
+                ClientContextMenuAction::BrowserToggleView,
+                ClientContextMenuTarget::Tab { tab_id, .. },
+            ) => {
+                self.toggle_browser_view(tab_id.clone(), outcome);
+                outcome.repaint = true;
+                return;
+            }
+            (
+                ClientContextMenuAction::BrowserToggleDock,
+                ClientContextMenuTarget::Browser { .. },
+            ) => {
+                self.toggle_browser_dock_for_focused_tab(outcome);
                 outcome.repaint = true;
                 return;
             }

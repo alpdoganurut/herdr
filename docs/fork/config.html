@@ -719,7 +719,32 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="k"><code>[browser] window = true</code></div>
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
+    <div class="row">
+      <div class="f"><h3><code>◨</code> Dock the browser on the focused tab</h3><p>A band at the window's right edge; the companion covers it and follows the terminal window (hidden while it moves, is minimised, hidden or on another Space).</p></div>
+      <div class="d"><span class="pill val">off, per tab</span></div>
+      <div class="k"><code>toggle_browser_dock</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>b</kbd><small>also the <code>◨</code> on the Browser row and the view strip, the tab menu's Dock browser</small></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Dock width</h3><p>Drag the divider to resize, double-click it for the default; the dragged width is saved per client.</p></div>
+      <div class="d"><span class="pill val">45 %</span></div>
+      <div class="k"><code>[ui] browser_dock_width = 20..80</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Browser view</h3><p>The browser over the whole tab; the panes keep running and keep their size, and keys never reach them.</p></div>
+      <div class="d"><span class="pill val">off, per tab</span></div>
+      <div class="k"><code>toggle_browser_view</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>z</kbd><small>also the view strip's <code>▣ Terminal</code> / <code>◎ Browser</code></small></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>The view strip</h3><p><code>▣ Terminal  ◎ Browser · 3 … ◨</code> at the top of a tab.</p></div>
+      <div class="d"><span class="pill val">"auto"</span><small>while the tab has pages, the dock or Browser view</small></div>
+      <div class="k"><code>[ui] browser_view_strip = "off"</code></div>
+      <div class="s"><span class="badge cfg">config only</span></div>
+    </div>
   </div>
+  <p class="note"><b>Docking:</b> macOS, the herdr on this machine, herdr directly in a terminal window (Ghostty measured exactly; other terminals best effort). Clicking the page gives it the keyboard; clicking the terminal, or <kbd>cmd</kbd>+<kbd>esc</kbd> in the browser, gives it back. While the browser is not over its area the area says why (starting, not running with a Start button, not installed, stopped after crashes with a Restart button, "click here once" when several terminal windows could be this one, or why it cannot dock).</p>
   <p class="note"><b>Companion browser:</b> the Electron app in <code>apps/companion</code>; <code>apps/companion/scripts/try.sh</code> tries it against a throwaway herdr in one command (run it in a plain terminal).</p>
   <p class="note"><b>Legacy keys:</b> <code>wrap_agents</code> is only read as a fallback for <code>[agents] wrap</code> (a Settings change to wrap removes it), and <code>shell_hook</code> is inert. The commented default file still says <code>stop_with_server</code> is not honoured; it is.</p>
 </section>
@@ -815,6 +840,9 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     <div class="kb"><code>tab_history_back</code><span class="ks"><kbd>cmd</kbd>+<kbd>[</kbd> <kbd>alt</kbd>+<kbd>,</kbd></span><p>Previously focused tab, browser-style</p></div>
     <div class="kb"><code>tab_history_forward</code><span class="ks"><kbd>cmd</kbd>+<kbd>]</kbd> <kbd>alt</kbd>+<kbd>.</kbd></span><p>Forward again after going back</p></div>
     <div class="kb"><code>toggle_info_pane</code><span class="ks"><span class="ub">unbound</span></span><p>Shows or hides the focused tab's notes pane</p></div>
+    <div class="kb"><code>toggle_browser_dock</code><span class="ks"><kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>b</kbd></span><p>Docks the companion browser on the right of the focused tab, or undocks it</p></div>
+    <div class="kb"><code>toggle_browser_view</code><span class="ks"><kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>z</kbd></span><p>The focused tab's Browser view: the companion browser over the whole tab</p></div>
+    <div class="kb"><code>focus_browser</code><span class="ks"><span class="ub">unbound</span></span><p>Gives the companion browser the keyboard</p></div>
     <div class="kb"><code>toggle_agent_suspend</code><span class="ks"><span class="ub">unbound</span></span><p>Suspends the focused agent, or activates it again</p></div>
     <div class="kb"><code>handoff_compact</code><span class="ks"><span class="ub">unbound</span></span><p>The focused Claude agent writes a handoff, then <code>/compact</code></p></div>
     <div class="kb"><code>restart_agent</code><span class="ks"><span class="ub">unbound</span></span><p>Exits the focused idle agent and relaunches it with its resume command</p></div>

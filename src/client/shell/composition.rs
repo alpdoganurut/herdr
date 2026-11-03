@@ -496,6 +496,22 @@ impl ClientShellState {
                 );
             }
         }
+        // Fork (companion launcher): the view strip, the browser band and
+        // the Browser view's area, into the chrome buffer (the companion
+        // covers the band and the area; the placeholder shows when it does
+        // not). Browser view hides the panes and the info dock.
+        let browser_dock_view = self.browser_dock_view(&layout);
+        let browser_view = super::browser_dock::compose(
+            &mut buffer,
+            &layout,
+            &browser_dock_view,
+            &self.config.palette,
+            &mut self.hits.browser_dock,
+        );
+        if browser_view {
+            // The info dock is under the browser too.
+            self.hits.info_dock = super::info_dock::InfoDockHits::default();
+        }
         self.hits.panes = surface
             .panes
             .iter()
@@ -565,8 +581,12 @@ impl ClientShellState {
                 topology_signature,
             })
             .collect();
-        if !self.config.mouse_capture {
+        if !self.config.mouse_capture || browser_view {
             self.hits.pane_splits.clear();
+        }
+        if browser_view {
+            // Fork (companion launcher): the panes are under the browser.
+            self.hits.panes.clear();
         }
         let mode_bar_area = if layout.mobile_header.is_empty()
             && self.config.tab_bar_position == TabBarPositionConfig::Bottom
@@ -604,8 +624,10 @@ impl ClientShellState {
             let start = usize::from(bar.y) * usize::from(frame.width) + usize::from(bar.x);
             frame.cells[start..start + usize::from(bar.width)].to_vec()
         });
-        blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
-        if self.info_dock_focused() || self.sidebar_search_focused() {
+        if !browser_view {
+            blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        }
+        if self.info_dock_focused() || self.sidebar_search_focused() || browser_view {
             // Fork: the keyboard is in the info dock or the sidebar's
             // search field, not the pane.
             frame.cursor = None;
@@ -769,7 +791,7 @@ impl ClientShellState {
                     endpoint_notices::render_notice(
                         &mut composed,
                         Rect::new(0, 0, cols, rows),
-                        layout.info_dock,
+                        super::browser_dock::toast_dock(&layout),
                         notice,
                         u16::from(has_config_diagnostic) + lifecycle_offset,
                         &self.config.palette,
@@ -788,7 +810,7 @@ impl ClientShellState {
                 self.hits.notification_toasts = notifications::render_notification_stack(
                     &mut composed,
                     Rect::new(0, 0, cols, rows),
-                    layout.info_dock,
+                    super::browser_dock::toast_dock(&layout),
                     &self.visible_notifications,
                     self.config.toast_position,
                     self.config.toast_max_stack,
@@ -805,7 +827,7 @@ impl ClientShellState {
                     notifications::render_visible_notification(
                         &mut composed,
                         Rect::new(0, 0, cols, rows),
-                        layout.info_dock,
+                        super::browser_dock::toast_dock(&layout),
                         notification,
                         self.config.toast_position,
                         u16::from(has_config_diagnostic) + lifecycle_offset,

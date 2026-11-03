@@ -528,6 +528,16 @@ fn serve_connection(
             let response = crate::browser::serve::host_lease(request_id.clone(), method_body);
             finish_wait_response(&mut stream, Some(response), &request_id, method, changes_ui)
         }
+        // Fork (companion launcher): the host's long poll of the clients'
+        // placements and its report on one, on the connection thread.
+        Method::BrowserPlacements(params) => {
+            let response = crate::browser::serve::placements(request_id.clone(), params, running);
+            finish_wait_response(&mut stream, Some(response), &request_id, method, changes_ui)
+        }
+        Method::BrowserPlacementReport(params) => {
+            let response = crate::browser::serve::placement_report(request_id.clone(), params);
+            finish_wait_response(&mut stream, Some(response), &request_id, method, changes_ui)
+        }
         method_body => {
             let (response_write_tx, response_write_rx) = std::sync::mpsc::channel();
             let stop_caller = matches!(method_body, Method::ServerStop(_))

@@ -711,6 +711,11 @@ impl ClientShellState {
                     self.handle_info_dock_key(key, outcome);
                     return None;
                 }
+                // Fork (companion launcher): Browser view hides the panes;
+                // keys never reach them.
+                if self.browser_view_swallows_key(outcome) {
+                    return None;
+                }
                 self.focused_pane_id().map(ClientInputTarget::Pane)
             }
             ClientShellMode::Prefix => {
@@ -726,7 +731,9 @@ impl ClientShellState {
                     outcome.repaint = true;
                     // Fork (sidebar filters): a literal prefix never reaches
                     // the pane while the search field has the keyboard.
-                    if self.sidebar_search_focused() {
+                    // Fork (companion launcher): nor while Browser view
+                    // hides the panes.
+                    if self.sidebar_search_focused() || self.browser_view_swallows_key(outcome) {
                         return None;
                     }
                     return self.focused_pane_id().map(ClientInputTarget::Pane);

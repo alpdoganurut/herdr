@@ -385,6 +385,14 @@ mod tests {
             actual.remove("browser.companion").as_deref(),
             Some("99d0f3a05524cdef4dde7f8640ddd616657be7d7e99d017e9ca2fe1c11140477")
         );
+        // Fork (companion launcher): BrowserPlacementSetParams { placement:
+        // Option<BrowserPlacementSpec { id, kind: BrowserPlacementKind
+        // (side|full, Unknown fallback), tab_id, area, grid, cell_px,
+        // extent_px, pids, shown, nudge }> }.
+        assert_eq!(
+            actual.remove("browser.placement.set").as_deref(),
+            Some("1c26ddec75fa72dead38119465c337fb90fdc2893280f7422536d20feabde82d")
+        );
         assert_eq!(
             actual.remove("coordinator.get").as_deref(),
             Some("d6ec446e6d7ee38199feb4f9c48198613e9f339a534012bde7160fb07a63eaa8")
@@ -540,8 +548,9 @@ mod tests {
         assert!(!supports_client_shell_method_name(
             crate::api::schema::team::method::CONTEXT
         ));
-        // Fork (companion launcher): browser.companion is the 101st.
-        assert_eq!(supported_client_shell_method_names().len(), 101);
+        // Fork (companion launcher): browser.companion is the 101st,
+        // browser.placement.set the 102nd.
+        assert_eq!(supported_client_shell_method_names().len(), 102);
     }
 
     #[test]

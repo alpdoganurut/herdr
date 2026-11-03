@@ -185,7 +185,8 @@ class HerdrLink extends EventEmitter {
   }
 
   // A request that needs a lease (lease_id added). Rejects with code 'no_lease' when detached.
-  async call(method, params = {}) {
+  // `opts.timeoutMs`: for a long poll (browser.placements).
+  async call(method, params = {}, opts = {}) {
     if (!this.lease) {
       const e = new Error('not attached to herdr');
       e.code = 'no_lease';
@@ -193,7 +194,7 @@ class HerdrLink extends EventEmitter {
     }
     const gen = this.gen;
     try {
-      return await this._rpc(method, { lease_id: this.lease.lease_id, ...params });
+      return await this._rpc(method, { lease_id: this.lease.lease_id, ...params }, opts);
     } catch (e) {
       if (e.code === 'lease_unknown' && gen === this.gen) this._lost('lease_unknown');
       throw e;

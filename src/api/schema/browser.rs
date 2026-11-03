@@ -593,6 +593,11 @@ pub struct BrowserGetInfo {
     /// says so (its window is on).
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub window_off: bool,
+    /// Fork (companion launcher): the browser host's last report on each
+    /// client's placement (`browser.placement_report`), so a client can say
+    /// why its area is empty. Always current, also on an `unchanged` answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub placements: Vec<super::BrowserPlacementStatus>,
 }
 
 /// Fork (companion launcher): what `browser.companion` does. The values are

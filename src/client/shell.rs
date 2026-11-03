@@ -32,6 +32,10 @@ pub(super) use endpoints::*;
 /// Fork: agents' context use (`endpoint.agent-context.v1`).
 mod agent_context;
 mod browser;
+// Fork (companion launcher): the browser dock and Browser view.
+mod browser_dock;
+mod browser_dock_render;
+pub(crate) use browser_dock::PLACEMENT_REQUEST_PREFIX as BROWSER_PLACEMENT_REQUEST_PREFIX;
 mod browser_overlay;
 mod global_menu;
 mod graphics;

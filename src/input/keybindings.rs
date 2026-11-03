@@ -66,6 +66,14 @@ pub(crate) enum KeybindAction {
     OpenCoordinator,
     /// Fork: show or hide the focused tab's info pane (client-only).
     ToggleInfoPane,
+    /// Fork (companion launcher): dock or undock the browser on the focused
+    /// tab (client-only).
+    ToggleBrowserDock,
+    /// Fork (companion launcher): the focused tab's Browser view on or off
+    /// (client-only).
+    ToggleBrowserView,
+    /// Fork (companion launcher): give the companion browser the keyboard.
+    FocusBrowser,
     /// Fork (sidebar v3): focus the previously focused tab (client-side history).
     TabHistoryBack,
     /// Fork (sidebar v3): focus the next tab again after going back.
@@ -162,6 +170,15 @@ pub(crate) fn resolve_non_indexed_action(
         (&keybinds.open_browser, KeybindAction::OpenBrowser),
         (&keybinds.open_coordinator, KeybindAction::OpenCoordinator),
         (&keybinds.toggle_info_pane, KeybindAction::ToggleInfoPane),
+        (
+            &keybinds.toggle_browser_dock,
+            KeybindAction::ToggleBrowserDock,
+        ),
+        (
+            &keybinds.toggle_browser_view,
+            KeybindAction::ToggleBrowserView,
+        ),
+        (&keybinds.focus_browser, KeybindAction::FocusBrowser),
         (&keybinds.tab_history_back, KeybindAction::TabHistoryBack),
         (
             &keybinds.tab_history_forward,

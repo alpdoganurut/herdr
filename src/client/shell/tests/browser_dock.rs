@@ -1,0 +1,524 @@
+//! The browser dock and Browser view (fork, companion launcher): the band
+//! on the right, its divider, the view strip, Browser view over the pane
+//! area, the key guard, the placeholder and the placement this client
+//! publishes (`browser.placement.set`).
+
+use super::*;
+use crate::api::schema::{
+    BrowserCompanionAppInfo, BrowserGetInfo, BrowserPlacementKind, BrowserPlacementStatus,
+    BrowserSessionInfo, Method, Request,
+};
+use crate::config::Config;
+use crate::input::TerminalKey;
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+
+const COLS: u16 = 160;
+const ROWS: u16 = 45;
+
+fn tab(tab_id: &str, label: &str, focused: bool) -> ClientShellTab {
+    ClientShellTab {
+        tab_id: tab_id.into(),
+        workspace_id: "ws_1".into(),
+        number: 1,
+        label: label.into(),
+        custom_label: true,
+        zoomed: false,
+        focused,
+        agent_status: AgentStatus::Idle,
+        color: None,
+        important: false,
+        remind_every: None,
+    }
+}
+
+fn two_tab_snapshot(focused: &str) -> ClientShellSnapshot {
+    let mut snapshot = snapshot();
+    snapshot.tabs = vec![
+        tab("tab_1", "planner", focused == "tab_1"),
+        tab("tab_2", "scratch", focused == "tab_2"),
+    ];
+    snapshot.focused_tab_id = Some(focused.into());
+    snapshot
+}
+
+fn companion(state: &str) -> BrowserGetInfo {
+    BrowserGetInfo {
+        seq: 1,
+        enabled: true,
+        companion_app: Some(BrowserCompanionAppInfo {
+            state: state.into(),
+            ..Default::default()
+        }),
+        window_off: true,
+        ..Default::default()
+    }
+}
+
+fn dock_state() -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(two_tab_snapshot("tab_1")));
+    state.set_pane_surface(surface());
+    state.browser.info = Some(companion("running"));
+    state.browser_dock.pixels_for_test = Some((COLS, ROWS, 1600, 900));
+    state.compose(COLS, ROWS);
+    state
+}
+
+fn recompose(state: &mut ClientShellState) -> Option<FrameData> {
+    if state.pane_surface.is_none() {
+        state.set_pane_surface(surface());
+    }
+    state.compose(COLS, ROWS).map(|composed| composed.frame)
+}
+
+fn toggle_dock(state: &mut ClientShellState) -> ClientShellInput {
+    let mut outcome = ClientShellInput::default();
+    state.toggle_browser_dock_for_focused_tab(&mut outcome);
+    recompose(state);
+    outcome
+}
+
+fn toggle_view(state: &mut ClientShellState) -> ClientShellInput {
+    let mut outcome = ClientShellInput::default();
+    state.toggle_browser_view_for_focused_tab(&mut outcome);
+    recompose(state);
+    outcome
+}
+
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> RawInputEvent {
+    RawInputEvent::Mouse(MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    })
+}
+
+fn click(column: u16, row: u16) -> Vec<RawInputEvent> {
+    vec![
+        mouse(MouseEventKind::Down(MouseButton::Left), column, row),
+        mouse(MouseEventKind::Up(MouseButton::Left), column, row),
+    ]
+}
+
+/// The placement message this client would send now, decoded.
+fn sent_placement(
+    state: &mut ClientShellState,
+    at: std::time::Instant,
+) -> Option<Option<crate::api::schema::BrowserPlacementSpec>> {
+    let message = state.take_browser_placement_request(at)?;
+    let crate::protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request } = message
+    else {
+        panic!("a placement is an endpoint request");
+    };
+    assert_eq!(boot_id, "boot-1");
+    let request: Request = serde_json::from_str(&request).expect("request json");
+    assert!(request
+        .id
+        .starts_with(super::super::browser_dock::PLACEMENT_REQUEST_PREFIX));
+    match request.method {
+        Method::BrowserPlacementSet(params) => Some(params.placement),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn row_text(frame: &FrameData, y: u16) -> String {
+    (0..frame.width)
+        .map(|x| frame.cells[(y * frame.width + x) as usize].symbol.as_str())
+        .collect()
+}
+
+#[test]
+fn fork_smoke_the_dock_takes_45_percent_on_the_right_and_reports_the_narrower_surface() {
+    let mut state = dock_state();
+    let before = state.surface_size(COLS, ROWS);
+    let outcome = toggle_dock(&mut state);
+    assert!(outcome.resize, "the surface narrows");
+    assert!(outcome.repaint);
+    let layout = state.layout(COLS, ROWS);
+    let main_width = COLS - layout.sidebar.width;
+    let band = layout.browser_band;
+    assert_eq!(band.right(), COLS, "the band meets the window's right edge");
+    assert_eq!(band.width, main_width * 45 / 100);
+    assert_eq!(layout.pane_surface.right(), band.x);
+    let after = state.surface_size(COLS, ROWS);
+    assert_eq!(after.cols, before.cols - band.width);
+    // the strip appears with the dock (one row)
+    assert_eq!(layout.view_strip.height, 1);
+    assert_eq!(after.rows, before.rows - 1);
+    // the divider is the band's first column
+    assert_eq!(state.hits.browser_dock.divider.x, band.x);
+    // the other tab is untouched: switching to it reflows that tab alone
+    state.set_snapshot(Box::new(two_tab_snapshot("tab_2")));
+    recompose(&mut state);
+    assert!(state.layout(COLS, ROWS).browser_band.is_empty());
+    assert_eq!(state.surface_size(COLS, ROWS), before);
+}
+
+#[test]
+fn the_divider_drag_is_remembered_and_a_double_click_resets_it() {
+    let mut state = dock_state();
+    toggle_dock(&mut state);
+    let divider = state.hits.browser_dock.divider;
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        divider.x,
+        10,
+    )]);
+    assert!(state.browser_dock.dragging);
+    assert!(
+        matches!(state.chrome_drag, Some(ClientChromeDrag::BrowserDockWidth)),
+        "the divider press starts a drag"
+    );
+    recompose(&mut state);
+    // the dragged divider is drawn gold
+    let frame = recompose(&mut state).expect("frame");
+    assert_eq!(
+        row_text(&frame, 10).chars().nth(usize::from(divider.x)),
+        Some('┃')
+    );
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        divider.x - 20,
+        10,
+    )]);
+    assert!(outcome.resize);
+    let layout = state.layout(COLS, ROWS);
+    let main_width = COLS - layout.sidebar.width;
+    assert!(state.browser_dock.percent > 45);
+    assert!(state.browser_dock.percent_manual);
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        divider.x - 20,
+        10,
+    )]);
+    assert!(!state.browser_dock.dragging);
+    recompose(&mut state);
+    let band = state.layout(COLS, ROWS).browser_band;
+    assert_eq!(
+        band.width,
+        main_width * state.browser_dock.percent / 100,
+        "the remembered percent sizes the band"
+    );
+    // a double-click resets to the config default
+    let divider = state.hits.browser_dock.divider;
+    state.handle_raw_events(click(divider.x, 10));
+    state.handle_raw_events(click(divider.x, 10));
+    assert_eq!(state.browser_dock.percent, 45);
+    assert!(!state.browser_dock.percent_manual);
+}
+
+#[test]
+fn the_dock_and_the_info_pane_share_the_right_edge_and_the_terminal_keeps_30_columns() {
+    let config = ClientShellConfig::from_config(&Config::default());
+    // both docks: the band outermost, the info dock left of it
+    let both = config.layout_with_browser(COLS, ROWS, false, 1, 26, Some(44), Some(45), true);
+    assert_eq!(both.browser_band.right(), COLS);
+    assert_eq!(both.info_dock.right(), both.browser_band.x);
+    assert_eq!(both.pane_surface.right(), both.info_dock.x);
+    assert!(both.pane_surface.width >= super::super::browser_dock::TERM_MIN);
+    // too little room: the info dock drops first, the band shrinks to its minimum
+    let narrow = config.layout_with_browser(110, ROWS, false, 1, 26, Some(44), Some(80), false);
+    assert!(narrow.info_dock.is_empty(), "{narrow:?}");
+    assert!(narrow.browser_band.width >= super::super::browser_dock::BAND_MIN);
+    assert!(narrow.pane_surface.width >= super::super::browser_dock::TERM_MIN);
+    // no room for the band and a 30-column terminal: no band
+    let tiny = config.layout_with_browser(90, ROWS, false, 1, 26, None, Some(45), false);
+    assert!(tiny.browser_band.is_empty());
+}
+
+#[test]
+fn a_modal_over_the_band_unshows_the_placement() {
+    let mut state = dock_state();
+    toggle_dock(&mut state);
+    let now = std::time::Instant::now();
+    let spec = sent_placement(&mut state, now)
+        .expect("a placement is sent")
+        .expect("with a spec");
+    assert!(spec.shown);
+    assert_eq!(spec.kind, BrowserPlacementKind::Side);
+    assert_eq!(spec.tab_id, "tab_1");
+    let band = state.layout(COLS, ROWS).browser_band;
+    // the area is the band without its divider
+    assert_eq!(spec.area.x, band.x + 1);
+    assert_eq!(spec.area.width, band.width - 1);
+    assert_eq!(spec.grid.cols, COLS);
+    assert_eq!(spec.extent_px.width, 1600);
+    assert_eq!(spec.cell_px.width, 10);
+    assert_eq!(spec.cell_px.height, 20);
+    assert!(!spec.pids.is_empty());
+    assert_eq!(spec.pids[0], std::process::id());
+    // unchanged: nothing more is sent
+    assert!(sent_placement(&mut state, now + std::time::Duration::from_secs(1)).is_none());
+    // the Browser overlay (a modal) is over the band: reserved, not covered
+    state.open_browser_overlay(&mut ClientShellInput::default());
+    let later = now + std::time::Duration::from_secs(2);
+    let spec = sent_placement(&mut state, later)
+        .expect("sent again")
+        .expect("spec");
+    assert!(!spec.shown);
+    // within 33 ms of the last one, a change waits for the gap
+    state.overlay = None;
+    assert!(sent_placement(&mut state, later + std::time::Duration::from_millis(10)).is_none());
+    assert!(state.next_browser_dock_deadline(later).is_some());
+    let spec = sent_placement(&mut state, later + std::time::Duration::from_millis(40))
+        .expect("sent after the gap")
+        .expect("spec");
+    assert!(spec.shown);
+    // undocking clears it, once
+    toggle_dock(&mut state);
+    let cleared = sent_placement(&mut state, later + std::time::Duration::from_secs(1));
+    assert_eq!(cleared, Some(None));
+    assert!(sent_placement(&mut state, later + std::time::Duration::from_secs(2)).is_none());
+}
+
+#[test]
+fn fork_smoke_browser_view_covers_the_pane_area_without_resizing_the_panes() {
+    let mut state = dock_state();
+    toggle_dock(&mut state);
+    let docked = state.surface_size(COLS, ROWS);
+    let outcome = toggle_view(&mut state);
+    assert!(!outcome.resize, "toggling never resizes the panes");
+    assert_eq!(state.surface_size(COLS, ROWS), docked);
+    let layout = state.layout(COLS, ROWS);
+    let spec = sent_placement(&mut state, std::time::Instant::now())
+        .expect("sent")
+        .expect("spec");
+    assert_eq!(spec.kind, BrowserPlacementKind::Full);
+    // from the pane surface's left edge to the window's right edge, below the strip
+    assert_eq!(spec.area.x, layout.pane_surface.x);
+    assert_eq!(spec.area.x + spec.area.width, COLS);
+    assert_eq!(spec.area.y, layout.pane_surface.y);
+    assert_eq!(spec.area.height, layout.pane_surface.height);
+    // the panes are not drawn and take no clicks; the strip says Browser
+    let frame = recompose(&mut state).expect("frame");
+    assert!(state.hits.panes.is_empty());
+    assert!(frame.cursor.is_none());
+    let strip = row_text(&frame, layout.view_strip.y);
+    assert!(
+        strip.contains("Terminal") && strip.contains("Browser"),
+        "{strip}"
+    );
+    assert!(!row_text(&frame, layout.pane_surface.y).contains("LIVE"));
+    // back to the terminal: the panes are there again
+    toggle_view(&mut state);
+    let frame = recompose(&mut state).expect("frame");
+    assert!(!state.hits.panes.is_empty());
+    assert!(frame
+        .cells
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect::<String>()
+        .contains("LIVE"));
+}
+
+#[test]
+fn keys_typed_in_browser_view_never_reach_the_hidden_panes() {
+    let mut state = dock_state();
+    toggle_view(&mut state);
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Key(TerminalKey::new(
+        KeyCode::Char('x'),
+        KeyModifiers::empty(),
+    ))]);
+    assert!(
+        !outcome
+            .requests
+            .iter()
+            .any(|request| matches!(request, ClientMessage::ClientShellPaneInput { .. })),
+        "no pane input: {:?}",
+        outcome.requests
+    );
+    let notice = state
+        .visible_endpoint_notice
+        .as_ref()
+        .expect("the first swallowed key says how to type");
+    assert!(notice.body.contains("Click the page"), "{}", notice.body);
+    // the terminal again: keys reach the pane
+    toggle_view(&mut state);
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Key(TerminalKey::new(
+        KeyCode::Char('x'),
+        KeyModifiers::empty(),
+    ))]);
+    assert!(outcome
+        .requests
+        .iter()
+        .any(|request| matches!(request, ClientMessage::ClientShellPaneInput { .. })));
+}
+
+#[test]
+fn the_view_strip_shows_only_for_tabs_with_pages_or_a_browser_view() {
+    let mut state = dock_state();
+    assert!(!state.browser_view_strip_for_focused_tab());
+    assert!(state.layout(COLS, ROWS).view_strip.is_empty());
+    // an agent opened the tab's first page: the strip appears (one row)
+    let mut info = companion("running");
+    info.sessions = vec![BrowserSessionInfo {
+        tab_id: "tab_1".into(),
+        pages: 3,
+        ..Default::default()
+    }];
+    state.browser.info = Some(info);
+    let frame = recompose(&mut state).expect("frame");
+    let strip = state.layout(COLS, ROWS).view_strip;
+    assert_eq!(strip.height, 1);
+    let text = row_text(&frame, strip.y);
+    assert!(text.contains("Terminal"), "{text}");
+    assert!(text.contains("Browser · 3"), "{text}");
+    assert!(text.contains("◨"), "{text}");
+    // the other tab has none
+    state.set_snapshot(Box::new(two_tab_snapshot("tab_2")));
+    recompose(&mut state);
+    assert!(state.layout(COLS, ROWS).view_strip.is_empty());
+    // `ui.browser_view_strip = "off"`: never drawn
+    let mut config = Config::default();
+    config.ui.browser_view_strip = "off".into();
+    let mut off = ClientShellState::new(ClientShellConfig::from_config(&config));
+    off.set_snapshot(Box::new(two_tab_snapshot("tab_1")));
+    off.set_pane_surface(surface());
+    let mut info = companion("running");
+    info.sessions = vec![BrowserSessionInfo {
+        tab_id: "tab_1".into(),
+        pages: 3,
+        ..Default::default()
+    }];
+    off.browser.info = Some(info);
+    off.compose(COLS, ROWS);
+    assert!(off.layout(COLS, ROWS).view_strip.is_empty());
+    // a click on the strip's Browser segment opens Browser view
+    let mut state = dock_state();
+    toggle_dock(&mut state);
+    let (rect, _) = state
+        .hits
+        .browser_dock
+        .targets
+        .iter()
+        .find(|(_, target)| *target == super::super::browser_dock::BrowserDockTarget::ViewBrowser)
+        .copied()
+        .expect("the Browser segment");
+    state.handle_raw_events(click(rect.x + 1, rect.y));
+    assert!(state.browser_view_open_for("tab_1"));
+}
+
+#[test]
+fn the_placeholder_names_why_the_companion_is_not_covering() {
+    let text = |state: &mut ClientShellState| {
+        let frame = recompose(state).expect("frame");
+        let band = state.layout(COLS, ROWS).browser_band;
+        (band.y..band.bottom())
+            .map(|y| {
+                (band.x..band.right())
+                    .map(|x| frame.cells[(y * frame.width + x) as usize].symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut state = dock_state();
+    toggle_dock(&mut state);
+    // running, nothing reported yet: calm (only the mark)
+    let calm = text(&mut state);
+    assert!(calm.contains('◎') && !calm.contains("companion"), "{calm}");
+    // stopped: a Start button that starts it
+    state.browser.info = Some(companion("stopped"));
+    let stopped = text(&mut state);
+    assert!(
+        stopped.contains("The companion is not running"),
+        "{stopped}"
+    );
+    assert!(stopped.contains("[ Start companion ]"), "{stopped}");
+    let (rect, _) = *state
+        .hits
+        .browser_dock
+        .targets
+        .iter()
+        .find(|(_, target)| *target == super::super::browser_dock::BrowserDockTarget::Start)
+        .expect("the Start button");
+    let outcome = state.handle_raw_events(click(rect.x + 2, rect.y));
+    assert!(outcome.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(request.method, Method::BrowserCompanion(ref params)
+                if params.action == crate::api::schema::BrowserCompanionAction::Start)
+    )));
+    // not installed: the setup command
+    state.browser.info = Some(companion("not_installed"));
+    assert!(text(&mut state).contains("herdr browser setup --companion"));
+    // starting: the tab's label and the spinner
+    state.browser.info = Some(companion("starting"));
+    let starting = text(&mut state);
+    assert!(starting.contains("Browser · planner"), "{starting}");
+    assert!(starting.contains("Starting the companion"), "{starting}");
+    // running but the companion cannot dock here: its reason
+    let mut info = companion("running");
+    info.placements = vec![BrowserPlacementStatus {
+        id: state.browser_dock.placement_id.clone(),
+        state: "unsupported".into(),
+        reason: Some("Let herdr fill its Ghostty window (no Ghostty splits)".into()),
+    }];
+    state.browser.info = Some(info);
+    let unsupported = text(&mut state);
+    assert!(unsupported.contains("no Ghostty splits"), "{unsupported}");
+    // unbound: a click anywhere on it binds (nudge)
+    let mut info = companion("running");
+    info.placements = vec![BrowserPlacementStatus {
+        id: state.browser_dock.placement_id.clone(),
+        state: "unbound".into(),
+        reason: None,
+    }];
+    state.browser.info = Some(info);
+    assert!(text(&mut state).contains("Click here once"));
+    let band = state.layout(COLS, ROWS).browser_band;
+    state.handle_raw_events(click(band.x + 5, band.y + 3));
+    assert_eq!(state.browser_dock.nudge, 1);
+}
+
+#[test]
+fn docking_a_remote_endpoint_or_on_an_old_server_says_why() {
+    let mut state = dock_state();
+    state
+        .endpoints
+        .iter_mut()
+        .find(|endpoint| endpoint.endpoint_id == state.active_endpoint_id)
+        .expect("the local endpoint")
+        .methods = Some(vec!["browser.get".to_owned()].into_iter().collect());
+    let outcome = toggle_dock(&mut state);
+    assert!(!outcome.resize);
+    assert!(state.layout(COLS, ROWS).browser_band.is_empty());
+    let notice = state.visible_endpoint_notice.as_ref().expect("a notice");
+    assert!(
+        notice.body.contains("update and restart"),
+        "{}",
+        notice.body
+    );
+}
+
+#[test]
+fn a_companion_that_never_reports_on_the_dock_is_offered_a_restart() {
+    let mut state = dock_state();
+    toggle_dock(&mut state);
+    let now = std::time::Instant::now();
+    sent_placement(&mut state, now).expect("sent");
+    // a moment later: still calm (the companion takes its time to bind)
+    assert!(state.browser_placeholder(now).calm);
+    // seconds later without a word from it: an old companion
+    let later = now + std::time::Duration::from_secs(5);
+    let placeholder = state.browser_placeholder(later);
+    assert!(!placeholder.calm);
+    assert_eq!(
+        placeholder.button,
+        Some((
+            "Restart",
+            super::super::browser_dock::BrowserDockTarget::Restart
+        ))
+    );
+    assert!(placeholder.lines[0].0.contains("has not docked"));
+    // its report arrives: calm again
+    let mut info = companion("running");
+    info.placements = vec![BrowserPlacementStatus {
+        id: state.browser_dock.placement_id.clone(),
+        state: "covering".into(),
+        reason: None,
+    }];
+    state.browser.info = Some(info);
+    assert!(state.browser_placeholder(later).calm);
+}

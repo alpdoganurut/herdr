@@ -17,6 +17,30 @@ pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../apps/companion/package.json"),
     ),
     (
+        "src/dock/dock.js",
+        include_bytes!("../../apps/companion/src/dock/dock.js"),
+    ),
+    (
+        "src/dock/geometry.js",
+        include_bytes!("../../apps/companion/src/dock/geometry.js"),
+    ),
+    (
+        "src/dock/ghostty-config.js",
+        include_bytes!("../../apps/companion/src/dock/ghostty-config.js"),
+    ),
+    (
+        "src/dock/placements.js",
+        include_bytes!("../../apps/companion/src/dock/placements.js"),
+    ),
+    (
+        "src/dock/probe.jxa.js",
+        include_bytes!("../../apps/companion/src/dock/probe.jxa.js"),
+    ),
+    (
+        "src/dock/window-probe.js",
+        include_bytes!("../../apps/companion/src/dock/window-probe.js"),
+    ),
+    (
         "src/groups.js",
         include_bytes!("../../apps/companion/src/groups.js"),
     ),

@@ -91,6 +91,17 @@ body.noinset #tabsrow { padding-left: 8px; }
 #status.warn { color: var(--rust); }
 #status.warn::before { background: var(--rust); }
 
+/* docked over herdr's band: always Dusk, no traffic lights, nothing drags the window */
+body.docked {
+  color-scheme: dark;
+  --page: #17181e; --chrome: #1b1c23; --sel: #22242e; --hover: #262836; --rule: #363947;
+  --ink: #cfd2de; --body: #a6aabb; --dim: #6b6f80; --note: #888c9e;
+  --gold: #a5a9cf; --rust: #d09a8a; --accent: #aa6eff;
+  --gold-tint: rgba(165, 169, 207, .14); --rust-tint: rgba(208, 154, 138, .12); --accent-tint: rgba(170, 110, 255, .16);
+  --ok: #8fc7a0; --field: #22242e; --field-border: transparent; --field-focus: #a5a9cf;
+}
+body.docked #tabsrow { padding-left: 8px; -webkit-app-region: no-drag; }
+
 /* empty state */
 #empty { position: fixed; top: 120px; left: 0; right: 0; text-align: center; color: var(--dim); }
 #empty .mark { display: block; margin: 0 auto 6px; opacity: .85; }

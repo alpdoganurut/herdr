@@ -100,6 +100,9 @@ pub(crate) struct BrowserRow {
     /// Fork (companion launcher): the companion's state on a server that
     /// runs it (the menu's companion items).
     pub(crate) companion: Option<String>,
+    /// Fork (companion launcher): the row's `◨` (the focused tab's dock is
+    /// open or not) where the browser docks.
+    pub(crate) dock: Option<bool>,
 }
 
 /// The row's state and status text for `info`; a failing check only an
@@ -198,7 +201,7 @@ impl BrowserOverlayRow {
     }
 }
 
-fn unix_now() -> u64 {
+pub(super) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|age| age.as_secs())
@@ -395,6 +398,9 @@ impl ClientShellState {
                         .unwrap_or_else(|| "main".into()),
                     running: window.is_some_and(|p| p.state == "running" || p.state == "starting"),
                     companion: Some(companion.state.clone()),
+                    dock: self
+                        .browser_dock_offered()
+                        .then(|| self.browser_dock_open_for_focused_tab()),
                 });
             }
         }
@@ -414,6 +420,9 @@ impl ClientShellState {
             profile,
             running: running.is_some(),
             companion: info.companion_app.as_ref().map(|c| c.state.clone()),
+            dock: self
+                .browser_dock_offered()
+                .then(|| self.browser_dock_open_for_focused_tab()),
         })
     }
 
@@ -501,7 +510,10 @@ impl ClientShellState {
                     .is_some_and(|companion| companion_changing(&companion.state))
         });
         let overlay_open = matches!(self.overlay, Some(ClientShellOverlay::Browser(_)));
-        if busy || overlay_open {
+        // Fork (companion launcher): the dock's placeholder follows the
+        // companion and its report on this placement.
+        let docked = self.browser_dock_in_use();
+        if busy || overlay_open || docked {
             BROWSER_REFRESH_ACTIVE
         } else {
             BROWSER_REFRESH_IDLE
@@ -872,6 +884,10 @@ impl ClientShellState {
             .info
             .as_ref()
             .is_some_and(|info| !info.window_off);
+        // Fork (companion launcher): the focused tab's dock item.
+        let dock = self
+            .browser_dock_offered()
+            .then(|| self.browser_dock_open_for_focused_tab());
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Browser {
                 profile: row.profile,
@@ -879,6 +895,7 @@ impl ClientShellState {
                 local: self.active_endpoint_id.is_local(),
                 companion: row.companion,
                 window,
+                dock,
             },
             x,
             y,
@@ -952,6 +969,8 @@ impl ClientShellState {
                                     info.companion_app = browser.companion_app;
                                 }
                                 info.window_off = browser.window_off;
+                                // Fork (companion launcher): and the reports on placements
+                                info.placements = browser.placements;
                             }
                         } else {
                             if browser

@@ -811,7 +811,19 @@ pub(super) fn finish_client_shell_input(
         .as_ref()
         .is_none_or(|shell| shell.endpoint_is_online(endpoints.active_id()))
         && endpoints.active_surface_available();
-    for request in outcome.requests {
+    let mut requests = outcome.requests;
+    // Fork (companion launcher): the browser placement, when it changed
+    // (beside the command lane; never across a pending activation).
+    if active_endpoint_online && pending_activation.is_none() {
+        if let Some(placement) = state
+            .shell
+            .as_mut()
+            .and_then(|shell| shell.take_browser_placement_request(std::time::Instant::now()))
+        {
+            requests.push(placement);
+        }
+    }
+    for request in requests {
         if let ClientMessage::ClientShellHostTheme { update } = &request {
             state.record_host_theme_update(update);
             if let Some(activation) = pending_activation.as_mut() {

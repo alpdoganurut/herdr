@@ -1924,6 +1924,10 @@ async fn run_client_loop(
                         if request_id.starts_with("client-shell-surface:") {
                             continue;
                         }
+                        // Fork (companion launcher): placements are not waited for.
+                        if request_id.starts_with(shell::BROWSER_PLACEMENT_REQUEST_PREFIX) {
+                            continue;
+                        }
                         let completed = endpoint_commands
                             .receive_chunk(
                                 &endpoint_id,
@@ -2491,6 +2495,8 @@ async fn run_client_loop(
                         shell.tick_teams(now, &mut outcome);
                         shell.tick_browser(now, &mut outcome);
                         shell.tick_info_dock(now, &mut outcome);
+                        // Fork (companion launcher): the dock's placeholder and placement.
+                        shell.tick_browser_dock(now, &mut outcome);
                         outcome.repaint |= notification_repaint
                             | shell.tick_copy_feedback(now)
                             | shell.tick_workspace_highlight(now)

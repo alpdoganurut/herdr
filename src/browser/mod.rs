@@ -24,6 +24,8 @@ pub mod launch;
 pub mod node;
 pub mod ntp;
 pub mod page_errors;
+// Fork (companion launcher): every client's browser placement (the dock).
+pub mod placements;
 pub mod profiles;
 pub mod serve;
 pub mod session;

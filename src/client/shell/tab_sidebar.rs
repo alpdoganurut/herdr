@@ -326,7 +326,14 @@ pub(super) fn render_tab_sidebar_with(
         let hovered = matches!(hover, Some(SidebarHover::Fixed(hovered)) if *hovered == kind);
         render_fixed_row(buffer, rect, row, hovered, config);
         match row {
-            FixedRow::Browser(_) => hits.browser_row = rect,
+            FixedRow::Browser(browser) => {
+                hits.browser_row = rect;
+                // Fork (companion launcher): the row's `◨` dock toggle.
+                if browser.dock.is_some() && rect.width >= 12 {
+                    hits.browser_dock.row_button =
+                        Rect::new(rect.right().saturating_sub(3), rect.y, 3, 1);
+                }
+            }
             FixedRow::News(_) => hits.news_row = rect,
             FixedRow::Coordinator(_) => coordinator_rect = rect,
         }
@@ -1033,7 +1040,19 @@ fn render_fixed_row(
     } else {
         status_width
     };
-    let label_cells = rect.width.saturating_sub(LABEL_X + status_cells + 2);
+    // Fork (companion launcher): the Browser row's `◨` takes the last cells.
+    let dock = match row {
+        FixedRow::Browser(row) if rect.width >= 12 => row.dock,
+        _ => None,
+    };
+    let dock_cells: u16 = if dock.is_some() { 2 } else { 0 };
+    let status_cells = status_cells.min(
+        rect.width
+            .saturating_sub(LABEL_X + display_width(label) + 2 + dock_cells),
+    );
+    let label_cells = rect
+        .width
+        .saturating_sub(LABEL_X + status_cells + 2 + dock_cells);
     put_truncated(
         buffer,
         rect.x.saturating_add(LABEL_X),
@@ -1044,12 +1063,26 @@ fn render_fixed_row(
     );
     put_truncated(
         buffer,
-        rect.right().saturating_sub(1 + status_cells),
+        rect.right().saturating_sub(1 + status_cells + dock_cells),
         rect.y,
         status_cells,
         status,
         Style::default().fg(palette.overlay1),
     );
+    if let Some(open) = dock {
+        put_text(
+            buffer,
+            rect.right().saturating_sub(2),
+            rect.y,
+            1,
+            super::browser_dock_render::DOCK_GLYPH,
+            Style::default().fg(if open {
+                palette.accent
+            } else {
+                palette.overlay1
+            }),
+        );
+    }
 }
 
 /// The footer's lines: the non-empty status segments joined with the

@@ -1065,6 +1065,10 @@ impl ClientShellState {
                     self.info_dock_drag(mouse.column, outcome);
                     return;
                 }
+                Some(ClientChromeDrag::BrowserDockWidth) => {
+                    self.browser_dock_drag(mouse.column, outcome);
+                    return;
+                }
                 Some(ClientChromeDrag::SidebarSection) => {
                     self.set_sidebar_section_from_row(mouse.row, outcome);
                     return;
@@ -1448,6 +1452,7 @@ impl ClientShellState {
                         self.persist_chrome_preferences(outcome);
                     }
                     ClientChromeDrag::InfoDockWidth => self.info_dock_release(outcome),
+                    ClientChromeDrag::BrowserDockWidth => self.browser_dock_release(outcome),
                     ClientChromeDrag::WorkspaceScrollbar { .. }
                     | ClientChromeDrag::AgentScrollbar { .. }
                     | ClientChromeDrag::HelpScrollbar { .. }
@@ -2181,6 +2186,11 @@ impl ClientShellState {
                 // Fork: the info dock, before any pane hit, so a dock press
                 // never starts a pane gesture or a selection.
                 if self.info_dock_press(point, outcome) {
+                    return;
+                }
+                // Fork (companion launcher): the browser band, its strip,
+                // the Browser view's area and the Browser row's `◨`.
+                if self.browser_dock_press(point, outcome) {
                     return;
                 }
                 // The toggle is painted over the agent scrollbar's last cell.

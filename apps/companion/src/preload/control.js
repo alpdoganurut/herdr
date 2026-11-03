@@ -18,4 +18,5 @@ contextBridge.exposeInMainWorld('__herdrCompanion', {
   // test hooks (HERDR_COMPANION_TEST_HOOKS=1 only; unknown_op otherwise)
   __crash: () => call('__crash'),
   __hang: () => call('__hang'),
+  dock_debug: () => call('dock_debug'), // the dock's inputs, decision and window bounds
 });

@@ -3034,3 +3034,213 @@ fn the_managed_companion_stops_with_the_server_but_not_on_a_live_handoff() {
     );
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// Fork (companion launcher): a client shell's `browser.placement.set` is a
+/// fact about that client: stored on the placement board and answered at
+/// once, even while the client's command lane is busy, and it never makes
+/// the client the foreground one (a background client's placement must not
+/// steal the server's focus). It leaves with the client.
+#[tokio::test]
+async fn a_placement_set_never_promotes_the_client_or_takes_the_command_lane() {
+    let mut server = test_headless_server();
+    let _input_rx = install_focused_test_runtime(&mut server, b"");
+    let board = crate::browser::placements::board();
+    let mut controls = Vec::new();
+    for client_id in [9061_u64, 9062] {
+        let (writer, control_rx, _render_rx) = test_client_writer();
+        assert!(
+            server.handle_server_event(ServerEvent::ClientShellConnected {
+                surface_reuse: false,
+                surface_delta: false,
+                surface_scroll: false,
+                client_id,
+                surface_cols: 120,
+                surface_rows: 36,
+                cell_width_px: 16,
+                cell_height_px: 34,
+                pixel_mouse: true,
+                direct_graphics: false,
+                endpoint_keybindings: true,
+                mouse_capture: true,
+                surface_active: true,
+                writer,
+            })
+        );
+        let _ = client_shell_snapshot(&control_rx);
+        controls.push(control_rx);
+    }
+    // the second client is in front; the first one's lane is busy
+    server.promote_client_to_foreground(9062);
+    assert_eq!(server.foreground_client_id, Some(9062));
+    server
+        .clients
+        .get_mut(&9061)
+        .expect("client")
+        .shell_endpoint_command_in_flight = true;
+    let placement = api::schema::BrowserPlacementSpec {
+        id: "pl-fork-smoke-a".into(),
+        kind: api::schema::BrowserPlacementKind::Side,
+        tab_id: "tab_1".into(),
+        area: api::schema::BrowserCellRect {
+            x: 66,
+            y: 1,
+            width: 54,
+            height: 35,
+        },
+        grid: api::schema::BrowserGridSize {
+            cols: 120,
+            rows: 36,
+        },
+        pids: vec![std::process::id()],
+        shown: true,
+        ..Default::default()
+    };
+    let boot_id = server.client_shell_boot_id.clone();
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id: 9061,
+        boot_id: boot_id.clone(),
+        request: Box::new(Request {
+            id: "client-shell-placement:1".into(),
+            method: Method::BrowserPlacementSet(api::schema::BrowserPlacementSetParams {
+                placement: Some(placement.clone()),
+            }),
+        }),
+    });
+    let ServerMessage::ClientShellEndpointResponseChunk {
+        request_id, data, ..
+    } = read_server_message(controls[0].recv().expect("the placement's answer"))
+    else {
+        panic!("expected an endpoint response");
+    };
+    assert_eq!(request_id, "client-shell-placement:1");
+    let success: api::schema::SuccessResponse =
+        serde_json::from_slice(&data).expect("answered Ok, not endpoint_busy");
+    assert!(matches!(success.result, api::schema::ResponseResult::Ok {}));
+    assert_eq!(server.foreground_client_id, Some(9062), "never promoted");
+    let mine = |board: &crate::browser::placements::PlacementBoard| {
+        board
+            .wait(
+                None,
+                std::time::Duration::ZERO,
+                &std::sync::atomic::AtomicBool::new(true),
+            )
+            .placements
+            .into_iter()
+            .find(|info| info.placement.id == "pl-fork-smoke-a")
+    };
+    let stored = mine(board).expect("on the board");
+    assert_eq!(stored.placement, placement);
+    assert!(!stored.foreground);
+    // the client goes: its placement goes too
+    server.remove_client(9061);
+    assert!(mine(board).is_none());
+}
+
+/// Fork (companion launcher): the host sees each placement with the
+/// server's facts about its client (its terminal's focus, the foreground
+/// client, its surface showing this server), as they change; an unknown
+/// lease reads nothing.
+#[tokio::test]
+async fn placements_reach_the_host_with_focus_and_foreground() {
+    let mut server = test_headless_server();
+    let _input_rx = install_focused_test_runtime(&mut server, b"");
+    let board = crate::browser::placements::board();
+    let (writer, control_rx, _render_rx) = test_client_writer();
+    let client_id = 9071_u64;
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellConnected {
+            surface_reuse: false,
+            surface_delta: false,
+            surface_scroll: false,
+            client_id,
+            surface_cols: 120,
+            surface_rows: 36,
+            cell_width_px: 16,
+            cell_height_px: 34,
+            pixel_mouse: true,
+            direct_graphics: false,
+            endpoint_keybindings: true,
+            mouse_capture: true,
+            surface_active: true,
+            writer,
+        })
+    );
+    let _ = client_shell_snapshot(&control_rx);
+    let boot_id = server.client_shell_boot_id.clone();
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id,
+        request: Box::new(Request {
+            id: "client-shell-placement:2".into(),
+            method: Method::BrowserPlacementSet(api::schema::BrowserPlacementSetParams {
+                placement: Some(api::schema::BrowserPlacementSpec {
+                    id: "pl-fork-smoke-b".into(),
+                    kind: api::schema::BrowserPlacementKind::Full,
+                    tab_id: "tab_1".into(),
+                    shown: true,
+                    ..Default::default()
+                }),
+            }),
+        }),
+    });
+    let read = || {
+        board
+            .wait(
+                None,
+                std::time::Duration::ZERO,
+                &std::sync::atomic::AtomicBool::new(true),
+            )
+            .placements
+            .into_iter()
+            .find(|info| info.placement.id == "pl-fork-smoke-b")
+            .expect("on the board")
+    };
+    let before = read();
+    let rev = board
+        .wait(
+            None,
+            std::time::Duration::ZERO,
+            &std::sync::atomic::AtomicBool::new(true),
+        )
+        .rev;
+    // the user focuses that terminal: focused and in front
+    server.handle_server_event(ServerEvent::ClientShellFocus {
+        client_id,
+        focused: true,
+    });
+    let after = read();
+    assert!(after.focused && after.foreground, "{after:?}");
+    assert!(!before.focused);
+    // a waiter that saw `rev` wakes for the change at once
+    let next = board.wait(
+        Some(rev),
+        std::time::Duration::from_secs(5),
+        &std::sync::atomic::AtomicBool::new(true),
+    );
+    assert!(next.rev > rev);
+    // the client shows another endpoint: its placement stays, unshown
+    let boot_id = server.client_shell_boot_id.clone();
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id,
+        request: Box::new(Request {
+            id: "client-shell-surface:9".into(),
+            method: Method::ClientShellSurfaceSet(api::schema::ClientShellSurfaceSetParams {
+                active: false,
+            }),
+        }),
+    });
+    assert!(!read().placement.shown);
+    // the host's long poll needs its live lease
+    let answer = crate::browser::serve::placements(
+        "c1".into(),
+        api::schema::BrowserPlacementsParams {
+            lease_id: "not-a-lease".into(),
+            since_rev: None,
+            wait_ms: Some(0),
+        },
+        &std::sync::atomic::AtomicBool::new(true),
+    );
+    assert!(answer.contains("lease_unknown"), "{answer}");
+    server.remove_client(client_id);
+}

@@ -6,6 +6,7 @@ pub mod agent_wrap;
 pub mod agents;
 pub mod agents_model;
 pub mod browser;
+pub mod browser_placement;
 pub mod closed_sessions;
 pub mod commands;
 pub mod common;
@@ -37,6 +38,11 @@ pub use agent_wrap::{
 };
 pub use agents::*;
 pub use browser::*;
+pub use browser_placement::{
+    BrowserCellRect, BrowserGridSize, BrowserPlacementInfo, BrowserPlacementKind,
+    BrowserPlacementReportParams, BrowserPlacementSetParams, BrowserPlacementSpec,
+    BrowserPlacementStatus, BrowserPlacementsParams, BrowserPxSize,
+};
 pub use closed_sessions::*;
 pub use commands::*;
 pub use common::*;
@@ -259,6 +265,14 @@ operations::define_operations! {
     /// Fork (companion launcher): the companion app herdr runs — status,
     /// start, stop, restart, focus (App lane; the Browser row and overlay).
     BrowserCompanion(BrowserCompanionParams) => "browser.companion", false, true;
+    /// Fork (companion launcher): the browser placement of an attached
+    /// client (client shell; the headless server's endpoint handler stores
+    /// it, never the App), every client's placement for the browser host (a
+    /// long poll) and the host's report on one (both on the connection
+    /// thread, src/browser/serve.rs).
+    BrowserPlacementSet(BrowserPlacementSetParams) => "browser.placement.set", false, true;
+    BrowserPlacements(BrowserPlacementsParams) => "browser.placements", false, false;
+    BrowserPlacementReport(BrowserPlacementReportParams) => "browser.placement_report", false, false;
     AgentPrompt(AgentPromptParams) => "agent.prompt", true, false;
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;

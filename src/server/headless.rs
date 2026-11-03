@@ -82,6 +82,8 @@ pub mod agent_times;
 /// Fork: the autosuspend scan's shown panes.
 mod autosuspend;
 mod bootstrap;
+/// Fork (companion launcher): attached clients' browser placements.
+mod browser_placement;
 mod client_views;
 mod coordinator_notify;
 mod endpoint_requests;
@@ -834,6 +836,8 @@ impl HeadlessServer {
     }
 
     fn sync_foreground_client_state(&mut self) {
+        // Fork (companion launcher): the browser placements' foreground fact.
+        self.sync_browser_placement_facts();
         self.app.pixel_mouse_available = self.foreground_client_id.is_some_and(|id| {
             self.clients
                 .get(&id)
@@ -983,6 +987,8 @@ impl HeadlessServer {
 
     fn remove_client(&mut self, client_id: u64) -> bool {
         self.disconnect_native_graphics(client_id);
+        // Fork (companion launcher): its browser placement leaves with it.
+        self.drop_browser_placement(client_id);
         let disconnected_focus = self
             .clients
             .get(&client_id)
@@ -2367,6 +2373,8 @@ impl HeadlessServer {
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.outer_terminal_focus = Some(focused);
                 }
+                // Fork (companion launcher): the browser placements' focus fact.
+                self.sync_browser_placement_facts();
                 if focused {
                     self.promote_client_to_foreground(client_id);
                     self.claim_shell_tab_geometry(client_id, false);

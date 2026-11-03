@@ -13,6 +13,17 @@ impl ClientShellState {
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleInfoPane) => {
                 self.toggle_info_pane_for_focused_tab(outcome);
             }
+            // Fork (companion launcher): the browser dock, Browser view and
+            // the companion's keyboard.
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleBrowserDock) => {
+                self.toggle_browser_dock_for_focused_tab(outcome);
+            }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleBrowserView) => {
+                self.toggle_browser_view_for_focused_tab(outcome);
+            }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::FocusBrowser) => {
+                self.focus_browser(outcome);
+            }
             // Fork (sidebar filters): the tabs sidebar's search field.
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::SidebarSearch) => {
                 self.toggle_sidebar_search(outcome);

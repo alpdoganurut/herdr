@@ -79,6 +79,7 @@ fn running_info(seq: u64, touched_at: u64) -> BrowserGetInfo {
         sessions: vec![],
         companion_app: None,
         window_off: false,
+        placements: Vec::new(),
         profiles: vec![BrowserProfileInfo {
             name: "main".into(),
             state: "running".into(),
@@ -958,6 +959,7 @@ pub(crate) mod fork_smoke {
                 "Focus companion",
                 "Restart companion",
                 "Stop companion",
+                "Dock browser here",
                 "Open overlay"
             ]
         );
@@ -967,6 +969,12 @@ pub(crate) mod fork_smoke {
             state.activate_context_menu_item(index, &mut outcome);
             assert_eq!(companion_request(&outcome), action);
         }
+        // Fork (companion launcher, phase B): the dock item docks the focused tab
+        state.open_browser_context_menu(rect.x, rect.y);
+        state.activate_context_menu_item(3, &mut ClientShellInput::default());
+        assert!(state.browser_dock_open_for_focused_tab());
+        state.toggle_browser_dock_for_focused_tab(&mut ClientShellInput::default());
+        assert!(!state.browser_dock_open_for_focused_tab());
         // its reply lands at once; a note (a companion started by hand) shows
         let mut stopped = companion_info(1, "stopped").companion_app.unwrap();
         stopped.state = "external".into();
@@ -985,7 +993,10 @@ pub(crate) mod fork_smoke {
         assert_eq!(row.status, "companion stopped");
         assert_eq!(row.state.glyph(), "◌");
         state.open_browser_context_menu(rect.x, rect.y);
-        assert_eq!(menu_labels(&state), ["Start companion", "Open overlay"]);
+        assert_eq!(
+            menu_labels(&state),
+            ["Start companion", "Dock browser here", "Open overlay"]
+        );
         let mut outcome = ClientShellInput::default();
         state.activate_context_menu_item(0, &mut outcome);
         assert_eq!(companion_request(&outcome), Action::Start);
@@ -1010,7 +1021,10 @@ pub(crate) mod fork_smoke {
             ("×", "companion failed")
         );
         state.open_browser_context_menu(rect.x, rect.y);
-        assert_eq!(menu_labels(&state), ["Restart companion", "Open overlay"]);
+        assert_eq!(
+            menu_labels(&state),
+            ["Restart companion", "Dock browser here", "Open overlay"]
+        );
         deliver_unchanged_companion(&mut state, companion_info(1, "not_installed"));
         assert_eq!(
             state.browser_row().unwrap().status,
@@ -1044,13 +1058,14 @@ pub(crate) mod fork_smoke {
                 "Focus companion",
                 "Restart companion",
                 "Stop companion",
+                "Dock browser here",
                 "Start profile",
                 "Open overlay"
             ]
         );
         state.open_browser_context_menu(rect.x, rect.y);
         let mut outcome = ClientShellInput::default();
-        state.activate_context_menu_item(3, &mut outcome);
+        state.activate_context_menu_item(4, &mut outcome);
         assert!(matches!(
             &endpoint_requests(&outcome)[..],
             [(_, Method::BrowserStart(params))] if params.profile.as_deref() == Some("main")

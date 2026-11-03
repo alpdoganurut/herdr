@@ -11,6 +11,9 @@ const { ViewManager, within } = require('./views.js');
 const { HerdrLink } = require('./host.js');
 const { resolveSocketPath, serialized } = require('./herdr-api.js');
 const { parseManaged, registerFields, startupWindow, watchdogFor, onQuitSignals } = require('./managed.js');
+const { PlacementFeed, anyDockPlacement } = require('./dock/placements.js');
+const { WindowProbe } = require('./dock/window-probe.js');
+const { DockController } = require('./dock/dock.js');
 
 const VERSION = require('../package.json').version;
 const APP_NAME = 'herdr+ companion'; // the macOS menu bar, Dock and window titles
@@ -19,6 +22,8 @@ const ICON_DIR = path.join(__dirname, '..', 'assets', 'icon'); // eye-plus app i
 const CHROME_HEIGHT = 56; // strip.css: tabs row 26 + nav row 30; extra rows add to it (reported by the strip)
 // The window background behind the bar before it paints: the bar's --chrome colour (light / Dusk dark).
 const chromeBackground = () => (nativeTheme.shouldUseDarkColors ? '#1b1c23' : '#efeee9');
+// The docked bar is always Dusk (it sits in herdr's dark window); pages keep the system look.
+const DOCK_BACKGROUND = '#1b1c23';
 const SCHEME = 'herdr-companion';
 const SYNC_MIN_INTERVAL_MS = 250; // ≤ 4 syncs/s (contract §2.3)
 const SYNC_MAX_BYTES = 256 * 1024; // herdr's cap on a sync's groups
@@ -125,12 +130,18 @@ class Companion {
       onState: (id) => this.onViewState(id),
       onError: (id, kind, text) => this.onPageError(id, kind, text),
       onOpen: (from, url, disposition, opts) => this.onWindowOpen(from, url, disposition, opts),
-      onKey: () => false,
+      onKey: (input) => this.dockKey(input),
       onPermission: (id, req, done) => this.onPermission(id, req, done),
       onLeave: (id, origin) => this.onLeave(id, origin),
     });
     this.prompts = []; // pending permission prompts {id, view_id, permission, label, origin, dones[], timer}
     this.nextPrompt = 1;
+    // Docked mode (launcher design §3.4): a frameless window over herdr's band.
+    this.dockWin = null;
+    this.docked = false;
+    this.dockChromeHeight = CHROME_HEIGHT;
+    this.mainWasVisible = false;
+    this.startupShow = null;
   }
 
   async start() {
@@ -143,8 +154,9 @@ class Companion {
       return this.controlCall(op, a);
     });
     ipcMain.handle('herdr-companion:strip', (e, name, a) => {
-      if (!this.win || e.sender !== this.win.webContents) return null;
-      return this.stripAction(name, a);
+      const dock = !!(this.dockWindow() && e.sender === this.dockWin.webContents);
+      if (!dock && (!this.win || e.sender !== this.win.webContents)) return null;
+      return this.stripAction(name, a, { dock });
     });
 
     this.win = new BrowserWindow({
@@ -166,6 +178,7 @@ class Companion {
         nodeIntegration: false,
       },
     });
+    this.views.setHost(this.win);
     this.win.on('resize', () => this.layout());
     const onTheme = () => this.win && this.win.setBackgroundColor(chromeBackground());
     nativeTheme.on('updated', onTheme);
@@ -221,14 +234,22 @@ class Companion {
     this.link.on('heartbeat', (lease) => this.onUpdateNote(lease));
     this.link.on('lost', () => this.pushStrip());
     this.link.on('event', (ev) => this.onEvent(ev));
+    // Docking: herdr's placements, the terminal windows, and what the dock does with them.
+    this.feed = new PlacementFeed({ link: this.link, log });
+    const fakeWindows = MANAGED.testHooks ? process.env.HERDR_COMPANION_FAKE_WINDOWS || null : null;
+    if (fakeWindows) this.fakeScale = Number(process.env.HERDR_COMPANION_FAKE_SCALE) || 2;
+    this.probe = new WindowProbe({ log, fakeFile: fakeWindows });
+    this.dock = new DockController({ host: this, feed: this.feed, probe: this.probe, log, headless: HEADLESS, electron: require('electron') });
     this.link.start();
     setInterval(() => this.flushReports(), REPORT_FLUSH_MS).unref();
 
     // A managed companion started for an agent, by autostart or a crash restart never
     // shows itself; one the user started shows without taking the keyboard.
-    const show = startupWindow(MANAGED, HEADLESS);
-    if (show === 'inactive') this.win.showInactive();
-    else if (show === 'show') this.win.show();
+    // A herdr that keeps an area for the browser gets it docked, not a window: the window
+    // waits for herdr's first placements (at most 1.5 s).
+    this.startupShow = startupWindow(MANAGED, HEADLESS);
+    this.startupTimer = setTimeout(() => this.showStartupWindow(), 1500);
+    this.feed.once('placements', () => this.showStartupWindow());
     // managed: herdr gone for good (a crash, kill -9; a handoff's gap is far shorter) quits it
     this.watchdog = watchdogFor(MANAGED, { socketPath: SOCKET, log, onGone: () => app.quit() });
     if (this.watchdog) this.watchdog.start();
@@ -280,6 +301,9 @@ class Companion {
     log('lease', lease.lease_id, lease.state, 'features', (lease.server_features || []).join(','));
     this.features = new Set(lease.server_features || []);
     this.onUpdateNote(lease);
+    this.feed.reset();
+    this.feed.start();
+    if (!this.features.has('placements')) this.showStartupWindow();
     this.store.resetLease();
     await this.refreshState();
     if (this.link) this.link.releaseEvents();
@@ -319,7 +343,14 @@ class Companion {
     // Re-show only when herdr focus moved (or nothing valid is shown): a page an agent raised
     // with focus() stays up across unrelated tab/workspace events.
     const focus = this.store.focusedTabId;
-    if (focus && (focus !== prevFocus || !this.shownTab)) await this.showGroup(focus, { reason: 'follow', focusMoved: focus !== prevFocus });
+    // Docked, the dock's client decides which group shows (its herdr tab).
+    if (this.docked && this.dockTab && this.store.tabs.has(this.dockTab)) {
+      if (this.shownTab !== this.dockTab) await this.showGroup(this.dockTab, { reason: 'follow' });
+      else {
+        this.layout();
+        this.pushStrip();
+      }
+    } else if (focus && (focus !== prevFocus || !this.shownTab)) await this.showGroup(focus, { reason: 'follow', focusMoved: focus !== prevFocus });
     else {
       this.layout();
       this.pushStrip();
@@ -341,6 +372,8 @@ class Companion {
           if (!this.store.tabs.has(d.tab_id)) return this.refreshSoon(0);
           const moved = this.store.focusedTabId !== d.tab_id;
           this.store.focusedTabId = d.tab_id;
+          // Docked, the dock's client decides (its placement names its herdr tab).
+          if (this.docked && this.dockTab) return;
           this.showGroup(d.tab_id, { reason: 'follow', focusMoved: moved });
         }, 50);
         break;
@@ -415,13 +448,147 @@ class Companion {
   }
 
   layout() {
-    if (!this.win) return;
-    const [w, h] = this.win.getContentSize();
-    const top = this.chromeHeight;
+    const host = this.docked && this.dockWindow() ? this.dockWin : this.win;
+    if (!host) return;
+    const [w, h] = host.getContentSize();
+    const top = host === this.dockWin ? this.dockChromeHeight : this.chromeHeight;
     const e = this.activeEntry();
     this.views.layout(e ? e.view_id : null, { x: 0, y: top, width: w, height: Math.max(0, h - top) });
-    const label = this.shownTab ? this.store.label(this.shownTab) : null;
-    this.win.setTitle(label ? `${APP_NAME} — ${label}` : APP_NAME);
+    const title = this.windowTitle();
+    if (this.win) this.win.setTitle(title);
+    if (this.dockWindow()) this.dockWin.setTitle(title);
+  }
+
+  // `herdr+ companion — <label>`: the shown session.
+  windowTitle() {
+    if (!this.shownTab) return APP_NAME;
+    return `${APP_NAME} — ${this.store.label(this.shownTab)}`;
+  }
+
+  // ---------- docked mode (launcher design §3.4; dock/dock.js decides) ----------
+
+  dockWindow() {
+    return this.dockWin && !this.dockWin.isDestroyed() ? this.dockWin : null;
+  }
+
+  ensureDockWindow() {
+    if (this.dockWindow()) return this.dockWin;
+    const ui = session.fromPartition('herdr-ui');
+    const win = new BrowserWindow({
+      show: false,
+      frame: false,
+      hasShadow: false,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      hiddenInMissionControl: true,
+      acceptFirstMouse: true,
+      width: 600,
+      height: 400,
+      title: APP_NAME,
+      backgroundColor: DOCK_BACKGROUND,
+      paintWhenInitiallyHidden: true,
+      webPreferences: {
+        session: ui,
+        preload: path.join(__dirname, 'preload', 'strip.js'),
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    this.dockWin = win;
+    win.on('resize', () => this.layout());
+    win.on('focus', () => this.onWindowFocus());
+    // A click into the terminal orders it front: back above it at once.
+    win.on('blur', () => this.dock && this.dock.onBlur());
+    win.on('closed', () => {
+      if (this.dockWin === win) this.dockWin = null;
+    });
+    win.webContents.on('before-input-event', (e, input) => {
+      if (this.dockKey(input)) e.preventDefault();
+    });
+    win.loadURL(`${SCHEME}://ui/strip.html?mode=docked`).catch((e) => log('dock strip failed to load', e.message));
+    return win;
+  }
+
+  // dock.js: herdr keeps an area for the browser: the pages move into the dock window and
+  // the window hides (it comes back when docking ends, if it was up).
+  enterDocked() {
+    const win = this.ensureDockWindow();
+    this.docked = true;
+    this.mainWasVisible = !!(this.win && this.win.isVisible());
+    if (this.win && !HEADLESS) this.win.hide();
+    this.views.setHost(win);
+    this.layout();
+    this.pushStrip();
+  }
+
+  leaveDocked() {
+    this.docked = false;
+    this.dockTab = null;
+    if (this.win) this.views.setHost(this.win);
+    this.layout();
+    this.pushStrip();
+    if (this.mainWasVisible && this.win && !HEADLESS) this.win.showInactive();
+    // back to following herdr's focus
+    const focus = this.store.focusedTabId;
+    if (focus && focus !== this.shownTab) this.showGroup(focus, { reason: 'follow' });
+  }
+
+  // dock.js: the target placement's herdr tab shows in the dock.
+  dockShowsTab(tabId) {
+    this.dockTab = tabId;
+    if (tabId && tabId !== this.shownTab && this.store.tabs.has(tabId)) this.showGroup(tabId, { reason: 'follow', focusMoved: true });
+  }
+
+  // The window waits for herdr's first placements (docked: it never shows).
+  showStartupWindow() {
+    clearTimeout(this.startupTimer);
+    const show = this.startupShow;
+    this.startupShow = null;
+    if (!show || !this.win || this.docked || anyDockPlacement(this.feed && this.feed.placements)) return;
+    if (show === 'inactive') this.win.showInactive();
+    else if (show === 'show') this.win.show();
+  }
+
+  // Keys while the dock (or one of its pages) has the keyboard: ⌘⎋ gives it back to the
+  // terminal; the bar's shortcuts work without the menu bar (the dock is an accessory).
+  dockKey(input) {
+    if (!this.docked || !input || input.type !== 'keyDown') return false;
+    const cmd = process.platform === 'darwin' ? input.meta : input.control;
+    if (!cmd || input.alt) return false;
+    const key = String(input.key || '').toLowerCase();
+    if (key === 'escape') {
+      this.returnKeyboard();
+      return true;
+    }
+    const map = { t: 't', w: 'w', l: 'l', r: 'r', '[': '[', ']': ']' };
+    if (!input.shift && map[key]) {
+      this.handleKey(map[key]);
+      return true;
+    }
+    if (input.shift && key === 's') {
+      this.handleKey('send');
+      return true;
+    }
+    return false;
+  }
+
+  // The keyboard back to the terminal: hiding the app activates the one before it (the
+  // terminal); the dock comes back over it without taking the keyboard.
+  returnKeyboard() {
+    if (HEADLESS || process.platform !== 'darwin') return;
+    app.hide();
+    setTimeout(() => {
+      const win = this.dockWindow();
+      if (win && this.dock && this.dock.shown) {
+        win.showInactive();
+        this.dock.raise(win);
+      }
+    }, 60);
   }
 
   async openEntry(tabId, spec, { background = true } = {}) {
@@ -573,6 +740,9 @@ class Companion {
           log('test hook: crashing');
           setTimeout(() => process.exit(70), 20);
           return { ok: true };
+        case 'dock_debug':
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op dock_debug');
+          return this.dock ? this.dock.debug() : null;
         case '__hang':
           if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op __hang');
           log('test hook: no more heartbeats');
@@ -626,6 +796,17 @@ class Companion {
   raise({ user = false } = {}) {
     if (HEADLESS || !this.win) {
       log('raise suppressed (headless)');
+      return { ok: true, raised: false };
+    }
+    // Docked: the dock is where it is. The user's focus gives it the keyboard; an agent's
+    // only selects the page (◉ and herdr's notice bring the user).
+    if (this.docked) {
+      const dock = this.dockWindow();
+      if (user && dock && this.dock && this.dock.shown) {
+        dock.focus();
+        if (process.platform === 'darwin') app.focus({ steal: true });
+        return { ok: true, raised: true };
+      }
       return { ok: true, raised: false };
     }
     if (user) {
@@ -727,18 +908,26 @@ class Companion {
           this.report('user_action', 'forward', e, g);
         }
         return;
-      case 'send':
-        return this.win && this.win.webContents.executeJavaScript("document.getElementById('send').click()", true);
+      case 'send': {
+        const strip = this.stripWindow();
+        return strip && strip.webContents.executeJavaScript("document.getElementById('send').click()", true);
+      }
       case 'go':
         return this.goToTab();
       default:
     }
   }
 
+  // The window whose bar the user sees: the dock's while docked.
+  stripWindow() {
+    return this.docked && this.dockWindow() ? this.dockWin : this.win;
+  }
+
   focusUrl() {
-    if (!this.win || HEADLESS) return;
-    this.win.webContents.focus();
-    this.win.webContents.send('strip:focus-url');
+    const strip = this.stripWindow();
+    if (!strip || HEADLESS) return;
+    strip.webContents.focus();
+    strip.webContents.send('strip:focus-url');
   }
 
   async newTab(url = 'about:blank') {
@@ -761,7 +950,7 @@ class Companion {
     }
   }
 
-  async stripAction(name, a) {
+  async stripAction(name, a, { dock = false } = {}) {
     const g = this.shownGroup();
     const e = this.activeEntry(g);
     const wc = e && this.views.has(e.view_id) ? this.views.get(e.view_id).view.webContents : null;
@@ -770,8 +959,9 @@ class Companion {
         return this.pushStrip();
       case 'chrome-height': {
         const h = Math.max(40, Math.min(200, Number(a) || CHROME_HEIGHT));
-        if (h !== this.chromeHeight) {
-          this.chromeHeight = h;
+        const field = dock ? 'dockChromeHeight' : 'chromeHeight';
+        if (h !== this[field]) {
+          this[field] = h;
           this.layout();
         }
         return;
@@ -859,7 +1049,7 @@ class Companion {
     this.pushStrip();
   }
 
-  stripState() {
+  stripState({ dock = false } = {}) {
     const g = this.shownGroup();
     const active = this.activeEntry(g);
     const status = this.link ? this.link.status : { state: 'connecting', text: 'starting…' };
@@ -867,7 +1057,8 @@ class Companion {
     if (this.flash && this.flash.until > Date.now()) line = { level: this.flash.level, text: this.flash.text };
     else if (status.state !== 'registered') line = { level: 'warn', text: status.text };
     return {
-      inset: process.platform === 'darwin',
+      inset: process.platform === 'darwin' && !dock,
+      docked: dock,
       session: this.shownTab
         ? {
             tab_id: this.shownTab,
@@ -900,8 +1091,9 @@ class Companion {
   }
 
   pushStrip() {
-    if (!this.win || this.win.isDestroyed()) return;
-    this.win.webContents.send('strip:state', this.stripState());
+    if (this.win && !this.win.isDestroyed()) this.win.webContents.send('strip:state', this.stripState());
+    const dock = this.dockWindow();
+    if (dock) dock.webContents.send('strip:state', this.stripState({ dock: true }));
   }
 
   say(level, text, ms = 6000) {
@@ -1039,6 +1231,8 @@ class Companion {
 
   async shutdown() {
     if (this.watchdog) this.watchdog.stop();
+    if (this.dock) this.dock.stop();
+    if (this.feed) this.feed.stop();
     if (this.link) await this.link.stop();
   }
 }

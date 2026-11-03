@@ -344,6 +344,9 @@ impl BrowserHub {
         // Fork (companion launcher): always current (not seq-gated).
         info.companion_app = Some(self.companion_app_info());
         info.window_off = !config.window;
+        // Fork (companion launcher): the host's reports on the clients'
+        // placements, always current like the companion's state.
+        info.placements = super::placements::board().statuses();
         info
     }
 
