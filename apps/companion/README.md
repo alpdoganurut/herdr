@@ -134,6 +134,9 @@ covering, hidden, moving, unbound, unsupported, elsewhere), which herdr's placeh
   the terminal; ⌘T/W/L/R/[/] and ⌘⇧S work without the menu bar. Docked, a focus on another herdr
   tab's page keeps the dock on its tab: an agent's selects and marks the page there, the user's own
   focuses that herdr tab (the dock follows where that tab has it).
+* A right-click into a page opens its context menu (`src/context-menu.js`): back, forward and
+  reload; cut, copy, paste and select all; open or copy a link; open, copy or save an image;
+  inspect element.
 * The bar's count pill (`3 · 12`: pages in this session · in every session; `src/info.js`) lists
   every session with pages and focuses the herdr tab you pick; the window title carries the count.
 
@@ -188,6 +191,7 @@ herdr tabs swaps its pages. Quit the companion and the next `open` goes to the h
 | `src/host.js` | herdr link: register, heartbeat, events stream, reconnect |
 | `src/herdr-api.js` | newline-JSON socket client, socket path resolution |
 | `src/groups.js` | herdr tab → group bookkeeping, host_state merge, host_sync payloads (pure) |
+| `src/context-menu.js` | a page's context menu: what it offers for what was right-clicked (pure) |
 | `src/views.js` | WebContentsView per page, partitions, html sandbox, CDP target id, re-parenting (docked) |
 | `src/dock/` | docked mode: placements feed, window probe (JXA), geometry model, Ghostty config, the dock core and its Electron side |
 | `src/info.js` | the count pill and the sessions menu (pure) |

@@ -19,4 +19,5 @@ contextBridge.exposeInMainWorld('__herdrCompanion', {
   __crash: () => call('__crash'),
   __hang: () => call('__hang'),
   dock_debug: () => call('dock_debug'), // the dock's inputs, decision and window bounds
+  page_menu: (args) => call('page_menu', args), // the last page context menu ({close}: closes it)
 });

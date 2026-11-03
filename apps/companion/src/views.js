@@ -266,6 +266,8 @@ class ViewManager {
     wc.on('before-input-event', (e, input) => {
       if (this.hooks.onKey(input)) e.preventDefault();
     });
+    // a right-click: the page's context menu (main.js)
+    wc.on('context-menu', (_e, params) => this.hooks.onContextMenu && this.hooks.onContextMenu(id, params));
     if (entry.kind === 'html_view') {
       wc.setWindowOpenHandler(() => ({ action: 'deny' }));
       wc.on('will-navigate', (e, url) => {

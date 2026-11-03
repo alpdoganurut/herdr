@@ -41,6 +41,10 @@ pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../apps/companion/src/dock/window-probe.js"),
     ),
     (
+        "src/context-menu.js",
+        include_bytes!("../../apps/companion/src/context-menu.js"),
+    ),
+    (
         "src/groups.js",
         include_bytes!("../../apps/companion/src/groups.js"),
     ),

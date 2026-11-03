@@ -1,7 +1,7 @@
 // herdr+ companion browser: Electron main process (contract §6).
 // One window; a WebContentsView per page; one group of pages per herdr tab; follows herdr focus.
 'use strict';
-const { app, BrowserWindow, WebContentsView, ipcMain, protocol, session, Menu, net, nativeTheme, nativeImage } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, protocol, session, Menu, net, nativeTheme, nativeImage, clipboard } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -15,6 +15,7 @@ const { PlacementFeed, anyDockPlacement } = require('./dock/placements.js');
 const { WindowProbe } = require('./dock/window-probe.js');
 const { DockController } = require('./dock/dock.js');
 const { sessionCounts, sessionMenuItems } = require('./info.js');
+const { pageMenuItems } = require('./context-menu.js');
 
 const VERSION = require('../package.json').version;
 const APP_NAME = 'herdr+ companion'; // the macOS menu bar, Dock and window titles
@@ -134,6 +135,7 @@ class Companion {
       onKey: (input) => this.dockKey(input),
       onPermission: (id, req, done) => this.onPermission(id, req, done),
       onLeave: (id, origin) => this.onLeave(id, origin),
+      onContextMenu: (id, params) => this.openPageMenu(id, params),
     });
     this.prompts = []; // pending permission prompts {id, view_id, permission, label, origin, dones[], timer}
     this.nextPrompt = 1;
@@ -768,6 +770,14 @@ class Companion {
         case 'dock_debug':
           if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op dock_debug');
           return this.dock ? this.dock.debug() : null;
+        case 'page_menu': {
+          // the last page context menu: its items and whether it is open; `close` closes it
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op page_menu');
+          const m = this.pageMenu;
+          if (!m) return null;
+          if (a && a.close && m.open) m.menu.closePopup();
+          return { view_id: m.view_id, items: m.items, open: m.open };
+        }
         case '__hang':
           if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op __hang');
           log('test hook: no more heartbeats');
@@ -1132,6 +1142,57 @@ class Companion {
   // The bar's count pill: pages in the shown session, pages and sessions in all of herdr.
   sessionInfo() {
     return sessionCounts(this.store, this.shownTab);
+  }
+
+  // A right-click into a page: its context menu (src/context-menu.js) at the pointer, in the
+  // window the page is in (the dock's while docked). Back, forward and reload go the strip's
+  // way (reported to herdr like the buttons).
+  openPageMenu(viewId, params = {}) {
+    if (!this.views.has(viewId) || HEADLESS) return 0;
+    const wc = this.views.get(viewId).view.webContents;
+    const link = String(params.linkURL || '');
+    const src = String(params.srcURL || '');
+    const actions = {
+      'open-link': () => this.onWindowOpen(viewId, link, 'foreground-tab'),
+      'copy-link': () => clipboard.writeText(link),
+      'open-image': () => this.onWindowOpen(viewId, src, 'foreground-tab'),
+      'copy-image': () => wc.copyImageAt(params.x, params.y),
+      'copy-image-address': () => clipboard.writeText(src),
+      'save-image': () => wc.downloadURL(src),
+      undo: () => wc.undo(),
+      redo: () => wc.redo(),
+      cut: () => wc.cut(),
+      copy: () => wc.copy(),
+      paste: () => wc.paste(),
+      'select-all': () => wc.selectAll(),
+      back: () => this.handleKey('['),
+      forward: () => this.handleKey(']'),
+      reload: () => this.handleKey('r'),
+      inspect: () => wc.inspectElement(params.x, params.y),
+    };
+    const template = pageMenuItems(params, this.views.navState(viewId)).map((it) =>
+      it.type === 'separator'
+        ? it
+        : {
+            label: it.label,
+            enabled: it.enabled,
+            click: () => {
+              try {
+                actions[it.id]();
+              } catch (e) {
+                this.say('warn', `${it.label} failed: ${e.message}`);
+              }
+            },
+          },
+    );
+    const win = this.stripWindow();
+    if (!win) return 0;
+    const menu = Menu.buildFromTemplate(template);
+    // the test hook's view of the last one (page_menu)
+    this.pageMenu = { view_id: viewId, items: template.map((it) => (it.type === 'separator' ? '-' : it.label)), menu, open: true };
+    const shown = this.pageMenu;
+    menu.popup({ window: win, callback: () => (shown.open = false) });
+    return template.length;
   }
 
   // The pill's menu: one item per herdr tab with pages; choosing one focuses it in herdr
