@@ -133,7 +133,11 @@ covering, hidden, moving, unbound, unsupported, elsewhere), which herdr's placeh
   docked bar is always Dusk, without traffic lights or a drag region. ⌘⎋ gives the keyboard back to
   the terminal; ⌘T/W/L/R/[/] and ⌘⇧S work without the menu bar. Docked, a focus on another herdr
   tab's page keeps the dock on its tab: an agent's selects and marks the page there, the user's own
-  focuses that herdr tab (the dock follows where that tab has it).
+  focuses that herdr tab (the dock follows where that tab has it). When you bring the companion up
+  (a click into the dock, herdr's focus companion) while another app's window is above its
+  terminal, the terminal's window comes along (`src/dock/front.jxa.js`: Ghostty's own "select tab",
+  no activation, so the keyboard stays in the dock; macOS asks once for Automation), and the dock
+  stays above it instead of dropping back under the other window.
 * A right-click into a page opens its context menu (`src/context-menu.js`): back, forward and
   reload; cut, copy, paste and select all; open or copy a link; open, copy or save an image;
   inspect element.

@@ -37,6 +37,9 @@ const VARIANTS = {
   // the defaults, then a second native tab and switches between the tabs (tabSequence below);
   // the second tab runs cat, not a shell
   tabs: { args: ['--command=/bin/cat'], cols: 120, rows: 36, config: {}, tabs: true },
+  // the defaults, then the user bringing the companion up over another app (pairSequence) and
+  // a right-click into a page (its context menu)
+  pair: { args: [], cols: 120, rows: 36, config: {}, pair: true },
 };
 
 const env = {
@@ -420,6 +423,7 @@ async function measureVariant(name, v, out) {
   say(`z-order: directly above the Ghostty window: ${out.directlyAbove} (dock layer ${out.dockLayer}); probe CPU ${out.probeCpuPct}% of a core`);
   if (v.clicks) out.clicks = await clickSequence({ ghostty, term, dock, debug });
   if (v.tabs) out.tabs = await tabSequence({ ghostty, term, dock, debug });
+  if (v.pair) out.pair = await pairSequence({ cdp, control, ghostty, term, dock, debug, companionPid });
   await cdp.close().catch(() => {});
   return out;
 }
@@ -578,7 +582,11 @@ async function tabSequence({ ghostty, term, dock, debug }) {
     }
     prev = termOn;
     if (!termOn && dockOn) overOther += 1;
-    if (termOn && dockOn && !dockAbove) below += 1;
+    // within 100 ms of a click from another app the window server may order the terminal over
+    // the dock before the activation notice raises it (the clicks variant owns that contract)
+    const e = res.events.filter((x) => x.t <= t).at(-1);
+    const nearClick = e && e.what === 'click' && t - e.t < 100;
+    if (termOn && dockOn && !dockAbove && !nearClick) below += 1;
     if (pending === 'hide' && !dockOn) {
       hideLag.push(Math.round(t - since));
       pending = null;
@@ -598,6 +606,108 @@ async function tabSequence({ ghostty, term, dock, debug }) {
   res.ok = !failed.length && res.samples > 1000 && hideLag.length >= 3 && showLag.length >= 3 && pending === null && Math.max(...hideLag) <= 250 && Math.max(...showLag) <= 500 && below === 0 && after.shown;
   say(`tabs: ${res.events.map((e) => `${e.what}=${e.r}`).join(', ')}; ${res.samples} on-screen samples every 2 ms`);
   say(`tabs: the dock left the screen ${hideLag.length} times after its tab did (lag ms ${hideLag.join('/')}), came back ${showLag.length} times (lag ms ${showLag.join('/')}); on screen without its tab in ${overOther} samples; below the terminal in ${below}; shown at the end ${after.shown}`);
+  return res;
+}
+
+// The user brings the companion up while another app's window covers the terminal (herdr's
+// "focus companion": the control page's raise({user}), which activates the companion as a
+// click into the dock does): the terminal's window must come along without Ghostty becoming
+// the active app, the dock above it, the other app's window behind both. Three rounds, the
+// order sampled every 2 ms. Then a page and a right-click into it (CDP input): its context
+// menu opens (a companion window at the menu level in CGWindowList) and closes.
+async function pairSequence({ cdp, control, ghostty, term, dock, debug, companionPid }) {
+  if (MEASURE !== 'swift') throw new Error('the pairing needs the compiled Swift reader (swiftc)');
+  const res = { rounds: [] };
+  const helperBin = path.join(T, 'helper');
+  if (!fs.existsSync(helperBin)) {
+    fs.writeFileSync(`${helperBin}.swift`, HELPER_SWIFT);
+    execFileSync('/usr/bin/swiftc', ['-O', '-o', helperBin, `${helperBin}.swift`], { stdio: 'ignore', timeout: 180000 });
+  }
+  // over the terminal and half the dock
+  const helper = spawn(helperBin, [Math.round(term.x + 120), Math.round(term.y + 80), Math.round(dock.x - term.x), 360].map(String), { stdio: ['pipe', 'pipe', 'ignore'] });
+  let helperOut = '';
+  helper.stdout.on('data', (d) => (helperOut += d));
+  const helperWid = Number(await waitFor(() => helperOut.trim(), 5000, 50));
+  const frontPid = () => {
+    const asn = execFileSync('/usr/bin/lsappinfo', ['front'], { encoding: 'utf8' }).trim();
+    const m = /"pid"\s*=\s*(\d+)/.exec(execFileSync('/usr/bin/lsappinfo', ['info', '-only', 'pid', asn], { encoding: 'utf8' }));
+    return m ? Number(m[1]) : null;
+  };
+  let watchOut = '';
+  const watchSeconds = 3 * 3.2 + 1;
+  const watcher = spawn(CGWIN, ['watch', term.num, dock.num, helperWid || 0, 2, watchSeconds].map(String), { stdio: ['ignore', 'pipe', 'ignore'] });
+  watcher.stdout.on('data', (d) => (watchOut += d));
+  const marks = [];
+  for (let i = 0; i < 3; i++) {
+    helper.stdin.write('front\n');
+    await sleep(1200);
+    const covered = { front: frontPid() };
+    const t = Date.now();
+    await control.evaluate(() => globalThis.__herdrCompanion.raise({ user: true }));
+    marks.push(t);
+    await sleep(2000);
+    const after = await debug();
+    res.rounds.push({ before: covered.front, after: frontPid(), paired: after.paired, shown: after.shown, level: after.level });
+  }
+  await waitFor(() => watcher.exitCode !== null, (watchSeconds + 5) * 1000, 100);
+  let samples = [];
+  try {
+    samples = JSON.parse(watchOut);
+  } catch {}
+  // from 400 ms after each activation until the next "other app" step: the helper must not be
+  // above the terminal and the dock must be
+  let bad = 0;
+  let judged = 0;
+  const settle = [];
+  for (const m of marks) {
+    const win = samples.filter(([t]) => t >= m && t < m + 1900);
+    const firstGood = win.find(([, dockAbove, , helperAbove]) => dockAbove && !helperAbove);
+    settle.push(firstGood ? Math.round(firstGood[0] - m) : null);
+    for (const [t, dockAbove, , helperAbove] of win) {
+      if (t < m + 400) continue;
+      judged += 1;
+      if (!dockAbove || helperAbove) bad += 1;
+    }
+  }
+  fs.writeFileSync(`${REPORT}.pair.json`, JSON.stringify({ term: term.num, dock: dock.num, helper: helperWid, marks, rounds: res.rounds, samples }));
+  res.judged = judged;
+  res.bad = bad;
+  res.settle = settle;
+  const fronts = res.rounds.map((r) => r.after);
+  res.ok = !!helperWid && judged > 1000 && bad === 0 && fronts.every((p) => p === companionPid) && res.rounds.every((r) => r.before !== companionPid && r.shown);
+  say(`pair: 3 activations over another app (front before ${res.rounds.map((r) => r.before).join('/')}, after ${fronts.join('/')}; companion ${companionPid}, Ghostty ${ghostty}); the terminal came along in ${settle.join('/')} ms; ${bad} of ${judged} samples from 400 ms on with the other app above the terminal or the dock not above it`);
+  // the context menu: a page, a right-click on its body and on a link
+  const opened = await control.evaluate(() => globalThis.__herdrCompanion.open({ url: 'about:blank', background: false }));
+  await sleep(800);
+  const page = await waitFor(async () => {
+    for (const ctx of cdp.contexts()) for (const p of ctx.pages()) if (p.url().startsWith('about:blank') && !p.url().includes('control')) return p;
+    return null;
+  }, 5000);
+  const menus = [];
+  if (page) {
+    await page.evaluate(() => {
+      document.body.innerHTML = '<p style="font:20px sans-serif;margin:40px">some text</p><a id="l" href="https://example.com/" style="font:20px sans-serif;margin:40px">a link</a>';
+    });
+    const link = await page.evaluate(() => {
+      const r = document.getElementById('l').getBoundingClientRect();
+      return { x: r.x + 5, y: r.y + r.height / 2 };
+    });
+    for (const [what, x, y] of [['page', 200, 300], ['link', link.x, link.y]]) {
+      await page.mouse.click(x, y, { button: 'right' });
+      const m = await waitFor(() => control.evaluate(() => globalThis.__herdrCompanion.page_menu()).then((r) => (r && r.open ? r : null)), 3000, 50);
+      // a window at the pop-up menu level (101) above the dock
+      const menuWindow = aboveOf(dock.num).some(([, layer]) => layer === 101);
+      menus.push({ what, items: m && m.items, menuWindow });
+      await control.evaluate(() => globalThis.__herdrCompanion.page_menu({ close: true }));
+      await sleep(300);
+    }
+  }
+  helper.stdin.end('quit\n');
+  res.menus = menus;
+  res.view = opened && opened.view_id;
+  const menuOk = menus.length === 2 && menus[0].items && menus[0].items.includes('Reload') && menus[1].items && menus[1].items.includes('Open Link in New Tab');
+  res.ok = res.ok && menuOk;
+  for (const m of menus) say(`context menu on the ${m.what}: ${m.items ? m.items.join(', ') : 'none'}; menu window above the dock: ${m.menuWindow}`);
   return res;
 }
 
@@ -630,5 +740,5 @@ for (const r of results) {
 }
 fs.writeFileSync(REPORT, lines.join('\n') + '\n');
 console.log(`\nreport: ${REPORT}`);
-const bad = results.filter((r) => r.error || r.maxErrPt > 1 || !r.directlyAbove || (r.clicks && !r.clicks.ok) || (r.tabs && !r.tabs.ok));
+const bad = results.filter((r) => r.error || r.maxErrPt > 1 || !r.directlyAbove || (r.clicks && !r.clicks.ok) || (r.tabs && !r.tabs.ok) || (r.pair && !r.pair.ok));
 process.exit(bad.length ? 1 : 0);

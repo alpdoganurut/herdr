@@ -26,6 +26,13 @@
 // activation notice, at once) or another window gets above the terminal (the next sample),
 // it is back at the normal level directly above the terminal, so other windows cover both.
 // Windows of other processes cannot be parent and child (addChildWindow is in-process only).
+// The user brings the companion to the front (a click into the dock while another app is in
+// front, `browser companion focus`) while other windows are above the terminal: the terminal's
+// window comes along ("paired"), ordered front by its own app's scripting without activating it
+// (dock/front.jxa.js: an inactive app's window goes just below the active app's, so the pair
+// sits together above the others and the keyboard stays in the dock); meanwhile the dock stays
+// raised instead of dropping back under those windows. Once per activation; never for an
+// agent (an agent's focus never activates the companion).
 
 'use strict';
 
@@ -33,6 +40,9 @@ const { execFile } = require('node:child_process');
 const { placementRect, isFullScreen, REASONS } = require('./geometry.js');
 const { chooseTarget, anyDockPlacement } = require('./placements.js');
 const { readGhosttyConfig } = require('./ghostty-config.js');
+const path = require('node:path');
+
+const FRONT = path.join(__dirname, 'front.jxa.js');
 
 const SETTLE_MS = 120;
 // Right after a move or resize herdr's placement may still describe the old size: a
@@ -70,6 +80,9 @@ function readTerminalSettings(pid, fake, done) {
 // A sample taken this soon after the frontmost app changed may still show the order from
 // before: it does not take the dock off the raised level.
 const FRONT_SETTLE_MS = 50;
+// After the terminal's window was asked to come along with the companion: the dock stays
+// raised this long while the order catches up (or the ask failed: then back under the others).
+const PAIR_MS = 800;
 // The level above normal windows: one above (other apps' floating panels stay above it).
 const RAISED = ['normal', 1];
 
@@ -120,6 +133,10 @@ class DockCore {
     this.movedAt = 0; // the last change (for RESETTLE_MS)
     this.dockWid = null; // our dock window's number (z-order upkeep)
     this.front = null; // {pid, at}: the frontmost app (null: not known yet)
+    this.pairedFor = null; // the activation (front.at) the terminal's window was asked for
+    this.pairAt = 0; // when
+    this.pairOff = false; // the terminal's app refused (no Automation), or it missed: never asked again
+    this.pairMissed = false; // an ask took the terminal's window off screen
   }
 
   // The frontmost app changed (the workspace's notice, or read once at the start).
@@ -151,6 +168,12 @@ class DockCore {
       this.candidatesSeq += 1;
     }
     const t = sample.target;
+    // Right after the terminal's window was asked to come along, it went off screen: the ask
+    // reached another window (Ghostty's "front window" can be on another Space). Never again.
+    if (this.pairAt && !this.pairOff && this.bound && t && t.num === this.bound.wid && t.on === false && now - this.pairAt < PAIR_MS) {
+      this.pairOff = true;
+      this.pairMissed = true;
+    }
     if (this.bound && t && t.num === this.bound.wid) {
       if (!sameFrame(t, this.frame)) {
         this.frame = { x: t.x, y: t.y, w: t.w, h: t.h };
@@ -284,7 +307,8 @@ class DockCore {
     // Directly above the terminal window: the last layer-0 window of its above-list.
     const above = ((this.sample && this.sample.above) || []).filter((w) => (w[2] || 0) === 0);
     const last = above.length ? above[above.length - 1][0] : null;
-    out.level = this._raised(above) ? 'raised' : 'normal';
+    out.pair = this._pair(above, now);
+    out.level = this._raised(above, now) ? 'raised' : 'normal';
     out.raise = out.level === 'normal' && (this.dockWid === null || last !== this.dockWid);
     return say('covering');
   }
@@ -292,20 +316,47 @@ class DockCore {
   // Raised: the terminal's app or the companion is the frontmost app, and no other normal
   // window is above the terminal (a sample from right after the app came to the front may
   // still show the app before it: until a later one, the dock stays raised).
-  _raised(above) {
+  _raised(above, now) {
     const f = this.front;
     if (!f || !this.bound || (f.pid !== this.bound.pid && f.pid !== this.env.selfPid)) return false;
     if (!above.some((w) => w[0] !== this.dockWid)) return true;
+    if (f.pid === this.env.selfPid && this.pairedFor === f.at && now - this.pairAt < PAIR_MS) return true;
     const t = this.sample && typeof this.sample.t === 'number' ? this.sample.t : 0;
     return t < f.at + FRONT_SETTLE_MS;
   }
+
+  // The companion came to the front with other windows above the terminal: the terminal's
+  // window, to come along ({pid, rank, onscreen}: its place among its app's on-screen windows,
+  // front to back, from the last candidate list), once per activation; else null.
+  _pair(above, now) {
+    const f = this.front;
+    if (this.pairOff || !f || f.pid !== this.env.selfPid || !this.bound || !this.dockWid) return null;
+    if (this.pairedFor === f.at || !above.some((w) => w[0] !== this.dockWid)) return null;
+    const mine = (this.candidates || []).filter((w) => w.pid === this.bound.pid);
+    const i = mine.findIndex((w) => w.num === this.bound.wid);
+    if (i < 0) return null;
+    this.pairedFor = f.at;
+    this.pairAt = now;
+    return { pid: this.bound.pid, rank: i + 1, onscreen: mine.length };
+  }
+}
+
+// The terminal's window to the front with the companion (front.jxa.js); `done(status)`:
+// 'ok', 'skipped' (not sure which window it is), 'denied' (no Automation), 'failed'.
+function orderFrontTerminal({ pid, rank, onscreen }, done) {
+  execFile('/usr/bin/osascript', ['-l', 'JavaScript', FRONT, String(pid), String(rank), String(onscreen)], { encoding: 'utf8', timeout: 5000 }, (err, stdout, stderr) => {
+    const code = err ? err.code : 0;
+    done(code === 0 ? 'ok' : code === 4 ? 'skipped' : code === 5 ? 'denied' : 'failed', String(stderr || '').trim());
+  });
 }
 
 // The Electron side. `host` is the companion (main.js): views, windows, strip, groups.
 class DockController {
   // `readSettings(pid, fake, done)`: the terminal's settings (tests replace it).
   // `readFront(done)`: the frontmost app's pid (tests replace it).
-  constructor({ host, feed, probe, log = () => {}, headless = false, platform = process.platform, electron, readSettings = readTerminalSettings, readFront = readFrontPid, selfPid = process.pid }) {
+  // `orderFront(pair, done)`: the terminal's window to the front with the companion
+  // (orderFrontTerminal; none headless or with fake windows; tests replace it).
+  constructor({ host, feed, probe, log = () => {}, headless = false, platform = process.platform, electron, readSettings = readTerminalSettings, readFront = readFrontPid, selfPid = process.pid, orderFront }) {
     this.host = host;
     this.feed = feed;
     this.probe = probe;
@@ -314,6 +365,7 @@ class DockController {
     this.electron = electron;
     this.readSettings = readSettings;
     this.readFront = readFront;
+    this.orderFront = orderFront !== undefined ? orderFront : headless || probe.fakeFile || platform !== 'darwin' ? null : orderFrontTerminal;
     const { screen } = electron;
     // pid -> {cfg, at, reading, key: the geometryKey they were read for, seen: the last one
     // asked about, timer: a re-read waiting for CONFIG_FOLLOW_MS}: the terminal's settings
@@ -467,6 +519,13 @@ class DockController {
     }
     if (!this.docked) return;
     if (d.tabId) this.host.dockShowsTab(d.tabId);
+    if (d.pair && this.orderFront) {
+      this.orderFront(d.pair, (status, why) => {
+        if (status !== 'ok') this.log(`dock: the terminal's window did not come along (${status}${why ? `: ${why}` : ''})`);
+        if (status === 'denied') this.core.pairOff = true;
+        if (!this.stopped) this.apply();
+      });
+    }
     const win = this.host.dockWindow();
     if (!win) return;
     if (d.show && d.rect) {
@@ -591,6 +650,7 @@ class DockController {
       accessory: this.accessory,
       level: this.level,
       front: this.core.front,
+      paired: { for: this.core.pairedFor, at: this.core.pairAt, off: this.core.pairOff, missed: this.core.pairMissed },
     };
   }
 
@@ -609,4 +669,4 @@ class DockController {
   }
 }
 
-module.exports = { DockCore, DockController, SETTLE_MS, RESETTLE_MS, FRONT_SETTLE_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, geometryKey, activatedPid };
+module.exports = { DockCore, DockController, SETTLE_MS, RESETTLE_MS, FRONT_SETTLE_MS, PAIR_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, geometryKey, activatedPid };

@@ -21,6 +21,10 @@ pub const COMPANION_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../apps/companion/src/dock/dock.js"),
     ),
     (
+        "src/dock/front.jxa.js",
+        include_bytes!("../../apps/companion/src/dock/front.jxa.js"),
+    ),
+    (
         "src/dock/geometry.js",
         include_bytes!("../../apps/companion/src/dock/geometry.js"),
     ),

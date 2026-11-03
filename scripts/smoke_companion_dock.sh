@@ -2,7 +2,7 @@
 # Live dock alignment smoke (launcher design §10.2): the companion's dock window over a real
 # Ghostty window, measured.
 #
-#   scripts/smoke_companion_dock.sh [--variants small,defaults,large,padding,balanced,native,hidden,clicks,tabs] [--report <file>] [--keep]
+#   scripts/smoke_companion_dock.sh [--variants small,defaults,large,padding,balanced,native,hidden,clicks,tabs,pair] [--report <file>] [--keep]
 #
 # For each variant a SEPARATE background Ghostty instance (never the user's) runs an isolated
 # herdr client that docks the browser on its own (HERDR_TEST_BROWSER_VIEW=side); the companion
@@ -20,6 +20,9 @@
 # `tabs` is the defaults plus a second native Ghostty tab and switches between the two (Ghostty's
 # "new tab" and "goto_tab" over Apple Events, the test instance only, same permission rule),
 # sampled every 2 ms: the dock leaves the screen with its tab and comes back with it.
+# `pair` is the defaults plus the companion brought up over another app's window (herdr's focus
+# companion): the terminal's window comes along, Ghostty never activated; then a right-click into
+# a page opens its context menu.
 #
 # Ghostty creates its first window only when the instance is activated: each variant brings its
 # own instance to the front for a few seconds (the user's windows are never touched, focused,

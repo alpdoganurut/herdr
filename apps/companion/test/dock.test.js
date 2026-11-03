@@ -4,7 +4,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { DockCore, DockController, SETTLE_MS, RESETTLE_MS, FRONT_SETTLE_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, geometryKey, activatedPid } = require('../src/dock/dock.js');
+const { DockCore, DockController, SETTLE_MS, RESETTLE_MS, FRONT_SETTLE_MS, PAIR_MS, NO_WINDOW, NOT_MAC, CONFIG_PENDING, CONFIG_FOLLOW_MS, geometryKey, activatedPid } = require('../src/dock/dock.js');
 const { chooseTarget, anyDockPlacement } = require('../src/dock/placements.js');
 const { REASONS } = require('../src/dock/geometry.js');
 
@@ -149,6 +149,75 @@ test('clicks into the terminal: the dock stays shown at one level, never hidden 
   assert.ok(seen.every(([show, level, raise, state]) => show && level === 'raised' && !raise && state === 'covering'), JSON.stringify(seen));
 });
 
+// The user brings the companion to the front while another app's window is above the
+// terminal: the terminal's window is asked to come along (once per activation), and the dock
+// stays raised meanwhile instead of dropping back under that window.
+test('the companion activated over another app: the terminal comes along, the dock stays raised', () => {
+  const c = covering();
+  c.setFront(OTHER, 0);
+  at(c, 100, [[77, OTHER, 0], [99, SELF, 0]]); // the other app's window above the dock and terminal
+  let d = c.decide(101);
+  assert.equal(d.level, 'normal');
+  assert.equal(d.pair, null, 'another app in front: nothing to bring');
+  // the user clicks into the dock: the companion is frontmost, the order is from before
+  c.setFront(SELF, 200);
+  at(c, 210, [[99, SELF, 0], [77, OTHER, 0]]);
+  d = c.decide(211);
+  assert.deepEqual(d.pair, { pid: GHOSTTY, rank: 1, onscreen: 1 });
+  assert.equal(d.level, 'raised', 'not dropped back under the other window');
+  assert.equal(d.raise, false);
+  d = c.decide(212);
+  assert.equal(d.pair, null, 'once per activation');
+  assert.equal(d.level, 'raised');
+  // the terminal came along: nothing else above it
+  at(c, 300, [[99, SELF, 0]]);
+  d = c.decide(301);
+  assert.equal(d.level, 'raised');
+  assert.equal(d.pair, null);
+  // a later activation asks again; one that did not bring it ends at the normal level
+  c.setFront(OTHER, 400);
+  at(c, 410, [[77, OTHER, 0], [99, SELF, 0]]);
+  c.setFront(SELF, 500);
+  assert.ok(c.decide(501).pair);
+  at(c, 500 + PAIR_MS + 10, [[99, SELF, 0], [77, OTHER, 0]]);
+  d = c.decide(500 + PAIR_MS + 11);
+  assert.equal(d.level, 'normal', 'the ask failed: back directly above the terminal, under the others');
+  assert.equal(d.raise, true);
+});
+
+test('no pairing for the terminal frontmost, nothing above it, or the terminal app refusing', () => {
+  const c = covering();
+  c.setFront(GHOSTTY, 0);
+  at(c, 100, [[12, GHOSTTY, 0]]); // another Ghostty window above: Ghostty is frontmost, not us
+  assert.equal(c.decide(101).pair, null);
+  c.setFront(SELF, 200);
+  at(c, 210, [[99, SELF, 0]]); // the dock was raised over its terminal: the user clicked it
+  assert.equal(c.decide(211).pair, null, 'already together');
+  c.pairOff = true;
+  c.setFront(OTHER, 300);
+  c.setFront(SELF, 400);
+  at(c, 410, [[99, SELF, 0], [77, OTHER, 0]]);
+  assert.equal(c.decide(411).pair, null);
+  // an ask that took the terminal's window off screen (it reached another window): never again
+  const c3 = covering();
+  c3.setFront(OTHER, 0);
+  c3.setFront(SELF, 100);
+  at(c3, 110, [[99, SELF, 0], [77, OTHER, 0]]);
+  assert.ok(c3.decide(111).pair);
+  c3.onSample({ t: 200, wid: 11, target: win(11, 100, 200, { on: false }), above: [] }, 200);
+  assert.equal(c3.pairOff, true);
+  assert.equal(c3.pairMissed, true);
+  // a sibling window of the same app before it in the candidate list: rank 2 of 2
+  const c2 = covering();
+  c2.decide(1); // bound to 11 (the client's focus answered)
+  c2.onSample({ t: 2, candidates: [win(12, 400, 300), win(11)] }, 2);
+  c2.decide(3);
+  assert.equal(c2.bound.wid, 11);
+  c2.setFront(SELF, 10);
+  at(c2, 20, [[99, SELF, 0], [77, OTHER, 0]]);
+  assert.deepEqual(c2.decide(21).pair, { pid: GHOSTTY, rank: 2, onscreen: 2 });
+});
+
 test('the pid of a workspace activation notice', () => {
   assert.equal(activatedPid({ NSWorkspaceApplicationKey: '<NSRunningApplication: 0x1240002c8d0 (com.mitchellh.ghostty - 659) LSASN:{hi=0x0;lo=0xf047038}>' }), 659);
   assert.equal(activatedPid({ NSWorkspaceApplicationKey: '<NSRunningApplication: 0x1 (com.github.Electron - 94763)>' }), 94763);
@@ -210,6 +279,26 @@ test('the controller changes the level only when it changes, and orders the dock
   assert.deepEqual(calls, []);
   ctl.stop();
   assert.deepEqual(calls, ['unsub 7']);
+});
+
+test('the controller asks for the terminal window once per pairing; a refusal stops the asks', () => {
+  const feed = Object.assign(new EventEmitter(), { report() {} });
+  const probe = Object.assign(new EventEmitter(), { watch() {}, stop() {}, fakeFile: null });
+  const host = { dockWindow: () => null, dockShowsTab() {}, enterDocked() {}, leaveDocked() {}, layout() {} };
+  const electron = { screen: { getDisplayMatching: () => ({ scaleFactor: 2, bounds: { x: 0, y: 0, width: 100, height: 100 } }) }, app: {} };
+  const asks = [];
+  const ctl = new DockController({ host, feed, probe, headless: true, platform: 'darwin', electron, orderFront: (pair, done) => asks.push({ pair, done }) });
+  ctl.docked = true;
+  let next = { docked: true, watch: {}, reports: [], pair: { pid: 700, rank: 1, onscreen: 1 } };
+  ctl.core = { decide: () => next, setPlacements() {}, onSample() {}, bound: null, dockWid: null, pairOff: false };
+  ctl.apply();
+  assert.equal(asks.length, 1);
+  assert.deepEqual(asks[0].pair, { pid: 700, rank: 1, onscreen: 1 });
+  next = { ...next, pair: null };
+  asks[0].done('denied', 'not allowed');
+  assert.equal(ctl.core.pairOff, true);
+  assert.equal(asks.length, 1, 'decided again, nothing asked');
+  ctl.stop();
 });
 
 test('a move hides the dock until the window settles; off screen hides it', () => {
