@@ -71,9 +71,6 @@ const MIN_FIELD_CELLS: u16 = 4;
 pub(crate) const SEARCH_GLYPH: &str = "\u{2315}"; // ⌕
 /// The recency chip's glyph.
 pub(crate) const RECENCY_GLYPH: &str = "\u{25F7}"; // ◷
-/// The notes button's glyph (the focused tab's info pane), the menus'
-/// Info pane glyph.
-pub(crate) const NOTES_GLYPH: &str = "\u{25E7}"; // ◧
 /// The tab history buttons' glyphs.
 pub(crate) const HISTORY_BACK_GLYPH: &str = "\u{2039}"; // ‹
 pub(crate) const HISTORY_FORWARD_GLYPH: &str = "\u{203A}"; // ›
@@ -269,14 +266,6 @@ pub(crate) fn full_mask(terms: &[String]) -> u64 {
     }
 }
 
-/// The toolbar's notes button: one cell, two blank cells before `+` (at
-/// `right - 2`, render_toolbar), so a wide `◧` does not crowd it. `None`
-/// when it would reach the fold toggle.
-pub(super) fn notes_button_rect(content: Rect) -> Option<Rect> {
-    let x = content.right().checked_sub(5)?;
-    (x >= content.x.saturating_add(3) && content.height > 0).then(|| Rect::new(x, content.y, 1, 1))
-}
-
 /// The toolbar's tab history buttons, `‹` and `›`: one cell each after the
 /// fold toggle's slot, one blank cell between and after them. `None` when
 /// the search field would be left fewer than `MIN_FIELD_CELLS`: the buttons
@@ -294,20 +283,20 @@ pub(super) fn history_button_rects(content: Rect) -> Option<(Rect, Rect)> {
 /// The field's width when it starts at `field_x`; `None` under
 /// `MIN_FIELD_CELLS`.
 fn field_width(content: Rect, field_x: u16) -> Option<u16> {
-    // The notes button sits at `right - 5` (notes_button_rect); the chip
-    // ends one cell before it.
-    let chip_x = content.right().checked_sub(6 + CHIP_CELLS)?;
+    // `+` sits at `right - 2` (render_toolbar); the chip ends one blank
+    // cell before it. Fork (session header): the notes button moved to the
+    // header's `▤`.
+    let chip_x = content.right().checked_sub(3 + CHIP_CELLS)?;
     let width = chip_x.checked_sub(1)?.checked_sub(field_x)?;
     (width >= MIN_FIELD_CELLS && content.height > 0).then_some(width)
 }
 
 /// The toolbar's filter controls for one frame: the field from after the
 /// fold toggle (and the history buttons, when they fit) to the chip, the
-/// chip right-aligned before the notes button with one blank cell on each
-/// side. `None` when the toolbar is too narrow.
+/// chip right-aligned before `+` with one blank cell between. `None` when the toolbar is too narrow.
 pub(super) fn control_rects(content: Rect) -> Option<(Rect, Rect)> {
     let y = content.y;
-    let chip_x = content.right().checked_sub(6 + CHIP_CELLS)?;
+    let chip_x = content.right().checked_sub(3 + CHIP_CELLS)?;
     let start = if history_button_rects(content).is_some() {
         7
     } else {
@@ -721,13 +710,6 @@ impl ClientShellState {
             self.clear_sidebar_filters(outcome);
             return true;
         }
-        if super::contains(self.hits.sidebar_notes, point) {
-            // The focused tab's info pane, never taking the keyboard.
-            self.toggle_info_pane_for_focused_tab(outcome);
-            self.sidebar_hover = Some(super::sidebar_model::SidebarHover::Toolbar);
-            outcome.repaint = true;
-            return true;
-        }
         // The tab history buttons do what their keys do; a dim one (no
         // history that way) sends nothing.
         for (rect, action) in [
@@ -887,29 +869,28 @@ mod tests {
     }
 
     #[test]
-    fn control_rects_sit_between_the_toggle_and_the_notes_button() {
+    fn control_rects_sit_between_the_toggle_and_the_new_tab_button() {
         let (field, chip) = control_rects(Rect::new(0, 0, 30, 20)).expect("fits");
-        assert_eq!((field.x, field.width), (7, 11), "after the history buttons");
-        assert_eq!((chip.x, chip.width), (19, CHIP_CELLS));
-        let notes = notes_button_rect(Rect::new(0, 0, 30, 20)).expect("fits");
-        assert_eq!((notes.x, notes.width), (25, 1));
-        assert_eq!(chip.right() + 1, notes.x, "one blank cell between");
-        assert!(control_rects(Rect::new(0, 0, 14, 20)).is_none());
-        assert!(notes_button_rect(Rect::new(0, 0, 14, 20)).is_some());
-        assert!(notes_button_rect(Rect::new(0, 0, 7, 20)).is_none());
+        assert_eq!((field.x, field.width), (7, 14), "after the history buttons");
+        assert_eq!((chip.x, chip.width), (22, CHIP_CELLS));
+        // `+` sits at right - 2: one blank cell between.
+        assert_eq!(chip.right() + 1, 28);
+        assert!(control_rects(Rect::new(0, 0, 11, 20)).is_none());
     }
 
     #[test]
     fn history_buttons_lead_the_toolbar_and_drop_before_the_field() {
         let (back, forward) = history_button_rects(Rect::new(0, 0, 30, 20)).expect("fits");
         assert_eq!((back.x, back.width, forward.x, forward.width), (3, 1, 5, 1));
-        // The narrowest toolbar with buttons leaves the field its minimum.
-        let (field, _) = control_rects(Rect::new(0, 0, 23, 20)).expect("fits");
-        assert!(history_button_rects(Rect::new(0, 0, 23, 20)).is_some());
+        // The narrowest toolbar with buttons leaves the field its minimum
+        // (fork, session header: three cells narrower than with the notes
+        // button).
+        let (field, _) = control_rects(Rect::new(0, 0, 20, 20)).expect("fits");
+        assert!(history_button_rects(Rect::new(0, 0, 20, 20)).is_some());
         assert_eq!((field.x, field.width), (7, MIN_FIELD_CELLS));
         // One cell narrower: the buttons go, the field takes their cells.
-        assert!(history_button_rects(Rect::new(0, 0, 22, 20)).is_none());
-        let (field, _) = control_rects(Rect::new(0, 0, 22, 20)).expect("fits");
+        assert!(history_button_rects(Rect::new(0, 0, 19, 20)).is_none());
+        let (field, _) = control_rects(Rect::new(0, 0, 19, 20)).expect("fits");
         assert_eq!((field.x, field.width), (3, 7));
         assert!(history_button_rects(Rect::new(0, 0, 14, 20)).is_none());
         assert!(history_button_rects(Rect::new(0, 0, 30, 0)).is_none());

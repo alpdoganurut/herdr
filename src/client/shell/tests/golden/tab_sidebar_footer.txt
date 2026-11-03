@@ -1,9 +1,9 @@
-31| ──────────────────────────── │|
+33| ──────────────────────────── │|
    00-00 -/sidebar_chrome_bg
    01-28 surface1/sidebar_chrome_bg
    29-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
-32| ▾ Scheduled              1   │|
+34| ▾ Scheduled              1   │|
    00-00 -/sidebar_chrome_bg
    01-01 overlay1/sidebar_chrome_bg
    02-02 -/sidebar_chrome_bg
@@ -12,7 +12,7 @@
    26-26 overlay0/sidebar_chrome_bg
    27-29 -/sidebar_chrome_bg
    30-30 surface1/sidebar_bg
-33|   ◑ notes Planni… 1h in 1h00 │|
+35|   ◑ notes Planni… 1h in 1h00 │|
    00-02 -/sidebar_chrome_bg
    03-03 overlay0/sidebar_chrome_bg
    04-04 -/sidebar_chrome_bg
@@ -24,20 +24,6 @@
    21-21 -/sidebar_chrome_bg
    22-28 subtext0/sidebar_chrome_bg
    29-29 -/sidebar_chrome_bg
-   30-30 surface1/sidebar_bg
-34| ──────────────────────────── │|
-   00-00 -/sidebar_chrome_bg
-   01-28 surface1/sidebar_chrome_bg
-   29-29 -/sidebar_chrome_bg
-   30-30 surface1/sidebar_bg
-35|   ◌ Browser          stopped │|
-   00-02 -/sidebar_bg
-   03-03 overlay0/sidebar_bg
-   04-04 -/sidebar_bg
-   05-11 subtext0/sidebar_bg
-   12-21 -/sidebar_bg
-   22-28 overlay1/sidebar_bg
-   29-29 -/sidebar_bg
    30-30 surface1/sidebar_bg
 36| cpu 12%                      │|
    00-00 -/sidebar_chrome_bg

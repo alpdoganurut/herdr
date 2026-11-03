@@ -799,7 +799,6 @@ impl ClientShellState {
             return Some(HoverAt::Group(id));
         }
         [
-            (hits.browser_row, FixedKind::Browser),
             (hits.news_row, FixedKind::News),
             (hits.coordinator_row, FixedKind::Coordinator),
         ]

@@ -329,7 +329,6 @@ src/client/shell/sidebar_model.rs
 src/client/shell/sidebar_filter.rs
 src/client/shell/tests/sidebar_filter.rs
 src/client/shell/tab_sidebar_active.rs
-src/client/shell/tab_sidebar_detail.rs
 src/client/shell/agent_times.rs
 src/app/agent_times.rs
 src/server/headless/agent_times.rs
@@ -497,7 +496,6 @@ src/client/shell/tests/golden/session_header.txt
 | ShellHitMap | context_menu_swatches | Vec::new() |
 | ShellHitMap | context_menu_remind_options | Vec::new() |
 | ShellHitMap | news_row | Rect::default() |
-| ShellHitMap | browser_row | Rect::default() |
 | ShellHitMap | coordinator_row | Rect::default() |
 | OverlayRender | menu_swatches | Vec::new() |
 | OverlayRender | menu_remind_options | Vec::new() |
@@ -505,7 +503,6 @@ src/client/shell/tests/golden/session_header.txt
 | ShellRenderState | idle_reminders | &self.idle_reminders |
 | ShellRenderState | scheduled_reminders | &self.scheduled_reminders |
 | ShellRenderState | news_row | None |
-| ShellRenderState | browser_row | None |
 | ShellRenderState | browser_marked_tabs | std::collections::HashSet::new() |
 | ShellRenderState | browser_attention_tabs | std::collections::HashSet::new() |
 | ShellRenderState | coordinator_row | None |
@@ -627,7 +624,6 @@ src/client/shell/tests/golden/session_header.txt
 | ShellHitMap | sidebar_active_header | Rect::default() |
 | ShellHitMap | sidebar_active_rows | Vec::new() |
 | ShellHitMap | sidebar_active_more | Rect::default() |
-| ShellHitMap | sidebar_detail | Rect::default() |
 | ShellHitMap | sidebar_clock_deadline | None |
 | ClientShellState | sidebar_model | sidebar_model::SidebarModel::new() |
 | ClientShellState | sidebar_hover | None |
@@ -742,8 +738,6 @@ src/client/shell/tests/golden/session_header.txt
 | ClientInputContext | sidebar_search_focused | false |
 | ClientContextMenuItem | look | Default::default() |
 | ShellHitMap | context_menu_area | Rect::default() |
-| ShellHitMap | sidebar_notes | Rect::default() |
-| ShellRenderState | info_pane_open | false |
 | ClientConnection | shell_notes_reveal_sent | None |
 | SuspendedAgent | forced_exit | None |
 | SuspendedAgent | waking_until | None |
@@ -772,7 +766,6 @@ src/client/shell/tests/golden/session_header.txt
 | ShellHitMap | browser_dock | Default::default() |
 | ShellRenderState | browser_page_tabs | std::collections::HashMap::new() |
 | ClientContextMenuTarget::Tab | browser_dock | None |
-| ClientContextMenuTarget::Browser | dock | None |
 | UiConfig | browser_dock_width | 45 |
 | UiConfig | browser_view_strip | "auto".into() |
 | KeysConfig | toggle_browser_dock | crate::config::BindingConfig::one("prefix+shift+b") |
@@ -884,7 +877,6 @@ KeybindAction::OpenBrowser   [src/input/keybindings.rs, after OpenNews; internal
 KeybindAction::OpenCoordinator   [src/input/keybindings.rs, after OpenBrowser; internal]
 ClientShellOverlayKind::Browser   [src/client/shell/state.rs, last after Settings; internal]
 ClientShellOverlay::Browser   [src/client/shell/state.rs, last after Settings; the Browser overlay (client/shell/browser.rs), client-local, never on the wire]
-ClientContextMenuTarget::Browser   [src/client/shell/state.rs, last after News; the tabs layout's pinned Browser row, `{ profile, running, local }`; internal]
 ClientContextMenuTarget::Coordinator   [src/client/shell/state.rs, last after Browser; the tabs layout's pinned coordinator row, `{ items }` captured when the menu opened; internal]
 ClientContextMenuAction::BrowserFocusWindow   [src/client/shell/state.rs, after NewsToggleSchedule; the Browser row menu's Focus window; internal]
 ClientContextMenuAction::BrowserToggleProfile   [src/client/shell/state.rs, after BrowserFocusWindow; Start / Stop profile; internal]
@@ -1373,8 +1365,8 @@ src/persist/snapshot.rs  additive: sidebar v3: TabSnapshot.pinned directly after
 src/persist/restore.rs  additive: sidebar v3: `pinned: snap.pinned` directly after remind_every in the restored Tab; `pinned: false` in the test TabSnapshot literals
 src/client/endpoint/control.rs  additive: sidebar v3: EndpointControlMessage::TabPins directly after AgentTimes, its decode branch directly after the agent-times one, its round-trip test last
 src/client/mod.rs  additive: sidebar v3: the EndpointControlMessage::TabPins arm directly after the AgentTimes arm
-src/client/shell.rs  additive: Sidebar v2: `mod agent_times;` directly after `mod agent_cards;`, `mod sidebar_model;` directly after `mod settings_sounds;`, `mod tab_sidebar_active;` and `mod tab_sidebar_detail;` directly after `mod tab_sidebar;` (each with its doc line); sidebar v3: `mod tab_sidebar_pins;`, `mod tab_sidebar_scheduled;` and `mod tab_pins;` directly after `mod tab_sidebar_detail;` (each with its doc line)
-src/client/shell/state.rs  additive: Sidebar v2: ClientShellConfig.sidebar_active_agents directly after info_pane_width; ShellHitMap.sidebar_active_header, sidebar_active_rows, sidebar_active_more, sidebar_detail, sidebar_clock_deadline the last fields; ClientShellState.sidebar_model, sidebar_hover, agent_times, active_agents_folded, active_agents_expanded, sidebar_reveal_tab, sidebar_clock, then (sidebar v3) tab_pins, pinned_agents_folded, scheduled_agents_folded, pins_expanded, scheduled_expanded, then (tab history) tab_history the last fields (and in new()); sidebar v3: ClientShellConfig.sidebar_pinned_agents, sidebar_scheduled_agents directly after sidebar_active_agents; ShellHitMap.sidebar_pins_header, sidebar_pins_rows, sidebar_pins_more, sidebar_scheduled_header, sidebar_scheduled_rows, sidebar_scheduled_more directly after sidebar_clock_deadline (the last fields); ClientContextMenuAction::Pin last; ClientContextMenuTarget::Tab.pinned, pin_supported its last fields
+src/client/shell.rs  additive: Sidebar v2: `mod agent_times;` directly after `mod agent_cards;`, `mod sidebar_model;` directly after `mod settings_sounds;`, `mod tab_sidebar_active;` directly after `mod tab_sidebar;` (with its doc line); sidebar v3: `mod tab_sidebar_pins;`, `mod tab_sidebar_scheduled;` and `mod tab_pins;` directly after `mod tab_sidebar_active;` (each with its doc line)
+src/client/shell/state.rs  additive: Sidebar v2: ClientShellConfig.sidebar_active_agents directly after info_pane_width; ShellHitMap.sidebar_active_header, sidebar_active_rows, sidebar_active_more, sidebar_clock_deadline the last fields; ClientShellState.sidebar_model, sidebar_hover, agent_times, active_agents_folded, active_agents_expanded, sidebar_reveal_tab, sidebar_clock, then (sidebar v3) tab_pins, pinned_agents_folded, scheduled_agents_folded, pins_expanded, scheduled_expanded, then (tab history) tab_history the last fields (and in new()); sidebar v3: ClientShellConfig.sidebar_pinned_agents, sidebar_scheduled_agents directly after sidebar_active_agents; ShellHitMap.sidebar_pins_header, sidebar_pins_rows, sidebar_pins_more, sidebar_scheduled_header, sidebar_scheduled_rows, sidebar_scheduled_more directly after sidebar_clock_deadline (the last fields); ClientContextMenuAction::Pin last; ClientContextMenuTarget::Tab.pinned, pin_supported its last fields
 src/client/shell/render.rs  additive: Sidebar v2: ShellRenderState.sidebar_model, sidebar_hover, now, sidebar_reveal_tab, active_view, then (sidebar v3) pins_view, scheduled_view, tab_pins the last fields; put_truncated directly before display_width; suspended runs: ShellRenderState.expanded_runs directly after collapsed_groups
 src/client/shell/preferences.rs  additive: Sidebar v2: ClientChromePreferences.active_agents_folded, then (sidebar v3) pinned_agents_folded, scheduled_agents_folded the last fields (serde default, skip_serializing_if none)
 src/client/shell/tests/mod.rs  additive: Sidebar v2: `mod sidebar_active;` and `mod sidebar_perf;` directly after `mod settings_closed;`, `mod tab_sidebar_golden;` directly after `mod tab_sidebar;`; sidebar v3: `mod sidebar_sections;` (with its doc line) directly after `mod sidebar_perf;`
@@ -1570,14 +1562,11 @@ src/server/headless.rs  additive: relaunch fail-fast: `mod relaunch_notify;` (wi
 src/server/headless/tests/fork_smoke.rs  additive: restart screen: fork_smoke_a_restart_is_pushed_as_restarting_until_the_relaunched_agent_is_detected then fork_smoke_a_relaunch_that_never_starts_toasts_the_shell directly before tab_browser_state_survives_a_live_handoff
 src/client/shell/tests/tab_sidebar.rs  additive: restart screen: suspended_card_shows_restarting_waking_and_a_failed_relaunch and restarting_card_holds_after_the_relaunch_until_the_mark_goes directly before suspended_pane_swallows_input_but_the_toggle_binding_still_activates
 src/client/shell/sidebar_model.rs  mid-logic: autosuspend: TabFacts.auto_parked directly after parked (struct and Default), set for a Suspended agent the agent times push marks
-src/client/shell/tab_sidebar_detail.rs  mid-logic: autosuspend: tab_chips' status chip appends ` (auto)` (a Suspended tab) or ` (auto-suspended)` (a parked agent in a tab of another status) when TabFacts.auto_parked
-src/client/shell/state.rs  additive: menu design: ClientContextMenuItem.look the last field; ShellHitMap.context_menu_area directly after context_menu_remind_options, ShellHitMap.sidebar_notes directly after sidebar_recency
-src/client/shell/composition.rs  additive: menu design: render_context_menu gets &self.config.keybinds and the context menu branch sets hits.context_menu_area directly after context_menu_remind_options; both ShellRenderState literals pass info_pane_open (info_dock_open_for_focused_tab(), bound directly after scheduled_view, before the literal) last after quiet
-src/client/shell/render.rs  additive: menu design: ShellRenderState.info_pane_open last after quiet
+src/client/shell/state.rs  additive: menu design: ClientContextMenuItem.look the last field; ShellHitMap.context_menu_area directly after context_menu_remind_options
+src/client/shell/composition.rs  additive: menu design: render_context_menu gets &self.config.keybinds and the context menu branch sets hits.context_menu_area directly after context_menu_remind_options
 src/client/shell/mouse.rs  additive: menu design: the context menu's left press keeps the menu (a no-op arm) when it lands in hits.context_menu_area but on no item (a rule row, the border), directly before the close-on-outside arm; a ScrollUp / ScrollDown arm inside hits.context_menu_area moves the highlight (move_context_menu_selection) directly after the left-press arm
 src/client/shell.rs  additive: menu design: `mod context_menu_look;` directly after `mod context_menu;`
 src/client/shell/tests/mod.rs  additive: menu design: `mod context_menu_look;` directly before `mod context_menu_session;`
-src/client/shell/tests/coordinator.rs  additive: menu design: the render_sidebar ShellRenderState literal gains info_pane_open: false last
 src/client/shell/tests/graphics.rs  additive: menu design: render_context_menu gets &state.config.keybinds
 src/client/shell/tests/close_tab.rs  additive: menu design: request_close finds the Close row by action (the tab menu's fourth item), not at index 2
 src/client/shell/tests/agents_worktrees_notifications.rs  additive: menu design: the repository workspace menu's Close is found by action (last, behind a rule) and activated at that index
@@ -1630,9 +1619,9 @@ src/cli/tab_closed.rs  additive: dnd provenance: `dnd_by_agent: false` after `dn
 src/client/shell/tests/settings_closed.rs  additive: dnd provenance: `dnd_by_agent: false` after `dnd: false` in the ClosedSessionInfo literal
 src/terminal/state.rs  additive: forced restart: AgentRestartResume.forced last; mark_suspended_agent_resume_pending takes `forced: bool` last (agent_suspend.rs passes restart_agent_with's `force`; restore.rs's test passes false)
 src/persist/restore.rs  additive: forced restart: the restored-record test's mark_suspended_agent_resume_pending call passes `false` last
-src/client/shell/state.rs  additive: toolbar history: ShellHitMap.sidebar_history_back, sidebar_history_forward directly after sidebar_notes
-src/client/shell/render.rs  additive: toolbar history: ShellRenderState.history_back, history_forward last after info_pane_open
-src/client/shell/composition.rs  additive: toolbar history: both ShellRenderState literals pass history_back, history_forward (tab_history_available(), bound directly after info_pane_open, before the literal) last after info_pane_open
+src/client/shell/state.rs  additive: toolbar history: ShellHitMap.sidebar_history_back, sidebar_history_forward directly after sidebar_recency
+src/client/shell/render.rs  additive: toolbar history: ShellRenderState.history_back, history_forward last after quiet
+src/client/shell/composition.rs  additive: toolbar history: both ShellRenderState literals pass history_back, history_forward (tab_history_available(), bound directly after scheduled_view, before the literal) last after quiet
 src/client/shell/tests/coordinator.rs  additive: toolbar history: the render_sidebar ShellRenderState literal gains history_back: false, history_forward: false last
 src/config/model.rs  additive: fork defaults (section 6), keep the fork's values in a conflict: UpdateConfig::default has version_check: false, manifest_check: false (upstream true); SidebarLayoutConfig's `#[default]` on Tabs and UiConfig's Default sidebar_layout: Tabs; KeysConfig's Default tab_history_back/forward are BindingConfig::Many with the cmd and alt keys; update_config_defaults_and_parses asserts the fork's false defaults and an explicit true (keep it so when upstream edits that test)
 src/main.rs  additive: fork defaults (section 6), keep the fork's values in a conflict: the DEFAULT_CONFIG `[update]` comments `# version_check = false` / `# manifest_check = false` with their herdr+ reason lines (upstream: `= true`); `# sidebar_layout = "tabs"` with "tabs" described first; the tab_history comment lines show the two-key arrays
@@ -1657,7 +1646,6 @@ src/config.rs  additive: companion browser: BrowserHostMode in the browser re-ex
 src/main.rs  additive: companion browser: DEFAULT_CONFIG `# host = "auto"` and `# page_errors = "agent"` (with their comments) at the end of the [browser] block
 src/client/shell/render.rs  additive: companion browser: ShellRenderState.browser_attention_tabs directly after browser_marked_tabs
 src/client/shell/composition.rs  additive: companion browser: both ShellRenderState literals pass browser_attention_tabs after browser_marked_tabs
-src/client/shell/tab_sidebar_detail.rs  additive: companion browser: the `◉` chip (yellow) before the `◎` one, which it replaces while a page needs the user
 src/client/shell/tests/coordinator.rs  additive: companion browser: `browser_attention_tabs: HashSet::new()` after browser_marked_tabs
 src/integration/mod.rs  additive: companion launcher: `pub(crate) mod companion_assets;` (with its comment) directly after `mod command;` (rustfmt order)
 src/api/schema.rs  additive: companion launcher: the BrowserCompanion row directly after BrowserSendPage
@@ -1668,7 +1656,7 @@ src/server/client_commands.rs  additive: companion launcher: the browser.compani
 src/server/headless.rs  additive: companion launcher: `pub(crate) fn stop_browsers_at_exit` (with its own doc) directly before `HeadlessServer`'s doc comment, which stays on the struct; the exit path calls it (replacing the inline stop_with_server_if_configured block) after save_session_on_shutdown
 src/platform/mod.rs  additive: companion launcher: detach_background_command (cfg(unix) setsid, cfg(windows) CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS) directly before current_process_is_detached_server_daemon
 src/main.rs  additive: companion launcher: DEFAULT_CONFIG `# companion_autostart = false` (with its comment) directly after `# page_errors = "agent"`
-src/client/shell/state.rs  additive: companion launcher: ClientContextMenuAction::BrowserCompanion directly after Dnd; ClientContextMenuTarget::Browser.companion and .window its last fields; PendingEndpointKind::BrowserCompanion directly after BrowserFix; ShellHitMap.browser_overlay and browser_overlay_popup directly after team_overlay_popup
+src/client/shell/state.rs  additive: companion launcher: ClientContextMenuAction::BrowserCompanion directly after Dnd; PendingEndpointKind::BrowserCompanion directly after BrowserFix; ShellHitMap.browser_overlay and browser_overlay_popup directly after team_overlay_popup
 src/client/shell/composition.rs  additive: companion launcher: the ClientShellOverlay::Browser branch (render_browser_overlay, hits.browser_overlay / browser_overlay_popup) directly before the TeamInfo branch
 src/client/shell/overlays.rs  additive: companion launcher: ClientShellOverlay::Browser joins the ContextMenu | GlobalMenu | TeamInfo arm that answers None (composed in composition.rs)
 src/client/shell/mouse.rs  additive: companion launcher: the Browser overlay branch (route_browser_overlay_click, the wheel moves the cursor) directly before the TeamInfo branch
@@ -1700,9 +1688,9 @@ src/client/shell/preferences.rs  additive: companion launcher, phase B: ClientCh
 src/client/shell/render.rs  additive: companion launcher, phase B: ShellRenderState.browser_page_tabs directly after browser_attention_tabs
 src/client/shell/actions.rs  additive: companion launcher, phase B: the ToggleBrowserDock / ToggleBrowserView / FocusBrowser arms directly after ToggleInfoPane in record_binding
 src/client/shell/mouse.rs  additive: companion launcher, phase B: browser_dock_press directly after info_dock_press in the left press; the BrowserDockWidth drag and release arms directly after InfoDockWidth's
-src/client/shell/context_menu.rs  additive: companion launcher, phase B: the tab menu's Dock browser / Browser view toggles in its Browser section after the page item; the Browser row menu's Dock browser here after the companion items; their actions (tab target: that tab, without focusing it; Browser target: the focused tab) directly after the tab menu's ToggleInfoPane arm; Tab.browser_dock filled from browser_dock_offered in open_tab_context_menu
+src/client/shell/context_menu.rs  additive: companion launcher, phase B: the tab menu's Dock browser / Browser view toggles in its Browser section after the page item; their actions (tab target: that tab, without focusing it) directly after the tab menu's ToggleInfoPane arm; Tab.browser_dock filled from browser_dock_offered in open_tab_context_menu
 src/client/shell/context_menu_look.rs  additive: companion launcher, phase B: BrowserToggleDock / BrowserToggleView key hints directly after ToggleInfoPane
-src/client/shell/tab_sidebar.rs  additive: companion launcher, phase B: the dim `◎` (overlay0) for a tab with browser pages after the lit `◎` in push_reminder_marks; the Browser row's `◨` in render_fixed_row (its status shrinks by two cells; a status-first row keeps its status, capped to the row) and its hit (hits.browser_dock.row_button) in the pinned rows loop
+src/client/shell/tab_sidebar.rs  additive: companion launcher, phase B: the dim `◎` (overlay0) for a tab with browser pages after the lit `◎` in push_reminder_marks
 src/client/shell/tests/coordinator.rs  additive: companion launcher, phase B: `dock: None` after `companion: None` in the BrowserRow literal; `browser_page_tabs: HashMap::new()` after browser_attention_tabs in the ShellRenderState literal
 src/client/shell/tests/graphics.rs  additive: companion launcher, phase B: `browser_dock: None` last in the ClientContextMenuTarget::Tab literal
 src/client/shell/tests/mod.rs  additive: companion launcher, phase B: `mod browser_dock;` (with its doc) directly after `mod browser;`
@@ -1756,9 +1744,9 @@ src/app/actions.rs  mid-logic: the client notification kind match treats Sound::
 src/client/shell_runtime.rs  mid-logic: the action loop plays ClientShellAction::PreviewSound
 src/client/shell_runtime.rs  mid-logic: install_client_shell_snapshot decides the ClientShellResize with surface_report_basis / surface_report_required (src/client/shell/info_dock.rs): the size changed or the surface now shows another tab (upstream: size only)
 src/server/headless/client_views.rs  mid-logic: resize_shell_tab_geometry_to_target takes a ShellTabSizing; upstream's single-client all-tabs loop runs only for EveryTab (claim_unowned_shell_tab_geometry at attach, restore_shell_tab_geometry and remove_client_and_resize_if_needed in headless.rs at detach, via apply_shell_tab_geometry_sized / resize_tabs_for_only_shell_client(_, sizing)); a ClientShellResize, a navigation claim and every reapply size the shown tab only. Upstream's apply_shell_tab_geometry keeps its signature (ShownTab). A new upstream all-tabs caller must pick a sizing: an upstream test asserting hidden tabs follow a single client's resize = review
-src/client/shell/mouse.rs  mid-logic: handle_mouse (the Browser row: a left press on hits.browser_row opens the Browser overlay and a right-click its menu, both checked directly before the News row checks; the News row: a left press on hits.news_row goes to activate_news_row before the sidebar tab press is taken (tab.focus on the News tab, or news.open while the row shows without one), and a right-click opens the News menu before the tab-row lookup; sidebar tab drag, group menu, locked-pane gestures, notification card hits: timed left-click keeps the upstream pane_id gate, sticky left focuses / right dismisses / the fold line swallows), push_pane_mouse_event; the ContextMenu block asks route_tab_color_swatch_mouse, then route_tab_remind_option_mouse first (swatch / reminder option hover and click); a settings choice click also applies at once when reminders_click_applies (the reminders tab's daily time row and picker) or news_click_applies (every row of the news tab); a settings row click applies at once in the Browser section too (browser_click_applies)
+src/client/shell/mouse.rs  mid-logic: handle_mouse (the News row: a left press on hits.news_row goes to activate_news_row before the sidebar tab press is taken (tab.focus on the News tab, or news.open while the row shows without one), and a right-click opens the News menu before the tab-row lookup; sidebar tab drag, group menu, locked-pane gestures, notification card hits: timed left-click keeps the upstream pane_id gate, sticky left focuses / right dismisses / the fold line swallows), push_pane_mouse_event; the ContextMenu block asks route_tab_color_swatch_mouse, then route_tab_remind_option_mouse first (swatch / reminder option hover and click); a settings choice click also applies at once when reminders_click_applies (the reminders tab's daily time row and picker) or news_click_applies (every row of the news tab); a settings row click applies at once in the Browser section too (browser_click_applies)
 src/client/shell/surface_patch.rs  mid-logic: fast_path_blocker else-if for suspended panes; the notification arm calls notification_blocks_patch (timed: any card blocks, as upstream; sticky: only patch rows over a drawn card)
-src/client/shell/composition.rs  mid-logic: both ShellRenderState literals pass news_row, browser_row and browser_marked_tabs (computed by news_row(), browser_row() and browser_marked_tabs() before the mutable borrows); compose paints the suspended card and occludes graphics; compose draws the sticky notification stack (render_notification_stack), occludes every card rect, fills hits.notification_toasts, and hands the stack bounds to copy_feedback_offset_for_toast; the context menu branch copies rendered.menu_swatches and menu_remind_options into the hit map; both ShellRenderState literals pass idle_reminders, scheduled_reminders, breathe_phase and breathe_reset_rgb (computed before the mutable borrows); render_client_overlay gets &self.config
+src/client/shell/composition.rs  mid-logic: both ShellRenderState literals pass news_row and browser_marked_tabs (computed by news_row() and browser_marked_tabs() before the mutable borrows); compose paints the suspended card and occludes graphics; compose draws the sticky notification stack (render_notification_stack), occludes every card rect, fills hits.notification_toasts, and hands the stack bounds to copy_feedback_offset_for_toast; the context menu branch copies rendered.menu_swatches and menu_remind_options into the hit map; both ShellRenderState literals pass idle_reminders, scheduled_reminders, breathe_phase and breathe_reset_rgb (computed before the mutable borrows); render_client_overlay gets &self.config
 src/client/shell/render.rs  mid-logic: render_sidebar_column (render_shell's sidebar dispatch, factored out) else-if for the tabs layout
 src/client/shell/config.rs  mid-logic: layout (show_tab_bar), from_config (browser_active_glyph_secs from config.browser.active_glyph_secs), apply_live_config (sound_files, daily_reminder_minutes, browser_active_glyph_secs), reload_client_config (rebalance_notification_cards after a sticky flip)
 src/client/shell/notification_policy.rs  mid-logic: retire_endpoint_notifications, queue_visible_notification (sticky push), promote_queued_notification, focus_visible_notification (split into focus_notification_at), receive_notification (replace-by-pane moved into replace_pane_notifications), tick_notifications (starts with tick_idle_reminders, whose due reminders it delivers from the pending list; a pending reminder's sound becomes Sound::Reminder; a validated pending event is passed through format_agent_notification before the target/sound/delivery code, so every path gets the `tabs` layout text; expiry gated on !toast_sticky); notification_validation is reused by sticky_notification_is_stale; notification_target_is_active is the idle reminders' focus test
@@ -1819,7 +1807,7 @@ src/client/shell/render.rs  mid-logic: render_sidebar_column calls tab_sidebar::
 src/client/shell/tabs.rs  mid-logic: render_tab_bar appends the coordinator mark (`● 2 ideas`) to the coordinator tab's label through a local tab_label closure
 src/client/shell/context_menu.rs  mid-logic: items and activate route ClientContextMenuTarget::Coordinator to coordinator_shell.rs
 src/client/shell/settings.rs  mid-logic: open_settings_overlay (coordinator: Box::default()), selected_index_for_settings_section (Coordinator 0), select_settings_section (enter_coordinator_section), settings_choice_count, apply_settings_choice and the esc picker chain (close_coordinator_picker)
-src/client/shell/settings_overlay.rs  mid-logic: render_settings_overlay is 104 columns wide (twelve section tabs; when even the bare labels and gaps do not fit, the gaps go), the agents section 32 rows (render_agents_section; the primary button only with a record and not while the [fix] is armed), the browser section 30 rows, the coordinator section 30 rows, renders render_coordinator_section, the primary button only with a record
+src/client/shell/settings_overlay.rs  mid-logic: render_settings_overlay is 104 columns wide (twelve section tabs; when even the bare labels and gaps do not fit, the gaps go), the agents section 32 rows (render_agents_section; the primary button only with a record and not while the [fix] is armed), the browser section 30 rows (session header: plus one per live row and one for the live state's fact), the coordinator section 30 rows, renders render_coordinator_section, the primary button only with a record
 src/client/shell/idle_reminders.rs  mid-logic: is_news_tab also exempts the coordinator tab (is_coordinator_tab) from both reminder engines
 src/client/shell/worktrees.rs  mid-logic: the exhaustive PendingEndpointKind error arm lists PendingEndpointKind::Coordinator(_)
 src/client/shell/tests/graphics.rs  depends: its ClientSettingsOverlay literal carries `coordinator: Box::default()` and `agents: Box::default()`
@@ -1965,7 +1953,6 @@ src/codex_sessions.rs  mid-logic: agent context: day_dirs and uuid_v7_ms are pub
 src/client/shell/sidebar_model.rs  mid-logic: agent context: TabFacts.context (the fullest use over the tab's agents, agent_context::fuller), Sections.context_usage (ui.sidebar_context_usage), ModelInputs.context; the rebuild's agent pass folds the push in (no lookup while the state lists no pane or the toggle is off)
 src/client/shell/tab_sidebar.rs  mid-logic: agent context: sidebar_sections copies context_usage; a tab row's TabRowLook.context (agent_context::row_percent_text / row_percent_color from TabFacts.context, a static `75%`..`100%` table) is drawn by render_tab_row just left of the marks and packed with them (the label truncates first; a row with no room for it drops it, never the marks)
 src/server/render_scale_benchmark.rs  mid-logic: agent context: the "tabs sidebar, background workspaces" profile gives every root pane a context use (60 %, 82 %, 93 % in turn) and feeds the client the agent-context push built by App::agent_context_panes, directly after the agent-times push
-src/client/shell/tab_sidebar_detail.rs  mid-logic: agent context: tab_chips adds the `ctx NN% · used/window` chip (context_chip_text, a StackStr) directly after the agent kind / name chips, overlay1 under 75 %, the row colors from it
 
 
 src/server/headless/notifications.rs  mid-logic: mute: forward_semantic_agent_transition returns false for a muted tab right after resolving tab_idx; forward_pane_state_update_notifications_to_clients returns early when pane_notifications_muted; the StateChanged and HookStateReported arms widen suppress_completion with pane_notifications_muted after next_state (sound and flat toast); the TerminalBell arm drops a muted tab's bell first
@@ -1976,12 +1963,10 @@ src/client/shell/idle_reminders.rs  mid-logic: mute: waiting_important_tabs skip
 src/client/shell/context_menu.rs  mid-logic: mute: the tab menu's Mute notifications / Unmute notifications item directly after Pin / Unpin, only with mute_supported; its activation (tab.set_muted, no focus) directly after the Pin arm; open_tab_context_menu fills muted / mute_supported
 src/client/shell/composition.rs  mid-logic: mute: the sidebar model's ModelInputs and both ShellRenderState literals pass the active endpoint's tab mutes (tab_mutes::active_tab_mutes_of) directly after the pins
 src/client/shell/tab_sidebar.rs  mid-logic: mute: the one-off ModelInputs passes mutes; render_tab_row draws TabRowLook.muted (tab_mutes::mute_mark) at x=3 before the status icon
-src/client/shell/tab_sidebar_detail.rs  mid-logic: mute: tab_chips adds a `notifications off` chip directly after the `pinned` one
 src/client/shell/sidebar_model.rs  mid-logic: mute: TabFacts.muted after pin; ModelInputs.mutes after pins (no lookups while empty)
 src/client/shell/context_menu.rs  mid-logic: dnd: the tab menu's Do not disturb / End do not disturb item directly after the Mute item, only with dnd_supported; its activation (tab.set_dnd, no focus) directly after the Mute arm; open_tab_context_menu fills dnd / dnd_supported (active_tab_dnd, supports_endpoint_method(TabSetDnd))
 src/client/shell/context_menu.rs  mid-logic: companion browser: the tab menu's page title row (section `Browser`, glyph ◉ while a page needs the user, else ◎; Action::BrowserOpenOverlay) directly after the lead block, only with browser_page; its activation (the Browser overlay, no focus) directly before the Pin arm; open_tab_context_menu fills browser_page from browser.get `sessions` (the active page's title, else its url); the item closure wraps its label in Cow::Borrowed
 src/client/shell/tab_sidebar.rs  mid-logic: dnd: render_tab_row's x=3 cell shows quiet::dnd_mark (accent moon U+F0594; `ui.tab_agent_glyphs.dnd`) instead of the muted mark when TabFacts.dnd; the pending mark (`✉N`, `✉9+`, overlay1) is pushed first into the row's marks when TabFacts.quiet > 0; the one-off ModelInputs passes quiet
-src/client/shell/tab_sidebar_detail.rs  mid-logic: dnd: tab_chips adds a `<moon> do not disturb` chip (accent) and an `N quiet` chip (overlay1) directly after the `notifications off` one
 src/client/shell/sidebar_model.rs  mid-logic: dnd: TabFacts.dnd and TabFacts.quiet after muted; ModelInputs.quiet after mutes (no lookups while the state lists nothing)
 src/app/message_queue.rs  mid-logic: dnd: message_check_with answers Wait(DND_WAIT_REASON) after the voice check when handoff_hold and the pane is in a DND tab (App::pane_dnd_holds; dnd provenance: message_check_from(.., from_coordinator) skips a DND an agent turned on, coordinator_message_check uses it, and deliver_queued_to re-checks with it when the wait is DND_WAIT_REASON and a deliverable entry (typed or not, so its submit retry and recovery still run) is the coordinator's (QueuedMessage.from_coordinator, set only by agents_send_message for Actor::Coordinator through deliver_agent_message / deliver_urgent_message / queued_message, false from agent.message_send whatever its from_pane, carried through the quiet store as QuietRelease.from_coordinator and back by requeue), then batches only the coordinator's entries); handle_agent_message_send stores a message to a DND tab quietly (dnd_agent_message_send, with its envelope) right after `let status = check.status();`; handle_agent_message_claim also claims a quiet message (quiet_claimer); handle_agents_inbox extends its list with quiet_inbox_messages before the sort; MessageQueue::requeue (directly after push) takes a released quiet message back; finish and message_target are pub(super) for src/app/quiet_messages.rs
 src/app/agents_model.rs  mid-logic: quiet messages: agents_send_message refuses quiet+urgent first, refuses urgent to a DND tab (`dnd`) right after `let now = now_unix();` (dnd provenance: `dnd` is pane_dnd_holds(.., caller.actor is Actor::Coordinator), and the coordinator's check is coordinator_message_check), and hands quiet or DND messages to send_quiet_message right before the urgent/normal delivery
@@ -1996,7 +1981,6 @@ src/client/shell/context_menu.rs  mid-logic: agent handoff: the tab menu's "Hand
 src/client/shell/actions.rs  mid-logic: agent handoff: KeybindAction::HandoffCompact → agents.handoff for the focused pane (agent_handoff_method: a live Claude agent; only when advertised) directly after the RestartAgent arm; agent_handoff_method directly before agent_restart_method
 src/app/api/agents.rs  mid-logic: agent handoff: handle_deferred_agent_api_request answers agent_not_ready (through legacy_refusal_response, so a legacy message is queued and held) while agent_handoff.holds_messages for the validated terminal, after validate_agent_prompt and before the waiter thread; not inside validate_agent_prompt, which herdr's own typing for a run goes through
 src/client/shell/sidebar_model.rs  mid-logic: agent handoff: TabFacts.handoff_unix last (struct and Default); the context filter also keeps a push that has only handoffs; the newest handoff of the tab's agents (context.handoff_of) directly after the context fold
-src/client/shell/tab_sidebar_detail.rs  mid-logic: agent handoff: tab_chips draws the `handoff <age> ago` chip (handoff_chip_text, directly before context_chip_text) before the context chip and asks for a repaint when the minute turns
 src/client/shell/tests/tab_sidebar.rs  mid-logic: agent handoff: the three swatch-row tests press Down 15 times (12 upstream): the agent tab's menu has "Handoff & compact", "Do not disturb" and (tab menu groups) "Move to group…"
 src/client/shell/tests/context_menu_session.rs  mid-logic: agent handoff: tab_menu_lists_copy_session_id_after_restart_once_the_id_arrives expects HandoffCompact directly after RestartAgent, CopySessionId and Close one row later
 src/integration/assets/claude/herdr-agent-state.sh  depends: agent handoff: `precompact` (PreCompact) and the `session` action's SessionStart(compact) block send pane.report_compact; the post answer's `context` is printed as SessionStart additionalContext (call() reads the whole answer line within 3 s); quiet messages: the `turn` action and every SessionStart call agents.take_quiet (2 s), print its `context` as additionalContext, one JSON object per hook run (the compact handoff and the quiet messages joined by a blank line), and only then agents.ack_quiet with the offered ids
@@ -2029,7 +2013,6 @@ src/client/shell_runtime.rs  mid-logic: companion launcher, phase B: finish_clie
 src/client/mod.rs  mid-logic: companion launcher, phase B: a ClientShellEndpointResponseChunk whose request id starts with BROWSER_PLACEMENT_REQUEST_PREFIX is dropped like the surface ones (never fed to EndpointCommands); the tick runs tick_browser_dock directly after tick_info_dock; the ClientLoopEvent::Resize arm calls shell.note_terminal_resized() directly after invalidate_pane_surface (the browser placement asks the terminal for its pixel extent, TIOCGWINSZ, once per resize, never per input event: an upstream resize path that skips the arm leaves the placement on the old extent until a dock or Browser view opens again)
 src/client/shell/composition.rs  mid-logic: companion launcher, phase B: the strip, band and Browser view area are composed (browser_dock_view + browser_dock::compose) directly after the info dock; in Browser view the pane surface is not blitted, hits.panes / pane_splits / info_dock are cleared and the cursor hidden; the notices and toasts lay out beside toast_dock (the info dock and the band) instead of the info dock alone; in Browser view (browser_dock::banner_area: one line on the view strip between its switch and its ◨, else the tab bar's right half) the notice, the primary or newest toast and the agent cards render as their one-line mobile banners there (render_mobile_banner, render_mobile_notification_banner, render_agent_card_banner; the sticky stack is not drawn), never under the companion
 src/client/shell/input.rs  mid-logic: companion launcher, phase B: in Terminal mode, after the info dock's keys, browser_view_swallows_key keeps keys from the hidden panes in Browser view; in Prefix mode a literal prefix is swallowed too; the Text and Paste arms' Terminal-mode pane fallback asks browser_view_swallows_key first (an IME or compose commit or a paste never reaches a hidden pane) and clipboard_image_target answers None in Browser view after its popup check
-src/client/shell/tab_sidebar_detail.rs  mid-logic: companion launcher, phase B: the detail strip's browser chip is `◎ N pages` (its mark ◉ / lit / dim as on the row) plus a `docked` / `browser view` chip, from ShellRenderState.browser_page_tabs
 src/platform/macos.rs  mid-logic: companion launcher, phase B: parent_pid falls back to PROC_PIDT_SHORTBSDINFO when the full BSD info is refused for another user's process (a terminal's root-owned `login`), so process_ancestry reaches the terminal app (the dock binds the terminal window by it). An upstream change to parent_pid needs a human check that a root-owned parent still resolves (parent_pid_reads_another_users_process)
 
 
@@ -2948,10 +2931,6 @@ MenuLook
 MenuSection
 MenuKind
 context_menu_area
-sidebar_notes
-notes_button_rect
-NOTES_GLYPH
-info_pane_open
 notes_reveal
 NotesReveal
 NotesRevealParams
@@ -3052,7 +3031,7 @@ server::headless::tests::fork_smoke::news_enabled_on_a_desk_that_never_ran_start
 server::headless::tests::fork_smoke::browser_get_reports_a_fake_host_tab_with_its_actor
 server::headless::tests::fork_smoke::browser_launch_argv_carries_no_automation_switches
 server::headless::tests::fork_smoke::browser_settings_write_the_config_and_fix_the_codex_entries_but_never_the_hook
-client::shell::tests::browser::fork_smoke::browser_row_shows_the_running_browser_above_the_footer
+client::shell::tests::browser::fork_smoke::the_tabs_sidebar_has_no_browser_row_and_news_keeps_its_row
 server::headless::tests::fork_smoke::coordinator::coordinator_enabled_starts_a_coordinator_in_a_pinned_tab
 server::headless::tests::fork_smoke::coordinator::coordinator_wake_reaches_the_coordinator_pane
 server::headless::tests::fork_smoke::coordinator::coordinator_suggestion_notification_waits_for_a_client_shell
@@ -3094,7 +3073,7 @@ client::shell::tests::sidebar_active::fork_smoke::active_block_lists_attention_f
 server::headless::tests::fork_smoke::agent_times_push_reaches_the_client_shell
 server::headless::tests::fork_smoke::a_restored_agent_state_time_reaches_the_client_shell
 server::headless::tests::fork_smoke::tab_pin_reaches_every_client_and_survives_a_move
-client::shell::tests::sidebar_sections::fork_smoke::detail_on_top_and_bottom_blocks_reach_the_renderer
+client::shell::tests::sidebar_sections::fork_smoke::list_on_top_and_bottom_blocks_reach_the_renderer
 client::shell::tests::sidebar_sections::fork_smoke::pinned_and_scheduled_sections_reach_the_renderer
 client::shell::tests::tab_history::fork_smoke::cmd_bracket_focuses_the_previous_tab_and_back_again
 server::headless::tests::fork_smoke::fork_smoke_tab_mute_reaches_every_client_silences_the_tab_and_survives_a_move
@@ -3139,14 +3118,15 @@ server::headless::tests::fork_smoke::placements_reach_the_host_with_focus_and_fo
 client::shell::tests::browser_dock::fork_smoke_the_dock_takes_45_percent_on_the_right_and_reports_the_narrower_surface
 client::shell::tests::browser_dock::fork_smoke_browser_view_covers_the_pane_area_without_resizing_the_panes
 client::shell::tests::browser_dock::fork_smoke_the_terminal_extent_is_read_once_per_resize_not_per_event
-client::shell::tab_sidebar::fixed_row_tests::fork_smoke_a_narrow_news_row_keeps_its_status_and_the_browser_row_its_label
-client::shell::tests::browser::fork_smoke::the_browser_row_shows_the_companion_state_and_offers_start_stop_restart_focus
+client::shell::tab_sidebar::fixed_row_tests::fork_smoke_a_narrow_news_row_keeps_its_status_and_the_coordinator_row_its_label
+client::shell::tests::browser::fork_smoke::settings_browser_shows_the_companion_state_and_offers_start_stop_restart_focus
 browser::tests::fork_smoke_with_the_window_off_window_profiles_answer_window_disabled_with_the_fix
 browser::companion_app::tests::fork_smoke_no_companion_starts_without_the_browser_helper_it_registers_through
 browser::companion_app::tests::fork_smoke_a_config_that_keeps_the_companion_off_never_starts_it
 client::shell::tests::browser_dock::fork_smoke_without_the_companion_nothing_docks_and_the_notice_says_why
 client::shell::tests::browser_dock::fork_smoke_pastes_and_text_commits_in_browser_view_never_reach_the_hidden_panes
 client::shell::tests::browser_dock::fork_smoke_browser_view_shows_notices_and_toasts_on_its_strip_not_under_the_page
+client::shell::tests::session_header::fork_smoke_the_header_sits_on_top_and_its_controls_switch_views_and_docks
 browser::state::tests::fork_smoke_a_restarted_companion_page_keeps_its_id_attribution_and_cursor
 browser::state::tests::fork_smoke_a_new_page_never_inherits_a_closed_pages_record
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)

@@ -604,11 +604,7 @@ fn golden_short_height_keeps_the_last_tab() {
 fn golden_footer_and_pinned_rows() {
     let (state, frame) = compose_golden(40);
     let body = state.hits.agent_body;
-    assert_ne!(
-        state.hits.browser_row,
-        Rect::default(),
-        "browser row pinned"
-    );
+    // Fork (session header): no Browser row (its menu is Settings → Browser).
     let dump = sidebar_dump(
         &frame,
         &state.config.palette,

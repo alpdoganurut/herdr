@@ -31,8 +31,6 @@ pub(crate) use browser_companion::{
 pub(super) const BROWSER_REFRESH_ACTIVE: std::time::Duration = std::time::Duration::from_secs(2);
 /// The pull cadence otherwise.
 pub(super) const BROWSER_REFRESH_IDLE: std::time::Duration = std::time::Duration::from_secs(15);
-/// The row's label.
-pub(crate) const BROWSER_ROW_LABEL: &str = "Browser";
 /// The marker of a herdr tab whose pane uses the browser.
 pub(crate) const TAB_BROWSER_MARKER: &str = "\u{25CE}"; // ◎
 /// Fork (companion browser): a page of the tab needs the user.
@@ -615,14 +613,6 @@ impl ClientShellState {
         self.browser.refresh_due = true;
     }
 
-    /// A left click on the row opens the overlay.
-    pub(super) fn activate_browser_row(&mut self, outcome: &mut ClientShellInput) {
-        if self.browser_row().is_none() {
-            return;
-        }
-        self.open_browser_overlay(outcome);
-    }
-
     /// The Browser overlay, filled from the last `browser.get`; a fresh pull
     /// follows at once.
     pub(crate) fn open_browser_overlay(&mut self, outcome: &mut ClientShellInput) {
@@ -661,6 +651,8 @@ impl ClientShellState {
     }
 
     fn sync_browser_overlay(&mut self) {
+        // Fork (session header): Settings → Browser's live rows follow too.
+        self.sync_browser_settings_live();
         let views = self.browser_page_tabs();
         let Some(info) = self.browser.info.as_ref() else {
             return;
@@ -896,36 +888,9 @@ impl ClientShellState {
         }
     }
 
-    /// Right-click on the row: Focus window, Start/Stop profile, Open overlay.
-    pub(super) fn open_browser_context_menu(&mut self, x: u16, y: u16) {
-        let Some(row) = self.browser_row() else {
-            return;
-        };
-        let window = self
-            .browser
-            .info
-            .as_ref()
-            .is_some_and(|info| !info.window_off);
-        // Fork (companion launcher): the focused tab's dock item.
-        let dock = self
-            .browser_dock_offered()
-            .then(|| self.browser_dock_open_for_focused_tab());
-        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
-            target: ClientContextMenuTarget::Browser {
-                profile: row.profile,
-                running: row.running,
-                local: self.active_endpoint_id.is_local(),
-                companion: row.companion,
-                window,
-                dock,
-            },
-            x,
-            y,
-            highlighted: 0,
-        }));
-    }
-
-    /// The Browser row menu's items.
+    /// The Browser actions Settings → Browser lists (the Browser row's
+    /// menu before the session header): focus window, start / stop
+    /// profile, open the overlay, the companion's actions.
     pub(super) fn activate_browser_context_action(
         &mut self,
         profile: String,

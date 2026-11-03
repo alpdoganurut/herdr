@@ -46,8 +46,11 @@ pub(super) fn render_settings_overlay(
     let height = if settings.section == ClientSettingsSection::Integrations {
         integration_height.max(22)
     } else if settings.section == ClientSettingsSection::Browser {
-        // ten rows, a rule and up to six facts (clamped to the terminal)
-        30
+        // ten rows, a rule and up to six facts (clamped to the terminal);
+        // fork (session header): the live rows and the live state's fact
+        30u16
+            .saturating_add(settings.browser.actions.len() as u16)
+            .saturating_add(u16::from(settings.browser.live.is_some()))
     } else if settings.section == ClientSettingsSection::Coordinator {
         // up to nine rows and nine facts (clamped to the terminal)
         30

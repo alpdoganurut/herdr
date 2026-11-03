@@ -260,10 +260,9 @@ pub(crate) fn interval_rank(every: crate::api::schema::TabRemindInterval) -> Opt
     })
 }
 
-/// A fixed row under the list (Browser, News, coordinator; "pinned" in the docs).
+/// A fixed row under the list (News, coordinator; "pinned" in the docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum FixedKind {
-    Browser,
     News,
     Coordinator,
 }

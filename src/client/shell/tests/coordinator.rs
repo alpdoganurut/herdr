@@ -790,15 +790,6 @@ fn settings_refuse_actions_while_off_and_without_a_dashboard() {
 
 #[test]
 fn the_coordinator_keeps_its_pinned_row_first_when_space_runs_short() {
-    let browser = super::super::browser::BrowserRow {
-        state: super::super::browser::BrowserRowState::Running,
-        status: "1 tab".into(),
-        active: false,
-        profile: "main".into(),
-        running: true,
-        companion: None,
-        dock: None,
-    };
     let news = super::super::news::NewsRow {
         tab_id: None,
         state: super::super::news::NewsRowState::Idle,
@@ -811,38 +802,24 @@ fn the_coordinator_keeps_its_pinned_row_first_when_space_runs_short() {
         status: "0 watched".into(),
         focused: false,
     };
-    let rows = || {
-        vec![
-            FixedRow::Browser(&browser),
-            FixedRow::News(&news),
-            FixedRow::Coordinator(&coordinator),
-        ]
-    };
+    let rows = || vec![FixedRow::News(&news), FixedRow::Coordinator(&coordinator)];
     let kinds = |rows: Vec<FixedRow<'_>>| {
         rows.iter()
             .map(|row| match row {
-                FixedRow::Browser(_) => "browser",
                 FixedRow::News(_) => "news",
                 FixedRow::Coordinator(_) => "coordinator",
             })
             .collect::<Vec<_>>()
     };
     assert_eq!(
-        kinds(fixed_rows_that_fit(rows(), 3)),
-        ["browser", "news", "coordinator"]
-    );
-    assert_eq!(
         kinds(fixed_rows_that_fit(rows(), 2)),
         ["news", "coordinator"]
     );
     assert_eq!(kinds(fixed_rows_that_fit(rows(), 1)), ["coordinator"]);
     assert!(fixed_rows_that_fit(rows(), 0).is_empty());
-    // Without the coordinator, News still beats Browser.
+    // Without the coordinator, News keeps its row.
     assert_eq!(
-        kinds(fixed_rows_that_fit(
-            vec![FixedRow::Browser(&browser), FixedRow::News(&news)],
-            1
-        )),
+        kinds(fixed_rows_that_fit(vec![FixedRow::News(&news)], 1)),
         ["news"]
     );
 }
@@ -890,7 +867,6 @@ fn render_sidebar(
         idle_reminders: &shell.idle_reminders,
         scheduled_reminders: &shell.scheduled_reminders,
         news_row,
-        browser_row: None,
         browser_marked_tabs: HashSet::new(),
         browser_attention_tabs: HashSet::new(),
         browser_page_tabs: HashMap::new(),
@@ -922,7 +898,6 @@ fn render_sidebar(
         tab_mutes: None,
         sidebar_filter: None,
         quiet: None,
-        info_pane_open: false,
         history_back: false,
         history_forward: false,
     };

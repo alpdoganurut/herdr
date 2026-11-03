@@ -11,10 +11,15 @@
 //! browsers) apply only while Settings → Agents wraps claude / codex; the
 //! shell hook lives there too. `fix all` runs the setup steps for every
 //! failing check (`browser.fix`); `open browser` / `stop browser` start or
-//! stop the default profile. Below the rows, under a rule, the facts: the
-//! status line, the browser, the helper, the extension, the MCP
-//! registrations — each with ✓/✗ and a short reason from the server's
-//! checks.
+//! stop the default profile. Fork (session header): the rows the tabs
+//! sidebar's Browser row menu had follow (that row is gone): the
+//! companion's focus / start / restart / stop, the focused tab's browser
+//! dock, focus the herdr+ window, open the Browser overlay — from the
+//! shell's last `browser.get`, synced on entry and on every pull while the
+//! section is open. Below the rows, under a rule, the facts: the live state
+//! (the old row's glyph and status), the status line, the browser, the
+//! helper, the extension, the MCP registrations — each with ✓/✗ and a
+//! short reason from the server's checks.
 
 use super::render::{display_width, put_text};
 use super::*;
@@ -60,6 +65,72 @@ pub(super) struct ClientBrowserSettings {
     pub(super) poll_at: Option<std::time::Instant>,
     /// A one-line note under the facts (`copied …`).
     pub(super) note: Option<String>,
+    /// Fork (session header): the browser's live state (the old Browser
+    /// row) and the actions its menu had, from the shell's `browser.get`.
+    pub(super) live: Option<super::browser::BrowserRow>,
+    pub(super) actions: Vec<LiveAction>,
+}
+
+/// Fork (session header): one of the rows after `ROWS`, the Browser row
+/// menu's actions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LiveAction {
+    pub(super) label: String,
+    pub(super) action: ClientContextMenuAction,
+}
+
+/// The live rows for the browser's state: the companion's items (a local
+/// endpoint), the focused tab's dock where the browser docks, focus the
+/// herdr+ window while it runs, and the Browser overlay.
+pub(super) fn live_actions(
+    live: Option<&super::browser::BrowserRow>,
+    local: bool,
+    window: bool,
+) -> Vec<LiveAction> {
+    let mut actions = Vec::new();
+    let mut push = |label: String, action| actions.push(LiveAction { label, action });
+    if let Some(live) = live.filter(|_| local) {
+        if let Some(state) = live.companion.as_deref() {
+            for (label, action, _) in super::browser::companion_menu_items(state) {
+                push(
+                    label.to_lowercase(),
+                    ClientContextMenuAction::BrowserCompanion(action),
+                );
+            }
+        }
+        if let Some(docked) = live.dock {
+            push(
+                format!(
+                    "browser dock on this tab: {}",
+                    if docked { "on" } else { "off" }
+                ),
+                ClientContextMenuAction::BrowserToggleDock,
+            );
+        }
+        if (live.companion.is_none() || window) && live.running {
+            push(
+                "focus the browser window".into(),
+                ClientContextMenuAction::BrowserFocusWindow,
+            );
+        }
+        // Beside the companion, the herdr+ window's own profile (without
+        // it, `open browser` / `stop browser` above is that profile).
+        if live.companion.is_some() && window {
+            push(
+                if live.running {
+                    "stop the browser window".into()
+                } else {
+                    "start the browser window".into()
+                },
+                ClientContextMenuAction::BrowserToggleProfile,
+            );
+        }
+    }
+    push(
+        "open the Browser overlay…".into(),
+        ClientContextMenuAction::BrowserOpenOverlay,
+    );
+    actions
 }
 
 /// The whole command the install row copies.
@@ -149,11 +220,40 @@ impl ClientShellState {
         )
     }
 
-    /// Rows in the browser section: the ten rows once a record is there.
+    /// Rows in the browser section: the ten rows and the live ones once a
+    /// record is there.
     pub(super) fn browser_section_rows(&self) -> usize {
         match self.browser_settings() {
-            Some(ClientBrowserSettings { info: Some(_), .. }) => ROWS,
+            Some(ClientBrowserSettings {
+                info: Some(_),
+                actions,
+                ..
+            }) => ROWS + actions.len(),
             _ => 0,
+        }
+    }
+
+    /// Fork (session header): copy the browser's live state into the open
+    /// section (on entry and after each `browser.get` reply).
+    pub(super) fn sync_browser_settings_live(&mut self) {
+        if !self.browser_section_open() {
+            return;
+        }
+        let live = self.browser_row();
+        let local = self.active_endpoint_id.is_local();
+        let window = self
+            .browser
+            .info
+            .as_ref()
+            .is_some_and(|info| !info.window_off);
+        let actions = live_actions(live.as_ref(), local, window);
+        if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
+            settings.browser.live = live;
+            settings.browser.actions = actions;
+            if settings.browser.info.is_some() {
+                let rows = ROWS + settings.browser.actions.len();
+                settings.selected = settings.selected.min(rows - 1);
+            }
         }
     }
 
@@ -174,6 +274,8 @@ impl ClientShellState {
         if supported {
             self.pull_browser_settings(outcome);
         }
+        self.sync_browser_settings_live();
+        self.refresh_browser();
         outcome.repaint = true;
     }
 
@@ -257,7 +359,8 @@ impl ClientShellState {
         }
         if let Some(ClientShellOverlay::Settings(settings)) = self.overlay.as_mut() {
             if settings.section == ClientSettingsSection::Browser {
-                settings.selected = settings.selected.min(ROWS - 1);
+                let rows = ROWS + settings.browser.actions.len();
+                settings.selected = settings.selected.min(rows - 1);
             }
         }
         // The Browser row and the overlay follow a start/stop or a fix.
@@ -292,6 +395,10 @@ impl ClientShellState {
         let Some(info) = self.browser_settings().and_then(|b| b.info.clone()) else {
             return;
         };
+        if selected >= ROWS {
+            self.apply_browser_live_action(selected - ROWS, outcome);
+            return;
+        }
         match selected {
             ROW_ENABLED => self.set_browser_setting("enabled", (!info.enabled).into(), outcome),
             ROW_ACTIVITY => {
@@ -379,6 +486,32 @@ impl ClientShellState {
             }
             _ => {}
         }
+    }
+
+    /// Fork (session header): a live row: what the Browser row's menu item
+    /// did (the dock acts on the focused tab).
+    fn apply_browser_live_action(&mut self, index: usize, outcome: &mut ClientShellInput) {
+        let Some(action) = self
+            .browser_settings()
+            .and_then(|b| b.actions.get(index))
+            .map(|row| row.action)
+        else {
+            return;
+        };
+        let (profile, running) = self
+            .browser_settings()
+            .and_then(|b| b.live.as_ref())
+            .map(|live| (live.profile.clone(), live.running))
+            .unwrap_or_else(|| ("main".into(), false));
+        match action {
+            ClientContextMenuAction::BrowserToggleDock => {
+                self.toggle_browser_dock_for_focused_tab(outcome);
+            }
+            action => self.activate_browser_context_action(profile, running, action, outcome),
+        }
+        self.refresh_browser();
+        self.sync_browser_settings_live();
+        outcome.repaint = true;
     }
 
     /// The section's own keys, ahead of the overlay's: → cycles the colour
@@ -713,7 +846,25 @@ pub(super) fn render_browser_section(
         );
         hits.push((rect, index));
     }
-    let rule_y = area.y + 3 + labels.len() as u16;
+    // Fork (session header): the Browser row menu's actions.
+    for (offset, row) in browser.actions.iter().enumerate() {
+        let index = ROWS + offset;
+        let y = area.y + 3 + index as u16;
+        if y >= area.bottom() {
+            break;
+        }
+        let rect = Rect::new(area.x, y, area.width, 1);
+        draw_row(
+            buffer,
+            rect,
+            &[(row.label.clone(), None)],
+            index == settings.selected,
+            false,
+            palette,
+        );
+        hits.push((rect, index));
+    }
+    let rule_y = area.y + 3 + (labels.len() + browser.actions.len()) as u16;
     if rule_y < area.bottom() {
         put_text(
             buffer,
@@ -727,7 +878,23 @@ pub(super) fn render_browser_section(
             Style::default().fg(palette.surface0).bg(palette.panel_bg),
         );
     }
-    let facts = facts(info, palette);
+    let mut facts = facts(info, palette);
+    // Fork (session header): the live state leads (the old Browser row).
+    if let Some(live) = browser.live.as_ref() {
+        facts.insert(
+            0,
+            (
+                "now",
+                vec![
+                    (
+                        live.state.glyph().to_string(),
+                        Some(live.state.color(palette, live.active)),
+                    ),
+                    (format!(" {}", live.status), None),
+                ],
+            ),
+        );
+    }
     for (offset, (label, segments)) in facts.iter().enumerate() {
         draw_fact(
             buffer,

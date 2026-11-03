@@ -378,80 +378,6 @@ impl ClientContextMenuOverlay {
             ClientContextMenuTarget::Coordinator { items } => {
                 super::coordinator_shell::coordinator_menu_items(items)
             }
-            ClientContextMenuTarget::Browser {
-                running,
-                local,
-                companion,
-                window,
-                dock,
-                ..
-            } => {
-                let mut items = Vec::new();
-                if *local {
-                    // Fork (companion launcher): the companion's items lead;
-                    // the herdr+ window's follow in their own section while
-                    // it is on.
-                    if let Some(state) = companion.as_deref() {
-                        for (label, action, glyph) in super::browser::companion_menu_items(state) {
-                            items.push(item(
-                                label,
-                                Action::BrowserCompanion(action),
-                                glyph,
-                                Section::Lead,
-                                if action == crate::api::schema::BrowserCompanionAction::Stop {
-                                    Kind::Danger
-                                } else {
-                                    Kind::Action
-                                },
-                            ));
-                        }
-                    }
-                    // Fork (companion launcher): dock the browser on the
-                    // focused tab (the row's `◨` does the same).
-                    if let Some(docked) = dock {
-                        items.push(item(
-                            "Dock browser here",
-                            Action::BrowserToggleDock,
-                            if *docked { GLYPH_ON } else { GLYPH_OFF },
-                            Section::Lead,
-                            Kind::Toggle(*docked),
-                        ));
-                    }
-                    if companion.is_none() || *window {
-                        let section = if companion.is_some() {
-                            Section::Titled("Window")
-                        } else {
-                            Section::Lead
-                        };
-                        if *running {
-                            items.push(item(
-                                "Focus window",
-                                Action::BrowserFocusWindow,
-                                GLYPH_FOCUS,
-                                section,
-                                Kind::Action,
-                            ));
-                            items.push(item(
-                                "Stop profile",
-                                Action::BrowserToggleProfile,
-                                GLYPH_STOP,
-                                section,
-                                Kind::Action,
-                            ));
-                        } else {
-                            items.push(item(
-                                "Start profile",
-                                Action::BrowserToggleProfile,
-                                GLYPH_ACTIVATE,
-                                section,
-                                Kind::Action,
-                            ));
-                        }
-                    }
-                }
-                items.push(lead("Open overlay", Action::BrowserOpenOverlay, GLYPH_OPEN));
-                items
-            }
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -893,8 +819,7 @@ impl ClientShellState {
                 return;
             }
             // Fork (companion launcher): the tab menu's dock and Browser
-            // view items act on that tab without focusing it; the Browser
-            // row's on the focused tab.
+            // view items act on that tab without focusing it.
             (
                 ClientContextMenuAction::BrowserToggleDock,
                 ClientContextMenuTarget::Tab { tab_id, .. },
@@ -908,14 +833,6 @@ impl ClientShellState {
                 ClientContextMenuTarget::Tab { tab_id, .. },
             ) => {
                 self.toggle_browser_view(tab_id.clone(), outcome);
-                outcome.repaint = true;
-                return;
-            }
-            (
-                ClientContextMenuAction::BrowserToggleDock,
-                ClientContextMenuTarget::Browser { .. },
-            ) => {
-                self.toggle_browser_dock_for_focused_tab(outcome);
                 outcome.repaint = true;
                 return;
             }
@@ -982,9 +899,6 @@ impl ClientShellState {
             ClientContextMenuTarget::News { enabled, .. } => {
                 self.activate_news_context_action(enabled, action, outcome)
             }
-            ClientContextMenuTarget::Browser {
-                profile, running, ..
-            } => self.activate_browser_context_action(profile, running, action, outcome),
             ClientContextMenuTarget::Coordinator { .. } => {
                 self.activate_coordinator_context_action(action, outcome)
             }

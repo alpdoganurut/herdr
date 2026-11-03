@@ -80,8 +80,6 @@ pub(crate) struct BrowserDockHits {
     pub(crate) divider: Rect,
     /// The Browser view's area (empty while the tab shows its terminal).
     pub(crate) full: Rect,
-    /// The Browser row's `◨`.
-    pub(crate) row_button: Rect,
     pub(crate) targets: Vec<(Rect, BrowserDockTarget)>,
 }
 
@@ -927,10 +925,6 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         let hits = &self.hits.browser_dock;
-        if super::contains(hits.row_button, point) {
-            self.toggle_browser_dock_for_focused_tab(outcome);
-            return true;
-        }
         if !hits.divider.is_empty() && super::contains(hits.divider, point) {
             let now = Instant::now();
             let double_click = self

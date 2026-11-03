@@ -150,7 +150,6 @@ impl ClientShellState {
             });
         let breathe_phase = self.breathe_phase();
         let breathe_reset_rgb = self.breathe_reset_rgb();
-        let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
         let browser_attention_tabs = self.browser_attention_tabs();
         // Fork (companion launcher): tabs with browser pages (one map, O(sessions)).
@@ -158,8 +157,6 @@ impl ClientShellState {
         let active_view = self.active_view();
         let pins_view = self.pins_view();
         let scheduled_view = self.scheduled_view();
-        // Fork (menu design): the toolbar's notes button.
-        let info_pane_open = self.info_dock_open_for_focused_tab();
         // Fork (tab history): the toolbar's back / forward buttons.
         let (history_back, history_forward) = self.tab_history_available();
         let mut render_state = render::ShellRenderState {
@@ -174,7 +171,6 @@ impl ClientShellState {
             idle_reminders: &self.idle_reminders,
             scheduled_reminders: &self.scheduled_reminders,
             news_row,
-            browser_row,
             browser_marked_tabs,
             browser_attention_tabs,
             browser_page_tabs,
@@ -230,7 +226,6 @@ impl ClientShellState {
                 &self.active_endpoint_id,
                 self.snapshot.as_deref(),
             ),
-            info_pane_open,
             history_back,
             history_forward,
         };
@@ -378,7 +373,6 @@ impl ClientShellState {
         };
         let breathe_phase = self.breathe_phase();
         let breathe_reset_rgb = self.breathe_reset_rgb();
-        let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
         let browser_attention_tabs = self.browser_attention_tabs();
         // Fork (companion launcher): tabs with browser pages (one map, O(sessions)).
@@ -392,8 +386,6 @@ impl ClientShellState {
         let active_view = self.active_view();
         let pins_view = self.pins_view();
         let scheduled_view = self.scheduled_view();
-        // Fork (menu design): the toolbar's notes button.
-        let info_pane_open = self.info_dock_open_for_focused_tab();
         // Fork (tab history): the toolbar's back / forward buttons.
         let (history_back, history_forward) = self.tab_history_available();
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
@@ -414,7 +406,6 @@ impl ClientShellState {
                 idle_reminders: &self.idle_reminders,
                 scheduled_reminders: &self.scheduled_reminders,
                 news_row,
-                browser_row,
                 browser_marked_tabs,
                 browser_attention_tabs,
                 browser_page_tabs,
@@ -476,7 +467,6 @@ impl ClientShellState {
                     &self.active_endpoint_id,
                     Some(snapshot),
                 ),
-                info_pane_open,
                 history_back,
                 history_forward,
             },

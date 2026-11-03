@@ -83,8 +83,6 @@ mod tab_remind_menu;
 mod tab_sidebar;
 /// Fork (sidebar v2): the tabs sidebar's Active agents block.
 mod tab_sidebar_active;
-/// Fork (sidebar v2): the tabs sidebar's detail strip.
-mod tab_sidebar_detail;
 /// Fork (sidebar v3): the tabs sidebar's Pinned block.
 mod tab_sidebar_pins;
 /// Fork (sidebar v3): the tabs sidebar's Scheduled block.

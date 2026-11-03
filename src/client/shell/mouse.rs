@@ -2035,11 +2035,6 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                if super::contains(self.hits.browser_row, point) {
-                    self.open_browser_context_menu(mouse.column, mouse.row);
-                    outcome.repaint = true;
-                    return;
-                }
                 if super::contains(self.hits.news_row, point) {
                     self.open_news_context_menu(mouse.column, mouse.row);
                     outcome.repaint = true;
@@ -2367,11 +2362,6 @@ impl ClientShellState {
                 if super::contains(self.hits.group_new, point) {
                     self.toolbar_new_tab(outcome);
                     outcome.repaint = true;
-                    return;
-                }
-                if super::contains(self.hits.browser_row, point) {
-                    // The pinned Browser row opens the overlay on the press.
-                    self.activate_browser_row(outcome);
                     return;
                 }
                 if super::contains(self.hits.news_row, point) {

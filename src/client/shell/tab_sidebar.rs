@@ -58,8 +58,7 @@
 //! `surface1`.
 //!
 //! Fork, sidebar v3 (the layout, `plan_layout`), top to bottom: toolbar,
-//! the detail strip (about the hovered row, else the focused tab), the list,
-//! the Active block, the Pinned block (`tab_sidebar_pins.rs`), the Scheduled
+//! the list, the Active block, the Pinned block (`tab_sidebar_pins.rs`), the Scheduled
 //! block (`tab_sidebar_scheduled.rs`), the fixed rows, the status footer,
 //! the menu row.
 
@@ -192,12 +191,13 @@ pub(super) fn render_tab_sidebar_with(
     }
 
     let status_lines = status_footer_lines(snapshot);
+    // Fork (session header): the Browser row is gone (its menu is Settings
+    // → Browser, its dock toggle the header's `◧`).
     let pinned: Vec<FixedRow<'_>> = state
-        .browser_row
+        .news_row
         .as_ref()
-        .map(FixedRow::Browser)
+        .map(FixedRow::News)
         .into_iter()
-        .chain(state.news_row.as_ref().map(FixedRow::News))
         .chain(coordinator.row.map(FixedRow::Coordinator))
         .collect();
     // The pinned tabs (News, coordinator) leave the list.
@@ -243,7 +243,6 @@ pub(super) fn render_tab_sidebar_with(
             active_cap: super::tab_sidebar_active::active_cap(content.height),
             pins_cap: super::tab_sidebar_pins::pins_cap(content.height),
             scheduled_cap: super::tab_sidebar_scheduled::scheduled_cap(content.height),
-            detail_lines: super::tab_sidebar_detail::detail_lines(content.height),
         },
         SectionRows {
             active: &|cap| super::tab_sidebar_active::active_block_rows(model, active_view, cap),
@@ -262,7 +261,6 @@ pub(super) fn render_tab_sidebar_with(
         plan.pins,
         plan.scheduled,
         plan.fixed_rule,
-        plan.detail,
         plan.footer,
         plan.menu,
     ] {
@@ -281,7 +279,6 @@ pub(super) fn render_tab_sidebar_with(
         buffer,
         content,
         all_groups_folded(snapshot, state.collapsed_groups),
-        state.info_pane_open,
         (state.history_back, state.history_forward),
         config,
         hits,
@@ -314,7 +311,7 @@ pub(super) fn render_tab_sidebar_with(
 
     let selected = resolve_selected(snapshot, model, hover);
     let pinned = fixed_rows_that_fit(pinned, plan.fixed.height);
-    // Top-down from the list's bottom edge: Browser, News, coordinator.
+    // Top-down from the list's bottom edge: News, coordinator.
     for (offset, row) in pinned.iter().enumerate() {
         let rect = Rect::new(
             content.x,
@@ -326,14 +323,6 @@ pub(super) fn render_tab_sidebar_with(
         let hovered = matches!(hover, Some(SidebarHover::Fixed(hovered)) if *hovered == kind);
         render_fixed_row(buffer, rect, row, hovered, config);
         match row {
-            FixedRow::Browser(browser) => {
-                hits.browser_row = rect;
-                // Fork (companion launcher): the row's `◨` dock toggle.
-                if browser.dock.is_some() && rect.width >= 12 {
-                    hits.browser_dock.row_button =
-                        Rect::new(rect.right().saturating_sub(3), rect.y, 3, 1);
-                }
-            }
             FixedRow::News(_) => hits.news_row = rect,
             FixedRow::Coordinator(_) => coordinator_rect = rect,
         }
@@ -362,17 +351,6 @@ pub(super) fn render_tab_sidebar_with(
             snapshot,
             model,
             scheduled_view,
-            config,
-            state,
-            hits,
-        );
-    }
-    if !plan.detail.is_empty() {
-        super::tab_sidebar_detail::render_detail_strip(
-            buffer,
-            plan.detail,
-            snapshot,
-            model,
             config,
             state,
             hits,
@@ -708,10 +686,6 @@ pub(super) struct SidebarPlan {
     pub(super) fixed_rule: Rect,
     /// The fixed rows (Browser, News, coordinator).
     pub(super) fixed: Rect,
-    /// Fork (sidebar v3): the detail strip (`tab_sidebar_detail.rs`) under
-    /// the toolbar: the text rows, then the rule above the list. Empty when
-    /// the strip does not fit.
-    pub(super) detail: Rect,
     /// The `ui.tab_bar_right` status rows.
     pub(super) footer: Rect,
     pub(super) menu: Rect,
@@ -730,18 +704,6 @@ pub(super) struct LayoutWants {
     pub(super) status_lines: usize,
     /// The Active agents block's line cap (`active_cap`).
     pub(super) active_cap: u16,
-    /// The detail strip's text rows (`detail_lines`), without its rules.
-    pub(super) detail_lines: u16,
-}
-
-/// The rows the detail strip takes for `lines` text rows: the text and the
-/// rule under it.
-fn detail_rows(lines: u16) -> u16 {
-    if lines == 0 {
-        0
-    } else {
-        lines + 1
-    }
 }
 
 /// The rows each block under the list asks for at a line cap (`*_block_rows`;
@@ -778,11 +740,10 @@ const SECTION_CAP_STEPS: [u16; 2] = [2, 1];
 /// one row each; the status footer one row per line
 /// from `SPACIOUS_HEIGHT` rows, else one row for all of them; the Active,
 /// Pinned and Scheduled blocks the rows `rows` asks for at their caps; the
-/// detail strip its text rows and rules; the fixed rows one each while the
+/// fixed rows one each while the
 /// list keeps a row (`fixed_rows_that_fit` picks which stay in
 /// `plan.fixed.height`). The list takes the rest. While it has fewer than
-/// `MIN_LIST_ROWS` rows the optional rows give way in turn: the detail
-/// strip, then the Scheduled block's lines (cap 2, 1), the Pinned block's
+/// `MIN_LIST_ROWS` rows the optional rows give way in turn: the Scheduled block's lines (cap 2, 1), the Pinned block's
 /// (cap 2, 1), the Active block's (cap 6, 4, 2), then the whole Scheduled,
 /// Pinned and Active blocks, then the rule above the fixed rows, then the
 /// footer (one row, then none).
@@ -805,14 +766,9 @@ pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'
         fixed,
         fixed_rule: u16::from(fixed > 0),
         footer,
-        detail: wants.detail_lines,
     };
     let short = |budget: &Budget| budget.list(room) < MIN_LIST_ROWS;
-    // 1. The detail strip.
-    if short(&budget) {
-        budget.detail = 0;
-    }
-    // 2, 3. The Scheduled, then the Pinned block's lines.
+    // 1, 2. The Scheduled, then the Pinned block's lines.
     for cap in SECTION_CAP_STEPS {
         if !short(&budget) {
             break;
@@ -829,7 +785,7 @@ pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'
             budget.pins = budget.pins.min((rows.pins)(cap));
         }
     }
-    // 4. The Active block's lines.
+    // 3. The Active block's lines.
     for cap in ACTIVE_CAP_STEPS {
         if !short(&budget) {
             break;
@@ -838,7 +794,7 @@ pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'
             budget.active = budget.active.min((rows.active)(cap));
         }
     }
-    // 5 to 7. The whole blocks.
+    // 4 to 6. The whole blocks.
     if short(&budget) {
         budget.scheduled = 0;
     }
@@ -848,21 +804,19 @@ pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'
     if short(&budget) {
         budget.active = 0;
     }
-    // 8. The rule above the fixed rows.
+    // 7. The rule above the fixed rows.
     if short(&budget) {
         budget.fixed_rule = 0;
     }
-    // 9. The footer.
+    // 8. The footer.
     while budget.footer > 0 && short(&budget) {
         budget.footer = if budget.footer > 1 { 1 } else { 0 };
     }
     let list_height = budget.list(room);
-    let detail_height = detail_rows(budget.detail);
 
     let row = |y: u16, height: u16| Rect::new(content.x, y, content.width, height);
     let toolbar = row(content.y, TOOLBAR_ROWS.min(height));
-    let detail = row(toolbar.bottom(), detail_height);
-    let list = row(detail.bottom(), list_height);
+    let list = row(toolbar.bottom(), list_height);
     let active = row(list.bottom(), budget.active);
     let pins = row(active.bottom(), budget.pins);
     let scheduled = row(pins.bottom(), budget.scheduled);
@@ -881,7 +835,6 @@ pub(super) fn plan_layout(content: Rect, wants: LayoutWants, rows: SectionRows<'
         scheduled,
         fixed_rule,
         fixed,
-        detail,
         footer,
         menu,
     }
@@ -896,8 +849,6 @@ struct Budget {
     /// Fork (sidebar v3): the rule above the fixed rows (0 or 1).
     fixed_rule: u16,
     footer: u16,
-    /// Detail strip text rows (its rules come with `detail_rows`).
-    detail: u16,
 }
 
 impl Budget {
@@ -909,16 +860,14 @@ impl Budget {
                 .saturating_add(self.scheduled)
                 .saturating_add(self.fixed)
                 .saturating_add(self.fixed_rule)
-                .saturating_add(self.footer)
-                .saturating_add(detail_rows(self.detail)),
+                .saturating_add(self.footer),
         )
     }
 }
 
-/// The fixed rows under the list (Browser, News, coordinator), in drawing order.
+/// The fixed rows under the list (News, coordinator), in drawing order.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum FixedRow<'a> {
-    Browser(&'a super::browser::BrowserRow),
     News(&'a super::news::NewsRow),
     Coordinator(&'a super::coordinator::CoordinatorRow),
 }
@@ -929,22 +878,20 @@ impl FixedRow<'_> {
         match self {
             Self::Coordinator(_) => 0,
             Self::News(_) => 1,
-            Self::Browser(_) => 2,
         }
     }
 
     fn kind(&self) -> FixedKind {
         match self {
-            Self::Browser(_) => FixedKind::Browser,
             Self::News(_) => FixedKind::News,
             Self::Coordinator(_) => FixedKind::Coordinator,
         }
     }
 }
 
-/// The pinned rows to draw in `room` rows, still in drawing order (Browser,
-/// News, coordinator). When not every row fits, the coordinator keeps its
-/// row first, then News, then Browser.
+/// The pinned rows to draw in `room` rows, still in drawing order (News,
+/// coordinator). When not every row fits, the coordinator keeps its row
+/// first, then News.
 pub(super) fn fixed_rows_that_fit(rows: Vec<FixedRow<'_>>, room: u16) -> Vec<FixedRow<'_>> {
     let room = usize::from(room);
     if rows.len() <= room {
@@ -962,8 +909,8 @@ pub(super) fn fixed_rows_that_fit(rows: Vec<FixedRow<'_>>, room: u16) -> Vec<Fix
 /// state's color, the label at x=5, the status dim and right-aligned with a
 /// one-cell margin. The focused News / coordinator row has the focused row
 /// background and a bold label; a hovered row has the bar and the hover
-/// band. On the Browser and coordinator rows the label wins over the status
-/// in a narrow sidebar (the status is truncated first); on the News row the
+/// band. On the coordinator row the label wins over the status in a narrow
+/// sidebar (the status is truncated first); on the News row the
 /// status wins.
 fn render_fixed_row(
     buffer: &mut Buffer,
@@ -974,14 +921,6 @@ fn render_fixed_row(
 ) {
     let palette = &config.palette;
     let (glyph, glyph_color, label, status, focused, label_first) = match row {
-        FixedRow::Browser(row) => (
-            row.state.glyph(),
-            row.state.color(palette, row.active),
-            super::browser::BROWSER_ROW_LABEL,
-            row.status.as_str(),
-            false,
-            true,
-        ),
         FixedRow::News(row) => (
             row.state.glyph(),
             row.state.color(palette),
@@ -1029,26 +968,18 @@ fn render_fixed_row(
         glyph,
         Style::default().fg(glyph_color),
     );
-    // Fork (companion launcher): the Browser row's `◨` takes the last cells.
-    let dock = match row {
-        FixedRow::Browser(row) if rect.width >= 12 => row.dock,
-        _ => None,
-    };
-    let dock_cells: u16 = if dock.is_some() { 2 } else { 0 };
     // Cells for the status: (label first) what the label and the gaps
     // around it leave, else all the row has right of the glyph.
     let status_width = display_width(status);
     let status_cells = if label_first {
         status_width.min(
             rect.width
-                .saturating_sub(LABEL_X + display_width(label) + 2 + dock_cells),
+                .saturating_sub(LABEL_X + display_width(label) + 2),
         )
     } else {
-        status_width.min(rect.width.saturating_sub(LABEL_X + 2 + dock_cells))
+        status_width.min(rect.width.saturating_sub(LABEL_X + 2))
     };
-    let label_cells = rect
-        .width
-        .saturating_sub(LABEL_X + status_cells + 2 + dock_cells);
+    let label_cells = rect.width.saturating_sub(LABEL_X + status_cells + 2);
     put_truncated(
         buffer,
         rect.x.saturating_add(LABEL_X),
@@ -1059,26 +990,12 @@ fn render_fixed_row(
     );
     put_truncated(
         buffer,
-        rect.right().saturating_sub(1 + status_cells + dock_cells),
+        rect.right().saturating_sub(1 + status_cells),
         rect.y,
         status_cells,
         status,
         Style::default().fg(palette.overlay1),
     );
-    if let Some(open) = dock {
-        put_text(
-            buffer,
-            rect.right().saturating_sub(2),
-            rect.y,
-            1,
-            super::browser_dock_render::DOCK_GLYPH,
-            Style::default().fg(if open {
-                palette.accent
-            } else {
-                palette.overlay1
-            }),
-        );
-    }
 }
 
 /// The footer's lines: the non-empty status segments joined with the
@@ -1349,7 +1266,6 @@ fn render_toolbar(
     buffer: &mut Buffer,
     content: Rect,
     all_folded: Option<bool>,
-    info_pane_open: bool,
     history: (bool, bool),
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
@@ -1389,24 +1305,6 @@ fn render_toolbar(
         if config.mouse_capture {
             hits.sidebar_history_back = back;
             hits.sidebar_history_forward = forward;
-        }
-    }
-    if let Some(notes) = super::sidebar_filter::notes_button_rect(content) {
-        let fg = if info_pane_open {
-            palette.accent
-        } else {
-            palette.overlay0
-        };
-        put_text(
-            buffer,
-            notes.x,
-            y,
-            1,
-            super::sidebar_filter::NOTES_GLYPH,
-            Style::default().fg(fg),
-        );
-        if config.mouse_capture {
-            hits.sidebar_notes = notes;
         }
     }
     let new_width = display_width(NEW_TAB_LABEL);
@@ -1963,11 +1861,11 @@ mod fixed_row_tests {
             .to_owned()
     }
 
-    /// Fork (companion launcher, audit 2 A16): only the Browser row's label
-    /// reserves its cells (and the `◨` its two); the News row's status still
-    /// wins in a narrow sidebar.
+    /// Fork (companion launcher, audit 2 A16): the coordinator row's label
+    /// reserves its cells; the News row's status still wins in a narrow
+    /// sidebar.
     #[test]
-    fn fork_smoke_a_narrow_news_row_keeps_its_status_and_the_browser_row_its_label() {
+    fn fork_smoke_a_narrow_news_row_keeps_its_status_and_the_coordinator_row_its_label() {
         let news = super::super::news::NewsRow {
             tab_id: None,
             state: super::super::news::NewsRowState::Idle,
@@ -1977,21 +1875,17 @@ mod fixed_row_tests {
         let text = row_text(&FixedRow::News(&news), 20);
         assert!(text.ends_with("next 09:00"), "{text:?}");
         assert!(text.contains("Ne…"), "the label gives way: {text:?}");
-        let browser = super::super::browser::BrowserRow {
-            state: super::super::browser::BrowserRowState::Running,
-            status: "companion · 3 tabs · 2 agents".into(),
-            active: false,
-            profile: "companion".into(),
-            running: true,
-            companion: Some("running".into()),
-            dock: Some(false),
+        let coordinator = super::super::coordinator::CoordinatorRow {
+            tab_id: None,
+            state: super::super::coordinator::CoordinatorRowState::Working,
+            status: "working on 3 suggestions".into(),
+            focused: false,
         };
-        let text = row_text(&FixedRow::Browser(&browser), 22);
-        assert!(text.contains("Browser"), "the label stays whole: {text:?}");
-        assert!(text.contains('…'), "the status gives way: {text:?}");
+        let text = row_text(&FixedRow::Coordinator(&coordinator), 22);
         assert!(
-            text.ends_with(super::super::browser_dock_render::DOCK_GLYPH),
-            "{text:?}"
+            text.contains("coordinator"),
+            "the label stays whole: {text:?}"
         );
+        assert!(text.contains('…'), "the status gives way: {text:?}");
     }
 }

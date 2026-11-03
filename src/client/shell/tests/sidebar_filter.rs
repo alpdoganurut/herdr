@@ -827,69 +827,24 @@ mod fork_smoke {
     }
 }
 
-// ------------------------------------------------------------ notes button
+// ------------------------------------------------------------ toolbar
 
+/// Fork (session header): the toolbar is `⏶ ‹ ›  ⌕ search  ◷ 1h  +`: the
+/// notes button moved to the header's `▤`, the chip sits one blank cell
+/// before `+`.
 #[test]
-fn the_notes_button_sits_before_plus_and_is_shown_without_hover() {
+fn the_toolbar_has_no_notes_button_and_the_chip_sits_before_plus() {
     let mut state = filter_state();
     let frame = state.compose(106, 30).expect("composed frame");
-    let notes = state.hits.sidebar_notes;
     let plus = state.hits.group_new;
-    assert_eq!((notes.width, notes.height), (1, 1));
-    assert_eq!(notes.y, plus.y, "in the toolbar row");
-    assert_eq!(notes.x + 3, plus.x, "two blank cells before +");
     let chip = state.hits.sidebar_recency;
-    assert_eq!(chip.right() + 1, notes.x, "one blank cell after the chip");
-    assert_eq!(
-        row_text(&frame, notes),
-        super::super::sidebar_filter::NOTES_GLYPH
+    assert_eq!(chip.y, plus.y, "in the toolbar row");
+    assert_eq!(chip.right() + 1, plus.x, "one blank cell before +");
+    let toolbar = row_text(
+        &frame,
+        ratatui::layout::Rect::new(0, plus.y, state.hits.sidebar_divider.x, 1),
     );
-    assert!(state.sidebar_hover.is_none(), "shown without the pointer");
-    let cell = &frame.cells[(notes.y * frame.width + notes.x) as usize];
-    assert_eq!(
-        cell.fg,
-        crate::protocol::color_to_u32(state.config.palette.overlay0),
-        "dim while the focused tab's pane is closed"
-    );
-}
-
-#[test]
-fn the_notes_button_toggles_the_focused_tabs_info_pane_without_focusing_it() {
-    let mut state = filter_state();
-    let notes = state.hits.sidebar_notes;
-    let opened = click(&mut state, notes);
-    assert!(opened.resize, "the pane surface narrows");
-    assert!(state.info_dock_open_for_focused_tab());
-    assert_eq!(pane_inputs(&opened), 0);
-    state.set_pane_surface(surface());
-    let frame = state.compose(106, 30).expect("composed frame");
-    assert!(!state.info_dock_focused(), "the session keeps the keyboard");
-    let notes = state.hits.sidebar_notes;
-    let cell = &frame.cells[(notes.y * frame.width + notes.x) as usize];
-    assert_eq!(
-        cell.fg,
-        crate::protocol::color_to_u32(state.config.palette.accent),
-        "lit while it is open"
-    );
-    assert!(
-        pane_inputs(&key(&mut state, "j")) > 0,
-        "keys go to the pane"
-    );
-
-    // Again closes it.
-    let closed = click(&mut state, notes);
-    assert!(closed.resize);
-    assert!(!state.info_dock_open_for_focused_tab());
-
-    // Without mouse capture there is no hit, but the glyph still shows.
-    let mut state = filter_state();
-    state.config.mouse_capture = false;
-    let frame = state.compose(106, 30).expect("composed frame");
-    assert_eq!(state.hits.sidebar_notes, ratatui::layout::Rect::default());
-    assert_eq!(
-        row_text(&frame, notes),
-        super::super::sidebar_filter::NOTES_GLYPH
-    );
+    assert!(!toolbar.contains('◧'), "{toolbar:?}");
 }
 
 // ------------------------------------------------------- tab cycling keys

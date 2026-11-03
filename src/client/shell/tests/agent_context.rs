@@ -1,6 +1,7 @@
 //! Fork: agents' context use in the tabs sidebar (`agent_context.rs`): the
-//! `NN%` row mark from 75 %, the detail strip chip, the model rebuild on a
-//! push and the `ui.sidebar_context_usage` toggle.
+//! `NN%` row mark from 75 %, the model rebuild on a push and the
+//! `ui.sidebar_context_usage` toggle (the session header's use: tests in
+//! `session_header.rs`).
 
 use super::*;
 use crate::app::agent_context::AgentContextPane;
@@ -118,19 +119,6 @@ fn fg_of(frame: &FrameData, rect: ratatui::layout::Rect, needle: char) -> Option
         .map(|x| frame.cells[(rect.y * frame.width + x) as usize].fg)
 }
 
-fn detail_text(state: &ClientShellState, frame: &FrameData) -> String {
-    let detail = state.hits.sidebar_detail;
-    (detail.y..detail.bottom())
-        .map(|y| {
-            text_of(
-                frame,
-                ratatui::layout::Rect::new(detail.x, y, detail.width, 1),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 #[test]
 fn rows_show_the_use_from_75_percent_yellow_then_red() {
     let mut state = state_with(&tabs_config());
@@ -220,16 +208,7 @@ fn the_narrowest_row_packs_the_use_and_the_marks_and_truncates_the_label() {
 }
 
 #[test]
-fn the_detail_strip_names_the_use_at_any_level_and_the_toggle_hides_it() {
-    let mut state = state_with(&tabs_config());
-    state.receive_agent_context(
-        &ClientEndpointId::Local,
-        payload(1, &[("pane_1", 120_000, 200_000)]),
-    );
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let text = detail_text(&state, &frame);
-    assert!(text.contains("ctx 60% \u{b7} 120k/200k"), "{text:?}");
-
+fn the_toggle_hides_the_use_on_the_row() {
     let mut config = tabs_config();
     config.ui.sidebar_context_usage = false;
     let mut state = state_with(&config);
@@ -238,7 +217,6 @@ fn the_detail_strip_names_the_use_at_any_level_and_the_toggle_hides_it() {
         payload(1, &[("pane_1", 190_000, 200_000)]),
     );
     let frame = state.compose(COLS, ROWS).expect("composed frame");
-    assert!(!detail_text(&state, &frame).contains("ctx"));
     assert!(!text_of(&frame, row_rect(&state, "tab_1")).contains('%'));
 }
 
@@ -259,55 +237,4 @@ fn a_push_from_another_server_boot_is_not_used() {
     assert!(text_of(&frame, row_rect(&state, "tab_2"))
         .trim_end()
         .ends_with("95%"));
-}
-
-#[test]
-fn context_chip_text_formats_tokens() {
-    use crate::agent_context::ContextUsage;
-    let text = |used, window| {
-        super::super::tab_sidebar_detail::context_chip_text(ContextUsage { used, window })
-            .as_str()
-            .to_owned()
-    };
-    assert_eq!(text(164_000, 200_000), "ctx 82% \u{b7} 164k/200k");
-    assert_eq!(text(820_271, 1_000_000), "ctx 82% \u{b7} 820k/1M");
-    assert_eq!(text(1_250_000, 2_000_000), "ctx 62% \u{b7} 1.2M/2M");
-    assert_eq!(text(950, 258_400), "ctx 0% \u{b7} 950/258k");
-}
-
-#[test]
-fn the_detail_strip_shows_the_last_handoff_age_even_without_a_context_use() {
-    let config = tabs_config();
-    let mut state = state_with(&config);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let mut push = payload(1, &[]);
-    push.panes.push(AgentContextPane {
-        pane_id: "pane_1".into(),
-        used: 0,
-        window: 0,
-        handoff_unix: Some(now - 5 * 60),
-    });
-    assert!(state.receive_agent_context(&ClientEndpointId::Local, push));
-    let context = &state.agent_context[&ClientEndpointId::Local];
-    assert_eq!(context.usage_of("pane_1"), None, "a zero window is no use");
-    assert_eq!(context.handoff_of("pane_1"), Some(now - 5 * 60));
-    let frame = state.compose(COLS, ROWS).expect("composed frame");
-    let text = detail_text(&state, &frame);
-    assert!(text.contains("handoff 5m ago"), "{text}");
-    assert!(!text.contains("ctx"), "{text}");
-}
-
-#[test]
-fn handoff_chip_text_reads_as_an_age() {
-    let text = |at, now| {
-        super::super::tab_sidebar_detail::handoff_chip_text(at, now)
-            .as_str()
-            .to_owned()
-    };
-    assert_eq!(text(1_000, 1_030), "handoff <1m ago");
-    assert_eq!(text(1_000, 1_000 + 5 * 60), "handoff 5m ago");
-    assert_eq!(text(2_000, 1_000), "handoff <1m ago", "a clock skew");
 }

@@ -357,7 +357,6 @@ fn the_history_buttons_sit_after_the_toggle_slot_before_the_search_field() {
         state.hits.group_toggle_all,
         state.hits.sidebar_search,
         state.hits.sidebar_recency,
-        state.hits.sidebar_notes,
         state.hits.group_new,
     ] {
         assert!(!back.intersects(other) && !forward.intersects(other));
@@ -443,7 +442,9 @@ fn a_click_on_a_dim_history_button_does_nothing() {
 #[test]
 fn narrow_toolbars_drop_the_history_buttons_before_the_search_field() {
     let mut config = tabs_config();
-    config.ui.sidebar_width = 22;
+    // Fork (session header): 19 content cells, one fewer than the buttons
+    // need since the notes button left the toolbar.
+    config.ui.sidebar_width = 20;
     let (mut state, _) = visited_state_with(config);
     let frame = composed(&mut state);
     assert!(state.hits.sidebar_history_back.is_empty());

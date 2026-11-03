@@ -151,8 +151,6 @@ pub(super) struct ShellHitMap {
     pub(super) sidebar_toolbar: Rect,
     pub(super) sidebar_search: Rect,
     pub(super) sidebar_recency: Rect,
-    /// Fork (menu design): the toolbar's `◧` notes button.
-    pub(super) sidebar_notes: Rect,
     /// Fork (tab history): the toolbar's `‹` and `›` buttons.
     pub(super) sidebar_history_back: Rect,
     pub(super) sidebar_history_forward: Rect,
@@ -169,8 +167,6 @@ pub(super) struct ShellHitMap {
     pub(super) group_new: Rect,
     /// The `tabs` layout's pinned News row (not a `sidebar_tabs` row: no drag).
     pub(super) news_row: Rect,
-    /// The `tabs` layout's pinned Browser row, directly above the News row.
-    pub(super) browser_row: Rect,
     /// Fork: the `tabs` layout's pinned coordinator row, the bottom-most.
     pub(super) coordinator_row: Rect,
     /// Fork: the info dock (`info_dock.rs`).
@@ -258,8 +254,6 @@ pub(super) struct ShellHitMap {
     pub(super) sidebar_active_rows: Vec<(Rect, String)>,
     /// Fork (sidebar v2): the Active agents `+N more` / `show fewer` row.
     pub(super) sidebar_active_more: Rect,
-    /// Fork (sidebar v2): the detail strip under the list.
-    pub(super) sidebar_detail: Rect,
     /// Fork (sidebar v2): when a displayed duration next changes its text
     /// (the minute clock's repaint).
     pub(super) sidebar_clock_deadline: Option<std::time::Instant>,
@@ -969,22 +963,6 @@ pub(super) enum ClientContextMenuTarget {
     /// The `tabs` layout's pinned News row; `enabled` is the schedule state
     /// when the menu opened (the toggle item flips it).
     News { enabled: bool },
-    /// The `tabs` layout's pinned Browser row: the profile the items act on,
-    /// whether it runs, and whether the endpoint is local (focus/start/stop).
-    Browser {
-        profile: String,
-        running: bool,
-        local: bool,
-        /// Fork (companion launcher): the companion's state on a server
-        /// that runs it (its items lead the menu).
-        companion: Option<String>,
-        /// Fork (companion launcher): the herdr+ window is on (its items
-        /// show in a "Window" section).
-        window: bool,
-        /// Fork (companion launcher): the focused tab's dock (open or not)
-        /// where the browser docks.
-        dock: Option<bool>,
-    },
     /// Fork: the `tabs` layout's pinned coordinator row, with its items as
     /// they were when the menu opened.
     Coordinator {
