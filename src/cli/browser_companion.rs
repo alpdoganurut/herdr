@@ -42,11 +42,42 @@ pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
         eprintln!("unknown flag {bad}\n{USAGE}");
         return Ok(2);
     }
+    act(action, verb, None, json)
+}
+
+/// Whether `herdr browser start [--profile P]` starts the companion: it is
+/// named, or no profile is while the herdr+ window is off (`window_off`
+/// asks the server).
+pub(super) fn starts_companion(
+    profile: Option<&str>,
+    window_off: impl FnOnce() -> std::io::Result<bool>,
+) -> std::io::Result<bool> {
+    match profile.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => Ok(crate::browser::hub::is_companion(name)),
+        None => window_off(),
+    }
+}
+
+/// `herdr browser start` for the companion: `browser.companion start` with
+/// the caller (`browser.start`'s params carry none), so a start from a
+/// pane — an agent — runs in the background like `companion start`.
+pub(super) fn start_for_browser_start(pane: Option<&str>, json: bool) -> std::io::Result<i32> {
+    act(BrowserCompanionAction::Start, "start", pane, json)
+}
+
+/// The request for `action` (the caller: `pane`, else this pane's), then
+/// its answer, raw (`--json`, an error) or in words.
+fn act(
+    action: BrowserCompanionAction,
+    verb: &str,
+    pane: Option<&str>,
+    json: bool,
+) -> std::io::Result<i32> {
     let response = super::super::send_request(&Request {
         id: format!("cli:browser:companion:{verb}"),
         method: Method::BrowserCompanion(BrowserCompanionParams {
             action,
-            caller: super::caller(None),
+            caller: super::caller(pane),
         }),
     })?;
     if response.get("error").is_some() || json {
@@ -215,6 +246,29 @@ fn log(args: &[String]) -> std::io::Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_start_goes_to_the_companion_when_named_or_the_window_is_off() {
+        let asked = std::cell::Cell::new(false);
+        let window_off = |off: bool| {
+            let asked = &asked;
+            move || {
+                asked.set(true);
+                Ok(off)
+            }
+        };
+        assert!(starts_companion(Some("companion"), window_off(false)).unwrap());
+        assert!(starts_companion(Some(" companion "), window_off(false)).unwrap());
+        assert!(!asked.get(), "a named profile needs no question");
+        assert!(!starts_companion(Some("main"), window_off(true)).unwrap());
+        assert!(!asked.get());
+        // no profile: the companion while the herdr+ window is off
+        assert!(starts_companion(None, window_off(true)).unwrap());
+        assert!(asked.get());
+        assert!(!starts_companion(None, window_off(false)).unwrap());
+        assert!(!starts_companion(Some("  "), window_off(false)).unwrap());
+        assert!(starts_companion(None, || Err(std::io::Error::other("no server"))).is_err());
+    }
 
     #[test]
     fn the_status_line_names_pid_uptime_restarts_and_an_update() {

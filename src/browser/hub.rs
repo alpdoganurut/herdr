@@ -1265,6 +1265,12 @@ impl BrowserHub {
         if !config.window && !is_companion(&profile) {
             return Err(window_disabled());
         }
+        // Fork (companion launcher): a page-creating op that names the
+        // companion (`--profile companion`, a `companion:` tab) starts it on
+        // demand too, like one routed there by `[browser] host`.
+        if is_companion(&profile) && Self::op_follows_host(&params.op) && !self.companion_live() {
+            self.ensure_companion(self.companion_register_wait())?;
+        }
         self.ensure_running(&profile)?;
         let deadline = Duration::from_millis(match &params.op {
             BrowserOp::Wait { timeout_s, .. } => timeout_s.unwrap_or(30).clamp(1, 300) * 1000 + 500,

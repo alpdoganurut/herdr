@@ -21,10 +21,11 @@ use crate::api::schema::{
 #[path = "browser_companion.rs"]
 pub(crate) mod browser_companion;
 pub(crate) use browser_companion::{
-    companion_menu_items, CompanionChip, CompanionOverlayRow, CompanionTone,
+    companion_changing, companion_menu_items, CompanionChip, CompanionOverlayRow, CompanionTone,
 };
 
-/// The pull cadence while a profile is running or starting.
+/// The pull cadence while a profile is running or starting (fork, companion
+/// launcher: or the companion is starting, restarting or stopping).
 pub(super) const BROWSER_REFRESH_ACTIVE: std::time::Duration = std::time::Duration::from_secs(2);
 /// The pull cadence otherwise.
 pub(super) const BROWSER_REFRESH_IDLE: std::time::Duration = std::time::Duration::from_secs(15);
@@ -492,6 +493,12 @@ impl ClientShellState {
             info.profiles
                 .iter()
                 .any(|p| p.state == "running" || p.state == "starting")
+                // Fork (companion launcher): the companion is on its way up
+                // or down (its row's countdown moves with each pull)
+                || info
+                    .companion_app
+                    .as_ref()
+                    .is_some_and(|companion| companion_changing(&companion.state))
         });
         let overlay_open = matches!(self.overlay, Some(ClientShellOverlay::Browser(_)));
         if busy || overlay_open {

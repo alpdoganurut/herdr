@@ -932,6 +932,22 @@ fn start_stop(args: &[String], start: bool) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    // Fork (companion launcher): the companion starts through
+    // browser.companion, which knows the caller (from a pane: an agent, in
+    // the background); browser.start's params carry none.
+    if start
+        && browser_companion::starts_companion(common.profile.as_deref(), || {
+            let response = super::send_request(&Request {
+                id: "cli:browser:start:window".into(),
+                method: Method::BrowserGet(BrowserGetParams::default()),
+            })?;
+            Ok(response["result"]["browser"]["window_off"]
+                .as_bool()
+                .unwrap_or(false))
+        })?
+    {
+        return browser_companion::start_for_browser_start(common.pane.as_deref(), common.json);
+    }
     let method = if start {
         Method::BrowserStart(BrowserProfileTarget {
             profile: common.profile.clone(),

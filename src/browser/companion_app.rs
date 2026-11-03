@@ -21,6 +21,11 @@
 //! Lock order: the core's mutex is a leaf. It is never held across a spawn,
 //! a signal, a sidecar request or another hub lock, and every wait releases
 //! it.
+//!
+//! A pid from a run record (an adopted companion, another session's) is
+//! only trusted, and only ever signalled, while it is still the process
+//! that record names: the start token recorded at the launch tells it
+//! apart from a later process that reuses the pid.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -58,8 +63,17 @@ pub const QUIT_WAIT: Duration = Duration::from_secs(3);
 pub const EXIT_WAIT: Duration = Duration::from_secs(5);
 pub const TERM_WAIT: Duration = Duration::from_secs(5);
 pub const KILL_WAIT: Duration = Duration::from_secs(2);
+/// A process without a live lease of its own (still starting, or its lease
+/// lost) gets no quit: this grace, then SIGTERM.
+pub const UNATTACHED_WAIT: Duration = Duration::from_millis(500);
 /// The whole stop at server exit.
 pub const SERVER_EXIT_BUDGET: Duration = Duration::from_secs(8);
+/// SIGKILL's exit is always given this long to be seen, even when the
+/// stop's deadline has come.
+const KILL_FLOOR: Duration = Duration::from_millis(250);
+/// A run record's `started_at` (stamped right after the spawn) against the
+/// process's own start time, for a record without a start token.
+const START_SLACK_SECS: u64 = 15;
 /// `companion.log` moves to `companion.log.1` at a launch beyond this size.
 pub const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
 /// The variables a managed companion never inherits from the server.
@@ -98,6 +112,11 @@ pub struct CompanionRunRecord {
     pub bundle: String,
     #[serde(default)]
     pub started_at: u64,
+    /// The process's start token at the launch
+    /// (`platform::process_start_token`): what tells it apart from a later
+    /// process that reuses its pid (0: not recorded).
+    #[serde(default)]
+    pub start_token: u64,
     #[serde(default)]
     pub server_pid: u32,
     /// The API socket the process was told to use.
@@ -251,6 +270,29 @@ pub struct SpawnTicket {
     pub background: bool,
 }
 
+/// What a stop finds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopTarget {
+    /// This process: the caller stops it.
+    Process {
+        pid: u32,
+        generation: u64,
+        has_child: bool,
+    },
+    /// A launch is in flight: it runs the stop on what it spawns, or spawns
+    /// nothing.
+    Launch { generation: u64 },
+    /// No process lives (it is `stopped`, or still `failed`).
+    Nothing,
+}
+
+/// A stop that came while a launch was in flight: its waits and its deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingStop {
+    ladder: Ladder,
+    deadline: Instant,
+}
+
 /// What the driver must do now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -296,6 +338,11 @@ pub struct Core {
     pub spawning: bool,
     /// A waiter thread reports the exit (else the driver polls the pid).
     has_child: bool,
+    /// A stop that came while the launch was in flight: the launch runs it
+    /// on what it spawns, or spawns nothing.
+    stop_pending: Option<PendingStop>,
+    /// The server is exiting: nothing launches from now on.
+    pub shutting_down: bool,
 }
 
 impl Default for Core {
@@ -329,6 +376,8 @@ impl Core {
             run: None,
             spawning: false,
             has_child: false,
+            stop_pending: None,
+            shutting_down: false,
         }
     }
 
@@ -369,14 +418,20 @@ impl Core {
         }
     }
 
-    /// Begin a launch; `None` when one is under way or the process lives.
+    /// Begin a launch; `None` when one is under way, the process lives, it
+    /// gave up (`failed`) or the server is exiting.
     pub fn begin_spawn(
         &mut self,
         reason: StartReason,
         now: Instant,
         now_unix: u64,
     ) -> Option<SpawnTicket> {
-        if self.busy() || self.phase == Phase::Failed {
+        if self.busy() || self.phase == Phase::Failed || self.shutting_down {
+            return None;
+        }
+        // a crash restart the driver found due loses to a stop (or a start)
+        // that came in between
+        if reason == StartReason::CrashRestart && self.phase != Phase::Crashed {
             return None;
         }
         self.generation += 1;
@@ -424,12 +479,34 @@ impl Core {
         true
     }
 
-    /// The launch itself failed (no executable, …): a crash with that error.
+    /// Right before the spawn: whether this launch still goes ahead. A stop
+    /// that came while it got ready, or the server's exit, calls it off:
+    /// nothing is spawned and it is `stopped`.
+    pub fn launch_goes_ahead(&mut self, generation: u64, now_unix: u64) -> bool {
+        if generation != self.generation || !self.spawning {
+            return false;
+        }
+        if self.stop_pending.is_some() || self.shutting_down {
+            self.spawning = false;
+            self.stop_pending = None;
+            self.set_phase(Phase::Stopped, now_unix);
+            return false;
+        }
+        true
+    }
+
+    /// The launch itself failed (no executable, …): a crash with that error
+    /// (a stop that waited for it, or the server's exit: stopped).
     pub fn spawn_failed(&mut self, generation: u64, error: String, now: Instant, now_unix: u64) {
         if generation != self.generation {
             return;
         }
         self.spawning = false;
+        if self.stop_pending.take().is_some() || self.shutting_down {
+            self.last_error = Some(error);
+            self.set_phase(Phase::Stopped, now_unix);
+            return;
+        }
         self.crash(error, now, now_unix);
     }
 
@@ -493,6 +570,7 @@ impl Core {
         }
         self.pid = None;
         self.spawning = false;
+        self.stop_pending = None;
         self.has_child = false;
         self.run = None;
         self.registered = false;
@@ -542,23 +620,32 @@ impl Core {
         }
     }
 
-    /// The user (or server exit) stops it: the pid and generation to stop,
-    /// `None` when no process lives (then it is `stopped` already).
-    pub fn begin_stop(&mut self, now_unix: u64) -> Option<(u32, u64, bool)> {
+    /// The user (or the server's exit) stops it, on `ladder` by `deadline`.
+    /// A scheduled restart goes either way. A launch in flight takes the
+    /// stop over: it runs it on what it spawns, or spawns nothing (and no
+    /// start is accepted until then).
+    pub fn begin_stop(&mut self, ladder: Ladder, deadline: Instant, now_unix: u64) -> StopTarget {
         self.next_retry = None;
         self.next_retry_unix = None;
-        match self.pid {
-            Some(pid) => {
-                self.set_phase(Phase::Stopping, now_unix);
-                Some((pid, self.generation, self.has_child))
-            }
-            None => {
-                if self.phase != Phase::Failed && !self.spawning {
-                    self.set_phase(Phase::Stopped, now_unix);
-                }
-                None
-            }
+        if let Some(pid) = self.pid {
+            self.set_phase(Phase::Stopping, now_unix);
+            return StopTarget::Process {
+                pid,
+                generation: self.generation,
+                has_child: self.has_child,
+            };
         }
+        if self.spawning {
+            self.stop_pending = Some(PendingStop { ladder, deadline });
+            self.set_phase(Phase::Stopping, now_unix);
+            return StopTarget::Launch {
+                generation: self.generation,
+            };
+        }
+        if self.phase != Phase::Failed {
+            self.set_phase(Phase::Stopped, now_unix);
+        }
+        StopTarget::Nothing
     }
 
     /// The stop could not end the process: let it go as stopped, with why.
@@ -567,6 +654,7 @@ impl Core {
             return;
         }
         self.pid = None;
+        self.stop_pending = None;
         self.run = None;
         self.has_child = false;
         self.last_error = Some(why);
@@ -681,13 +769,58 @@ pub struct Spawned {
     pub child: Option<std::process::Child>,
 }
 
+/// What tells a live process apart from a later one that reuses its pid
+/// (each `None` where this platform cannot read it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProcessFacts {
+    /// `platform::process_start_token`.
+    pub start_token: Option<u64>,
+    /// `platform::process_start_unix_ms`.
+    pub started_ms: Option<u64>,
+}
+
+/// What a run record's pid is now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordedProcess {
+    /// The process the record names (its start token matches, else its
+    /// start time).
+    Same,
+    /// No process has that pid, or another one does (a reused pid).
+    Gone,
+    /// A live pid nothing tells apart (no start token or time to compare):
+    /// never adopted, never signalled.
+    Unknown,
+}
+
+/// What `record`'s pid is now, from `facts` about it (`None`: no process
+/// has that pid).
+pub fn match_record(record: &CompanionRunRecord, facts: Option<&ProcessFacts>) -> RecordedProcess {
+    let Some(facts) = facts.filter(|_| record.pid != 0) else {
+        return RecordedProcess::Gone;
+    };
+    let same = |yes: bool| {
+        if yes {
+            RecordedProcess::Same
+        } else {
+            RecordedProcess::Gone
+        }
+    };
+    if let (true, Some(token)) = (record.start_token != 0, facts.start_token) {
+        return same(token == record.start_token);
+    }
+    if let (true, Some(ms)) = (record.started_at != 0, facts.started_ms) {
+        return same((ms / 1000).abs_diff(record.started_at) <= START_SLACK_SECS);
+    }
+    RecordedProcess::Unknown
+}
+
 /// Starting, signalling and probing companion processes (a fake in tests).
 pub trait Spawner: Send + Sync {
     fn spawn(&self, spec: &LaunchSpec) -> std::io::Result<Spawned>;
-    fn alive(&self, pid: u32) -> bool;
     fn signal(&self, pid: u32, signal: StopSignal);
-    /// Whether a live `pid` from a run record is an Electron (a reused pid is not).
-    fn is_companion(&self, pid: u32) -> bool;
+    /// What tells a live `pid` apart from a later process that reuses it;
+    /// `None` when no process has that pid.
+    fn facts(&self, pid: u32) -> Option<ProcessFacts>;
 }
 
 /// The real thing: the inner binary, executed directly (never `open`:
@@ -725,10 +858,6 @@ impl Spawner for ProcessSpawner {
         })
     }
 
-    fn alive(&self, pid: u32) -> bool {
-        crate::platform::process_exists(pid)
-    }
-
     fn signal(&self, pid: u32, signal: StopSignal) {
         match signal {
             StopSignal::Term => super::launch::terminate(pid),
@@ -736,9 +865,11 @@ impl Spawner for ProcessSpawner {
         }
     }
 
-    fn is_companion(&self, pid: u32) -> bool {
-        crate::platform::process_comm_name(pid)
-            .is_some_and(|name| name.to_ascii_lowercase().starts_with("electron"))
+    fn facts(&self, pid: u32) -> Option<ProcessFacts> {
+        (pid != 0 && crate::platform::process_exists(pid)).then(|| ProcessFacts {
+            start_token: crate::platform::process_start_token(pid),
+            started_ms: crate::platform::process_start_unix_ms(pid),
+        })
     }
 }
 
@@ -955,35 +1086,48 @@ pub struct LeaseFacts {
     pub pid: Option<u32>,
 }
 
-/// A stop's waits (the server's exit is shorter).
-#[derive(Debug, Clone, Copy)]
-struct Ladder {
+/// A stop's waits (the server's exit is shorter). Every wait also ends at
+/// the stop's one deadline, `total()` after it began; the control page's
+/// quit is sent without waiting for its reply (the exit is the answer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ladder {
+    /// The exit after the control page's quit.
     quit: Duration,
-    exit: Duration,
+    /// No live lease of its own (no quit sent): the grace before SIGTERM.
+    unattached: Duration,
+    /// The exit after SIGTERM.
     term: Duration,
+    /// The exit after SIGKILL.
     kill: Duration,
 }
 
+impl Ladder {
+    /// The whole stop (an unattached grace is never longer than the quit's wait).
+    const fn total(&self) -> Duration {
+        Duration::from_millis(
+            (self.quit.as_millis() + self.term.as_millis() + self.kill.as_millis()) as u64,
+        )
+    }
+}
+
 const USER_LADDER: Ladder = Ladder {
-    quit: QUIT_WAIT,
-    exit: EXIT_WAIT,
+    quit: Duration::from_secs(QUIT_WAIT.as_secs() + EXIT_WAIT.as_secs()),
+    unattached: UNATTACHED_WAIT,
     term: TERM_WAIT,
     kill: KILL_WAIT,
 };
 
 /// At most [`SERVER_EXIT_BUDGET`] in all.
 const SERVER_LADDER: Ladder = Ladder {
-    quit: Duration::from_secs(2),
-    exit: Duration::from_secs(2),
+    quit: Duration::from_secs(4),
+    unattached: UNATTACHED_WAIT,
     term: Duration::from_secs(3),
     kill: Duration::from_secs(1),
 };
 const _: () = assert!(
-    SERVER_LADDER.quit.as_secs()
-        + SERVER_LADDER.exit.as_secs()
-        + SERVER_LADDER.term.as_secs()
-        + SERVER_LADDER.kill.as_secs()
-        <= SERVER_EXIT_BUDGET.as_secs()
+    SERVER_LADDER.total().as_millis() <= SERVER_EXIT_BUDGET.as_millis()
+        && SERVER_LADDER.unattached.as_millis() <= SERVER_LADDER.quit.as_millis()
+        && USER_LADDER.unattached.as_millis() <= USER_LADDER.quit.as_millis()
 );
 
 impl BrowserHub {
@@ -1002,12 +1146,32 @@ impl BrowserHub {
     fn companion_other_session(&self, home: &Path) -> Option<String> {
         let ours = self.launcher().socket();
         let record = read_run_record(home)?;
-        let spawner = self.launcher().spawner();
         (record.socket != ours.display().to_string()
-            && record.pid != 0
-            && spawner.alive(record.pid)
-            && spawner.is_companion(record.pid))
-        .then_some(record.socket)
+            && self.record_process(&record) == RecordedProcess::Same)
+            .then_some(record.socket)
+    }
+
+    /// What a run record's pid is now: its process, gone, or another one.
+    fn record_process(&self, record: &CompanionRunRecord) -> RecordedProcess {
+        let facts = (record.pid != 0)
+            .then(|| self.launcher().spawner().facts(record.pid))
+            .flatten();
+        match_record(record, facts.as_ref())
+    }
+
+    /// The process of `generation`, which herdr has no child of (adopted):
+    /// what its run record's pid is now (`Gone` once it is not current).
+    fn companion_adopted_process(&self, generation: u64, pid: u32) -> RecordedProcess {
+        let record = {
+            let core = self.launcher().lock();
+            (core.generation == generation)
+                .then(|| core.run.clone())
+                .flatten()
+        };
+        match record {
+            Some(record) if record.pid == pid => self.record_process(&record),
+            _ => RecordedProcess::Gone,
+        }
     }
 
     /// `[browser] host` routed an `open` / `show` to the companion and no
@@ -1026,15 +1190,22 @@ impl BrowserHub {
             if self.companion_live() {
                 return Ok(());
             }
-            let (phase, spawning, generation, last_error) = {
+            let (phase, spawning, generation, last_error, shutting_down) = {
                 let core = launcher.lock();
                 (
                     core.phase,
                     core.spawning,
                     core.generation,
                     core.last_error.clone(),
+                    core.shutting_down,
                 )
             };
+            if shutting_down {
+                return Err(BrowserError::new(
+                    "host_unavailable",
+                    "herdr is shutting down; the companion browser is not started now",
+                ));
+            }
             match phase {
                 Phase::Failed => return Err(failed_error(last_error.as_deref())),
                 Phase::Stopped if !spawning => {
@@ -1201,7 +1372,8 @@ impl BrowserHub {
     }
 
     /// Run a launch: resolve the install (this herdr's app files first),
-    /// spawn, record, watch. On the calling thread.
+    /// spawn, record, watch. On the calling thread. A stop that came
+    /// meanwhile calls it off before the spawn, or runs here right after it.
     fn companion_launch(&self, ticket: SpawnTicket) {
         let home = self.companion_home();
         let generation = ticket.generation;
@@ -1213,7 +1385,10 @@ impl BrowserHub {
             hub.companion_changed();
             hub.ensure_companion_driver();
         };
-        if let Some(Err(err)) = companion_install::refresh_app_files(&home, None) {
+        // the directory a companion still runs from is kept
+        if let Some(Err(err)) =
+            companion_install::refresh_app_files(&home, running_app_dir(&home).as_deref())
+        {
             tracing::warn!(event = "browser.companion.refresh", error = %err, "companion app files not refreshed");
         }
         let install = match companion_install::resolve(&home) {
@@ -1239,6 +1414,19 @@ impl BrowserHub {
             args,
             log: companion_install::log_path(&home),
         };
+        // a stop (or the server's exit) that came while this got ready: no process
+        if !self
+            .launcher()
+            .lock()
+            .launch_goes_ahead(generation, unix_now())
+        {
+            tracing::info!(
+                event = "browser.companion.launch",
+                "companion launch called off by a stop"
+            );
+            self.companion_changed();
+            return;
+        }
         let spawner = self.launcher().spawner();
         let spawned = match spawner.spawn(&spec) {
             Ok(spawned) => spawned,
@@ -1249,8 +1437,9 @@ impl BrowserHub {
                 )
             }
         };
+        let pid = spawned.pid;
         let record = CompanionRunRecord {
-            pid: spawned.pid,
+            pid,
             launch_token: ticket.token.clone(),
             app: install.record.app.clone(),
             app_sha256: install.record.app_sha256.clone(),
@@ -1258,6 +1447,10 @@ impl BrowserHub {
             electron: install.record.electron.clone(),
             bundle: install.record.bundle.clone(),
             started_at: unix_now(),
+            start_token: spawner
+                .facts(pid)
+                .and_then(|facts| facts.start_token)
+                .unwrap_or(0),
             server_pid: std::process::id(),
             socket: socket.display().to_string(),
             background: ticket.background,
@@ -1266,13 +1459,14 @@ impl BrowserHub {
             tracing::warn!(event = "browser.companion.run_record", error = %err, "companion run record not written; a live handoff cannot adopt it");
         }
         let has_child = spawned.child.is_some();
-        let current =
-            self.launcher()
-                .lock()
-                .spawned(generation, spawned.pid, record, has_child, unix_now());
+        let (current, pending) = {
+            let mut core = self.launcher().lock();
+            let current = core.spawned(generation, pid, record, has_child, unix_now());
+            (current, current.then(|| core.stop_pending.take()).flatten())
+        };
         tracing::info!(
             event = "browser.companion.spawn",
-            pid = spawned.pid,
+            pid,
             background = ticket.background,
             current,
             "companion started"
@@ -1291,6 +1485,10 @@ impl BrowserHub {
         }
         self.companion_changed();
         self.ensure_companion_driver();
+        // a stop came while it was being spawned: it runs now, on its deadline
+        if let Some(stop) = pending {
+            self.companion_stop_process(pid, generation, has_child, stop.ladder, stop.deadline);
+        }
     }
 
     /// The process of `generation` is gone.
@@ -1316,44 +1514,90 @@ impl BrowserHub {
         self.companion_changed();
     }
 
-    /// The stop: the control page's quit, the wait, SIGTERM, SIGKILL.
+    /// The stop, within `ladder.total()` from now (one deadline for every
+    /// step). A launch in flight stops what it spawns on that deadline, or
+    /// spawns nothing; this waits for it.
     fn companion_stop_blocking(&self, ladder: Ladder) {
         let launcher = self.launcher();
-        // a launch in flight gets its pid first
-        let started = Instant::now();
-        let target = loop {
-            let mut core = launcher.lock();
-            if core.spawning && started.elapsed() < Duration::from_secs(5) {
-                drop(launcher.wait(core, Duration::from_millis(100)));
-                continue;
-            }
-            break core.begin_stop(unix_now());
-        };
+        let deadline = Instant::now() + ladder.total();
+        let target = launcher.lock().begin_stop(ladder, deadline, unix_now());
         self.companion_changed();
-        let Some((pid, generation, has_child)) = target else {
-            return;
-        };
-        let spawner = launcher.spawner();
+        match target {
+            StopTarget::Process {
+                pid,
+                generation,
+                has_child,
+            } => self.companion_stop_process(pid, generation, has_child, ladder, deadline),
+            StopTarget::Launch { generation } => {
+                let until = deadline + KILL_FLOOR + Duration::from_millis(100);
+                let mut core = launcher.lock();
+                while core.generation == generation && (core.spawning || core.pid.is_some()) {
+                    let now = Instant::now();
+                    if now >= until {
+                        break;
+                    }
+                    core = launcher.wait(core, (until - now).min(Duration::from_millis(100)));
+                }
+            }
+            StopTarget::Nothing => {}
+        }
+    }
+
+    /// Stop the process of `generation`: the control page's quit when it
+    /// holds the live lease (sent, never waited for: its exit is the
+    /// answer), else a short grace; then SIGTERM, then SIGKILL. Every wait
+    /// ends at `deadline` too (SIGKILL's gets at least [`KILL_FLOOR`]).
+    fn companion_stop_process(
+        &self,
+        pid: u32,
+        generation: u64,
+        has_child: bool,
+        ladder: Ladder,
+        deadline: Instant,
+    ) {
+        let launcher = self.launcher();
+        let left = |step: Duration| step.min(deadline.saturating_duration_since(Instant::now()));
         let gone = |within: Duration| self.companion_wait_gone(generation, pid, has_child, within);
-        let attached = self.companion_live();
+        let token = {
+            let core = launcher.lock();
+            (core.generation == generation)
+                .then(|| core.token.clone())
+                .flatten()
+        };
+        let facts = self.companion_lease_facts();
+        let attached = facts.live && token.is_some() && facts.launch_token == token;
         if attached {
-            let _ = self.request(
-                "control_quit",
-                Some(COMPANION_PROFILE),
-                None,
-                serde_json::Value::Null,
-                ladder.quit,
-            );
+            let hub = self.clone();
+            let wait = ladder.quit;
+            let _ = std::thread::Builder::new()
+                .name("herdr-companion-quit".into())
+                .spawn(move || {
+                    if let Err(err) = hub.request(
+                        "control_quit",
+                        Some(COMPANION_PROFILE),
+                        None,
+                        serde_json::Value::Null,
+                        wait,
+                    ) {
+                        tracing::debug!(event = "browser.companion.quit", code = %err.code, "companion control_quit failed");
+                    }
+                });
         }
-        if gone(ladder.quit + ladder.exit) {
+        if gone(left(if attached {
+            ladder.quit
+        } else {
+            ladder.unattached
+        })) {
             return;
         }
-        spawner.signal(pid, StopSignal::Term);
-        if gone(ladder.term) {
+        if !self.companion_signal(pid, generation, has_child, StopSignal::Term)
+            || gone(left(ladder.term))
+        {
             return;
         }
-        spawner.signal(pid, StopSignal::Kill);
-        if gone(ladder.kill) {
+        if !self.companion_signal(pid, generation, has_child, StopSignal::Kill)
+            || gone(left(ladder.kill).max(KILL_FLOOR))
+        {
             return;
         }
         tracing::warn!(
@@ -1361,7 +1605,6 @@ impl BrowserHub {
             pid,
             "companion did not exit after SIGKILL"
         );
-        let token = launcher.lock().token.clone();
         launcher.lock().abandon(
             generation,
             format!("pid {pid} did not exit after SIGKILL"),
@@ -1375,8 +1618,41 @@ impl BrowserHub {
         self.companion_changed();
     }
 
+    /// Signal the process of `generation`; one herdr has no child of
+    /// (adopted) only while its pid is still the process its run record
+    /// names. `false`: it is gone (its exit is reported here).
+    fn companion_signal(
+        &self,
+        pid: u32,
+        generation: u64,
+        has_child: bool,
+        signal: StopSignal,
+    ) -> bool {
+        if !has_child {
+            match self.companion_adopted_process(generation, pid) {
+                RecordedProcess::Same => {}
+                RecordedProcess::Gone => {
+                    self.companion_exited(generation, ExitInfo::unknown());
+                    return false;
+                }
+                RecordedProcess::Unknown => {
+                    tracing::warn!(
+                        event = "browser.companion.signal",
+                        pid,
+                        ?signal,
+                        "the companion's pid cannot be told from a reused one; not signalled"
+                    );
+                    return true;
+                }
+            }
+        }
+        self.launcher().spawner().signal(pid, signal);
+        true
+    }
+
     /// Wait until the process of `generation` is gone (its waiter reported,
-    /// or — adopted — its pid went away), at most `within`.
+    /// or — adopted — its pid went away or is another process now), at most
+    /// `within`.
     fn companion_wait_gone(
         &self,
         generation: u64,
@@ -1385,15 +1661,16 @@ impl BrowserHub {
         within: Duration,
     ) -> bool {
         let launcher = self.launcher();
-        let spawner = launcher.spawner();
         let deadline = Instant::now() + within;
         let gone = |core: &Core| core.generation != generation || core.pid.is_none();
         loop {
             if gone(&launcher.lock()) {
                 return true;
             }
-            // an adopted process has no waiter: its pid is the fact
-            if !has_child && !spawner.alive(pid) {
+            // an adopted process has no waiter: its recorded pid is the fact
+            if !has_child
+                && self.companion_adopted_process(generation, pid) == RecordedProcess::Gone
+            {
                 self.companion_exited(generation, ExitInfo::unknown());
                 return true;
             }
@@ -1410,19 +1687,25 @@ impl BrowserHub {
     }
 
     /// A new server (live handoff, restart) takes over the companion the
-    /// last one started: its pid lives, it is an Electron and it was told
-    /// this server's socket. It re-registers with the same token.
+    /// last one started: its pid lives, is still the process its run record
+    /// names (the start token) and was told this server's socket. It
+    /// re-registers with the same token.
     pub fn adopt_companion(&self) {
         let home = self.companion_home();
         let Some(record) = read_run_record(&home) else {
             return;
         };
-        let launcher = self.launcher();
-        let spawner = launcher.spawner();
-        if record.pid == 0 || !spawner.alive(record.pid) || !spawner.is_companion(record.pid) {
-            clear_run_record(&home, Some(&record.launch_token));
-            return;
+        match self.record_process(&record) {
+            // its process is gone, or its pid is another process now
+            RecordedProcess::Gone => {
+                clear_run_record(&home, Some(&record.launch_token));
+                return;
+            }
+            // nothing tells it from a reused pid: left alone
+            RecordedProcess::Unknown => return,
+            RecordedProcess::Same => {}
         }
+        let launcher = self.launcher();
         if record.socket != launcher.socket().display().to_string() {
             // another session's: never touched (routing names it)
             return;
@@ -1465,16 +1748,13 @@ impl BrowserHub {
         }
     }
 
-    /// Server exit (never a live handoff): the managed companion quits with
-    /// it, within [`SERVER_EXIT_BUDGET`]. A companion started by hand stays.
+    /// Server exit (never a live handoff): nothing launches from now on (a
+    /// scheduled crash restart goes too) and the managed companion quits
+    /// with the server, within [`SERVER_EXIT_BUDGET`]. A companion started
+    /// by hand stays.
     pub fn stop_companion_with_server(&self) {
-        let managed = {
-            let core = self.launcher().lock();
-            core.pid.is_some() || core.spawning
-        };
-        if managed {
-            self.companion_stop_blocking(SERVER_LADDER);
-        }
+        self.launcher().lock().shutting_down = true;
+        self.companion_stop_blocking(SERVER_LADDER);
     }
 
     /// The managed companion, as the API shows it.
@@ -1557,7 +1837,6 @@ impl BrowserHub {
         let launcher = self.launcher();
         let lease_live = self.companion_live();
         let actions = launcher.lock().due(Instant::now(), lease_live);
-        let spawner = launcher.spawner();
         for action in actions {
             match action {
                 Action::Respawn => {
@@ -1576,18 +1855,25 @@ impl BrowserHub {
                     generation,
                     signal,
                 } => {
-                    if launcher.lock().generation == generation {
+                    let (current, has_child) = {
+                        let core = launcher.lock();
+                        (
+                            core.generation == generation && core.pid == Some(pid),
+                            core.has_child,
+                        )
+                    };
+                    if current {
                         tracing::warn!(
                             event = "browser.companion.kill",
                             pid,
                             ?signal,
                             "stopping an unhealthy companion"
                         );
-                        spawner.signal(pid, signal);
+                        self.companion_signal(pid, generation, has_child, signal);
                     }
                 }
                 Action::Poll { pid, generation } => {
-                    if !spawner.alive(pid) {
+                    if self.companion_adopted_process(generation, pid) == RecordedProcess::Gone {
                         self.companion_exited(generation, ExitInfo::unknown());
                     }
                 }

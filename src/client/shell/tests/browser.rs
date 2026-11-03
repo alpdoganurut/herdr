@@ -879,6 +879,39 @@ fn the_overlay_companion_block_shows_pid_uptime_restarts_update_and_last_error()
     assert!(!text.contains("[Start]"), "{text}");
 }
 
+/// Fork (companion launcher): while the companion starts, re-attaches,
+/// stops or waits to restart after a crash, the row is pulled at the
+/// active cadence (its state and countdown keep up); settled, at the idle one.
+#[test]
+fn a_companion_on_its_way_up_or_down_is_pulled_every_2_s() {
+    for companion in ["starting", "reconnecting", "stopping", "crashed"] {
+        let mut state = tabs_state(browser_snapshot());
+        state.compose(106, 20).expect("composed frame");
+        deliver(&mut state, companion_info(1, companion));
+        let later = tick(
+            &mut state,
+            std::time::Instant::now() + super::super::browser::BROWSER_REFRESH_ACTIVE,
+        );
+        assert!(
+            matches!(&endpoint_requests(&later)[..], [(_, Method::BrowserGet(_))]),
+            "{companion}: pulled after 2 s"
+        );
+    }
+    for companion in ["stopped", "failed", "not_installed"] {
+        let mut state = tabs_state(browser_snapshot());
+        state.compose(106, 20).expect("composed frame");
+        deliver(&mut state, companion_info(1, companion));
+        let later = tick(
+            &mut state,
+            std::time::Instant::now() + super::super::browser::BROWSER_REFRESH_ACTIVE,
+        );
+        assert!(
+            endpoint_requests(&later).is_empty(),
+            "{companion}: settled, the idle cadence"
+        );
+    }
+}
+
 /// A pull answered `unchanged` still carries the companion's state.
 fn deliver_unchanged_companion(state: &mut ClientShellState, info: BrowserGetInfo) {
     let mut unchanged = BrowserGetInfo {

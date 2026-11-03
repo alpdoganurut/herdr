@@ -10,7 +10,8 @@
 //! - `electron/<version>/`: the pinned npm manifest and lock (electron only),
 //!   `node_modules/` from `npm ci --ignore-scripts`, then the Electron binary
 //!   (`node node_modules/electron/install.js`) — a download of about 115 MB
-//!   that only an explicit, consented setup runs. `HERDR_COMPANION_ELECTRON_DIST`
+//!   that only an explicit, consented setup runs; a later `npm ci` (a new
+//!   lock) keeps the binary aside and puts it back. `HERDR_COMPANION_ELECTRON_DIST`
 //!   clones an existing Electron `dist` directory instead (tests, offline).
 //! - `bundle/<version>/herdr+ companion.app` (macOS): a clone of
 //!   `Electron.app` named `herdr+ companion` with the eye-plus icon and its
@@ -606,6 +607,8 @@ fn install_electron(
         return Ok((String::new(), String::new()));
     }
 
+    // a setup cut short while the binary waited outside node_modules (below)
+    let _ = restore_kept_dist(home);
     // npm ci of the pinned manifest (electron only), unless it is in place
     let manifest_changed = std::fs::read_to_string(dir.join("package-lock.json"))
         .ok()
@@ -617,8 +620,8 @@ fn install_electron(
     if !need_npm && !need_binary {
         return Ok((String::new(), String::new()));
     }
-    // asked before anything touches the network for the binary
-    if need_binary && !options.consent && !need_npm {
+    // asked before anything touches the network (npm included) or the files
+    if need_binary && !options.consent {
         return Err(CompanionSetupError::NeedsConsent);
     }
     let node = super::node::discover_default(env.node_override.as_deref().or(config.node()), None)
@@ -661,7 +664,18 @@ fn install_electron(
                 node.path.display()
             )));
         };
-        let output = std::process::Command::new(npm)
+        // npm ci empties node_modules, and Electron's binary (electron/dist)
+        // with it: this Electron's binary, already here, waits outside and
+        // comes back (a lock change never costs the download, nor consent)
+        let keep = !need_binary;
+        if keep {
+            keep_dist_aside(home).map_err(|err| {
+                failed(format!(
+                    "companion: cannot keep the Electron binary across npm ci ({err})"
+                ))
+            })?;
+        }
+        let ran = std::process::Command::new(npm)
             .args([
                 "ci",
                 "--ignore-scripts",
@@ -672,8 +686,17 @@ fn install_electron(
             .current_dir(&dir)
             .env("PATH", &path_env)
             .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|err| failed(format!("companion: cannot run {} ({err})", npm.display())))?;
+            .output();
+        if keep {
+            restore_kept_dist(home).map_err(|err| {
+                failed(format!(
+                    "companion: cannot put the Electron binary back after npm ci ({err}); it is in {}",
+                    kept_dist(home).display()
+                ))
+            })?;
+        }
+        let output =
+            ran.map_err(|err| failed(format!("companion: cannot run {} ({err})", npm.display())))?;
         if !output.status.success() {
             return Err(failed(format!(
                 "companion: npm ci failed ({}) in {}: {}",
@@ -706,6 +729,37 @@ fn install_electron(
         lines.push(format!("companion: electron {ELECTRON_VERSION} downloaded"));
     }
     Ok((node_text, npm_text))
+}
+
+/// Where the Electron binary waits while `npm ci` empties `node_modules`.
+fn kept_dist(home: &Path) -> PathBuf {
+    electron_dir(home).join(".dist-kept")
+}
+
+fn keep_dist_aside(home: &Path) -> io::Result<()> {
+    let kept = kept_dist(home);
+    let _ = std::fs::remove_dir_all(&kept);
+    std::fs::rename(electron_dist(home), &kept)
+}
+
+/// Put a binary kept aside back (also one a setup cut short left there),
+/// unless this Electron's binary is in place already.
+fn restore_kept_dist(home: &Path) -> io::Result<()> {
+    let kept = kept_dist(home);
+    if !kept.exists() {
+        return Ok(());
+    }
+    if electron_installed(home).as_deref() == Some(ELECTRON_VERSION) {
+        return std::fs::remove_dir_all(&kept);
+    }
+    let dist = electron_dist(home);
+    if dist.exists() {
+        std::fs::remove_dir_all(&dist)?;
+    }
+    if let Some(parent) = dist.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(&kept, &dist)
 }
 
 fn last_lines(text: &str, n: usize) -> Vec<String> {

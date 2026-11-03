@@ -1287,7 +1287,11 @@ pub fn fix(id: &str, config: &BrowserConfig, env: &SetupEnv) -> Option<BrowserFi
 fn companion_fix(env: &SetupEnv, config: &BrowserConfig) -> Result<String, String> {
     let home = super::companion_install::companion_home(&env.browser_home);
     if super::companion_install::read_install(&home).is_some() {
-        if let Some(outcome) = super::companion_install::refresh_app_files(&home, None) {
+        // the directory a companion still runs from is kept
+        if let Some(outcome) = super::companion_install::refresh_app_files(
+            &home,
+            super::companion_app::running_app_dir(&home).as_deref(),
+        ) {
             return outcome;
         }
     }

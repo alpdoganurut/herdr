@@ -47,6 +47,13 @@ pub(crate) fn companion_up(state: &str) -> bool {
     matches!(state, "running" | "external")
 }
 
+/// Whether the companion is on its way up or down (starting, re-attaching
+/// after a handoff, stopping, or waiting to restart after a crash): the
+/// client pulls at the active cadence until it settles.
+pub(crate) fn companion_changing(state: &str) -> bool {
+    matches!(state, "starting" | "reconnecting" | "stopping" | "crashed")
+}
+
 /// The pinned row's state and status while the server runs the companion;
 /// `None` when the herdr+ window says more (the companion is down while a
 /// window profile runs).

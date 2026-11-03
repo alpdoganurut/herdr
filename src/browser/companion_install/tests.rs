@@ -312,3 +312,164 @@ fn a_failed_companion_reads_as_failed_with_its_last_error() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Executable `body` at `dir/name`.
+#[cfg(unix)]
+fn script(dir: &Path, name: &str, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    std::fs::write(&path, body).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// An npm whose `ci` does what the real one does to `node_modules`
+/// (empties it, installs the package without its binary), then exits `code`.
+#[cfg(unix)]
+fn npm_ci(code: u8) -> String {
+    format!(
+        "#!/bin/sh\n[ \"$1\" = ci ] || exit 2\necho ran >> npm-ci.log\nrm -rf node_modules\nmkdir -p node_modules/electron\nprintf '{{\"name\":\"electron\",\"version\":\"{ELECTRON_VERSION}\"}}' > node_modules/electron/package.json\nexit {code}\n"
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn fork_smoke_a_new_lock_reruns_npm_ci_but_keeps_the_downloaded_electron() {
+    let dir = temp("lock-change");
+    let mut env = env_in(&dir);
+    let home = companion_home(&env.browser_home);
+    let electron = electron_dir(&home);
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    script(&bin, "node", "#!/bin/sh\nexit 0\n");
+    script(&bin, "npm", &npm_ci(0));
+    env.node_override = Some(bin.join("node").display().to_string());
+    // Electron downloaded under an older lock
+    let dist = fake_dist(&dir, ELECTRON_VERSION);
+    std::fs::create_dir_all(electron_dist(&home).parent().unwrap()).unwrap();
+    std::fs::rename(&dist, electron_dist(&home)).unwrap();
+    std::fs::write(
+        electron.join("node_modules/electron/package.json"),
+        format!("{{\"name\":\"electron\",\"version\":\"{ELECTRON_VERSION}\"}}"),
+    )
+    .unwrap();
+    std::fs::write(electron.join("package.json"), ELECTRON_MANIFEST).unwrap();
+    std::fs::write(electron.join("package-lock.json"), "{\"old\":true}\n").unwrap();
+    assert_eq!(electron_installed(&home).as_deref(), Some(ELECTRON_VERSION));
+    let no_consent = CompanionSetupOptions {
+        consent: false,
+        dist_override: None,
+        brand: false,
+    };
+
+    // no download, so no consent needed; npm ci runs for the new lock
+    let report = setup_companion(&env, &BrowserConfig::default(), &no_consent)
+        .expect("the binary is here: nothing to ask");
+    assert_eq!(
+        std::fs::read_to_string(electron.join("npm-ci.log"))
+            .unwrap()
+            .lines()
+            .count(),
+        1,
+        "npm ci ran"
+    );
+    assert_eq!(
+        std::fs::read_to_string(electron.join("package-lock.json")).unwrap(),
+        ELECTRON_LOCK
+    );
+    assert_eq!(
+        electron_installed(&home).as_deref(),
+        Some(ELECTRON_VERSION),
+        "the binary is kept across npm ci: {:?}",
+        report.lines
+    );
+    assert!(!kept_dist(&home).exists());
+    assert!(resolve(&home).is_ok());
+
+    // an npm ci that fails keeps it too
+    script(&bin, "npm", &npm_ci(1));
+    std::fs::write(electron.join("package-lock.json"), "{\"older\":true}\n").unwrap();
+    let err =
+        setup_companion(&env, &BrowserConfig::default(), &no_consent).expect_err("npm ci failed");
+    assert!(err.to_string().contains("npm ci failed"), "{err}");
+    assert_eq!(
+        electron_installed(&home).as_deref(),
+        Some(ELECTRON_VERSION),
+        "kept across a failed npm ci"
+    );
+
+    // a setup cut short while the binary waited aside: the next one puts it back
+    std::fs::rename(electron_dist(&home), kept_dist(&home)).unwrap();
+    script(&bin, "npm", &npm_ci(0));
+    setup_companion(&env, &BrowserConfig::default(), &no_consent).expect("recovers");
+    assert_eq!(electron_installed(&home).as_deref(), Some(ELECTRON_VERSION));
+    assert!(!kept_dist(&home).exists());
+
+    // and without the binary, nothing runs before the consent (npm included)
+    std::fs::remove_dir_all(electron_dist(&home)).unwrap();
+    std::fs::write(electron.join("package-lock.json"), "{\"oldest\":true}\n").unwrap();
+    assert_eq!(
+        setup_companion(&env, &BrowserConfig::default(), &no_consent),
+        Err(CompanionSetupError::NeedsConsent)
+    );
+    assert_eq!(
+        std::fs::read_to_string(electron.join("npm-ci.log"))
+            .unwrap()
+            .lines()
+            .count(),
+        2,
+        "npm ci did not run again"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_settings_fix_keeps_the_app_files_a_companion_still_runs_from() {
+    let dir = temp("fix-keeps");
+    let env = env_in(&dir);
+    let dist = fake_dist(&dir, ELECTRON_VERSION);
+    setup_companion(&env, &BrowserConfig::default(), &options(&dist)).unwrap();
+    let home = companion_home(&env.browser_home);
+    let root = app_root(&home);
+    for (name, age) in [
+        ("aaaaaaaaaaaa", 4),
+        ("bbbbbbbbbbbb", 3),
+        ("cccccccccccc", 2),
+    ] {
+        std::fs::create_dir_all(root.join(name)).unwrap();
+        std::fs::write(root.join(name).join("package.json"), "{}").unwrap();
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(age * 60);
+        std::fs::File::open(root.join(name))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+    // the oldest is a live companion's (this test process stands in for it)
+    crate::browser::companion_app::write_run_record(
+        &home,
+        &crate::browser::companion_app::CompanionRunRecord {
+            pid: std::process::id(),
+            launch_token: "t".into(),
+            app_dir: root.join("aaaaaaaaaaaa").display().to_string(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // the installed app files are an older herdr's
+    let mut record = read_install(&home).unwrap();
+    record.app = "0.1.0".into();
+    record.app_sha256 = format!("{}{}", "c".repeat(12), "0".repeat(52));
+    std::fs::write(
+        home.join(INSTALL_FILE),
+        serde_json::to_string_pretty(&record).unwrap(),
+    )
+    .unwrap();
+    let fixed = crate::browser::setup::fix("companion_app", &BrowserConfig::default(), &env)
+        .expect("a fix for companion_app");
+    assert!(fixed.ok, "{fixed:?}");
+    assert!(
+        root.join("aaaaaaaaaaaa").is_dir(),
+        "a running companion's directory stays"
+    );
+    assert!(!root.join("bbbbbbbbbbbb").exists(), "older ones go");
+    let _ = std::fs::remove_dir_all(&dir);
+}

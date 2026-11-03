@@ -2,7 +2,7 @@
 //! against a fake sidecar (`browser::tests::fake_host`) and a fake spawner
 //! (no Electron, no processes, no signals).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -269,11 +269,22 @@ pub(crate) struct FakeSpawner {
     pub(crate) hub: Mutex<Option<BrowserHub>>,
     pub(crate) specs: Mutex<Vec<LaunchSpec>>,
     pub(crate) alive: Mutex<HashSet<u32>>,
+    /// A pid another process reuses now: its start token (else [`fake_token`]).
+    pub(crate) tokens: Mutex<HashMap<u32, u64>>,
     pub(crate) signals: Mutex<Vec<(u32, StopSignal)>>,
     /// Signals the fake process exits on.
     pub(crate) exits_on: Mutex<Vec<StopSignal>>,
     pub(crate) register: std::sync::atomic::AtomicBool,
     pub(crate) next_pid: AtomicU32,
+    /// How long a spawn takes.
+    pub(crate) spawn_delay: Mutex<Duration>,
+    /// A spawn is under way (set as it starts).
+    pub(crate) in_spawn: std::sync::atomic::AtomicBool,
+}
+
+/// The start token a fake process has (until another one reuses its pid).
+pub(crate) fn fake_token(pid: u32) -> u64 {
+    1_000_000 + u64::from(pid)
 }
 
 impl FakeSpawner {
@@ -339,6 +350,11 @@ fn register_with(hub: &BrowserHub, instance: &str, token: Option<&str>, pid: u32
 
 impl Spawner for FakeSpawner {
     fn spawn(&self, spec: &LaunchSpec) -> std::io::Result<Spawned> {
+        self.in_spawn.store(true, Ordering::Relaxed);
+        let delay = *self.spawn_delay.lock().unwrap();
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
         let pid = self.next_pid.fetch_add(1, Ordering::Relaxed);
         self.specs.lock().unwrap().push(spec.clone());
         self.alive.lock().unwrap().insert(pid);
@@ -355,10 +371,6 @@ impl Spawner for FakeSpawner {
         Ok(Spawned { pid, child: None })
     }
 
-    fn alive(&self, pid: u32) -> bool {
-        self.alive.lock().unwrap().contains(&pid)
-    }
-
     fn signal(&self, pid: u32, signal: StopSignal) {
         self.signals.lock().unwrap().push((pid, signal));
         if self.exits_on.lock().unwrap().contains(&signal) {
@@ -366,8 +378,22 @@ impl Spawner for FakeSpawner {
         }
     }
 
-    fn is_companion(&self, pid: u32) -> bool {
-        self.alive(pid)
+    fn facts(&self, pid: u32) -> Option<ProcessFacts> {
+        self.alive
+            .lock()
+            .unwrap()
+            .contains(&pid)
+            .then(|| ProcessFacts {
+                start_token: Some(
+                    self.tokens
+                        .lock()
+                        .unwrap()
+                        .get(&pid)
+                        .copied()
+                        .unwrap_or_else(|| fake_token(pid)),
+                ),
+                started_ms: None,
+            })
     }
 }
 
@@ -613,13 +639,15 @@ fn an_open_while_it_failed_names_the_restart_and_a_silent_start_times_out() {
 }
 
 /// Stop with millisecond waits (the real ladder takes seconds).
+const QUICK_LADDER: Ladder = Ladder {
+    quit: Duration::from_millis(300),
+    unattached: Duration::from_millis(50),
+    term: Duration::from_millis(300),
+    kill: Duration::from_millis(300),
+};
+
 fn quick_stop(hub: &BrowserHub) {
-    hub.companion_stop_blocking(Ladder {
-        quit: Duration::from_millis(150),
-        exit: Duration::from_millis(150),
-        term: Duration::from_millis(300),
-        kill: Duration::from_millis(300),
-    });
+    hub.companion_stop_blocking(QUICK_LADDER);
 }
 
 #[test]
@@ -708,6 +736,7 @@ fn fork_smoke_a_new_server_adopts_the_running_companion_from_its_run_record() {
         &CompanionRunRecord {
             pid: 77,
             launch_token: "t".into(),
+            start_token: fake_token(77),
             socket: home.join("herdr-test.sock").display().to_string(),
             ..Default::default()
         },
@@ -838,5 +867,411 @@ fn new_app_files_make_an_update_ready_without_a_restart() {
     assert_eq!(lease.update.as_deref(), Some("0.2.1"));
     assert_eq!(spawner.spawns(), 1);
     assert!(spawner.signals().is_empty());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+// ----- audit 1 -----------------------------------------------------------------
+
+#[test]
+fn a_run_record_names_its_process_by_its_start_token_else_its_start_time() {
+    let facts = |start_token: Option<u64>, started_ms: Option<u64>| ProcessFacts {
+        start_token,
+        started_ms,
+    };
+    let mut run = record(4242, "tok");
+    run.start_token = 77;
+    run.started_at = 1_000;
+    // the start token decides when both have one
+    assert_eq!(
+        match_record(&run, Some(&facts(Some(77), None))),
+        RecordedProcess::Same
+    );
+    assert_eq!(
+        match_record(&run, Some(&facts(Some(78), Some(1_000_000)))),
+        RecordedProcess::Gone,
+        "a reused pid: another start token, whatever its start time"
+    );
+    // no token to read: the start time, near the record's started_at
+    assert_eq!(
+        match_record(&run, Some(&facts(None, Some(999_400)))),
+        RecordedProcess::Same
+    );
+    assert_eq!(
+        match_record(&run, Some(&facts(None, Some(4_600_000)))),
+        RecordedProcess::Gone
+    );
+    // a record without a token: the start time too
+    run.start_token = 0;
+    assert_eq!(
+        match_record(&run, Some(&facts(Some(5), Some(1_000_200)))),
+        RecordedProcess::Same
+    );
+    // nothing to compare: never trusted
+    assert_eq!(
+        match_record(&run, Some(&facts(None, None))),
+        RecordedProcess::Unknown
+    );
+    run.started_at = 0;
+    assert_eq!(
+        match_record(&run, Some(&facts(Some(5), Some(1)))),
+        RecordedProcess::Unknown
+    );
+    // no process with that pid, or no pid at all
+    assert_eq!(match_record(&run, None), RecordedProcess::Gone);
+    run.pid = 0;
+    assert_eq!(
+        match_record(&run, Some(&facts(Some(5), None))),
+        RecordedProcess::Gone
+    );
+}
+
+#[test]
+fn the_real_spawner_tells_this_process_from_a_reused_pid() {
+    let pid = std::process::id();
+    let facts = ProcessSpawner.facts(pid).expect("this process lives");
+    let token = facts.start_token.expect("a start token on macOS and Linux");
+    let mut run = record(pid, "tok");
+    run.start_token = token;
+    assert_eq!(match_record(&run, Some(&facts)), RecordedProcess::Same);
+    run.start_token = token + 1;
+    assert_eq!(match_record(&run, Some(&facts)), RecordedProcess::Gone);
+    // a record without a token: this process started about when it says
+    run.start_token = 0;
+    run.started_at = facts.started_ms.expect("a start time") / 1000;
+    assert_eq!(match_record(&run, Some(&facts)), RecordedProcess::Same);
+    assert!(ProcessSpawner.facts(0).is_none());
+}
+
+#[test]
+fn fork_smoke_a_reused_pid_is_never_adopted_or_signalled() {
+    let (hub, home, _) = companion_hub("reused-pid", true);
+    let spawner = FakeSpawner::new(&hub, false);
+    let pid = 6100;
+    spawner.alive.lock().unwrap().insert(pid);
+    let run = CompanionRunRecord {
+        pid,
+        launch_token: "ab".repeat(16),
+        start_token: fake_token(pid),
+        started_at: unix_now(),
+        socket: home.join("herdr-test.sock").display().to_string(),
+        ..record(pid, "")
+    };
+    // the pid lives, but as another process now (another Electron, say)
+    write_run_record(&hub.companion_home(), &run).unwrap();
+    spawner.tokens.lock().unwrap().insert(pid, 42);
+    hub.adopt_companion();
+    assert_eq!(hub.companion_app_info().state, "stopped", "not adopted");
+    assert!(
+        read_run_record(&hub.companion_home()).is_none(),
+        "its stale record goes"
+    );
+    // nor is it another session's companion that blocks a start
+    let mut other = run.clone();
+    other.socket = "/elsewhere/herdr.sock".into();
+    write_run_record(&hub.companion_home(), &other).unwrap();
+    assert!(hub.companion_other_session(&hub.companion_home()).is_none());
+    spawner.tokens.lock().unwrap().remove(&pid);
+    assert_eq!(
+        hub.companion_other_session(&hub.companion_home())
+            .as_deref(),
+        Some("/elsewhere/herdr.sock"),
+        "while the pid is still that process, it is"
+    );
+
+    // adopted while it was the companion; then it exits and another
+    // process takes its pid: the stop finds it gone and signals nothing
+    write_run_record(&hub.companion_home(), &run).unwrap();
+    hub.adopt_companion();
+    assert_eq!(hub.companion_app_info().state, "reconnecting");
+    spawner.tokens.lock().unwrap().insert(pid, 43);
+    hub.companion_stop_blocking(QUICK_LADDER);
+    assert_eq!(hub.companion_app_info().state, "stopped");
+    assert!(
+        spawner.signals().is_empty(),
+        "never signalled: {:?}",
+        spawner.signals()
+    );
+    assert!(read_run_record(&hub.companion_home()).is_none());
+
+    // and the driver's poll of an adopted pid that is another process now:
+    // gone (a crash), never signalled
+    write_run_record(&hub.companion_home(), &run).unwrap();
+    spawner.tokens.lock().unwrap().remove(&pid);
+    hub.adopt_companion();
+    assert_eq!(hub.companion_app_info().state, "reconnecting");
+    spawner.tokens.lock().unwrap().insert(pid, 44);
+    wait_for("the poll", Duration::from_secs(5), || {
+        hub.companion_app_info().state != "reconnecting"
+    });
+    hub.stop_companion_with_server();
+    assert!(
+        spawner
+            .signals
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(p, _)| *p != pid),
+        "{:?}",
+        spawner.signals()
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_stop_whose_quit_gets_no_answer_keeps_its_deadline() {
+    let (hub, home, shared) = companion_hub("quit-unanswered", true);
+    let spawner = FakeSpawner::new(&hub, true);
+    hub.companion_start(StartReason::User).unwrap();
+    wait_for("the registration", Duration::from_secs(5), || {
+        hub.companion_app_info().state == "running"
+    });
+    // the control page never answers the quit and the app ignores it:
+    // only SIGTERM ends it
+    shared.lock().unwrap().silent.push("control_quit".into());
+    *spawner.exits_on.lock().unwrap() = vec![StopSignal::Term];
+    let started = Instant::now();
+    quick_stop(&hub);
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(250),
+        "the quit had its wait: {took:?}"
+    );
+    assert!(
+        took < Duration::from_secs(3),
+        "the quit's reply is never waited for (the sidecar's grace alone is 5 s): {took:?}"
+    );
+    assert!(shared
+        .lock()
+        .unwrap()
+        .ops
+        .iter()
+        .any(|(op, _, _)| op == "control_quit"));
+    assert_eq!(spawner.signals(), vec![StopSignal::Term]);
+    assert_eq!(hub.companion_app_info().state, "stopped");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_companion_without_a_lease_gets_sigterm_after_a_short_grace() {
+    let (hub, home, shared) = companion_hub("unattached", true);
+    // it never registers (still starting, or its lease lost)
+    let spawner = FakeSpawner::new(&hub, false);
+    hub.companion_start(StartReason::User).unwrap();
+    wait_for("the spawn", Duration::from_secs(5), || {
+        hub.companion_app_info().pid.is_some()
+    });
+    let started = Instant::now();
+    hub.companion_stop_blocking(Ladder {
+        quit: Duration::from_secs(5),
+        ..QUICK_LADDER
+    });
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(2),
+        "no quit was sent, so none is waited for: {took:?}"
+    );
+    assert!(!shared
+        .lock()
+        .unwrap()
+        .ops
+        .iter()
+        .any(|(op, _, _)| op == "control_quit"));
+    assert_eq!(spawner.signals(), vec![StopSignal::Term]);
+    assert_eq!(hub.companion_app_info().state, "stopped");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_stop_during_a_launch_calls_it_off_or_stops_what_it_spawned() {
+    let t0 = Instant::now();
+    let deadline = t0 + Duration::from_secs(8);
+    // before the spawn: nothing is spawned, and no start until then
+    let mut core = Core::new(0);
+    let ticket = core.begin_spawn(StartReason::User, t0, 0).unwrap();
+    assert_eq!(
+        core.begin_stop(QUICK_LADDER, deadline, 0),
+        StopTarget::Launch {
+            generation: ticket.generation
+        }
+    );
+    assert_eq!(core.phase, Phase::Stopping);
+    assert!(
+        core.begin_spawn(StartReason::OnDemand, t0, 0).is_none(),
+        "no start while that stop is pending"
+    );
+    assert!(!core.launch_goes_ahead(ticket.generation, 0));
+    assert_eq!(core.phase, Phase::Stopped);
+    assert!(!core.busy());
+    // during the spawn: the launch takes the stop over
+    let ticket = core.begin_spawn(StartReason::User, t0, 0).unwrap();
+    assert!(core.launch_goes_ahead(ticket.generation, 0));
+    assert_eq!(
+        core.begin_stop(QUICK_LADDER, deadline, 0),
+        StopTarget::Launch {
+            generation: ticket.generation
+        }
+    );
+    assert!(core.spawned(ticket.generation, 9, record(9, &ticket.token), true, 0));
+    assert_eq!(
+        core.stop_pending.take(),
+        Some(PendingStop {
+            ladder: QUICK_LADDER,
+            deadline
+        })
+    );
+    // its exit is a stop, not a crash
+    core.exited(ticket.generation, &crashed(), &[], t0, 0);
+    assert_eq!(core.phase, Phase::Stopped);
+    assert_eq!(core.crashes_in_window(t0), 0);
+    // a spawn that fails while a stop waits: stopped too
+    let ticket = core.begin_spawn(StartReason::User, t0, 0).unwrap();
+    core.begin_stop(QUICK_LADDER, deadline, 0);
+    core.spawn_failed(ticket.generation, "no such file".into(), t0, 0);
+    assert_eq!(core.phase, Phase::Stopped);
+    assert_eq!(core.crashes_in_window(t0), 0);
+}
+
+#[test]
+fn a_stop_while_the_companion_is_spawned_stops_it_once_it_is() {
+    let (hub, home, _) = companion_hub("stop-in-spawn", true);
+    let spawner = FakeSpawner::new(&hub, false);
+    *spawner.spawn_delay.lock().unwrap() = Duration::from_millis(300);
+    hub.companion_start(StartReason::User).unwrap();
+    wait_for("the spawn under way", Duration::from_secs(5), || {
+        spawner.in_spawn.load(Ordering::Relaxed)
+    });
+    let started = Instant::now();
+    // blocks until the launch has stopped what it spawned
+    quick_stop(&hub);
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert_eq!(spawner.spawns(), 1);
+    assert_eq!(
+        spawner.signals(),
+        vec![StopSignal::Term],
+        "no lease of its own yet: SIGTERM after the grace"
+    );
+    let info = hub.companion_app_info();
+    assert_eq!(info.state, "stopped");
+    assert_eq!(info.restarts, 0);
+    assert!(read_run_record(&hub.companion_home()).is_none());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_crash_restart_found_due_loses_to_a_stop_and_the_server_exit_launches_nothing() {
+    let t0 = Instant::now();
+    let mut core = Core::new(0);
+    run_one(&mut core, StartReason::User, 40, t0);
+    let generation = core.generation;
+    core.exited(generation, &crashed(), &[], t0, 0);
+    let due = core.next_retry.expect("a restart is scheduled");
+    assert_eq!(core.due(due, false), vec![Action::Respawn]);
+    // the user stops it before the driver acts on that
+    assert_eq!(core.begin_stop(QUICK_LADDER, due, 0), StopTarget::Nothing);
+    assert_eq!(core.phase, Phase::Stopped);
+    assert!(core.next_retry.is_none());
+    assert!(core
+        .begin_spawn(StartReason::CrashRestart, due, 0)
+        .is_none());
+    // the server's exit: nothing launches at all
+    core.shutting_down = true;
+    assert!(core.begin_spawn(StartReason::User, due, 0).is_none());
+    assert!(core.begin_spawn(StartReason::OnDemand, due, 0).is_none());
+}
+
+#[test]
+fn fork_smoke_the_server_exit_cancels_a_scheduled_restart_and_refuses_launches() {
+    let (hub, home, _) = companion_hub("exit-while-crashed", true);
+    let spawner = FakeSpawner::new(&hub, true);
+    hub.companion_start(StartReason::User).unwrap();
+    wait_for("the registration", Duration::from_secs(5), || {
+        hub.companion_app_info().state == "running"
+    });
+    // it crashes: a restart is due in 1 s
+    let pid = hub.companion_app_info().pid.expect("a pid");
+    spawner.alive.lock().unwrap().remove(&pid);
+    wait_for("the crash", Duration::from_secs(5), || {
+        hub.companion_app_info().state == "crashed"
+    });
+    hub.stop_companion_with_server();
+    let info = hub.companion_app_info();
+    assert_eq!(info.state, "stopped");
+    assert!(info.next_retry_unix.is_none());
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(spawner.spawns(), 1, "no crash restart after the exit");
+    // nothing launches any more: a start, an agent's open
+    hub.companion_start(StartReason::User).unwrap();
+    let err = hub
+        .run(&pane("w1:p1"), open("https://example.test/"))
+        .expect_err("the server is exiting");
+    assert_eq!(err.code, "host_unavailable");
+    assert!(err.message.contains("shutting down"), "{}", err.message);
+    assert_eq!(spawner.spawns(), 1);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn an_open_that_names_the_companion_starts_it_on_demand_too() {
+    let (hub, home, _) = companion_hub("named-profile", true);
+    let spawner = FakeSpawner::new(&hub, true);
+    let mut params = open("https://example.test/");
+    params.profile = Some(COMPANION_PROFILE.into());
+    let result = hub
+        .run(&pane("w1:p1"), params)
+        .expect("started, then the open lands");
+    assert_eq!(result.data["host"], "companion");
+    assert_eq!(spawner.spawns(), 1);
+    assert!(spawner.last_args().contains(&"--background".to_string()));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_launch_keeps_the_app_files_a_companion_still_runs_from() {
+    let (hub, home, _) = companion_hub("keep-running-dir", true);
+    let _spawner = FakeSpawner::new(&hub, true);
+    let companion_home = hub.companion_home();
+    let root = companion_install::app_root(&companion_home);
+    for (name, age) in [
+        ("aaaaaaaaaaaa", 4),
+        ("bbbbbbbbbbbb", 3),
+        ("cccccccccccc", 2),
+    ] {
+        std::fs::create_dir_all(root.join(name)).unwrap();
+        std::fs::write(root.join(name).join("package.json"), "{}").unwrap();
+        let when = std::time::SystemTime::now() - Duration::from_secs(age * 60);
+        std::fs::File::open(root.join(name))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+    // the oldest is a live companion's (this test process stands in for it)
+    write_run_record(
+        &companion_home,
+        &CompanionRunRecord {
+            pid: std::process::id(),
+            launch_token: "t".into(),
+            app_dir: root.join("aaaaaaaaaaaa").display().to_string(),
+            socket: "/elsewhere/herdr.sock".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // the installed app files are an older herdr's: the launch refreshes them
+    let mut installed = companion_install::read_install(&companion_home).unwrap();
+    installed.app_sha256 = format!("{}{}", "c".repeat(12), "0".repeat(52));
+    std::fs::write(
+        companion_home.join(companion_install::INSTALL_FILE),
+        serde_json::to_string_pretty(&installed).unwrap(),
+    )
+    .unwrap();
+    hub.companion_start(StartReason::User).unwrap();
+    wait_for("the registration", Duration::from_secs(5), || {
+        hub.companion_app_info().state == "running"
+    });
+    assert!(
+        root.join("aaaaaaaaaaaa").is_dir(),
+        "a running companion's directory stays"
+    );
+    assert!(!root.join("bbbbbbbbbbbb").exists(), "older ones go");
     let _ = std::fs::remove_dir_all(&home);
 }
