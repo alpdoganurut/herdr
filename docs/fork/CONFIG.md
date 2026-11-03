@@ -54,7 +54,7 @@ Before a Claude agent's context is compacted, herdr has it write a handoff, save
 | Pinned block | on | `[ui] sidebar_pinned_agents = false` | Yes, indicators |
 | Scheduled block (tabs with a reminder) | on | `[ui] sidebar_scheduled_agents = false` | Yes, indicators |
 | Suspended-run folding (3+ suspended tabs in a row fold into "N suspended") | on | `[ui] sidebar_collapse_suspended = false` | Yes, indicators ("fold suspended runs") |
-| Context use (`NN%` from 75 %) | on | `[ui] sidebar_context_usage = false` | No, config only |
+| Context use (`NN%` from 75 %, on the tab row and in the session header) | on | `[ui] sidebar_context_usage = false` | No, config only |
 | Sidebar search (type to filter tabs; Esc clears, Enter focuses the first match) | available | Key `sidebar_search` (default `prefix+f`) or click the toolbar field | n/a, not saved |
 | Recency filter (`◷` chip: off, 15m, 30m, 1h, 6h, 1d) | off | Click the chip (shift-click or right-click steps back). No config key | n/a, not saved |
 | Tab history back / forward | available | The toolbar's `‹` `›` buttons; keys `tab_history_back` (`cmd+[`, `alt+,`), `tab_history_forward` (`cmd+]`, `alt+.`) | n/a |
@@ -63,16 +63,34 @@ The search query and recency chip belong to the client only. They are never save
 
 ### Sidebar toolbar
 
-The top row of the tabs sidebar, left to right: `⏶ ‹ ›  ⌕ search  ◷ 1h  ◧  +`. Dim controls are `overlay0`; lit ones take the theme accent. Widths below are the sidebar's (`[ui] sidebar_width`, default 26; `sidebar_min_width` 18).
+The top row of the tabs sidebar, left to right: `⏶ ‹ ›  ⌕ search  ◷ 1h  +`. Dim controls are `overlay0`; lit ones take the theme accent. Widths below are the sidebar's (`[ui] sidebar_width`, default 26; `sidebar_min_width` 18).
 
 | Control | What it does | Shown when | Key / setting |
 |---|---|---|---|
 | `⏶` / `⏷` fold toggle | `⏶` folds every group, `⏷` (once all are folded) expands them all. The group holding the focused tab always stays open. Does nothing while a search or recency filter is on | There is a group that can fold | `toggle_groups_folded` (unbound) |
-| `‹` `›` tab history | Back to the previously focused tab, forward again after going back (browser-style). Lit while there is a tab that way; a dim one does nothing | Always, from 24 columns; below that they drop first | `tab_history_back` (`cmd+[`, `alt+,`), `tab_history_forward` (`cmd+]`, `alt+.`), see the note under Keybinds |
-| `⌕ search` field | Click to type a filter (Esc clears and leaves, Enter focuses the first match, the query stays). Dim placeholder when empty, accent `⌕` with a query, highlighted with a caret while typing | On toolbar hover, or while the field has the keyboard, holds a query or the recency chip is on; from 20 columns | `sidebar_search` (`prefix+f`) |
+| `‹` `›` tab history | Back to the previously focused tab, forward again after going back (browser-style). Lit while there is a tab that way; a dim one does nothing | Always, from 21 columns; below that they drop first | `tab_history_back` (`cmd+[`, `alt+,`), `tab_history_forward` (`cmd+]`, `alt+.`), see the note under Keybinds |
+| `⌕ search` field | Click to type a filter (Esc clears and leaves, Enter focuses the first match, the query stays). Dim placeholder when empty, accent `⌕` with a query, highlighted with a caret while typing | On toolbar hover, or while the field has the keyboard, holds a query or the recency chip is on; at every sidebar width | `sidebar_search` (`prefix+f`) |
 | `◷` recency chip | Click steps forward through off, 15m, 30m, 1h, 6h, 1d and round again; shift-click or right-click steps back. Dim `◷` while off, accent `◷ 1h` while on | Same as the search field | None, not saved |
-| `◧` notes button | Opens or closes the focused tab's notes pane, without moving the keyboard to it. Lit while that pane is open | Always | `toggle_info_pane` (unbound) |
 | `+` | Opens a new plain shell tab, loose (in no group) at the top of the list, and focuses it; no name prompt. To group a tab, right-click it: the tab menu's **Move to group…** asks for a group name (an existing one, or a new one to create), and **Remove from group** makes a grouped tab loose again. `move_tab_to_group` opens the same prompt for the focused tab, and dragging a tab onto a group works too | Always | None; grouping is in the tab menu |
+
+The notes pane toggle moved to the session header's `▤` (below); the sidebar has no Browser row and no detail strip any more: the browser's controls are in Settings → Browser and the focused tab's facts in the session header.
+
+### Session header
+
+One row on top of the session area (the `tabs` layout only; the `spaces` layout keeps its tab bar and view strip). Selection and hover change only the text colour: the active view and the open dock are accent, other controls dim (`overlay0`), a hovered one `text`.
+
+| Part | What it shows or does | Shown when |
+|---|---|---|
+| Status icon (first cell) | `●` working (yellow), `○` idle (green), `◉` blocked (red), `●` done (teal), `◌` suspended, `↻` restarting or waking (yellow); `ui.status_indicators = "symbols"` uses the sidebar's symbol set | Always |
+| Tab name | Bold, in its colour tag; truncates first when the row is narrow | Always |
+| `NN%` | The fullest context use of the tab's agents, as on the tab row (yellow, red from 90 %) | From 75 %, while `[ui] sidebar_context_usage` is on |
+| `⚭N` | Running subagents | When not zero |
+| `✉N` | Quiet messages waiting for the tab's agents | When not zero |
+| `Terminal` / `Browser` | Switch the tab between its terminal and Browser view (keys `toggle_browser_view`). Below the name's minimum they shrink to `T` / `B`, then go | While the companion browser docks here (this machine's herdr, `[browser]` running the companion) and `[ui] browser_view_strip` is not `"off"` |
+| `◧` | Docks the browser on the right of the tab (key `toggle_browser_dock`); in Browser view it brings the terminal back with the browser docked. Lit while docked | Same as the view tabs, also on the narrowest row |
+| `▤` | Opens or closes the tab's notes pane (key `toggle_info_pane`), never taking the keyboard. Lit while open | Always, the far right |
+
+There is one dock slot on the right: the notes pane or the browser, never both; `◧` and `▤` swap it, and each keeps its own width (`[ui] info_pane_width`, `[ui] browser_dock_width`, or the width you dragged). Each dock has a one-line title bar: notes `▤ Notes  ✎  ✕` (`✎` edits or leaves the editor, `✕` closes), browser `◧ <page title>  ⤢  ✕` (`⤢` turns the tab to Browser view and frees the slot, `✕` closes). The page's back, forward and reload stay in the companion's own bar: herdr has no client path to drive the page from the dock. In Browser view the notes pane stays beside the page.
 
 ## Per-tab toggles (tab menu)
 
@@ -86,7 +104,7 @@ Right-click a tab. These are per tab, not config keys. Important, pin, mute, do 
 | Do not disturb | off | Agent messages to the tab are stored quietly instead of typed in, urgent ones are refused, herdr types nothing in and the coordinator's wake-ups are held; your typing is unaffected. Notifications are untouched (that is mute). An agent can also turn it on or off for its own tab and its teammates' tabs (`agents_dnd`, `herdr tab dnd on|off`), never outside its team or on the coordinator's tab; the coordinator can, for any other tab, in your turn. When an agent or the coordinator turned it on, the coordinator's messages still get through |
 | remind | none | Scheduled reminder: 5m, 10m, 30m, 1h, 6h, daily. Pick the current one again to turn it off. Picking never focuses the tab |
 | Color | none | Color tag (also key `cycle_tab_color`) |
-| Info pane | hidden, every start | Shows or hides the tab's notes pane (also key `toggle_info_pane`, or the `◧` toolbar button). Which tabs have it open is client-only: after a restart or in a new client every notes pane starts hidden |
+| Info pane | hidden, every start | Shows or hides the tab's notes pane (also key `toggle_info_pane`, or the session header's `▤`). Which tabs have it open is client-only: after a restart or in a new client every notes pane starts hidden |
 
 ## Notes pane (`[notes]`)
 
@@ -128,7 +146,7 @@ A server-run Claude agent in a pinned `coordinator` tab that watches other agent
 
 ## Browser (`[browser]`)
 
-The browser herdr runs for agents: the herdr+ companion browser (`herdr browser setup --companion` installs it; the first page an agent opens starts it; `herdr browser companion status|start|stop|restart|focus|log`, the Browser row's menu and the Browser overlay control it). The herdr+ Chromium window is off unless `[browser] window = true`.
+The browser herdr runs for agents: the herdr+ companion browser (`herdr browser setup --companion` installs it; the first page an agent opens starts it; `herdr browser companion status|start|stop|restart|focus|log`, Settings → Browser and the Browser overlay control it). Settings → Browser lists, after its own rows, what the old Browser row's menu had: focus, start, restart or stop the companion, the focused tab's browser dock, focus or start / stop the herdr+ window (while it is on), open the Browser overlay; its facts start with the live state (`now  ◎ companion · 3 tabs · 2 agents`). The herdr+ Chromium window is off unless `[browser] window = true`.
 
 | Feature | Default | Where to change | In Settings? |
 |---|---|---|---|
@@ -156,13 +174,13 @@ The companion browser can sit inside herdr's window: docked on the right of a ta
 
 | Feature | Default | Where to change | In Settings? |
 |---|---|---|---|
-| Dock the browser on the focused tab | `prefix+shift+b` | `[keys] toggle_browser_dock`; also the `◨` on the pinned Browser row and in the tab's view strip, the tab menu's Dock browser, the Browser row menu's Dock browser here | No, config only |
+| Dock the browser on the focused tab | `prefix+shift+b` | `[keys] toggle_browser_dock`; also the session header's `◧` (the `◨` in the `spaces` layout's view strip), the tab menu's Dock browser, Settings → Browser's `browser dock on this tab` | No, config only |
 | Dock width | 45 % of the area right of the sidebar | `[ui] browser_dock_width = 20..80`. Drag the divider (its first column) to resize, double-click it for the default; a dragged width is saved per client | No, config only |
-| Browser view (the browser over the whole tab; the panes keep running and keep their size, and keys, pastes and IME text never reach them) | `prefix+shift+z` | `[keys] toggle_browser_view`; also the view strip's `▣ Terminal` / `◎ Browser` and the tab menu's Browser view | No, config only |
-| The view strip (`▣ Terminal  ◎ Browser · 3 … ◨`) | `"auto"`: while the tab has pages, the dock or Browser view | `[ui] browser_view_strip = "off"` | No, config only |
+| Browser view (the browser over the whole tab; the panes keep running and keep their size, and keys, pastes and IME text never reach them) | `prefix+shift+z` | `[keys] toggle_browser_view`; also the session header's `Terminal` / `Browser` (the `spaces` view strip's `▣ Terminal` / `◎ Browser`), the browser dock's `⤢` and the tab menu's Browser view | No, config only |
+| The view controls: the `tabs` layout's header view tabs and `◧`; the `spaces` layout's view strip (`▣ Terminal  ◎ Browser · 3 … ◨`) | `"auto"`: the header shows them while the browser docks here; the strip while the tab has pages, the dock or Browser view | `[ui] browser_view_strip = "off"` (hides both) | No, config only |
 | Give the companion the keyboard | unbound | `[keys] focus_browser` | No, config only |
 
-While the browser is not over its area, the area says why: starting (a spinner), not running (`[ Start companion ]`), not installed (the setup command), stopped after 5 crashes (`[ Restart ]`), "Click here once to dock the browser to this window" (several terminal windows could be this one), or the reason it cannot dock here. In Browser view herdr's notices, toasts and agent cards show as one line on the view strip (the browser covers the rest of the tab). Tabs with browser pages wear a dim `◎` on their row (lit while an agent uses the browser, `◉` while a page needs you); the detail strip says `◎ 3 pages` and `docked` / `browser view`. In the companion's bar, the count pill (`3 · 12`: pages in this session · in all sessions) lists every session with pages; picking one focuses that herdr tab.
+While the browser is not over its area, the area says why: starting (a spinner), not running (`[ Start companion ]`), not installed (the setup command), stopped after 5 crashes (`[ Restart ]`), "Click here once to dock the browser to this window" (several terminal windows could be this one), or the reason it cannot dock here. In Browser view herdr's notices, toasts and agent cards show as one line on the session header, between the name and the view tabs (the view strip in the `spaces` layout; the browser covers the rest of the tab). Tabs with browser pages wear a dim `◎` on their row (lit while an agent uses the browser, `◉` while a page needs you). In the companion's bar, the count pill (`3 · 12`: pages in this session · in all sessions) lists every session with pages; picking one focuses that herdr tab.
 
 Legacy keys: `wrap_agents` is only read as a fallback for `[agents] wrap` (a Settings change to wrap removes it), and `shell_hook` is inert. The commented default file still says `stop_with_server` is not honoured; it is.
 

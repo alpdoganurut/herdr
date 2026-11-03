@@ -374,7 +374,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
   <p class="note">The search query and recency chip belong to the client only. They are never saved: a restart or a new client lists every tab again.</p>
 
   <h4 id="sidebar-toolbar">Sidebar toolbar</h4>
-  <p class="lede" style="margin-bottom:.9rem">The top row of the tabs sidebar, left to right: <code>⏶ ‹ ›  ⌕ search  ◷ 1h  ◧  +</code>. Dim controls are <code>overlay0</code>; lit ones take the theme accent. Widths below are the sidebar's (<code>[ui] sidebar_width</code>, default 26; <code>sidebar_min_width</code> 18).</p>
+  <p class="lede" style="margin-bottom:.9rem">The top row of the tabs sidebar, left to right: <code>⏶ ‹ ›  ⌕ search  ◷ 1h  +</code>. Dim controls are <code>overlay0</code>; lit ones take the theme accent. Widths below are the sidebar's (<code>[ui] sidebar_width</code>, default 26; <code>sidebar_min_width</code> 18).</p>
   <div class="rows">
     <div class="row head"><span>Control</span><span>Shown when</span><span>What it does</span><span>Key / setting</span></div>
     <div class="row">
@@ -385,13 +385,13 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
     </div>
     <div class="row">
       <div class="f"><h3><code>‹</code> <code>›</code> tab history</h3></div>
-      <div class="d"><span class="pill val">always, from 24 columns</span><small>below that they drop first</small></div>
+      <div class="d"><span class="pill val">always, from 21 columns</span><small>below that they drop first</small></div>
       <div class="k">Back to the previously focused tab, forward again after going back (browser-style)<small>Lit while there is a tab that way; a dim one does nothing</small></div>
       <div class="s"><code>tab_history_back</code> <kbd>cmd</kbd>+<kbd>[</kbd>, <kbd>alt</kbd>+<kbd>,</kbd><br><code>tab_history_forward</code> <kbd>cmd</kbd>+<kbd>]</kbd>, <kbd>alt</kbd>+<kbd>.</kbd><small>see the note under <a href="#keys">Keybinds</a></small></div>
     </div>
     <div class="row">
       <div class="f"><h3><code>⌕ search</code> field</h3></div>
-      <div class="d"><span class="pill val">on toolbar hover, or while engaged</span><small>engaged: the field has the keyboard, holds a query, or the recency chip is on; from 20 columns</small></div>
+      <div class="d"><span class="pill val">on toolbar hover, or while engaged</span><small>engaged: the field has the keyboard, holds a query, or the recency chip is on; at every sidebar width</small></div>
       <div class="k">Click to type a filter (Esc clears and leaves, Enter focuses the first match, the query stays)<small>Dim placeholder when empty, accent <code>⌕</code> with a query, highlighted with a caret while typing</small></div>
       <div class="s"><code>sidebar_search</code> <kbd>prefix</kbd>+<kbd>f</kbd></div>
     </div>
@@ -402,18 +402,50 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="s"><span class="badge na">none</span><small>not saved</small></div>
     </div>
     <div class="row">
-      <div class="f"><h3><code>◧</code> notes button</h3></div>
-      <div class="d"><span class="pill val">always</span></div>
-      <div class="k">Opens or closes the focused tab's notes pane, without moving the keyboard to it<small>Lit while that pane is open</small></div>
-      <div class="s"><code>toggle_info_pane</code><small>unbound</small></div>
-    </div>
-    <div class="row">
       <div class="f"><h3><code>+</code></h3></div>
       <div class="d"><span class="pill val">always</span></div>
       <div class="k">Opens a new plain shell tab, loose (in no group) at the top of the list, and focuses it; no name prompt<small>To group a tab, right-click it: the tab menu's <b>Move to group…</b> asks for a group name (an existing one, or a new one to create), and <b>Remove from group</b> makes a grouped tab loose again. <code>move_tab_to_group</code> opens the same prompt for the focused tab, and dragging a tab onto a group works too</small></div>
       <div class="s">none<small>grouping is in the tab menu</small></div>
     </div>
   </div>
+  <p class="note">The notes pane toggle moved to the session header's <code>▤</code>. The sidebar has no Browser row and no detail strip any more: the browser's controls are in <a href="#browser">Settings → Browser</a>, the focused tab's facts in the session header.</p>
+
+  <h4 id="session-header">Session header</h4>
+  <p class="lede" style="margin-bottom:.9rem">One row on top of the session area, in the <code>tabs</code> layout only (the <code>spaces</code> layout keeps its tab bar and view strip): <code>● name  82% ⚭3 ✉1 … Terminal  Browser ◧  ▤</code>. Selection and hover change only the text colour: the active view and the open dock are accent, other controls dim (<code>overlay0</code>), a hovered one <code>text</code>.</p>
+  <div class="rows">
+    <div class="row head"><span>Part</span><span>Shown when</span><span>What it shows or does</span><span>Key / setting</span></div>
+    <div class="row">
+      <div class="f"><h3>Status icon</h3></div>
+      <div class="d"><span class="pill val">always, the first cell</span></div>
+      <div class="k"><code>●</code> working (yellow), <code>○</code> idle (green), <code>◉</code> blocked (red), <code>●</code> done (teal), <code>◌</code> suspended, <code>↻</code> restarting or waking (yellow)</div>
+      <div class="s"><code>[ui] status_indicators = "symbols"</code><small>uses the sidebar's symbol set</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3>Name, <code>NN%</code>, <code>⚭N</code>, <code>✉N</code></h3></div>
+      <div class="d"><span class="pill val">the use from 75 %</span><small>the counts when not zero</small></div>
+      <div class="k">The tab's name (bold, its colour tag; it truncates first), its agents' fullest context use as on the tab row, running subagents, quiet messages waiting</div>
+      <div class="s"><code>[ui] sidebar_context_usage</code></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3><code>Terminal</code> / <code>Browser</code></h3></div>
+      <div class="d"><span class="pill val">while the browser docks here</span><small>this machine's herdr running the companion; shrink to <code>T</code> / <code>B</code>, then go, on a narrow row</small></div>
+      <div class="k">Switch the tab between its terminal and Browser view</div>
+      <div class="s"><code>toggle_browser_view</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>z</kbd><small><code>[ui] browser_view_strip = "off"</code> hides them</small></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3><code>◧</code> browser dock</h3></div>
+      <div class="d"><span class="pill val">same as the view tabs</span><small>also on the narrowest row</small></div>
+      <div class="k">Docks the browser on the right of the tab; in Browser view it brings the terminal back with the browser docked<small>Lit while docked</small></div>
+      <div class="s"><code>toggle_browser_dock</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>b</kbd></div>
+    </div>
+    <div class="row">
+      <div class="f"><h3><code>▤</code> notes dock</h3></div>
+      <div class="d"><span class="pill val">always, the far right</span></div>
+      <div class="k">Opens or closes the tab's notes pane, never taking the keyboard<small>Lit while open</small></div>
+      <div class="s"><code>toggle_info_pane</code><small>unbound</small></div>
+    </div>
+  </div>
+  <p class="note">One dock slot on the right: the notes pane or the browser, never both. <code>◧</code> and <code>▤</code> swap it, and each keeps its own width (<code>[ui] info_pane_width</code>, <code>[ui] browser_dock_width</code>, or the width you dragged). Each dock has a one-line title bar: notes <code>▤ Notes  ✎  ✕</code> (<code>✎</code> edits or leaves the editor, <code>✕</code> closes), browser <code>◧ &lt;page title&gt;  ⤢  ✕</code> (<code>⤢</code> turns the tab to Browser view and frees the slot). The page's back, forward and reload stay in the companion's own bar. In Browser view the notes pane stays beside the page.</p>
 </section>
 
 <!-- ============ PER-TAB ============ -->
@@ -463,7 +495,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="f"><h3>Info pane</h3></div>
       <div class="d"><span class="pill off">hidden, every start</span></div>
       <div class="k">Shows or hides the tab's notes pane. Which tabs have it open is client-only: after a restart or in a new client every notes pane starts hidden</div>
-      <div class="s"><span class="badge tab">tab menu</span><small>also key <code>toggle_info_pane</code>, or the <code>◧</code> toolbar button</small></div>
+      <div class="s"><span class="badge tab">tab menu</span><small>also key <code>toggle_info_pane</code>, or the session header's <code>▤</code></small></div>
     </div>
   </div>
 </section>
@@ -626,7 +658,7 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
 <section id="browser">
   <p class="eyebrow">07 · browser</p>
   <h2>Browser <code>[browser]</code></h2>
-  <p class="lede">The browser herdr runs for agents: the herdr+ companion browser. <code>herdr browser setup --companion</code> installs it; the first page an agent opens starts it; <code>herdr browser companion</code>, the Browser row's menu and the Browser overlay start, stop, restart and focus it. The herdr+ Chromium window is off unless <code>[browser] window = true</code>.</p>
+  <p class="lede">The browser herdr runs for agents: the herdr+ companion browser. <code>herdr browser setup --companion</code> installs it; the first page an agent opens starts it; <code>herdr browser companion</code>, Settings → Browser and the Browser overlay start, stop, restart and focus it. The herdr+ Chromium window is off unless <code>[browser] window = true</code>.</p>
   <div class="rows">
     <div class="row head"><span>Feature</span><span>Default</span><span>Where to change</span><span>In Settings?</span></div>
     <div class="row">
@@ -720,9 +752,9 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
-      <div class="f"><h3><code>◨</code> Dock the browser on the focused tab</h3><p>A band at the window's right edge; the companion covers it and follows the terminal window (hidden while it moves, is minimised, hidden or on another Space).</p></div>
+      <div class="f"><h3><code>◧</code> Dock the browser on the focused tab</h3><p>A band at the window's right edge; the companion covers it and follows the terminal window (hidden while it moves, is minimised, hidden or on another Space).</p></div>
       <div class="d"><span class="pill val">off, per tab</span></div>
-      <div class="k"><code>toggle_browser_dock</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>b</kbd><small>also the <code>◨</code> on the Browser row and the view strip, the tab menu's Dock browser</small></div>
+      <div class="k"><code>toggle_browser_dock</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>b</kbd><small>also the session header's <code>◧</code> (the <code>◨</code> in the <code>spaces</code> view strip), the tab menu's Dock browser, Settings → Browser</small></div>
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
@@ -732,19 +764,20 @@ footer{max-width:1180px;margin:0 auto;padding:2rem 1.25rem 3rem;border-top:1px s
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
-      <div class="f"><h3>Browser view</h3><p>The browser over the whole tab; the panes keep running and keep their size, and keys, pastes and IME text never reach them. herdr's notices and toasts show as one line on the view strip.</p></div>
+      <div class="f"><h3>Browser view</h3><p>The browser over the whole tab; the panes keep running and keep their size, and keys, pastes and IME text never reach them. herdr's notices and toasts show as one line on the session header (the view strip in the <code>spaces</code> layout).</p></div>
       <div class="d"><span class="pill val">off, per tab</span></div>
-      <div class="k"><code>toggle_browser_view</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>z</kbd><small>also the view strip's <code>▣ Terminal</code> / <code>◎ Browser</code></small></div>
+      <div class="k"><code>toggle_browser_view</code> <kbd>prefix</kbd>+<kbd>shift</kbd>+<kbd>z</kbd><small>also the session header's <code>Terminal</code> / <code>Browser</code> (the <code>spaces</code> view strip's <code>▣ Terminal</code> / <code>◎ Browser</code>), the dock's <code>⤢</code></small></div>
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
     <div class="row">
-      <div class="f"><h3>The view strip</h3><p><code>▣ Terminal  ◎ Browser · 3 … ◨</code> at the top of a tab.</p></div>
-      <div class="d"><span class="pill val">"auto"</span><small>while the tab has pages, the dock or Browser view</small></div>
-      <div class="k"><code>[ui] browser_view_strip = "off"</code></div>
+      <div class="f"><h3>The view controls</h3><p>The <code>tabs</code> layout: the session header's view tabs and <code>◧</code>. The <code>spaces</code> layout: the view strip, <code>▣ Terminal  ◎ Browser · 3 … ◨</code> at the top of a tab.</p></div>
+      <div class="d"><span class="pill val">"auto"</span><small>the header's while the browser docks here; the strip while the tab has pages, the dock or Browser view</small></div>
+      <div class="k"><code>[ui] browser_view_strip = "off"</code><small>hides both</small></div>
       <div class="s"><span class="badge cfg">config only</span></div>
     </div>
   </div>
   <p class="note"><b>Docking:</b> macOS, the herdr on this machine, herdr directly in a terminal window (Ghostty measured exactly; other terminals best effort). Clicking the page gives it the keyboard; clicking the terminal, or <kbd>cmd</kbd>+<kbd>esc</kbd> in the browser, gives it back. While the browser is not over its area the area says why (starting, not running with a Start button, not installed, stopped after crashes with a Restart button, "click here once" when several terminal windows could be this one, or why it cannot dock). Tabs with pages wear a dim <code>◎</code>; the companion's count pill (<code>3 · 12</code>) lists every session with pages.</p>
+  <p class="note"><b>Settings → Browser</b> lists, after its own rows, what the sidebar's old Browser row menu had: focus, start, restart or stop the companion, the focused tab's browser dock, focus or start / stop the herdr+ window (while it is on), open the Browser overlay. Its facts start with the live state (<code>now  ◎ companion · 3 tabs · 2 agents</code>).</p>
   <p class="note"><b>Companion browser:</b> the Electron app in <code>apps/companion</code>; <code>apps/companion/scripts/try.sh</code> tries it against a throwaway herdr in one command (run it in a plain terminal).</p>
   <p class="note"><b>Legacy keys:</b> <code>wrap_agents</code> is only read as a fallback for <code>[agents] wrap</code> (a Settings change to wrap removes it), and <code>shell_hook</code> is inert. The commented default file still says <code>stop_with_server</code> is not honoured; it is.</p>
 </section>
