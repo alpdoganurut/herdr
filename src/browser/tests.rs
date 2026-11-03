@@ -59,6 +59,17 @@ pub(crate) struct FakeHostState {
 
 pub(crate) type Shared = Arc<Mutex<FakeHostState>>;
 
+/// One line per write, under one lock: replies go out from their own
+/// threads (some after a delay), and a line that another write splits
+/// between its text and its newline is one unparsable line to the hub (its
+/// reply lost: the call times out).
+fn send_line(writer: &Mutex<UnixStream>, line: &str) {
+    let mut bytes = Vec::with_capacity(line.len() + 1);
+    bytes.extend_from_slice(line.as_bytes());
+    bytes.push(b'\n');
+    let _ = writer.lock().unwrap().write_all(&bytes);
+}
+
 pub(crate) fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
     let (ours, theirs) = UnixStream::pair().unwrap();
     let shared: Shared = Arc::new(Mutex::new(FakeHostState {
@@ -66,7 +77,7 @@ pub(crate) fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
         ..Default::default()
     }));
     let state = shared.clone();
-    let mut writer = theirs.try_clone().unwrap();
+    let writer = Arc::new(Mutex::new(theirs.try_clone().unwrap()));
     let reader = BufReader::new(theirs);
     std::thread::spawn(move || {
         for line in reader.lines() {
@@ -235,17 +246,15 @@ pub(crate) fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                 }
             };
             for event in events {
-                writer.write_all(event.as_bytes()).unwrap();
-                writer.write_all(b"\n").unwrap();
+                send_line(&writer, &event);
             }
             if let Some(reply) = reply {
-                let mut writer = writer.try_clone().unwrap();
+                let writer = writer.clone();
                 std::thread::spawn(move || {
                     if delay > 0 {
                         std::thread::sleep(Duration::from_millis(delay));
                     }
-                    let _ = writer.write_all(reply.to_string().as_bytes());
-                    let _ = writer.write_all(b"\n");
+                    send_line(&writer, &reply.to_string());
                 });
             }
         }
