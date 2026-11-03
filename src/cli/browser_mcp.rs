@@ -32,7 +32,10 @@ pub const STEERING: &str = "You are working inside herdr+. For ANY browser work 
 filling forms, screenshots, checking a site — use the herdr-browser tools (browser_open, browser_read, browser_find, browser_snapshot, \
 browser_click, browser_fill, browser_screenshot, …), not any other browser tool: not Claude in Chrome (mcp__claude-in-chrome__*), not Codex's \
 in-app browser or the browser_use skill, not Playwright or Chrome DevTools MCPs. The herdr browser is the shared window the user watches and \
-signs in to. Web search tools remain fine for quick lookups that need no page.";
+signs in to. Any web page, docs site, dashboard, login or screenshot → the herdr browser (browser_open, then browser_read or \
+browser_find); to show the user a page → browser_open (browser_focus brings it forward), a local HTML file → browser_show. Use WebFetch, \
+another browser or `open` only when the user asks for it: herdr denies those once, and repeating the same call runs it. Web search tools \
+remain fine for quick lookups that need no page.";
 
 /// The instructions the server announces: neutral, plus the steering paragraph when configured.
 pub fn instructions(steer: bool) -> String {
@@ -408,7 +411,7 @@ pub fn tools() -> Vec<Value> {
         json!({ "name": "browser_tabs", "description": "List the browser's open tabs with who opened and last used each one; `*` marks your current tab.", "inputSchema": schema(json!({ "mine": { "type": "boolean", "description": "Only tabs your pane touched" } }), &[]) }),
         json!({ "name": "browser_use", "description": "Make a tab (yours or the user's) your current tab.", "inputSchema": schema(json!({}), &["tab"]) }),
         json!({ "name": "browser_close", "description": "Close the current (or given) tab. Close tabs you opened when the whole task is done, unless the user may want to look at them.", "inputSchema": schema(json!({}), &[]) }),
-        json!({ "name": "browser_show", "description": "Show a local HTML file (a report, a chart, a prototype you wrote) to the user in a sandboxed tab of your session: the companion browser when it runs, else the herdr+ window. The network is blocked unless allow_network; it reloads when the file changes (watch, default true). The tab becomes your current tab. `file` must be an absolute path to an .html/.htm file.", "inputSchema": schema(json!({ "file": { "type": "string" }, "allow_network": { "type": "boolean" }, "watch": { "type": "boolean" }, "focus": { "type": "boolean" }, "title": { "type": "string" } }), &["file"]) }),
+        json!({ "name": "browser_show", "description": "Show a local HTML file (a report, a chart, a prototype you wrote) to the user in a sandboxed tab of your session: the companion browser when it runs, else the herdr+ window. The network is blocked unless allow_network; it reloads when the file changes (watch, default true). The tab becomes your current tab. `file` must be an absolute path (or a file:// URL) to an .html/.htm file.", "inputSchema": schema(json!({ "file": { "type": "string" }, "allow_network": { "type": "boolean" }, "watch": { "type": "boolean" }, "focus": { "type": "boolean" }, "title": { "type": "string" } }), &["file"]) }),
         json!({ "name": "browser_focus", "description": "Bring the browser window up for the user with the current (or given) tab selected and marked for them, e.g. to ask them to log in or look at something. The only call that brings the window forward; it never takes the user's keyboard.", "inputSchema": schema(json!({}), &[]) }),
         json!({ "name": "browser_click", "description": "Click an element of the current tab by aria ref (from browser_snapshot) or CSS selector. Works on background tabs. A stale ref answers stale_ref: re-run browser_snapshot.", "inputSchema": schema(target_props(json!({})), &[]) }),
         json!({ "name": "browser_type", "description": "Type text key by key into an element (ref or selector); `clear` empties it first, `submit` presses Enter after. Password fields are refused: ask the user to type it (browser_focus).", "inputSchema": schema(target_props(json!({ "text": { "type": "string" }, "submit": { "type": "boolean" }, "clear": { "type": "boolean" } })), &["text"]) }),
@@ -725,6 +728,13 @@ mod tests {
         assert!(on.contains("mcp__claude-in-chrome__*"));
         assert!(on.contains("browser_use"));
         assert!(on.contains("Web search tools remain fine"));
+        for trigger in [
+            "docs site, dashboard, login or screenshot",
+            "a local HTML file → browser_show",
+            "only when the user asks",
+        ] {
+            assert!(on.contains(trigger), "{trigger}");
+        }
         assert!(on.ends_with(INSTRUCTIONS));
         assert_eq!(instructions(false), INSTRUCTIONS);
         let transport = fake(Ok(BrowserRunResult::default()));
