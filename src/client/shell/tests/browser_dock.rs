@@ -59,7 +59,7 @@ fn dock_state() -> ClientShellState {
     state.set_snapshot(Box::new(two_tab_snapshot("tab_1")));
     state.set_pane_surface(surface());
     state.browser.info = Some(companion("running"));
-    state.browser_dock.pixels_for_test = Some((COLS, ROWS, 1600, 900));
+    state.browser_dock.extent_for_test = Some((COLS, ROWS, 1600, 900));
     state.compose(COLS, ROWS);
     state
 }
@@ -565,4 +565,144 @@ fn a_companion_that_never_reports_on_the_dock_is_offered_a_restart() {
     }];
     state.browser.info = Some(info);
     assert!(state.browser_placeholder(later).calm);
+}
+
+/// Fork (companion launcher, audit 2 A8): the placement goes out after every
+/// input event while a dock is in use, but the terminal is asked for its
+/// pixel extent once per resize (one `/dev/tty` open), not per event; the
+/// extent beyond whole cells comes from the terminal, never from the grid.
+#[test]
+fn fork_smoke_the_terminal_extent_is_read_once_per_resize_not_per_event() {
+    let mut state = dock_state();
+    toggle_dock(&mut state);
+    let start = std::time::Instant::now();
+    let first = sent_placement(&mut state, start)
+        .expect("sent")
+        .expect("a placement");
+    assert_eq!(first.extent_px.width, 1600);
+    let reads = state.browser_dock.extent_reads;
+    assert_eq!(reads, 1);
+    for step in 1..=20_u64 {
+        state.handle_raw_events(vec![mouse(MouseEventKind::Moved, 10, 10)]);
+        let _ = state
+            .take_browser_placement_request(start + std::time::Duration::from_millis(50 * step));
+    }
+    assert_eq!(state.browser_dock.extent_reads, reads, "no read per event");
+    // the window grows by less than a cell: the same grid, a wider extent
+    state.browser_dock.extent_for_test = Some((COLS, ROWS, 1610, 900));
+    state.note_terminal_resized();
+    let later = start + std::time::Duration::from_secs(5);
+    let grown = sent_placement(&mut state, later)
+        .expect("sent again")
+        .expect("a placement");
+    assert_eq!(grown.extent_px.width, 1610);
+    assert_eq!(grown.grid.cols, COLS);
+    assert_eq!(state.browser_dock.extent_reads, reads + 1);
+    // with no dock anywhere nothing is read or sent after the clear
+    toggle_dock(&mut state);
+    assert_eq!(
+        sent_placement(&mut state, later + std::time::Duration::from_secs(1)),
+        Some(None),
+        "the clear"
+    );
+    state.note_terminal_resized();
+    assert!(state
+        .take_browser_placement_request(later + std::time::Duration::from_secs(2))
+        .is_none());
+    assert_eq!(state.browser_dock.extent_reads, reads + 1);
+}
+
+/// Fork (companion launcher, audit 2 A14): the layout's fast path (no dock,
+/// no Browser view: no lookups) holds after the last dock or view closes or
+/// its tab goes.
+#[test]
+fn closing_the_last_dock_or_view_leaves_the_dock_state_empty() {
+    let mut state = dock_state();
+    assert!(state.browser_dock.docked.is_empty() && state.browser_dock.viewing.is_empty());
+    assert_eq!(state.browser_band_for_focused_tab(), None);
+    toggle_dock(&mut state);
+    toggle_view(&mut state);
+    assert_eq!(state.browser_dock.docked.len(), 1);
+    assert_eq!(state.browser_dock.viewing.len(), 1);
+    assert!(state.browser_band_for_focused_tab().is_some());
+    assert!(state.browser_view_strip_for_focused_tab());
+    toggle_view(&mut state);
+    toggle_dock(&mut state);
+    assert!(
+        state.browser_dock.docked.is_empty(),
+        "no endpoint left listed"
+    );
+    assert!(state.browser_dock.viewing.is_empty());
+    assert!(!state.browser_view_strip_for_focused_tab());
+    // a dock on a tab that closes is pruned the same way
+    state.set_snapshot(Box::new(two_tab_snapshot("tab_2")));
+    toggle_dock(&mut state);
+    assert!(state.browser_dock_open_for("tab_2"));
+    let mut snapshot = two_tab_snapshot("tab_1");
+    snapshot.tabs.retain(|tab| tab.tab_id == "tab_1");
+    state.set_snapshot(Box::new(snapshot));
+    assert!(!state.browser_dock_open_for("tab_2"));
+    assert!(state.browser_dock.docked.is_empty());
+}
+
+/// Fork (companion launcher, audit 2 A3): a key typed in Browser view while
+/// no page covers the tab says what the area says to do, not "click the page".
+#[test]
+fn the_swallowed_key_toast_follows_what_covers_the_tab() {
+    let body = |info: BrowserGetInfo, report: Option<&str>| {
+        let mut state = dock_state();
+        toggle_view(&mut state);
+        let mut info = info;
+        if let Some(report) = report {
+            info.placements = vec![BrowserPlacementStatus {
+                id: state.browser_dock.placement_id.clone(),
+                state: report.into(),
+                reason: Some("Let herdr fill its Ghostty window (no Ghostty splits)".into()),
+            }];
+        }
+        state.browser.info = Some(info);
+        state.handle_raw_events(vec![RawInputEvent::Key(TerminalKey::new(
+            KeyCode::Char('x'),
+            KeyModifiers::empty(),
+        ))]);
+        state
+            .visible_endpoint_notice
+            .as_ref()
+            .expect("the toast")
+            .body
+            .clone()
+    };
+    let stopped = body(companion("stopped"), None);
+    assert!(
+        stopped.starts_with("The companion is not running: click Start companion;"),
+        "{stopped}"
+    );
+    assert!(stopped.ends_with("shows the terminal again."), "{stopped}");
+    let missing = body(companion("not_installed"), None);
+    assert!(
+        missing.contains("run herdr browser setup --companion"),
+        "{missing}"
+    );
+    let failed = body(companion("failed"), None);
+    assert!(
+        failed.contains(crate::browser::companion_app::GIVE_UP_TEXT)
+            && failed.contains("click Restart"),
+        "{failed}"
+    );
+    assert!(body(companion("starting"), None).starts_with("The companion is starting;"));
+    let unbound = body(companion("running"), Some("unbound"));
+    assert!(
+        unbound.starts_with("Click the browser's area once"),
+        "{unbound}"
+    );
+    let split = body(companion("running"), Some("unsupported"));
+    assert!(
+        split.starts_with("Let herdr fill its Ghostty window"),
+        "{split}"
+    );
+    let covering = body(companion("running"), Some("covering"));
+    assert!(
+        covering.starts_with("Click the page to type there;"),
+        "{covering}"
+    );
 }

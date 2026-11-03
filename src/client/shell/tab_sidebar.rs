@@ -1029,27 +1029,23 @@ fn render_fixed_row(
         glyph,
         Style::default().fg(glyph_color),
     );
-    // Cells for the status: all of it, or (label first) what the label and
-    // the gaps around it leave.
-    let status_width = display_width(status);
-    let status_cells = if label_first {
-        status_width.min(
-            rect.width
-                .saturating_sub(LABEL_X + display_width(label) + 2),
-        )
-    } else {
-        status_width
-    };
     // Fork (companion launcher): the Browser row's `◨` takes the last cells.
     let dock = match row {
         FixedRow::Browser(row) if rect.width >= 12 => row.dock,
         _ => None,
     };
     let dock_cells: u16 = if dock.is_some() { 2 } else { 0 };
-    let status_cells = status_cells.min(
-        rect.width
-            .saturating_sub(LABEL_X + display_width(label) + 2 + dock_cells),
-    );
+    // Cells for the status: (label first) what the label and the gaps
+    // around it leave, else all the row has right of the glyph.
+    let status_width = display_width(status);
+    let status_cells = if label_first {
+        status_width.min(
+            rect.width
+                .saturating_sub(LABEL_X + display_width(label) + 2 + dock_cells),
+        )
+    } else {
+        status_width.min(rect.width.saturating_sub(LABEL_X + 2 + dock_cells))
+    };
     let label_cells = rect
         .width
         .saturating_sub(LABEL_X + status_cells + 2 + dock_cells);
@@ -1949,4 +1945,53 @@ fn render_tab_row(
 
 fn display_width(text: &str) -> u16 {
     unicode_width::UnicodeWidthStr::width(text).min(usize::from(u16::MAX)) as u16
+}
+
+#[cfg(test)]
+mod fixed_row_tests {
+    use super::*;
+
+    fn row_text(row: &FixedRow<'_>, width: u16) -> String {
+        let rect = Rect::new(0, 0, width, 1);
+        let mut buffer = Buffer::empty(rect);
+        let config = ClientShellConfig::from_config(&crate::config::Config::default());
+        render_fixed_row(&mut buffer, rect, row, false, &config);
+        (0..width)
+            .map(|x| buffer[(x, 0)].symbol().to_owned())
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    /// Fork (companion launcher, audit 2 A16): only the Browser row's label
+    /// reserves its cells (and the `◨` its two); the News row's status still
+    /// wins in a narrow sidebar.
+    #[test]
+    fn fork_smoke_a_narrow_news_row_keeps_its_status_and_the_browser_row_its_label() {
+        let news = super::super::news::NewsRow {
+            tab_id: None,
+            state: super::super::news::NewsRowState::Idle,
+            status: "next 09:00".into(),
+            focused: false,
+        };
+        let text = row_text(&FixedRow::News(&news), 20);
+        assert!(text.ends_with("next 09:00"), "{text:?}");
+        assert!(text.contains("Ne…"), "the label gives way: {text:?}");
+        let browser = super::super::browser::BrowserRow {
+            state: super::super::browser::BrowserRowState::Running,
+            status: "companion · 3 tabs · 2 agents".into(),
+            active: false,
+            profile: "companion".into(),
+            running: true,
+            companion: Some("running".into()),
+            dock: Some(false),
+        };
+        let text = row_text(&FixedRow::Browser(&browser), 22);
+        assert!(text.contains("Browser"), "the label stays whole: {text:?}");
+        assert!(text.contains('…'), "the status gives way: {text:?}");
+        assert!(
+            text.ends_with(super::super::browser_dock_render::DOCK_GLYPH),
+            "{text:?}"
+        );
+    }
 }

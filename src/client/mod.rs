@@ -1321,6 +1321,9 @@ async fn run_client_loop(
                 if let Some(shell) = state.shell.as_mut() {
                     shell.set_graphics_cell_size(cell_width_px, cell_height_px);
                     shell.invalidate_pane_surface();
+                    // Fork (companion launcher): the browser placement asks
+                    // the terminal for its pixel extent again.
+                    shell.note_terminal_resized();
                 }
                 let msg = if let Some(shell) = &state.shell {
                     client_shell_resize_message(

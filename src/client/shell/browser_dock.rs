@@ -15,9 +15,13 @@
 //! Everything here is presentation state, per client process, in memory:
 //! which tabs have the dock or Browser view, the dock's width (remembered
 //! in the chrome preferences once dragged). Only the local endpoint docks:
-//! the companion runs on this machine. Nothing here runs per pane: the
-//! layout asks two set lookups and one scan of the server's browser
-//! sessions per call.
+//! the companion runs on this machine. Nothing here runs per pane, but the
+//! layout (asked on every pane surface patch) asks for the band and the
+//! strip: with no dock, no Browser view and no browser pages that is a few
+//! emptiness checks; otherwise set lookups by `&str` and one scan of the
+//! server's browser sessions, the endpoint's method check last, and no
+//! allocation. The terminal's pixel extent is read once per resize, never
+//! per input event.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -162,13 +166,39 @@ struct SentPlacement {
     spec: Option<BrowserPlacementSpec>,
 }
 
+/// Tab ids by endpoint; an endpoint without any is not listed (so an empty
+/// map means none anywhere).
+pub(crate) type TabsByEndpoint = HashMap<ClientEndpointId, HashSet<String>>;
+
+fn tab_listed(tabs: &TabsByEndpoint, endpoint: &ClientEndpointId, tab_id: &str) -> bool {
+    !tabs.is_empty()
+        && tabs
+            .get(endpoint)
+            .is_some_and(|listed| listed.contains(tab_id))
+}
+
+fn list_tab(tabs: &mut TabsByEndpoint, endpoint: &ClientEndpointId, tab_id: String) -> bool {
+    tabs.entry(endpoint.clone()).or_default().insert(tab_id)
+}
+
+fn unlist_tab(tabs: &mut TabsByEndpoint, endpoint: &ClientEndpointId, tab_id: &str) -> bool {
+    let Some(listed) = tabs.get_mut(endpoint) else {
+        return false;
+    };
+    let removed = listed.remove(tab_id);
+    if listed.is_empty() {
+        tabs.remove(endpoint);
+    }
+    removed
+}
+
 /// The client's dock and Browser view state (see the module docs).
 #[derive(Debug)]
 pub(crate) struct ClientBrowserDockState {
     /// Tabs with the dock open, by endpoint.
-    pub(crate) docked: HashSet<(ClientEndpointId, String)>,
+    pub(crate) docked: TabsByEndpoint,
     /// Tabs in Browser view, by endpoint.
-    pub(crate) viewing: HashSet<(ClientEndpointId, String)>,
+    pub(crate) viewing: TabsByEndpoint,
     /// The dock's width in percent of the area right of the sidebar.
     pub(crate) percent: u16,
     /// Dragged: only then remembered.
@@ -196,9 +226,16 @@ pub(crate) struct ClientBrowserDockState {
     /// the first focused tab once the server runs the companion, without
     /// input (the smoke cannot type into its terminal window).
     test_view: Option<BrowserPlacementKind>,
-    /// Tests: the terminal's `(cols, rows, width px, height px)`.
+    /// The terminal's `(cols, rows, width px, height px)` (`TIOCGWINSZ`;
+    /// zeros when it does not say), read when a placement needs it and
+    /// again after a terminal resize (`note_terminal_resized`) or when a dock
+    /// or Browser view opens: `None` until then.
+    terminal_extent: Option<(u16, u16, u32, u32)>,
+    /// Tests: what the terminal says (no `/dev/tty`), and how often it was asked.
     #[cfg(test)]
-    pub(crate) pixels_for_test: Option<(u16, u16, u32, u32)>,
+    pub(crate) extent_for_test: Option<(u16, u16, u32, u32)>,
+    #[cfg(test)]
+    pub(crate) extent_reads: u32,
 }
 
 fn placement_id() -> String {
@@ -217,8 +254,8 @@ fn placement_id() -> String {
 impl ClientBrowserDockState {
     pub(crate) fn new(percent: Option<u16>, default_percent: u16) -> Self {
         Self {
-            docked: HashSet::new(),
-            viewing: HashSet::new(),
+            docked: HashMap::new(),
+            viewing: HashMap::new(),
             percent: percent.unwrap_or(default_percent).clamp(
                 crate::config::MIN_BROWSER_DOCK_WIDTH,
                 crate::config::MAX_BROWSER_DOCK_WIDTH,
@@ -239,8 +276,31 @@ impl ClientBrowserDockState {
                 Ok("full") => Some(BrowserPlacementKind::Full),
                 _ => None,
             },
+            terminal_extent: None,
             #[cfg(test)]
-            pixels_for_test: None,
+            extent_for_test: None,
+            #[cfg(test)]
+            extent_reads: 0,
+        }
+    }
+
+    /// Ask the terminal for its extent (one `/dev/tty` open and ioctl).
+    fn read_terminal_extent(&mut self) -> (u16, u16, u32, u32) {
+        #[cfg(test)]
+        {
+            self.extent_reads += 1;
+            if let Some(extent) = self.extent_for_test {
+                return extent;
+            }
+        }
+        match crossterm::terminal::window_size() {
+            Ok(size) if size.columns > 0 && size.rows > 0 => (
+                size.columns,
+                size.rows,
+                u32::from(size.width),
+                u32::from(size.height),
+            ),
+            _ => (0, 0, 0, 0),
         }
     }
 }
@@ -345,10 +405,6 @@ impl ClientShellState {
         }
     }
 
-    fn browser_dock_key(&self, tab_id: &str) -> (ClientEndpointId, String) {
-        (self.active_endpoint_id.clone(), tab_id.to_owned())
-    }
-
     fn browser_dock_focused_tab(&self) -> Option<&str> {
         self.snapshot
             .as_deref()
@@ -371,43 +427,44 @@ impl ClientShellState {
     }
 
     pub(crate) fn browser_dock_open_for(&self, tab_id: &str) -> bool {
-        self.browser_dock
-            .docked
-            .contains(&self.browser_dock_key(tab_id))
+        tab_listed(&self.browser_dock.docked, &self.active_endpoint_id, tab_id)
     }
 
     pub(crate) fn browser_view_open_for(&self, tab_id: &str) -> bool {
-        self.browser_dock
-            .viewing
-            .contains(&self.browser_dock_key(tab_id))
+        tab_listed(&self.browser_dock.viewing, &self.active_endpoint_id, tab_id)
     }
 
     /// A tab of the active endpoint has the dock or Browser view.
     pub(crate) fn browser_dock_in_use(&self) -> bool {
         self.browser_dock
             .docked
-            .iter()
-            .chain(self.browser_dock.viewing.iter())
-            .any(|(endpoint, _)| *endpoint == self.active_endpoint_id)
+            .contains_key(&self.active_endpoint_id)
+            || self
+                .browser_dock
+                .viewing
+                .contains_key(&self.active_endpoint_id)
     }
 
+    // The lookups first, the endpoint's method check last (these run on
+    // every layout).
     pub(crate) fn browser_dock_open_for_focused_tab(&self) -> bool {
-        self.browser_dock_available()
-            && self
-                .browser_dock_focused_tab()
-                .is_some_and(|tab_id| self.browser_dock_open_for(tab_id))
+        self.browser_dock_focused_tab()
+            .is_some_and(|tab_id| self.browser_dock_open_for(tab_id))
+            && self.browser_dock_available()
     }
 
     pub(crate) fn browser_view_open_for_focused_tab(&self) -> bool {
-        self.browser_dock_available()
-            && self
-                .browser_dock_focused_tab()
-                .is_some_and(|tab_id| self.browser_view_open_for(tab_id))
+        self.browser_dock_focused_tab()
+            .is_some_and(|tab_id| self.browser_view_open_for(tab_id))
+            && self.browser_dock_available()
     }
 
     /// The band to carve for the focused tab (its width in percent), `None`
     /// while undocked (the layout still drops a band that does not fit).
     pub(crate) fn browser_band_for_focused_tab(&self) -> Option<u16> {
+        if self.browser_dock.docked.is_empty() {
+            return None;
+        }
         self.browser_dock_open_for_focused_tab()
             .then_some(self.browser_dock.percent)
     }
@@ -445,10 +502,7 @@ impl ClientShellState {
             ("browser view", &self.browser_dock.viewing),
             ("docked", &self.browser_dock.docked),
         ] {
-            for (on, tab_id) in set.iter() {
-                if on != endpoint {
-                    continue;
-                }
+            for tab_id in set.get(endpoint).into_iter().flatten() {
                 let mark = tabs.entry(tab_id.clone()).or_insert(TabBrowserMark {
                     pages: 0,
                     view: None,
@@ -462,17 +516,19 @@ impl ClientShellState {
 
     /// The focused tab shows its view strip: `ui.browser_view_strip =
     /// "auto"`, docking works here, and the tab has pages, the dock or
-    /// Browser view.
+    /// Browser view (the lookups first, the sessions scan next, the
+    /// endpoint's method check last: this runs on every layout).
     pub(crate) fn browser_view_strip_for_focused_tab(&self) -> bool {
-        if !self.config.browser_view_strip || !self.browser_dock_available() {
+        if !self.config.browser_view_strip {
             return false;
         }
         let Some(tab_id) = self.browser_dock_focused_tab() else {
             return false;
         };
-        self.browser_dock_open_for(tab_id)
+        (self.browser_dock_open_for(tab_id)
             || self.browser_view_open_for(tab_id)
-            || self.browser_tab_pages(tab_id) > 0
+            || self.browser_tab_pages(tab_id) > 0)
+            && self.browser_dock_available()
     }
 
     /// The band in the last composed layout (empty when not drawn).
@@ -520,16 +576,24 @@ impl ClientShellState {
             .last_composed_size
             .map(|(cols, rows)| self.surface_size(cols, rows));
         let focused = self.browser_dock_focused_tab() == Some(tab_id.as_str());
-        let key = self.browser_dock_key(&tab_id);
-        let opened = if self.browser_dock.docked.remove(&key) {
+        let opened = if unlist_tab(
+            &mut self.browser_dock.docked,
+            &self.active_endpoint_id,
+            &tab_id,
+        ) {
             false
         } else {
-            self.browser_dock.docked.insert(key);
-            true
+            list_tab(
+                &mut self.browser_dock.docked,
+                &self.active_endpoint_id,
+                tab_id.clone(),
+            )
         };
         self.browser_dock.dragging = false;
         outcome.repaint = true;
         if opened {
+            // The terminal is asked for its extent again (a missed resize).
+            self.browser_dock.terminal_extent = None;
             self.start_companion_for_dock(outcome);
             // The placeholder follows the companion's state at the active cadence.
             self.refresh_browser();
@@ -585,17 +649,25 @@ impl ClientShellState {
         let size_before = self
             .last_composed_size
             .map(|(cols, rows)| self.surface_size(cols, rows));
-        let key = self.browser_dock_key(&tab_id);
         let changed = if on {
-            self.browser_dock.viewing.insert(key)
+            list_tab(
+                &mut self.browser_dock.viewing,
+                &self.active_endpoint_id,
+                tab_id.clone(),
+            )
         } else {
-            self.browser_dock.viewing.remove(&key)
+            unlist_tab(
+                &mut self.browser_dock.viewing,
+                &self.active_endpoint_id,
+                &tab_id,
+            )
         };
         if !changed {
             return;
         }
         outcome.repaint = true;
         if on {
+            self.browser_dock.terminal_extent = None;
             self.start_companion_for_dock(outcome);
             self.refresh_browser();
         }
@@ -628,12 +700,18 @@ impl ClientShellState {
 
     /// Keep only docks and views whose tab the active endpoint still lists.
     pub(crate) fn prune_browser_dock_tabs(&mut self, snapshot: &ClientShellSnapshot) {
-        let endpoint_id = self.active_endpoint_id.clone();
-        let listed = |(endpoint, tab_id): &(ClientEndpointId, String)| {
-            *endpoint != endpoint_id || snapshot.tabs.iter().any(|tab| &tab.tab_id == tab_id)
-        };
-        self.browser_dock.docked.retain(listed);
-        self.browser_dock.viewing.retain(listed);
+        let listed = |tab_id: &String| snapshot.tabs.iter().any(|tab| &tab.tab_id == tab_id);
+        for tabs in [
+            &mut self.browser_dock.docked,
+            &mut self.browser_dock.viewing,
+        ] {
+            if let Some(open) = tabs.get_mut(&self.active_endpoint_id) {
+                open.retain(listed);
+                if open.is_empty() {
+                    tabs.remove(&self.active_endpoint_id);
+                }
+            }
+        }
         self.browser_dock
             .guard_toasts
             .retain(|tab_id, _| snapshot.tabs.iter().any(|tab| &tab.tab_id == tab_id));
@@ -776,15 +854,54 @@ impl ClientShellState {
             .is_none_or(|at| now.duration_since(*at) >= GUARD_TOAST_EVERY);
         if due {
             self.browser_dock.guard_toasts.insert(tab_id, now);
-            let key = self.browser_view_key_hint();
+            let body = self.browser_view_guard_text(now);
             outcome.repaint |= self.push_endpoint_notice(
                 ClientEndpointNoticeKind::Rejected,
                 "browser_view:keys",
                 "Browser view",
-                format!("Click the page to type there; {key} shows the terminal again."),
+                body,
             );
         }
         true
+    }
+
+    /// The swallowed key's toast: how to type into the page, or, while no
+    /// page covers the tab, what the area says to do (Start, Restart, the
+    /// setup command, a click to dock).
+    fn browser_view_guard_text(&self, now: Instant) -> String {
+        let key = self.browser_view_key_hint();
+        let what = match self
+            .browser_companion()
+            .map(|companion| companion.state.as_str())
+        {
+            Some("stopped") => "The companion is not running: click Start companion".to_owned(),
+            Some("not_installed") => {
+                "The companion is not installed: run herdr browser setup --companion".to_owned()
+            }
+            Some("failed") => format!(
+                "The companion stopped after {}: click Restart",
+                crate::browser::companion_app::GIVE_UP_TEXT
+            ),
+            Some("starting") => "The companion is starting".to_owned(),
+            Some("reconnecting") => "The companion is reconnecting".to_owned(),
+            Some("crashed") => "The companion is restarting".to_owned(),
+            Some("stopping") => "The companion is stopping".to_owned(),
+            _ => {
+                let placeholder = self.browser_placeholder(now);
+                match (placeholder.click, placeholder.lines.first()) {
+                    (_, _) if placeholder.calm => "Click the page to type there".to_owned(),
+                    (Some(BrowserDockTarget::Nudge), _) => {
+                        "Click the browser's area once to dock it to this window".to_owned()
+                    }
+                    (_, Some((title, _))) => match placeholder.button {
+                        Some((label, _)) => format!("{title}: click {label}"),
+                        None => title.clone(),
+                    },
+                    (_, None) => "Click the page to type there".to_owned(),
+                }
+            }
+        };
+        format!("{what}; {key} shows the terminal again.")
     }
 
     /// `^b Z` (the toggle_browser_view binding, compact), else its name.
@@ -1000,15 +1117,12 @@ impl ClientShellState {
 
     /// This client's placement now (`None`: none to publish).
     fn browser_placement_spec(&self) -> Option<BrowserPlacementSpec> {
-        if !self.browser_dock_available() {
+        if !self.browser_dock_in_use() || !self.browser_dock_available() {
             return None;
         }
         let snapshot = self.snapshot.as_deref()?;
         let tab_id = snapshot.focused_tab_id.clone()?;
         let (cols, rows) = self.last_composed_size?;
-        if !self.browser_dock_in_use() {
-            return None;
-        }
         let layout = self.layout(cols, rows);
         let viewing = self.browser_view_open_for(&tab_id);
         let (kind, area, shown) = if viewing {
@@ -1029,8 +1143,7 @@ impl ClientShellState {
             let viewing_elsewhere = self
                 .browser_dock
                 .viewing
-                .iter()
-                .any(|(endpoint, _)| *endpoint == self.active_endpoint_id);
+                .contains_key(&self.active_endpoint_id);
             let kind = if !self.browser_dock_open_for(&tab_id) && viewing_elsewhere {
                 BrowserPlacementKind::Full
             } else {
@@ -1075,22 +1188,22 @@ impl ClientShellState {
         })
     }
 
-    /// The terminal's grid and pixel extent (`TIOCGWINSZ`); the composed
-    /// size and no pixels when the terminal does not say.
+    /// The terminal's grid and pixel extent (`TIOCGWINSZ`, as last read);
+    /// the composed size and no pixels when the terminal does not say.
     fn browser_terminal_pixels(&self, cols: u16, rows: u16) -> (u16, u16, u32, u32) {
-        #[cfg(test)]
-        if let Some(pixels) = self.browser_dock.pixels_for_test {
-            return pixels;
-        }
-        match crossterm::terminal::window_size() {
-            Ok(size) if size.columns > 0 && size.rows > 0 => (
-                size.columns,
-                size.rows,
-                u32::from(size.width),
-                u32::from(size.height),
-            ),
+        match self.browser_dock.terminal_extent {
+            Some((grid_cols, grid_rows, width, height)) if grid_cols > 0 && grid_rows > 0 => {
+                (grid_cols, grid_rows, width, height)
+            }
             _ => (cols, rows, 0, 0),
         }
+    }
+
+    /// The terminal resized: its extent is read again when a placement
+    /// needs it (the extent beyond whole cells matters to the companion, so
+    /// it is never derived from the grid).
+    pub(crate) fn note_terminal_resized(&mut self) {
+        self.browser_dock.terminal_extent = None;
     }
 
     /// The `browser.placement.set` to send now, if the placement changed
@@ -1100,6 +1213,21 @@ impl ClientShellState {
         &mut self,
         now: Instant,
     ) -> Option<crate::protocol::ClientMessage> {
+        // Nothing docked and nothing left to clear: nothing to do (this runs
+        // after every input event).
+        let in_use = self.browser_dock_in_use();
+        if !in_use
+            && self
+                .browser_dock
+                .sent
+                .as_ref()
+                .is_none_or(|sent| sent.spec.is_none())
+        {
+            return None;
+        }
+        if in_use && self.browser_dock.terminal_extent.is_none() {
+            self.browser_dock.terminal_extent = Some(self.browser_dock.read_terminal_extent());
+        }
         let boot_id = self.snapshot.as_deref()?.boot_id.clone();
         let spec = self.browser_placement_spec();
         let current = SentPlacement {
