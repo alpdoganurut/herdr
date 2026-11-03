@@ -1511,10 +1511,23 @@ impl BrowserHub {
         }
     }
 
-    /// The process of `generation` is gone.
+    /// The process of `generation` is gone. Its run record goes before the
+    /// core hears of it: whoever then sees the process gone (a stop, a
+    /// restart) finds no record left behind.
     fn companion_exited(&self, generation: u64, exit: ExitInfo) {
         let home = self.companion_home();
         let tail = log_tail(&companion_install::log_path(&home), 3);
+        let live_token = {
+            let core = self.launcher().lock();
+            (core.generation == generation && (core.pid.is_some() || core.spawning))
+                .then(|| core.token.clone())
+                .flatten()
+        };
+        // the process is current until `exited` (no launch can begin before
+        // it): the record on disk is still this token's
+        if let Some(token) = live_token.as_deref() {
+            clear_run_record(&home, Some(token));
+        }
         let (current, token, phase) = {
             let mut core = self.launcher().lock();
             let token = core.token.clone();
@@ -1522,7 +1535,6 @@ impl BrowserHub {
             (current, token, core.phase)
         };
         if current {
-            clear_run_record(&home, token.as_deref());
             if let Some(token) = token.as_deref() {
                 self.drop_companion_lease_for(
                     token,
