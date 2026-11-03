@@ -21,9 +21,13 @@ const { Connection } = require(path.join(APP, 'src', 'herdr-api.js'));
 const GHOSTTY = '/Applications/Ghostty.app';
 const GHOSTTY_EXE = '/Applications/Ghostty.app/Contents/MacOS/ghostty';
 
-// Ghostty flags (points / cells) and the geometry config the model reads for them.
+// Ghostty flags (points / cells) and the geometry config the model reads for them. `small`
+// and `large` are the default config at other window sizes (100 columns: the narrowest
+// window that still fits a band beside a 30-column terminal and the sidebar).
 const VARIANTS = {
+  small: { args: [], cols: 100, rows: 30, config: {} },
   defaults: { args: [], cols: 120, rows: 36, config: {} },
+  large: { args: [], cols: 180, rows: 50, config: {} },
   padding: { args: ['--window-padding-x=10', '--window-padding-y=6'], cols: 110, rows: 32, config: { paddingX: [10, 10], paddingY: [6, 6] } },
   balanced: { args: ['--window-padding-balance=true'], cols: 104, rows: 30, config: { balance: true } },
   native: { args: ['--macos-titlebar-style=native'], cols: 132, rows: 38, config: { titlebarStyle: 'native' } },
@@ -82,8 +86,46 @@ async function api(method, params = {}, timeoutMs = 15000) {
   }
 }
 const jxa = (src, args = []) => execFileSync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', src, ...args.map(String)], { encoding: 'utf8', timeout: 10000 }).trim();
+// The measurement's window reader: a tiny Swift program over CGWindowList (no permission),
+// compiled into the temp dir, independent of the companion's own probe (JXA through
+// osascript). Without swiftc the JXA readers below measure instead (the report says so).
+const CGWIN_SWIFT = `import CoreGraphics
+import Foundation
+func windows(_ options: CGWindowListOption, _ relativeTo: CGWindowID) -> [[String: Any]] {
+    (CGWindowListCopyWindowInfo(options, relativeTo) as? [[String: Any]]) ?? []
+}
+func number(_ d: [String: Any], _ key: CFString) -> Int? { (d[key as String] as? NSNumber)?.intValue }
+let args = Array(CommandLine.arguments.dropFirst())
+var out: Any = []
+if args.first == "list" {
+    let pids = Set(args.dropFirst().compactMap { Int($0) })
+    var list: [[String: Any]] = []
+    for d in windows([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) {
+        guard let pid = number(d, kCGWindowOwnerPID), pids.contains(pid), number(d, kCGWindowLayer) == 0,
+              let num = number(d, kCGWindowNumber), let bounds = d[kCGWindowBounds as String] as? NSDictionary,
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { continue }
+        list.append(["num": num, "pid": pid, "x": rect.origin.x, "y": rect.origin.y, "w": rect.size.width, "h": rect.size.height])
+    }
+    out = list
+} else if args.first == "above", args.count > 1, let wid = UInt32(args[1]) {
+    out = windows([.optionOnScreenAboveWindow], CGWindowID(wid)).filter { number($0, kCGWindowLayer) == 0 }.compactMap { number($0, kCGWindowNumber) }
+} else {
+    FileHandle.standardError.write(Data("usage: cgwin list <pid>... | cgwin above <wid>\\n".utf8))
+    exit(2)
+}
+FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: out))
+`;
+const CGWIN = path.join(T, 'cgwin');
+let MEASURE = 'jxa';
+try {
+  fs.writeFileSync(`${CGWIN}.swift`, CGWIN_SWIFT);
+  execFileSync('/usr/bin/swiftc', ['-O', '-o', CGWIN, `${CGWIN}.swift`], { stdio: 'ignore', timeout: 180000 });
+  MEASURE = 'swift';
+} catch {}
+const cgwin = (args) => JSON.parse(execFileSync(CGWIN, args.map(String), { encoding: 'utf8', timeout: 10000 }));
 // On-screen layer-0 windows of `pids`, front to back (CGWindowList: no permission).
 function windowsOf(pids) {
+  if (MEASURE === 'swift') return cgwin(['list', ...pids]);
   const src = `ObjC.import('CoreGraphics');
 function run(argv) { const pids = argv.map(Number); const a = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, 0)); const o = [];
 for (let i = 0; i < a.count; i++) { const d = a.objectAtIndex(i); const pid = d.objectForKey('kCGWindowOwnerPID').js; if (!pids.includes(pid) || d.objectForKey('kCGWindowLayer').js !== 0) continue;
@@ -92,6 +134,7 @@ return JSON.stringify(o); }`;
   return JSON.parse(jxa(src, pids));
 }
 function aboveOf(wid) {
+  if (MEASURE === 'swift') return cgwin(['above', wid]);
   const src = `ObjC.import('CoreGraphics');
 function run(argv) { const a = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenAboveWindow, Number(argv[0]))); const o = [];
 for (let i = 0; i < a.count; i++) { const d = a.objectAtIndex(i); if (d.objectForKey('kCGWindowLayer').js === 0) o.push(d.objectForKey('kCGWindowNumber').js); } return JSON.stringify(o); }`;
@@ -126,6 +169,7 @@ const cpuSeconds = (pid) => {
 say(`# Dock alignment smoke — ${new Date().toISOString()}`);
 say('');
 say(`herdr ${BIN}; Ghostty ${execFileSync(GHOSTTY_EXE, ['--version'], { encoding: 'utf8' }).split('\n')[0]}; macOS ${execFileSync('/usr/bin/sw_vers', ['-productVersion'], { encoding: 'utf8' }).trim()}`);
+say(`windows measured with ${MEASURE === 'swift' ? 'a compiled Swift CGWindowList reader (not the companion\'s osascript probe)' : 'JXA through osascript (no swiftc)'}; errors in points and device pixels (scale 2)`);
 say('');
 
 // Install the companion from this build (no download: the app's own Electron dist).
@@ -209,6 +253,7 @@ async function measureVariant(name, v, out) {
   const model = placementRect({ placement, frame: { x: term.x, y: term.y, w: term.w, h: term.h }, scale: 2, config: v.config });
   out.frame = term;
   out.dock = dock;
+  out.grid = `${placement.grid.cols}x${placement.grid.rows}`;
   out.expected = model.rect;
   out.model = model.model;
   if (!dock || !model.ok) throw new Error(`no dock window on screen, or the model refused it: ${JSON.stringify({ dock, model })}`);
@@ -238,6 +283,7 @@ async function measureVariant(name, v, out) {
   say(`Ghostty frame ${term.x},${term.y} ${term.w}x${term.h} pt; model padL ${padL} pt, titlebar ${model.model.titlebar} pt`);
   say(`dock window ${dock.x},${dock.y} ${dock.w}x${dock.h} pt; expected ${model.rect.x},${model.rect.y} ${model.rect.width}x${model.rect.height}`);
   say(`error per edge (pt): left ${err.left}, top ${err.top}, right ${err.right}, bottom ${err.bottom}  → max ${out.maxErrPt} pt = ${out.maxErrPt * 2} px; left edge vs herdr's divider ${out.leftVsDivider.toFixed(2)} pt`);
+  say(`error per edge (device px): left ${err.left * 2}, top ${err.top * 2}, right ${err.right * 2}, bottom ${err.bottom * 2}`);
   say(`z-order: directly above the Ghostty window: ${out.directlyAbove}; probe CPU ${out.probeCpuPct}% of a core`);
   await cdp.close().catch(() => {});
   return out;
@@ -254,14 +300,14 @@ async function stopServer(server, ghostty, out) {
 }
 
 say('\n## Summary\n');
-say('| variant | Ghostty frame (pt) | max error | left vs divider | directly above | probe CPU | Ghostty quit |');
-say('|---|---|---|---|---|---|---|');
+say('| variant | grid (cells) | Ghostty frame (pt) | dock window (pt) | max error | left vs divider | directly above | probe CPU | Ghostty quit |');
+say('|---|---|---|---|---|---|---|---|---|');
 for (const r of results) {
   if (r.error) {
-    say(`| ${r.name} | blocked | ${r.error.split('\n')[0].slice(0, 120)} | | | | |`);
+    say(`| ${r.name} | | blocked | ${r.error.split('\n')[0].slice(0, 120)} | | | | | |`);
     continue;
   }
-  say(`| ${r.name} | ${r.frame.w}x${r.frame.h} | ${r.maxErrPt} pt (${r.maxErrPt * 2} px) | ${r.leftVsDivider.toFixed(2)} pt | ${r.directlyAbove} | ${r.probeCpuPct}% | ${r.ghosttyQuit} |`);
+  say(`| ${r.name} | ${r.grid} | ${r.frame.w}x${r.frame.h} @${r.frame.x},${r.frame.y} | ${r.dock.w}x${r.dock.h} @${r.dock.x},${r.dock.y} | ${r.maxErrPt} pt (${r.maxErrPt * 2} px) | ${r.leftVsDivider.toFixed(2)} pt | ${r.directlyAbove} | ${r.probeCpuPct}% | ${r.ghosttyQuit} |`);
 }
 fs.writeFileSync(REPORT, lines.join('\n') + '\n');
 console.log(`\nreport: ${REPORT}`);
