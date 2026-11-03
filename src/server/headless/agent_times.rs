@@ -119,12 +119,14 @@ mod tests {
                     state_change_seq: 7,
                     since_unix_ms: 1_700_000_000_000,
                     auto_suspended: false,
+                    ..Default::default()
                 },
                 AgentTimePane {
                     pane_id: "w2:p1".into(),
                     state_change_seq: 9,
                     since_unix_ms: 1_700_000_050_000,
                     auto_suspended: false,
+                    ..Default::default()
                 },
             ],
         };
@@ -150,5 +152,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(newer.panes[0].since_unix_ms, 4);
+    }
+
+    /// Fork (restart screen): the resume marks ride the pane entry only when
+    /// set, so a pane without them serializes as before, and a client that
+    /// predates them (modelled by a struct without the fields) still decodes.
+    #[test]
+    fn resume_marks_are_optional_on_the_wire_and_older_clients_ignore_them() {
+        #[derive(Deserialize)]
+        struct OldPane {
+            pane_id: String,
+            state_change_seq: u64,
+            since_unix_ms: u64,
+        }
+        #[derive(Deserialize)]
+        struct OldPayload {
+            panes: Vec<OldPane>,
+        }
+        let payload = AgentTimesPayload {
+            boot_id: "boot".into(),
+            revision: 1,
+            server_now_unix_ms: 9,
+            panes: vec![
+                AgentTimePane {
+                    pane_id: "w1:p1".into(),
+                    state_change_seq: 3,
+                    since_unix_ms: 4,
+                    resuming: Some("restart".into()),
+                    ..Default::default()
+                },
+                AgentTimePane {
+                    pane_id: "w1:p2".into(),
+                    state_change_seq: 5,
+                    since_unix_ms: 6,
+                    resume_failed: Some("wake".into()),
+                    ..Default::default()
+                },
+                AgentTimePane {
+                    pane_id: "w1:p3".into(),
+                    state_change_seq: 7,
+                    since_unix_ms: 8,
+                    ..Default::default()
+                },
+            ],
+        };
+        let ServerMessage::EndpointControl { data, .. } = payload.message().unwrap() else {
+            panic!("expected a control message");
+        };
+        assert!(data.contains(r#""resuming":"restart""#), "{data}");
+        assert!(data.contains(r#""resume_failed":"wake""#), "{data}");
+        assert!(
+            data.contains(r#"{"pane_id":"w1:p3","state_change_seq":7,"since_unix_ms":8}"#),
+            "unmarked panes keep the old shape: {data}"
+        );
+        assert_eq!(AgentTimesPayload::decode(&data).unwrap(), payload);
+        let old: OldPayload = serde_json::from_str(&data).expect("an older client decodes it");
+        assert_eq!(old.panes.len(), 3);
+        assert_eq!(old.panes[0].pane_id, "w1:p1");
+        assert_eq!(
+            (old.panes[0].state_change_seq, old.panes[0].since_unix_ms),
+            (3, 4)
+        );
     }
 }

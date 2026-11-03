@@ -143,6 +143,7 @@ mod tests {
                         state_change_seq: 4,
                         since_unix_ms: 1_000_000 - 90_000,
                         auto_suspended: false,
+                        ..Default::default()
                     },
                     AgentTimePane {
                         pane_id: "w1:p2".into(),
@@ -150,6 +151,7 @@ mod tests {
                         // A since after the server's now (clock stepped back).
                         since_unix_ms: 2_000_000,
                         auto_suspended: false,
+                        ..Default::default()
                     },
                 ],
             },

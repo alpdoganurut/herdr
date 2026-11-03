@@ -209,6 +209,7 @@ pub(super) fn times_payload(
                     state_change_seq: *seq,
                     since_unix_ms: 10_000_000_000 - age_ms,
                     auto_suspended: false,
+                    ..Default::default()
                 },
             )
             .collect(),

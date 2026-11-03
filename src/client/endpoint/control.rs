@@ -363,6 +363,7 @@ mod tests {
                 state_change_seq: 2,
                 since_unix_ms: 4_000,
                 auto_suspended: false,
+                ..Default::default()
             }],
         };
         let crate::protocol::ServerMessage::EndpointControl { kind, data } =

@@ -148,6 +148,10 @@ pub(crate) const WAKE_RETRY: Duration = Duration::from_secs(10);
 /// Fork (autosuspend): after a wake failed this long, the senders of the
 /// messages waiting for it hear once.
 pub(crate) const WAKE_NOTICE_AFTER: Duration = Duration::from_secs(60);
+/// Fork (restart screen): how long one retried wake shows the pane waking;
+/// the queue pass retries every [`WAKE_RETRY`], so it lapses only once the
+/// retries stopped.
+pub(crate) const WAKE_MARK_TTL: Duration = Duration::from_secs(30);
 
 mod submit;
 pub(crate) use submit::DeliveryWatch;
@@ -2077,6 +2081,23 @@ impl App {
                 Some(WAKING_REASON.to_string())
             }
             Err((exiting, no_shell, reason)) => {
+                // Fork (restart screen): a wake still waiting on the exit,
+                // the shell or the user's typing shows the pane waking (the
+                // queue pass retries it); any other failure gave up.
+                let retrying = typing || exiting || no_shell;
+                if let Some(terminal) = self.state.terminals.get_mut(target.terminal_id.as_str()) {
+                    let changed = if retrying {
+                        terminal.mark_suspended_agent_waking(now, now + WAKE_MARK_TTL)
+                    } else {
+                        terminal.fail_suspended_agent_resume(
+                            crate::terminal::AgentResumeKind::Wake,
+                            now + super::agent_suspend::RESUME_FAILED_MARK_TTL,
+                        )
+                    };
+                    if changed {
+                        self.note_agent_resume_marks_changed();
+                    }
+                }
                 let first = !self
                     .message_queue
                     .wake_failed
@@ -2136,6 +2157,15 @@ impl App {
         };
         failure.notified = true;
         let reason = failure.reason.clone();
+        // Fork (restart screen): a wake that failed this long gave up.
+        if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
+            if terminal.fail_suspended_agent_resume(
+                crate::terminal::AgentResumeKind::Wake,
+                now + super::agent_suspend::RESUME_FAILED_MARK_TTL,
+            ) {
+                self.note_agent_resume_marks_changed();
+            }
+        }
         let waiting: Vec<QueuedMessage> = self
             .message_queue
             .entries

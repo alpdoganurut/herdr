@@ -964,4 +964,66 @@ mod tests {
         assert!(parked(&mut app), "it waits for its user");
         assert!(!typed(&mut rx).contains(SESSION), "no relaunch");
     }
+
+    /// Fork (restart screen): the pane's resume marks as the agent times push
+    /// carries them.
+    fn pushed_marks(app: &mut App) -> (Option<String>, Option<String>) {
+        terminal(app).last_agent_state_change_seq.get_or_insert(1);
+        let pane = app.agent_times().into_iter().next().expect("listed");
+        (pane.resuming, pane.resume_failed)
+    }
+
+    #[tokio::test]
+    async fn a_retried_wake_is_pushed_as_waking_until_the_relaunch_or_it_gives_up() {
+        // Still exiting: the wake is retried, the pane shows waking.
+        let (mut app, mut rx) = free();
+        assert!(scan(&mut app));
+        typed(&mut rx);
+        assert_eq!(pushed_marks(&mut app), (None, None), "a plain auto-suspend");
+        let rev = app.state.agent_times_view_rev;
+        let sent_at = Instant::now();
+        send(&mut app, "ma1", "please review");
+        assert!(app.state.agent_times_view_rev > rev, "clients hear of it");
+        assert_eq!(pushed_marks(&mut app), (Some("wake".into()), None));
+
+        // Once the exit is seen the retry relaunches it: the mark goes.
+        observe_exit(&mut app);
+        app.message_queue.mark_due();
+        app.message_queue_pass(
+            sent_at + crate::app::message_queue::WAKE_RETRY * 2,
+            crate::coordinator::now_unix(),
+        );
+        assert!(!parked(&mut app), "woken on the retry");
+        assert_eq!(pushed_marks(&mut app), (None, None));
+
+        // Retries that stop leave the mark to lapse on the scheduler.
+        let (mut app, mut rx) = free();
+        assert!(scan(&mut app));
+        typed(&mut rx);
+        send(&mut app, "ma1", "please review");
+        let lapse = app
+            .state
+            .next_suspended_agent_resume_deadline()
+            .expect("the mark's lapse is scheduled");
+        let rev = app.state.agent_times_view_rev;
+        assert!(app.start_pending_agent_restarts(lapse));
+        assert!(app.state.agent_times_view_rev > rev);
+        assert_eq!(pushed_marks(&mut app), (None, None), "lapsed");
+
+        // A wake failing past WAKE_NOTICE_AFTER gave up.
+        let (mut app, mut rx) = free();
+        assert!(scan(&mut app));
+        typed(&mut rx);
+        send(&mut app, "ma1", "please review");
+        let terminal_id = root_terminal_id(&app).to_string();
+        let since = app.message_queue.wake_failed[&terminal_id].since;
+        app.message_queue.mark_due();
+        app.message_queue_pass(
+            since + crate::app::message_queue::WAKE_NOTICE_AFTER,
+            crate::coordinator::now_unix(),
+        );
+        assert!(app.message_queue.wake_failed[&terminal_id].notified);
+        assert_eq!(pushed_marks(&mut app), (None, Some("wake".into())));
+        assert!(auto_suspended(&mut app), "still parked");
+    }
 }

@@ -149,6 +149,30 @@ pub struct SuspendedAgent {
     /// once its Esc took effect; `exit_deadline` is the next look meanwhile.
     /// Never persisted.
     forced_exit: Option<ForcedExitInput>,
+    /// Fork (restart screen): a wake (a message for an auto-suspended agent)
+    /// is being retried until this instant. Never persisted.
+    waking_until: Option<Instant>,
+    /// Fork (restart screen): the restart or wake gave up; shown until the
+    /// instant. Never persisted.
+    resume_failed: Option<(AgentResumeKind, Instant)>,
+}
+
+/// Fork (restart screen): what a parked agent's relaunch is for: a restart
+/// (`agent.restart`) or a wake (a message for an auto-suspended agent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentResumeKind {
+    Restart,
+    Wake,
+}
+
+impl AgentResumeKind {
+    /// The name on the agent times push.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Restart => "restart",
+            Self::Wake => "wake",
+        }
+    }
 }
 
 /// Fork (force suspend): the exit input a forced suspend types once the
@@ -195,6 +219,24 @@ impl SuspendedAgent {
     /// Fork (force suspend): the exit input still owed, if any.
     pub fn forced_exit(&self) -> Option<ForcedExitInput> {
         self.forced_exit
+    }
+
+    /// Fork (restart screen): the relaunch this parked agent is waiting for
+    /// at `now`: a pending restart, else a wake still being retried.
+    pub fn resuming(&self, now: Instant) -> Option<AgentResumeKind> {
+        if self.resume_pending.is_some() {
+            return Some(AgentResumeKind::Restart);
+        }
+        self.waking_until
+            .filter(|until| now < *until)
+            .map(|_| AgentResumeKind::Wake)
+    }
+
+    /// Fork (restart screen): the relaunch that gave up, while its mark lasts.
+    pub fn resume_failed(&self, now: Instant) -> Option<AgentResumeKind> {
+        self.resume_failed
+            .filter(|(_, until)| now < *until)
+            .map(|(kind, _)| kind)
     }
 }
 
@@ -2842,6 +2884,8 @@ impl TerminalState {
             probe_retries: 0,
             resume_pending: None,
             forced_exit: None,
+            waking_until: None,
+            resume_failed: None,
         });
         self.revision = self.revision.saturating_add(1);
     }
@@ -2908,6 +2952,8 @@ impl TerminalState {
             probe_retries: 0,
             resume_pending: None,
             forced_exit: None,
+            waking_until: None,
+            resume_failed: None,
         });
     }
 
@@ -3033,17 +3079,69 @@ impl TerminalState {
         cleared
     }
 
+    /// Fork (restart screen): a wake of the parked agent is being retried
+    /// until `until`. Ignored while a failed relaunch is shown. Returns
+    /// whether the agent was not shown waking before.
+    pub fn mark_suspended_agent_waking(&mut self, now: Instant, until: Instant) -> bool {
+        let Some(record) = self.suspended_agent.as_mut() else {
+            return false;
+        };
+        if record.resume_failed(now).is_some() {
+            return false;
+        }
+        let was = record.resuming(now).is_some();
+        record.waking_until = Some(until);
+        !was
+    }
+
+    /// Fork (restart screen): the parked agent's `kind` relaunch gave up;
+    /// shown until `until`. Returns whether a record took the mark.
+    pub fn fail_suspended_agent_resume(&mut self, kind: AgentResumeKind, until: Instant) -> bool {
+        let Some(record) = self.suspended_agent.as_mut() else {
+            return false;
+        };
+        record.waking_until = None;
+        record.resume_failed = Some((kind, until));
+        true
+    }
+
+    /// Fork (restart screen): drop a lapsed wake or failed mark. Returns
+    /// whether one was dropped.
+    pub fn expire_suspended_agent_resume_marks(&mut self, now: Instant) -> bool {
+        let Some(record) = self.suspended_agent.as_mut() else {
+            return false;
+        };
+        let mut changed = false;
+        if record.waking_until.is_some_and(|until| now >= until) {
+            record.waking_until = None;
+            changed = true;
+        }
+        if record.resume_failed.is_some_and(|(_, until)| now >= until) {
+            record.resume_failed = None;
+            changed = true;
+        }
+        changed
+    }
+
     /// When the pending relaunch next needs the scheduler: the probe instant
     /// once the exit was observed, otherwise only the give-up instant (the
-    /// exit observation itself arrives as an event).
+    /// exit observation itself arrives as an event). Fork (restart screen):
+    /// also when a wake or failed mark lapses.
     pub fn suspended_agent_resume_deadline(&self) -> Option<Instant> {
         let record = self.suspended_agent.as_ref()?;
-        let pending = record.resume_pending?;
-        Some(if record.exit_observed {
-            pending.next_check.min(pending.give_up_at)
-        } else {
-            pending.give_up_at
-        })
+        let marks = record
+            .waking_until
+            .into_iter()
+            .chain(record.resume_failed.map(|(_, until)| until))
+            .min();
+        let pending = record.resume_pending.map(|pending| {
+            if record.exit_observed {
+                pending.next_check.min(pending.give_up_at)
+            } else {
+                pending.give_up_at
+            }
+        });
+        pending.into_iter().chain(marks).min()
     }
 
     pub fn take_suspended_agent(&mut self) -> Option<SuspendedAgent> {
