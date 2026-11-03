@@ -1767,6 +1767,10 @@ impl AppState {
             let resume_revision = terminal.reported_resume_revision();
             let mutation = update(terminal);
             terminal.reconcile_reported_resume();
+            // Fork (restart screen): the relaunched agent is detected again.
+            if terminal.finish_agent_resuming_if_detected() {
+                self.agent_times_view_rev = self.agent_times_view_rev.wrapping_add(1).max(1);
+            }
             // Resume-only changes return no mutation but must still be saved.
             if terminal.reported_resume_revision() != resume_revision {
                 self.session_dirty = true;

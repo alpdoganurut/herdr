@@ -702,6 +702,10 @@ src/client/shell/tests/force_notice.rs
 | ShellRenderState | info_pane_open | false |
 | ClientConnection | shell_notes_reveal_sent | None |
 | SuspendedAgent | forced_exit | None |
+| SuspendedAgent | waking_until | None |
+| SuspendedAgent | wake_failed | false |
+| TerminalState | agent_resuming | None |
+| TerminalState | agent_resume_failed | None |
 | AgentRestartResume | forced | false |
 | QueuedMessage | from_coordinator | false |
 | QuietRelease | from_coordinator | false |
@@ -1110,7 +1114,7 @@ Digest asserts in advertised_client_shell_method_shapes_stay_at_the_v1_contract:
 Any digest value change = deny (contract change, never a fixture fix). pane.move's digest covers upstream-owned PaneMoveParams/PaneMoveDestination: an upstream reshape fails it after a clean merge, and that is a deny.
 tests/fixtures/endpoint-*-v1.json and src/protocol/** frozen tests: never edited (the fork has no diff under tests/).
 Upstream setting client_shell = true on the pane.move or pane.get row, or adding any section 9 identifier = deny (collision).
-endpoint.agent-times.v1 (sidebar v2): an optional JSON control, not a client-shell method shape (src/server/headless/agent_times.rs: AgentTimesPayload { boot_id, revision, server_now_unix_ms, panes: Vec<AgentTimePane { pane_id, state_change_seq, since_unix_ms, auto_suspended (autosuspend: serde default, omitted when false; the detail strip reads `suspended (auto)`) }> }, the whole list of panes with a stamped state change, sent from the render pass when ClientConnection.shell_agent_times_sent != AppState.agent_times_view_rev; nothing while the revision is 0). The client measures each age on the server's clock (server_now_unix_ms - since_unix_ms) and uses a time only while its state_change_seq equals the snapshot agent's. Old clients ignore the kind; no bincode type and no PROTOCOL_VERSION change.
+endpoint.agent-times.v1 (sidebar v2): an optional JSON control, not a client-shell method shape (src/server/headless/agent_times.rs: AgentTimesPayload { boot_id, revision, server_now_unix_ms, panes: Vec<AgentTimePane { pane_id, state_change_seq, since_unix_ms, auto_suspended (autosuspend: serde default, omitted when false; the detail strip reads `suspended (auto)`), resuming and resume_failed (restart screen: Option<String> `restart` | `wake`, serde default, omitted when None; a client ignores a name it does not know; the tabs layout's suspended card reads them) }> }, the whole list of panes with a stamped state change, sent from the render pass when ClientConnection.shell_agent_times_sent != AppState.agent_times_view_rev; nothing while the revision is 0). The client measures each age on the server's clock (server_now_unix_ms - since_unix_ms) and uses a time only while its state_change_seq equals the snapshot agent's. Old clients ignore the kind; no bincode type and no PROTOCOL_VERSION change.
 agent.get, agent.list (upstream methods), agent context: fork optional AgentInfo.context (AgentContextInfo { used_tokens: u64, window_tokens: u64, percent: u8 }, fork type directly after AgentInfo in src/api/schema/agents.rs; `#[serde(default, skip_serializing_if = "Option::is_none")]`, absent while unknown, so an agent without it serializes as upstream's; docs/next/api/herdr-api.schema.json regenerated). Not a client-shell method shape: the client shell learns it from the optional control `endpoint.agent-context.v1` (src/server/headless/agent_context.rs: AgentContextPayload { boot_id, revision, panes: Vec<AgentContextPane { pane_id, used, window }> }, the whole list of panes with a known context use, sent from the render pass when ClientConnection.shell_agent_context_sent != AppState.agent_context_view_rev; nothing while the revision is 0; bumped only when a read changes a value or clears one, and, once any value was known, by pane/tab/workspace moves and closes). Old clients ignore the kind; no bincode type and no PROTOCOL_VERSION change (stays 25), endpoint generation 1, no frozen fixture touched.
 agent.get, agent.list (upstream methods), lost-message fix: fork optional AgentInfo.blocked_since (Unix seconds; `#[serde(default, skip_serializing_if = "Option::is_none")]`, directly after context): since when herdr's message queue has seen the agent wait on its user (MessageQueue.user_blocked: screen blocked, OSC 7501 blocked, input box absent; only while messages are queued for it), else since its screen state turned blocked (TerminalState.agent_state_since_unix_ms). JSON only (docs/next/api/herdr-api.schema.json regenerated); no bincode, PROTOCOL_VERSION stays 25, no frozen fixture touched.
 agents.suspend, agents.restart (fork methods), lost-message: refused with the new error_code::AGENT_BLOCKED (`agent_blocked`, src/api/schema/agents_model.rs after USER_TYPING) while App::pane_waits_on_user (src/app/agents_model.rs, after pane_user_typing: OSC 7501 blocked, or the typing guard's InputBoxAbsent) holds, checked after the user-typing check and before the soft edit; agents.activate (types into the shell) and the close check (pane_user_typing) are unchanged.
@@ -1450,6 +1454,14 @@ src/api/schema/agents.rs  additive: autosuspend: AgentInfo.auto_suspended direct
 src/app/agents.rs  additive: autosuspend: agent_info sets AgentInfo.auto_suspended from the suspended record's auto directly after background_tasks
 src/app/agent_times.rs  additive: autosuspend: AgentTimePane.auto_suspended last; agent_times() sets it from the suspended record
 src/client/shell/agent_times.rs  additive: autosuspend: ClientAgentTimesState.auto_suspended (pane ids) and auto_suspended(pane_id)
+src/terminal/state.rs  additive: restart screen: SuspendedAgent.waking_until and wake_failed last (None / false in begin_agent_suspend and restore_suspended_agent); AgentResumeKind and AgentResuming directly after SuspendedAgent; SuspendedAgent::resuming(now) and wake_failed() last in its impl; TerminalState.agent_resuming and agent_resume_failed last (struct and new(); runtime only, never persisted, so a live handoff mid-restart or mid-wake drops them); begin_agent_suspend clears both, clear_agent_runtime_identity_after_respawn clears agent_resuming; TerminalState::resuming_mark, resume_failed_mark, mark_suspended_agent_waking, fail_suspended_agent_wake, fail_agent_resume, begin_agent_resuming, finish_agent_resuming_if_detected and expire_suspended_agent_resume_marks directly before suspended_agent_resume_deadline, has_resume_marks() directly before mark_suspended_agent_waking
+src/terminal/mod.rs  additive: restart screen: AgentResumeKind in the `pub use state::{..}` list after AgentMetadataReport
+src/app/agent_times.rs  additive: restart screen: AgentTimePane derives Default; AgentTimePane.resuming and resume_failed after auto_suspended; agent_times() sets them from TerminalState::resuming_mark / resume_failed_mark; a pane with a mark but no stamped state change is listed with state_change_seq 0 and since_unix_ms the server's now
+src/client/shell/agent_times.rs  additive: restart screen: ClientAgentTimesState.resume_marks, ClientResumeMark directly after the struct, any_resuming() and resume_mark(pane_id) before since_of; since_of answers None for seq 0 (a pane listed only for its resume mark)
+src/app/agent_suspend.rs  additive: restart screen: RESUME_FAILED_MARK_TTL after FORCE_INTERRUPT_WAIT; App::note_agent_resume_marks_changed directly after activate_resolved_agent; its tests (pushed_marks, restart_mark and four restart-screen tests) last in the tests module
+src/app/message_queue.rs  additive: restart screen: WAKE_MARK_TTL directly after WAKE_NOTICE_AFTER
+src/server/headless/tests/fork_smoke.rs  additive: restart screen: fork_smoke_a_restart_is_pushed_as_restarting_until_the_relaunched_agent_is_detected directly before tab_browser_state_survives_a_live_handoff
+src/client/shell/tests/tab_sidebar.rs  additive: restart screen: suspended_card_shows_restarting_waking_and_a_failed_relaunch and restarting_card_holds_after_the_relaunch_until_the_mark_goes directly before suspended_pane_swallows_input_but_the_toggle_binding_still_activates
 src/client/shell/sidebar_model.rs  mid-logic: autosuspend: TabFacts.auto_parked directly after parked (struct and Default), set for a Suspended agent the agent times push marks
 src/client/shell/tab_sidebar_detail.rs  mid-logic: autosuspend: tab_chips' status chip appends ` (auto)` (a Suspended tab) or ` (auto-suspended)` (a parked agent in a tab of another status) when TabFacts.auto_parked
 src/client/shell/state.rs  additive: menu design: ClientContextMenuItem.look the last field; ShellHitMap.context_menu_area directly after context_menu_remind_options, ShellHitMap.sidebar_notes directly after sidebar_recency
@@ -1833,6 +1845,12 @@ src/client/shell/tab_remind_menu.rs  mid-logic: menu design: the selector's colu
 src/server/headless.rs  mid-logic: force suspend: request_from_client_shell = client_local in handle_api_request_with_shutdown_check_inner is the only gate on agent.suspend_force / agent.restart_force; a new upstream path into App::handle_api_request that skips it refuses them (safe), but one that passes client_local = true for a public request would let agents force
 src/client/shell/mouse.rs  mid-logic: force suspend: the force button's press is taken before the endpoint notice's dismiss-on-press; an upstream reorder there would dismiss instead of forcing
 src/app/agent_suspend.rs  mid-logic: forced restart: start_pending_agent_restarts abandons on SuspendExitEscalation::Killed only when !resume.forced; a forced restart still needs the observed exit and an available shell prompt before give_up_at (RESTART_RESUME_TIMEOUT), else it is abandoned with today's warnings
+src/app/agent_suspend.rs  mid-logic: restart screen: restart_agent_with, abandon_agent_restart (TerminalState::fail_agent_resume Restart for RESUME_FAILED_MARK_TTL) and a successful activate_resolved_agent bump AppState.agent_times_view_rev (note_agent_resume_marks_changed); a successful activate_resolved_agent (restart relaunch, manual Activate, autosuspend wake) calls begin_agent_resuming (Restart when the record owed a restart, else Wake; detect_by = now + RESTART_RESUME_TIMEOUT); start_pending_agent_restarts first expires lapsed marks (expire_suspended_agent_resume_marks on every terminal: a relaunch not detected by detect_by becomes agent_resume_failed) and reports the expiry as a change; suspend_resolved_agent bumps agent_times_view_rev when the pane carried a relaunch or failed mark (begin_agent_suspend clears them); App::clear_agent_identity_after_respawn (directly before note_agent_resume_marks_changed) clears the respawned terminal's identity and bumps the revision when it carried a mark
+src/terminal/state.rs  mid-logic: restart screen: suspended_agent_resume_deadline also answers the earliest wake lapse, relaunch detect_by and failed mark lapse (so the scheduler expires them), with or without a parked record
+src/app/message_queue.rs  mid-logic: restart screen: wake_auto_suspended marks the record waking (WAKE_MARK_TTL) when the wake waits on typing, the exit or the shell, and wake_failed (sticky for the record: no more waking, no lapse) on any other activation error; notify_failed_wake marks wake_failed when it flips notified; only a new mark bumps agent_times_view_rev
+src/client/shell/suspended_pane.rs  mid-logic: restart screen: paint_suspended_panes also covers a pane that is not suspended while the active endpoint's push marks it restarting or waking (after the relaunch, until detection), and picks the card text with suspended_card_text from ClientAgentTimesState::resume_mark (↻ restarting / ↻ waking in accent without a hint; a failed restart or wake on a suspended pane replaces the hint with `restart didn't finish — …` / `couldn't wake — …` in yellow); suspended_pane_locked also locks a pane_resuming pane
+src/app/actions.rs  mid-logic: restart screen: update_terminal_state_with_completion_policy calls finish_agent_resuming_if_detected right after reconcile_reported_resume (before the no-mutation return) and bumps agent_times_view_rev when the relaunched agent is detected again (effective_known_agent is the expected kind, no parked record)
+src/app/api.rs  mid-logic: restart screen: respawn_shell_for_launch_pane calls App::clear_agent_identity_after_respawn instead of TerminalState::clear_agent_runtime_identity_after_respawn directly
 
 src/config/model.rs  mid-logic: fork defaults (section 6): UpdateConfig::default (version_check, manifest_check false; upstream true). Any upstream change to UpdateConfig, its Default or update_config_defaults_and_parses needs a human check that the fork's off defaults survive
 
@@ -2040,6 +2058,32 @@ auto_suspended
 autosuspend
 AutosuspendState
 suspend_agent_auto
+AgentResumeKind
+ClientResumeMark
+resume_marks
+resume_mark
+waking_until
+resume_failed
+mark_suspended_agent_waking
+expire_suspended_agent_resume_marks
+note_agent_resume_marks_changed
+RESUME_FAILED_MARK_TTL
+WAKE_MARK_TTL
+suspended_card_text
+AgentResuming
+agent_resuming
+agent_resume_failed
+wake_failed
+fail_suspended_agent_wake
+fail_agent_resume
+begin_agent_resuming
+finish_agent_resuming_if_detected
+resuming_mark
+resume_failed_mark
+pane_resuming
+any_resuming
+has_resume_marks
+clear_agent_identity_after_respawn
 wake_auto_suspended
 WakeFailure
 WAKING_REASON
@@ -2779,6 +2823,7 @@ browser::launch::tests::fork_smoke_a_configured_binary_matches_only_its_own_name
 app::missing_cwd::tests::fork_smoke_a_pending_notice_follows_its_pane_to_another_space_across_a_restart
 server::headless::tests::fork_smoke::suspended_status_reaches_the_client_shell_snapshot
 server::headless::tests::fork_smoke::session_restore_keeps_a_suspended_pane_parked
+server::headless::tests::fork_smoke::fork_smoke_a_restart_is_pushed_as_restarting_until_the_relaunched_agent_is_detected
 server::headless::tests::fork_smoke::claude_hook_asset_reports_the_transcript_path_the_backup_store_uses
 server::headless::tests::fork_smoke::claude_subagent_hooks_reach_the_client_shell_snapshot
 server::headless::tests::agents_model_smoke::fork_smoke_turn_hooks_free_a_working_claude_for_messages
@@ -2876,6 +2921,7 @@ app::browser_host::tests::fork_smoke_send_page_to_a_dnd_tab_is_stored_quietly
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 A user-facing feature or fix that changes what herdr+ offers also updates the showcase page `docs/fork/herdr-plus.html` (self-contained, no network resources, no personal data; mockups follow the current code), in the same change.
 ### Added
+- Restart screen: in the `tabs` layout, a suspended pane whose agent is being restarted (`agent.restart`, `agent.restart_force`, through `SIGKILL` for a forced restart) reads `↻ restarting`, and one being activated or woken for a message (autosuspend) reads `↻ waking`, instead of the suspended card, until the relaunched agent is detected again (at most 30 s after the relaunch); both keep the agent's name and folder, and the pane stays locked meanwhile. A restart that gives up (the shell never came back in time, or a plain restart had to kill the agent) returns to the suspended card with `restart didn't finish — <key> to activate` (`… — activate from the tab menu` without `keys.toggle_agent_suspend`) for five minutes; a wake that fails says `couldn't wake — …` until the agent is suspended, activated or restarted again. The agent times push carries the optional `resuming` / `resume_failed` names; older clients ignore them.
 - The herdr+ Claude Code skills ship with the fork: `docs/fork/skills/` holds `plus:notes`, `plus:notify`, `plus:status` and `plus:team-build` (the skills herdr+'s built-in agent instructions name), stored as `plus-<name>` because tracked paths carry no `:`. `scripts/install-plus-skills.sh [--dest <dir>] [--dry-run]` installs them as `plus:<name>` into `${CLAUDE_CONFIG_DIR:-~/.claude}/skills`; a skill already identical is left alone, one that differs is first moved to `skills-backup/<name>.<timestamp>` next to the skills folder (outside it, so Claude Code does not load the backup), and `run-with-deadline.sh` keeps its executable bit. `plus:status` needs `jq` (macOS 15 ships `/usr/bin/jq`). `plus:team-build`'s batch audit uses a second model such as the `codex` CLI when installed and otherwise falls back to 2 Opus auditors + a judge, so Codex is optional. Tests: `python3 -m unittest scripts/test_install_plus_skills.py`.
 - The `tabs` sidebar's toolbar has `‹` and `›` buttons at its start, after the fold toggle and before the search field, always shown: a click goes back or forward through the tab history exactly like `keys.tab_history_back` / `keys.tab_history_forward` (cmd+[ / cmd+]); a button is lit (accent) while the history has a tab that way and dim otherwise, where a click does nothing. A narrow sidebar drops them before the search field gets too short.
 - Companion browser host (herdr side): an external browser (the Electron companion, `apps/companion`) registers over the API (`browser.host_register`, a heartbeat lease) and becomes the reserved profile `companion`; with `[browser] host = "auto"` (default) agents' `browser open` / `show` go to it while it runs and silently to the herdr+ window otherwise (`host` in the result). Each herdr tab keeps its browser pages (`browser.host_state` / `host_sync`), restored across restarts and live handoff. `herdr browser show <file.html>` (MCP `browser_show`) shows a local HTML file in a sandboxed, network-blocked tab of the session that reloads when the file changes. Send page to agent (`browser.send_page`, quiet under do not disturb), user actions in the ledger as you, a `◉` needs-you mark on the tab (an agent's focus request, a dialog, a failed view) and the sessions in the Browser overlay; page errors go quietly to the Claude agent that uses the tab (`[browser] page_errors = "agent"`, default); the tab's context menu names its page (a click opens the Browser overlay). The companion app (`apps/companion`, Electron): one strip per session with back/stop/reload and send to agent, follows the focused herdr tab, asks before a page gets your location, notifications, camera/microphone or clipboard (allow once / deny).
