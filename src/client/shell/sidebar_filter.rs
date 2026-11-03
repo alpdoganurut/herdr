@@ -43,7 +43,7 @@
 //! Fork (toolbar new tab): `+` opens a plain shell tab, loose (in the
 //! ungrouped bucket, the first space) and first in the list, and focuses it:
 //! `tab.create`, then a `tab.move` to index 0 of the tab the reply names.
-//! Grouping stays with `keys.move_tab_to_group` and tab drag.
+//! Grouping is in the tab menu (Move to group…, Remove from group).
 
 use std::time::Duration;
 
