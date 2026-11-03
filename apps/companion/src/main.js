@@ -15,7 +15,7 @@ const { PlacementFeed, anyDockPlacement } = require('./dock/placements.js');
 const { WindowProbe } = require('./dock/window-probe.js');
 const { DockController } = require('./dock/dock.js');
 const { sessionCounts, sessionMenuItems } = require('./info.js');
-const { pageMenuItems } = require('./context-menu.js');
+const { pageMenuItems, pageMenuActions } = require('./context-menu.js');
 
 const VERSION = require('../package.json').version;
 const APP_NAME = 'herdr+ companion'; // the macOS menu bar, Dock and window titles
@@ -1145,31 +1145,22 @@ class Companion {
   }
 
   // A right-click into a page: its context menu (src/context-menu.js) at the pointer, in the
-  // window the page is in (the dock's while docked). Back, forward and reload go the strip's
-  // way (reported to herdr like the buttons).
+  // window the page is in (the dock's while docked). Every item acts on the page that was
+  // clicked (even if another one is shown by then); back, forward and reload are reported to
+  // herdr like the strip's buttons.
   openPageMenu(viewId, params = {}) {
     if (!this.views.has(viewId) || HEADLESS) return 0;
     const wc = this.views.get(viewId).view.webContents;
-    const link = String(params.linkURL || '');
-    const src = String(params.srcURL || '');
-    const actions = {
-      'open-link': () => this.onWindowOpen(viewId, link, 'foreground-tab'),
-      'copy-link': () => clipboard.writeText(link),
-      'open-image': () => this.onWindowOpen(viewId, src, 'foreground-tab'),
-      'copy-image': () => wc.copyImageAt(params.x, params.y),
-      'copy-image-address': () => clipboard.writeText(src),
-      'save-image': () => wc.downloadURL(src),
-      undo: () => wc.undo(),
-      redo: () => wc.redo(),
-      cut: () => wc.cut(),
-      copy: () => wc.copy(),
-      paste: () => wc.paste(),
-      'select-all': () => wc.selectAll(),
-      back: () => this.handleKey('['),
-      forward: () => this.handleKey(']'),
-      reload: () => this.handleKey('r'),
-      inspect: () => wc.inspectElement(params.x, params.y),
-    };
+    const actions = pageMenuActions({
+      wc,
+      params,
+      openTab: (url) => this.onWindowOpen(viewId, url, 'foreground-tab'),
+      copyText: (text) => clipboard.writeText(text),
+      report: (action) => {
+        const hit = this.store.findView(viewId);
+        if (hit) this.report('user_action', action, hit.entry, hit.group);
+      },
+    });
     const template = pageMenuItems(params, this.views.navState(viewId)).map((it) =>
       it.type === 'separator'
         ? it

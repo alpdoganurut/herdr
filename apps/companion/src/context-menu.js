@@ -1,6 +1,6 @@
 // A page's context menu (a right-click into a page view): what it offers for what was
-// clicked, from Electron's `context-menu` params. Pure: main.js builds the menu and does the
-// actions.
+// clicked, from Electron's `context-menu` params, and what each item does to the clicked
+// page (pageMenuActions). No Electron here: main.js builds the menu.
 //
 // Sections, separated, in this order (only the ones that apply):
 //   link       Open Link in New Tab, Copy Link Address
@@ -13,6 +13,11 @@
 'use strict';
 
 const WEB = /^(https?|about):/i;
+// An image the page may offer to save: from the web or inline, never a local file.
+const SAVABLE_IMAGE = /^(https?|data):/i;
+// What a page may download (each one through the save dialog): never a local file.
+const DOWNLOADABLE = /^(https?|data|blob):/i;
+const downloadAllowed = (url) => DOWNLOADABLE.test(String(url || ''));
 
 // `params`: Electron's context-menu params; `nav`: {canGoBack, canGoForward}.
 // Returns [{id, label, enabled}] with {type: 'separator'} between sections.
@@ -34,7 +39,7 @@ function pageMenuItems(params = {}, nav = {}) {
       { id: 'open-image', label: 'Open Image in New Tab', enabled: WEB.test(src) },
       { id: 'copy-image', label: 'Copy Image', enabled: true },
       { id: 'copy-image-address', label: 'Copy Image Address', enabled: true },
-      { id: 'save-image', label: 'Save Image As…', enabled: /^(https?|data|blob|file):/i.test(src) },
+      { id: 'save-image', label: 'Save Image As…', enabled: SAVABLE_IMAGE.test(src) },
     ]);
   }
   if (params.isEditable) {
@@ -67,4 +72,46 @@ function pageMenuItems(params = {}, nav = {}) {
   return out;
 }
 
-module.exports = { pageMenuItems };
+// What each item does, to the page that was right-clicked (`wc`, its webContents; the menu's
+// enabled states are that page's too), never to whichever page is shown by the time the item
+// is chosen. deps: {wc, params, openTab(url), copyText(text), report(action): back, forward and
+// reload reported to herdr like the strip's buttons}. A page closed meanwhile: nothing.
+function pageMenuActions({ wc, params = {}, openTab, copyText, report = () => {} }) {
+  const link = String(params.linkURL || '');
+  const src = String(params.srcURL || '');
+  const live = (fn) => () => {
+    if (!wc || (typeof wc.isDestroyed === 'function' && wc.isDestroyed())) return;
+    fn();
+  };
+  return {
+    'open-link': () => openTab(link),
+    'copy-link': () => copyText(link),
+    'open-image': () => openTab(src),
+    'copy-image': live(() => wc.copyImageAt(params.x, params.y)),
+    'copy-image-address': () => copyText(src),
+    'save-image': live(() => SAVABLE_IMAGE.test(src) && wc.downloadURL(src)),
+    undo: live(() => wc.undo()),
+    redo: live(() => wc.redo()),
+    cut: live(() => wc.cut()),
+    copy: live(() => wc.copy()),
+    paste: live(() => wc.paste()),
+    'select-all': live(() => wc.selectAll()),
+    back: live(() => {
+      if (!wc.navigationHistory.canGoBack()) return;
+      wc.navigationHistory.goBack();
+      report('back');
+    }),
+    forward: live(() => {
+      if (!wc.navigationHistory.canGoForward()) return;
+      wc.navigationHistory.goForward();
+      report('forward');
+    }),
+    reload: live(() => {
+      wc.reload();
+      report('reload');
+    }),
+    inspect: live(() => wc.inspectElement(params.x, params.y)),
+  };
+}
+
+module.exports = { pageMenuItems, pageMenuActions, downloadAllowed };

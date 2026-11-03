@@ -1,7 +1,7 @@
 // One WebContentsView per page (contract §6). Web pages share the persistent profile
 // partition; every html view gets its own in-memory sandbox partition (§4.3).
 'use strict';
-const { WebContentsView, session, net } = require('electron');
+const { WebContentsView, session, net, app } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -10,6 +10,19 @@ const { pathToFileURL, fileURLToPath } = require('node:url');
 const WEB_PARTITION = 'persist:herdr-companion';
 const NETWORK_URLS = ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'];
 const NONET_PRELOAD = path.join(__dirname, 'preload', 'nonet.js');
+const { downloadAllowed } = require('./context-menu.js');
+
+// Every download of a page's session (a link, Save Image As…) goes through the save dialog
+// (no save path is set: Electron asks where), starting in Downloads; a local file is never
+// copied out (file: and other non-web URLs are cancelled).
+function guardDownloads(ses) {
+  ses.on('will-download', (_e, item) => {
+    if (!downloadAllowed(item.getURL())) return item.cancel();
+    try {
+      item.setSaveDialogOptions({ defaultPath: path.join(app.getPath('downloads'), item.getFilename() || 'download') });
+    } catch {}
+  });
+}
 
 function within(root, p) {
   return p === root || p.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
@@ -80,6 +93,7 @@ function htmlSession(rootReal, allowNetwork) {
   }
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   ses.setPermissionCheckHandler(() => false);
+  guardDownloads(ses);
   const out = { ses, rootReal, ready, partition };
   htmlSessions.set(partition, out);
   return out;
@@ -157,6 +171,7 @@ class ViewManager {
     const ses = session.fromPartition(WEB_PARTITION);
     if (this.webSessionReady) return ses;
     this.webSessionReady = true;
+    guardDownloads(ses);
     ses.setPermissionRequestHandler((wc, permission, cb, details = {}) => {
       if (ALLOWED.has(permission)) return cb(true);
       const viewId = this.viewIdOf(wc);
