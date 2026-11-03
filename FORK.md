@@ -27,6 +27,7 @@ apps/companion/install/package-lock.json
 apps/companion/install/package.json
 apps/companion/package-lock.json
 apps/companion/package.json
+apps/companion/scripts/try-launcher.sh
 apps/companion/scripts/try.sh
 apps/companion/spike/driver.mjs
 apps/companion/spike/main.js

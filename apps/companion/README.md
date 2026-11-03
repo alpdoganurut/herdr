@@ -28,15 +28,23 @@ unreachable for 30 s, and its control page's `quit()` / `raise({user})` serve he
 ## Try it (one command)
 
 ```
-scripts/try.sh [url]
+scripts/try-launcher.sh [url]
 ```
 
-Run in a plain terminal (not inside herdr, tmux or ssh). It starts a throwaway herdr (temp HOME/XDG dirs,
-its own socket; your live herdr is never touched) in that terminal, opens the companion window next to it,
-and optionally opens `url` in the first tab. In a pane: `herdr browser open <url>`,
-`herdr browser show <file.html>`; for an agent run `HOME=$REAL_HOME claude`. Leaving herdr (ctrl+b q)
-quits the companion, stops the throwaway server and deletes its folder. `TRY_HEADLESS=1` runs a hidden
-self-check instead (used by CI-style dry runs).
+Run in a plain Ghostty window (not inside herdr, tmux or ssh). It builds what is missing (herdr in
+release mode, `node_modules`, Electron), installs the companion into a throwaway state dir with
+`herdr browser setup --companion` (Electron cloned from `node_modules`, no download) and opens a
+throwaway herdr in that window (temp HOME/XDG dirs, its own socket; your live herdr is never
+touched). Its first pane lists what to try: an agent's `herdr browser open` (the on-demand start),
+`ctrl+b B` or `◨` (the dock), `◎ Browser` or `ctrl+b Z` (Browser view), the Browser row's menu,
+`companion-crash` (a crash restart through the test hook) and the checks to do by hand (move,
+resize, Spaces, full screen, the keyboard hand-off). `url` is opened agent-style in the first pane.
+Leaving herdr (ctrl+b q) stops the server, the companion goes with it, and the temp folder is
+deleted; after a live handoff the script attaches the UI again. `TRY_HEADLESS=1` runs a hidden
+self-check instead (the on-demand start, a crash restart; the exit status says how it went).
+
+`scripts/try.sh [url]` is the older variant: the companion started by hand next to a throwaway
+herdr with the herdr+ window on (`host = "auto"`).
 
 ## Run
 
