@@ -6,7 +6,7 @@
 // Covered: setup --companion (install, the no-op rerun, the doctor), an agent's open starting the
 // companion in the background, crash restarts with backoff (1, 2, 4 s scheduled), the give-up after
 // 5 crashes in 5 minutes and the error an open then gets, restart clearing it, a clean stop (no
-// signal needed), survival of a live handoff (same pid, re-registered, adopted), the stop with the
+// signal needed), a crash and a restart keeping the agent's tab id and current tab, survival of a live handoff (same pid, re-registered, adopted), the stop with the
 // server.
 import { spawn, execFile, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -264,6 +264,43 @@ try {
     }, 30000, 200);
     check('running again, restarts back to 0', s && !s.restarts && !s.last_error, s || (await companion()));
     check('a user restart from a plain terminal shows its window (no --background)', s && !/--background/.test(argsOf(s.pid)), s && argsOf(s.pid));
+  });
+
+  // GAP 1: a restarted companion restores the agent's page under a new target; herdr keeps its
+  // herdr tab id, its opener and the pane's current tab, so the agent's next call just works.
+  await section("a crash and a restart keep the agent's tab id and current tab", async () => {
+    const o = await browser(['open', `${W}/r`]);
+    check('an agent opens a page', o.result && o.result.data && o.result.data.host === 'companion', o.error || o.result);
+    const ledger = async () => ((await api('browser.get', {})).browser || {}).tabs || [];
+    const mine = async () => (await ledger()).find((t) => t.profile === 'companion' && /\/r$/.test(t.url) && t.state === 'open');
+    const first = await waitFor(mine, 10000);
+    check('the ledger has it as the agent\'s', first && JSON.stringify(first.opened_by).includes(PANE), first);
+    if (!first) return;
+    for (const how of ['crash', 'restart']) {
+      const before = await companion();
+      if (how === 'crash') await crash();
+      else {
+        const r = await cli(['browser', 'companion', 'restart']);
+        check('`browser companion restart` answers', r.code === 0, r.stdout + r.stderr);
+      }
+      const back = await waitFor(async () => {
+        const s = await companion();
+        return s.state === 'running' && s.pid && s.pid !== before.pid ? s : null;
+      }, 30000, 100);
+      check(`${how}: running again as a new process`, back, await companion());
+      const again = await waitFor(async () => {
+        const t = (await ledger()).find((x) => x.id === first.id);
+        return t && t.state === 'open' && t.target_id !== first.target_id ? t : null;
+      }, 15000, 200);
+      check(`${how}: the page is open again under its herdr tab id ${first.id} (a new target)`, again, (await ledger()).filter((t) => t.profile === 'companion'));
+      check(`${how}: still opened by the agent's pane`, again && JSON.stringify(again.opened_by).includes(PANE) && !JSON.stringify(again.last_actor).includes('"user"'), again);
+      const dupes = (await ledger()).filter((t) => t.profile === 'companion' && t.state === 'open' && /\/r$/.test(t.url));
+      check(`${how}: no second record for the page`, dupes.length === 1, dupes);
+      const read = await browser(['read', '--format', 'text']);
+      check(`${how}: the agent's next call (no tab given) reads its page`, !read.error && /\/r/.test(JSON.stringify(read.result)), read.error || read.result);
+      const old = await browser(['read', first.id, '--format', 'text']);
+      check(`${how}: the old id still answers`, !old.error, old.error);
+    }
   });
 
   await section('stop quits it cleanly (control page, no signal needed)', async () => {

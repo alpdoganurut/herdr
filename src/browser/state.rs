@@ -182,6 +182,11 @@ pub struct BrowserTabRecord {
     /// handoff, a dialog, a failed HTML view); `◉` on its herdr tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention: Option<BrowserAttention>,
+    /// Fork (companion launcher): the companion page this tab is,
+    /// `<Tab.browser key>/<entry id>` (stable across a companion restart,
+    /// which gives the page a new target). Ledger-internal, not in the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
 }
 
 /// Why a tab needs the user. Append-closed.
@@ -454,6 +459,7 @@ impl BrowserState {
                 state: TabState::Open,
                 closed_at: None,
                 attention: None,
+                entry: None,
             },
         );
         self.bump();
@@ -527,14 +533,81 @@ impl BrowserState {
         }
     }
 
+    /// Fork (companion launcher): the companion's host sync names which
+    /// page (`entry`, `<group key>/<entry id>`) each target is. A first
+    /// sighting binds the record; a page known under another target (the
+    /// companion restarted and restored it) moves its record, with its
+    /// short id, attribution and the cursors on it, to the new target; a
+    /// record the new target was adopted under meanwhile (as the user's)
+    /// gives up its place. O(pairs × tabs), only for targets that changed.
+    pub fn bind_entries(&mut self, profile: &str, pairs: &[(String, String)]) {
+        for (target, entry) in pairs {
+            let new_key = TabKey::new(profile, target);
+            let old_key = self
+                .tabs
+                .values()
+                .find(|record| {
+                    record.profile == profile
+                        && record.entry.as_deref() == Some(entry.as_str())
+                        && record.target_id != *target
+                })
+                .map(BrowserTabRecord::key);
+            let Some(old_key) = old_key else {
+                if let Some(record) = self.tabs.get_mut(&new_key) {
+                    if record.entry.as_deref() != Some(entry.as_str()) {
+                        record.entry = Some(entry.clone());
+                        self.dirty = true;
+                    }
+                }
+                continue;
+            };
+            let Some(mut record) = self.tabs.remove(&old_key) else {
+                continue;
+            };
+            match self.tabs.remove(&new_key) {
+                Some(fresh) => {
+                    record.url = fresh.url;
+                    record.title = fresh.title;
+                    record.selected = fresh.selected;
+                    record.dialog_open = fresh.dialog_open;
+                    record.state = fresh.state;
+                    record.closed_at = fresh.closed_at;
+                }
+                None => {
+                    // Bound before the sidecar saw the view: open, the
+                    // sidecar's own events fill url and title in.
+                    record.state = TabState::Open;
+                    record.closed_at = None;
+                }
+            }
+            record.target_id = target.clone();
+            self.tabs.insert(new_key.clone(), record);
+            for cursor in self.cursors.values_mut() {
+                if cursor.key == old_key {
+                    cursor.key = new_key.clone();
+                }
+            }
+            self.bump();
+        }
+    }
+
+    /// A tab closed. The cursors on it go, except on a companion page
+    /// (bound to an `entry`): a crash or restart closes it too, and
+    /// [`Self::bind_entries`] brings it back with them; a dangling one
+    /// finds nothing open (`cursor`) and goes with the record (`prune`).
     pub fn close_tab(&mut self, key: &TabKey, now: u64) {
+        let mut restorable = false;
         if let Some(record) = self.tabs.get_mut(key) {
+            restorable = record.entry.is_some();
             if record.is_open() {
                 record.state = TabState::Closed;
                 record.closed_at = Some(now);
                 record.dialog_open = false;
                 self.bump();
             }
+        }
+        if restorable {
+            return;
         }
         let panes: Vec<String> = self
             .cursors
@@ -832,6 +905,11 @@ impl BrowserState {
             _ => true,
         });
         let mut changed = before != self.tabs.len();
+        if changed {
+            let tabs = &self.tabs;
+            self.cursors
+                .retain(|_, cursor| tabs.contains_key(&cursor.key));
+        }
         let expired: Vec<String> = self
             .profiles
             .iter()
@@ -1096,6 +1174,110 @@ mod tests {
             "the counter survived the reload"
         );
         assert!(reloaded.tabs[&c].opened_by.is_user());
+    }
+
+    fn opened(profile: &str, target: &str, url: &str) -> HostTabEvent {
+        HostTabEvent {
+            profile: profile.into(),
+            target: target.into(),
+            kind: "opened".into(),
+            url: url.into(),
+            title: String::new(),
+            opener: None,
+            initiator: "other".into(),
+            selected: None,
+            text: None,
+        }
+    }
+
+    #[test]
+    fn fork_smoke_a_restarted_companion_page_keeps_its_id_attribution_and_cursor() {
+        let mut state = BrowserState::new();
+        let old = TabKey::new("companion", "T1");
+        state.adopt_tab(&old, &host_tab("T1", "https://a/"), &pane("w2:pD"), 10);
+        state.set_cursor("w2:pD", &old, Some("w2:tD"), 10);
+        state.bind_entries("companion", &[("T1".into(), "g-k/b1".into())]);
+        assert_eq!(state.tabs[&old].entry.as_deref(), Some("g-k/b1"));
+
+        // The companion restarts: its tabs close, the agent's cursor stays
+        // (the sidecar's `closed` event for the page, then the registration's drop).
+        let mut gone = opened("companion", "T1", "");
+        gone.kind = "closed".into();
+        state.apply_tab_event(&gone, 20);
+        state.close_profile_tabs("companion", 20);
+        assert!(!state.tabs[&old].is_open());
+        assert!(state.cursor("w2:pD").is_none(), "closed while it is gone");
+        assert_eq!(state.cursor_profile("w2:pD"), Some("companion"));
+
+        // The restored view shows up first as the user's (the sidecar's event)…
+        state.apply_tab_event(&opened("companion", "T2", "https://a/2"), 21);
+        let new = TabKey::new("companion", "T2");
+        assert!(state.tabs[&new].opened_by.is_user());
+        // …then the host sync names its page: the old record moves to it.
+        state.bind_entries("companion", &[("T2".into(), "g-k/b1".into())]);
+        assert!(!state.tabs.contains_key(&old));
+        let record = &state.tabs[&new];
+        assert_eq!(record.short, "t1", "the agent's herdr tab id is kept");
+        assert!(record.is_open());
+        assert_eq!(record.url, "https://a/2");
+        assert_eq!(record.opened_by.pane_id(), Some("w2:pD"));
+        assert_eq!(record.last_actor.pane_id(), Some("w2:pD"));
+        assert_eq!(
+            state.resolve_tab("companion", "t1").unwrap().target_id,
+            "T2"
+        );
+        assert_eq!(state.cursor("w2:pD").unwrap().target_id, "T2");
+        assert_eq!(state.tabs.len(), 1, "the user-adopted duplicate is gone");
+
+        // The sync may also land before the sidecar sees the view.
+        state.close_profile_tabs("companion", 30);
+        state.bind_entries("companion", &[("T3".into(), "g-k/b1".into())]);
+        let third = TabKey::new("companion", "T3");
+        assert!(state.tabs[&third].is_open());
+        assert_eq!(state.cursor("w2:pD").unwrap().short, "t1");
+        state.apply_tab_event(&opened("companion", "T3", "https://a/3"), 31);
+        assert_eq!(
+            state.tabs.len(),
+            1,
+            "the later event does not adopt it again"
+        );
+        assert_eq!(state.tabs[&third].opened_by.pane_id(), Some("w2:pD"));
+    }
+
+    #[test]
+    fn a_closed_page_keeps_its_cursor_only_while_it_can_come_back() {
+        let mut state = BrowserState::new();
+        let bound = TabKey::new("companion", "B");
+        let loose = TabKey::new("companion", "L");
+        state.adopt_tab(&bound, &host_tab("B", "https://b/"), &pane("w2:pD"), 1);
+        state.adopt_tab(&loose, &host_tab("L", "https://l/"), &pane("w2:pE"), 1);
+        state.bind_entries("companion", &[("B".into(), "g/b1".into())]);
+        state.set_cursor("w2:pD", &bound, None, 1);
+        state.set_cursor("w2:pE", &loose, None, 1);
+        state.close_profile_tabs("companion", 2);
+        assert!(state.cursors.contains_key("w2:pD"));
+        assert!(state.cursor("w2:pD").is_none(), "nothing open behind it");
+        assert!(
+            !state.cursors.contains_key("w2:pE"),
+            "no page to come back to"
+        );
+        // A page that never comes back: its cursor goes with its record.
+        state.prune(2 + CLOSED_TAB_RETENTION_SECS);
+        assert!(state.tabs.is_empty());
+        assert!(state.cursors.is_empty());
+    }
+
+    #[test]
+    fn a_reload_keeps_the_entry_binding() {
+        let mut state = BrowserState::new();
+        let key = TabKey::new("companion", "T");
+        state.adopt_tab(&key, &host_tab("T", "https://a/"), &pane("w2:pD"), 1);
+        state.bind_entries("companion", &[("T".into(), "g/b4".into())]);
+        state.set_cursor("w2:pD", &key, None, 1);
+        let mut reloaded = BrowserState::new();
+        reloaded.restore(state.snapshot(), 5);
+        reloaded.bind_entries("companion", &[("U".into(), "g/b4".into())]);
+        assert_eq!(reloaded.cursor("w2:pD").unwrap().short, "t1");
     }
 
     #[test]

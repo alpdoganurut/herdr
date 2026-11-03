@@ -279,6 +279,23 @@ impl TabBrowser {
 
     /// A restored group: targets unknown until the host syncs, ids and
     /// sizes re-checked (a hand-edited session.json).
+    /// Fork (companion launcher): the entries whose target is new since
+    /// `before`, as `(target, "<key>/<entry id>")` (the ledger binds its
+    /// records to them, so a restored page keeps its herdr tab id).
+    pub fn new_targets(&self, before: &TabBrowser) -> Vec<(String, String)> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                let target = entry.target.as_deref()?;
+                let known = before
+                    .entries
+                    .iter()
+                    .any(|old| old.id == entry.id && old.target.as_deref() == Some(target));
+                (!known).then(|| (target.to_string(), format!("{}/{}", self.key, entry.id)))
+            })
+            .collect()
+    }
+
     pub fn restored(mut self) -> Option<TabBrowser> {
         if self.key.trim().is_empty() {
             self.key = new_key();
@@ -377,6 +394,38 @@ mod tests {
             active: active.map(str::to_string),
             entries,
         }
+    }
+
+    #[test]
+    fn new_targets_names_each_entry_whose_target_changed() {
+        let mut browser = TabBrowser::new(Some("g-k"));
+        let mut minted = BTreeMap::new();
+        browser.apply_sync(
+            "w1:t1",
+            &group(None, vec![wire(None, "v1", "https://a/")]),
+            &mut minted,
+        );
+        let before = browser.clone();
+        assert_eq!(
+            browser.new_targets(&TabBrowser::new(Some("g-k"))),
+            [("T-v1".to_string(), "g-k/b1".to_string())]
+        );
+        // The same target again: nothing to bind.
+        browser.apply_sync(
+            "w1:t1",
+            &group(None, vec![wire(Some("b1"), "v1", "https://a/2")]),
+            &mut minted,
+        );
+        assert!(browser.new_targets(&before).is_empty());
+        // A restarted companion: the restored entry b1 under a new view and target.
+        let mut restored = wire(Some("b1"), "v9", "https://a/2");
+        restored.target = Some("T-new".into());
+        let before = browser.clone();
+        browser.apply_sync("w1:t1", &group(None, vec![restored]), &mut minted);
+        assert_eq!(
+            browser.new_targets(&before),
+            [("T-new".to_string(), "g-k/b1".to_string())]
+        );
     }
 
     #[test]

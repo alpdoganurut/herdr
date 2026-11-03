@@ -340,6 +340,7 @@ class Companion {
     const out = this.store.applyHostState(res.state || {});
     for (const g of out.dropped) this.destroyGroupViews(g);
     if (out.moved.length) log('groups moved', JSON.stringify(out.moved));
+    this.loadAgentPages(out.created);
     if (this.shownTab && !this.store.tabs.has(this.shownTab)) this.shownTab = null;
     // Re-show only when herdr focus moved (or nothing valid is shown): a page an agent raised
     // with focus() stays up across unrelated tab/workspace events.
@@ -414,6 +415,26 @@ class Companion {
     this.store.markDirty(tabId);
     this.scheduleSync();
     return target;
+  }
+
+  // Restored pages are placeholders until shown, except the agents' own (`agent:<pane>`): an
+  // agent works on its page without looking at it, so after a restart its view loads at once,
+  // hidden, one at a time; herdr's sync then gives the agent its page back under the same
+  // herdr tab id. (An exception to the lazy restore, kept to the agents' pages.)
+  loadAgentPages(tabIds) {
+    const todo = [];
+    for (const tabId of tabIds || []) {
+      const g = this.store.group(tabId);
+      if (!g) continue;
+      for (const e of g.entries) if (e.placeholder && /^agent:/.test(e.opened_by || '')) todo.push([e, tabId]);
+    }
+    if (!todo.length) return;
+    (async () => {
+      for (const [e, tabId] of todo) {
+        if (!this.store.findView(e.view_id)) continue; // closed meanwhile
+        await this.ensureLive(e, tabId).catch((err) => log('restore load failed', e.view_id, err && err.message));
+      }
+    })();
   }
 
   // reason 'follow' (herdr focus) | 'agent'. `focusMoved`: herdr focus just moved to this tab,

@@ -2930,6 +2930,9 @@ view_strip
 HERDR_TEST_BROWSER_VIEW
 stop_browsers_at_exit
 detach_background_command
+bind_entries
+bind_companion_entries
+new_targets
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::tab_geometry_tests::fork_smoke_single_client_resize_reflows_only_the_shown_tab
 server::headless::tests::tab_geometry_tests::fork_smoke_switching_dock_and_plain_tabs_reflows_one_tab_at_most
@@ -3055,6 +3058,7 @@ browser::companion_app::tests::fork_smoke_a_config_that_keeps_the_companion_off_
 client::shell::tests::browser_dock::fork_smoke_without_the_companion_nothing_docks_and_the_notice_says_why
 client::shell::tests::browser_dock::fork_smoke_pastes_and_text_commits_in_browser_view_never_reach_the_hidden_panes
 client::shell::tests::browser_dock::fork_smoke_browser_view_shows_notices_and_toasts_on_its_strip_not_under_the_page
+browser::state::tests::fork_smoke_a_restarted_companion_page_keeps_its_id_attribution_and_cursor
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 A user-facing feature or fix that changes what herdr+ offers also updates the showcase page `docs/fork/herdr-plus.html` (self-contained, no network resources, no personal data; mockups follow the current code), in the same change.
 ### Added
@@ -3178,6 +3182,7 @@ A user-facing feature or fix that changes what herdr+ offers also updates the sh
 - Browser, audit fixes: a launch whose DevTools never answers stops only a browser that launch started: the `SingletonLock` pid is read once before the first spawn and that pid (a dead browser's lock, possibly reused by an unrelated process) is never signalled. A live `SingletonLock` pid whose `SingletonSocket` does not answer still holds the profile when it is a Chromium process (by process name, like Chromium's own `IsChromeProcess`: the exact file name of the configured binary, or herdr+ Browser; any Chromium or Chrome name only when no binary resolves; macOS and Linux, elsewhere the socket alone decides). `browser profile delete` treats a run record as live only when its DevTools answers too (as the attach does), else it checks the lock.
 - Browser and missing directories, second audit fixes: a live `SingletonLock` pid holds a profile only when its process name is exactly the configured browser binary's (or herdr+ Browser); a Chrome helper, crash handler or chromedriver no longer keeps `browser profile delete` from deleting it. A browser started by one launch attempt that survives its SIGTERM is still stopped by the next attempt (the pre-launch lock pid is read once per launch, not per attempt). `browser profile delete` waits for a run record's DevTools as long as the attach does (1.5 s). A pending "working directory recreated" notice follows its pane when the pane moves to another tab or space (a restart re-arms it on the moved pane), stays saved as parked while its agent is suspended (a restart right after the activation no longer drops one parked for more than 24 h), and a notice dropped in the same pass as another one was queued is saved gone.
 - Context use and the auto handoff no longer jump to 100% after an advisor (or other server-side multi-step) response: such a Claude response's top-level `message.usage` sums every step, so a session at about 62% of a 1M window read as over 1.24M (100%) and the handoff fired. When `usage.iterations` holds a `type: "message"` step, the context is now the last such step's input + cache read + cache creation + output, the same sum as the top level (`agent_context::last_message_iteration_used`); advisor and other non-message steps are ignored, and a line without a message step keeps the top-level sum. Codex is unchanged.
+- An agent keeps its companion page across a companion restart (a crash, the menu's Restart, `herdr browser companion restart`): the restored page keeps its herdr tab id (`companion:t7`), its opener and last actor, and stays the pane's current tab, so the agent's next call works without a `tab`. Before, it came back under a new id as the user's, the old id answered `tab_closed` and the next call `no_current_tab`. The ledger binds each companion tab to its page (`<Tab.browser key>/<entry id>`, from `browser.host_sync`) and moves the record to the page's new target; the companion loads the agents' restored pages at once (hidden) instead of when shown.
 
 ### Changed
 - New defaults: the `tabs` sidebar is the default layout (`[ui] sidebar_layout = "spaces"` brings back the space and agent panels); upstream's background update checks are off (`[update] version_check` and `manifest_check` default to false, so herdr.dev's upstream releases are not offered and remote detection manifests do not replace the bundled rules; `true` turns either on again, and `herdr update` is unchanged); tab history also has `alt+,` / `alt+.` (`tab_history_back = ["cmd+[", "alt+,"]`, `tab_history_forward = ["cmd+]", "alt+."]`), which reach herdr where Cmd does not and are no longer passed to the pane. The configuration guide (`docs/fork/CONFIG.md`, `config.html`) gains a "Suggested key set" `[keys]` snippet; every other key stays unbound.

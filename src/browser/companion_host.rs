@@ -1101,6 +1101,20 @@ impl BrowserHub {
         self.inner.state.lock().unwrap().bump_seq();
     }
 
+    /// Fork (companion launcher): the companion pages whose target is new
+    /// (`(target, "<group key>/<entry id>")`): a page the companion
+    /// restored keeps its ledger record (id, attribution, cursors).
+    pub fn bind_companion_entries(&self, pairs: &[(String, String)]) {
+        if pairs.is_empty() {
+            return;
+        }
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .bind_entries(COMPANION_PROFILE, pairs);
+    }
+
     /// The most recent pane that used the companion target (ledger
     /// `users`, most recent first).
     pub fn last_user_of(&self, target: &str) -> Option<String> {
