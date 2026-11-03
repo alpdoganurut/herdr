@@ -5,7 +5,8 @@
 //! Everything shown comes from `browser.get {since_seq}`, pulled on the first
 //! snapshot of a connection, after every `browser.*` reply the client sent,
 //! and on a timer: every 2 s while a profile is running or starting (or an
-//! installed companion is stopped, to start on demand), every 15 s otherwise. Nothing is pulled from a server that does not advertise
+//! installed companion is stopped, to start on demand), every 15 s
+//! otherwise. Nothing is pulled from a server that does not advertise
 //! `browser.get`. A remote endpoint is rendered read-only (no `focus`).
 
 use std::collections::HashSet;
@@ -523,7 +524,8 @@ impl ClientShellState {
                             // An installed companion that is stopped starts on an
                             // agent's first open: its page shows within 2 s, not 15.
                             // (One `browser.get {since_seq}` per client per tick,
-                            // `unchanged` when nothing moved.)
+                            // `unchanged` when nothing moved. Accepted for now: a
+                            // start signal from the server could replace it.)
                             || (companion.state == "stopped" && companion.installed.is_some())
                     })
         });

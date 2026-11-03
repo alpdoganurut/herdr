@@ -2883,8 +2883,8 @@ impl BrowserHub {
     }
 
     /// Fork (companion launcher): what `ensure_host` would refuse before
-    /// starting a sidecar (its runtime missing, or outdated past an in-place
-    /// refresh), read without starting one or touching its files. `None`
+    /// starting a sidecar (its runtime missing, outdated past an in-place
+    /// refresh, or no node binary to run it with), read without starting one or touching its files. `None`
     /// while one runs (a test's fake one too) or it can start. The launcher
     /// asks before a launch: a companion registers through the sidecar.
     pub(crate) fn sidecar_problem(&self) -> Option<SidecarProblem> {

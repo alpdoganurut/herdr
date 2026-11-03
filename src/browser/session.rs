@@ -34,6 +34,11 @@ pub struct TabBrowser {
     /// The active entry's id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<String>,
+    /// Fork (companion launcher): the highest `b<n>` ever minted here, so
+    /// a closed entry's id is never handed to a new page (the ledger binds
+    /// its records by entry id). 0 in a file from before it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub last_entry: u64,
     /// Bumped on every change (runtime only).
     #[serde(skip)]
     pub rev: u64,
@@ -103,6 +108,15 @@ pub fn new_key() -> String {
     format!("g-{}", random_hex(16))
 }
 
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// The `n` of a `b<n>` entry id.
+fn entry_number(id: &str) -> Option<u64> {
+    id.strip_prefix('b').and_then(|n| n.parse::<u64>().ok())
+}
+
 fn clip(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         text.to_string()
@@ -131,17 +145,19 @@ impl TabBrowser {
             .or_else(|| self.entries.first())
     }
 
-    /// The next free `b<n>` id.
-    fn next_id(&self, taken: &[String]) -> String {
-        let max = self
-            .entries
+    /// The highest entry number used so far: the stored mark, or an id in
+    /// use above it (a hand-edited file).
+    fn high_water(&self) -> u64 {
+        self.entries
             .iter()
-            .map(|entry| entry.id.as_str())
-            .chain(taken.iter().map(String::as_str))
-            .filter_map(|id| id.strip_prefix('b').and_then(|n| n.parse::<u64>().ok()))
-            .max()
-            .unwrap_or(0);
-        format!("b{}", max + 1)
+            .filter_map(|entry| entry_number(&entry.id))
+            .fold(self.last_entry, u64::max)
+    }
+
+    /// Mint the next `b<n>` id above `last` (never one used before).
+    fn mint_id(last: &mut u64) -> String {
+        *last += 1;
+        format!("b{last}")
     }
 
     /// Replace the list with the companion's live one (`browser.host_sync`).
@@ -154,7 +170,7 @@ impl TabBrowser {
         minted: &mut BTreeMap<String, String>,
     ) -> SyncChange {
         let mut entries: Vec<TabBrowserEntry> = Vec::with_capacity(group.entries.len());
-        let mut new_ids: Vec<String> = Vec::new();
+        let mut last = self.high_water();
         let mut view_ids: Vec<(Option<String>, String)> = Vec::new();
         for wire in group.entries.iter().take(MAX_ENTRIES) {
             let view = wire.view_id.as_deref().filter(|view| !view.is_empty());
@@ -184,8 +200,7 @@ impl TabBrowser {
                     old.id.clone()
                 }
                 None => {
-                    let id = self.next_id(&new_ids);
-                    new_ids.push(id.clone());
+                    let id = Self::mint_id(&mut last);
                     if let Some(view) = wire.view_id.as_deref().filter(|v| !v.is_empty()) {
                         minted.insert(format!("{tab_id}/{view}"), id.clone());
                     }
@@ -219,6 +234,8 @@ impl TabBrowser {
                 .iter()
                 .zip(&self.entries)
                 .any(|(new, old)| new != old);
+        // a minted id changed the group's ids, so `persisted` is set too
+        self.last_entry = last;
         if any {
             self.entries = entries;
             self.active = active;
@@ -277,8 +294,6 @@ impl TabBrowser {
             .collect()
     }
 
-    /// A restored group: targets unknown until the host syncs, ids and
-    /// sizes re-checked (a hand-edited session.json).
     /// Fork (companion launcher): the entries whose target is new since
     /// `before`, as `(target, "<key>/<entry id>")` (the ledger binds its
     /// records to them, so a restored page keeps its herdr tab id).
@@ -296,6 +311,9 @@ impl TabBrowser {
             .collect()
     }
 
+    /// A restored group: targets unknown until the host syncs, ids and
+    /// sizes re-checked (a hand-edited session.json), the id mark raised
+    /// to the highest id in the file.
     pub fn restored(mut self) -> Option<TabBrowser> {
         if self.key.trim().is_empty() {
             self.key = new_key();
@@ -313,13 +331,13 @@ impl TabBrowser {
                 seen.push(entry.id.clone());
             }
         }
-        for index in 0..self.entries.len() {
-            if self.entries[index].id.is_empty() {
-                let id = self.next_id(&seen);
-                seen.push(id.clone());
-                self.entries[index].id = id;
+        let mut last = self.high_water();
+        for entry in &mut self.entries {
+            if entry.id.is_empty() {
+                entry.id = Self::mint_id(&mut last);
             }
         }
+        self.last_entry = last;
         if self
             .active
             .as_deref()
@@ -429,6 +447,80 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_entry_id_is_never_minted_again() {
+        let mut browser = TabBrowser::new(Some("g-k"));
+        let mut minted = BTreeMap::new();
+        browser.apply_sync(
+            "w1:t1",
+            &group(None, vec![wire(None, "v1", "a"), wire(None, "v2", "b")]),
+            &mut minted,
+        );
+        assert_eq!(browser.last_entry, 2);
+        // the highest entry closes in one sync…
+        browser.apply_sync(
+            "w1:t1",
+            &group(None, vec![wire(Some("b1"), "v1", "a")]),
+            &mut minted,
+        );
+        // …and a new page in a later one gets a fresh id
+        browser.apply_sync(
+            "w1:t1",
+            &group(
+                None,
+                vec![wire(Some("b1"), "v1", "a"), wire(None, "v3", "c")],
+            ),
+            &mut minted,
+        );
+        assert_eq!(browser.entries[1].id, "b3");
+        // removed and added in the same sync
+        browser.apply_sync(
+            "w1:t1",
+            &group(
+                None,
+                vec![wire(Some("b1"), "v1", "a"), wire(None, "v4", "d")],
+            ),
+            &mut minted,
+        );
+        assert_eq!(browser.entries[1].id, "b4");
+        assert_eq!(browser.last_entry, 4);
+
+        // the mark persists, and a restart keeps minting above it
+        let json = serde_json::to_string(&browser.for_snapshot().unwrap()).unwrap();
+        let mut restored: TabBrowser = serde_json::from_str::<TabBrowser>(&json)
+            .unwrap()
+            .restored()
+            .unwrap();
+        assert_eq!(restored.last_entry, 4);
+        restored.apply_sync(
+            "w1:t1",
+            &group(
+                None,
+                vec![wire(Some("b1"), "v1", "a"), wire(None, "v5", "e")],
+            ),
+            &mut minted,
+        );
+        assert_eq!(restored.entries[1].id, "b5");
+    }
+
+    #[test]
+    fn a_restored_group_raises_its_id_mark_to_the_file_ids() {
+        // a file from before the mark, or hand-edited: ids above it, a
+        // blank and a duplicate id
+        let json = r#"{"key":"g-k","last_entry":2,"entries":[
+            {"id":"b7","url":"a"},{"id":"","url":"b"},{"id":"b7","url":"c"}]}"#;
+        let browser = serde_json::from_str::<TabBrowser>(json)
+            .unwrap()
+            .restored()
+            .unwrap();
+        let ids: Vec<&str> = browser.entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["b7", "b8", "b9"]);
+        assert_eq!(browser.last_entry, 9);
+        let old: TabBrowser = serde_json::from_str(r#"{"key":"g-k"}"#).unwrap();
+        assert_eq!(old.last_entry, 0, "absent in an older file");
+        assert!(!serde_json::to_string(&old).unwrap().contains("last_entry"));
+    }
+
+    #[test]
     fn a_sync_mints_ids_for_new_entries_and_keeps_known_ones() {
         let mut browser = TabBrowser::new(None);
         assert!(browser.key.starts_with("g-") && browser.key.len() == 18);
@@ -513,7 +605,8 @@ mod tests {
         back.entries[1].id = "b1".into(); // a duplicate after a hand edit
         let back = back.restored().expect("entries");
         assert_eq!(back.entries[0].id, "b1");
-        assert_eq!(back.entries[1].id, "b2");
+        // b2 was minted once already (the stored mark): never again
+        assert_eq!(back.entries[1].id, "b3");
         assert!(TabBrowser::new(None).for_snapshot().is_none());
     }
 

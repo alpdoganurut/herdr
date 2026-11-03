@@ -1108,11 +1108,23 @@ impl BrowserHub {
         if pairs.is_empty() {
             return;
         }
-        self.inner
+        let moved = self
+            .inner
             .state
             .lock()
             .unwrap()
             .bind_entries(COMPANION_PROFILE, pairs);
+        for rebound in moved {
+            tracing::debug!(
+                event = "browser.entry_rebound",
+                profile = COMPANION_PROFILE,
+                entry = %rebound.entry,
+                from = %rebound.from,
+                to = %rebound.to,
+                short = %rebound.short,
+                "companion page record moved to its new target"
+            );
+        }
     }
 
     /// The most recent pane that used the companion target (ledger
