@@ -557,15 +557,16 @@ fn the_tab_menu_offers_role_leave_or_join_in_a_team_group() {
         .into_iter()
         .map(|(_, a)| a)
         .collect();
-    // Fork (menu design): the Team section, then the Alerts section.
+    // Fork (menu design): the Team section, then the Group section (tab
+    // groups), then the Alerts section.
     let role = actions
         .iter()
         .position(|a| *a == Action::SetRole)
         .expect("set role");
     assert_eq!(
         &actions[role..role + 3],
-        [Action::SetRole, Action::LeaveTeam, Action::Important],
-        "the Team section, then Important"
+        [Action::SetRole, Action::LeaveTeam, Action::MoveToGroup],
+        "the Team section, then the Group section"
     );
     assert!(!actions.contains(&Action::JoinTeam));
     assert!(
@@ -610,7 +611,7 @@ fn the_tab_menu_offers_role_leave_or_join_in_a_team_group() {
         .expect("set role");
     assert_eq!(
         &actions[role..role + 3],
-        [Action::SetRole, Action::JoinTeam, Action::Important]
+        [Action::SetRole, Action::JoinTeam, Action::MoveToGroup]
     );
     let outcome = pick(&mut state, Action::JoinTeam);
     let requests = endpoint_requests(&outcome);
@@ -632,7 +633,7 @@ fn the_tab_menu_offers_role_leave_or_join_in_a_team_group() {
         .expect("set team role");
     assert_eq!(
         &actions[role..role + 3],
-        [Action::SetTeamRole, Action::LeaveTeam, Action::Important]
+        [Action::SetTeamRole, Action::LeaveTeam, Action::MoveToGroup]
     );
     let actions: Vec<_> = tab_menu(&mut state, "tab_3")
         .into_iter()

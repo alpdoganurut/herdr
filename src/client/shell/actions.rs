@@ -568,6 +568,11 @@ impl ClientShellState {
         if let PendingEndpointKind::ContextMenuSession { pane_id } = pending.kind {
             return self.complete_context_menu_session(pane_id, result);
         }
+        // Fork (toolbar new tab): the create's reply moves the tab to the
+        // top; the move never raises a notice.
+        if let Some(done) = self.complete_toolbar_new_tab(&pending.kind, &result) {
+            return done;
+        }
         // Fork: info dock replies show in the dock, never as a notice.
         if pending.kind.is_info_dock() {
             return self.handle_info_dock_endpoint_result(pending, result);
@@ -625,7 +630,10 @@ impl ClientShellState {
             }
         }
         match pending.kind {
-            PendingEndpointKind::Generic | PendingEndpointKind::ForceableAgentStop { .. } => {}
+            PendingEndpointKind::Generic
+            | PendingEndpointKind::ForceableAgentStop { .. }
+            | PendingEndpointKind::ToolbarNewTab
+            | PendingEndpointKind::ToolbarNewTabMove => {}
             PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),
             PendingEndpointKind::InfoNotesGet
             | PendingEndpointKind::InfoNotesWrite

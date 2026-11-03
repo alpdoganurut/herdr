@@ -638,6 +638,143 @@ fn suspended_pane_shows_a_card_instead_of_the_shell_and_hides_the_cursor() {
     assert!(text.contains("SHELL SCROLLBACK"), "{text}");
 }
 
+/// Fork (restart screen): the suspended card follows the pane's resume mark
+/// on the agent times push.
+#[test]
+fn suspended_card_shows_restarting_waking_and_a_failed_relaunch() {
+    let mut state = suspended_state();
+    let boot_id = state.snapshot.as_ref().expect("snapshot").boot_id.clone();
+    let mut revision = 0;
+    let mut card = |state: &mut ClientShellState, resuming: Option<&str>, failed: Option<&str>| {
+        revision += 1;
+        state.receive_agent_times(
+            &ClientEndpointId::Local,
+            crate::server::headless::agent_times::AgentTimesPayload {
+                boot_id: boot_id.clone(),
+                revision,
+                server_now_unix_ms: 10,
+                panes: vec![crate::app::agent_times::AgentTimePane {
+                    pane_id: "pane_1".into(),
+                    state_change_seq: 1,
+                    since_unix_ms: 1,
+                    resuming: resuming.map(str::to_string),
+                    resume_failed: failed.map(str::to_string),
+                    ..Default::default()
+                }],
+            },
+        );
+        let frame = state.compose(106, 20).expect("composed frame");
+        assert!(frame.cursor.is_none());
+        frame_text(&frame, state.hits.panes[0].inner_rect)
+    };
+
+    let text = card(&mut state, Some("restart"), None);
+    assert!(text.contains("↻ restarting"), "{text}");
+    assert!(text.contains("reviewer"), "{text}");
+    assert!(!text.contains("suspended"), "{text}");
+    assert!(!text.contains("to activate"), "no hint: {text}");
+    assert!(!text.contains("SHELL SCROLLBACK"), "{text}");
+
+    let text = card(&mut state, Some("wake"), None);
+    assert!(text.contains("↻ waking"), "{text}");
+    assert!(!text.contains("to activate"), "{text}");
+
+    let text = card(&mut state, None, Some("restart"));
+    assert!(text.contains("suspended"), "{text}");
+    assert!(
+        text.contains("restart didn't finish — alt+s to activate"),
+        "{text}"
+    );
+
+    let text = card(&mut state, None, Some("wake"));
+    assert!(text.contains("couldn't wake — alt+s to activate"), "{text}");
+
+    let text = card(&mut state, None, None);
+    assert!(text.contains("suspended"), "{text}");
+    assert!(text.contains("alt+s to activate"), "{text}");
+    assert!(!text.contains("didn't finish"), "{text}");
+}
+
+/// Fork (restart screen): after the relaunch the pane is no longer
+/// suspended, but while the push still marks it restarting or waking the
+/// card covers it and its input stays locked; the card lifts with the mark.
+#[test]
+fn restarting_card_holds_after_the_relaunch_until_the_mark_goes() {
+    use crossterm::event::KeyCode;
+    let mut state = suspended_state();
+    let mut snapshot = state.snapshot.as_deref().expect("snapshot").clone();
+    snapshot.agents[0].agent_status = AgentStatus::Unknown;
+    let boot_id = snapshot.boot_id.clone();
+    state.set_snapshot(Box::new(snapshot));
+    let push = |state: &mut ClientShellState,
+                revision: u64,
+                resuming: Option<&str>,
+                failed: Option<&str>| {
+        state.receive_agent_times(
+            &ClientEndpointId::Local,
+            crate::server::headless::agent_times::AgentTimesPayload {
+                boot_id: boot_id.clone(),
+                revision,
+                server_now_unix_ms: 10,
+                panes: vec![crate::app::agent_times::AgentTimePane {
+                    pane_id: "pane_1".into(),
+                    state_change_seq: 1,
+                    since_unix_ms: 1,
+                    resuming: resuming.map(str::to_string),
+                    resume_failed: failed.map(str::to_string),
+                    ..Default::default()
+                }],
+            },
+        );
+    };
+    let typed_reaches_pane = |state: &mut ClientShellState| {
+        state
+            .handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+                KeyCode::Char('l'),
+                KeyModifiers::empty(),
+            ))])
+            .requests
+            .iter()
+            .any(|request| matches!(request, ClientMessage::ClientShellPaneInput { .. }))
+    };
+
+    push(&mut state, 1, Some("restart"), None);
+    let frame = state.compose(106, 20).expect("composed frame");
+    let text = frame_text(&frame, state.hits.panes[0].inner_rect);
+    assert!(text.contains("↻ restarting"), "{text}");
+    assert!(!text.contains("SHELL SCROLLBACK"), "{text}");
+    assert!(state.suspended_pane_locked("pane_1"));
+    assert!(!typed_reaches_pane(&mut state), "locked while restarting");
+
+    push(&mut state, 2, Some("wake"), None);
+    let frame = state.compose(106, 20).expect("composed frame");
+    let text = frame_text(&frame, state.hits.panes[0].inner_rect);
+    assert!(text.contains("↻ waking"), "{text}");
+
+    // Detected: the mark goes, the shell shows, input flows. A failed mark
+    // on a pane that is not suspended covers nothing.
+    for (revision, failed) in [(3, None), (4, Some("wake"))] {
+        push(&mut state, revision, None, failed);
+        let frame = state.compose(106, 20).expect("composed frame");
+        let text = frame_text(&frame, state.hits.panes[0].inner_rect);
+        assert!(text.contains("SHELL SCROLLBACK"), "{text}");
+        assert!(!state.suspended_pane_locked("pane_1"));
+        assert!(typed_reaches_pane(&mut state));
+    }
+
+    // The spaces layout never covers it.
+    let mut snapshot = two_space_snapshot();
+    snapshot.agents = vec![agent("pane_1", "tab_1", AgentStatus::Unknown)];
+    let mut spaces = ClientShellState::new(ClientShellConfig::from_config(&spaces_config()));
+    spaces.set_snapshot(Box::new(snapshot));
+    spaces.set_pane_surface(wide_surface());
+    push(&mut spaces, 1, Some("restart"), None);
+    let frame = spaces.compose(106, 20).expect("composed frame");
+    let text = frame_text(&frame, spaces.hits.panes[0].inner_rect);
+    assert!(text.contains("SHELL SCROLLBACK"), "{text}");
+    assert!(!spaces.suspended_pane_locked("pane_1"));
+}
+
 #[test]
 fn suspended_pane_swallows_input_but_the_toggle_binding_still_activates() {
     use crossterm::event::KeyCode;
@@ -1420,12 +1557,11 @@ fn move_tab_to_group_prompt_joins_an_existing_group_or_creates_one() {
     )));
 
     state.compose(106, 24).expect("composed frame");
-    let plus = state.hits.group_new;
-    state.handle_raw_events(vec![mouse(
-        MouseEventKind::Down(MouseButton::Left),
-        plus.x,
-        plus.y,
-    )]);
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        KeybindMatch::Action(KeybindAction::MoveTabToGroup),
+        &mut outcome,
+    );
     let outcome = state.handle_input_bytes(b"parked\r");
     assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
         method,
@@ -1435,6 +1571,324 @@ fn move_tab_to_group_prompt_joins_an_existing_group_or_creates_one() {
                 crate::api::schema::PaneMoveDestination::NewWorkspace { label: Some(label), tab_label: Some(tab_label) }
                     if label == "parked" && tab_label == "reviewer"
             )
+    )));
+}
+
+fn created_tab(tab_id: &str, workspace_id: &str) -> crate::api::schema::ResponseResult {
+    crate::api::schema::ResponseResult::TabCreated {
+        tab: crate::api::schema::TabInfo {
+            tab_id: tab_id.into(),
+            workspace_id: workspace_id.into(),
+            number: 9,
+            label: "9".into(),
+            focused: true,
+            pane_count: 1,
+            agent_status: AgentStatus::Unknown,
+            color: None,
+            important: false,
+            remind_every: None,
+            pinned: false,
+            muted: false,
+            dnd: false,
+        },
+        root_pane: crate::api::schema::PaneInfo {
+            pane_id: "pane_9".into(),
+            terminal_id: "term_9".into(),
+            workspace_id: workspace_id.into(),
+            tab_id: tab_id.into(),
+            focused: true,
+            cwd: None,
+            foreground_cwd: None,
+            restore_error: None,
+            label: None,
+            agent: None,
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            display_agent: None,
+            agent_status: AgentStatus::Unknown,
+            state_labels: Default::default(),
+            tokens: Default::default(),
+            agent_session: None,
+            scroll: None,
+            revision: 0,
+        },
+    }
+}
+
+/// Click the toolbar `+` and return the single endpoint request it sends.
+fn click_plus(state: &mut ClientShellState) -> crate::api::schema::Request {
+    let plus = state.hits.group_new;
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        plus.x,
+        plus.y,
+    )]);
+    assert!(state.overlay.is_none(), "no prompt");
+    let requests = outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some((**request).clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [request] = &requests[..] else {
+        panic!("one request from +: {requests:?}");
+    };
+    request.clone()
+}
+
+#[test]
+fn the_toolbar_plus_opens_a_loose_shell_tab_at_the_top_even_from_a_group() {
+    let mut snapshot = three_space_snapshot();
+    // The focused tab sits in the "api" group: new_tab would land there.
+    snapshot.focused_workspace_id = Some("ws_2".into());
+    snapshot.focused_tab_id = Some("tab_3".into());
+    for tab in &mut snapshot.tabs {
+        tab.focused = tab.tab_id == "tab_3";
+    }
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tabs_config()));
+    state.set_snapshot(Box::new(snapshot.clone()));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("composed frame");
+
+    let create = click_plus(&mut state);
+    let crate::api::schema::Method::TabCreate(params) = &create.method else {
+        panic!("+ sends tab.create: {:?}", create.method);
+    };
+    assert_eq!(
+        params,
+        &crate::api::schema::TabCreateParams {
+            workspace_id: Some("ws_1".into()),
+            cwd: None,
+            focus: true,
+            label: None,
+            env: Default::default(),
+        },
+        "a plain shell tab in the ungrouped bucket, focused"
+    );
+
+    let (_, actions) = state.handle_endpoint_result(
+        &snapshot.boot_id,
+        &create.id,
+        Ok(created_tab("tab_9", "ws_1")),
+    );
+    let moves = actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(&request.method),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        matches!(
+            &moves[..],
+            [crate::api::schema::Method::TabMove(params)]
+                if params.tab_id == "tab_9" && params.insert_index == 0
+        ),
+        "only the created tab moves to the top: {moves:?}"
+    );
+
+    // The server's next snapshot: the new tab loose, first and focused.
+    snapshot.focused_workspace_id = Some("ws_1".into());
+    snapshot.focused_tab_id = Some("tab_9".into());
+    for tab in &mut snapshot.tabs {
+        tab.focused = false;
+    }
+    snapshot
+        .tabs
+        .insert(0, tab("tab_9", "ws_1", 3, "9", true, AgentStatus::Unknown));
+    state.set_snapshot(Box::new(snapshot));
+    state.compose(106, 24).expect("composed frame");
+    assert_eq!(listed_tab_ids(&state)[0], "tab_9");
+}
+
+#[test]
+fn a_failed_top_move_after_plus_raises_no_notice_but_a_failed_create_does() {
+    let mut state = grouped_state();
+    let boot_id = state
+        .snapshot
+        .as_deref()
+        .map(|snapshot| snapshot.boot_id.clone())
+        .expect("snapshot");
+    let create = click_plus(&mut state);
+    let (_, actions) =
+        state.handle_endpoint_result(&boot_id, &create.id, Ok(created_tab("tab_9", "ws_1")));
+    let [ClientShellAction::Endpoint {
+        request: tab_move, ..
+    }] = &actions[..]
+    else {
+        panic!("one tab.move: {actions:?}");
+    };
+    let (repaint, actions) = state.handle_endpoint_result(
+        &boot_id,
+        &tab_move.id,
+        Err(ClientShellEndpointError {
+            code: Some("tab_not_found".into()),
+            message: "tab tab_9 not found".into(),
+        }),
+    );
+    assert!(!repaint && actions.is_empty());
+    assert!(
+        state.visible_endpoint_notice.is_none(),
+        "the tab stays where it landed, quietly"
+    );
+
+    let create = click_plus(&mut state);
+    state.handle_endpoint_result(
+        &boot_id,
+        &create.id,
+        Err(ClientShellEndpointError {
+            code: Some("tab_create_failed".into()),
+            message: "no shell".into(),
+        }),
+    );
+    assert!(
+        state.visible_endpoint_notice.is_some(),
+        "a failed create shows"
+    );
+}
+
+/// Right-click the sidebar row of `tab_id` and return its menu's items.
+fn open_tab_menu(state: &mut ClientShellState, tab_id: &str) -> Vec<ClientContextMenuItem> {
+    let (rect, _) = state
+        .hits
+        .sidebar_tabs
+        .iter()
+        .find(|(_, id)| id == tab_id)
+        .cloned()
+        .expect("listed tab");
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Right),
+        rect.x + 2,
+        rect.y,
+    )]);
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu.items(),
+        _ => panic!("tab context menu"),
+    }
+}
+
+fn click_menu_item(
+    state: &mut ClientShellState,
+    action: ClientContextMenuAction,
+) -> ClientShellInput {
+    state.compose(106, 40).expect("composed menu");
+    let index = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .iter()
+            .position(|item| item.action == action)
+            .expect("menu item"),
+        _ => panic!("tab context menu"),
+    };
+    let row = state.hits.context_menu_rows[index].0;
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        row.x + 1,
+        row.y,
+    )])
+}
+
+#[test]
+fn the_tab_menu_moves_its_tab_to_a_group_with_the_bound_key_as_hint() {
+    // grouped_state binds move_tab_to_group to alt+g; tab_1 has the focus.
+    let mut state = grouped_state_at(40);
+    let items = open_tab_menu(&mut state, "tab_3");
+    let labels = items
+        .iter()
+        .filter(|item| {
+            item.look.section == super::super::context_menu_look::MenuSection::Titled("Group")
+        })
+        .map(|item| item.label.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        labels,
+        ["Move to group…", "Remove from group"],
+        "tab_3 is in api"
+    );
+    let frame = state.compose(106, 40).expect("composed menu");
+    let index = items
+        .iter()
+        .position(|item| item.action == ClientContextMenuAction::MoveToGroup)
+        .expect("move item");
+    let row = state.hits.context_menu_rows[index].0;
+    let text = row_text(&frame, row);
+    assert!(
+        text.contains("Move to group…") && text.contains("⌥g"),
+        "{text:?}"
+    );
+
+    let outcome = click_menu_item(&mut state, ClientContextMenuAction::MoveToGroup);
+    assert!(
+        endpoint_methods(&outcome).is_empty(),
+        "the prompt opens without focusing the tab"
+    );
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            target: ClientRenameTarget::MoveTabToGroup { ref tab_id, ref pane_id, .. },
+            ..
+        })) if tab_id == "tab_3" && pane_id == "pane_3"
+    ));
+    let outcome = state.handle_input_bytes(b"infra\r");
+    assert!(endpoint_methods(&outcome).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::PaneMove(params)
+            if params.pane_id == "pane_3" && matches!(
+                &params.destination,
+                crate::api::schema::PaneMoveDestination::NewTab { workspace_id: Some(ws), .. } if ws == "ws_3"
+            )
+    )));
+}
+
+#[test]
+fn the_tab_menu_removes_a_grouped_tab_from_its_group_and_bucket_tabs_get_no_remove() {
+    let mut state = grouped_state_at(40);
+    let items = open_tab_menu(&mut state, "tab_2");
+    assert!(items
+        .iter()
+        .any(|item| item.action == ClientContextMenuAction::MoveToGroup));
+    assert!(
+        !items
+            .iter()
+            .any(|item| item.action == ClientContextMenuAction::RemoveFromGroup),
+        "tab_2 is already loose"
+    );
+    state.overlay = None;
+
+    open_tab_menu(&mut state, "tab_4");
+    let outcome = click_menu_item(&mut state, ClientContextMenuAction::RemoveFromGroup);
+    assert!(
+        matches!(
+            &endpoint_methods(&outcome)[..],
+            [crate::api::schema::Method::PaneMove(params)]
+                if params.pane_id == "pane_4" && matches!(
+                    &params.destination,
+                    crate::api::schema::PaneMoveDestination::NewTab { workspace_id: Some(ws), .. } if ws == "ws_1"
+                )
+        ),
+        "{:?}",
+        endpoint_methods(&outcome)
+    );
+}
+
+#[test]
+fn the_spaces_layout_tab_menu_has_no_grouping_items() {
+    let mut config = tabs_config();
+    config.ui.sidebar_layout = SidebarLayoutConfig::Spaces;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(three_space_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("composed frame");
+    state.open_tab_context_menu("tab_3".into(), 10, 5);
+    let Some(ClientShellOverlay::ContextMenu(menu)) = state.overlay.as_ref() else {
+        panic!("tab context menu");
+    };
+    assert!(!menu.items().iter().any(|item| matches!(
+        item.action,
+        ClientContextMenuAction::MoveToGroup | ClientContextMenuAction::RemoveFromGroup
     )));
 }
 
@@ -2031,7 +2485,8 @@ fn tab_menu_ends_with_a_swatch_row_marking_the_current_color() {
     use crossterm::event::KeyCode;
     let (mut state, _) = colored_tabs_state(&tabs_config());
     // Fork (menu design): without an agent the menu is the lead block (New
-    // tab, Rename, Info pane, Close) and the Alerts section.
+    // tab, Rename, Info pane, Close), the Group section (tab groups; tab_3 is
+    // in a group) and the Alerts section.
     let plain = tab_menu_items(&mut state, 2);
     assert_eq!(
         plain.iter().map(|item| item.action).collect::<Vec<_>>(),
@@ -2040,6 +2495,8 @@ fn tab_menu_ends_with_a_swatch_row_marking_the_current_color() {
             ClientContextMenuAction::Rename,
             ClientContextMenuAction::ToggleInfoPane,
             ClientContextMenuAction::Close,
+            ClientContextMenuAction::MoveToGroup,
+            ClientContextMenuAction::RemoveFromGroup,
             ClientContextMenuAction::Important,
             ClientContextMenuAction::Pin,
             ClientContextMenuAction::Mute,
@@ -2099,9 +2556,9 @@ fn tab_menu_ends_with_a_swatch_row_marking_the_current_color() {
         .iter()
         .all(|(rect, _)| cell(*rect, 0).bg == color_to_u32(palette.panel_bg)));
 
-    // 14 rows: the agent tab offers "Handoff & compact" (fork, agent
-    // handoff) and "Do not disturb" (fork).
-    state.handle_raw_events((0..14).map(|_| key(KeyCode::Down)).collect());
+    // 15 rows: the agent tab offers "Handoff & compact" (fork, agent
+    // handoff), "Do not disturb" (fork) and "Move to group…" (tab groups).
+    state.handle_raw_events((0..15).map(|_| key(KeyCode::Down)).collect());
     assert_eq!(menu_state(&state).0, row);
     let frame = state.compose(106, 20).expect("menu frame");
     let bg = |index: usize| {
@@ -2141,9 +2598,9 @@ fn swatch_row_keys_move_along_the_row_and_enter_picks_without_focusing() {
     assert_eq!(menu_state(&state), (0, menu_state(&state).1));
     assert_eq!(menu_state(&state).1.cursor, 4);
 
-    // 14 rows: the agent tab offers "Handoff & compact" (fork, agent
-    // handoff) and "Do not disturb" (fork).
-    state.handle_raw_events((0..14).map(|_| key(KeyCode::Down)).collect());
+    // 15 rows: the agent tab offers "Handoff & compact" (fork, agent
+    // handoff), "Do not disturb" (fork) and "Move to group…" (tab groups).
+    state.handle_raw_events((0..15).map(|_| key(KeyCode::Down)).collect());
     assert_eq!(menu_state(&state).0, row, "the swatch row is one row");
     assert_eq!(
         menu_state(&state).1.cursor,
@@ -2168,9 +2625,9 @@ fn swatch_row_keys_move_along_the_row_and_enter_picks_without_focusing() {
 
     // Re-entering the row puts the cursor back on the current color.
     let row = open_menu_with_swatches(&mut state, 1);
-    // 14 rows: the agent tab offers "Handoff & compact" (fork, agent
-    // handoff) and "Do not disturb" (fork).
-    state.handle_raw_events((0..14).map(|_| key(KeyCode::Down)).collect());
+    // 15 rows: the agent tab offers "Handoff & compact" (fork, agent
+    // handoff), "Do not disturb" (fork) and "Move to group…" (tab groups).
+    state.handle_raw_events((0..15).map(|_| key(KeyCode::Down)).collect());
     state.handle_raw_events(vec![key(KeyCode::Right)]);
     assert_eq!(menu_state(&state).1.cursor, 2);
     state.handle_raw_events(vec![key(KeyCode::Up), key(KeyCode::Down)]);

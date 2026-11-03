@@ -132,6 +132,7 @@ fn times(now: Instant, ago: &[Option<u64>]) -> ClientAgentTimesState {
             })
             .collect::<HashMap<_, _>>(),
         auto_suspended: Default::default(),
+        resume_marks: Default::default(),
     }
 }
 
@@ -725,6 +726,7 @@ fn an_idle_tab_whose_restored_time_is_older_than_the_window_is_hidden() {
                 state_change_seq: 1,
                 since_unix_ms: server_now_unix_ms - 2 * 3_600_000,
                 auto_suspended: false,
+                ..Default::default()
             })
             .collect(),
     };

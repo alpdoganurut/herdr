@@ -144,6 +144,7 @@ fn item_binding<'a>(
         (Action::BrowserToggleDock, _) => &keys.toggle_browser_dock,
         (Action::BrowserToggleView, _) => &keys.toggle_browser_view,
         (Action::Important, _) => &keys.toggle_tab_important,
+        (Action::MoveToGroup, _) => &keys.move_tab_to_group,
         (Action::NewWorktree, _) => &keys.new_worktree,
         (Action::OpenWorktree, _) => &keys.open_worktree,
         (Action::RemoveWorktree, _) => &keys.remove_worktree,

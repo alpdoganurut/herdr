@@ -95,6 +95,8 @@ pub mod notes_reveal;
 mod notifications;
 /// Fork: the `endpoint.quiet.v1` push (quiet messages, do-not-disturb).
 pub mod quiet;
+/// Fork (restart screen): toasts for relaunches that never started.
+mod relaunch_notify;
 mod render;
 mod retained_surface;
 mod surface_interest;
@@ -3504,6 +3506,7 @@ impl HeadlessServer {
         changed |= self.app.maybe_run_agents_migration(now);
         changed |= self.app.escalate_suspended_agent_exits(now);
         changed |= self.app.start_pending_agent_restarts(now);
+        self.flush_relaunch_failure_notices();
         // Fork: park agents left idle (about once a minute while it is on).
         changed |= self.handle_agent_autosuspend(now);
 

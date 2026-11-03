@@ -2361,7 +2361,7 @@ impl ClientShellState {
                     return;
                 }
                 if super::contains(self.hits.group_new, point) {
-                    self.open_move_tab_to_group_overlay();
+                    self.toolbar_new_tab(outcome);
                     outcome.repaint = true;
                     return;
                 }

@@ -47,6 +47,21 @@ pub(crate) const FORCE_INTERRUPT_SETTLE: Duration = Duration::from_millis(500);
 /// agent to come back to its prompt; past it the agent is terminated
 /// (`SIGTERM`, then `SIGKILL`) without the exit input.
 pub(crate) const FORCE_INTERRUPT_WAIT: Duration = Duration::from_secs(5);
+/// Fork (restart screen): how long a restart or wake that gave up stays
+/// marked on its parked agent (the suspended card says so).
+pub(crate) const RESUME_FAILED_MARK_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// Fork (restart screen): a toast for a relaunch that never started (the
+/// pane's shell came back with no agent), for the server to send to client
+/// shells. Public ids, so a click focuses the pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RelaunchFailureNotice {
+    pub title: String,
+    pub body: Option<String>,
+    pub workspace_id: String,
+    pub tab_id: Option<String>,
+    pub pane_id: Option<String>,
+}
 
 pub(super) enum AgentSuspendError {
     Target(TerminalTargetError),
@@ -402,6 +417,12 @@ impl App {
             })
         };
         let now = Instant::now();
+        // Fork (restart screen): the suspend clears the pane's resume marks.
+        let marked = self
+            .state
+            .terminals
+            .get(&terminal_id)
+            .is_some_and(crate::terminal::TerminalState::has_resume_marks);
         let busy = force
             .then(|| self.state.terminals.get(&terminal_id))
             .flatten()
@@ -487,6 +508,9 @@ impl App {
         // retention; queue it for the next backup pass rather than waiting
         // for the periodic interval.
         self.queue_agent_transcript_backup(resolved.ws_idx, resolved.pane_id, session);
+        if marked {
+            self.note_agent_resume_marks_changed();
+        }
         self.state.mark_session_dirty();
         self.schedule_session_save();
         self.emit_agent_status_transition(resolved.ws_idx, resolved.pane_id);
@@ -684,6 +708,8 @@ impl App {
                 record.suspended_by = Some(by);
             }
         }
+        // Fork (restart screen): clients show the pane restarting.
+        self.note_agent_resume_marks_changed();
         Ok(pane_id)
     }
 
@@ -699,6 +725,26 @@ impl App {
     /// forced restart is not abandoned for the `SIGKILL`: it still waits for
     /// the observed exit and an available shell prompt, within the timeout.
     pub(crate) fn start_pending_agent_restarts(&mut self, now: Instant) -> bool {
+        // Fork (restart screen): a lapsed wake or failed mark leaves the push.
+        let mut expired = false;
+        for terminal in self.state.terminals.values_mut() {
+            let (changed, lapsed) =
+                terminal.expire_suspended_agent_resume_marks(now, RESUME_FAILED_MARK_TTL);
+            expired |= changed;
+            if let Some(kind) = lapsed {
+                tracing::warn!(
+                    event = "agent.resume.undetected",
+                    terminal_id = %terminal.id,
+                    kind = kind.name(),
+                    reason = "timeout",
+                    "the relaunched agent was not detected in time"
+                );
+            }
+        }
+        expired |= self.fail_unstarted_relaunches(now);
+        if expired {
+            self.note_agent_resume_marks_changed();
+        }
         let pending: Vec<_> = self
             .state
             .terminals
@@ -715,7 +761,7 @@ impl App {
                 ))
             })
             .collect();
-        let mut changed = false;
+        let mut changed = expired;
         for (terminal_id, agent, resume, escalation, exit_observed) in pending {
             let abandon = if escalation == SuspendExitEscalation::Killed && !resume.forced {
                 Some("the agent had to be killed; leaving it suspended".to_string())
@@ -790,10 +836,114 @@ impl App {
         changed
     }
 
+    /// Fork (restart screen): a relaunch typed into the pane's shell whose
+    /// agent never started (the shell is back at an available prompt and no
+    /// agent is detected) ends at its probe instead of holding the restarting
+    /// card until `detect_by`, with a toast. Probes are rate-limited by the
+    /// mark's `probe_at`. Returns whether a mark changed.
+    fn fail_unstarted_relaunches(&mut self, now: Instant) -> bool {
+        let due: Vec<_> = self
+            .state
+            .terminals
+            .values()
+            .filter_map(|terminal| {
+                terminal
+                    .agent_resuming_probe_due(now)
+                    .map(|resuming| (terminal.id.clone(), resuming))
+            })
+            .collect();
+        let mut changed = false;
+        for (terminal_id, resuming) in due {
+            let shell_back = self
+                .terminal_runtimes
+                .get(&terminal_id)
+                .is_some_and(|runtime| available_shell_name(runtime).is_some());
+            let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
+                continue;
+            };
+            if !shell_back || terminal.effective_known_agent().is_some() {
+                terminal.defer_agent_resuming_probe(now + RESTART_RESUME_POLL_INTERVAL);
+                continue;
+            }
+            let name = terminal
+                .agent_name
+                .clone()
+                .or_else(|| {
+                    resuming
+                        .agent
+                        .map(|agent| crate::detect::agent_label(agent).to_string())
+                })
+                .unwrap_or_else(|| "agent".to_string());
+            terminal.agent_resuming = None;
+            changed = true;
+            tracing::warn!(
+                event = "agent.resume.undetected",
+                terminal_id = %terminal_id,
+                kind = resuming.kind.name(),
+                agent = %name,
+                reason = "shell_back",
+                "the relaunched agent never started; the shell is back"
+            );
+            self.queue_relaunch_failure_notice(&terminal_id, resuming.kind, &name);
+        }
+        if changed {
+            self.note_agent_resume_marks_changed();
+        }
+        changed
+    }
+
+    /// Fork (restart screen): queue the toast for a relaunch that never
+    /// started; a muted tab gets none.
+    fn queue_relaunch_failure_notice(
+        &mut self,
+        terminal_id: &TerminalId,
+        kind: crate::terminal::AgentResumeKind,
+        name: &str,
+    ) {
+        let Some(target) = self
+            .terminal_targets()
+            .into_iter()
+            .find(|candidate| candidate.terminal_id == terminal_id.to_string())
+        else {
+            return;
+        };
+        if self.state.pane_notifications_muted(target.pane_id) {
+            return;
+        }
+        let Some(workspace) = self.state.workspaces.get(target.ws_idx) else {
+            return;
+        };
+        let label = workspace.display_name_from(&self.state.terminals, &self.terminal_runtimes);
+        let body =
+            super::actions::notification_context(workspace, &label, target.ws_idx, target.pane_id);
+        let title = match kind {
+            crate::terminal::AgentResumeKind::Restart => {
+                format!("{name}: restart didn't start — the shell is back")
+            }
+            crate::terminal::AgentResumeKind::Wake => {
+                format!("{name}: couldn't wake — the shell is back")
+            }
+        };
+        let notice = RelaunchFailureNotice {
+            title,
+            body: (!body.is_empty()).then_some(body),
+            workspace_id: self.public_workspace_id(target.ws_idx),
+            tab_id: self.public_tab_id(target.ws_idx, target.tab_idx),
+            pane_id: self.public_pane_id(target.ws_idx, target.pane_id),
+        };
+        self.relaunch_failure_notices.push(notice);
+    }
+
     fn abandon_agent_restart(&mut self, terminal_id: &TerminalId, agent: &str, reason: &str) {
         if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
             terminal.clear_suspended_agent_resume_pending();
+            // Fork (restart screen): the card says the restart didn't finish.
+            terminal.fail_agent_resume(
+                crate::terminal::AgentResumeKind::Restart,
+                Instant::now() + RESUME_FAILED_MARK_TTL,
+            );
         }
+        self.note_agent_resume_marks_changed();
         tracing::warn!(
             event = "agent.restart.abandoned",
             terminal_id = %terminal_id,
@@ -843,7 +993,14 @@ impl App {
             return Err(AgentActivateError::NotSuspended(target.to_string()));
         };
         let kind = crate::detect::parse_agent_label(&record.agent);
+        // Fork (restart screen): what the relaunch shows until it is detected.
+        let resume_kind = if record.resume_pending().is_some() {
+            crate::terminal::AgentResumeKind::Restart
+        } else {
+            crate::terminal::AgentResumeKind::Wake
+        };
 
+        let typed_into_shell = self.terminal_runtimes.get(&terminal_id).is_some();
         if let Some(runtime) = self.terminal_runtimes.get(&terminal_id) {
             // The shell can look available before detection publishes the
             // exit; that late report would then wipe the relaunched session.
@@ -926,10 +1083,42 @@ impl App {
 
         self.state.mark_session_dirty();
         self.schedule_session_save();
+        // Fork (restart screen): the pane shows restarting or waking until
+        // detection reports the agent again (or RESTART_RESUME_TIMEOUT).
+        // Typed into a live shell: probed for a relaunch that never started.
+        let now = Instant::now();
+        if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+            terminal.begin_agent_resuming(
+                resume_kind,
+                kind,
+                now + RESTART_RESUME_TIMEOUT,
+                typed_into_shell.then_some(now + AGENT_START_SETTLE_DELAY),
+            );
+        }
+        self.note_agent_resume_marks_changed();
         self.emit_agent_status_transition(resolved.ws_idx, resolved.pane_id);
         Ok(self
             .public_pane_id(resolved.ws_idx, resolved.pane_id)
             .unwrap_or_else(|| target.to_string()))
+    }
+
+    /// The respawned shell of `terminal_id` hosts no agent. Fork (restart
+    /// screen): a resume mark it carried leaves the push.
+    pub(crate) fn clear_agent_identity_after_respawn(&mut self, terminal_id: &TerminalId) {
+        let Some(terminal) = self.state.terminals.get_mut(terminal_id) else {
+            return;
+        };
+        let marked = terminal.has_resume_marks();
+        terminal.clear_agent_runtime_identity_after_respawn();
+        if marked {
+            self.note_agent_resume_marks_changed();
+        }
+    }
+
+    /// Fork (restart screen): a parked agent's restarting, waking or failed
+    /// mark changed: clients get the agent times push again. O(1).
+    pub(crate) fn note_agent_resume_marks_changed(&mut self) {
+        self.state.agent_times_view_rev = self.state.agent_times_view_rev.wrapping_add(1).max(1);
     }
 
     /// A parked Claude session that was backgrounded out of its pane and
@@ -2230,7 +2419,16 @@ mod tests {
         );
         assert!(sent.ends_with('\r'));
         assert_ne!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
-        assert_eq!(app.state.next_suspended_agent_resume_deadline(), None);
+        // Fork (restart screen): only the shell probe and the detection
+        // timeout are left.
+        let resuming = app.state.terminals[&terminal_id]
+            .agent_resuming
+            .expect("waits for detection");
+        assert!(resuming.probe_at.is_some_and(|at| at < resuming.detect_by));
+        assert_eq!(
+            app.state.next_suspended_agent_resume_deadline(),
+            resuming.probe_at
+        );
         assert!(!app.start_pending_agent_restarts(Instant::now()));
     }
 
@@ -3459,5 +3657,405 @@ mod tests {
         assert!(app.state.terminals[&terminal_id].suspended_agent.is_none());
         no_input(&mut rx, "a refused force wrote nothing").await;
         assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Working);
+    }
+
+    /// Fork (restart screen): the pane's resume marks as the agent times
+    /// push carries them (the pane gets a stamped state time first, as any
+    /// agent that ever changed state has).
+    fn pushed_marks(app: &mut App) -> (Option<String>, Option<String>) {
+        let terminal_id = root_terminal_id(app);
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.last_agent_state_change_seq.get_or_insert(1);
+        terminal.agent_state_since_unix_ms.get_or_insert(1);
+        let pane = app.agent_times().into_iter().next().expect("listed");
+        (pane.resuming, pane.resume_failed)
+    }
+
+    fn restart_mark() -> (Option<String>, Option<String>) {
+        (Some("restart".into()), None)
+    }
+
+    #[tokio::test]
+    async fn a_restart_is_pushed_as_restarting_until_the_relaunch() {
+        let mut app = test_app();
+        let (_terminal_id, mut rx) = live_claude(&mut app, AgentState::Idle);
+        assert_eq!(pushed_marks(&mut app), (None, None));
+        let rev = app.state.agent_times_view_rev;
+        assert_eq!(
+            restart(&mut app, "reviewer")["result"]["type"],
+            "agent_restarted"
+        );
+        assert!(app.state.agent_times_view_rev > rev, "clients hear of it");
+        assert_eq!(pushed_marks(&mut app), restart_mark());
+        assert_eq!(&next_input(&mut rx).await[..], b"/exit");
+        // Through the exit: still restarting.
+        observe_exit(&mut app);
+        assert_eq!(pushed_marks(&mut app), restart_mark());
+        let rev = app.state.agent_times_view_rev;
+        assert!(app.start_pending_agent_restarts(Instant::now()));
+        assert!(app.state.agent_times_view_rev > rev);
+        assert_ne!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
+        // Relaunched but not detected yet: still restarting.
+        assert_eq!(pushed_marks(&mut app), restart_mark(), "until detected");
+        let rev = app.state.agent_times_view_rev;
+        report_agent_back(&mut app);
+        assert!(app.state.agent_times_view_rev > rev);
+        assert_eq!(pushed_marks(&mut app), (None, None), "detected");
+    }
+
+    /// Detection reports the relaunched Claude.
+    fn report_agent_back(app: &mut App) {
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        app.handle_internal_event(crate::events::AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Claude),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            voice: crate::detect::AgentVoice::Off,
+            process_exited: false,
+            observed_at: Instant::now() + Duration::from_millis(50),
+        });
+    }
+
+    /// Suspend then activate: the parked agent is relaunched as a wake.
+    fn woken_claude(app: &mut App) -> crate::terminal::TerminalId {
+        let (terminal_id, _rx) = live_claude(app, AgentState::Idle);
+        assert_eq!(
+            suspend(app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        observe_exit(app);
+        assert_eq!(
+            activate(app, "reviewer")["result"]["type"],
+            "agent_activated"
+        );
+        assert_eq!(pushed_marks(app), (Some("wake".into()), None));
+        terminal_id
+    }
+
+    fn resuming(
+        app: &App,
+        terminal_id: &crate::terminal::TerminalId,
+    ) -> crate::terminal::state::AgentResuming {
+        app.state.terminals[terminal_id]
+            .agent_resuming
+            .expect("waits for detection")
+    }
+
+    #[tokio::test]
+    async fn a_relaunch_that_never_starts_fails_at_its_probe_with_a_toast() {
+        let mut app = test_app();
+        let terminal_id = woken_claude(&mut app);
+        let resuming = resuming(&app, &terminal_id);
+        let probe_at = resuming.probe_at.expect("typed into the shell: probed");
+        assert!(
+            probe_at + Duration::from_secs(20) < resuming.detect_by,
+            "well before the timeout"
+        );
+        assert_eq!(
+            app.state.next_suspended_agent_resume_deadline(),
+            Some(probe_at),
+            "the scheduler wakes for the probe"
+        );
+        assert!(!app.start_pending_agent_restarts(probe_at - Duration::from_millis(1)));
+        assert!(app.relaunch_failure_notices.is_empty(), "settling");
+
+        // The test runtime counts as an available shell, and nothing is
+        // detected: the relaunch never started.
+        let rev = app.state.agent_times_view_rev;
+        assert!(app.start_pending_agent_restarts(probe_at));
+        assert!(app.state.agent_times_view_rev > rev, "clients hear of it");
+        assert_eq!(pushed_marks(&mut app), (None, None), "the card unlocks");
+        let terminal = &app.state.terminals[&terminal_id];
+        assert!(terminal.agent_resuming.is_none());
+        assert_eq!(terminal.agent_resume_failed, None, "no failed mark");
+        assert_eq!(app.state.next_suspended_agent_resume_deadline(), None);
+        assert_eq!(app.relaunch_failure_notices.len(), 1, "one toast");
+        let notice = &app.relaunch_failure_notices[0];
+        assert_eq!(notice.title, "reviewer: couldn't wake — the shell is back");
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        assert_eq!(notice.pane_id, app.public_pane_id(0, root));
+        assert_eq!(notice.tab_id, app.public_tab_id(0, 0));
+        assert_eq!(notice.workspace_id, app.public_workspace_id(0));
+
+        // Later passes raise nothing more.
+        assert!(!app.start_pending_agent_restarts(probe_at + Duration::from_secs(60)));
+        assert_eq!(app.relaunch_failure_notices.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_restart_that_never_starts_toasts_as_a_restart() {
+        let mut app = test_app();
+        let (terminal_id, mut rx) = live_claude(&mut app, AgentState::Idle);
+        assert_eq!(
+            restart(&mut app, "reviewer")["result"]["type"],
+            "agent_restarted"
+        );
+        assert_eq!(&next_input(&mut rx).await[..], b"/exit");
+        observe_exit(&mut app);
+        assert!(app.start_pending_agent_restarts(Instant::now()));
+        assert_eq!(pushed_marks(&mut app), restart_mark());
+        let probe_at = resuming(&app, &terminal_id).probe_at.expect("probed");
+        assert!(app.start_pending_agent_restarts(probe_at));
+        assert_eq!(pushed_marks(&mut app), (None, None));
+        assert_eq!(app.state.terminals[&terminal_id].agent_resume_failed, None);
+        let titles: Vec<_> = app
+            .relaunch_failure_notices
+            .iter()
+            .map(|notice| notice.title.as_str())
+            .collect();
+        assert_eq!(
+            titles,
+            ["reviewer: restart didn't start — the shell is back"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_detected_relaunch_never_toasts() {
+        let mut app = test_app();
+        let terminal_id = woken_claude(&mut app);
+        let resuming = resuming(&app, &terminal_id);
+        report_agent_back(&mut app);
+        assert_eq!(pushed_marks(&mut app), (None, None), "detected");
+        assert!(!app.start_pending_agent_restarts(resuming.probe_at.expect("probed")));
+        assert!(!app.start_pending_agent_restarts(resuming.detect_by));
+        assert!(app.relaunch_failure_notices.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_relaunch_still_starting_is_probed_again() {
+        let mut app = test_app();
+        let terminal_id = woken_claude(&mut app);
+        let probe_at = resuming(&app, &terminal_id).probe_at.expect("probed");
+        // No shell to find (here: no runtime): the probe waits a poll.
+        let runtime = app.terminal_runtimes.remove(&terminal_id).expect("runtime");
+        assert!(!app.start_pending_agent_restarts(probe_at));
+        let next = probe_at + RESTART_RESUME_POLL_INTERVAL;
+        assert_eq!(resuming(&app, &terminal_id).probe_at, Some(next));
+        assert_eq!(app.state.next_suspended_agent_resume_deadline(), Some(next));
+        assert_eq!(pushed_marks(&mut app), (Some("wake".into()), None));
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        assert!(app.start_pending_agent_restarts(next));
+        assert_eq!(app.relaunch_failure_notices.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_muted_tab_gets_no_relaunch_toast() {
+        let mut app = test_app();
+        let terminal_id = woken_claude(&mut app);
+        app.state.workspaces[0].tabs[0].muted = true;
+        app.state.tab_mutes_view_rev = 1;
+        let probe_at = resuming(&app, &terminal_id).probe_at.expect("probed");
+        assert!(app.start_pending_agent_restarts(probe_at));
+        assert_eq!(pushed_marks(&mut app), (None, None), "still unlocks");
+        assert!(app.relaunch_failure_notices.is_empty(), "muted");
+    }
+
+    #[tokio::test]
+    async fn a_relaunch_never_detected_times_out_without_a_failed_mark() {
+        let mut app = test_app();
+        let terminal_id = woken_claude(&mut app);
+        let detect_by = resuming(&app, &terminal_id).detect_by;
+        let rev = app.state.agent_times_view_rev;
+        assert!(app.start_pending_agent_restarts(detect_by));
+        assert!(app.state.agent_times_view_rev > rev);
+        assert_eq!(pushed_marks(&mut app), (None, None));
+        let terminal = &app.state.terminals[&terminal_id];
+        assert!(terminal.agent_resuming.is_none());
+        assert_eq!(terminal.agent_resume_failed, None, "nobody renders it");
+        assert_eq!(app.state.next_suspended_agent_resume_deadline(), None);
+        assert!(
+            app.relaunch_failure_notices.is_empty(),
+            "the timeout only logs"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_suspend_is_never_pushed_as_restarting() {
+        let mut app = test_app();
+        let (_terminal_id, _rx) = live_claude(&mut app, AgentState::Idle);
+        assert_eq!(
+            suspend(&mut app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        assert_eq!(pushed_marks(&mut app), (None, None));
+    }
+
+    #[tokio::test]
+    async fn a_forced_restart_stays_restarting_through_sigkill_to_the_relaunch() {
+        let mut app = test_app();
+        let (terminal_id, mut rx) = live_claude(&mut app, AgentState::Idle);
+        let typed_at = Instant::now();
+        let response = force_restart(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_restarted", "{response}");
+        let _ = next_input(&mut rx).await;
+        assert_eq!(pushed_marks(&mut app), restart_mark());
+        escalation_reaches_kill(&mut app, &terminal_id, typed_at);
+        assert!(!app.start_pending_agent_restarts(Instant::now()));
+        assert_eq!(
+            pushed_marks(&mut app),
+            restart_mark(),
+            "killed, not given up"
+        );
+        observe_exit(&mut app);
+        assert!(app.start_pending_agent_restarts(Instant::now()));
+        assert_eq!(
+            pushed_marks(&mut app),
+            restart_mark(),
+            "relaunched, not detected"
+        );
+        report_agent_back(&mut app);
+        assert_eq!(pushed_marks(&mut app), (None, None), "detected");
+    }
+
+    #[tokio::test]
+    async fn a_restart_that_gives_up_is_pushed_as_failed_for_a_while() {
+        // A plain restart that needed SIGKILL.
+        let mut app = test_app();
+        let (terminal_id, mut rx) = live_claude(&mut app, AgentState::Idle);
+        let typed_at = Instant::now();
+        assert_eq!(
+            restart(&mut app, "reviewer")["result"]["type"],
+            "agent_restarted"
+        );
+        let _ = next_input(&mut rx).await;
+        escalation_reaches_kill(&mut app, &terminal_id, typed_at);
+        observe_exit(&mut app);
+        let rev = app.state.agent_times_view_rev;
+        assert!(app.start_pending_agent_restarts(Instant::now()));
+        assert!(app.state.agent_times_view_rev > rev);
+        assert_eq!(
+            pushed_marks(&mut app),
+            (None, Some("restart".into())),
+            "abandoned for the kill"
+        );
+        assert_eq!(agent_status(&mut app, "reviewer"), AgentStatus::Suspended);
+
+        // The mark lapses on the scheduler: its deadline is due then.
+        let lapse = app
+            .state
+            .next_suspended_agent_resume_deadline()
+            .expect("the mark's lapse is scheduled");
+        assert!(lapse >= Instant::now() + RESUME_FAILED_MARK_TTL - Duration::from_secs(5));
+        assert!(!app.start_pending_agent_restarts(lapse - Duration::from_millis(1)));
+        let rev = app.state.agent_times_view_rev;
+        assert!(app.start_pending_agent_restarts(lapse));
+        assert!(app.state.agent_times_view_rev > rev);
+        assert_eq!(app.state.next_suspended_agent_resume_deadline(), None);
+        assert_eq!(
+            app.state.terminals[&terminal_id].resume_failed_mark(Instant::now()),
+            None
+        );
+
+        // A restart that timed out; activating clears the mark.
+        let mut app = test_app();
+        let (terminal_id, _rx) = live_claude(&mut app, AgentState::Idle);
+        assert_eq!(
+            restart(&mut app, "reviewer")["result"]["type"],
+            "agent_restarted"
+        );
+        let give_up_at = app.state.terminals[&terminal_id]
+            .suspended_agent
+            .as_ref()
+            .and_then(|record| record.resume_pending())
+            .unwrap()
+            .give_up_at;
+        assert!(app.start_pending_agent_restarts(give_up_at));
+        assert_eq!(pushed_marks(&mut app), (None, Some("restart".into())));
+        observe_exit(&mut app);
+        let rev = app.state.agent_times_view_rev;
+        assert_eq!(
+            activate(&mut app, "reviewer")["result"]["type"],
+            "agent_activated"
+        );
+        assert!(app.state.agent_times_view_rev > rev);
+        assert_eq!(
+            pushed_marks(&mut app),
+            (Some("wake".into()), None),
+            "the failed mark goes; the activation waits for detection"
+        );
+        report_agent_back(&mut app);
+        assert_eq!(pushed_marks(&mut app), (None, None));
+    }
+
+    #[tokio::test]
+    async fn activating_a_cold_restored_pane_pushes_the_wake_mark_without_a_time() {
+        let mut app = test_app();
+        let terminal_id = root_terminal_id(&app);
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.restore_suspended_agent(
+            "claude".into(),
+            Some("reviewer".into()),
+            claude_session("claude-session"),
+        );
+        assert_eq!(terminal.last_agent_state_change_seq, None, "no stamps");
+        assert_eq!(terminal.agent_state_since_unix_ms, None);
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        assert!(app.agent_times().is_empty(), "nothing to list yet");
+
+        let before = crate::codex_sessions::now_unix_ms();
+        let rev = app.state.agent_times_view_rev;
+        let response = activate(&mut app, "reviewer");
+        assert_eq!(response["result"]["type"], "agent_activated", "{response}");
+        assert!(app.state.agent_times_view_rev > rev);
+        let panes = app.agent_times();
+        assert_eq!(panes.len(), 1, "listed for its mark alone");
+        assert_eq!(panes[0].resuming.as_deref(), Some("wake"));
+        assert_eq!(panes[0].state_change_seq, 0, "never matched for a time");
+        assert!(panes[0].since_unix_ms >= before);
+        assert_eq!(
+            app.state.terminals[&terminal_id].last_agent_state_change_seq, None,
+            "the push stamps nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_respawn_pushes_the_cleared_resuming_mark() {
+        let mut app = test_app();
+        let (terminal_id, _rx) = live_claude(&mut app, AgentState::Idle);
+        assert_eq!(
+            suspend(&mut app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        observe_exit(&mut app);
+        assert_eq!(
+            activate(&mut app, "reviewer")["result"]["type"],
+            "agent_activated"
+        );
+        assert!(app.state.terminals[&terminal_id].agent_resuming.is_some());
+        let rev = app.state.agent_times_view_rev;
+        app.clear_agent_identity_after_respawn(&terminal_id);
+        assert!(app.state.agent_times_view_rev > rev, "clients hear of it");
+        assert!(app.state.terminals[&terminal_id].agent_resuming.is_none());
+        assert!(app.agent_times().iter().all(|pane| pane.resuming.is_none()));
+
+        // Nothing marked: a respawn pushes nothing.
+        let rev = app.state.agent_times_view_rev;
+        app.clear_agent_identity_after_respawn(&terminal_id);
+        assert_eq!(app.state.agent_times_view_rev, rev);
+    }
+
+    #[tokio::test]
+    async fn a_suspend_of_a_pane_with_a_failed_mark_pushes_the_change() {
+        let mut app = test_app();
+        let (terminal_id, _rx) = live_claude(&mut app, AgentState::Idle);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .fail_agent_resume(
+                crate::terminal::AgentResumeKind::Wake,
+                Instant::now() + RESUME_FAILED_MARK_TTL,
+            );
+        assert_eq!(pushed_marks(&mut app), (None, Some("wake".into())));
+        let rev = app.state.agent_times_view_rev;
+        assert_eq!(
+            suspend(&mut app, "reviewer")["result"]["type"],
+            "agent_suspended"
+        );
+        assert!(app.state.agent_times_view_rev > rev, "clients hear of it");
+        assert_eq!(pushed_marks(&mut app), (None, None));
     }
 }

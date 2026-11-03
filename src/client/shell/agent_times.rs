@@ -8,6 +8,10 @@
 //! `state_change_seq` equals the snapshot agent's (`since_of`): a push that
 //! lags the snapshot shows no time, never a wrong one. A state is used only
 //! while its `boot_id` is the active snapshot's.
+//!
+//! Fork (restart screen): a pane's `resuming` / `resume_failed` names become
+//! a [`ClientResumeMark`] for the suspended card; a name this client does not
+//! know is ignored.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -24,6 +28,48 @@ pub(crate) struct ClientAgentTimesState {
     pub(crate) panes: HashMap<String, (u64, Instant)>,
     /// Fork (autosuspend): the panes whose agent herdr parked for idling.
     pub(crate) auto_suspended: std::collections::HashSet<String>,
+    /// Fork (restart screen): the parked panes being relaunched, or whose
+    /// relaunch gave up.
+    pub(crate) resume_marks: HashMap<String, ClientResumeMark>,
+}
+
+/// Fork (restart screen): what the suspended card says about a parked
+/// agent's relaunch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClientResumeMark {
+    /// `agent.restart` owes it a relaunch.
+    Restarting,
+    /// A message's wake is being retried.
+    Waking,
+    /// The restart gave up.
+    RestartFailed,
+    /// The wake gave up.
+    WakeFailed,
+}
+
+impl ClientResumeMark {
+    /// The mark for a pane's pushed names: a relaunch under way wins over
+    /// a failed one; unknown names are none.
+    fn from_names(resuming: Option<&str>, failed: Option<&str>) -> Option<Self> {
+        match resuming {
+            Some("restart") => return Some(Self::Restarting),
+            Some("wake") => return Some(Self::Waking),
+            _ => {}
+        }
+        match failed {
+            Some("restart") => Some(Self::RestartFailed),
+            Some("wake") => Some(Self::WakeFailed),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_resuming(self) -> bool {
+        matches!(self, Self::Restarting | Self::Waking)
+    }
+
+    pub(crate) fn is_failed(self) -> bool {
+        matches!(self, Self::RestartFailed | Self::WakeFailed)
+    }
 }
 
 impl ClientAgentTimesState {
@@ -35,10 +81,22 @@ impl ClientAgentTimesState {
             .filter(|pane| pane.auto_suspended)
             .map(|pane| pane.pane_id.clone())
             .collect();
+        let resume_marks = payload
+            .panes
+            .iter()
+            .filter_map(|pane| {
+                ClientResumeMark::from_names(
+                    pane.resuming.as_deref(),
+                    pane.resume_failed.as_deref(),
+                )
+                .map(|mark| (pane.pane_id.clone(), mark))
+            })
+            .collect();
         Self {
             boot_id: payload.boot_id,
             revision: payload.revision,
             auto_suspended,
+            resume_marks,
             panes: payload
                 .panes
                 .into_iter()
@@ -56,9 +114,26 @@ impl ClientAgentTimesState {
         !self.auto_suspended.is_empty() && self.auto_suspended.contains(pane_id)
     }
 
+    /// Fork (restart screen): whether any pane is marked restarting or waking.
+    pub(crate) fn any_resuming(&self) -> bool {
+        self.resume_marks.values().any(|mark| mark.is_resuming())
+    }
+
+    /// Fork (restart screen): what the suspended card says about `pane_id`'s relaunch.
+    pub(crate) fn resume_mark(&self, pane_id: &str) -> Option<ClientResumeMark> {
+        if self.resume_marks.is_empty() {
+            return None;
+        }
+        self.resume_marks.get(pane_id).copied()
+    }
+
     /// When `pane_id`'s agent entered its state, only while the push's seq
     /// is `seq` (the snapshot agent's `state_change_seq`).
+    /// Seq 0 (no state change: a pane listed only for its resume mark) never has one.
     pub(crate) fn since_of(&self, pane_id: &str, seq: u64) -> Option<Instant> {
+        if seq == 0 {
+            return None;
+        }
         self.panes
             .get(pane_id)
             .filter(|(pushed, _)| *pushed == seq)
@@ -143,6 +218,7 @@ mod tests {
                         state_change_seq: 4,
                         since_unix_ms: 1_000_000 - 90_000,
                         auto_suspended: false,
+                        ..Default::default()
                     },
                     AgentTimePane {
                         pane_id: "w1:p2".into(),
@@ -150,6 +226,7 @@ mod tests {
                         // A since after the server's now (clock stepped back).
                         since_unix_ms: 2_000_000,
                         auto_suspended: false,
+                        ..Default::default()
                     },
                 ],
             },
@@ -162,5 +239,69 @@ mod tests {
         assert_eq!(state.since_of("w1:p1", 3), None, "a stale seq has no time");
         assert_eq!(state.since_of("w1:p2", 5), Some(received));
         assert_eq!(state.since_of("w9:p9", 1), None);
+
+        // Fork (restart screen): a pane listed only for its resume mark
+        // (seq 0) never yields a time, even for a snapshot agent at seq 0.
+        let marked = ClientAgentTimesState::from_payload(
+            AgentTimesPayload {
+                boot_id: "b".into(),
+                revision: 2,
+                server_now_unix_ms: 1_000_000,
+                panes: vec![AgentTimePane {
+                    pane_id: "w1:p3".into(),
+                    state_change_seq: 0,
+                    since_unix_ms: 1_000_000,
+                    resuming: Some("wake".into()),
+                    ..Default::default()
+                }],
+            },
+            received,
+        );
+        assert_eq!(marked.since_of("w1:p3", 0), None);
+        assert_eq!(marked.resume_mark("w1:p3"), Some(ClientResumeMark::Waking));
+    }
+
+    #[test]
+    fn resume_marks_are_read_from_the_push_and_unknown_names_ignored() {
+        let pane = |id: &str, resuming: Option<&str>, failed: Option<&str>| AgentTimePane {
+            pane_id: id.into(),
+            state_change_seq: 1,
+            since_unix_ms: 1,
+            resuming: resuming.map(str::to_string),
+            resume_failed: failed.map(str::to_string),
+            ..Default::default()
+        };
+        let state = ClientAgentTimesState::from_payload(
+            AgentTimesPayload {
+                boot_id: "b".into(),
+                revision: 1,
+                server_now_unix_ms: 2,
+                panes: vec![
+                    pane("w1:p1", Some("restart"), None),
+                    pane("w1:p2", Some("wake"), Some("wake")),
+                    pane("w1:p3", None, Some("restart")),
+                    pane("w1:p4", None, Some("wake")),
+                    pane("w1:p5", Some("phase-2"), Some("later")),
+                    pane("w1:p6", None, None),
+                ],
+            },
+            Instant::now(),
+        );
+        assert_eq!(
+            state.resume_mark("w1:p1"),
+            Some(ClientResumeMark::Restarting)
+        );
+        assert_eq!(state.resume_mark("w1:p2"), Some(ClientResumeMark::Waking));
+        assert_eq!(
+            state.resume_mark("w1:p3"),
+            Some(ClientResumeMark::RestartFailed)
+        );
+        assert_eq!(
+            state.resume_mark("w1:p4"),
+            Some(ClientResumeMark::WakeFailed)
+        );
+        assert_eq!(state.resume_mark("w1:p5"), None, "a newer server's name");
+        assert_eq!(state.resume_mark("w1:p6"), None);
+        assert_eq!(state.resume_mark("w9:p9"), None);
     }
 }

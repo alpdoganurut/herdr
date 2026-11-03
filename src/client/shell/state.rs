@@ -847,6 +847,12 @@ pub(super) enum ClientContextMenuAction {
     BrowserToggleDock,
     /// Fork (companion launcher), tab menu: the tab's Browser view.
     BrowserToggleView,
+    /// Fork (tab groups), tab menu: the move-to-group name prompt for the
+    /// menu's tab.
+    MoveToGroup,
+    /// Fork (tab groups), tab menu of a grouped tab: move it to the
+    /// ungrouped bucket.
+    RemoveFromGroup,
 }
 
 /// The tab menu's swatch row: the tab's color captured when the menu opened
@@ -929,6 +935,10 @@ pub(super) enum ClientContextMenuTarget {
         /// opened (`browser.get` `sessions`): its active page's title (the
         /// URL without one) and whether a page needs the user.
         browser_page: Option<(String, bool)>,
+        /// Fork (tab groups): in the `tabs` layout, whether the tab sits in a
+        /// group (not the ungrouped bucket); `None` in another layout, where
+        /// the menu has no grouping items.
+        grouped: Option<bool>,
         /// Fork (companion launcher): (docked, Browser view) where the
         /// browser docks (the local endpoint of a server that takes
         /// placements).
@@ -1157,6 +1167,11 @@ pub(super) enum PendingEndpointKind {
         target: String,
         restart: bool,
     },
+    /// Fork (toolbar new tab): the toolbar `+`'s loose `tab.create`; its
+    /// reply moves the new tab to the top (`sidebar_filter.rs`).
+    ToolbarNewTab,
+    /// Fork (toolbar new tab): that follow-up `tab.move`; never a notice.
+    ToolbarNewTabMove,
 }
 
 pub(super) struct PendingEndpointRequest {

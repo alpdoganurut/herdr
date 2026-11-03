@@ -144,7 +144,7 @@ impl super::state::AppState {
 }
 
 /// One pane's last agent state change, as pushed to client shells.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct AgentTimePane {
     /// The pane's public id.
     pub pane_id: String,
@@ -156,6 +156,16 @@ pub struct AgentTimePane {
     /// (the detail strip says so). Absent when false; older clients ignore it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_suspended: bool,
+    /// Fork (restart screen): the parked agent is being relaunched:
+    /// `restart` (`agent.restart`, until the relaunch) or `wake` (a message
+    /// for an auto-suspended agent, while it is retried). Absent otherwise;
+    /// older clients ignore it, and a client ignores a name it does not know.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resuming: Option<String>,
+    /// Fork (restart screen): the parked agent's `restart` or `wake` gave up
+    /// (for a few minutes). Absent otherwise; older clients ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_failed: Option<String>,
 }
 
 impl App {
@@ -178,34 +188,39 @@ impl App {
         }
     }
 
-    /// Every pane with a stamped state change, sorted by public pane id (the push).
+    /// Every pane with a stamped state change, sorted by public pane id (the
+    /// push). Fork (restart screen): also a pane with only a resume mark, as
+    /// `state_change_seq` 0 (never matched for a time) at the server's now.
     pub(crate) fn agent_times(&self) -> Vec<AgentTimePane> {
+        let now = Instant::now();
+        let now_unix_ms = crate::codex_sessions::now_unix_ms();
         let mut panes = Vec::new();
         for (ws_idx, workspace) in self.state.workspaces.iter().enumerate() {
             for (pane_id, pane) in workspace.tabs.iter().flat_map(|tab| tab.panes.iter()) {
-                let Some((state_change_seq, since_unix_ms, auto_suspended)) = self
-                    .state
-                    .terminals
-                    .get(&pane.attached_terminal_id)
-                    .and_then(|terminal| {
-                        Some((
-                            terminal.last_agent_state_change_seq?,
-                            terminal.agent_state_since_unix_ms?,
-                            terminal
-                                .suspended_agent
-                                .as_ref()
-                                .is_some_and(|record| record.auto),
-                        ))
-                    })
-                else {
+                let Some(terminal) = self.state.terminals.get(&pane.attached_terminal_id) else {
                     continue;
+                };
+                let resuming = terminal.resuming_mark(now);
+                let resume_failed = terminal.resume_failed_mark(now);
+                let (state_change_seq, since_unix_ms) = match terminal
+                    .last_agent_state_change_seq
+                    .zip(terminal.agent_state_since_unix_ms)
+                {
+                    Some(stamped) => stamped,
+                    None if resuming.is_some() || resume_failed.is_some() => (0, now_unix_ms),
+                    None => continue,
                 };
                 if let Some(public) = self.public_pane_id(ws_idx, *pane_id) {
                     panes.push(AgentTimePane {
                         pane_id: public,
                         state_change_seq,
                         since_unix_ms,
-                        auto_suspended,
+                        auto_suspended: terminal
+                            .suspended_agent
+                            .as_ref()
+                            .is_some_and(|record| record.auto),
+                        resuming: resuming.map(|kind| kind.name().to_string()),
+                        resume_failed: resume_failed.map(|kind| kind.name().to_string()),
                     });
                 }
             }
@@ -289,6 +304,7 @@ mod tests {
                 state_change_seq: seq,
                 since_unix_ms: since,
                 auto_suspended: false,
+                ..Default::default()
             }]
         );
         let info = app.agent_info(0, pane(&app)).expect("an agent pane");
@@ -439,6 +455,7 @@ mod tests {
                 state_change_seq: seq,
                 since_unix_ms: saved,
                 auto_suspended: false,
+                ..Default::default()
             }
         );
         // Detection confirming the state changes nothing.
