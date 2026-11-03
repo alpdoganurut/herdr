@@ -2990,10 +2990,14 @@ async fn fork_smoke_a_relaunch_that_never_starts_toasts_the_shell() {
         .agent_resuming
         .is_none());
     assert_eq!(server.flush_relaunch_failure_notices(), 1);
+    // The test writer forwards on its own thread: wait for the toast, then
+    // take whatever else arrives shortly after (a second toast would too).
     let mut notifications = Vec::new();
-    while let Ok(bytes) = control.try_recv() {
+    let mut wait = Duration::from_secs(2);
+    while let Ok(bytes) = control.recv_timeout(wait) {
         if let ServerMessage::SemanticNotification(notification) = read_server_message(bytes) {
             notifications.push(notification);
+            wait = Duration::from_millis(100);
         }
     }
     assert_eq!(notifications.len(), 1, "one toast");
