@@ -4,8 +4,8 @@
 //!
 //! Everything shown comes from `browser.get {since_seq}`, pulled on the first
 //! snapshot of a connection, after every `browser.*` reply the client sent,
-//! and on a timer: every 2 s while a profile is running or starting, every
-//! 15 s otherwise. Nothing is pulled from a server that does not advertise
+//! and on a timer: every 2 s while a profile is running or starting (or an
+//! installed companion is stopped, to start on demand), every 15 s otherwise. Nothing is pulled from a server that does not advertise
 //! `browser.get`. A remote endpoint is rendered read-only (no `focus`).
 
 use std::collections::HashSet;
@@ -25,7 +25,8 @@ pub(crate) use browser_companion::{
 };
 
 /// The pull cadence while a profile is running or starting (fork, companion
-/// launcher: or the companion is starting, restarting or stopping).
+/// launcher: or the companion is starting, restarting or stopping, or is
+/// installed and stopped, so an agent's on-demand start shows at once).
 pub(super) const BROWSER_REFRESH_ACTIVE: std::time::Duration = std::time::Duration::from_secs(2);
 /// The pull cadence otherwise.
 pub(super) const BROWSER_REFRESH_IDLE: std::time::Duration = std::time::Duration::from_secs(15);
@@ -517,7 +518,14 @@ impl ClientShellState {
                 || info
                     .companion_app
                     .as_ref()
-                    .is_some_and(|companion| companion_changing(&companion.state))
+                    .is_some_and(|companion| {
+                        companion_changing(&companion.state)
+                            // An installed companion that is stopped starts on an
+                            // agent's first open: its page shows within 2 s, not 15.
+                            // (One `browser.get {since_seq}` per client per tick,
+                            // `unchanged` when nothing moved.)
+                            || (companion.state == "stopped" && companion.installed.is_some())
+                    })
         });
         let overlay_open = matches!(self.overlay, Some(ClientShellOverlay::Browser(_)));
         // Fork (companion launcher): the dock's placeholder follows the

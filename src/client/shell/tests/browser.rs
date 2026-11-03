@@ -428,6 +428,34 @@ fn no_pull_from_a_server_without_browser_get_and_idle_cadence_is_slow() {
 }
 
 #[test]
+fn an_installed_stopped_companion_is_pulled_every_2_s_and_a_missing_one_every_15() {
+    let start = std::time::Instant::now();
+    let pulls = |info: BrowserGetInfo, after: std::time::Duration| {
+        let mut state = tabs_state(browser_snapshot());
+        state.compose(106, 20).expect("composed frame");
+        deliver(&mut state, info);
+        state.browser.last_pull = Some(start);
+        endpoint_requests(&tick(&mut state, start + after)).len()
+    };
+    let two = super::super::browser::BROWSER_REFRESH_ACTIVE;
+    assert_eq!(
+        pulls(companion_info(1, "stopped"), two),
+        1,
+        "installed and stopped: an agent's open may start it any moment"
+    );
+    let mut missing = companion_info(1, "not_installed");
+    if let Some(c) = missing.companion_app.as_mut() {
+        c.installed = None;
+    }
+    assert_eq!(pulls(missing, two), 0, "not installed: the slow cadence");
+    let mut never = companion_info(1, "stopped");
+    if let Some(c) = never.companion_app.as_mut() {
+        c.installed = None;
+    }
+    assert_eq!(pulls(never, two), 0, "nothing installed to start");
+}
+
+#[test]
 fn the_row_opens_the_overlay_and_its_menu_focuses_starts_and_stops() {
     let mut state = tabs_state(browser_snapshot());
     state.compose(106, 20).expect("composed frame");
@@ -887,10 +915,11 @@ fn the_overlay_companion_block_shows_pid_uptime_restarts_update_and_last_error()
 
 /// Fork (companion launcher): while the companion starts, re-attaches,
 /// stops or waits to restart after a crash, the row is pulled at the
-/// active cadence (its state and countdown keep up); settled, at the idle one.
+/// active cadence (its state and countdown keep up); so it is while it is
+/// installed and stopped (an agent's open starts it); settled, at the idle one.
 #[test]
 fn a_companion_on_its_way_up_or_down_is_pulled_every_2_s() {
-    for companion in ["starting", "reconnecting", "stopping", "crashed"] {
+    for companion in ["starting", "reconnecting", "stopping", "crashed", "stopped"] {
         let mut state = tabs_state(browser_snapshot());
         state.compose(106, 20).expect("composed frame");
         deliver(&mut state, companion_info(1, companion));
@@ -903,7 +932,7 @@ fn a_companion_on_its_way_up_or_down_is_pulled_every_2_s() {
             "{companion}: pulled after 2 s"
         );
     }
-    for companion in ["stopped", "failed", "not_installed"] {
+    for companion in ["failed", "not_installed"] {
         let mut state = tabs_state(browser_snapshot());
         state.compose(106, 20).expect("composed frame");
         deliver(&mut state, companion_info(1, companion));
