@@ -31,6 +31,31 @@ pub const NO_WRAP_ENV: &str = "HERDR_NO_WRAP";
 /// a wrap that finds it equal to its own pane runs inside that agent (a
 /// `claude -p` or `codex exec` from its Bash tool), not as the pane's agent.
 pub const WRAPPED_PANE_ENV: &str = "HERDR_WRAPPED_PANE";
+/// Read by the Claude hook's browser steering (PreToolUse, integration
+/// v17): the config file it re-reads for `[browser] enabled` and
+/// `steer_agents` before it denies a call, and the directory of its denial
+/// markers (the retry window). Set on a wrapped Claude launch that steers,
+/// cleared on every other launch; without them the hook allows everything.
+pub const BROWSER_STEER_CONFIG_ENV: &str = "HERDR_BROWSER_STEER_CONFIG";
+pub const BROWSER_STEER_STATE_ENV: &str = "HERDR_BROWSER_STEER_STATE";
+
+/// The browser steering variables for a launch of `agent` under `plan`:
+/// Claude with the steering on and the browser enabled; None clears them.
+pub fn browser_steer_env(
+    agent: &str,
+    plan: &WrapPlan,
+    config: &Config,
+) -> Option<[(&'static str, PathBuf); 2]> {
+    (agent == "claude" && plan.steer && config.browser.enabled).then(|| {
+        [
+            (BROWSER_STEER_CONFIG_ENV, crate::config::config_path()),
+            (
+                BROWSER_STEER_STATE_ENV,
+                crate::config::state_dir().join("browser-steer"),
+            ),
+        ]
+    })
+}
 /// The herdr_agents tools a wrapped launch pre-approves (agents v2: every
 /// agent has the tools, and the herdr server checks what it may do): every
 /// tool but close and reopen, which ask the user first as a courtesy.

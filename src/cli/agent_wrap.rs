@@ -211,6 +211,18 @@ pub(super) fn run(args: &[String]) -> std::io::Result<i32> {
     if let Some(pane) = env.pane_id.as_deref() {
         command.env(agent_wrap::WRAPPED_PANE_ENV, pane);
     }
+    // The Claude hook's browser steering runs only where these are set.
+    match agent_wrap::browser_steer_env(agent, &plan, &config) {
+        Some(vars) => {
+            for (name, value) in vars {
+                command.env(name, value);
+            }
+        }
+        None => {
+            command.env_remove(agent_wrap::BROWSER_STEER_CONFIG_ENV);
+            command.env_remove(agent_wrap::BROWSER_STEER_STATE_ENV);
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
