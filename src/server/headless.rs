@@ -243,6 +243,12 @@ pub struct HeadlessServer {
     native_graphics: native_graphics::NativeGraphics,
     interactive_input_deadlines: HashMap<crate::layout::PaneId, Instant>,
     interactive_render_budget: Option<(Instant, u8)>,
+    /// Fork (scroll perf): the last render pass found a visible pane mid
+    /// synchronized-output frame and presented nothing for it.
+    render_sync_deferred: bool,
+    /// Fork (scroll perf): this frame slot already gave a synchronized deferral
+    /// its one retry.
+    sync_retry_pending: bool,
     #[cfg(unix)]
     next_client_id: u64,
     /// The client currently driving session-wide host presentation and side effects.
@@ -400,6 +406,8 @@ impl HeadlessServer {
             native_graphics: Default::default(),
             interactive_input_deadlines: HashMap::new(),
             interactive_render_budget: None,
+            render_sync_deferred: false,
+            sync_retry_pending: false,
             #[cfg(unix)]
             next_client_id: 1,
             foreground_client_id: None,
@@ -635,7 +643,16 @@ impl HeadlessServer {
                     crate::render_prof::event("full_render.invoke");
                     self.render_and_stream();
                 }
-                self.app.record_render_attempt(now, !hidden_only);
+                // Fork (scroll perf): a pass a synchronized-output frame deferred
+                // presented nothing; leave its frame slot open once, so the PTY
+                // chunk that closes the frame renders at once instead of a full
+                // interval later (back-to-back redraws otherwise keep landing
+                // mid-frame and freeze the pane). At most two attempts per slot.
+                if self.take_sync_retry() {
+                    crate::render_prof::event("render.sync_retry");
+                } else {
+                    self.app.record_render_attempt(now, !hidden_only);
+                }
                 if interactive_due {
                     self.record_interactive_render(now);
                 }
