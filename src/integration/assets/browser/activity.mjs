@@ -898,7 +898,7 @@ export class ControlPage {
  *  typed). */
 export const DIALOG_BINDING = '__herdrDialogs';
 export class CompanionDialog {
-  constructor(control, d, onAnswer = () => {}) {
+  constructor(control, d, onAnswer = () => {}, onUnanswered = () => {}) {
     this.control = control;
     this.companion = true;
     this.id = String(d.id);
@@ -907,18 +907,35 @@ export class CompanionDialog {
     this._message = String(d.message == null ? '' : d.message);
     this._default = String(d.default_value == null ? '' : d.default_value);
     this.onAnswer = onAnswer;
+    this.onUnanswered = onUnanswered;
   }
   type() { return this._type; }
   message() { return this._message; }
   defaultValue() { return this._default; }
   accept(text) { return this._answer(true, text); }
   dismiss() { return this._answer(false); }
+  // Remembered as answered while the call goes (a push from before it must not bring the
+  // dialog back); forgotten again when the companion did not take it (a timeout, the
+  // control page gone): only no_dialog means it is closed.
   async _answer(accept, text) {
     this.onAnswer(this.id);
     const arg = { view_id: this.viewId, id: this.id, accept };
     if (typeof text === 'string') arg.text = text;
-    await this.control.call('dialog', arg);
+    try {
+      await this.control.call('dialog', arg);
+    } catch (err) {
+      if (!err || err.code !== 'no_dialog') this.onUnanswered(this.id);
+      throw err;
+    }
   }
+}
+
+/** The answered ids a push still needs: those it lists (an answer in flight).
+ *  Ids never repeat, so one the companion no longer lists is gone for good. */
+export function pruneAnswered(answered, list) {
+  const listed = new Set((Array.isArray(list) ? list : []).filter((d) => d && d.id).map((d) => String(d.id)));
+  for (const id of [...answered]) if (!listed.has(id)) answered.delete(id);
+  return answered;
 }
 
 /** What a companion dialog push changes for the tracked pages: `current`

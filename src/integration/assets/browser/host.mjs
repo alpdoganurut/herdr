@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import { EXTRACT_SOURCE, LINKS_SOURCE } from './extract.mjs';
-import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, DIALOG_BINDING } from './activity.mjs';
+import { Overlay, Companion, NUDGE_URL, dismissPanes, captureWithQuietRetry, SELECT_BUDGET_MS, describe, probePages, ControlPage, ViewWatches, isFurnitureUrl, VIEW_MARKER, CompanionDialog, reconcileDialogs, pruneAnswered, DIALOG_BINDING } from './activity.mjs';
 import { pathToFileURL } from 'node:url';
 import nodePath from 'node:path';
 /** Kept out of the connect for the post-timeout diagnosis (the page probe: a 1 s list fetch, 1 s probes). */
@@ -377,6 +377,7 @@ function applyCompanionDialogs(profile, payload) {
   const seq = Number(payload.seq) || 0;
   if (seq < profile.dialogSeq) return; // an older answer (the attach read) after a newer push
   profile.dialogSeq = seq;
+  pruneAnswered(profile.dialogsAnswered, payload.dialogs);
   profile.dialogs = new Map(payload.dialogs.filter((d) => d && d.target_id).map((d) => [String(d.target_id), d]));
   syncCompanionDialogs(profile);
 }
@@ -390,7 +391,7 @@ function syncCompanionDialogs(profile) {
   const { open, close } = reconcileDialogs(current, [...profile.dialogs.values()], profile.dialogsAnswered);
   for (const [target, d] of open) {
     const state = profile.pages.get(target);
-    state.dialog = new CompanionDialog(profile.control, d, (id) => profile.dialogsAnswered.add(id));
+    state.dialog = new CompanionDialog(profile.control, d, (id) => profile.dialogsAnswered.add(id), (id) => profile.dialogsAnswered.delete(id));
     event('dialog', { profile: profile.name, target, type: state.dialog.type(), message: state.dialog.message().slice(0, 500), state: 'open' });
   }
   for (const target of close) {
@@ -472,11 +473,19 @@ function needPage(profile, target) {
   if (!state || state.closed) fail('tab_closed', 'that browser tab is gone; open another or pick one with browser tabs');
   return state;
 }
+async function companionDialogStillOpen(state) {
+  const profile = state.profile;
+  const now = profile.control ? await withTimeout(profile.control.call('dialogs'), 500, 'x', 'x').catch(() => null) : null;
+  if (now) applyCompanionDialogs(profile, now);
+  return Boolean(state.dialog);
+}
 // A dialog the user answered in the window: the renderer answers again, so a quick evaluate
 // resolving means the dialog is gone (belt and braces next to Page.javascriptDialogClosed).
 async function dialogStillOpen(state) {
   if (!state.dialog) return false;
-  if (state.dialog.companion) return true; // the companion pushes its close (a frame's dialog leaves the page answering)
+  // the companion pushes its close (a frame's dialog leaves the page answering); a quick
+  // re-read of its list in case a push was lost
+  if (state.dialog.companion) return companionDialogStillOpen(state);
   const gone = await withTimeout(state.page.evaluate('1').then(() => true), 300, 'x', 'x').catch(() => false);
   if (gone) {
     state.dialog = null;
@@ -1142,10 +1151,22 @@ const ops = {
   async dialog({ profile: name, target, args }) {
     const state = needPage(needProfile(name), target);
     if (!(await dialogStillOpen(state))) fail('no_dialog', 'no dialog is open on this tab');
+    const profile = state.profile;
     const dialog = state.dialog;
     state.dialog = null;
-    try { if (args.accept) await dialog.accept(args.text || undefined); else await dialog.dismiss(); }
-    catch (err) { fail('no_dialog', `the dialog was already closed (${String(err.message).split('\n')[0]})`); }
+    // an explicit "" is an empty answer; no text keeps the field's value
+    try { if (args.accept) await dialog.accept(typeof args.text === 'string' ? args.text : undefined); else await dialog.dismiss(); }
+    catch (err) {
+      const why = String(err && err.message).split('\n')[0];
+      // the companion did not take the answer (a timeout, its control page gone): the dialog
+      // is still the tab's, unless a push closed it meanwhile
+      if (dialog.companion && err && err.code !== 'no_dialog') {
+        const listed = profile.dialogs.get(state.target);
+        if (!state.dialog && !state.closed && listed && String(listed.id) === dialog.id) state.dialog = dialog;
+        fail(err.code || 'browser_error', `the companion did not answer the dialog (${why})`);
+      }
+      fail('no_dialog', `the dialog was already closed (${why})`);
+    }
     event('dialog', { profile: name, target, state: 'closed' });
     return { result: { type: dialog.type(), message: dialog.message() }, page: await pageInfo(state) };
   },

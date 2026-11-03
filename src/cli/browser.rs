@@ -436,11 +436,13 @@ pub(crate) fn build_op(verb: &str, args: &[String]) -> Result<(BrowserOp, Common
                 .first()
                 .cloned()
                 .ok_or_else(|| usage("dialog [TAB] accept [TEXT] | dismiss"))?;
+            // no TEXT: the field's value (the default unless the user typed); an explicit
+            // "" is an empty answer
             let text = c
                 .positionals
                 .get(1..)
-                .map(|t| t.join(" "))
-                .filter(|t| !t.is_empty());
+                .filter(|t| !t.is_empty())
+                .map(|t| t.join(" "));
             (BrowserOp::Dialog { action, text }, c)
         }
         "tabs" => {
@@ -1659,6 +1661,12 @@ mod tests {
         assert!(
             matches!(op, BrowserOp::Dialog { ref action, text: Some(ref t) } if action == "accept" && t == "my answer")
         );
+        let (op, _) = build_op("dialog", &s(&["accept", ""])).unwrap();
+        assert!(
+            matches!(op, BrowserOp::Dialog { ref action, text: Some(ref t) } if action == "accept" && t.is_empty())
+        );
+        let (op, _) = build_op("dialog", &s(&["accept"])).unwrap();
+        assert!(matches!(op, BrowserOp::Dialog { text: None, .. }));
         let (op, _) = build_op(
             "network",
             &s(&["--failed", "--type", "xhr", "--match", "api"]),
