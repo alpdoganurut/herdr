@@ -2950,6 +2950,72 @@ async fn fork_smoke_a_restart_is_pushed_as_restarting_until_the_relaunched_agent
     shutdown_test_runtimes(&mut server);
 }
 
+/// Fork (restart screen): a restart whose relaunched agent never starts
+/// (the shell is back, nothing detected) unlocks the restarting card at the
+/// shell probe, well before the detection timeout, and toasts the attached
+/// shell once.
+#[tokio::test]
+async fn fork_smoke_a_relaunch_that_never_starts_toasts_the_shell() {
+    const SESSION: &str = "0b5e3d2a-7c41-4f8e-b2d6-9a1c3e5f7a90";
+    let (mut server, mut rx) = server_with_claude(Some(SESSION));
+    report_state(&mut server, AgentState::Idle);
+    let (control, _render) = connect_test_shell(&mut server, 72, 80, 23);
+    let response = api(
+        &mut server,
+        Method::AgentRestart(crate::api::schema::AgentRestartParams {
+            target: AGENT_NAME.into(),
+        }),
+    );
+    assert_eq!(response["result"]["type"], "agent_restarted", "{response}");
+    let exit = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("the exit input arrives")
+        .expect("runtime channel open");
+    assert_eq!(exit, Bytes::from_static(b"/exit"));
+    observe_agent_exit(&mut server);
+    assert!(server
+        .app
+        .start_pending_agent_restarts(std::time::Instant::now()));
+    let terminal_id = root_terminal_id(&server);
+    let resuming = server.app.state.terminals[&terminal_id]
+        .agent_resuming
+        .expect("relaunched, not detected yet");
+    let probe_at = resuming.probe_at.expect("typed into the shell: probed");
+    assert!(probe_at < resuming.detect_by);
+    assert_eq!(server.flush_relaunch_failure_notices(), 0, "settling");
+    while control.try_recv().is_ok() {}
+
+    assert!(server.app.start_pending_agent_restarts(probe_at));
+    assert!(server.app.state.terminals[&terminal_id]
+        .agent_resuming
+        .is_none());
+    assert_eq!(server.flush_relaunch_failure_notices(), 1);
+    let mut notifications = Vec::new();
+    while let Ok(bytes) = control.try_recv() {
+        if let ServerMessage::SemanticNotification(notification) = read_server_message(bytes) {
+            notifications.push(notification);
+        }
+    }
+    assert_eq!(notifications.len(), 1, "one toast");
+    let notification = &notifications[0];
+    assert_eq!(
+        notification.kind,
+        protocol::SemanticNotificationKind::Custom
+    );
+    assert_eq!(
+        notification.title,
+        format!("{AGENT_NAME}: restart didn't start — the shell is back")
+    );
+    assert_eq!(notification.sound, None);
+    assert_eq!(
+        notification.pane_id,
+        server.app.public_pane_id(0, root_pane(&server)),
+        "a click focuses the pane"
+    );
+    assert_eq!(server.flush_relaunch_failure_notices(), 0, "sent once");
+    shutdown_test_runtimes(&mut server);
+}
+
 /// Fork (companion browser): a herdr tab's browser group is in the
 /// snapshot a live handoff hands over (`session.json`), so the replacement
 /// server has the same key, entries and active page; runtime targets are
