@@ -15,12 +15,17 @@
 
 pub mod activity;
 pub mod brand;
+// Fork (companion launcher): the companion app's install and its launcher.
+pub mod companion_app;
+pub mod companion_install;
 pub mod host;
 pub mod hub;
 pub mod launch;
 pub mod node;
 pub mod ntp;
 pub mod page_errors;
+// Fork (companion launcher): every client's browser placement (the dock).
+pub mod placements;
 pub mod profiles;
 pub mod serve;
 pub mod session;
@@ -29,8 +34,9 @@ pub mod shape;
 pub mod shots;
 pub mod state;
 
+// pub(crate): the fake sidecar serves the companion launcher's tests too.
 #[cfg(all(test, unix))]
-mod tests;
+pub(crate) mod tests;
 
 use std::sync::OnceLock;
 

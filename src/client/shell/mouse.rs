@@ -1065,6 +1065,10 @@ impl ClientShellState {
                     self.info_dock_drag(mouse.column, outcome);
                     return;
                 }
+                Some(ClientChromeDrag::BrowserDockWidth) => {
+                    self.browser_dock_drag(mouse.column, outcome);
+                    return;
+                }
                 Some(ClientChromeDrag::SidebarSection) => {
                     self.set_sidebar_section_from_row(mouse.row, outcome);
                     return;
@@ -1448,6 +1452,7 @@ impl ClientShellState {
                         self.persist_chrome_preferences(outcome);
                     }
                     ClientChromeDrag::InfoDockWidth => self.info_dock_release(outcome),
+                    ClientChromeDrag::BrowserDockWidth => self.browser_dock_release(outcome),
                     ClientChromeDrag::WorkspaceScrollbar { .. }
                     | ClientChromeDrag::AgentScrollbar { .. }
                     | ClientChromeDrag::HelpScrollbar { .. }
@@ -1839,6 +1844,26 @@ impl ClientShellState {
             }
             return;
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::Browser(_))) {
+            // Fork (companion launcher): the Browser overlay's chips and rows.
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.route_browser_overlay_click(point, outcome);
+                }
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    self.move_browser_overlay_cursor(
+                        if mouse.kind == MouseEventKind::ScrollUp {
+                            -1
+                        } else {
+                            1
+                        },
+                        outcome,
+                    );
+                }
+                _ => {}
+            }
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::TeamInfo(_))) {
             // Fork: the Team info overlay (`team_overlay.rs`).
             match mouse.kind {
@@ -2161,6 +2186,11 @@ impl ClientShellState {
                 // Fork: the info dock, before any pane hit, so a dock press
                 // never starts a pane gesture or a selection.
                 if self.info_dock_press(point, outcome) {
+                    return;
+                }
+                // Fork (companion launcher): the browser band, its strip,
+                // the Browser view's area and the Browser row's `◨`.
+                if self.browser_dock_press(point, outcome) {
                     return;
                 }
                 // The toggle is painted over the agent scrollbar's last cell.

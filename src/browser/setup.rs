@@ -36,10 +36,12 @@ pub const ZSHRC_MARKER: &str = "# herdr+";
 /// file without it is an older hook (`outdated`).
 pub const SHELL_FILE_MARKER: &str = "# herdr+ shell v2";
 /// The check ids, in display order.
-pub const CHECK_IDS: [&str; 6] = [
+pub const CHECK_IDS: [&str; 7] = [
     "executable",
     "helper",
     "extension",
+    // Fork (companion launcher): the companion app herdr installs and runs.
+    "companion_app",
     "mcp_claude",
     "mcp_codex",
     "launch_context",
@@ -958,8 +960,18 @@ pub fn checks(
 ) -> Vec<BrowserCheckInfo> {
     let mut out = Vec::with_capacity(CHECK_IDS.len());
 
-    // executable
-    out.push(
+    // executable (fork, companion launcher: not used while the window is off)
+    let window_off = |id: &str| {
+        check(
+            id,
+            true,
+            "not used ([browser] window = false)",
+            BrowserFixKind::None,
+        )
+    };
+    out.push(if !config.window {
+        window_off("executable")
+    } else {
         match super::launch::resolve_executable(&config.executable, env.home.as_deref()) {
             Ok(exe) => check(
                 "executable",
@@ -968,8 +980,8 @@ pub fn checks(
                 BrowserFixKind::None,
             ),
             Err(err) => check("executable", false, err.message, BrowserFixKind::None),
-        },
-    );
+        }
+    });
 
     // helper
     let host_dir = env.host_dir();
@@ -1046,6 +1058,7 @@ pub fn checks(
             .find(|p| p.name == config.default_profile() && p.state == "running")
     });
     out.push(match running {
+        _ if !config.window => window_off("extension"),
         Some(profile) => match profile.companion.as_deref() {
             Some(state) if state.contains("expects") => {
                 let idle = profile.agents == 0;
@@ -1092,6 +1105,12 @@ pub fn checks(
             BrowserFixKind::None,
         ),
     });
+
+    // Fork (companion launcher): the companion app
+    out.push(super::companion_install::doctor_check(
+        &super::companion_install::companion_home(&env.browser_home),
+        live.and_then(|info| info.companion_app.as_ref()),
+    ));
 
     // MCP per agent
     let wants = |agent: &str| config.mcp_agents.iter().any(|a| a == agent);
@@ -1244,6 +1263,9 @@ pub fn fix(id: &str, config: &BrowserConfig, env: &SetupEnv) -> Option<BrowserFi
         "helper" => install_helper(env, config, false),
         "mcp_claude" => register_claude(env, wants("claude")),
         "mcp_codex" => register_codex(env, wants("codex")),
+        // Fork (companion launcher): never the Electron download (that asks
+        // in a terminal: `herdr browser setup --companion`).
+        "companion_app" => companion_fix(env, config),
         _ => return None,
     };
     Some(match outcome {
@@ -1258,6 +1280,28 @@ pub fn fix(id: &str, config: &BrowserConfig, env: &SetupEnv) -> Option<BrowserFi
             detail,
         },
     })
+}
+
+/// The `companion_app` fix: the app files, npm and the bundle; a missing
+/// Electron binary is left to `herdr browser setup --companion` (it asks).
+fn companion_fix(env: &SetupEnv, config: &BrowserConfig) -> Result<String, String> {
+    let home = super::companion_install::companion_home(&env.browser_home);
+    if super::companion_install::read_install(&home).is_some() {
+        // the directory a companion still runs from is kept
+        if let Some(outcome) = super::companion_install::refresh_app_files(
+            &home,
+            super::companion_app::running_app_dir(&home).as_deref(),
+        ) {
+            return outcome;
+        }
+    }
+    super::companion_install::setup_companion(
+        env,
+        config,
+        &super::companion_install::CompanionSetupOptions::from_process(false),
+    )
+    .map(|report| report.lines.join(" · "))
+    .map_err(|err| err.to_string())
 }
 
 /// The fixes for `ids`, or for every failing fixable check when empty
@@ -1348,6 +1392,23 @@ pub fn auto_repair(config: &BrowserConfig, env: &SetupEnv) -> Option<Result<Stri
     if recorded.as_ref().is_some_and(|r| r.same_build(&current)) {
         return None;
     }
+    // Fork (companion launcher): an installed companion gets this herdr's
+    // app files (never a download, never a re-brand); a running one keeps
+    // its directory until it restarts.
+    let companion_home = super::companion_install::companion_home(&env.browser_home);
+    if let Some(outcome) = super::companion_install::refresh_app_files(
+        &companion_home,
+        super::companion_app::running_app_dir(&companion_home).as_deref(),
+    ) {
+        match outcome {
+            Ok(detail) => {
+                tracing::info!(event = "browser.companion.auto_repair", %detail, "companion app files refreshed after a herdr update")
+            }
+            Err(error) => {
+                tracing::warn!(event = "browser.companion.auto_repair", %error, "companion app files could not be refreshed; `herdr browser setup`")
+            }
+        }
+    }
     // A home that was never set up has nothing to repair: `setup` installs it.
     browser_assets::read_runtime(&env.host_dir())?;
     let outcome = install_helper(env, config, false);
@@ -1437,6 +1498,8 @@ mod tests {
             mcp_agents: mcp.iter().map(|s| s.to_string()).collect(),
             shell_hook: legacy_hook,
             executable: "/nonexistent/Chromium.app".into(),
+            // the window's checks (fork, companion launcher: off by default)
+            window: true,
             ..BrowserConfig::default()
         }
     }

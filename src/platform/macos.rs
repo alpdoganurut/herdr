@@ -980,7 +980,27 @@ pub(crate) fn process_comm_name(pid: u32) -> Option<String> {
 pub(crate) fn parent_pid(pid: u32) -> Option<u32> {
     process_bsdinfo(pid)
         .map(|info| info.pbi_ppid)
+        // Fork (companion launcher): the full BSD info is refused for another
+        // user's process (a terminal's root-owned `login` between a shell
+        // and the terminal app); the short one answers for any process.
+        .or_else(|| parent_pid_short(pid))
         .filter(|ppid| *ppid > 0)
+}
+
+/// The parent of `pid` from `PROC_PIDT_SHORTBSDINFO` (any owner).
+fn parent_pid_short(pid: u32) -> Option<u32> {
+    let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    let ret = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    (ret == size).then_some(info.pbsi_ppid)
 }
 
 fn process_bsdinfo(pid: u32) -> Option<libc::proc_bsdinfo> {
@@ -1232,6 +1252,32 @@ pub fn process_exists(pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// Fork (companion launcher): the parent of another user's process (a
+    /// root-owned daemon launchd started) is found too, through sysctl.
+    #[test]
+    fn parent_pid_reads_another_users_process() {
+        let out = std::process::Command::new("/bin/ps")
+            .args(["-axo", "pid=,ppid=,user="])
+            .output()
+            .expect("ps");
+        let root_child = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.split_whitespace();
+                let pid: u32 = parts.next()?.parse().ok()?;
+                let ppid: u32 = parts.next()?.parse().ok()?;
+                (parts.next()? == "root" && ppid == 1 && pid > 1).then_some(pid)
+            })
+            .next();
+        if let Some(pid) = root_child {
+            assert_eq!(super::parent_pid(pid), Some(1), "pid {pid}");
+        }
+        assert_eq!(
+            super::parent_pid(std::process::id()),
+            Some(std::os::unix::process::parent_id())
+        );
+    }
     use super::*;
 
     #[test]

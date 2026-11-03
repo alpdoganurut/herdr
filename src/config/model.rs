@@ -20,6 +20,11 @@ pub const MAX_IDLE_REMINDER_MINUTES: u32 = 240;
 pub const DEFAULT_INFO_PANE_WIDTH: u16 = 44;
 pub const MIN_INFO_PANE_WIDTH: u16 = 28;
 pub const MAX_INFO_PANE_WIDTH: u16 = 120;
+/// Fork (companion launcher): `ui.browser_dock_width` default and bounds
+/// (percent of the area right of the sidebar).
+pub const DEFAULT_BROWSER_DOCK_WIDTH: u16 = 45;
+pub const MIN_BROWSER_DOCK_WIDTH: u16 = 20;
+pub const MAX_BROWSER_DOCK_WIDTH: u16 = 80;
 pub const DEFAULT_DAILY_REMINDER_TIME: &str = "09:30";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -557,6 +562,14 @@ pub struct KeysConfig {
     pub open_coordinator: BindingConfig,
     /// Show or hide the focused tab's info pane (notes). Unset by default.
     pub toggle_info_pane: BindingConfig,
+    /// Fork (companion launcher): dock the companion browser on the right of the focused
+    /// tab, or undock it. Default: "prefix+shift+b".
+    pub toggle_browser_dock: BindingConfig,
+    /// Fork (companion launcher): switch the focused tab between its terminal and the
+    /// browser covering it (Browser view). Default: "prefix+shift+z".
+    pub toggle_browser_view: BindingConfig,
+    /// Fork (companion launcher): give the companion browser the keyboard. Unset by default.
+    pub focus_browser: BindingConfig,
     /// Focus the previously focused tab (browser-style back). Default: ["cmd+[", "alt+,"].
     pub tab_history_back: BindingConfig,
     /// Focus the next tab again after going back. Default: ["cmd+]", "alt+."].
@@ -724,6 +737,12 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_info_pane: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_browser_dock: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_browser_view: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    focus_browser: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tab_history_back: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tab_history_forward: Option<BindingConfig>,
@@ -874,6 +893,9 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(open_browser);
         apply_field!(open_coordinator);
         apply_field!(toggle_info_pane);
+        apply_field!(toggle_browser_dock);
+        apply_field!(toggle_browser_view);
+        apply_field!(focus_browser);
         apply_field!(tab_history_back);
         apply_field!(tab_history_forward);
         apply_field!(sidebar_search);
@@ -993,6 +1015,9 @@ impl KeysConfig {
         copy_effective_action_field!(open_browser, keybinds.open_browser);
         copy_effective_action_field!(open_coordinator, keybinds.open_coordinator);
         copy_effective_action_field!(toggle_info_pane, keybinds.toggle_info_pane);
+        copy_effective_action_field!(toggle_browser_dock, keybinds.toggle_browser_dock);
+        copy_effective_action_field!(toggle_browser_view, keybinds.toggle_browser_view);
+        copy_effective_action_field!(focus_browser, keybinds.focus_browser);
         copy_effective_action_field!(tab_history_back, keybinds.tab_history_back);
         copy_effective_action_field!(tab_history_forward, keybinds.tab_history_forward);
         copy_effective_action_field!(sidebar_search, keybinds.sidebar_search);
@@ -1176,6 +1201,14 @@ pub struct UiConfig {
     /// Default width (columns) of a tab's info pane until a width is dragged and remembered.
     /// 28 through 120. Default: 44.
     pub info_pane_width: u16,
+    /// Fork (companion launcher): default width of the browser dock, in percent of the area
+    /// right of the sidebar, until a width is dragged and remembered. 20 through 80.
+    /// Default: 45.
+    pub browser_dock_width: u16,
+    /// Fork (companion launcher): the [Terminal | Browser] strip at the top of a tab:
+    /// "auto" shows it while the tab has browser pages, the dock or Browser view; "off"
+    /// never draws it (the keys and menus still work). Default: "auto".
+    pub browser_view_strip: String,
     /// Show the Active block (blocked, voice, working, running-subagent and finished agents)
     /// under the tab list in the "tabs" sidebar layout. The block hides itself while nothing is active.
     /// Default: true.
@@ -1417,6 +1450,9 @@ impl Default for KeysConfig {
             open_browser: BindingConfig::default(),
             open_coordinator: BindingConfig::default(),
             toggle_info_pane: BindingConfig::default(),
+            toggle_browser_dock: BindingConfig::one("prefix+shift+b"),
+            toggle_browser_view: BindingConfig::one("prefix+shift+z"),
+            focus_browser: BindingConfig::default(),
             tab_history_back: BindingConfig::Many(vec!["cmd+[".into(), "alt+,".into()]),
             tab_history_forward: BindingConfig::Many(vec!["cmd+]".into(), "alt+.".into()]),
             sidebar_search: BindingConfig::one("prefix+f"),
@@ -1471,6 +1507,8 @@ impl Default for UiConfig {
             idle_reminder_minutes: DEFAULT_IDLE_REMINDER_MINUTES,
             daily_reminder_time: DEFAULT_DAILY_REMINDER_TIME.into(),
             info_pane_width: DEFAULT_INFO_PANE_WIDTH,
+            browser_dock_width: DEFAULT_BROWSER_DOCK_WIDTH,
+            browser_view_strip: "auto".into(),
             sidebar_active_agents: true,
             sidebar_pinned_agents: true,
             sidebar_scheduled_agents: true,
@@ -1548,6 +1586,37 @@ impl UiConfig {
     pub fn effective_info_pane_width(&self) -> u16 {
         self.info_pane_width
             .clamp(MIN_INFO_PANE_WIDTH, MAX_INFO_PANE_WIDTH)
+    }
+
+    /// Fork (companion launcher): `browser_dock_width` clamped to 20..=80.
+    pub fn effective_browser_dock_width(&self) -> u16 {
+        self.browser_dock_width
+            .clamp(MIN_BROWSER_DOCK_WIDTH, MAX_BROWSER_DOCK_WIDTH)
+    }
+
+    /// Fork (companion launcher): whether the view strip is drawn (`auto`).
+    pub fn browser_view_strip_auto(&self) -> bool {
+        self.browser_view_strip != "off"
+    }
+
+    /// Fork (companion launcher): an out-of-range dock width or an unknown
+    /// strip mode.
+    pub fn browser_dock_diagnostics(&self) -> Vec<String> {
+        let mut diagnostics = Vec::new();
+        if !(MIN_BROWSER_DOCK_WIDTH..=MAX_BROWSER_DOCK_WIDTH).contains(&self.browser_dock_width) {
+            diagnostics.push(format!(
+                "ui.browser_dock_width must be between {MIN_BROWSER_DOCK_WIDTH} and {MAX_BROWSER_DOCK_WIDTH} (percent, got {}); using {}",
+                self.browser_dock_width,
+                self.effective_browser_dock_width()
+            ));
+        }
+        if !matches!(self.browser_view_strip.as_str(), "auto" | "off") {
+            diagnostics.push(format!(
+                "ui.browser_view_strip must be \"auto\" or \"off\" (got {:?}); using \"auto\"",
+                self.browser_view_strip
+            ));
+        }
+        diagnostics
     }
 
     pub fn info_pane_width_diagnostic(&self) -> Option<String> {

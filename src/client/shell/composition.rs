@@ -153,6 +153,8 @@ impl ClientShellState {
         let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
         let browser_attention_tabs = self.browser_attention_tabs();
+        // Fork (companion launcher): tabs with browser pages (one map, O(sessions)).
+        let browser_page_tabs = self.browser_page_tabs();
         let active_view = self.active_view();
         let pins_view = self.pins_view();
         let scheduled_view = self.scheduled_view();
@@ -175,6 +177,7 @@ impl ClientShellState {
             browser_row,
             browser_marked_tabs,
             browser_attention_tabs,
+            browser_page_tabs,
             coordinator_row,
             teams: super::teams::active_teams_of(
                 &self.teams,
@@ -378,6 +381,8 @@ impl ClientShellState {
         let browser_row = self.browser_row();
         let browser_marked_tabs = self.browser_marked_tabs();
         let browser_attention_tabs = self.browser_attention_tabs();
+        // Fork (companion launcher): tabs with browser pages (one map, O(sessions)).
+        let browser_page_tabs = self.browser_page_tabs();
         let pending_workspace_highlight =
             self.pending_workspace_highlight.as_ref().filter(|pending| {
                 self.mode != ClientShellMode::Navigate
@@ -412,6 +417,7 @@ impl ClientShellState {
                 browser_row,
                 browser_marked_tabs,
                 browser_attention_tabs,
+                browser_page_tabs,
                 coordinator_row,
                 teams: super::teams::active_teams_of(
                     &self.teams,
@@ -496,6 +502,22 @@ impl ClientShellState {
                 );
             }
         }
+        // Fork (companion launcher): the view strip, the browser band and
+        // the Browser view's area, into the chrome buffer (the companion
+        // covers the band and the area; the placeholder shows when it does
+        // not). Browser view hides the panes and the info dock.
+        let browser_dock_view = self.browser_dock_view(&layout);
+        let browser_view = super::browser_dock::compose(
+            &mut buffer,
+            &layout,
+            &browser_dock_view,
+            &self.config.palette,
+            &mut self.hits.browser_dock,
+        );
+        if browser_view {
+            // The info dock is under the browser too.
+            self.hits.info_dock = super::info_dock::InfoDockHits::default();
+        }
         self.hits.panes = surface
             .panes
             .iter()
@@ -565,8 +587,12 @@ impl ClientShellState {
                 topology_signature,
             })
             .collect();
-        if !self.config.mouse_capture {
+        if !self.config.mouse_capture || browser_view {
             self.hits.pane_splits.clear();
+        }
+        if browser_view {
+            // Fork (companion launcher): the panes are under the browser.
+            self.hits.panes.clear();
         }
         let mode_bar_area = if layout.mobile_header.is_empty()
             && self.config.tab_bar_position == TabBarPositionConfig::Bottom
@@ -604,8 +630,10 @@ impl ClientShellState {
             let start = usize::from(bar.y) * usize::from(frame.width) + usize::from(bar.x);
             frame.cells[start..start + usize::from(bar.width)].to_vec()
         });
-        blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
-        if self.info_dock_focused() || self.sidebar_search_focused() {
+        if !browser_view {
+            blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        }
+        if self.info_dock_focused() || self.sidebar_search_focused() || browser_view {
             // Fork: the keyboard is in the info dock or the sidebar's
             // search field, not the pane.
             frame.cursor = None;
@@ -725,6 +753,11 @@ impl ClientShellState {
         self.hits.notification_toast_action = Rect::default();
         self.hits.notification_toasts.clear();
         let mut notification_stack_bounds = Rect::default();
+        // Fork (companion launcher): in Browser view the companion covers
+        // the tab; the notice, a toast or the agent cards show as one line
+        // on the view strip instead (else the tab bar).
+        let browser_banner =
+            super::browser_dock::banner_area(&layout, browser_view, &self.hits.browser_dock);
         let has_config_diagnostic = self.config_diagnostic.is_some();
         let active_lifecycle = self
             .endpoints
@@ -765,11 +798,19 @@ impl ClientShellState {
                 1
             });
             if let Some(notice) = self.visible_endpoint_notice.as_ref() {
-                self.hits.notification_toast = if layout.mobile_header.is_empty() {
+                self.hits.notification_toast = if let Some(banner) = browser_banner {
+                    endpoint_notices::render_mobile_banner(
+                        &mut composed,
+                        banner,
+                        notice,
+                        false,
+                        &self.config.palette,
+                    )
+                } else if layout.mobile_header.is_empty() {
                     endpoint_notices::render_notice(
                         &mut composed,
                         Rect::new(0, 0, cols, rows),
-                        layout.info_dock,
+                        super::browser_dock::toast_dock(&layout),
                         notice,
                         u16::from(has_config_diagnostic) + lifecycle_offset,
                         &self.config.palette,
@@ -784,11 +825,14 @@ impl ClientShellState {
                         &self.config.palette,
                     )
                 };
-            } else if self.config.toast_sticky && layout.mobile_header.is_empty() {
+            } else if self.config.toast_sticky
+                && layout.mobile_header.is_empty()
+                && browser_banner.is_none()
+            {
                 self.hits.notification_toasts = notifications::render_notification_stack(
                     &mut composed,
                     Rect::new(0, 0, cols, rows),
-                    layout.info_dock,
+                    super::browser_dock::toast_dock(&layout),
                     &self.visible_notifications,
                     self.config.toast_position,
                     self.config.toast_max_stack,
@@ -801,11 +845,19 @@ impl ClientShellState {
                 }
             } else if let Some(index) = self.primary_notification_index() {
                 let notification = &self.visible_notifications[index];
-                self.hits.notification_toast = if layout.mobile_header.is_empty() {
+                self.hits.notification_toast = if let Some(banner) = browser_banner {
+                    notifications::render_mobile_notification_banner(
+                        &mut composed,
+                        banner,
+                        notification,
+                        false,
+                        &self.config.palette,
+                    )
+                } else if layout.mobile_header.is_empty() {
                     notifications::render_visible_notification(
                         &mut composed,
                         Rect::new(0, 0, cols, rows),
-                        layout.info_dock,
+                        super::browser_dock::toast_dock(&layout),
                         notification,
                         self.config.toast_position,
                         u16::from(has_config_diagnostic) + lifecycle_offset,
@@ -837,7 +889,20 @@ impl ClientShellState {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_secs());
             let cards = self.agent_card_views();
-            let hits = if layout.mobile_header.is_empty() {
+            let hits = if let Some(banner) = browser_banner {
+                // Browser view: the strip's line, once no notice or toast holds it
+                if self.hits.notification_toast.is_empty() {
+                    agent_cards::render_agent_card_banner(
+                        &mut composed,
+                        banner,
+                        &cards,
+                        false,
+                        &self.config.palette,
+                    )
+                } else {
+                    Vec::new()
+                }
+            } else if layout.mobile_header.is_empty() {
                 let area = layout.pane_surface;
                 let toasts = if notification_stack_bounds.is_empty() {
                     self.hits.notification_toast
@@ -1025,6 +1090,17 @@ impl ClientShellState {
                 )?;
                 occlusion.cover(rendered.area);
                 self.hits.global_menu_rows = rendered.menu_rows;
+                None
+            } else if let ClientShellOverlay::Browser(browser) = overlay {
+                // Fork (companion launcher): the Browser overlay and its chips.
+                let rendered = super::browser_overlay::render_browser_overlay(
+                    &mut composed,
+                    browser,
+                    &self.config.palette,
+                )?;
+                occlusion.cover(rendered.area);
+                self.hits.browser_overlay_popup = rendered.area;
+                self.hits.browser_overlay = rendered.hits;
                 None
             } else if let ClientShellOverlay::TeamInfo(team) = overlay {
                 // Fork: the Team info overlay (`team_overlay.rs`).

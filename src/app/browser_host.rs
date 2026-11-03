@@ -151,6 +151,7 @@ impl App {
         let mut save = false;
         let mut changed = false;
         let mut rewatch = Vec::new();
+        let mut bound = Vec::new();
         for group in &params.groups {
             let Some((ws_idx, tab_idx)) = self.parse_tab_id(&group.tab_id) else {
                 unknown_tabs.push(group.tab_id.clone());
@@ -168,6 +169,7 @@ impl App {
             save |= change.persisted;
             changed |= change.any;
             rewatch.extend(browser.recreated_html_views(&before));
+            bound.extend(browser.new_targets(&before));
         }
         if save {
             self.schedule_session_save();
@@ -175,6 +177,7 @@ impl App {
         if changed {
             hub().note_session_change();
         }
+        hub().bind_companion_entries(&bound);
         hub().rewatch_html_views(rewatch);
         encode_success(id, ResponseResult::BrowserHostSynced { keys, unknown_tabs })
     }

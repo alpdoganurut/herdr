@@ -3638,6 +3638,77 @@
           ],
           "type": "object"
         },
+        "BrowserCellRect": {
+          "description": "A rectangle of terminal cells, origin top left.",
+          "properties": {
+            "height": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "y": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
+        "BrowserCompanionAction": {
+          "description": "Fork (companion launcher): what `browser.companion` does. The values are\ninside the method's frozen digest (a new action needs a new method name);\n`Unknown` is the serde fallback (answered `invalid_request`).",
+          "enum": [
+            "status",
+            "start",
+            "stop",
+            "restart",
+            "focus",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "BrowserCompanionParams": {
+          "description": "Fork (companion launcher): `browser.companion`, the controls of the\ncompanion app herdr runs (the CLI, the Browser row and overlay).",
+          "properties": {
+            "action": {
+              "$ref": "#/schemas/request/$defs/BrowserCompanionAction"
+            },
+            "caller": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/BrowserCaller"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The pane a CLI call came from (`HERDR_PANE_ID`): its starts run in\nthe background and its focus never takes the keyboard."
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
         "BrowserFixParams": {
           "description": "`browser.fix`: the checks to fix; empty = every failing fixable check.",
           "properties": {
@@ -3663,6 +3734,28 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "BrowserGridSize": {
+          "description": "The client's terminal grid.",
+          "properties": {
+            "cols": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rows": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "cols",
+            "rows"
+          ],
           "type": "object"
         },
         "BrowserHostCdp": {
@@ -3777,6 +3870,17 @@
             "kind": {
               "$ref": "#/schemas/request/$defs/BrowserHostKind",
               "default": "companion"
+            },
+            "launch_token": {
+              "description": "Fork (companion launcher): the token herdr's launcher gave this\nprocess (`--launch-token`); it makes the lease managed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "managed": {
+              "description": "Fork (companion launcher): the app says it runs managed\n(informational: only the token counts).",
+              "type": "boolean"
             },
             "nonce": {
               "description": "The control page answers it (`window.__herdrCompanion.nonce()`).",
@@ -4006,6 +4110,163 @@
           },
           "type": "object"
         },
+        "BrowserPlacementKind": {
+          "description": "How the area relates to the client's panes. The values are inside the\n`browser.placement.set` digest (a new kind needs a new method name);\n`Unknown` is the serde fallback (a host ignores such a placement).",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "side",
+              "description": "Beside the panes (they were narrowed for it).",
+              "type": "string"
+            },
+            {
+              "const": "full",
+              "description": "Over the panes (they keep their size underneath).",
+              "type": "string"
+            }
+          ]
+        },
+        "BrowserPlacementReportParams": {
+          "description": "`browser.placement_report` (browser host, connection lane): what the\nhost does with placement `id`: `covering`, `hidden`, `moving`,\n`unbound`, `unsupported` or `elsewhere`, with a reason for the user.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "lease_id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "lease_id",
+            "id",
+            "state"
+          ],
+          "type": "object"
+        },
+        "BrowserPlacementSetParams": {
+          "description": "`browser.placement.set` (client shell): this client's placement, `None`\nto clear it. Kept until replaced, cleared or the client disconnects.",
+          "properties": {
+            "placement": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/BrowserPlacementSpec"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "BrowserPlacementSpec": {
+          "description": "One client's placement.",
+          "properties": {
+            "area": {
+              "$ref": "#/schemas/request/$defs/BrowserCellRect",
+              "description": "Cells of the client's grid."
+            },
+            "cell_px": {
+              "$ref": "#/schemas/request/$defs/BrowserPxSize",
+              "default": {
+                "height": 0,
+                "width": 0
+              },
+              "description": "The terminal's cell size (`ws_xpixel / cols`, `ws_ypixel / rows`)."
+            },
+            "extent_px": {
+              "$ref": "#/schemas/request/$defs/BrowserPxSize",
+              "default": {
+                "height": 0,
+                "width": 0
+              },
+              "description": "The terminal's pixel extent (`ws_xpixel`, `ws_ypixel`)."
+            },
+            "grid": {
+              "$ref": "#/schemas/request/$defs/BrowserGridSize"
+            },
+            "id": {
+              "description": "Random per client process: the client finds the host's report on\nits placement by it (`browser.get` `placements`).",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/schemas/request/$defs/BrowserPlacementKind"
+            },
+            "nudge": {
+              "description": "Bumped when the user asks the host to bind this placement to the\nfrontmost terminal window.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pids": {
+              "description": "The client process and its ancestors, nearest first (at most 16):\na host on the same machine finds the terminal window by them.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "shown": {
+              "description": "`false`: reserved but not to be covered (something of the client's\nown is over it, or the shown tab has no area while another has).",
+              "type": "boolean"
+            },
+            "tab_id": {
+              "description": "The herdr tab the client shows; the area belongs to it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "tab_id",
+            "area",
+            "grid"
+          ],
+          "type": "object"
+        },
+        "BrowserPlacementsParams": {
+          "description": "`browser.placements` (browser host, connection lane): every placement,\nat once when the board is newer than `since_rev` (or it is absent),\notherwise after the next change or `wait_ms` (at most 25 000).",
+          "properties": {
+            "lease_id": {
+              "type": "string"
+            },
+            "since_rev": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "wait_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "lease_id"
+          ],
+          "type": "object"
+        },
         "BrowserProfileCreateParams": {
           "properties": {
             "name": {
@@ -4040,6 +4301,26 @@
               ]
             }
           },
+          "type": "object"
+        },
+        "BrowserPxSize": {
+          "description": "A size in device pixels; zero when the terminal does not report it.",
+          "properties": {
+            "height": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height"
+          ],
           "type": "object"
         },
         "BrowserRunParams": {
@@ -11405,6 +11686,72 @@
           "type": "object"
         },
         {
+          "description": "Fork (companion launcher): the companion app herdr runs — status,\nstart, stop, restart, focus (App lane; the Browser row and overlay).",
+          "properties": {
+            "method": {
+              "const": "browser.companion",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserCompanionParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Fork (companion launcher): the browser placement of an attached\nclient (client shell; the headless server's endpoint handler stores\nit, never the App), every client's placement for the browser host (a\nlong poll) and the host's report on one (both on the connection\nthread, src/browser/serve.rs).",
+          "properties": {
+            "method": {
+              "const": "browser.placement.set",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserPlacementSetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.placements",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserPlacementsParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "browser.placement_report",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BrowserPlacementReportParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "agent.prompt",
@@ -14862,6 +15209,42 @@
             }
           ]
         },
+        "BrowserCellRect": {
+          "description": "A rectangle of terminal cells, origin top left.",
+          "properties": {
+            "height": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "y": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
         "BrowserCheckInfo": {
           "description": "One doctor check (`browser.settings`, `herdr browser doctor --json`).",
           "properties": {
@@ -14898,6 +15281,107 @@
           ],
           "type": "object"
         },
+        "BrowserCompanionAppInfo": {
+          "description": "Fork (companion launcher): the companion browser app herdr manages\n(`browser.companion`, `browser.get`). Timestamps are Unix seconds; the\nclient computes uptimes and countdowns from them.",
+          "properties": {
+            "autostart": {
+              "description": "`[browser] companion_autostart`.",
+              "type": "boolean"
+            },
+            "electron": {
+              "description": "The installed Electron version.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "installed": {
+              "description": "The installed app version (`herdr browser setup --companion`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "last_error": {
+              "description": "The last failure: how it exited and its last log lines.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "log": {
+              "description": "The managed process's log file.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "managed": {
+              "description": "herdr started this process (its registration carried the launch token).",
+              "type": "boolean"
+            },
+            "next_retry_unix": {
+              "description": "`crashed`: when the next start is due.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "restarts": {
+              "description": "Crashes within the crash window (5 minutes).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "since_unix": {
+              "description": "When the current state was entered.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "started_unix": {
+              "description": "When the running process started.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "state": {
+              "description": "`not_installed`, `stopped`, `starting`, `running`, `reconnecting`,\n`stopping`, `crashed` (a restart is scheduled), `failed` (herdr gave\nup restarting it), `external` (started by hand: herdr routes to it\nbut never stops or restarts it) or, in a `browser.companion` reply\nonly, `disabled` (the config keeps it off; the note says why).",
+              "type": "string"
+            },
+            "update_ready": {
+              "description": "Newer app files are installed than the running process uses: a\nrestart applies them (nothing restarts by itself).",
+              "type": "boolean"
+            },
+            "version": {
+              "description": "The version the running process registered with.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
         "BrowserFixKind": {
           "description": "How a failing check gets fixed: `safe` fixes (the sidecar's assets and\n`npm ci`, the companion) also run automatically after a herdr update;\n`edits_files` fixes (`~/.zshrc`, `~/.claude.json`, Codex's config.toml)\nonly on an explicit request (`browser.fix`, `herdr browser setup`).",
           "enum": [
@@ -14929,6 +15413,17 @@
         },
         "BrowserGetInfo": {
           "properties": {
+            "companion_app": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/BrowserCompanionAppInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fork (companion launcher): the companion app herdr installs and runs.\nAbsent from an older server, and while the config keeps the\ncompanion off (the browser disabled, or `[browser] host = \"window\"`\nwith the window on) and nothing of it runs."
+            },
             "enabled": {
               "type": "boolean"
             },
@@ -14937,6 +15432,13 @@
               "default": {
                 "state": ""
               }
+            },
+            "placements": {
+              "description": "Fork (companion launcher): the browser host's last report on each\nclient's placement (`browser.placement_report`), so a client can say\nwhy its area is empty. Always current, also on an `unchanged` answer.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserPlacementStatus"
+              },
+              "type": "array"
             },
             "profiles": {
               "default": [],
@@ -14978,10 +15480,36 @@
             },
             "unchanged": {
               "type": "boolean"
+            },
+            "window_off": {
+              "description": "Fork (companion launcher): the herdr+ window is off (`[browser]\nwindow = false`): clients hide its profiles. An older server never\nsays so (its window is on).",
+              "type": "boolean"
             }
           },
           "required": [
             "seq"
+          ],
+          "type": "object"
+        },
+        "BrowserGridSize": {
+          "description": "The client's terminal grid.",
+          "properties": {
+            "cols": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rows": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "cols",
+            "rows"
           ],
           "type": "object"
         },
@@ -15117,6 +15645,13 @@
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "update": {
+              "description": "Fork (companion launcher): a managed companion runs older app files\nthan are installed: the installed version (a restart applies it).",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -15217,6 +15752,141 @@
             "pane_id",
             "current",
             "last_at"
+          ],
+          "type": "object"
+        },
+        "BrowserPlacementInfo": {
+          "description": "A placement with the server's facts about its client.",
+          "properties": {
+            "focused": {
+              "description": "The client's terminal has the user's focus (its outer focus).",
+              "type": "boolean"
+            },
+            "foreground": {
+              "description": "The client the server treats as the one in front.",
+              "type": "boolean"
+            },
+            "placement": {
+              "$ref": "#/schemas/success_response/$defs/BrowserPlacementSpec"
+            },
+            "updated_unix": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "placement",
+            "updated_unix"
+          ],
+          "type": "object"
+        },
+        "BrowserPlacementKind": {
+          "description": "How the area relates to the client's panes. The values are inside the\n`browser.placement.set` digest (a new kind needs a new method name);\n`Unknown` is the serde fallback (a host ignores such a placement).",
+          "oneOf": [
+            {
+              "enum": [
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "side",
+              "description": "Beside the panes (they were narrowed for it).",
+              "type": "string"
+            },
+            {
+              "const": "full",
+              "description": "Over the panes (they keep their size underneath).",
+              "type": "string"
+            }
+          ]
+        },
+        "BrowserPlacementSpec": {
+          "description": "One client's placement.",
+          "properties": {
+            "area": {
+              "$ref": "#/schemas/success_response/$defs/BrowserCellRect",
+              "description": "Cells of the client's grid."
+            },
+            "cell_px": {
+              "$ref": "#/schemas/success_response/$defs/BrowserPxSize",
+              "default": {
+                "height": 0,
+                "width": 0
+              },
+              "description": "The terminal's cell size (`ws_xpixel / cols`, `ws_ypixel / rows`)."
+            },
+            "extent_px": {
+              "$ref": "#/schemas/success_response/$defs/BrowserPxSize",
+              "default": {
+                "height": 0,
+                "width": 0
+              },
+              "description": "The terminal's pixel extent (`ws_xpixel`, `ws_ypixel`)."
+            },
+            "grid": {
+              "$ref": "#/schemas/success_response/$defs/BrowserGridSize"
+            },
+            "id": {
+              "description": "Random per client process: the client finds the host's report on\nits placement by it (`browser.get` `placements`).",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/BrowserPlacementKind"
+            },
+            "nudge": {
+              "description": "Bumped when the user asks the host to bind this placement to the\nfrontmost terminal window.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pids": {
+              "description": "The client process and its ancestors, nearest first (at most 16):\na host on the same machine finds the terminal window by them.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "shown": {
+              "description": "`false`: reserved but not to be covered (something of the client's\nown is over it, or the shown tab has no area while another has).",
+              "type": "boolean"
+            },
+            "tab_id": {
+              "description": "The herdr tab the client shows; the area belongs to it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "tab_id",
+            "area",
+            "grid"
+          ],
+          "type": "object"
+        },
+        "BrowserPlacementStatus": {
+          "description": "The host's last report on a placement (`browser.get` `placements`).",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "state"
           ],
           "type": "object"
         },
@@ -15328,6 +15998,26 @@
           },
           "required": [
             "name"
+          ],
+          "type": "object"
+        },
+        "BrowserPxSize": {
+          "description": "A size in device pixels; zero when the terminal does not report it.",
+          "properties": {
+            "height": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "width",
+            "height"
           ],
           "type": "object"
         },
@@ -15566,6 +16256,17 @@
               "default": false,
               "type": "boolean"
             },
+            "companion_app": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/BrowserCompanionAppInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fork (companion launcher): the companion app herdr installs and runs.\nAbsent from an older server, and while the config keeps the\ncompanion off (the browser disabled, or `[browser] host = \"window\"`\nwith the window on) and nothing of it runs."
+            },
             "default_profile": {
               "default": "",
               "type": "string"
@@ -15612,6 +16313,13 @@
                 "string",
                 "null"
               ]
+            },
+            "placements": {
+              "description": "Fork (companion launcher): the browser host's last report on each\nclient's placement (`browser.placement_report`), so a client can say\nwhy its area is empty. Always current, also on an `unchanged` answer.",
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BrowserPlacementStatus"
+              },
+              "type": "array"
             },
             "profiles": {
               "default": [],
@@ -15666,6 +16374,10 @@
               "type": "array"
             },
             "unchanged": {
+              "type": "boolean"
+            },
+            "window_off": {
+              "description": "Fork (companion launcher): the herdr+ window is off (`[browser]\nwindow = false`): clients hide its profiles. An older server never\nsays so (its window is on).",
               "type": "boolean"
             }
           },
@@ -20909,6 +21621,59 @@
                 "outcome",
                 "to_pane",
                 "message_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork (companion launcher): `browser.companion`'s answer, the state\nafter the action started; `note` explains a refusal-free no-op (a\ncompanion started by hand is never stopped by herdr).",
+              "properties": {
+                "companion": {
+                  "$ref": "#/schemas/success_response/$defs/BrowserCompanionAppInfo"
+                },
+                "note": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "browser_companion",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "companion"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Fork (companion launcher): `browser.placements`: every attached\nclient's browser placement; `rev` grows with each change and\n`boot_id` is new with each server process (the host starts over).",
+              "properties": {
+                "boot_id": {
+                  "type": "string"
+                },
+                "placements": {
+                  "default": [],
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/BrowserPlacementInfo"
+                  },
+                  "type": "array"
+                },
+                "rev": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "browser_placements",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "boot_id",
+                "rev"
               ],
               "type": "object"
             },

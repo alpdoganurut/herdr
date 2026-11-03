@@ -67,6 +67,8 @@ pub(crate) use self::{
 };
 
 pub(crate) use self::{keybinds::CommandKeybindType, model::KeysConfig};
+// Fork (companion launcher): the browser dock's width bounds (percent).
+pub(crate) use self::model::{MAX_BROWSER_DOCK_WIDTH, MIN_BROWSER_DOCK_WIDTH};
 
 pub const CONFIG_PATH_ENV_VAR: &str = "HERDR_CONFIG_PATH";
 
@@ -147,6 +149,7 @@ impl Config {
             .chain(self.news.diagnostics())
             .chain(self.coordinator.diagnostics())
             .chain(self.ui.info_pane_width_diagnostic())
+            .chain(self.ui.browser_dock_diagnostics())
             .chain(self.browser.diagnostics())
             .chain(self.agents.autosuspend.diagnostics())
             .collect()

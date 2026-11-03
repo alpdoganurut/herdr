@@ -1,7 +1,8 @@
 // Companion browser host (fork): the sidecar's control-page driver and the
 // HTML view watches, against a fake control page (no Electron, no
 // Chromium): the nonce check, view calls and their error codes, the
-// target -> view map, furniture URLs, debounced reloads and the watch cap.
+// target -> view map, focus and raise against old and current companions,
+// furniture URLs, debounced reloads and the watch cap.
 // Run: node scripts/test_browser_companion_host.mjs   (also run by
 // integration::browser_assets::tests when node is on PATH)
 import { ControlPage, ViewWatches, isFurnitureUrl, CONTROL_URL_PREFIX } from '../src/integration/assets/browser/activity.mjs';
@@ -53,6 +54,61 @@ failed = null;
 try { await driver.call('missing'); } catch (err) { failed = err; }
 check(failed && failed.code === 'host_verify_failed', 'an API without the function is host_verify_failed');
 console.log('ok: view calls map targets to views and keep error codes');
+
+// Fork (companion launcher, audit 3): focus and raise against companions old and new. A
+// companion from before the user flag reads focus's argument as a view id only and has no
+// raise(); an agent's focus goes bare to both, the user's own falls back to it.
+function companionPage(api) {
+  const sent = [];
+  const driver = new ControlPage({
+    pages: () => [control],
+    evaluate: async (_target, fn, arg) => {
+      sent.push(arg);
+      globalThis.__herdrCompanion = api;
+      try { return fn(arg); } finally { delete globalThis.__herdrCompanion; }
+    },
+    callMs: 500,
+  });
+  return { driver, sent };
+}
+const known = (id) => id === 'v7';
+const oldApi = {
+  focus: (view) => (known(view) ? { ok: true, view_id: view } : { error: { code: 'view_not_found', message: `no view ${view}` } }),
+  views: () => [{ view_id: 'v6', shown: false, active: true }, { view_id: 'v7', shown: true, active: true }],
+};
+const newApi = {
+  focus: (arg) => {
+    const view = arg && typeof arg === 'object' ? arg.view_id : arg;
+    return known(view) ? { ok: true, view_id: view, user: Boolean(arg && arg.user) } : { error: { code: 'view_not_found', message: `no view ${view}` } };
+  },
+  raise: (arg) => ({ ok: true, raised: Boolean(arg && arg.user) }),
+  views: oldApi.views,
+};
+let page1 = companionPage(oldApi);
+await page1.driver.focusView('v7', false);
+check(JSON.stringify(page1.sent) === JSON.stringify([['focus', 'v7']]), `an agent's focus is the bare view id (${JSON.stringify(page1.sent)})`);
+const userOld = await page1.driver.focusView('v7', true);
+check(userOld.ok && JSON.stringify(page1.sent.slice(1)) === JSON.stringify([['focus', { view_id: 'v7', user: true }], ['focus', 'v7']]), `the user's own falls back to the bare id on an old companion (${JSON.stringify(page1.sent)})`);
+failed = null;
+try { await page1.driver.focusView('v-gone', true); } catch (err) { failed = err; }
+check(failed && failed.code === 'view_not_found', 'a view that is gone stays view_not_found');
+const raisedOld = await page1.driver.raise(true);
+check(raisedOld.ok && JSON.stringify(page1.sent.slice(-3)) === JSON.stringify([['raise', { user: true }], ['views', null], ['focus', 'v7']]), `the user's raise on an old companion focuses its shown page (${JSON.stringify(page1.sent.slice(-3))})`);
+failed = null;
+try { await page1.driver.raise(false); } catch (err) { failed = err; }
+check(failed && failed.code === 'companion_outdated' && /quit it/.test(failed.message), `an agent's raise there says why (${failed && failed.code})`);
+let page2 = companionPage(newApi);
+const userNew = await page2.driver.focusView('v7', true);
+check(userNew.user === true && page2.sent.length === 1, 'a current companion takes the user flag at once');
+const agentNew = await page2.driver.focusView('v7', false);
+check(agentNew.ok && agentNew.user === false, "and reads the bare id as an agent's focus");
+const raisedNew = await page2.driver.raise(true);
+check(raisedNew.raised === true && page2.sent.at(-1)[0] === 'raise', 'a current companion raises itself');
+failed = null;
+const noApi = new ControlPage({ pages: () => [control], evaluate: async (_t, fn, arg) => fn(arg), callMs: 500 });
+try { await noApi.raise(true); } catch (err) { failed = err; }
+check(failed && failed.code === 'host_verify_failed' && !failed.missing, 'a page without the companion API is not an old companion');
+console.log('ok: focus and raise reach old and current companions');
 
 // A control page that never answers times out.
 const hung = new ControlPage({ pages: () => [control], evaluate: () => new Promise(() => {}), callMs: 50 });

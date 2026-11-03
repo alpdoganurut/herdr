@@ -169,6 +169,29 @@ try {
   await strip.evaluate(() => window.stripBridge.action('send_page', { note: 'look' }));
   const sent = await waitFor(() => mock.state.sent[0], 3000);
   check('send to agent calls browser.send_page with tab, url and note', sent && sent.tab_id === 'w1:t2' && sent.note === 'look' && sent.url.includes(String(webPort)), sent);
+  // the update chip (herdr installed newer app files than this process runs): disabled only
+  // while its restart request runs; a failed request brings it back
+  const chip = () =>
+    strip.evaluate(() => {
+      const u = document.getElementById('update');
+      return { hidden: u.hidden, disabled: u.disabled, status: document.getElementById('status').textContent };
+    });
+  mock.state.update = '9.9.9';
+  mock.state.companionDelayMs = 1000;
+  check('the lease answer\'s update shows the chip', await waitFor(async () => !(await chip()).hidden, 5000), await chip());
+  await strip.evaluate(() => document.getElementById('update').click());
+  const busy = await waitFor(async () => ((await chip()).disabled ? chip() : null), 800, 50);
+  check('the chip is disabled while its restart runs', busy, busy);
+  await strip.evaluate(() => document.getElementById('update').click()); // one request at a time
+  const failedChip = await waitFor(async () => {
+    const c = await chip();
+    return !c.hidden && !c.disabled && /Restart failed/.test(c.status) ? c : null;
+  }, 4000);
+  check('a failed restart leaves the chip clickable again', failedChip, await chip());
+  check('the chip asked herdr once', mock.state.companionCalls.filter((c) => c.action === 'restart').length === 1, mock.state.companionCalls);
+  mock.state.update = null;
+  mock.state.companionDelayMs = 0;
+  check('the chip goes with the update', await waitFor(async () => (await chip()).hidden, 5000), await chip());
   // web page permissions are never auto-granted: asked in the strip (deny / allow once)
   const permBar = () =>
     strip.evaluate(() => {

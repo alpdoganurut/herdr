@@ -796,6 +796,8 @@ fn the_coordinator_keeps_its_pinned_row_first_when_space_runs_short() {
         active: false,
         profile: "main".into(),
         running: true,
+        companion: None,
+        dock: None,
     };
     let news = super::super::news::NewsRow {
         tab_id: None,
@@ -891,6 +893,7 @@ fn render_sidebar(
         browser_row: None,
         browser_marked_tabs: HashSet::new(),
         browser_attention_tabs: HashSet::new(),
+        browser_page_tabs: HashMap::new(),
         voice: None,
         coordinator_row: None,
         teams: None,

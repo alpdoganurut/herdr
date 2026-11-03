@@ -35,12 +35,14 @@ pub const HEARTBEAT_MS: u64 = 5_000;
 /// A lease not renewed within this goes.
 pub const LEASE_TTL_MS: u64 = 15_000;
 /// What the lease answer advertises beyond the register methods.
-pub const SERVER_FEATURES: [&str; 5] = [
+pub const SERVER_FEATURES: [&str; 6] = [
     "host_sync",
     "host_report",
     "send_page",
     "show",
     "page_errors",
+    // Fork (companion launcher): browser.placements / browser.placement_report.
+    "placements",
 ];
 /// The DevTools probe of a registering host.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -73,6 +75,11 @@ pub(super) struct CompanionLease {
     /// `browser.host_report` token bucket: tokens and the last refill.
     pub report_tokens: f64,
     pub report_refill: Instant,
+    /// Fork (companion launcher): the launch token the registration
+    /// carried; the launcher's own token makes the lease managed.
+    pub launch_token: Option<String>,
+    /// The process id the registration named (informational).
+    pub pid: Option<u32>,
 }
 
 impl CompanionLease {
@@ -102,7 +109,9 @@ impl BrowserHub {
         if !config.enabled {
             return Err(BrowserError::disabled());
         }
-        if config.host_mode() == BrowserHostMode::Window {
+        // Fork (companion launcher): only a herdr whose window is on and
+        // chosen refuses hosts.
+        if config.window && config.host_mode() == BrowserHostMode::Window {
             return Err(BrowserError::new(
                 "host_disabled",
                 "this herdr uses only its own browser window ([browser] host = \"window\")",
@@ -157,6 +166,13 @@ impl BrowserHub {
                 last_seq: None,
                 report_tokens: REPORT_RATE_PER_S,
                 report_refill: now,
+                launch_token: params
+                    .launch_token
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|token| !token.is_empty())
+                    .map(str::to_string),
+                pid: params.pid,
             });
             replaced_port
         };
@@ -221,23 +237,38 @@ impl BrowserHub {
                 }
             }
         }
-        tracing::info!(event = "browser.host.register", instance = %params.instance, version = %params.version, port = params.cdp.port, "companion browser registered");
+        // Fork (companion launcher): the launcher's own process is managed.
+        let managed = self.companion_registered(params.launch_token.as_deref());
+        tracing::info!(event = "browser.host.register", instance = %params.instance, version = %params.version, port = params.cdp.port, managed, "companion browser registered");
         self.flush();
-        Ok(lease_info(&lease_id, expires_unix))
+        Ok(lease_info(
+            &lease_id,
+            expires_unix,
+            managed.then(|| self.companion_update_ready()).flatten(),
+        ))
     }
 
     /// `browser.host_heartbeat`: a fresh expiry, or `lease_unknown`.
     pub fn host_heartbeat(&self, lease_id: &str) -> Result<BrowserHostLeaseInfo, BrowserError> {
         let now = Instant::now();
-        let mut slot = self.inner.companion_host.lock().unwrap();
-        match slot.as_mut() {
-            Some(lease) if lease.lease_id.as_deref() == Some(lease_id) && lease.live(now) => {
-                lease.expires_at = now + Duration::from_millis(LEASE_TTL_MS);
-                lease.expires_unix = unix_now() + LEASE_TTL_MS / 1000;
-                Ok(lease_info(lease_id, lease.expires_unix))
+        let (expires_unix, token) = {
+            let mut slot = self.inner.companion_host.lock().unwrap();
+            match slot.as_mut() {
+                Some(lease) if lease.lease_id.as_deref() == Some(lease_id) && lease.live(now) => {
+                    lease.expires_at = now + Duration::from_millis(LEASE_TTL_MS);
+                    lease.expires_unix = unix_now() + LEASE_TTL_MS / 1000;
+                    (lease.expires_unix, lease.launch_token.clone())
+                }
+                _ => return Err(lease_unknown()),
             }
-            _ => Err(lease_unknown()),
-        }
+        };
+        // Fork (companion launcher): `update` while newer app files wait.
+        let managed = token.is_some() && token == self.launcher().lock().token;
+        Ok(lease_info(
+            lease_id,
+            expires_unix,
+            managed.then(|| self.companion_update_ready()).flatten(),
+        ))
     }
 
     /// `browser.host_unregister`: the companion is closing.
@@ -245,6 +276,15 @@ impl BrowserHub {
         if !self.lease_matches(lease_id) {
             return Err(lease_unknown());
         }
+        // Fork (companion launcher): the process quits on its own (not a crash).
+        let token = self
+            .inner
+            .companion_host
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|lease| lease.launch_token.clone());
+        self.companion_unregistered(token.as_deref());
         self.drop_registration(ProfileStatus::Stopped, true);
         tracing::info!(
             event = "browser.host.unregister",
@@ -317,13 +357,107 @@ impl BrowserHub {
     }
 
     /// The profile `open` / `show` without `--profile` use (`[browser] host`).
-    pub(super) fn host_profile(&self, config: &BrowserConfig) -> Result<String, BrowserError> {
+    /// Fork (companion launcher): the companion without a live lease is
+    /// started and waited for (on the caller's connection thread); `user`:
+    /// the user's own call (errors say what to run).
+    pub(super) fn host_profile(
+        &self,
+        config: &BrowserConfig,
+        user: bool,
+    ) -> Result<String, BrowserError> {
+        // Fork (companion launcher): with the herdr+ window off every page
+        // goes to the companion (`auto` falls back only to an enabled window).
+        if !config.window {
+            if config.host_mode() == BrowserHostMode::Window {
+                return Err(window_disabled());
+            }
+            if !self.companion_live() {
+                self.ensure_companion(self.companion_register_wait(), user)?;
+            }
+            return Ok(COMPANION_PROFILE.into());
+        }
         match config.host_mode() {
             BrowserHostMode::Window => Ok(config.default_profile().to_string()),
             BrowserHostMode::Auto if self.companion_live() => Ok(COMPANION_PROFILE.into()),
             BrowserHostMode::Auto => Ok(config.default_profile().to_string()),
             BrowserHostMode::Companion if self.companion_live() => Ok(COMPANION_PROFILE.into()),
-            BrowserHostMode::Companion => Err(host_unavailable()),
+            BrowserHostMode::Companion => {
+                self.ensure_companion(self.companion_register_wait(), user)?;
+                Ok(COMPANION_PROFILE.into())
+            }
+        }
+    }
+
+    /// How long routing waits for the companion to register.
+    pub(crate) fn companion_register_wait(&self) -> Duration {
+        let ms = self
+            .inner
+            .companion_wait_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if ms == 0 {
+            crate::browser::companion_app::REGISTER_WAIT
+        } else {
+            Duration::from_millis(ms)
+        }
+    }
+
+    /// Tests: a shorter routing wait.
+    #[cfg(test)]
+    pub fn set_companion_register_wait_for_test(&self, wait: Duration) {
+        self.inner.companion_wait_ms.store(
+            wait.as_millis() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Fork (companion launcher): the lease as the launcher needs it.
+    pub(crate) fn companion_lease_facts(&self) -> crate::browser::companion_app::LeaseFacts {
+        let now = Instant::now();
+        let slot = self.inner.companion_host.lock().unwrap();
+        match slot.as_ref() {
+            Some(lease) => crate::browser::companion_app::LeaseFacts {
+                live: lease.lease_id.is_some() && lease.live(now),
+                launch_token: lease.launch_token.clone(),
+                version: lease.version.clone(),
+                pid: lease.pid.filter(|pid| *pid != 0),
+            },
+            None => Default::default(),
+        }
+    }
+
+    /// Fork (companion launcher): a companion started by hand is only
+    /// detached and its lease dropped (it re-registers); never signalled.
+    pub(crate) fn detach_external_companion(&self) {
+        self.drop_registration(ProfileStatus::Stopped, true);
+    }
+
+    /// Fork (companion launcher): the managed process with `token` is gone:
+    /// its lease goes now, so the next launch registers at once instead of
+    /// meeting `host_in_use` until the lease expires.
+    pub(crate) fn drop_companion_lease_for(&self, token: &str, crashed: bool) {
+        let taken = {
+            let mut slot = self.inner.companion_host.lock().unwrap();
+            if slot
+                .as_ref()
+                .is_some_and(|lease| lease.launch_token.as_deref() == Some(token))
+            {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if taken.is_some() {
+            self.release_registration(
+                if crashed {
+                    ProfileStatus::Crashed {
+                        at: unix_now(),
+                        detail: "companion gone".into(),
+                    }
+                } else {
+                    ProfileStatus::Stopped
+                },
+                true,
+            );
         }
     }
 
@@ -542,6 +676,8 @@ impl BrowserHub {
             last_seq: None,
             report_tokens: REPORT_RATE_PER_S,
             report_refill: now,
+            launch_token: None,
+            pid: None,
         });
     }
 
@@ -561,6 +697,8 @@ impl BrowserHub {
             last_seq: None,
             report_tokens: REPORT_RATE_PER_S,
             report_refill: now,
+            launch_token: None,
+            pid: None,
         });
     }
 
@@ -576,6 +714,17 @@ impl BrowserHub {
             .count()
     }
 
+    /// Tests: the live lease's id.
+    #[cfg(test)]
+    pub fn companion_lease_id_for_test(&self) -> Option<String> {
+        self.inner
+            .companion_host
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|lease| lease.lease_id.clone())
+    }
+
     /// Tests: the lease runs out now (the next supervisor pass drops it).
     #[cfg(test)]
     pub fn expire_host_lease_for_test(&self) {
@@ -585,7 +734,7 @@ impl BrowserHub {
     }
 }
 
-fn lease_info(lease_id: &str, expires_unix: u64) -> BrowserHostLeaseInfo {
+fn lease_info(lease_id: &str, expires_unix: u64, update: Option<String>) -> BrowserHostLeaseInfo {
     BrowserHostLeaseInfo {
         lease_id: lease_id.to_string(),
         profile: COMPANION_PROFILE.into(),
@@ -595,6 +744,7 @@ fn lease_info(lease_id: &str, expires_unix: u64) -> BrowserHostLeaseInfo {
         expires_unix,
         host_protocol: COMPANION_HOST_PROTOCOL,
         server_features: SERVER_FEATURES.iter().map(|f| f.to_string()).collect(),
+        update,
     }
 }
 
@@ -608,7 +758,16 @@ pub fn lease_unknown() -> BrowserError {
 pub fn host_unavailable() -> BrowserError {
     BrowserError::new(
         "host_unavailable",
-        "the companion browser is not running; start it, or set [browser] host = \"auto\" to use the herdr+ window",
+        "the herdr+ companion browser is not running; `herdr browser companion start` starts it (or set [browser] window = true and host = \"auto\" for the herdr+ window)",
+    )
+}
+
+/// Fork (companion launcher): an op on a window profile while the herdr+
+/// window is off (`[browser] window = false`).
+pub fn window_disabled() -> BrowserError {
+    BrowserError::new(
+        "window_disabled",
+        "the herdr+ browser window is off ([browser] window = false); agents use the companion browser. Set [browser] window = true to use the window again.",
     )
 }
 
@@ -913,9 +1072,59 @@ impl BrowserHub {
         );
     }
 
+    /// Fork (companion launcher): a `browser.companion` action in the
+    /// ledger, as `companion:<action>` by its actor.
+    pub fn record_companion_action(
+        &self,
+        actor: &crate::api::schema::BrowserActor,
+        action: &str,
+        ok: bool,
+        detail: &str,
+    ) {
+        let mut state = self.inner.state.lock().unwrap();
+        state.touch(
+            COMPANION_PROFILE,
+            None,
+            actor,
+            &format!("companion:{action}"),
+            detail,
+            ok,
+            0,
+            unix_now(),
+        );
+        drop(state);
+        self.flush();
+    }
+
     /// `browser.get` must re-pull: a herdr tab's browser group changed.
     pub fn note_session_change(&self) {
         self.inner.state.lock().unwrap().bump_seq();
+    }
+
+    /// Fork (companion launcher): the companion pages whose target is new
+    /// (`(target, "<group key>/<entry id>")`): a page the companion
+    /// restored keeps its ledger record (id, attribution, cursors).
+    pub fn bind_companion_entries(&self, pairs: &[(String, String)]) {
+        if pairs.is_empty() {
+            return;
+        }
+        let moved = self
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .bind_entries(COMPANION_PROFILE, pairs);
+        for rebound in moved {
+            tracing::debug!(
+                event = "browser.entry_rebound",
+                profile = COMPANION_PROFILE,
+                entry = %rebound.entry,
+                from = %rebound.from,
+                to = %rebound.to,
+                short = %rebound.short,
+                "companion page record moved to its new target"
+            );
+        }
     }
 
     /// The most recent pane that used the companion target (ledger

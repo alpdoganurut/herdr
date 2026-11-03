@@ -2082,3 +2082,121 @@ fn new_browser_host_methods_are_not_client_shell_and_old_digests_hold() {
         matches!(request.method, Method::BrowserHostRegister(ref p) if p.kind == BrowserHostKind::Companion)
     );
 }
+
+/// Fork (companion launcher): `browser.companion` is a client-shell method
+/// (the Browser row and overlay) that changes nothing the TUI draws by
+/// itself; its params are frozen by the endpoint shape digest
+/// (`server::client_commands::tests::advertised_client_shell_method_shapes_stay_at_the_v1_contract`,
+/// FORK §5); an action this server does not know reads as `Unknown`.
+#[test]
+fn browser_companion_is_a_client_shell_method_with_a_frozen_digest() {
+    let operation = Method::OPERATIONS
+        .iter()
+        .find(|operation| operation.name == "browser.companion")
+        .expect("browser.companion is a method");
+    assert!(operation.client_shell);
+    assert!(!operation.changes_ui);
+    assert!(super::operations::client_shell_method_names().contains(&"browser.companion"));
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "id": "c1",
+        "method": "browser.companion",
+        "params": { "action": "restart", "caller": { "pane_id": "w1:p2" } }
+    }))
+    .expect("parses");
+    match request.method {
+        Method::BrowserCompanion(params) => {
+            assert_eq!(params.action, BrowserCompanionAction::Restart);
+            assert_eq!(
+                params.caller.map(|caller| caller.pane_id).as_deref(),
+                Some("w1:p2")
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let later: Request = serde_json::from_value(serde_json::json!({
+        "id": "c2", "method": "browser.companion", "params": { "action": "dock" }
+    }))
+    .expect("an unknown action still parses");
+    assert!(matches!(
+        later.method,
+        Method::BrowserCompanion(BrowserCompanionParams {
+            action: BrowserCompanionAction::Unknown,
+            caller: None
+        })
+    ));
+    // the caller is omitted when absent (an old server never sees it)
+    let plain = serde_json::to_value(BrowserCompanionParams {
+        action: BrowserCompanionAction::Status,
+        caller: None,
+    })
+    .unwrap();
+    assert_eq!(plain, serde_json::json!({ "action": "status" }));
+}
+
+/// Fork (companion launcher): `browser.placement.set` is a client-shell
+/// method (an attached client's placement; the headless server stores it)
+/// that changes nothing the TUI draws by itself, frozen by the endpoint
+/// shape digest (FORK §5); the host's `browser.placements` and
+/// `browser.placement_report` are not client shell. Optional fields may be
+/// absent, a kind this server does not know reads as `Unknown`, and an
+/// absent placement clears.
+#[test]
+fn browser_placement_set_is_a_client_shell_method_with_a_frozen_digest() {
+    let operation = Method::OPERATIONS
+        .iter()
+        .find(|operation| operation.name == "browser.placement.set")
+        .expect("browser.placement.set is a method");
+    assert!(operation.client_shell);
+    assert!(!operation.changes_ui);
+    assert!(super::operations::client_shell_method_names().contains(&"browser.placement.set"));
+    for name in ["browser.placements", "browser.placement_report"] {
+        let operation = Method::OPERATIONS
+            .iter()
+            .find(|operation| operation.name == name)
+            .unwrap_or_else(|| panic!("{name} is a method"));
+        assert!(!operation.client_shell, "{name} is the host's");
+        assert!(!super::operations::client_shell_method_names().contains(&name));
+    }
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "id": "p1",
+        "method": "browser.placement.set",
+        "params": { "placement": {
+            "id": "pl-1", "kind": "side", "tab_id": "w1:t1",
+            "area": { "x": 66, "y": 1, "width": 54, "height": 35 },
+            "grid": { "cols": 120, "rows": 36 }
+        } }
+    }))
+    .expect("parses with the optional fields absent");
+    match request.method {
+        Method::BrowserPlacementSet(params) => {
+            let placement = params.placement.expect("a placement");
+            assert_eq!(placement.kind, BrowserPlacementKind::Side);
+            assert!(!placement.shown && placement.pids.is_empty());
+            assert_eq!(placement.cell_px, BrowserPxSize::default());
+        }
+        other => panic!("{other:?}"),
+    }
+    let later: Request = serde_json::from_value(serde_json::json!({
+        "id": "p2", "method": "browser.placement.set",
+        "params": { "placement": { "id": "pl-1", "kind": "floating", "tab_id": "t",
+            "area": { "x": 0, "y": 0, "width": 1, "height": 1 }, "grid": { "cols": 1, "rows": 1 } } }
+    }))
+    .expect("an unknown kind still parses");
+    assert!(matches!(
+        later.method,
+        Method::BrowserPlacementSet(BrowserPlacementSetParams { placement: Some(ref p) })
+            if p.kind == BrowserPlacementKind::Unknown
+    ));
+    let clear: Request = serde_json::from_value(serde_json::json!({
+        "id": "p3", "method": "browser.placement.set", "params": {}
+    }))
+    .expect("a clear");
+    assert!(matches!(
+        clear.method,
+        Method::BrowserPlacementSet(BrowserPlacementSetParams { placement: None })
+    ));
+    assert_eq!(
+        serde_json::to_value(BrowserPlacementSetParams::default()).unwrap(),
+        serde_json::json!({})
+    );
+}

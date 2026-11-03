@@ -29,6 +29,8 @@ use crate::api::schema::{
 };
 use crate::config::{valid_profile_name, BrowserConfig};
 use crate::integration::browser_assets;
+// Fork (companion launcher): the launcher asks about the sidecar before a launch.
+use super::companion_app::SidecarProblem;
 
 // Fork (companion browser): the browser host role, a child module so it
 // reaches the hub's private state.
@@ -36,7 +38,7 @@ use crate::integration::browser_assets;
 mod companion_host;
 use companion_host::ShowRequest;
 pub use companion_host::{
-    host_unavailable, is_companion, lease_unknown, COMPANION_PROFILE, REPORT_MAX_EVENTS,
+    is_companion, lease_unknown, window_disabled, COMPANION_PROFILE, REPORT_MAX_EVENTS,
 };
 
 /// Grace the hub adds to the sidecar's own deadline before giving up on a reply.
@@ -138,6 +140,10 @@ struct Inner {
     page_errors: Mutex<super::page_errors::PageErrorQueue>,
     /// Fork (companion browser): the tabs `show` opened (HTML views).
     html_views: Mutex<HashSet<TabKey>>,
+    /// Fork (companion launcher): the companion app herdr starts and watches.
+    launcher: super::companion_app::Launcher,
+    /// Fork (companion launcher): tests shorten the routing wait (0 = the default).
+    companion_wait_ms: AtomicU64,
 }
 
 /// The new tab page's snapshot goes out at most this often.
@@ -208,8 +214,20 @@ impl BrowserHub {
                 companion_host: Mutex::new(None),
                 page_errors: Mutex::new(Default::default()),
                 html_views: Mutex::new(HashSet::new()),
+                launcher: super::companion_app::Launcher::new(),
+                companion_wait_ms: AtomicU64::new(0),
             }),
         }
+    }
+
+    /// Fork (companion launcher): the companion app's launcher.
+    pub(crate) fn launcher(&self) -> &super::companion_app::Launcher {
+        &self.inner.launcher
+    }
+
+    /// The browser home this hub works in.
+    pub(crate) fn home_dir(&self) -> &Path {
+        &self.inner.home
     }
 
     pub fn config(&self) -> BrowserConfig {
@@ -325,6 +343,16 @@ impl BrowserHub {
         }
         drop(companion);
         info.setup_needed = self.setup_needed();
+        // Fork (companion launcher): always current (not seq-gated); left
+        // out while the config keeps the companion off and nothing of it
+        // runs (a client then offers no dock, Browser view or companion
+        // item, as for a server without the companion).
+        info.companion_app = Some(self.companion_app_info())
+            .filter(|companion| companion.state != super::companion_app::DISABLED_STATE);
+        info.window_off = !config.window;
+        // Fork (companion launcher): the host's reports on the clients'
+        // placements, always current like the companion's state.
+        info.placements = super::placements::board().statuses();
         info
     }
 
@@ -580,11 +608,41 @@ impl BrowserHub {
     pub fn setup_info(&self) -> BrowserSettingsInfo {
         let config = self.config();
         let info = self.get(None);
-        let profile = config.default_profile().to_string();
+        // Fork (companion launcher): with the window off the section's
+        // open · stop row is the companion's.
+        let profile = if config.window {
+            config.default_profile().to_string()
+        } else {
+            COMPANION_PROFILE.to_string()
+        };
         let running_profile = info
             .profiles
             .iter()
             .find(|p| p.name == profile && (p.state == "running" || p.state == "starting"));
+        let companion_status = (!config.window).then(|| {
+            let companion = info.companion_app.clone().unwrap_or_default();
+            match companion.state.as_str() {
+                "not_installed" => {
+                    "companion not installed · herdr browser setup --companion".to_string()
+                }
+                "running" | "external" => match running_profile {
+                    Some(p) => format!(
+                        "companion running · {} tab{} · {} agent{}",
+                        p.tabs,
+                        if p.tabs == 1 { "" } else { "s" },
+                        p.agents,
+                        if p.agents == 1 { "" } else { "s" }
+                    ),
+                    None => "companion running".to_string(),
+                },
+                "" => "companion stopped".to_string(),
+                other => format!("companion {other}"),
+            }
+        });
+        let running_companion = info
+            .companion_app
+            .as_ref()
+            .is_some_and(|c| matches!(c.state.as_str(), "running" | "external" | "starting"));
         let status = match running_profile {
             Some(p) if p.state == "starting" => format!("starting · profile {profile}"),
             Some(p) => format!(
@@ -596,6 +654,11 @@ impl BrowserHub {
             ),
             None if !config.enabled => "off".to_string(),
             None => format!("stopped · profile {profile}"),
+        };
+        let status = if config.enabled {
+            companion_status.unwrap_or(status)
+        } else {
+            status
         };
         let setup = self.inner.setup.lock().unwrap();
         BrowserSettingsInfo {
@@ -610,8 +673,8 @@ impl BrowserHub {
             mcp_agents: config.mcp_agents.clone(),
             // legacy and inert: the hook lives in Settings → Agents
             shell_hook: config.shell_hook,
+            running: running_profile.is_some() || (!config.window && running_companion),
             profile,
-            running: running_profile.is_some(),
             status,
             checks: setup.checks.clone(),
             checked_at: setup.checked_unix,
@@ -996,10 +1059,14 @@ impl BrowserHub {
         if !config.enabled {
             return Err(BrowserError::disabled());
         }
+        if !config.window && profile.is_some_and(|name| !is_companion(name.trim())) {
+            return Err(window_disabled());
+        }
         let name = self.profile_name(profile, None, &config)?;
-        // Fork (companion browser): the companion starts itself.
-        if is_companion(&name) && !self.companion_live() {
-            return Err(host_unavailable());
+        // Fork (companion launcher): the companion is launched by herdr.
+        if is_companion(&name) {
+            self.companion_start(super::companion_app::StartReason::User)?;
+            return Ok(self.get(None));
         }
         {
             let mut state = self.inner.state.lock().unwrap();
@@ -1059,7 +1126,14 @@ impl BrowserHub {
         if !config.enabled {
             return Err(BrowserError::disabled());
         }
-        let default_profile = profile.unwrap_or(config.default_profile()).to_string();
+        // Fork (companion launcher): with the window off, the companion's tabs.
+        let default_profile = profile
+            .unwrap_or(if config.window {
+                config.default_profile()
+            } else {
+                COMPANION_PROFILE
+            })
+            .to_string();
         let record = {
             let state = self.inner.state.lock().unwrap();
             state
@@ -1070,16 +1144,21 @@ impl BrowserHub {
         if !record.is_open() {
             return Err(BrowserError::tab_closed(&record.id()));
         }
+        if !config.window && !is_companion(&record.profile) {
+            return Err(window_disabled());
+        }
         let hub = self.clone();
         std::thread::Builder::new()
             .name("herdr-browser-focus".into())
             .spawn(move || {
+                // Fork (companion launcher): the user's focus may take the
+                // keyboard; an agent's never does.
                 let ok = hub
                     .request(
                         "focus",
                         Some(&record.profile),
                         Some(&record.target_id),
-                        Value::Null,
+                        json!({ "user": true }),
                         Duration::from_secs(3),
                     )
                     .is_ok();
@@ -1157,14 +1236,50 @@ impl BrowserHub {
             (Some(explicit), _) => Some(explicit),
             (None, prefix) => prefix,
         };
+        // Fork (companion launcher): a window profile while the window is
+        // off, before `new` would create one.
+        if !config.window && explicit_profile.is_some_and(|name| !is_companion(name)) {
+            return Err(window_disabled());
+        }
+        // Fork (companion launcher): with the window off, an op that needs
+        // the pane's current tab and has none in the companion (none at
+        // all, or a cursor left on a window tab) answers no_current_tab
+        // before anything starts.
+        if !config.window
+            && params.tab.is_none()
+            && explicit_profile.is_none()
+            && !Self::op_follows_host(&params.op)
+            && !matches!(params.op, BrowserOp::Tabs { .. } | BrowserOp::Batch { .. })
+        {
+            let companion_cursor = pane.as_deref().is_some_and(|pane| {
+                self.inner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .cursor_profile(pane)
+                    .is_some_and(is_companion)
+            });
+            if !companion_cursor {
+                return Err(BrowserError::no_current_tab());
+            }
+        }
         // Fork (companion browser): a page-creating op without a profile
         // follows `[browser] host`; everything else the pane's cursor.
         let profile = match explicit_profile {
             None if params.tab.is_none() && Self::op_follows_host(&params.op) => {
-                self.host_profile(&config)?
+                self.host_profile(&config, actor.is_user())?
             }
             _ => self.profile_name(explicit_profile, pane.as_deref(), &config)?,
         };
+        if !config.window && !is_companion(&profile) {
+            return Err(window_disabled());
+        }
+        // Fork (companion launcher): a page-creating op that names the
+        // companion (`--profile companion`, a `companion:` tab) starts it on
+        // demand too, like one routed there by `[browser] host`.
+        if is_companion(&profile) && Self::op_follows_host(&params.op) && !self.companion_live() {
+            self.ensure_companion(self.companion_register_wait(), actor.is_user())?;
+        }
         self.ensure_running(&profile)?;
         let deadline = Duration::from_millis(match &params.op {
             BrowserOp::Wait { timeout_s, .. } => timeout_s.unwrap_or(30).clamp(1, 300) * 1000 + 500,
@@ -1300,10 +1415,19 @@ impl BrowserHub {
         }
         if let Some(pane) = pane {
             if let Some(profile) = self.inner.state.lock().unwrap().cursor_profile(pane) {
-                return Ok(profile.to_string());
+                // Fork (companion launcher): a cursor on a window tab while
+                // the window is off is ignored (its next op answers
+                // no_current_tab, not window_disabled).
+                if config.window || is_companion(profile) {
+                    return Ok(profile.to_string());
+                }
             }
         }
-        Ok(config.default_profile().to_string())
+        Ok(if config.window {
+            config.default_profile().to_string()
+        } else {
+            COMPANION_PROFILE.to_string()
+        })
     }
 
     fn resolve_target(
@@ -2020,7 +2144,7 @@ impl BrowserHub {
                             "focus",
                             Some(profile),
                             Some(target),
-                            Value::Null,
+                            json!({ "user": actor.is_user() }),
                             deadline,
                         )?;
                         // Fork (companion browser): an agent hands the tab to
@@ -2388,6 +2512,8 @@ impl BrowserHub {
         if !self.config().stop_with_server {
             return;
         }
+        // Fork (companion launcher): the companion stops with the server on
+        // its own terms (`stop_companion_with_server`).
         let names: Vec<String> = self
             .inner
             .state
@@ -2395,8 +2521,9 @@ impl BrowserHub {
             .unwrap()
             .profiles
             .iter()
-            .filter(|(_, status)| {
-                status.is_running() || matches!(status, ProfileStatus::Starting { .. })
+            .filter(|(name, status)| {
+                !is_companion(name)
+                    && (status.is_running() || matches!(status, ProfileStatus::Starting { .. }))
             })
             .map(|(name, _)| name.clone())
             .collect();
@@ -2453,6 +2580,10 @@ impl BrowserHub {
             return self.ensure_companion_attached();
         }
         let config = self.config();
+        // Fork (companion launcher): the herdr+ window is off.
+        if !config.window {
+            return Err(window_disabled());
+        }
         let profile_dir = self.inner.profiles.dir(name);
         let log_path = self.inner.profiles.log_path(name);
 
@@ -2680,10 +2811,13 @@ impl BrowserHub {
     /// shutdown path passes false: it never starts a sidecar or attaches, it
     /// only closes what is attached and terminates the recorded live pid.
     fn stop_profile_with(&self, name: &str, attach: bool) {
-        // Fork (companion browser): stopping the companion detaches it and
-        // drops its lease; the app is never signalled (it re-registers).
+        // Fork (companion launcher): herdr's own companion quits (control
+        // page, SIGTERM, SIGKILL); one started by hand is only detached and
+        // its lease dropped (it re-registers).
         if is_companion(name) {
-            self.drop_registration(ProfileStatus::Stopped, true);
+            if let Err(err) = self.companion_stop() {
+                tracing::warn!(event = "browser.companion.stop", code = %err.code, message = %err.message, "companion stop failed");
+            }
             return;
         }
         // Only a live browser is attached to (a Running state whose process is
@@ -2746,6 +2880,45 @@ impl BrowserHub {
 
     fn host_dir(&self) -> PathBuf {
         self.inner.home.join(browser_assets::HOST_DIR)
+    }
+
+    /// Fork (companion launcher): what `ensure_host` would refuse before
+    /// starting a sidecar (its runtime missing, outdated past an in-place
+    /// refresh, or no node binary to run it with), read without starting one or touching its files. `None`
+    /// while one runs (a test's fake one too) or it can start. The launcher
+    /// asks before a launch: a companion registers through the sidecar.
+    pub(crate) fn sidecar_problem(&self) -> Option<SidecarProblem> {
+        if self.inner.host.lock().unwrap().is_some() || self.inner.test_mode.load(Ordering::Relaxed)
+        {
+            return None;
+        }
+        let host_dir = self.host_dir();
+        let Some(runtime) = browser_assets::read_runtime(&host_dir) else {
+            return Some(SidecarProblem::Missing);
+        };
+        if !host_dir
+            .join("node_modules")
+            .join("playwright-core")
+            .is_dir()
+        {
+            return Some(SidecarProblem::Missing);
+        }
+        if runtime.assets_sha256 != browser_assets::assets_sha256() {
+            // the scripts refresh in place; node_modules only npm can
+            let installed = browser_assets::playwright_installed(&host_dir);
+            if installed.as_deref() != Some(browser_assets::PLAYWRIGHT_CORE_VERSION) {
+                return Some(SidecarProblem::Outdated {
+                    installed: installed.unwrap_or_else(|| "missing".into()),
+                });
+            }
+        }
+        // Fork (companion launcher): the helper runs on node (once per
+        // launch, not on a render path).
+        let config = self.config();
+        if super::node::discover_default(config.node(), Some(Path::new(&runtime.node))).is_none() {
+            return Some(SidecarProblem::NoNode);
+        }
+        None
     }
 
     /// Make sure a sidecar runs (spawn + `hello` when needed).

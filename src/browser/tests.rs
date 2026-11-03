@@ -40,10 +40,10 @@ fn params(op: BrowserOp) -> BrowserRunParams {
 
 /// What the fake host saw and how it should behave.
 #[derive(Default)]
-struct FakeHostState {
-    ops: Vec<(String, Option<String>, Value)>,
+pub(crate) struct FakeHostState {
+    pub(crate) ops: Vec<(String, Option<String>, Value)>,
     /// Ops the host must never answer.
-    silent: Vec<String>,
+    pub(crate) silent: Vec<String>,
     /// Ops answered with this error.
     errors: Vec<(String, String, String)>,
     /// Extra lines pushed before the next reply (events).
@@ -57,16 +57,27 @@ struct FakeHostState {
     ntp: Vec<Value>,
 }
 
-type Shared = Arc<Mutex<FakeHostState>>;
+pub(crate) type Shared = Arc<Mutex<FakeHostState>>;
 
-fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
+/// One line per write, under one lock: replies go out from their own
+/// threads (some after a delay), and a line that another write splits
+/// between its text and its newline is one unparsable line to the hub (its
+/// reply lost: the call times out).
+fn send_line(writer: &Mutex<UnixStream>, line: &str) {
+    let mut bytes = Vec::with_capacity(line.len() + 1);
+    bytes.extend_from_slice(line.as_bytes());
+    bytes.push(b'\n');
+    let _ = writer.lock().unwrap().write_all(&bytes);
+}
+
+pub(crate) fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
     let (ours, theirs) = UnixStream::pair().unwrap();
     let shared: Shared = Arc::new(Mutex::new(FakeHostState {
         next_target: 1,
         ..Default::default()
     }));
     let state = shared.clone();
-    let mut writer = theirs.try_clone().unwrap();
+    let writer = Arc::new(Mutex::new(theirs.try_clone().unwrap()));
     let reader = BufReader::new(theirs);
     std::thread::spawn(move || {
         for line in reader.lines() {
@@ -197,7 +208,8 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                         "navigate" | "history" | "focus" | "select" => {
                             json!({ "id": id, "ok": true, "result": {}, "page": { "url": args["url"].as_str().unwrap_or("https://site.test/after"), "title": "After", "status": 200 } })
                         }
-                        "close" | "close_browser" | "detach" | "watch" | "unwatch" => {
+                        "close" | "close_browser" | "detach" | "watch" | "unwatch"
+                        | "control_quit" | "control_raise" => {
                             json!({ "id": id, "ok": true, "result": {} })
                         }
                         // Fork (companion browser): an HTML view.
@@ -234,17 +246,15 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
                 }
             };
             for event in events {
-                writer.write_all(event.as_bytes()).unwrap();
-                writer.write_all(b"\n").unwrap();
+                send_line(&writer, &event);
             }
             if let Some(reply) = reply {
-                let mut writer = writer.try_clone().unwrap();
+                let writer = writer.clone();
                 std::thread::spawn(move || {
                     if delay > 0 {
                         std::thread::sleep(Duration::from_millis(delay));
                     }
-                    let _ = writer.write_all(reply.to_string().as_bytes());
-                    let _ = writer.write_all(b"\n");
+                    send_line(&writer, &reply.to_string());
                 });
             }
         }
@@ -252,6 +262,17 @@ fn fake_host(hub: &BrowserHub) -> (Shared, UnixStream) {
     let reader: Box<dyn BufRead + Send> = Box::new(BufReader::new(ours.try_clone().unwrap()));
     hub.install_fake_host(Box::new(ours.try_clone().unwrap()), reader);
     (shared, ours)
+}
+
+/// Fork (companion launcher): these tests drive the herdr+ window, which
+/// is off by default since the companion launcher: they turn it on, with
+/// the old `auto` host (companion while leased, else the window).
+pub(crate) fn window_config() -> BrowserConfig {
+    BrowserConfig {
+        window: true,
+        host: "auto".into(),
+        ..BrowserConfig::default()
+    }
 }
 
 fn temp_home(name: &str) -> PathBuf {
@@ -263,7 +284,7 @@ fn temp_home(name: &str) -> PathBuf {
 
 fn hub(name: &str) -> (BrowserHub, Shared, UnixStream, PathBuf) {
     let home = temp_home(name);
-    let hub = BrowserHub::with_home(BrowserConfig::default(), home.clone());
+    let hub = BrowserHub::with_home(window_config(), home.clone());
     hub.set_profile_running_for_test("main", 0, 4321);
     let (shared, stream) = fake_host(&hub);
     (hub, shared, stream, home)
@@ -363,7 +384,7 @@ fn open_then_read_uses_the_cursor_and_records_attribution() {
             .count(),
         2
     );
-    let again = BrowserHub::with_home(BrowserConfig::default(), home.clone());
+    let again = BrowserHub::with_home(window_config(), home.clone());
     again.enable_persistence(&data_dir);
     again.with_state(|state| {
         assert_eq!(state.tabs[&TabKey::new("main", "T1")].short, "t2");
@@ -608,7 +629,7 @@ fn config_switches_are_honoured() {
     .unwrap();
     hub.apply_config(&BrowserConfig {
         allow_eval: false,
-        ..BrowserConfig::default()
+        ..window_config()
     });
     assert_eq!(
         hub.run(
@@ -624,7 +645,7 @@ fn config_switches_are_honoured() {
     );
     hub.apply_config(&BrowserConfig {
         enabled: false,
-        ..BrowserConfig::default()
+        ..window_config()
     });
     assert_eq!(
         hub.run(&actor, params(BrowserOp::Tabs { mine: false }))
@@ -633,7 +654,7 @@ fn config_switches_are_honoured() {
         "browser_disabled"
     );
     assert!(!hub.get(None).enabled);
-    hub.apply_config(&BrowserConfig::default());
+    hub.apply_config(&window_config());
     assert_eq!(
         hub.run(&BrowserActor::User, params(BrowserOp::Unknown))
             .unwrap_err()
@@ -1126,7 +1147,7 @@ fn act_ops_log_the_element_never_the_text_and_honour_the_switches() {
     });
     hub.apply_config(&BrowserConfig {
         type_into_password_fields: true,
-        ..BrowserConfig::default()
+        ..window_config()
     });
     hub.run(
         &actor,
@@ -1143,7 +1164,7 @@ fn act_ops_log_the_element_never_the_text_and_honour_the_switches() {
     );
     hub.apply_config(&BrowserConfig {
         allow_act: false,
-        ..BrowserConfig::default()
+        ..window_config()
     });
     assert_eq!(
         hub.run(
@@ -1665,7 +1686,7 @@ fn an_agent_call_carries_the_activity_directive_and_the_user_s_does_not() {
     // Off by config: nothing, even for a pane.
     hub.apply_config(&BrowserConfig {
         show_activity: false,
-        ..BrowserConfig::default()
+        ..window_config()
     });
     hub.run(
         &actor,
@@ -2065,7 +2086,7 @@ fn eval_is_guarded_by_the_password_rule_and_logs_the_code_not_the_result() {
     // Passwords allowed by config: no guard.
     hub.apply_config(&BrowserConfig {
         type_into_password_fields: true,
-        ..BrowserConfig::default()
+        ..window_config()
     });
     hub.run(
         &actor,
@@ -2161,7 +2182,7 @@ fn the_dashboard_pin_travels_with_attach_and_follows_the_config() {
     }
     hub.apply_config(&BrowserConfig {
         pin_dashboard: false,
-        ..BrowserConfig::default()
+        ..window_config()
     });
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut pushes: Vec<Value> = Vec::new();
@@ -2184,11 +2205,11 @@ fn the_dashboard_pin_travels_with_attach_and_follows_the_config() {
     // the same value again: no push; show_activity off: unpinned
     hub.apply_config(&BrowserConfig {
         pin_dashboard: false,
-        ..BrowserConfig::default()
+        ..window_config()
     });
     hub.apply_config(&BrowserConfig {
         show_activity: false,
-        ..BrowserConfig::default()
+        ..window_config()
     });
     std::thread::sleep(Duration::from_millis(300));
     let pushes: Vec<Value> = shared
@@ -2461,6 +2482,8 @@ fn register_params(instance: &str) -> crate::api::schema::BrowserHostRegisterPar
         version: "0.1.0".into(),
         protocol: 1,
         capabilities: vec!["views".into()],
+        launch_token: None,
+        managed: false,
     }
 }
 
@@ -2571,7 +2594,7 @@ fn fork_smoke_a_second_companion_is_refused_while_the_first_lease_lives() {
     );
     let config = BrowserConfig {
         host: "window".into(),
-        ..BrowserConfig::default()
+        ..window_config()
     };
     hub2.apply_config(&config);
     assert_eq!(
@@ -2672,7 +2695,7 @@ fn an_open_without_profile_follows_host_but_other_ops_follow_the_cursor() {
     // `[browser] host = "window"` keeps opens in the window.
     let config = BrowserConfig {
         host: "window".into(),
-        ..BrowserConfig::default()
+        ..window_config()
     };
     hub.apply_config(&config);
     let third = hub
@@ -2683,7 +2706,7 @@ fn an_open_without_profile_follows_host_but_other_ops_follow_the_cursor() {
     let (hub2, _s2, _st2, _h2) = self::hub("companion-only");
     let config = BrowserConfig {
         host: "companion".into(),
-        ..BrowserConfig::default()
+        ..window_config()
     };
     hub2.apply_config(&config);
     let err = hub2
@@ -2771,7 +2794,7 @@ fn page_errors_are_batched_deduped_and_capped_per_tab() {
     // `[browser] page_errors = "off"`: nothing queued.
     let config = BrowserConfig {
         page_errors: "off".into(),
-        ..BrowserConfig::default()
+        ..window_config()
     };
     hub.apply_config(&config);
     shared
@@ -2961,4 +2984,159 @@ fn a_supervisor_pass_never_drops_a_live_lease() {
     hub.expire_host_lease_for_test();
     hub.supervise();
     assert!(!hub.companion_live(), "an expired one goes");
+}
+
+// ----- Fork (companion launcher): the herdr+ window off ----------------------
+
+/// A hub with the defaults (window off, host companion) and the fake sidecar.
+fn window_off_hub(name: &str) -> (BrowserHub, Shared, UnixStream, PathBuf) {
+    let home = temp_home(name);
+    let hub = BrowserHub::with_home(BrowserConfig::default(), home.clone());
+    let (shared, stream) = fake_host(&hub);
+    (hub, shared, stream, home)
+}
+
+const WINDOW_OFF: &str = "the herdr+ browser window is off ([browser] window = false); agents use the companion browser. Set [browser] window = true to use the window again.";
+
+#[test]
+fn fork_smoke_with_the_window_off_window_profiles_answer_window_disabled_with_the_fix() {
+    let (hub, shared, _stream, home) = window_off_hub("window-off");
+    let actor = pane("w2:pD");
+    // a window profile, named or through a qualified tab
+    let named = BrowserRunParams {
+        profile: Some("main".into()),
+        ..params(open_op("https://a.test/"))
+    };
+    let err = hub.run(&actor, named).unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.message.as_str()),
+        ("window_disabled", WINDOW_OFF)
+    );
+    let qualified = BrowserRunParams {
+        tab: Some("main:t3".into()),
+        ..params(BrowserOp::Read {
+            format: None,
+            selector: None,
+            ref_: None,
+            offset: None,
+            max: None,
+            all: false,
+            interactive: false,
+        })
+    };
+    assert_eq!(
+        hub.run(&actor, qualified).unwrap_err().code,
+        "window_disabled"
+    );
+    // `new` would create a temporary window profile: refused before that
+    let fresh = BrowserRunParams {
+        profile: Some("new".into()),
+        ..params(open_op("https://a.test/"))
+    };
+    assert_eq!(hub.run(&actor, fresh).unwrap_err().code, "window_disabled");
+    assert!(
+        hub.profiles().iter().all(|p| !p.temporary),
+        "no profile was made"
+    );
+    assert_eq!(hub.start(Some("main")).unwrap_err().code, "window_disabled");
+    // an open without a profile goes to the companion: not installed here
+    let err = hub
+        .run(&actor, params(open_op("https://a.test/")))
+        .unwrap_err();
+    assert_eq!(err.code, "host_unavailable");
+    assert!(
+        err.message.contains("herdr browser setup --companion"),
+        "{}",
+        err.message
+    );
+    // `auto` falls back only to an enabled window: the companion too
+    hub.apply_config(&BrowserConfig {
+        host: "auto".into(),
+        ..BrowserConfig::default()
+    });
+    let err = hub
+        .run(&actor, params(open_op("https://a.test/")))
+        .unwrap_err();
+    assert_eq!(err.code, "host_unavailable");
+    // `window` without the window: window_disabled, and a config diagnostic
+    let window_host = BrowserConfig {
+        host: "window".into(),
+        ..BrowserConfig::default()
+    };
+    assert!(window_host
+        .diagnostics()
+        .iter()
+        .any(|d| d.contains("needs [browser] window = true")));
+    hub.apply_config(&window_host);
+    let err = hub
+        .run(&actor, params(open_op("https://a.test/")))
+        .unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.message.as_str()),
+        ("window_disabled", WINDOW_OFF)
+    );
+    // nothing ever reached a window profile, and Chromium was never launched
+    let ops = shared.lock().unwrap().ops.clone();
+    assert!(
+        ops.iter().all(|(op, _, _)| op != "attach"),
+        "no window attach: {ops:?}"
+    );
+    // the server says so to clients, and the doctor does not ask for Chromium
+    assert!(hub.get(None).window_off);
+    let env = crate::browser::setup::SetupEnv {
+        browser_home: home.clone(),
+        binary: PathBuf::from("/usr/bin/true"),
+        shell_file: home.join("shell.zsh"),
+        zshrc: None,
+        claude_json: None,
+        claude_bin: None,
+        claude_z_bin: None,
+        codex_config: None,
+        codex_bin: None,
+        home: Some(home.join("nohome")),
+        node_override: None,
+    };
+    let checks = crate::browser::setup::checks(&BrowserConfig::default(), &env, None);
+    for id in ["executable", "extension"] {
+        let check = checks.iter().find(|c| c.id == id).unwrap();
+        assert!(check.ok, "{check:?}");
+        assert_eq!(check.detail, "not used ([browser] window = false)");
+    }
+    // `window = true` brings it back exactly
+    hub.apply_config(&window_config());
+    hub.set_profile_running_for_test("main", 0, 4321);
+    let opened = hub
+        .run(&actor, params(open_op("https://a.test/")))
+        .expect("the window again");
+    assert!(opened.tab.as_deref().unwrap().starts_with("main:"));
+    assert!(!hub.get(None).window_off);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn with_the_window_off_a_cursor_on_a_window_tab_is_ignored() {
+    let (hub, _shared, _stream, home) = hub("window-off-cursor");
+    let actor = pane("w2:pD");
+    hub.run(&actor, params(open_op("https://a.test/")))
+        .expect("an open in the window");
+    let read = || {
+        params(BrowserOp::Read {
+            format: None,
+            selector: None,
+            ref_: None,
+            offset: None,
+            max: None,
+            all: false,
+            interactive: false,
+        })
+    };
+    hub.run(&actor, read()).expect("its cursor is on main");
+    // the window goes off: the cursor no longer picks a profile
+    hub.apply_config(&BrowserConfig::default());
+    let err = hub.run(&actor, read()).unwrap_err();
+    assert_eq!(err.code, "no_current_tab", "{err:?}");
+    // a pane without any cursor: the same, nothing starts
+    let err = hub.run(&pane("w9:p9"), read()).unwrap_err();
+    assert_eq!(err.code, "no_current_tab");
+    let _ = std::fs::remove_dir_all(&home);
 }

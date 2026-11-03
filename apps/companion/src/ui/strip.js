@@ -4,6 +4,8 @@ const $ = (id) => document.getElementById(id);
 const bridge = window.stripBridge;
 let state = null;
 let urlEditing = false;
+// The dock's bar (`strip.html?mode=docked`): Dusk, no traffic-light inset, no drag region.
+if (new URLSearchParams(location.search).get('mode') === 'docked') document.body.classList.add('docked');
 
 const act = (name, args) => bridge.action(name, args);
 
@@ -25,6 +27,15 @@ function reportHeight() {
 function render() {
   if (!state) return;
   document.body.classList.toggle('noinset', !state.inset);
+  if (state.docked) document.body.classList.add('docked');
+  const pill = $('count');
+  const info = state.info;
+  if (info && info.total > 0) {
+    pill.hidden = false;
+    pill.textContent = `${info.here} · ${info.total}`;
+    const pages = (n) => `${n} page${n === 1 ? '' : 's'}`;
+    pill.title = `${pages(info.here)} in this session · ${pages(info.total)} in ${info.sessions} session${info.sessions === 1 ? '' : 's'}\nClick for every session with pages`;
+  } else pill.hidden = true;
   const sess = $('session');
   sess.textContent = '';
   if (state.session) {
@@ -106,6 +117,11 @@ function render() {
     st.textContent = state.status.text;
     st.className = state.status.level || '';
   } else st.hidden = true;
+  const up = $('update');
+  up.hidden = !state.update;
+  // disabled only while its restart request runs (main.js clears it when that fails)
+  up.disabled = !!(state.update && state.update.restarting);
+  if (state.update) up.title = `herdr installed companion ${state.update.version}; Restart applies it (your pages come back)`;
   $('empty').hidden = !!state.active;
   $('emptytext').textContent = state.session ? 'No pages in this session.' : 'Waiting for herdr…';
   reportHeight();
@@ -171,6 +187,8 @@ $('note').addEventListener('keydown', (e) => {
     reportHeight();
   }
 });
+$('update').addEventListener('click', () => act('restart_update'));
+$('count').addEventListener('click', () => act('sessions_menu'));
 $('permallow').addEventListener('click', () => act('permission', { id: $('permbar').dataset.id, allow: true }));
 $('permdeny').addEventListener('click', () => act('permission', { id: $('permbar').dataset.id, allow: false }));
 // Shortcuts (⌘T/W/L/R/[/]) are application-menu accelerators in main.js.

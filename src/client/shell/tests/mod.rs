@@ -263,6 +263,8 @@ mod agents_model;
 mod agents_worktrees_notifications;
 mod breathe;
 mod browser;
+/// Fork (companion launcher): the browser dock and Browser view.
+mod browser_dock;
 mod chrome_context;
 mod close_pane;
 mod close_tab;

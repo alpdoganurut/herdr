@@ -374,6 +374,23 @@ pub enum ResponseResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// Fork (companion launcher): `browser.companion`'s answer, the state
+    /// after the action started; `note` explains a refusal-free no-op (a
+    /// companion started by hand is never stopped by herdr).
+    BrowserCompanion {
+        companion: super::BrowserCompanionAppInfo,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// Fork (companion launcher): `browser.placements`: every attached
+    /// client's browser placement; `rev` grows with each change and
+    /// `boot_id` is new with each server process (the host starts over).
+    BrowserPlacements {
+        boot_id: String,
+        rev: u64,
+        #[serde(default)]
+        placements: Vec<super::BrowserPlacementInfo>,
+    },
     AgentPrompted {
         agent: AgentInfo,
     },

@@ -584,6 +584,103 @@ pub struct BrowserGetInfo {
     /// active page and whether it needs the user (`◉`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<BrowserSessionInfo>,
+    /// Fork (companion launcher): the companion app herdr installs and runs.
+    /// Absent from an older server, and while the config keeps the
+    /// companion off (the browser disabled, or `[browser] host = "window"`
+    /// with the window on) and nothing of it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion_app: Option<BrowserCompanionAppInfo>,
+    /// Fork (companion launcher): the herdr+ window is off (`[browser]
+    /// window = false`): clients hide its profiles. An older server never
+    /// says so (its window is on).
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub window_off: bool,
+    /// Fork (companion launcher): the browser host's last report on each
+    /// client's placement (`browser.placement_report`), so a client can say
+    /// why its area is empty. Always current, also on an `unchanged` answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub placements: Vec<super::BrowserPlacementStatus>,
+}
+
+/// Fork (companion launcher): what `browser.companion` does. The values are
+/// inside the method's frozen digest (a new action needs a new method name);
+/// `Unknown` is the serde fallback (answered `invalid_request`).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserCompanionAction {
+    #[default]
+    Status,
+    Start,
+    Stop,
+    Restart,
+    Focus,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Fork (companion launcher): `browser.companion`, the controls of the
+/// companion app herdr runs (the CLI, the Browser row and overlay).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserCompanionParams {
+    pub action: BrowserCompanionAction,
+    /// The pane a CLI call came from (`HERDR_PANE_ID`): its starts run in
+    /// the background and its focus never takes the keyboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<BrowserCaller>,
+}
+
+/// Fork (companion launcher): the companion browser app herdr manages
+/// (`browser.companion`, `browser.get`). Timestamps are Unix seconds; the
+/// client computes uptimes and countdowns from them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct BrowserCompanionAppInfo {
+    /// `not_installed`, `stopped`, `starting`, `running`, `reconnecting`,
+    /// `stopping`, `crashed` (a restart is scheduled), `failed` (herdr gave
+    /// up restarting it), `external` (started by hand: herdr routes to it
+    /// but never stops or restarts it) or, in a `browser.companion` reply
+    /// only, `disabled` (the config keeps it off; the note says why).
+    pub state: String,
+    /// herdr started this process (its registration carried the launch token).
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub managed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// The version the running process registered with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The installed app version (`herdr browser setup --companion`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed: Option<String>,
+    /// The installed Electron version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub electron: Option<String>,
+    /// Newer app files are installed than the running process uses: a
+    /// restart applies them (nothing restarts by itself).
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub update_ready: bool,
+    /// When the running process started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_unix: Option<u64>,
+    /// When the current state was entered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_unix: Option<u64>,
+    /// Crashes within the crash window (5 minutes).
+    #[serde(default, skip_serializing_if = "super::is_zero")]
+    pub restarts: u32,
+    /// `crashed`: when the next start is due.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_retry_unix: Option<u64>,
+    /// The last failure: how it exited and its last log lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// `[browser] companion_autostart`.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub autostart: bool,
+    /// The managed process's log file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<String>,
 }
 
 /// `herdr browser setup`'s record of the installed runtime.
@@ -841,6 +938,14 @@ pub struct BrowserHostRegisterParams {
     pub protocol: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    /// Fork (companion launcher): the token herdr's launcher gave this
+    /// process (`--launch-token`); it makes the lease managed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_token: Option<String>,
+    /// Fork (companion launcher): the app says it runs managed
+    /// (informational: only the token counts).
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub managed: bool,
 }
 
 /// `browser.host_heartbeat` / `browser.host_unregister`.
@@ -863,6 +968,10 @@ pub struct BrowserHostLeaseInfo {
     pub host_protocol: u32,
     #[serde(default)]
     pub server_features: Vec<String>,
+    /// Fork (companion launcher): a managed companion runs older app files
+    /// than are installed: the installed version (a restart applies it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<String>,
 }
 
 /// `browser.host_state`.

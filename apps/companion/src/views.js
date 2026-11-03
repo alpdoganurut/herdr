@@ -122,6 +122,21 @@ class ViewManager {
   constructor(hooks) {
     this.hooks = hooks;
     this.live = new Map(); // view_id -> {view, entry, rootReal}
+    this.host = null; // the window the views live in (the dock's while docked)
+  }
+
+  // Move every view into `win` (docked mode and back). Re-parented views keep painting
+  // (spike S3); their page state is untouched.
+  setHost(win) {
+    if (!win || this.host === win) return;
+    const old = this.host;
+    this.host = win;
+    for (const rec of this.live.values()) {
+      try {
+        if (old && !old.isDestroyed()) old.contentView.removeChildView(rec.view);
+      } catch {}
+      win.contentView.addChildView(rec.view);
+    }
   }
 
   get(viewId) {
@@ -211,7 +226,7 @@ class ViewManager {
     const rec = { view, entry, rootReal, target: null, ready: null, grants: new Set() };
     this.live.set(entry.view_id, rec);
     view.setVisible(false);
-    win.contentView.addChildView(view);
+    (this.host || win).contentView.addChildView(view);
     this._wire(rec);
     rec.ready = (async () => {
       // Never leave a target unloaded: an unloaded webContents stalls connectOverCDP (spike S1).
@@ -285,7 +300,7 @@ class ViewManager {
     this.live.delete(viewId);
     if (this.hooks.onLeave) this.hooks.onLeave(viewId, null);
     try {
-      win.contentView.removeChildView(rec.view);
+      (this.host || win).contentView.removeChildView(rec.view);
     } catch {}
     try {
       rec.view.webContents.close();

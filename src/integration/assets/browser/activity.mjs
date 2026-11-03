@@ -823,16 +823,47 @@ export class ControlPage {
       const out = await Promise.race([
         this.evaluate(page, ([name, value]) => {
           const api = globalThis.__herdrCompanion;
-          if (!api || typeof api[name] !== 'function') return { error: { herdr: true, code: 'host_verify_failed', message: `the control page has no ${name}()` } };
+          // `missing`: a companion older than the call (its other calls work)
+          if (!api || typeof api[name] !== 'function') return { error: { herdr: true, code: 'host_verify_failed', message: `the control page has no ${name}()`, missing: Boolean(api) } };
           return api[name](value);
         }, [fn, arg === undefined ? null : arg]),
         timeout,
       ]);
       if (out && typeof out === 'object' && out.error) {
-        throw Object.assign(new Error(String(out.error.message || out.error.code)), { herdr: true, code: String(out.error.code || 'browser_error') });
+        throw Object.assign(new Error(String(out.error.message || out.error.code)), { herdr: true, code: String(out.error.code || 'browser_error'), missing: Boolean(out.error.missing) });
       }
       return out;
     } finally { clearTimeout(timer); }
+  }
+  /** Focus a view (`browser focus`, the login handoff). An agent's focus goes as the bare
+   *  view id, which every companion reads as a focus (one from before the user's own kind
+   *  activates its window, as it always did); the user's own as `{view_id, user: true}`,
+   *  sent bare again to a companion that takes the object for an unknown view. */
+  async focusView(view, user) {
+    if (!user) return this.call('focus', view);
+    try {
+      return await this.call('focus', { view_id: view, user: true });
+    } catch (err) {
+      if (err.code !== 'view_not_found') throw err;
+      return this.call('focus', view);
+    }
+  }
+  /** Raise the window (herdr's Focus companion; `user`: with the keyboard). A companion
+   *  from before `raise()`: the user's raise focuses its shown page, which activates it; an
+   *  agent's cannot happen there without taking the keyboard. */
+  async raise(user) {
+    try {
+      return await this.call('raise', { user: Boolean(user) });
+    } catch (err) {
+      if (!err.missing) throw err;
+      if (user) {
+        const views = await this.call('views').catch(() => []);
+        const list = Array.isArray(views) ? views : [];
+        const shown = list.find((view) => view && view.shown) || list.find((view) => view && view.active);
+        if (shown && shown.view_id) return this.call('focus', shown.view_id);
+      }
+      throw Object.assign(new Error('this companion browser predates herdr\'s companion controls; quit it and let herdr start it'), { herdr: true, code: 'companion_outdated' });
+    }
   }
   /** The control page answers the registration's nonce. */
   async verify(nonce) {

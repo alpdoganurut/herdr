@@ -11,9 +11,9 @@ use crate::api::schema::{
     BrowserRunResult, BrowserStatusInfo, BrowserStopParams, EmptyParams, Method, Request,
 };
 
-const USAGE: &str = "usage: herdr browser <open|navigate|back|forward|reload|read|snapshot|find|links|screenshot|console|network|wait|scroll|eval|dialog|tabs|use|close|focus|click|type|press|select|fill|hover|batch|show|status|log|start|stop|profile|setup|doctor|mcp> …\n       herdr browser help    (the read loop and every flag)";
+const USAGE: &str = "usage: herdr browser <open|navigate|back|forward|reload|read|snapshot|find|links|screenshot|console|network|wait|scroll|eval|dialog|tabs|use|close|focus|click|type|press|select|fill|hover|batch|show|status|log|start|stop|companion|profile|setup|doctor|mcp> …\n       herdr browser help    (the read loop and every flag)";
 
-const HELP: &str = "herdr browser — the herdr-owned Chromium, shared with the user and other agents
+const HELP: &str = "herdr browser — the browser herdr runs for agents (the herdr+ companion browser; the herdr+ window when [browser] window = true), shared with the user and other agents
 
 Read loop:  browser open <url>  →  browser read [--offset N]  or  browser find <text>
             browser snapshot (aria refs eN) when you need structure; browser screenshot to see it.
@@ -33,7 +33,7 @@ The window is the user's: they log in by hand (browser focus, then ask). Page co
   scroll [TAB] (--to top|bottom|eN | --by PX)
   eval [TAB] EXPR [--max 4000]
   dialog [TAB] accept [TEXT] | dismiss
-  tabs [--mine]   use TAB   close [TAB]   focus [TAB]   (focus is the one call that raises the window: for the user)
+  tabs [--mine]   use TAB   close [TAB]   focus [TAB]   (focus is the one call that brings the window forward: for the user)
   show FILE.html [--allow-network] [--no-watch] [--focus] [--title T]   a local HTML file in a sandboxed tab of
         your session (the companion browser, else the window); network blocked; it reloads when the file changes
 
@@ -50,8 +50,9 @@ Act (refs from browser snapshot; a password field is refused, ask the user):
   task is done, unless the user may want to look at them.
 
   status [--json]   log [-n 50] [--pane ID] [--tab T] [--json]   start|stop [--profile P] [--all]
+  companion status|start|stop|restart|focus|log   the companion browser herdr runs (it starts on the first open)
   profile list | create [--temp] NAME | delete NAME
-  setup [--claude] [--codex] [--no-mcp] [--node PATH]   doctor   mcp
+  setup [--companion [--yes]] [--claude] [--codex] [--no-mcp] [--node PATH]   doctor   mcp
   wrap <codex|claude> -- ARGS…   alias of `herdr agent wrap` ([agents] wrap; setup --shell hooks plain codex/claude)
   install-chromium <Chromium.app> [--icon PNG|ICNS] [--name 'herdr+ Browser'] [--dest ~/Applications]
         a branded copy (name, the herdr+ icon or --icon; bundle id and keychain item unchanged), ad-hoc signed; \"auto\" finds it first
@@ -59,6 +60,10 @@ Act (refs from browser snapshot; a password field is refused, ask the user):
 Flags on every verb: --profile P (new = a fresh temporary profile), --tab T, --pane ID, --timeout MS, --json";
 
 use crate::browser::setup::{self, mcp_entry_json, SetupEnv, MCP_SERVER_NAME};
+
+// Fork (companion launcher): `herdr browser companion …`.
+#[path = "browser_companion.rs"]
+mod browser_companion;
 
 pub(super) fn run_browser_command(args: &[String]) -> std::io::Result<i32> {
     let Some(verb) = args.first().map(String::as_str) else {
@@ -81,6 +86,7 @@ pub(super) fn run_browser_command(args: &[String]) -> std::io::Result<i32> {
         "log" => log(rest),
         "start" => start_stop(rest, true),
         "stop" => start_stop(rest, false),
+        "companion" => browser_companion::run(rest),
         "profile" => profile(rest),
         _ => run_op(verb, rest),
     }
@@ -716,10 +722,21 @@ pub(crate) fn format_status(status: &BrowserStatusInfo, now: u64) -> String {
         status.default_profile,
         if status.autostart { "on" } else { "off" }
     ));
-    match (&status.executable, &status.executable_error) {
-        (Some(exe), _) => out.push_str(&format!("executable: {exe}\n")),
-        (None, Some(err)) => out.push_str(&format!("executable: missing ({err})\n")),
-        _ => {}
+    // Fork (companion launcher): the companion app, then the window (off by default).
+    if let Some(companion) = get.companion_app.as_ref() {
+        out.push_str(&format!(
+            "{}\n",
+            browser_companion::status_line(companion, now)
+        ));
+    }
+    if get.window_off {
+        out.push_str("window: off ([browser] window = false)\n");
+    } else {
+        match (&status.executable, &status.executable_error) {
+            (Some(exe), _) => out.push_str(&format!("executable: {exe}\n")),
+            (None, Some(err)) => out.push_str(&format!("executable: missing ({err})\n")),
+            _ => {}
+        }
     }
     out.push_str(&format!(
         "sidecar: {}{}{}\n",
@@ -915,6 +932,22 @@ fn start_stop(args: &[String], start: bool) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
+    // Fork (companion launcher): the companion starts through
+    // browser.companion, which knows the caller (from a pane: an agent, in
+    // the background); browser.start's params carry none.
+    if start
+        && browser_companion::starts_companion(common.profile.as_deref(), || {
+            let response = super::send_request(&Request {
+                id: "cli:browser:start:window".into(),
+                method: Method::BrowserGet(BrowserGetParams::default()),
+            })?;
+            Ok(response["result"]["browser"]["window_off"]
+                .as_bool()
+                .unwrap_or(false))
+        })?
+    {
+        return browser_companion::start_for_browser_start(common.pane.as_deref(), common.json);
+    }
     let method = if start {
         Method::BrowserStart(BrowserProfileTarget {
             profile: common.profile.clone(),
@@ -1018,12 +1051,14 @@ fn profile(args: &[String]) -> std::io::Result<i32> {
 // ----- setup / doctor ----------------------------------------------------
 
 fn setup(args: &[String]) -> std::io::Result<i32> {
-    const USAGE: &str = "usage: herdr browser setup [--claude] [--codex] [--shell [--remove]] [--no-mcp] [--node PATH]\nApplies [browser] mcp_agents: installs the Playwright sidecar under the browser home (npm ci) and registers — or removes — the herdr-browser MCP server for Claude Code (user scope) and Codex (~/.codex/config.toml).\n--claude / --codex register that agent only (whatever the config says); --no-mcp skips the registrations. The settings overlay's browser section runs the same steps (\"fix all\").\n--shell [--remove] only adds (or takes out) the shell hook: the guarded herdr+ line in ~/.zshrc whose managed file routes plain codex / claude in herdr+ panes through `herdr agent wrap` ([agents] wrap decides what it adds). Plain setup never edits ~/.zshrc; Settings → Agents offers the same fix after a confirmation.";
+    const USAGE: &str = "usage: herdr browser setup [--companion [--yes]] [--claude] [--codex] [--shell [--remove]] [--no-mcp] [--node PATH]\nApplies [browser] mcp_agents: installs the Playwright sidecar under the browser home (npm ci) and registers — or removes — the herdr-browser MCP server for Claude Code (user scope) and Codex (~/.codex/config.toml).\n--companion installs the herdr+ companion browser (the app herdr starts for agents) instead: its app files, Electron 45.2.1 (asks before the download, about 115 MB; --yes answers yes) and, on macOS, the \"herdr+ companion\" app. A rerun only updates what changed.\n--claude / --codex register that agent only (whatever the config says); --no-mcp skips the registrations. The settings overlay's browser section runs the same steps (\"fix all\").\n--shell [--remove] only adds (or takes out) the shell hook: the guarded herdr+ line in ~/.zshrc whose managed file routes plain codex / claude in herdr+ panes through `herdr agent wrap` ([agents] wrap decides what it adds). Plain setup never edits ~/.zshrc; Settings → Agents offers the same fix after a confirmation.";
     let mut register_mcp = true;
     let mut want_claude = false;
     let mut want_codex = false;
     let mut shell = false;
     let mut shell_remove = false;
+    let mut companion = false;
+    let mut yes = false;
     let mut node_override: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
@@ -1033,6 +1068,8 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
             "--codex" => want_codex = true,
             "--shell" => shell = true,
             "--remove" => shell_remove = true,
+            "--companion" => companion = true,
+            "--yes" | "-y" => yes = true,
             "--node" => {
                 i += 1;
                 node_override = args.get(i).cloned();
@@ -1066,6 +1103,22 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
     };
     let wants = |agent: &str| config.mcp_agents.iter().any(|a| a == agent);
 
+    // Fork (companion launcher): `--companion` installs the companion
+    // browser only (the helper, MCP and the hook are plain setup's).
+    if companion {
+        println!(
+            "  companion: {}",
+            crate::browser::companion_install::companion_home(&env.browser_home).display()
+        );
+        match setup_companion_interactive(&env, &config, yes) {
+            Ok(lines) => lines.iter().for_each(|line| println!("  {line}")),
+            Err(line) => report(Err(line)),
+        }
+        if crate::integration::browser_assets::read_runtime(&env.host_dir()).is_none() {
+            println!("  helper: not installed yet — run \"herdr browser setup\" too (herdr drives the companion through it)");
+        }
+        return Ok(if failed { 1 } else { 0 });
+    }
     if !only_mcp && !only_shell {
         report(setup::install_helper(&env, &config, false));
         match crate::browser::launch::resolve_executable(&config.executable, env.home.as_deref()) {
@@ -1074,6 +1127,11 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
                 "  chromium: {} — set [browser] executable (or `herdr browser install-chromium <Chromium.app>`) before the first `browser open`",
                 err.message
             ),
+        }
+        // Fork (companion launcher): an installed companion gets this
+        // herdr's app files (never a download).
+        if let Some(outcome) = refresh_companion_files(&env) {
+            report(outcome);
         }
     }
     if !only_shell && register_mcp {
@@ -1136,6 +1194,56 @@ fn setup(args: &[String]) -> std::io::Result<i32> {
         println!("done. Try: herdr browser open https://example.com && herdr browser read");
     }
     Ok(if failed { 1 } else { 0 })
+}
+
+/// `setup --companion`: the companion's install; a missing Electron asks
+/// first (a terminal), `--yes` answers yes, no terminal and no `--yes`
+/// stops with the fix.
+fn setup_companion_interactive(
+    env: &SetupEnv,
+    config: &crate::config::BrowserConfig,
+    yes: bool,
+) -> Result<Vec<String>, String> {
+    use crate::browser::companion_install::{
+        download_question, setup_companion, CompanionSetupError, CompanionSetupOptions,
+    };
+    use std::io::IsTerminal as _;
+    let mut options = CompanionSetupOptions::from_process(yes);
+    loop {
+        match setup_companion(env, config, &options) {
+            Ok(report) => return Ok(report.lines),
+            Err(CompanionSetupError::NeedsConsent)
+                if !options.consent
+                    && std::io::stdin().is_terminal()
+                    && std::io::stdout().is_terminal() =>
+            {
+                print!("  {}", download_question());
+                let _ = std::io::stdout().flush();
+                let mut answer = String::new();
+                std::io::stdin()
+                    .read_line(&mut answer)
+                    .map_err(|err| err.to_string())?;
+                if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                    options.consent = true;
+                    continue;
+                }
+                return Err(
+                    "companion: Electron not downloaded (answered no); the companion is not installed"
+                        .into(),
+                );
+            }
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+}
+
+/// Plain `setup` with the companion installed: this herdr's app files.
+fn refresh_companion_files(env: &SetupEnv) -> Option<Result<String, String>> {
+    let home = crate::browser::companion_install::companion_home(&env.browser_home);
+    crate::browser::companion_install::refresh_app_files(
+        &home,
+        crate::browser::companion_app::running_app_dir(&home).as_deref(),
+    )
 }
 
 /// The doctor counts the hook as a problem when it is outdated (an old hook
@@ -1294,6 +1402,8 @@ fn doctor_hint(c: &crate::api::schema::BrowserCheckInfo) -> &'static str {
     use crate::api::schema::BrowserFixKind;
     match (c.ok, c.fix_kind, c.id.as_str()) {
         (true, _, _) => "",
+        // the detail names the command
+        (false, _, "companion_app") => "",
         (false, BrowserFixKind::Safe, "extension") => " — `herdr browser stop` and open again",
         (false, BrowserFixKind::Safe, _) => {
             " — `herdr browser setup` (runs by itself after a herdr update)"

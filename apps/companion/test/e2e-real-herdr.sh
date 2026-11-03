@@ -19,11 +19,13 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="$(cd "$APP_DIR/../.." && pwd)"
-HERDR_BIN="${HERDR_BIN:-$REPO/target/release/herdr}"
+# BIN, not HERDR_BIN: the loop below drops every inherited HERDR_* variable (an exported
+# HERDR_BIN with them).
+BIN="${HERDR_BIN:-$REPO/target/release/herdr}"
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
 
-[[ -x "$HERDR_BIN" ]] || { echo "no herdr binary at $HERDR_BIN (cargo build --release, or set HERDR_BIN)" >&2; exit 2; }
+[[ -x "$BIN" ]] || { echo "no herdr binary at $BIN (cargo build --release, or set HERDR_BIN)" >&2; exit 2; }
 [[ -d "$APP_DIR/node_modules/playwright-core" && -d "$APP_DIR/node_modules/electron" ]] || { echo "run npm install in $APP_DIR first" >&2; exit 2; }
 NODE="$(command -v node)"
 
@@ -35,17 +37,18 @@ mkdir -p "$T/home" "$T/config/herdr" "$T/state" "$T/data" "$T/cache" "$T/bin" "$
 # Drop every HERDR_* variable of the calling shell (a live herdr session's socket, pane id, ...).
 for v in $(env | sed -n 's/^\(HERDR_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 export HOME="$T/home" XDG_CONFIG_HOME="$T/config" XDG_STATE_HOME="$T/state" XDG_DATA_HOME="$T/data" XDG_CACHE_HOME="$T/cache"
-export HERDR_E2E_TMP="$T" HERDR_E2E_BIN="$HERDR_BIN" HERDR_E2E_SOCKET="$T/config/herdr/herdr.sock"
+export HERDR_E2E_TMP="$T" HERDR_E2E_BIN="$BIN" HERDR_E2E_SOCKET="$T/config/herdr/herdr.sock"
 
 # The Claude hook integration (in the temp HOME): herdr stores quiet messages (page errors)
 # only for a Claude pane whose hook is current.
 mkdir -p "$T/home/.claude"
-"$HERDR_BIN" integration install claude >/dev/null
+"$BIN" integration install claude >/dev/null
 
 cat > "$T/config/herdr/config.toml" <<EOF
 [browser]
 enabled = true
 autostart = false
+window = true
 host = "auto"
 page_errors = "agent"
 executable = "$T/no-chromium/herdr-e2e-chromium"
@@ -61,7 +64,7 @@ printf '{"version":1,"node":"%s","playwright_core":"1.63.0","assets_sha256":"","
 
 
 start_server() {
-  "$HERDR_BIN" server >>"$T/server.log" 2>&1 &
+  "$BIN" server >>"$T/server.log" 2>&1 &
   echo $! >>"$T/server.pids"
   for _ in $(seq 1 100); do [[ -S "$HERDR_E2E_SOCKET" ]] && return 0; sleep 0.1; done
   echo "herdr server did not create its socket; log: $T/server.log" >&2
@@ -71,17 +74,17 @@ export -f start_server 2>/dev/null || true
 
 cleanup() {
   local code=$?
-  "$HERDR_BIN" server stop >/dev/null 2>&1 || true
+  "$BIN" server stop >/dev/null 2>&1 || true
   sleep 1
   local left=""
   for p in $(cat "$T/server.pids" 2>/dev/null); do ps -p "$p" >/dev/null 2>&1 && left="$left $p"; done
-  [[ -n "$left" ]] && echo "herdr server pid(s) still running:$left (not killed; stop them with HOME=$T/home XDG_CONFIG_HOME=$T/config $HERDR_BIN server stop)" >&2
+  [[ -n "$left" ]] && echo "herdr server pid(s) still running:$left (not killed; stop them with HOME=$T/home XDG_CONFIG_HOME=$T/config $BIN server stop)" >&2
   if [[ $code -eq 0 && $KEEP -eq 0 && -z "$left" ]]; then rm -rf "$T"; else echo "kept $T"; fi
   exit $code
 }
 trap cleanup EXIT
 
 start_server
-echo "isolated herdr: $HERDR_BIN  socket: $HERDR_E2E_SOCKET  tmp: $T"
+echo "isolated herdr: $BIN  socket: $HERDR_E2E_SOCKET  tmp: $T"
 cd "$APP_DIR"
 "$NODE" test/e2e-real-herdr.mjs

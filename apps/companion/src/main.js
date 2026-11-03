@@ -10,13 +10,21 @@ const { GroupStore } = require('./groups.js');
 const { ViewManager, within } = require('./views.js');
 const { HerdrLink } = require('./host.js');
 const { resolveSocketPath, serialized } = require('./herdr-api.js');
+const { parseManaged, registerFields, startupWindow, watchdogFor, onQuitSignals } = require('./managed.js');
+const { PlacementFeed, anyDockPlacement } = require('./dock/placements.js');
+const { WindowProbe } = require('./dock/window-probe.js');
+const { DockController } = require('./dock/dock.js');
+const { sessionCounts, sessionMenuItems } = require('./info.js');
 
 const VERSION = require('../package.json').version;
+const APP_NAME = 'herdr+ companion'; // the macOS menu bar, Dock and window titles
 const UI_DIR = path.join(__dirname, 'ui');
 const ICON_DIR = path.join(__dirname, '..', 'assets', 'icon'); // eye-plus app icon (eye-plus.icns for packaging)
 const CHROME_HEIGHT = 56; // strip.css: tabs row 26 + nav row 30; extra rows add to it (reported by the strip)
 // The window background behind the bar before it paints: the bar's --chrome colour (light / Dusk dark).
 const chromeBackground = () => (nativeTheme.shouldUseDarkColors ? '#1b1c23' : '#efeee9');
+// The docked bar is always Dusk (it sits in herdr's dark window); pages keep the system look.
+const DOCK_BACKGROUND = '#1b1c23';
 const SCHEME = 'herdr-companion';
 const SYNC_MIN_INTERVAL_MS = 250; // ≤ 4 syncs/s (contract §2.3)
 const SYNC_MAX_BYTES = 256 * 1024; // herdr's cap on a sync's groups
@@ -37,6 +45,8 @@ function argValue(name) {
   return eq ? eq.slice(name.length + 1) : null;
 }
 const HEADLESS = process.argv.includes('--headless') || process.env.HERDR_COMPANION_HEADLESS === '1';
+// herdr's launcher started it (`--managed --launch-token … [--background]`): see managed.js.
+const MANAGED = parseManaged(process.argv, process.env);
 const explicitSocket = argValue('--socket') || process.env.HERDR_SOCKET_PATH || null;
 const SOCKET = explicitSocket || (process.argv.includes('--default-socket') ? resolveSocketPath([], process.env) : null);
 const log = (...a) => console.log(`[companion ${new Date().toISOString().slice(11, 23)}]`, ...a);
@@ -50,7 +60,9 @@ if (!SOCKET) {
 }
 
 const profileDir = argValue('--profile-dir');
-if (profileDir) app.setPath('userData', path.resolve(profileDir));
+// Without --profile-dir the profile keeps its old home (productName would move it).
+app.setPath('userData', profileDir ? path.resolve(profileDir) : path.join(app.getPath('appData'), 'herdr-companion'));
+app.setName(APP_NAME);
 // Chromium writes DevToolsActivePort only when user-data-dir is a switch (spike S1).
 app.commandLine.appendSwitch('user-data-dir', app.getPath('userData'));
 app.commandLine.appendSwitch('remote-debugging-port', '0');
@@ -103,6 +115,7 @@ class Companion {
     this.chromeHeight = CHROME_HEIGHT;
     this.shownTab = null;
     this.flash = null; // transient strip message
+    this.restarting = false; // the update chip's restart request is under way
     this.syncTimer = null;
     this.syncing = false;
     this.lastSyncAt = 0;
@@ -118,12 +131,18 @@ class Companion {
       onState: (id) => this.onViewState(id),
       onError: (id, kind, text) => this.onPageError(id, kind, text),
       onOpen: (from, url, disposition, opts) => this.onWindowOpen(from, url, disposition, opts),
-      onKey: () => false,
+      onKey: (input) => this.dockKey(input),
       onPermission: (id, req, done) => this.onPermission(id, req, done),
       onLeave: (id, origin) => this.onLeave(id, origin),
     });
     this.prompts = []; // pending permission prompts {id, view_id, permission, label, origin, dones[], timer}
     this.nextPrompt = 1;
+    // Docked mode (launcher design §3.4): a frameless window over herdr's band.
+    this.dockWin = null;
+    this.docked = false;
+    this.dockChromeHeight = CHROME_HEIGHT;
+    this.mainWasVisible = false;
+    this.startupShow = null;
   }
 
   async start() {
@@ -136,8 +155,9 @@ class Companion {
       return this.controlCall(op, a);
     });
     ipcMain.handle('herdr-companion:strip', (e, name, a) => {
-      if (!this.win || e.sender !== this.win.webContents) return null;
-      return this.stripAction(name, a);
+      const dock = !!(this.dockWindow() && e.sender === this.dockWin.webContents);
+      if (!dock && (!this.win || e.sender !== this.win.webContents)) return null;
+      return this.stripAction(name, a, { dock });
     });
 
     this.win = new BrowserWindow({
@@ -146,7 +166,7 @@ class Companion {
       height: 820,
       minWidth: 480,
       minHeight: 300,
-      title: 'herdr companion',
+      title: APP_NAME,
       backgroundColor: chromeBackground(),
       icon: path.join(ICON_DIR, 'eye-plus-512.png'),
       paintWhenInitiallyHidden: true,
@@ -159,6 +179,7 @@ class Companion {
         nodeIntegration: false,
       },
     });
+    this.views.setHost(this.win);
     this.win.on('resize', () => this.layout());
     const onTheme = () => this.win && this.win.setBackgroundColor(chromeBackground());
     nativeTheme.on('updated', onTheme);
@@ -203,6 +224,7 @@ class Companion {
         version: VERSION,
         protocol: 1,
         capabilities: ['views', 'html_view', 'send_page', 'user_actions'],
+        ...registerFields(MANAGED),
       }),
     });
     this.link.on('status', (s) => {
@@ -210,12 +232,28 @@ class Companion {
       this.pushStrip();
     });
     this.link.on('lease', (lease) => this.onLease(lease));
+    this.link.on('heartbeat', (lease) => this.onUpdateNote(lease));
     this.link.on('lost', () => this.pushStrip());
     this.link.on('event', (ev) => this.onEvent(ev));
+    // Docking: herdr's placements, the terminal windows, and what the dock does with them.
+    this.feed = new PlacementFeed({ link: this.link, log });
+    const fakeWindows = MANAGED.testHooks ? process.env.HERDR_COMPANION_FAKE_WINDOWS || null : null;
+    if (fakeWindows) this.fakeScale = Number(process.env.HERDR_COMPANION_FAKE_SCALE) || 2;
+    this.probe = new WindowProbe({ log, fakeFile: fakeWindows });
+    this.dock = new DockController({ host: this, feed: this.feed, probe: this.probe, log, headless: HEADLESS, electron: require('electron') });
     this.link.start();
     setInterval(() => this.flushReports(), REPORT_FLUSH_MS).unref();
 
-    if (!HEADLESS) this.win.show();
+    // A managed companion started for an agent, by autostart or a crash restart never
+    // shows itself; one the user started shows without taking the keyboard.
+    // A herdr that keeps an area for the browser gets it docked, not a window: the window
+    // waits for herdr's first placements (at most 1.5 s).
+    this.startupShow = startupWindow(MANAGED, HEADLESS);
+    this.startupTimer = setTimeout(() => this.showStartupWindow(), 1500);
+    this.feed.once('placements', () => this.showStartupWindow());
+    // managed: herdr gone for good (a crash, kill -9; a handoff's gap is far shorter) quits it
+    this.watchdog = watchdogFor(MANAGED, { socketPath: SOCKET, log, onGone: () => app.quit() });
+    if (this.watchdog) this.watchdog.start();
     this.layout();
     this.pushStrip();
   }
@@ -263,10 +301,23 @@ class Companion {
   async onLease(lease) {
     log('lease', lease.lease_id, lease.state, 'features', (lease.server_features || []).join(','));
     this.features = new Set(lease.server_features || []);
+    this.onUpdateNote(lease);
+    this.feed.reset();
+    this.feed.start();
+    if (!this.features.has('placements')) this.showStartupWindow();
     this.store.resetLease();
     await this.refreshState();
     if (this.link) this.link.releaseEvents();
     this.scheduleSync(0);
+  }
+
+  // herdr installed newer app files than this process runs (managed): the bar's chip.
+  onUpdateNote(lease) {
+    const update = (lease && lease.update) || null;
+    if (update !== this.update) {
+      this.update = update;
+      this.pushStrip();
+    }
   }
 
   // One host_state read at a time, in order (serialized): each request runs on its own
@@ -289,11 +340,19 @@ class Companion {
     const out = this.store.applyHostState(res.state || {});
     for (const g of out.dropped) this.destroyGroupViews(g);
     if (out.moved.length) log('groups moved', JSON.stringify(out.moved));
+    this.loadAgentPages(out.created);
     if (this.shownTab && !this.store.tabs.has(this.shownTab)) this.shownTab = null;
     // Re-show only when herdr focus moved (or nothing valid is shown): a page an agent raised
     // with focus() stays up across unrelated tab/workspace events.
     const focus = this.store.focusedTabId;
-    if (focus && (focus !== prevFocus || !this.shownTab)) await this.showGroup(focus, { reason: 'follow', focusMoved: focus !== prevFocus });
+    // Docked, the dock's client decides which group shows (its herdr tab).
+    if (this.docked && this.dockTab && this.store.tabs.has(this.dockTab)) {
+      if (this.shownTab !== this.dockTab) await this.showGroup(this.dockTab, { reason: 'follow' });
+      else {
+        this.layout();
+        this.pushStrip();
+      }
+    } else if (focus && (focus !== prevFocus || !this.shownTab)) await this.showGroup(focus, { reason: 'follow', focusMoved: focus !== prevFocus });
     else {
       this.layout();
       this.pushStrip();
@@ -315,6 +374,8 @@ class Companion {
           if (!this.store.tabs.has(d.tab_id)) return this.refreshSoon(0);
           const moved = this.store.focusedTabId !== d.tab_id;
           this.store.focusedTabId = d.tab_id;
+          // Docked, the dock's client decides (its placement names its herdr tab).
+          if (this.docked && this.dockTab) return;
           this.showGroup(d.tab_id, { reason: 'follow', focusMoved: moved });
         }, 50);
         break;
@@ -356,6 +417,26 @@ class Companion {
     return target;
   }
 
+  // Restored pages are placeholders until shown, except the agents' own (`agent:<pane>`): an
+  // agent works on its page without looking at it, so after a restart its view loads at once,
+  // hidden, one at a time; herdr's sync then gives the agent its page back under the same
+  // herdr tab id. (An exception to the lazy restore, kept to the agents' pages.)
+  loadAgentPages(tabIds) {
+    const todo = [];
+    for (const tabId of tabIds || []) {
+      const g = this.store.group(tabId);
+      if (!g) continue;
+      for (const e of g.entries) if (e.placeholder && /^agent:/.test(e.opened_by || '')) todo.push([e, tabId]);
+    }
+    if (!todo.length) return;
+    (async () => {
+      for (const [e, tabId] of todo) {
+        if (!this.store.findView(e.view_id)) continue; // closed meanwhile
+        await this.ensureLive(e, tabId).catch((err) => log('restore load failed', e.view_id, err && err.message));
+      }
+    })();
+  }
+
   // reason 'follow' (herdr focus) | 'agent'. `focusMoved`: herdr focus just moved to this tab,
   // so the user is looking at it: report `shown` (clears needs-you) even when the companion
   // already showed this group (an agent's focus() switched to it first).
@@ -389,13 +470,150 @@ class Companion {
   }
 
   layout() {
-    if (!this.win) return;
-    const [w, h] = this.win.getContentSize();
-    const top = this.chromeHeight;
+    const host = this.docked && this.dockWindow() ? this.dockWin : this.win;
+    if (!host) return;
+    const [w, h] = host.getContentSize();
+    const top = host === this.dockWin ? this.dockChromeHeight : this.chromeHeight;
     const e = this.activeEntry();
     this.views.layout(e ? e.view_id : null, { x: 0, y: top, width: w, height: Math.max(0, h - top) });
-    const label = this.shownTab ? this.store.label(this.shownTab) : null;
-    this.win.setTitle(label ? `herdr · ${label}` : 'herdr companion');
+    const title = this.windowTitle();
+    if (this.win) this.win.setTitle(title);
+    if (this.dockWindow()) this.dockWin.setTitle(title);
+  }
+
+  // `herdr+ companion — <label> (3)`: the shown session and its page count.
+  windowTitle() {
+    if (!this.shownTab) return APP_NAME;
+    const label = this.store.label(this.shownTab);
+    const g = this.shownGroup();
+    const n = g ? g.entries.length : 0;
+    return `${APP_NAME} — ${label}${n ? ` (${n})` : ''}`;
+  }
+
+  // ---------- docked mode (launcher design §3.4; dock/dock.js decides) ----------
+
+  dockWindow() {
+    return this.dockWin && !this.dockWin.isDestroyed() ? this.dockWin : null;
+  }
+
+  ensureDockWindow() {
+    if (this.dockWindow()) return this.dockWin;
+    const ui = session.fromPartition('herdr-ui');
+    const win = new BrowserWindow({
+      show: false,
+      frame: false,
+      hasShadow: false,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      hiddenInMissionControl: true,
+      acceptFirstMouse: true,
+      width: 600,
+      height: 400,
+      title: APP_NAME,
+      backgroundColor: DOCK_BACKGROUND,
+      paintWhenInitiallyHidden: true,
+      webPreferences: {
+        session: ui,
+        preload: path.join(__dirname, 'preload', 'strip.js'),
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    this.dockWin = win;
+    win.on('resize', () => this.layout());
+    win.on('focus', () => this.onWindowFocus());
+    // A click into the terminal orders it front: back above it at once.
+    win.on('blur', () => this.dock && this.dock.onBlur());
+    win.on('closed', () => {
+      if (this.dockWin === win) this.dockWin = null;
+    });
+    win.webContents.on('before-input-event', (e, input) => {
+      if (this.dockKey(input)) e.preventDefault();
+    });
+    win.loadURL(`${SCHEME}://ui/strip.html?mode=docked`).catch((e) => log('dock strip failed to load', e.message));
+    return win;
+  }
+
+  // dock.js: herdr keeps an area for the browser: the pages move into the dock window and
+  // the window hides (it comes back when docking ends, if it was up).
+  enterDocked() {
+    const win = this.ensureDockWindow();
+    this.docked = true;
+    this.mainWasVisible = !!(this.win && this.win.isVisible());
+    if (this.win && !HEADLESS) this.win.hide();
+    this.views.setHost(win);
+    this.layout();
+    this.pushStrip();
+  }
+
+  leaveDocked() {
+    this.docked = false;
+    this.dockTab = null;
+    if (this.win) this.views.setHost(this.win);
+    this.layout();
+    this.pushStrip();
+    if (this.mainWasVisible && this.win && !HEADLESS) this.win.showInactive();
+    // back to following herdr's focus
+    const focus = this.store.focusedTabId;
+    if (focus && focus !== this.shownTab) this.showGroup(focus, { reason: 'follow' });
+  }
+
+  // dock.js: the target placement's herdr tab shows in the dock.
+  dockShowsTab(tabId) {
+    this.dockTab = tabId;
+    if (tabId && tabId !== this.shownTab && this.store.tabs.has(tabId)) this.showGroup(tabId, { reason: 'follow', focusMoved: true });
+  }
+
+  // The window waits for herdr's first placements (docked: it never shows).
+  showStartupWindow() {
+    clearTimeout(this.startupTimer);
+    const show = this.startupShow;
+    this.startupShow = null;
+    if (!show || !this.win || this.docked || anyDockPlacement(this.feed && this.feed.placements)) return;
+    if (show === 'inactive') this.win.showInactive();
+    else if (show === 'show') this.win.show();
+  }
+
+  // Keys while the dock (or one of its pages) has the keyboard: ⌘⎋ gives it back to the
+  // terminal; the bar's shortcuts work without the menu bar (the dock is an accessory).
+  dockKey(input) {
+    if (!this.docked || !input || input.type !== 'keyDown') return false;
+    const cmd = process.platform === 'darwin' ? input.meta : input.control;
+    if (!cmd || input.alt) return false;
+    const key = String(input.key || '').toLowerCase();
+    if (key === 'escape') {
+      this.returnKeyboard();
+      return true;
+    }
+    const map = { t: 't', w: 'w', l: 'l', r: 'r', '[': '[', ']': ']' };
+    if (!input.shift && map[key]) {
+      this.handleKey(map[key]);
+      return true;
+    }
+    if (input.shift && key === 's') {
+      this.handleKey('send');
+      return true;
+    }
+    return false;
+  }
+
+  // The keyboard back to the terminal: hiding the app activates the one before it (the
+  // terminal); the dock comes back over it without taking the keyboard.
+  returnKeyboard() {
+    if (HEADLESS || process.platform !== 'darwin') return;
+    app.hide();
+    setTimeout(() => {
+      const win = this.dockWindow();
+      if (win && this.dock && this.dock.shown) {
+        win.showInactive();
+        this.dock.raise(win);
+      }
+    }, 60);
   }
 
   async openEntry(tabId, spec, { background = true } = {}) {
@@ -535,9 +753,25 @@ class Companion {
           return await this.ctlShow(a || {});
         case 'views':
           return this.listViews();
+        case 'raise':
+          return this.raise({ user: !!(a && a.user) });
         case 'quit':
-          if (!HEADLESS) return errOut('refused', 'quit through the control page is for headless runs only');
+          // herdr's stop of the companion it started (managed), or a headless test run
+          if (!HEADLESS && !MANAGED.managed) return errOut('refused', 'quit through the control page is for headless or managed runs only');
           setTimeout(() => app.quit(), 20);
+          return { ok: true };
+        case '__crash':
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op __crash');
+          log('test hook: crashing');
+          setTimeout(() => process.exit(70), 20);
+          return { ok: true };
+        case 'dock_debug':
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op dock_debug');
+          return this.dock ? this.dock.debug() : null;
+        case '__hang':
+          if (!MANAGED.testHooks) return errOut('unknown_op', 'unknown control op __hang');
+          log('test hook: no more heartbeats');
+          if (this.link) this.link.hang();
           return { ok: true };
         default:
           return errOut('unknown_op', `unknown control op ${op}`);
@@ -565,20 +799,61 @@ class Companion {
     return { view_id: e.view_id, target_id: e.target, tab_id: tabId };
   }
 
-  async ctlFocus(viewId) {
+  // `focus(view_id)` or `focus({view_id, user})`: an agent's focus (the login handoff) selects
+  // the page, marks it and orders the window front without taking the keyboard; the user's
+  // own (herdr's overlay, `browser focus` from a terminal) activates the window.
+  // Docked over another herdr tab, the dock keeps that tab's pages (it would switch back on
+  // its next decision): the page is selected in its own group and marked; the user's own
+  // focus brings its herdr tab forward instead, and the dock follows where that tab has it.
+  async ctlFocus(a) {
+    const viewId = a && typeof a === 'object' ? a.view_id : a;
+    const user = !!(a && typeof a === 'object' && a.user);
     const hit = this.store.findView(viewId);
     if (!hit) return errOut('view_not_found', `no view ${viewId}`);
     this.store.select(viewId);
     this.scheduleSync();
-    await this.showGroup(hit.group.tab_id, { reason: 'agent' });
-    hit.entry.attention = true; // the strip dot; cleared when the user selects it or herdr focus shows it
+    const tabId = hit.group.tab_id;
+    if (this.docked && this.dockTab && tabId !== this.dockTab) {
+      if (user) {
+        if (this.link) this.link.request('tab.focus', { tab_id: tabId }).catch((e) => this.say('warn', `could not focus the herdr tab: ${e.message}`));
+      } else hit.entry.attention = true; // herdr's ◉ and notice bring the user
+      this.pushStrip();
+      return { ok: true, view_id: viewId };
+    }
+    await this.showGroup(tabId, { reason: 'agent' });
+    if (!user) hit.entry.attention = true; // the strip dot; cleared when the user selects it or herdr focus shows it
     this.pushStrip();
-    if (!HEADLESS && this.win) {
-      this.selfRaiseUntil = Date.now() + 1000;
+    this.raise({ user });
+    return { ok: true, view_id: viewId };
+  }
+
+  // Bring the window up: `user` activates it (the keyboard goes to it); otherwise it is
+  // ordered front without activation (no keyboard theft).
+  raise({ user = false } = {}) {
+    if (HEADLESS || !this.win) {
+      log('raise suppressed (headless)');
+      return { ok: true, raised: false };
+    }
+    // Docked: the dock is where it is. The user's focus gives it the keyboard; an agent's
+    // only selects the page (◉ and herdr's notice bring the user).
+    if (this.docked) {
+      const dock = this.dockWindow();
+      if (user && dock && this.dock && this.dock.shown) {
+        dock.focus();
+        if (process.platform === 'darwin') app.focus({ steal: true });
+        return { ok: true, raised: true };
+      }
+      return { ok: true, raised: false };
+    }
+    if (user) {
       this.win.show();
       this.win.focus();
-    } else log('focus: window raise suppressed (headless)');
-    return { ok: true, view_id: viewId };
+      if (process.platform === 'darwin') app.focus({ steal: true });
+    } else {
+      this.selfRaiseUntil = Date.now() + 1000;
+      this.win.showInactive();
+    }
+    return { ok: true, raised: true };
   }
 
   async ctlShow(a) {
@@ -669,18 +944,26 @@ class Companion {
           this.report('user_action', 'forward', e, g);
         }
         return;
-      case 'send':
-        return this.win && this.win.webContents.executeJavaScript("document.getElementById('send').click()", true);
+      case 'send': {
+        const strip = this.stripWindow();
+        return strip && strip.webContents.executeJavaScript("document.getElementById('send').click()", true);
+      }
       case 'go':
         return this.goToTab();
       default:
     }
   }
 
+  // The window whose bar the user sees: the dock's while docked.
+  stripWindow() {
+    return this.docked && this.dockWindow() ? this.dockWin : this.win;
+  }
+
   focusUrl() {
-    if (!this.win || HEADLESS) return;
-    this.win.webContents.focus();
-    this.win.webContents.send('strip:focus-url');
+    const strip = this.stripWindow();
+    if (!strip || HEADLESS) return;
+    strip.webContents.focus();
+    strip.webContents.send('strip:focus-url');
   }
 
   async newTab(url = 'about:blank') {
@@ -703,7 +986,7 @@ class Companion {
     }
   }
 
-  async stripAction(name, a) {
+  async stripAction(name, a, { dock = false } = {}) {
     const g = this.shownGroup();
     const e = this.activeEntry(g);
     const wc = e && this.views.has(e.view_id) ? this.views.get(e.view_id).view.webContents : null;
@@ -712,12 +995,15 @@ class Companion {
         return this.pushStrip();
       case 'chrome-height': {
         const h = Math.max(40, Math.min(200, Number(a) || CHROME_HEIGHT));
-        if (h !== this.chromeHeight) {
-          this.chromeHeight = h;
+        const field = dock ? 'dockChromeHeight' : 'chromeHeight';
+        if (h !== this[field]) {
+          this[field] = h;
           this.layout();
         }
         return;
       }
+      case 'sessions_menu':
+        return this.openSessionsMenu(dock);
       case 'select': {
         const hit = this.selectView(a);
         if (hit) {
@@ -766,13 +1052,42 @@ class Companion {
         return this.goToTab();
       case 'send_page':
         return this.sendPage((a && a.note) || '');
+      case 'restart_update':
+        return this.restartForUpdate();
       case 'permission':
         return a && this.answerPrompt(String(a.id), a.allow === true);
       default:
     }
   }
 
-  stripState() {
+  // The bar's update chip: herdr restarts this process with the installed app files. One
+  // request at a time: the chip is disabled while it runs and comes back when it fails, when
+  // herdr answers without restarting (a note), or when this process is still here 30 s later.
+  async restartForUpdate() {
+    if (!this.link || this.restarting) return;
+    this.setRestarting(true);
+    this.say('ok', `Restarting into ${this.update || 'the new version'}…`, 15000);
+    try {
+      const res = await this.link.request('browser.companion', { action: 'restart' });
+      if (res && res.note) {
+        this.setRestarting(false);
+        this.say('warn', res.note);
+        return;
+      }
+      setTimeout(() => this.setRestarting(false), 30000).unref();
+    } catch (e) {
+      this.setRestarting(false);
+      this.say('warn', e.code === 'unknown_method' ? 'This herdr cannot restart the companion' : `Restart failed: ${e.message}`);
+    }
+  }
+
+  setRestarting(on) {
+    if (this.restarting === on) return;
+    this.restarting = on;
+    this.pushStrip();
+  }
+
+  stripState({ dock = false } = {}) {
     const g = this.shownGroup();
     const active = this.activeEntry(g);
     const status = this.link ? this.link.status : { state: 'connecting', text: 'starting…' };
@@ -780,7 +1095,9 @@ class Companion {
     if (this.flash && this.flash.until > Date.now()) line = { level: this.flash.level, text: this.flash.text };
     else if (status.state !== 'registered') line = { level: 'warn', text: status.text };
     return {
-      inset: process.platform === 'darwin',
+      inset: process.platform === 'darwin' && !dock,
+      docked: dock,
+      info: this.sessionInfo(),
       session: this.shownTab
         ? {
             tab_id: this.shownTab,
@@ -808,12 +1125,45 @@ class Companion {
       })(),
       attached: status.state === 'registered',
       status: line,
+      update: this.update ? { version: this.update, restarting: this.restarting } : null,
     };
   }
 
+  // The bar's count pill: pages in the shown session, pages and sessions in all of herdr.
+  sessionInfo() {
+    return sessionCounts(this.store, this.shownTab);
+  }
+
+  // The pill's menu: one item per herdr tab with pages; choosing one focuses it in herdr
+  // (the companion follows, docked or not).
+  openSessionsMenu(dock) {
+    const items = sessionMenuItems(this.store, this.shownTab);
+    const template = items.length
+      ? [
+          { label: 'Sessions with pages', enabled: false },
+          { type: 'separator' },
+          ...items.map((it) => ({
+            label: it.label,
+            sublabel: it.pages,
+            type: 'checkbox',
+            checked: it.current,
+            click: () => {
+              if (!this.link) return;
+              this.link.request('tab.focus', { tab_id: it.tab_id }).catch((e) => this.say('warn', `could not focus the herdr tab: ${e.message}`));
+            },
+          })),
+        ]
+      : [{ label: 'No session has pages yet', enabled: false }];
+    const win = dock ? this.dockWindow() : this.win;
+    if (!win || HEADLESS) return template.length;
+    Menu.buildFromTemplate(template).popup({ window: win });
+    return template.length;
+  }
+
   pushStrip() {
-    if (!this.win || this.win.isDestroyed()) return;
-    this.win.webContents.send('strip:state', this.stripState());
+    if (this.win && !this.win.isDestroyed()) this.win.webContents.send('strip:state', this.stripState());
+    const dock = this.dockWindow();
+    if (dock) dock.webContents.send('strip:state', this.stripState({ dock: true }));
   }
 
   say(level, text, ms = 6000) {
@@ -950,6 +1300,9 @@ class Companion {
   }
 
   async shutdown() {
+    if (this.watchdog) this.watchdog.stop();
+    if (this.dock) this.dock.stop();
+    if (this.feed) this.feed.stop();
     if (this.link) await this.link.stop();
   }
 }
@@ -970,6 +1323,12 @@ if (SOCKET) {
       companion.shutdown().finally(() => app.quit());
     });
     app.on('window-all-closed', () => app.quit());
+    // herdr's stop (after the control page's quit) and a terminal's ^C: a clean quit that
+    // unregisters first (before-quit above)
+    onQuitSignals(process, (signal) => {
+      log(`${signal}: quitting`);
+      app.quit();
+    });
     app.on('second-instance', () => {
       if (!HEADLESS && companion.win) {
         companion.win.show();

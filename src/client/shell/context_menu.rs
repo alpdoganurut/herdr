@@ -88,6 +88,7 @@ impl ClientContextMenuOverlay {
                 dnd_supported,
                 browser_page,
                 grouped,
+                browser_dock,
                 ..
             } => {
                 let agent_section = Section::Titled("Agent");
@@ -122,6 +123,25 @@ impl ClientContextMenuOverlay {
                             Kind::Action,
                         ),
                     });
+                }
+                // Fork (companion launcher): the tab's browser dock and
+                // Browser view, where the browser docks.
+                if let Some((docked, viewing)) = browser_dock {
+                    let browser = Section::Titled("Browser");
+                    items.push(item(
+                        "Dock browser",
+                        Action::BrowserToggleDock,
+                        if *docked { GLYPH_ON } else { GLYPH_OFF },
+                        browser,
+                        Kind::Toggle(*docked),
+                    ));
+                    items.push(item(
+                        "Browser view",
+                        Action::BrowserToggleView,
+                        if *viewing { GLYPH_ON } else { GLYPH_OFF },
+                        browser,
+                        Kind::Toggle(*viewing),
+                    ));
                 }
                 match agent {
                     Some(ClientTabMenuAgent {
@@ -358,26 +378,75 @@ impl ClientContextMenuOverlay {
             ClientContextMenuTarget::Coordinator { items } => {
                 super::coordinator_shell::coordinator_menu_items(items)
             }
-            ClientContextMenuTarget::Browser { running, local, .. } => {
+            ClientContextMenuTarget::Browser {
+                running,
+                local,
+                companion,
+                window,
+                dock,
+                ..
+            } => {
                 let mut items = Vec::new();
                 if *local {
-                    if *running {
-                        items.push(lead(
-                            "Focus window",
-                            Action::BrowserFocusWindow,
-                            GLYPH_FOCUS,
+                    // Fork (companion launcher): the companion's items lead;
+                    // the herdr+ window's follow in their own section while
+                    // it is on.
+                    if let Some(state) = companion.as_deref() {
+                        for (label, action, glyph) in super::browser::companion_menu_items(state) {
+                            items.push(item(
+                                label,
+                                Action::BrowserCompanion(action),
+                                glyph,
+                                Section::Lead,
+                                if action == crate::api::schema::BrowserCompanionAction::Stop {
+                                    Kind::Danger
+                                } else {
+                                    Kind::Action
+                                },
+                            ));
+                        }
+                    }
+                    // Fork (companion launcher): dock the browser on the
+                    // focused tab (the row's `◨` does the same).
+                    if let Some(docked) = dock {
+                        items.push(item(
+                            "Dock browser here",
+                            Action::BrowserToggleDock,
+                            if *docked { GLYPH_ON } else { GLYPH_OFF },
+                            Section::Lead,
+                            Kind::Toggle(*docked),
                         ));
-                        items.push(lead(
-                            "Stop profile",
-                            Action::BrowserToggleProfile,
-                            GLYPH_STOP,
-                        ));
-                    } else {
-                        items.push(lead(
-                            "Start profile",
-                            Action::BrowserToggleProfile,
-                            GLYPH_ACTIVATE,
-                        ));
+                    }
+                    if companion.is_none() || *window {
+                        let section = if companion.is_some() {
+                            Section::Titled("Window")
+                        } else {
+                            Section::Lead
+                        };
+                        if *running {
+                            items.push(item(
+                                "Focus window",
+                                Action::BrowserFocusWindow,
+                                GLYPH_FOCUS,
+                                section,
+                                Kind::Action,
+                            ));
+                            items.push(item(
+                                "Stop profile",
+                                Action::BrowserToggleProfile,
+                                GLYPH_STOP,
+                                section,
+                                Kind::Action,
+                            ));
+                        } else {
+                            items.push(item(
+                                "Start profile",
+                                Action::BrowserToggleProfile,
+                                GLYPH_ACTIVATE,
+                                section,
+                                Kind::Action,
+                            ));
+                        }
                     }
                 }
                 items.push(lead("Open overlay", Action::BrowserOpenOverlay, GLYPH_OPEN));
@@ -604,6 +673,13 @@ impl ClientShellState {
                 dnd: true,
             },
         ));
+        // Fork (companion launcher): the tab's dock and Browser view.
+        let browser_dock = self.browser_dock_offered().then(|| {
+            (
+                self.browser_dock_open_for(&tab_id),
+                self.browser_view_open_for(&tab_id),
+            )
+        });
         // Fork (tab groups): the grouping items' state (tabs layout only).
         let grouped = (self.config.sidebar_layout == crate::config::SidebarLayoutConfig::Tabs)
             .then(|| {
@@ -645,6 +721,7 @@ impl ClientShellState {
                 dnd_supported,
                 browser_page,
                 grouped,
+                browser_dock,
             },
             x,
             y,
@@ -812,6 +889,33 @@ impl ClientShellState {
                 ClientContextMenuTarget::Tab { tab_id, .. },
             ) => {
                 self.toggle_info_pane(tab_id.clone(), outcome);
+                outcome.repaint = true;
+                return;
+            }
+            // Fork (companion launcher): the tab menu's dock and Browser
+            // view items act on that tab without focusing it; the Browser
+            // row's on the focused tab.
+            (
+                ClientContextMenuAction::BrowserToggleDock,
+                ClientContextMenuTarget::Tab { tab_id, .. },
+            ) => {
+                self.toggle_browser_dock(tab_id.clone(), outcome);
+                outcome.repaint = true;
+                return;
+            }
+            (
+                ClientContextMenuAction::BrowserToggleView,
+                ClientContextMenuTarget::Tab { tab_id, .. },
+            ) => {
+                self.toggle_browser_view(tab_id.clone(), outcome);
+                outcome.repaint = true;
+                return;
+            }
+            (
+                ClientContextMenuAction::BrowserToggleDock,
+                ClientContextMenuTarget::Browser { .. },
+            ) => {
+                self.toggle_browser_dock_for_focused_tab(outcome);
                 outcome.repaint = true;
                 return;
             }

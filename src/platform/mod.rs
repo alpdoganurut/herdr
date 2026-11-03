@@ -424,6 +424,32 @@ pub fn detach_server_daemon_command(command: &mut std::process::Command) {
     }
 }
 
+/// Fork (companion launcher): a background helper that outlives this
+/// process: its own session (unix) or process group (Windows), so a
+/// terminal hangup or a signal to the server's group never reaches it.
+#[cfg(unix)]
+pub(crate) fn detach_background_command(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn detach_background_command(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn current_process_is_detached_server_daemon() -> bool {
     unsafe { libc::getsid(0) == libc::getpid() }

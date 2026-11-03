@@ -550,6 +550,7 @@ impl ClientShellState {
                 | PendingEndpointKind::BrowserSettings
                 | PendingEndpointKind::BrowserSettingsSet
                 | PendingEndpointKind::BrowserFix
+                | PendingEndpointKind::BrowserCompanion
                 | PendingEndpointKind::AgentsSettings
                 | PendingEndpointKind::AgentsSettingsSet
                 | PendingEndpointKind::AgentsFix

@@ -42,6 +42,9 @@ impl HeadlessServer {
             else {
                 return false;
             };
+            // Fork (companion launcher): a client showing another endpoint
+            // keeps its browser placement, unshown.
+            self.sync_browser_placement_facts();
             self.send_to_client(
                 client_id,
                 crate::server::client_commands::success_message_with_result(
@@ -54,6 +57,12 @@ impl HeadlessServer {
                 ),
             );
             return changed;
+        }
+        // Fork (companion launcher): a browser placement is stored and
+        // answered at once: no command lane, no foreground promotion.
+        if let api::schema::Method::BrowserPlacementSet(params) = request.method {
+            self.handle_client_shell_browser_placement(client_id, boot_id, request_id, params);
+            return false;
         }
         if client.shell_endpoint_command_in_flight {
             let message = crate::server::client_commands::error_message(

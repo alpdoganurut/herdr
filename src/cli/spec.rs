@@ -439,9 +439,9 @@ fn browser_command() -> Command {
     let verb =
         |name: &'static str, about: &'static str| browser_common(Command::new(name).about(about));
     Command::new("browser")
-        .about("Drive the herdr-owned Chromium (shared with the user); browser.run and friends")
+        .about("Drive the browser herdr runs for agents (shared with the user); browser.run and friends")
         .long_about(
-            "A Chromium window herdr launches for agents and the user shares. Read loop: `browser open URL` (page card), then `browser read` (paged markdown, follow the next: offset) or `browser find TEXT`; `browser snapshot` for structure (refs eN); `browser screenshot` to see it. Each pane has a current tab (set by open/use or --tab). The user logs in by hand (`browser focus`, then ask). Every call is logged with the calling pane (`browser status`, `browser log`).",
+            "The browser herdr runs for agents and the user shares: the herdr+ companion browser (the herdr+ window when [browser] window = true). Read loop: `browser open URL` (page card), then `browser read` (paged markdown, follow the next: offset) or `browser find TEXT`; `browser snapshot` for structure (refs eN); `browser screenshot` to see it. Each pane has a current tab (set by open/use or --tab). The user logs in by hand (`browser focus`, then ask). Every call is logged with the calling pane (`browser status`, `browser log`).",
         )
         .subcommand(
             verb("open", "Open a URL in a new background tab and make it the current tab")
@@ -623,6 +623,17 @@ fn browser_command() -> Command {
         )
         .subcommand(Command::new("start").about("Start a profile's browser now").arg(option("profile", "NAME")).arg(json_flag()))
         .subcommand(Command::new("stop").about("Close a profile's browser (or every running one)").arg(option("profile", "NAME")).arg(flag("all")).arg(json_flag()))
+        // Fork (companion launcher): the companion browser herdr runs.
+        .subcommand(
+            Command::new("companion")
+                .about("The companion browser herdr runs: status, start, stop, restart, focus, its log")
+                .subcommand(Command::new("status").about("State, pid, uptime, restarts, version, last error").arg(json_flag()))
+                .subcommand(Command::new("start").about("Start it (from a pane: in the background)").arg(json_flag()))
+                .subcommand(Command::new("stop").about("Quit it (one started by hand is only detached)").arg(json_flag()))
+                .subcommand(Command::new("restart").about("Stop, then start (applies an installed update; clears a give-up)").arg(json_flag()))
+                .subcommand(Command::new("focus").about("Bring its window up (from a plain terminal: with the keyboard)").arg(json_flag()))
+                .subcommand(Command::new("log").about("Its log").arg(option("lines", "N"))),
+        )
         .subcommand(
             Command::new("profile")
                 .about("List, create or delete browser profiles")
@@ -638,7 +649,9 @@ fn browser_command() -> Command {
                 .arg(flag("shell").help("Only write the managed shell file and add one guarded line to ~/.zshrc (plain codex/claude in herdr+ panes → herdr agent wrap); plain setup never edits ~/.zshrc"))
                 .arg(flag("remove").help("With --shell: take the line out of ~/.zshrc again"))
                 .arg(flag("no-mcp"))
-                .arg(option("node", "PATH")),
+                .arg(option("node", "PATH"))
+                .arg(flag("companion").help("Install the companion browser instead: its app files, Electron (asks before the ~115 MB download) and, on macOS, the herdr+ companion app"))
+                .arg(flag("yes").help("With --companion: answer yes to the download")),
         )
         .subcommand(
             Command::new("wrap")
@@ -1411,6 +1424,14 @@ mod tests {
         command_path(&cmd, &["browser", "profile", "delete"]);
         command_path(&cmd, &["browser", "mcp"]);
         command_path(&cmd, &["browser", "doctor"]);
+        // Fork (companion launcher)
+        for verb in ["status", "start", "stop", "restart", "focus", "log"] {
+            command_path(&cmd, &["browser", "companion", verb]);
+        }
+        assert!(has_option(
+            command_path(&cmd, &["browser", "setup"]),
+            "companion"
+        ));
     }
 
     #[test]

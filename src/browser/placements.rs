@@ -1,0 +1,478 @@
+//! Fork (companion launcher): the placement board.
+//!
+//! Every attached client shell's browser placement (`browser.placement.set`)
+//! with the server's facts about that client (its terminal has the user's
+//! focus; it is the foreground client; its surface shows this server: a
+//! client that switched to another endpoint keeps its placement but
+//! unshown), for the browser host's long poll
+//! (`browser.placements`), and the host's last report on each placement
+//! (`browser.placement_report`, shown by `browser.get` `placements`).
+//!
+//! Process-global like the hub: the headless server's event loop writes the
+//! placements and facts (never blocking: one short lock), connection threads
+//! read and wait. `rev` grows with every change; `boot_id` is new with each
+//! server process, so a host that outlives a live handoff starts over. A
+//! client's placement and the host's report on it leave with the client.
+
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use crate::api::schema::{
+    BrowserPlacementInfo, BrowserPlacementKind, BrowserPlacementSpec, BrowserPlacementStatus,
+};
+
+/// The longest a `browser.placements` wait may block.
+pub const MAX_WAIT: Duration = Duration::from_millis(25_000);
+/// How often a waiter wakes to check the server is still running.
+const WAIT_SLICE: Duration = Duration::from_millis(250);
+/// Field caps (the client sends short values; a misbehaving one is cut).
+const MAX_ID: usize = 64;
+const MAX_TAB_ID: usize = 128;
+const MAX_PIDS: usize = 16;
+const MAX_STATE: usize = 32;
+const MAX_REASON: usize = 300;
+/// The report states a host may send; anything else is stored as `unknown`.
+pub const REPORT_STATES: [&str; 6] = [
+    "covering",
+    "hidden",
+    "moving",
+    "unbound",
+    "unsupported",
+    "elsewhere",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    spec: BrowserPlacementSpec,
+    facts: ClientFacts,
+    updated_unix: u64,
+}
+
+/// The server's facts about a client with a placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClientFacts {
+    /// Its terminal has the user's focus (outer focus).
+    pub focused: bool,
+    /// The foreground client.
+    pub foreground: bool,
+    /// Its surface shows this server (else the placement is not shown).
+    pub surface_active: bool,
+}
+
+#[derive(Debug)]
+struct Board {
+    boot_id: String,
+    rev: u64,
+    /// By the server's client id.
+    entries: BTreeMap<u64, Entry>,
+    /// By placement id.
+    reports: HashMap<String, BrowserPlacementStatus>,
+}
+
+/// See the module docs.
+#[derive(Debug)]
+pub struct PlacementBoard {
+    board: Mutex<Board>,
+    changed: Condvar,
+}
+
+/// The process's board.
+pub fn board() -> &'static PlacementBoard {
+    static BOARD: OnceLock<PlacementBoard> = OnceLock::new();
+    BOARD.get_or_init(PlacementBoard::new)
+}
+
+/// What a read of the board answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacementSnapshot {
+    pub boot_id: String,
+    pub rev: u64,
+    pub placements: Vec<BrowserPlacementInfo>,
+}
+
+fn clip(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((end, _)) => text[..end].to_string(),
+        None => text.to_string(),
+    }
+}
+
+fn sanitize(mut spec: BrowserPlacementSpec) -> BrowserPlacementSpec {
+    spec.id = clip(spec.id.trim(), MAX_ID);
+    spec.tab_id = clip(spec.tab_id.trim(), MAX_TAB_ID);
+    spec.pids.retain(|pid| *pid > 0);
+    spec.pids.truncate(MAX_PIDS);
+    spec
+}
+
+fn boot_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|age| age.as_nanos())
+        .unwrap_or(0);
+    format!("{:x}-{:x}", std::process::id(), nanos)
+}
+
+impl Default for PlacementBoard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PlacementBoard {
+    pub fn new() -> Self {
+        Self {
+            board: Mutex::new(Board {
+                boot_id: boot_id(),
+                rev: 0,
+                entries: BTreeMap::new(),
+                reports: HashMap::new(),
+            }),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Board> {
+        // A panic while holding the lock leaves plain data behind; keep going.
+        self.board
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn bump(&self, board: &mut Board) {
+        board.rev = board.rev.saturating_add(1);
+        self.changed.notify_all();
+    }
+
+    /// Store (or, with `None`, clear) client `client_id`'s placement with
+    /// the server's facts about it. Returns whether the board changed. A
+    /// placement without an id or a tab, or of an unknown kind, clears.
+    pub fn set(
+        &self,
+        client_id: u64,
+        spec: Option<BrowserPlacementSpec>,
+        facts: ClientFacts,
+        now_unix: u64,
+    ) -> bool {
+        let spec = spec.map(sanitize).filter(|spec| {
+            !spec.id.is_empty()
+                && !spec.tab_id.is_empty()
+                && spec.kind != BrowserPlacementKind::Unknown
+        });
+        let mut board = self.lock();
+        let Some(spec) = spec else {
+            return self.remove_locked(&mut board, client_id);
+        };
+        if let Some(entry) = board.entries.get(&client_id) {
+            if entry.spec == spec && entry.facts == facts {
+                return false;
+            }
+        }
+        // A new id from the same client (a restarted client) takes the old
+        // id's report with it.
+        let old_id = board
+            .entries
+            .get(&client_id)
+            .map(|entry| entry.spec.id.clone())
+            .filter(|old| *old != spec.id);
+        if let Some(old_id) = old_id {
+            board.reports.remove(&old_id);
+        }
+        board.entries.insert(
+            client_id,
+            Entry {
+                spec,
+                facts,
+                updated_unix: now_unix,
+            },
+        );
+        self.bump(&mut board);
+        true
+    }
+
+    /// Refresh the facts of the clients on the board. Returns whether
+    /// anything changed.
+    pub fn set_facts(&self, facts: &[(u64, ClientFacts)]) -> bool {
+        let mut board = self.lock();
+        let mut changed = false;
+        for (client_id, facts) in facts {
+            if let Some(entry) = board.entries.get_mut(client_id) {
+                if entry.facts != *facts {
+                    entry.facts = *facts;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.bump(&mut board);
+        }
+        changed
+    }
+
+    /// The client went away: its placement and the report on it go too.
+    pub fn remove(&self, client_id: u64) -> bool {
+        let mut board = self.lock();
+        self.remove_locked(&mut board, client_id)
+    }
+
+    fn remove_locked(&self, board: &mut Board, client_id: u64) -> bool {
+        let Some(entry) = board.entries.remove(&client_id) else {
+            return false;
+        };
+        board.reports.remove(&entry.spec.id);
+        self.bump(board);
+        true
+    }
+
+    /// The clients that have a placement (usually none or one).
+    pub fn client_ids(&self) -> Vec<u64> {
+        self.lock().entries.keys().copied().collect()
+    }
+
+    fn snapshot_locked(board: &Board) -> PlacementSnapshot {
+        PlacementSnapshot {
+            boot_id: board.boot_id.clone(),
+            rev: board.rev,
+            placements: board
+                .entries
+                .values()
+                .map(|entry| {
+                    let mut placement = entry.spec.clone();
+                    placement.shown &= entry.facts.surface_active;
+                    BrowserPlacementInfo {
+                        placement,
+                        focused: entry.facts.focused,
+                        foreground: entry.facts.foreground,
+                        updated_unix: entry.updated_unix,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Every placement, at once when the board is newer than `since_rev`
+    /// (or it is `None`), else after the next change, `timeout` (capped at
+    /// [`MAX_WAIT`]) or the server stopping (`running` false). A
+    /// `since_rev` this board never reached is another server process's (a
+    /// host that outlived a live handoff): at once too, with the new
+    /// `boot_id`.
+    pub fn wait(
+        &self,
+        since_rev: Option<u64>,
+        timeout: Duration,
+        running: &AtomicBool,
+    ) -> PlacementSnapshot {
+        let deadline = Instant::now() + timeout.min(MAX_WAIT);
+        let mut board = self.lock();
+        loop {
+            let newer = since_rev.is_none_or(|since| board.rev != since);
+            let now = Instant::now();
+            if newer || now >= deadline || !running.load(Ordering::Relaxed) {
+                return Self::snapshot_locked(&board);
+            }
+            let slice = deadline.saturating_duration_since(now).min(WAIT_SLICE);
+            board = match self.changed.wait_timeout(board, slice) {
+                Ok((guard, _)) => guard,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
+        }
+    }
+
+    /// The host's report on placement `id`; ignored for an id the board
+    /// does not hold (the client left). Returns whether it changed.
+    pub fn report(&self, id: &str, state: &str, reason: Option<&str>) -> bool {
+        let state = state.trim();
+        let state = if REPORT_STATES.contains(&state) {
+            state.to_string()
+        } else {
+            "unknown".to_string()
+        };
+        let status = BrowserPlacementStatus {
+            id: clip(id.trim(), MAX_ID),
+            state: clip(&state, MAX_STATE),
+            reason: reason
+                .map(|reason| clip(reason.trim(), MAX_REASON))
+                .filter(|reason| !reason.is_empty()),
+        };
+        let mut board = self.lock();
+        if !board
+            .entries
+            .values()
+            .any(|entry| entry.spec.id == status.id)
+        {
+            return false;
+        }
+        if board.reports.get(&status.id) == Some(&status) {
+            return false;
+        }
+        board.reports.insert(status.id.clone(), status);
+        true
+    }
+
+    /// The host's reports on the placements the board holds, by id.
+    pub fn statuses(&self) -> Vec<BrowserPlacementStatus> {
+        let board = self.lock();
+        let mut statuses: Vec<_> = board.reports.values().cloned().collect();
+        statuses.sort_by(|a, b| a.id.cmp(&b.id));
+        statuses
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::schema::{BrowserCellRect, BrowserGridSize};
+
+    impl PlacementBoard {
+        fn snapshot(&self) -> PlacementSnapshot {
+            Self::snapshot_locked(&self.lock())
+        }
+    }
+
+    fn facts(focused: bool, foreground: bool) -> ClientFacts {
+        ClientFacts {
+            focused,
+            foreground,
+            surface_active: true,
+        }
+    }
+
+    fn spec(id: &str, tab: &str) -> BrowserPlacementSpec {
+        BrowserPlacementSpec {
+            id: id.into(),
+            kind: BrowserPlacementKind::Side,
+            tab_id: tab.into(),
+            area: BrowserCellRect {
+                x: 60,
+                y: 1,
+                width: 40,
+                height: 30,
+            },
+            grid: BrowserGridSize {
+                cols: 100,
+                rows: 31,
+            },
+            shown: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_wait_answers_at_once_when_newer_and_blocks_until_a_change() {
+        let board = std::sync::Arc::new(PlacementBoard::new());
+        let running = std::sync::Arc::new(AtomicBool::new(true));
+        // nothing seen yet: at once, even on an empty board
+        let first = board.wait(None, Duration::from_secs(5), &running);
+        assert_eq!(first.rev, 0);
+        assert!(first.placements.is_empty());
+        // up to date: a short wait times out with the same rev
+        let started = Instant::now();
+        let same = board.wait(Some(0), Duration::from_millis(120), &running);
+        assert_eq!(same.rev, 0);
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        // a change wakes a waiter long before its timeout
+        let waiter = {
+            let board = board.clone();
+            let running = running.clone();
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                let snapshot = board.wait(Some(0), Duration::from_secs(10), &running);
+                (snapshot, started.elapsed())
+            })
+        };
+        std::thread::sleep(Duration::from_millis(80));
+        assert!(board.set(7, Some(spec("pl1", "t1")), facts(true, true), 100));
+        let (snapshot, waited) = waiter.join().expect("waiter");
+        assert_eq!(snapshot.rev, 1);
+        assert_eq!(snapshot.placements.len(), 1);
+        assert!(snapshot.placements[0].focused && snapshot.placements[0].foreground);
+        assert!(waited < Duration::from_secs(5), "woke at once: {waited:?}");
+        // the same placement again changes nothing
+        assert!(!board.set(7, Some(spec("pl1", "t1")), facts(true, true), 101));
+        assert_eq!(board.snapshot().rev, 1);
+        // a rev from another server process (ahead of this board) answers at
+        // once: a host that outlived a live handoff starts over
+        let started = Instant::now();
+        let other_boot = board.wait(Some(57), Duration::from_secs(10), &running);
+        assert_eq!(other_boot.rev, 1);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // the server stopping ends a wait
+        running.store(false, Ordering::Relaxed);
+        let started = Instant::now();
+        board.wait(Some(1), Duration::from_secs(10), &running);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_disconnected_client_takes_its_placement_with_it() {
+        let board = PlacementBoard::new();
+        board.set(1, Some(spec("pa", "t1")), facts(false, true), 1);
+        board.set(2, Some(spec("pb", "t2")), facts(true, false), 1);
+        assert!(board.report("pa", "covering", None));
+        assert!(board.report("pb", "unbound", Some("click the band once")));
+        // an unknown state reads as unknown; a report for a gone id is dropped
+        assert!(!board.report("nobody", "covering", None));
+        assert_eq!(board.statuses().len(), 2);
+        let rev = board.snapshot().rev;
+        assert!(board.remove(1));
+        let snapshot = board.snapshot();
+        assert_eq!(snapshot.rev, rev + 1);
+        assert_eq!(snapshot.placements.len(), 1);
+        assert_eq!(snapshot.placements[0].placement.id, "pb");
+        assert_eq!(
+            board.statuses(),
+            vec![BrowserPlacementStatus {
+                id: "pb".into(),
+                state: "unbound".into(),
+                reason: Some("click the band once".into()),
+            }]
+        );
+        // clearing by `None` is a removal too; removing twice changes nothing
+        assert!(board.set(2, None, facts(false, false), 2));
+        assert!(!board.remove(2));
+        assert!(board.statuses().is_empty());
+    }
+
+    #[test]
+    fn facts_change_the_board_only_when_they_differ() {
+        let board = PlacementBoard::new();
+        board.set(3, Some(spec("pc", "t1")), facts(false, false), 1);
+        let rev = board.snapshot().rev;
+        assert!(!board.set_facts(&[(3, facts(false, false)), (9, facts(true, true))]));
+        assert_eq!(board.snapshot().rev, rev);
+        assert!(board.set_facts(&[(3, facts(true, false))]));
+        let snapshot = board.snapshot();
+        assert_eq!(snapshot.rev, rev + 1);
+        assert!(snapshot.placements[0].focused);
+        assert!(snapshot.placements[0].placement.shown);
+        assert_eq!(board.client_ids(), vec![3]);
+        // a client that shows another endpoint keeps its placement, unshown
+        assert!(board.set_facts(&[(
+            3,
+            ClientFacts {
+                surface_active: false,
+                ..facts(true, false)
+            }
+        )]));
+        assert!(!board.snapshot().placements[0].placement.shown);
+    }
+
+    #[test]
+    fn a_placement_without_an_id_or_of_an_unknown_kind_clears() {
+        let board = PlacementBoard::new();
+        board.set(4, Some(spec("pd", "t1")), facts(false, false), 1);
+        let mut unknown = spec("pd", "t1");
+        unknown.kind = BrowserPlacementKind::Unknown;
+        assert!(board.set(4, Some(unknown), facts(false, false), 2));
+        assert!(board.snapshot().placements.is_empty());
+        assert!(!board.set(4, Some(spec("", "t1")), facts(false, false), 3));
+        let mut long = spec(&"x".repeat(200), "t1");
+        long.pids = (1..40).collect();
+        board.set(5, Some(long), facts(false, false), 4);
+        let snapshot = board.snapshot();
+        assert_eq!(snapshot.placements[0].placement.id.len(), MAX_ID);
+        assert_eq!(snapshot.placements[0].placement.pids.len(), MAX_PIDS);
+    }
+}

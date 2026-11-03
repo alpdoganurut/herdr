@@ -202,6 +202,12 @@ pub(crate) fn keybind_help_groups(
                 ),
                 entry(binding_label(&keybinds.toggle_info_pane), "info pane"),
                 entry(
+                    binding_label(&keybinds.toggle_browser_dock),
+                    "dock the browser",
+                ),
+                entry(binding_label(&keybinds.toggle_browser_view), "browser view"),
+                entry(binding_label(&keybinds.focus_browser), "focus browser"),
+                entry(
                     binding_label(&keybinds.tab_history_back),
                     "back (tab history)",
                 ),

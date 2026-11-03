@@ -88,6 +88,45 @@ pub fn host_lease(request_id: String, method: Method) -> String {
     }
 }
 
+/// Fork (companion launcher): `browser.placements` on the connection lane:
+/// the live companion's long poll of every client's placement (blocks this
+/// connection's thread only, at most `wait_ms` ≤ 25 s, never past the
+/// server stopping).
+pub fn placements(
+    request_id: String,
+    params: crate::api::schema::BrowserPlacementsParams,
+    running: &std::sync::atomic::AtomicBool,
+) -> String {
+    if !super::hub().lease_matches(&params.lease_id) {
+        let err = super::hub::lease_unknown();
+        return encode_error(request_id, err.code(), err.message());
+    }
+    let wait = Duration::from_millis(params.wait_ms.unwrap_or(0));
+    let snapshot = super::placements::board().wait(params.since_rev, wait, running);
+    encode_success(
+        request_id,
+        ResponseResult::BrowserPlacements {
+            boot_id: snapshot.boot_id,
+            rev: snapshot.rev,
+            placements: snapshot.placements,
+        },
+    )
+}
+
+/// Fork (companion launcher): `browser.placement_report`: what the live
+/// companion does with a placement (`browser.get` `placements` shows it).
+pub fn placement_report(
+    request_id: String,
+    params: crate::api::schema::BrowserPlacementReportParams,
+) -> String {
+    if !super::hub().lease_matches(&params.lease_id) {
+        let err = super::hub::lease_unknown();
+        return encode_error(request_id, err.code(), err.message());
+    }
+    super::placements::board().report(&params.id, &params.state, params.reason.as_deref());
+    encode_success(request_id, ResponseResult::Ok {})
+}
+
 fn encode_success(id: String, result: ResponseResult) -> String {
     serde_json::to_string(&crate::api::schema::SuccessResponse { id, result })
         .unwrap_or_else(|err| encode_error(String::new(), "internal_error", err.to_string()))

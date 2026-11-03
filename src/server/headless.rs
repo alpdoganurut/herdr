@@ -82,6 +82,8 @@ pub mod agent_times;
 /// Fork: the autosuspend scan's shown panes.
 mod autosuspend;
 mod bootstrap;
+/// Fork (companion launcher): attached clients' browser placements.
+mod browser_placement;
 mod client_views;
 mod coordinator_notify;
 mod endpoint_requests;
@@ -211,6 +213,18 @@ enum AltScreenReadConflict {
     None,
     Frozen(crate::pane::TerminalReadSnapshot),
     Defer,
+}
+
+/// The browsers at server exit: `[browser] stop_with_server` and, fork
+/// (companion launcher), the managed companion. Never on a live handoff:
+/// the replacement reattaches to the window and adopts the companion from
+/// its run record.
+pub(crate) fn stop_browsers_at_exit(hub: &crate::browser::hub::BrowserHub, handoff: bool) {
+    if handoff {
+        return;
+    }
+    hub.stop_with_server_if_configured();
+    hub.stop_companion_with_server();
 }
 
 /// The headless server — runs the herdr event loop without a real terminal.
@@ -724,9 +738,7 @@ impl HeadlessServer {
         }
         // [browser] stop_with_server: close the browsers this server launched,
         // never on a live handoff (the replacement reattaches to them).
-        if !self.handoff_in_progress {
-            crate::browser::hub().stop_with_server_if_configured();
-        }
+        stop_browsers_at_exit(crate::browser::hub(), self.handoff_in_progress);
 
         info!("headless server exiting");
         Ok(())
@@ -826,6 +838,8 @@ impl HeadlessServer {
     }
 
     fn sync_foreground_client_state(&mut self) {
+        // Fork (companion launcher): the browser placements' foreground fact.
+        self.sync_browser_placement_facts();
         self.app.pixel_mouse_available = self.foreground_client_id.is_some_and(|id| {
             self.clients
                 .get(&id)
@@ -975,6 +989,8 @@ impl HeadlessServer {
 
     fn remove_client(&mut self, client_id: u64) -> bool {
         self.disconnect_native_graphics(client_id);
+        // Fork (companion launcher): its browser placement leaves with it.
+        self.drop_browser_placement(client_id);
         let disconnected_focus = self
             .clients
             .get(&client_id)
@@ -2359,6 +2375,8 @@ impl HeadlessServer {
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.outer_terminal_focus = Some(focused);
                 }
+                // Fork (companion launcher): the browser placements' focus fact.
+                self.sync_browser_placement_facts();
                 if focused {
                     self.promote_client_to_foreground(client_id);
                     self.claim_shell_tab_geometry(client_id, false);

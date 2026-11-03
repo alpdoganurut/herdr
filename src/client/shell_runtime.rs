@@ -735,6 +735,18 @@ pub(super) fn install_client_shell_snapshot(
     if let Some(resize) = resize {
         endpoints.send_to(endpoint_id, &resize);
     }
+    // Fork (companion launcher): a snapshot may move the focused tab (a tab
+    // switch, an agent's or the companion's tab.focus): the browser
+    // placement follows it at once, after the compose that sized its area.
+    if project_snapshot {
+        if let Some(placement) = state
+            .shell
+            .as_mut()
+            .and_then(|shell| shell.take_browser_placement_request(std::time::Instant::now()))
+        {
+            endpoints.send_to(endpoint_id, &placement);
+        }
+    }
     if let Some(frame) = composed {
         if projection_pending {
             state.present_frame(frame);
@@ -811,7 +823,19 @@ pub(super) fn finish_client_shell_input(
         .as_ref()
         .is_none_or(|shell| shell.endpoint_is_online(endpoints.active_id()))
         && endpoints.active_surface_available();
-    for request in outcome.requests {
+    let mut requests = outcome.requests;
+    // Fork (companion launcher): the browser placement, when it changed
+    // (beside the command lane; never across a pending activation).
+    if active_endpoint_online && pending_activation.is_none() {
+        if let Some(placement) = state
+            .shell
+            .as_mut()
+            .and_then(|shell| shell.take_browser_placement_request(std::time::Instant::now()))
+        {
+            requests.push(placement);
+        }
+    }
+    for request in requests {
         if let ClientMessage::ClientShellHostTheme { update } = &request {
             state.record_host_theme_update(update);
             if let Some(activation) = pending_activation.as_mut() {

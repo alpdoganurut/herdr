@@ -794,6 +794,24 @@
           "description": "Show or hide the focused tab's info pane: a dock on the right with the tab's agent-session notes page (click to edit, tick task markers). Open state is per tab; drag the divider or press < and > in the pane to resize. Unset by default; for example, toggle_info_pane = \"alt+n\"."
         },
         {
+          "key": "keys.toggle_browser_dock",
+          "type": "keybinding",
+          "default": "\"prefix+shift+b\"",
+          "description": "Dock the companion browser on the right of the focused tab, or undock it. herdr keeps a band at the window's right edge (ui.browser_dock_width; drag its divider to resize, double-click it for the default) and the companion browser sits over it, following the terminal window (it hides while the window moves, is minimised, hidden or on another Space). Open state is per tab. The ◨ button on the pinned Browser row and in the tab's view strip, the tab menu's Dock browser and the Browser row menu's Dock browser here do the same. macOS, the herdr on this machine, directly in a terminal window (Ghostty is measured exactly; other terminals best effort)."
+        },
+        {
+          "key": "keys.toggle_browser_view",
+          "type": "keybinding",
+          "default": "\"prefix+shift+z\"",
+          "description": "Switch the focused tab between its terminal and Browser view: the companion browser over the whole tab (everything right of the sidebar below the view strip). The panes keep running and keep their size underneath; keys typed while the terminal window has the keyboard never reach them (click the page to type there). The view strip's ▣ Terminal and ◎ Browser segments and the tab menu's Browser view do the same."
+        },
+        {
+          "key": "keys.focus_browser",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Give the companion browser the keyboard (browser.companion focus). In the docked browser, cmd+esc gives it back to the terminal. Unset by default; for example, focus_browser = \"alt+o\"."
+        },
+        {
           "key": "keys.tab_history_back",
           "type": "keybinding",
           "default": "[\"cmd+[\", \"alt+,\"]",
@@ -1040,6 +1058,18 @@
           "type": "integer",
           "default": "44",
           "description": "Default width in columns of a tab's info pane (keys.toggle_info_pane) until you drag its divider; a dragged width is remembered by the client. 28 through 120; out-of-range values are clamped with a config warning. The pane never takes more than 70% of the window and always leaves the terminal 30 columns; a pane surface narrower than 58 columns shows no pane until the window widens."
+        },
+        {
+          "key": "ui.browser_dock_width",
+          "type": "integer",
+          "default": "45",
+          "description": "Default width of the browser dock (keys.toggle_browser_dock), in percent of the area right of the sidebar, until you drag its divider; a dragged width is remembered by the client. 20 through 80; out-of-range values are clamped with a config warning. The dock keeps at least 40 columns and leaves the terminal 30; with the info pane open too, the info pane drops first when there is no room."
+        },
+        {
+          "key": "ui.browser_view_strip",
+          "type": "string",
+          "default": "\"auto\"",
+          "description": "The [▣ Terminal | ◎ Browser · N] strip at the top of a tab, with the ◨ dock button at its right end: \"auto\" shows it while the tab has browser pages, the dock or Browser view (one row of the tab, taken when its first page opens); \"off\" never draws it (keys.toggle_browser_view and the menus still work). Any other value is a config warning and reads as \"auto\"."
         },
         {
           "key": "ui.sidebar_active_agents",
@@ -1845,14 +1875,26 @@
         {
           "key": "browser.host",
           "type": "string",
-          "default": "\"auto\"",
-          "description": "Fork (companion browser): where `herdr browser open` and `herdr browser show` without `--profile` go. `auto` uses the companion browser (the Electron app, `apps/companion`) while it is registered and the herdr+ window otherwise; `companion` only the companion (`host_unavailable` without it); `window` only the herdr+ window. Every other operation follows the pane's current tab, wherever it lives. Applies live after `herdr server reload-config`; an unknown value reports a config diagnostic and reads as `auto`."
+          "default": "\"companion\"",
+          "description": "Fork (companion browser): where `herdr browser open` and `herdr browser show` without `--profile` go. `companion` (the default) uses the companion browser (the Electron app herdr installs with `herdr browser setup --companion`), starting it when it is not running and waiting up to 45 s for it; without an install the agent gets `host_unavailable` naming the setup command. `auto` uses the companion while it is registered and otherwise the herdr+ window, but only while `browser.window` is on (with the window off it behaves like `companion`); `window` only the herdr+ window, which needs `browser.window = true` (else a config diagnostic and `window_disabled`). Every other operation follows the pane's current tab, wherever it lives. Applies live after `herdr server reload-config`; an unknown value reports a config diagnostic and reads as `companion`."
         },
         {
           "key": "browser.page_errors",
           "type": "string",
           "default": "\"agent\"",
           "description": "Fork (companion browser): uncaught page errors, console errors, failed loads and crashes of a tab an agent opened or used recently are stored quietly for that agent when it is a Claude agent (batched, deduplicated and capped; never typed in, never a wake-up); other agents read them with `herdr browser console`. `off` keeps them pull-only. An unknown value reports a config diagnostic and reads as `agent`."
+        },
+        {
+          "key": "browser.window",
+          "type": "boolean",
+          "default": "false",
+          "description": "Fork (companion launcher): the herdr+ Chromium window (every browser profile but the companion). Off by default: agents use the companion browser, an operation on a window profile (`--profile main`, a tab like `main:t3`, `herdr browser start --profile main`) answers `window_disabled` naming this key, a pane's current tab left on a window tab is ignored (its next operation answers `no_current_tab`), `browser.autostart` is ignored, and the doctor reports the window's checks as not used. `true` brings the window back exactly as before (with `browser.host = \"auto\"` for the old fallback). Applies live after `herdr server reload-config`."
+        },
+        {
+          "key": "browser.companion_autostart",
+          "type": "boolean",
+          "default": "false",
+          "description": "Fork (companion launcher): start the installed companion browser with the server, in the background (no window, no focus), instead of on the first page an agent opens. `herdr browser setup --companion` installs it; herdr restarts it after a crash (after 1, 2, 4 and 8 s; it gives up after 5 crashes in 5 minutes until you restart it), stops it with the server (not on a live handoff: the new server takes it over) and offers start, stop, restart and focus in `herdr browser companion`, the Browser row's menu and the Browser overlay. Applies at the next server start."
         }
       ]
     },

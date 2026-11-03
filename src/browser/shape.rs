@@ -904,6 +904,7 @@ mod tests {
             state: TabState::Open,
             closed_at: None,
             attention: None,
+            entry: None,
         }
     }
 

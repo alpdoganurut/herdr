@@ -114,17 +114,27 @@ pub struct BrowserConfig {
     /// explicit, confirmed fix) and `herdr browser setup --shell`; nothing
     /// reads this key to edit a file. Kept so old configs parse.
     pub shell_hook: bool,
+    /// Fork (companion launcher): the herdr+ Chromium window (every profile
+    /// but `companion`). Off by default: agents use the companion browser,
+    /// and an op on a window profile answers `window_disabled` naming this
+    /// key. `true` brings the window back exactly as before. Default: false.
+    pub window: bool,
     /// Fork (companion browser): where `open` / `show` without a profile
-    /// go: `auto` (the companion while one is registered, else the herdr+
-    /// window), `companion` (only the companion: `host_unavailable`
-    /// without one) or `window`. Anything else is a diagnostic and reads as
-    /// `auto`. Default: `auto`.
+    /// go: `companion` (the companion, started on demand when it is not
+    /// running), `auto` (the companion while one is registered, else the
+    /// herdr+ window; with the window off: the companion) or `window`
+    /// (needs `window = true`). Anything else is a diagnostic and reads as
+    /// `companion`. Default: `companion`.
     pub host: String,
     /// Fork (companion browser): page errors of a tab an agent uses go to
     /// that agent quietly (`agent`, Claude only; others pull) or nowhere
     /// (`off`). Anything else is a diagnostic and reads as `agent`.
     /// Default: `agent`.
     pub page_errors: String,
+    /// Fork (companion launcher): start the installed companion with the
+    /// server (in the background) instead of on the first `open` routed to
+    /// it. Default: false.
+    pub companion_autostart: bool,
     /// Not a key: the effective `[agents] wrap` (`Config::agents_wrap`),
     /// filled in by the config loaders so the browser hub, which only
     /// receives this section, reports and applies the resolved value.
@@ -213,8 +223,10 @@ impl Default for BrowserConfig {
                 .map(|a| (*a).to_string())
                 .collect(),
             shell_hook: true,
-            host: BrowserHostMode::Auto.as_str().into(),
+            window: false,
+            host: BrowserHostMode::Companion.as_str().into(),
             page_errors: PAGE_ERRORS_AGENT.into(),
+            companion_autostart: false,
             effective_wrap: false,
         }
     }
@@ -383,9 +395,20 @@ impl BrowserConfig {
         }
         if BrowserHostMode::parse(&self.host).is_none() {
             diagnostics.push(format!(
-                "browser.host = {:?} is not auto, companion or window; using auto",
+                "browser.host = {:?} is not auto, companion or window; using companion",
                 self.host
             ));
+        }
+        // Fork (companion launcher): the window is off.
+        if !self.window && BrowserHostMode::parse(&self.host) == Some(BrowserHostMode::Window) {
+            diagnostics.push(
+                "browser.host = \"window\" needs [browser] window = true; agents get window_disabled until it is set".into(),
+            );
+        }
+        if !self.window && self.autostart {
+            diagnostics.push(
+                "browser.autostart starts the herdr+ window, which is off ([browser] window = false); ignored (companion_autostart starts the companion)".into(),
+            );
         }
         if !matches!(self.page_errors.trim(), PAGE_ERRORS_AGENT | PAGE_ERRORS_OFF) {
             diagnostics.push(format!(
@@ -403,9 +426,9 @@ impl BrowserConfig {
         diagnostics
     }
 
-    /// `[browser] host`; an unknown value reads as `auto`.
+    /// `[browser] host`; an unknown value reads as `companion` (the default).
     pub fn host_mode(&self) -> BrowserHostMode {
-        BrowserHostMode::parse(&self.host).unwrap_or(BrowserHostMode::Auto)
+        BrowserHostMode::parse(&self.host).unwrap_or(BrowserHostMode::Companion)
     }
 
     /// `[browser] page_errors = "agent"` (anything but `off`).
@@ -630,7 +653,7 @@ mod tests {
     #[test]
     fn section_deserializes_from_toml() {
         let config: BrowserConfig = toml::from_str(
-            "executable = \"/Applications/Chromium.app\"\nautostart = true\nextra_args = [\"--lang=tr\"]\nread_max_chars = 30000\n",
+            "window = true\nexecutable = \"/Applications/Chromium.app\"\nautostart = true\nextra_args = [\"--lang=tr\"]\nread_max_chars = 30000\n",
         )
         .unwrap();
         assert!(config.autostart);
@@ -643,20 +666,43 @@ mod tests {
     #[test]
     fn host_and_page_errors_default_and_fall_back_with_a_diagnostic() {
         let config = BrowserConfig::default();
-        assert_eq!(config.host_mode(), BrowserHostMode::Auto);
+        assert_eq!(config.host_mode(), BrowserHostMode::Companion);
         assert!(config.page_errors_to_agents());
         let config: BrowserConfig =
-            toml::from_str("host = \"window\"\npage_errors = \"off\"\n").unwrap();
+            toml::from_str("window = true\nhost = \"window\"\npage_errors = \"off\"\n").unwrap();
         assert_eq!(config.host_mode(), BrowserHostMode::Window);
         assert!(!config.page_errors_to_agents());
         assert!(config.diagnostics().is_empty());
         let config: BrowserConfig =
             toml::from_str("host = \"electron\"\npage_errors = \"loud\"\n").unwrap();
-        assert_eq!(config.host_mode(), BrowserHostMode::Auto);
+        assert_eq!(config.host_mode(), BrowserHostMode::Companion);
         assert!(config.page_errors_to_agents());
         let diagnostics = config.diagnostics();
         assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
         assert!(diagnostics[0].contains("browser.host"));
         assert!(diagnostics[1].contains("browser.page_errors"));
+    }
+
+    /// Fork (companion launcher): the herdr+ window is off and agents use
+    /// the companion; a window-only setting without the window says so.
+    #[test]
+    fn the_window_is_off_and_the_host_is_the_companion_by_default() {
+        let config = BrowserConfig::default();
+        assert!(!config.window);
+        assert_eq!(config.host, "companion");
+        assert_eq!(config.host_mode(), BrowserHostMode::Companion);
+        assert!(!config.companion_autostart);
+        assert!(config.diagnostics().is_empty());
+        let config: BrowserConfig =
+            toml::from_str("host = \"window\"\nautostart = true\n").unwrap();
+        let diagnostics = config.diagnostics();
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+        assert!(diagnostics[0].contains("needs [browser] window = true"));
+        assert!(diagnostics[1].contains("browser.autostart"));
+        let config: BrowserConfig =
+            toml::from_str("window = true\nhost = \"auto\"\nautostart = true\n").unwrap();
+        assert!(config.window);
+        assert_eq!(config.host_mode(), BrowserHostMode::Auto);
+        assert!(config.diagnostics().is_empty(), "the old setup, exactly");
     }
 }

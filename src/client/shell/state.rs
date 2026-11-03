@@ -22,6 +22,11 @@ pub(crate) struct ClientShellConfig {
     /// Fork: `ui.info_pane_width`, the info dock's width until one is
     /// dragged or stepped.
     pub(super) info_pane_width: u16,
+    /// Fork (companion launcher): `ui.browser_dock_width` (percent), the
+    /// browser dock's width until one is dragged.
+    pub(super) browser_dock_width: u16,
+    /// Fork (companion launcher): `ui.browser_view_strip` is `auto`.
+    pub(super) browser_view_strip: bool,
     /// Fork (sidebar v2): `ui.sidebar_active_agents`, the tabs sidebar's
     /// Active agents block.
     pub(super) sidebar_active_agents: bool,
@@ -93,6 +98,13 @@ pub(super) struct ClientShellLayout {
     /// Fork: the focused tab's info dock, carved from the right of the pane
     /// surface (empty while closed or when it does not fit).
     pub info_dock: Rect,
+    /// Fork (companion launcher): the focused tab's browser band at the
+    /// right edge, its divider in column 0 (empty while undocked or when it
+    /// does not fit).
+    pub browser_band: Rect,
+    /// Fork (companion launcher): the focused tab's [Terminal | Browser]
+    /// strip, the pane area's top row (empty when not shown).
+    pub view_strip: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +171,9 @@ pub(super) struct ShellHitMap {
     pub(super) coordinator_row: Rect,
     /// Fork: the info dock (`info_dock.rs`).
     pub(super) info_dock: super::info_dock::InfoDockHits,
+    /// Fork (companion launcher): the browser band, view strip, Browser
+    /// view placeholder and the Browser row's `◨`.
+    pub(super) browser_dock: super::browser_dock::BrowserDockHits,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
@@ -194,6 +209,10 @@ pub(super) struct ShellHitMap {
     /// panel (`team_overlay.rs`).
     pub(super) team_overlay: Vec<(Rect, super::team_overlay::TeamOverlayHit)>,
     pub(super) team_overlay_popup: Rect,
+    /// Fork (companion launcher): the Browser overlay's targets (the
+    /// companion chips, then the rows) and its panel.
+    pub(super) browser_overlay: Vec<(Rect, super::browser_overlay::BrowserOverlayHit)>,
+    pub(super) browser_overlay_popup: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
     /// The tab menu's swatch row: one hit per swatch, indexed like `tab_color::picker_choices`.
@@ -364,6 +383,8 @@ pub(super) enum ClientChromeDrag {
     },
     /// Fork: the info dock's divider.
     InfoDockWidth,
+    /// Fork (companion launcher): the browser band's divider.
+    BrowserDockWidth,
 }
 
 pub(super) struct WorkspaceHit {
@@ -818,6 +839,14 @@ pub(super) enum ClientContextMenuAction {
     /// Fork, tab menu: turn the tab's do-not-disturb on or off
     /// (`tab.set_dnd`).
     Dnd,
+    /// Fork (companion launcher), Browser row menu: `browser.companion`
+    /// (Focus / Start / Restart / Stop companion).
+    BrowserCompanion(crate::api::schema::BrowserCompanionAction),
+    /// Fork (companion launcher), tab and Browser row menus: dock the
+    /// browser on the tab, or undock it.
+    BrowserToggleDock,
+    /// Fork (companion launcher), tab menu: the tab's Browser view.
+    BrowserToggleView,
     /// Fork (tab groups), tab menu: the move-to-group name prompt for the
     /// menu's tab.
     MoveToGroup,
@@ -910,6 +939,10 @@ pub(super) enum ClientContextMenuTarget {
         /// group (not the ungrouped bucket); `None` in another layout, where
         /// the menu has no grouping items.
         grouped: Option<bool>,
+        /// Fork (companion launcher): (docked, Browser view) where the
+        /// browser docks (the local endpoint of a server that takes
+        /// placements).
+        browser_dock: Option<(bool, bool)>,
     },
     /// A space shown as a tab group in the `tabs` layout. Fork: `team` is
     /// the team items' state, `None` without `team.get` on the server.
@@ -936,6 +969,15 @@ pub(super) enum ClientContextMenuTarget {
         profile: String,
         running: bool,
         local: bool,
+        /// Fork (companion launcher): the companion's state on a server
+        /// that runs it (its items lead the menu).
+        companion: Option<String>,
+        /// Fork (companion launcher): the herdr+ window is on (its items
+        /// show in a "Window" section).
+        window: bool,
+        /// Fork (companion launcher): the focused tab's dock (open or not)
+        /// where the browser docks.
+        dock: Option<bool>,
     },
     /// Fork: the `tabs` layout's pinned coordinator row, with its items as
     /// they were when the menu opened.
@@ -1052,6 +1094,8 @@ pub(super) enum PendingEndpointKind {
     BrowserSettings,
     BrowserSettingsSet,
     BrowserFix,
+    /// Fork (companion launcher): `browser.companion`.
+    BrowserCompanion,
     /// Fork: `agents.settings` / `agents.settings.set` / `agents.fix`
     /// (`settings_agents.rs`).
     AgentsSettings,
@@ -1447,6 +1491,9 @@ pub(crate) struct ClientShellState {
     pub(super) info_dock_width: u16,
     /// Fork: the width was dragged or stepped; only then it is remembered.
     pub(super) info_dock_width_manual: bool,
+    /// Fork (companion launcher): the browser dock and Browser view
+    /// (`browser_dock.rs`).
+    pub(super) browser_dock: super::browser_dock::ClientBrowserDockState,
     /// Tabs with a scheduled reminder, keyed like `idle_reminders`.
     pub(super) scheduled_reminders:
         HashMap<(ClientEndpointId, String), super::idle_reminders::ClientScheduledReminder>,
@@ -1579,6 +1626,8 @@ impl ClientShellState {
             .unwrap_or(config.info_pane_width)
             .max(super::info_dock::DOCK_MIN);
         let info_dock_width_manual = preferences.info_dock_width.is_some();
+        let browser_dock_percent = preferences.browser_dock_percent;
+        let browser_dock_default = config.browser_dock_width;
         let active_agents_folded = preferences.active_agents_folded;
         let pinned_agents_folded = preferences.pinned_agents_folded;
         let scheduled_agents_folded = preferences.scheduled_agents_folded;
@@ -1696,6 +1745,10 @@ impl ClientShellState {
             info_dock: None,
             info_dock_width,
             info_dock_width_manual,
+            browser_dock: super::browser_dock::ClientBrowserDockState::new(
+                browser_dock_percent,
+                browser_dock_default,
+            ),
             reminder_epochs: HashMap::new(),
             reminder_local_time: None,
             reminder_daily_minutes: None,
@@ -1824,13 +1877,16 @@ impl ClientShellState {
     }
 
     pub(super) fn layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
-        self.config.layout(
+        // Fork (companion launcher): the browser band and the view strip.
+        self.config.layout_with_browser(
             cols,
             rows,
             self.sidebar_collapsed,
             self.focused_tab_count(),
             self.sidebar_width,
             self.info_dock_width_for_focused_tab(),
+            self.browser_band_for_focused_tab(),
+            self.browser_view_strip_for_focused_tab(),
         )
     }
 
@@ -2202,6 +2258,7 @@ impl ClientShellState {
             }
         }
         self.prune_info_dock_tabs(&snapshot);
+        self.prune_browser_dock_tabs(&snapshot);
         self.snapshot = Some(snapshot);
         self.refresh_suspended_pane_ids();
         self.reconcile_pending_workspace_highlight();
@@ -2507,6 +2564,7 @@ impl ClientShellState {
             .chain(self.next_browser_deadline(now))
             .chain(self.next_browser_settings_deadline())
             .chain(self.next_info_dock_deadline(now))
+            .chain(self.next_browser_dock_deadline(now))
             .chain(self.next_sidebar_clock_deadline())
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))

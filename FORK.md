@@ -23,15 +23,26 @@ apps/companion/assets/icon/eye-plus-small.svg
 apps/companion/assets/icon/eye-plus.icns
 apps/companion/assets/icon/eye-plus.svg
 apps/companion/assets/icon/make-icns.sh
+apps/companion/install/package-lock.json
+apps/companion/install/package.json
 apps/companion/package-lock.json
 apps/companion/package.json
+apps/companion/scripts/try-launcher.sh
 apps/companion/scripts/try.sh
 apps/companion/spike/driver.mjs
 apps/companion/spike/main.js
+apps/companion/src/dock/dock.js
+apps/companion/src/dock/geometry.js
+apps/companion/src/dock/ghostty-config.js
+apps/companion/src/dock/placements.js
+apps/companion/src/dock/probe.jxa.js
+apps/companion/src/dock/window-probe.js
 apps/companion/src/groups.js
 apps/companion/src/herdr-api.js
 apps/companion/src/host.js
+apps/companion/src/info.js
 apps/companion/src/main.js
+apps/companion/src/managed.js
 apps/companion/src/preload/control.js
 apps/companion/src/preload/nonet.js
 apps/companion/src/preload/strip.js
@@ -51,12 +62,25 @@ apps/companion/src/ui/strip.css
 apps/companion/src/ui/strip.html
 apps/companion/src/ui/strip.js
 apps/companion/src/views.js
+apps/companion/test/dock.test.js
+apps/companion/test/e2e-launcher.mjs
+apps/companion/test/e2e-launcher.sh
+apps/companion/test/e2e-placements.mjs
+apps/companion/test/e2e-placements.sh
+apps/companion/test/e2e-quit.mjs
 apps/companion/test/e2e-real-herdr.mjs
 apps/companion/test/e2e-real-herdr.sh
 apps/companion/test/e2e.mjs
+apps/companion/test/geometry.test.js
+apps/companion/test/ghostty-config.test.js
 apps/companion/test/groups.test.js
+apps/companion/test/info.test.js
+apps/companion/test/managed.test.js
 apps/companion/test/mock-herdr.mjs
+apps/companion/test/placements.test.js
+apps/companion/test/pty-client.py
 apps/companion/test/ui-shots.cjs
+apps/companion/test/window-probe.test.js
 docs/fork/CONFIG.md
 docs/fork/SETUP.md
 docs/fork/config.html
@@ -79,6 +103,8 @@ docs/fork/skills/plus-team-build/templates/ui-brief.md
 scripts/fork_sync.sh
 scripts/fork_sync_lib.py
 scripts/install-plus-skills.sh
+scripts/smoke_companion_dock.mjs
+scripts/smoke_companion_dock.sh
 scripts/test_browser_companion.mjs
 scripts/test_browser_companion_host.mjs
 scripts/test_browser_overlay.mjs
@@ -145,16 +171,22 @@ src/persist/news.rs
 src/server/headless/news_notify.rs
 src/server/headless/tests/fork_smoke.rs
 src/api/schema/browser.rs
+src/api/schema/browser_placement.rs
 src/app/browser.rs
 src/app/browser_host.rs
 src/app/browser_host/tests.rs
 src/browser/activity.rs
 src/browser/brand.rs
+src/browser/companion_app.rs
+src/browser/companion_app/tests.rs
 src/browser/companion_host.rs
+src/browser/companion_install.rs
+src/browser/companion_install/tests.rs
 src/browser/host.rs
 src/browser/hub.rs
 src/browser/ntp.rs
 src/browser/page_errors.rs
+src/browser/placements.rs
 src/browser/launch.rs
 src/browser/mod.rs
 src/browser/node.rs
@@ -167,11 +199,16 @@ src/browser/shots.rs
 src/browser/state.rs
 src/browser/tests.rs
 src/cli/browser.rs
+src/cli/browser_companion.rs
 src/cli/browser_mcp.rs
 src/client/shell/browser.rs
+src/client/shell/browser_companion.rs
+src/client/shell/browser_dock.rs
+src/client/shell/browser_dock_render.rs
 src/client/shell/browser_overlay.rs
 src/client/shell/settings_browser.rs
 src/client/shell/tests/browser.rs
+src/client/shell/tests/browser_dock.rs
 src/client/shell/tests/settings_browser.rs
 src/config/browser.rs
 src/integration/assets/browser/activity.mjs
@@ -188,7 +225,9 @@ src/integration/assets/browser/package-lock.json
 src/integration/assets/browser/package.json
 src/integration/assets/browser/smoke.mjs
 src/integration/browser_assets.rs
+src/integration/companion_assets.rs
 src/persist/browser.rs
+src/server/headless/browser_placement.rs
 src/api/schema/coordinator.rs
 src/cli/coordinator.rs
 src/coordinator/api.rs
@@ -719,6 +758,33 @@ src/client/shell/tests/force_notice.rs
 | ShellHitMap | sidebar_history_forward | Rect::default() |
 | ShellRenderState | history_back | false |
 | ShellRenderState | history_forward | false |
+| ShellHitMap | browser_overlay | Vec::new() |
+| ShellHitMap | browser_overlay_popup | Rect::default() |
+| ClientShellLayout | browser_band | Rect::default() |
+| ClientShellLayout | view_strip | Rect::default() |
+| ClientChromePreferences | browser_dock_percent | None |
+| ClientShellConfig | browser_dock_width | 45 |
+| ClientShellConfig | browser_view_strip | true |
+| ClientShellState | browser_dock | super::browser_dock::ClientBrowserDockState::new(None, 45) |
+| ShellHitMap | browser_dock | Default::default() |
+| ShellRenderState | browser_page_tabs | std::collections::HashMap::new() |
+| ClientContextMenuTarget::Tab | browser_dock | None |
+| ClientContextMenuTarget::Browser | dock | None |
+| UiConfig | browser_dock_width | 45 |
+| UiConfig | browser_view_strip | "auto".into() |
+| KeysConfig | toggle_browser_dock | crate::config::BindingConfig::one("prefix+shift+b") |
+| KeysConfig | toggle_browser_view | crate::config::BindingConfig::one("prefix+shift+z") |
+| KeysConfig | focus_browser | crate::config::BindingConfig::default() |
+| KeysConfigOverlay | toggle_browser_dock | None |
+| KeysConfigOverlay | toggle_browser_view | None |
+| KeysConfigOverlay | focus_browser | None |
+| Keybinds | toggle_browser_dock | crate::config::ActionKeybinds::default() |
+| Keybinds | toggle_browser_view | crate::config::ActionKeybinds::default() |
+| Keybinds | focus_browser | crate::config::ActionKeybinds::default() |
+| BrowserRow (fork-owned type) | dock | None |
+| BrowserGetInfo (fork-owned type; listed for the schema artifact) | placements | Vec::new() |
+
+Companion launcher, phase B: ClientShellLayout's two fields come from `ClientShellConfig::layout_with_browser` (the upstream `layout` keeps its signature and passes no band and no strip); an upstream literal of ClientShellLayout (E0063) takes `Rect::default()` for both.
 
 
 ## 3. Removed or re-signatured upstream symbols (E0425/E0061 at a new upstream call site = deny)
@@ -995,7 +1061,7 @@ Method::AgentsAckQuiet   [src/api/schema.rs, directly after AgentsTakeQuiet; wir
 ResponseResult::AgentsTakeQuiet   [src/api/schema/response.rs, directly after PaneReportCompact; wire "agents_take_quiet"]
 EndpointControlMessage::Quiet   [src/client/endpoint/control.rs, directly after TabMutes; the decoded `endpoint.quiet.v1` optional control (malformed data → Ignored); internal]
 ClientContextMenuAction::Dnd   [src/client/shell/state.rs, after HandoffCompact; tab menu Do not disturb / End do not disturb (`tab.set_dnd`); internal]
-ClientContextMenuAction::MoveToGroup   [src/client/shell/state.rs, after Dnd; tab menu Move to group… (the move_tab_to_group prompt for the menu's tab); internal]
+ClientContextMenuAction::MoveToGroup   [src/client/shell/state.rs, after BrowserToggleView (the companion launcher's variants follow Dnd); tab menu Move to group… (the move_tab_to_group prompt for the menu's tab); internal]
 ClientContextMenuAction::RemoveFromGroup   [src/client/shell/state.rs, last after MoveToGroup; tab menu Remove from group (pane.move into the bucket); internal]
 Method::NotesReveal   [src/api/schema.rs, directly after CheckpointsContext; wire "notes.reveal"; changes_ui = true, client_shell = false]
 EndpointControlMessage::NotesReveal   [src/client/endpoint/control.rs, directly after AgentContext; the decoded `endpoint.notes-reveal.v1` optional control (malformed data → Ignored); internal]
@@ -1019,6 +1085,19 @@ ResponseResult::BrowserHostLease, BrowserHostState, BrowserHostSynced, BrowserHo
 BrowserOp::Show   [src/api/schema/browser.rs, fork-owned enum, after Batch and before the `Unknown` serde(other) fallback; wire op "show"; also a batch step]
 BrowserHostKind {Companion, Unknown}, TabBrowserKind {Web, HtmlView, Unknown}, BrowserHostReportKind {UserAction, PageError, Unknown}   [src/api/schema/browser.rs, fork-owned, JSON only, append-closed, Unknown the serde(other) fallback]
 BrowserAttentionKind {FocusRequest, Dialog, LoadFailed, Unknown}   [src/browser/state.rs, fork-owned, persisted in browser.json (BrowserTabRecord.attention), append-closed, Unknown the serde(other) fallback]
+Method::BrowserCompanion   [src/api/schema.rs, directly after BrowserSendPage; wire "browser.companion"; changes_ui = false, client_shell = true (companion launcher); digest in section 5]
+ResponseResult::BrowserCompanion   [src/api/schema/response.rs, directly after BrowserSendPage; wire tag "browser_companion" { companion, note? }; JSON only]
+BrowserCompanionAction {Status, Start, Stop, Restart, Focus, Unknown}   [src/api/schema/browser.rs, fork-owned, JSON only, closed by the browser.companion digest (a new action needs a new method name), Unknown the serde(other) fallback answered invalid_request]
+ClientContextMenuAction::BrowserCompanion(BrowserCompanionAction)   [src/client/shell/state.rs, after Dnd (BrowserToggleDock, BrowserToggleView, MoveToGroup, RemoveFromGroup follow); the Browser row menu's Focus / Start / Restart / Stop companion; internal]
+PendingEndpointKind::BrowserCompanion   [src/client/shell/state.rs, directly after BrowserFix; internal]
+Method::BrowserPlacementSet, Method::BrowserPlacements, Method::BrowserPlacementReport   [src/api/schema.rs, directly after BrowserCompanion in that order; wire "browser.placement.set" (changes_ui = false, client_shell = true; digest in section 5), "browser.placements" and "browser.placement_report" (both false, false: the browser host's, on the connection lane)]
+ResponseResult::BrowserPlacements   [src/api/schema/response.rs, directly after BrowserCompanion; wire tag "browser_placements" { boot_id, rev, placements }; JSON only]
+BrowserPlacementKind {Side, Full, Unknown}   [src/api/schema/browser_placement.rs, fork-owned, JSON only, closed by the browser.placement.set digest (a new kind needs a new method name), Unknown the serde(other) fallback: the board treats it as a clear]
+ClientChromeDrag::BrowserDockWidth   [src/client/shell/state.rs, last after InfoDockWidth; the browser band's divider; internal]
+ClientContextMenuAction::BrowserToggleDock, ClientContextMenuAction::BrowserToggleView   [src/client/shell/state.rs, after BrowserCompanion (MoveToGroup, RemoveFromGroup follow); the tab menu's Dock browser / Browser view and the Browser row's Dock browser here; internal]
+KeybindAction::ToggleBrowserDock, KeybindAction::ToggleBrowserView, KeybindAction::FocusBrowser   [src/input/keybindings.rs, directly after ToggleInfoPane in that order; client-only actions; internal]
+BrowserDockTarget {ViewTerminal, ViewBrowser, ToggleDock, Start, Restart, Nudge}, PlaceholderTone {Title, Body, Dim, Error}   [src/client/shell/browser_dock.rs, fork-owned, internal]
+BrowserOverlayRow::Companion, CompanionNote   [src/client/shell/browser.rs, fork-owned enum, after Empty; the Browser overlay's companion line and detail lines; internal]
 
 ## 5. Owned API methods and digests
 Since the ee5bfb50 sync, an entry's "api_method_name arm", "request_changes_ui" and "CLIENT_SHELL_METHODS" mean the method's row in the `operations::define_operations!` table in src/api/schema.rs: its wire name, changes_ui flag and client_shell flag (upstream 241b99cd folded the three lists into that table).
@@ -1141,6 +1220,14 @@ agent.restart_force digest: 7a23fc5840425d1860599884dd00af8f6b8a87a04e6109c5fe66
 browser.host_register, browser.host_heartbeat, browser.host_unregister (companion browser): fork-defined (Method::BrowserHostRegister(BrowserHostRegisterParams) / BrowserHostHeartbeat(BrowserHostLeaseTarget) / BrowserHostUnregister(BrowserHostLeaseTarget), define_operations! rows with changes_ui and client_shell false, so not advertised to the client shell and no digest), served on the connection thread like browser.run (src/api/server.rs routes them to browser::serve::host_lease; the App answers `browser_lane`). Register: `[browser] enabled` else browser_disabled; `host = "window"` host_disabled; protocol != 1 host_protocol_unsupported; kind unknown, empty instance/nonce, non-loopback cdp.host or port 0 invalid_request; a live or pending lease of another instance host_in_use (the same instance replaces it); the DevTools probe (2 s, skipped in tests) else host_unreachable; then profile `companion` = Running { pid (informational), port, exe "companion <version>" } and the sidecar attach { port, kind: "companion", nonce } (attach_blocked after two timeouts, host_verify_failed from the nonce check), and only then the lease: ResponseResult::BrowserHostLease { lease: { lease_id, profile "companion", state "attached", heartbeat_ms 5000, ttl_ms 15000, expires_unix, host_protocol 1, server_features [host_sync, host_report, send_page, show, page_errors] } }. Heartbeat renews (lease_unknown otherwise); unregister answers Ok and detaches. The lease goes on expiry (supervisor pass), the sidecar's `disconnected` event or unregister: profile Crashed { "companion gone" } (Stopped on unregister / `browser stop companion`, which detaches and never signals the app), the companion's ledger tabs closed, Tab.browser kept. The companion pid is never probed or signalled; `companion` is reserved (profile_create/delete refuse it, ensure_running never launches it: host_unavailable without a lease).
 browser.host_state, browser.host_sync, browser.host_report, browser.send_page (companion browser): fork-defined App-lane methods (src/app/browser_host.rs), changes_ui and client_shell false, no digest. host_state { lease_id, tab_ids? } → BrowserHostState { state: { focused_tab_id, tabs: [{ tab_id, workspace_id, label, key?, rev, active?, entries }] } }. host_sync { lease_id, seq, groups: [{ tab_id, key?, active? (entry id or view_id), entries: [{ id?, view_id, target?, kind, url, title, file?, allow_network, opened_by? }] }] } → BrowserHostSynced { keys (tab_id → group key when new or different; "tab_id/view_id" → entry id when minted or not yet known to the host), unknown_tabs }; stale_seq for seq <= the last applied, lease_unknown, too_large over 256 KiB; order/url/kind/file/active changes schedule a save, any change bumps the browser.get seq. host_report { lease_id, events: [{ kind user_action|page_error, action?, error? (load_failed|crashed), tab_id?, view_id?, target?, url?, text?, at_ms? }] } → BrowserHostReported { accepted, dropped } (≤ 50 per request, ≤ 20/s per lease, excess dropped, never an error); user actions go into the ledger as the user (`user:<action>`), `shown` clears the group's needs-you. send_page { tab_id, url, title, selection?, note?, lease_id? } → BrowserSendPage { outcome sent|queued, to_pane, to_name, message_id, reason? }: target = the tab's focused agent pane, else the agent pane that last used the active page, else the first agent pane (no_agent_in_tab, tab_not_found, too_large over 64 KiB); a message from "you (browser)" with no from_pane, the page fenced and labelled untrusted, through deliver_agent_message; under do-not-disturb stored quietly (outcome queued, reason "in DND, queued"); never urgent.
 browser.run (companion browser additions): op `show` { file (absolute .html/.htm), allow_network, watch (default true), focus, title } (errors file_not_found, not_html, invalid_request for a relative path; data { tab, kind "html_view", watching, file, view_id?, host }); `open` / `show` without --profile and without --tab follow `[browser] host` (auto: companion while leased, else default_profile; companion: host_unavailable without one; window), every other op the pane's cursor; open/show results carry data.host "companion"|"window". browser.get gains `sessions` (BrowserGetInfo.sessions: [{ tab_id, title, url, pages, needs_you, host }], serde default, skipped when empty; response types are not digest-covered). Sidecar (host.mjs, HOST_PROTOCOL stays 1): attach { kind: "companion", nonce } (no extension sweep, dashboard or new tab page; the control page `herdr-companion://control/` answers the nonce), ops show / watch / unwatch, open/select/focus/close through the control page for companion profiles, `herdr-companion:` pages are furniture; tab events gain `text` and kinds page_error and load_failed.
+browser.companion (companion launcher): fork-defined (Method::BrowserCompanion(BrowserCompanionParams { action: BrowserCompanionAction status|start|stop|restart|focus (Unknown fallback → invalid_request), caller: Option<BrowserCaller> (skip when None) }), App lane: handler App::handle_browser_companion in src/app/browser.rs over the hub's launcher (src/browser/companion_app.rs); changes_ui false, client_shell true (the Browser row menu and the Browser overlay). Every action answers at once with ResponseResult::BrowserCompanion { companion: BrowserCompanionAppInfo, note? } (starts and stops run on hub threads) and is recorded in the browser activity ledger as `companion:<action>` by its actor. A caller pane (the CLI in a pane: an agent or the user typing there) starts it in the background and its focus never activates the window; no caller is the user (a start shows the window without the keyboard, a focus activates it). stop/restart of a companion started by hand (a lease without the launcher's token) only detaches it (today's browser.stop) and answers note "this companion was not started by herdr; quit it from its window". CLI `herdr browser companion status|start|stop|restart|focus|log` (src/cli/browser_companion.rs, a child of src/cli/browser.rs). An older server answers unknown_method: the client hides nothing but its actions fail with a message.
+browser.companion digest: 99d0f3a05524cdef4dde7f8640ddd616657be7d7e99d017e9ca2fe1c11140477 (BrowserCompanionParams { action: BrowserCompanionAction, caller: Option<BrowserCaller> }).
+browser.placement.set (companion launcher, phase B): fork-defined (Method::BrowserPlacementSet(BrowserPlacementSetParams { placement: Option<BrowserPlacementSpec { id, kind: BrowserPlacementKind side|full (Unknown fallback), tab_id, area: BrowserCellRect {x, y, width, height}, grid: BrowserGridSize {cols, rows}, cell_px / extent_px: BrowserPxSize {width, height} (default zero), pids: Vec<u32> (skip when empty), shown (skip when false), nudge (skip when zero) }> (skip when None: a clear) })), client shell only: handled by the headless server's endpoint lane (src/server/headless/browser_placement.rs, from endpoint_requests.rs directly after the ClientShellSurfaceSet arm, before the endpoint_busy and surface_active checks): stored on the process-global placement board (src/browser/placements.rs) with the server's facts about the client (outer focus, foreground, surface active: a client showing another endpoint keeps its placement, unshown), answered Ok at once, never promoting the client to the foreground, never reaching the App (on the API socket the App answers invalid_request). The placement leaves with the client (remove_client). The client sends it beside its command lane (request id prefix `client-shell-placement:`, its answer dropped), at most one per 33 ms, only for the local endpoint and only when the server advertises the method; without it the client's dock items say the server must be updated. Names are neutral (placement, area, side/full: no dock, band or strip in the API).
+browser.placement.set digest: 1c26ddec75fa72dead38119465c337fb90fdc2893280f7422536d20feabde82d (BrowserPlacementSetParams { placement: Option<BrowserPlacementSpec> }).
+browser.placements (companion launcher, phase B): fork-defined (Method::BrowserPlacements(BrowserPlacementsParams { lease_id, since_rev?, wait_ms? })), connection lane (src/browser/serve.rs, from src/api/server.rs beside the host lease methods), not client shell, no digest: the live companion lease's long poll of the board: answers at once when the board's rev is newer than since_rev (or it is absent), else blocks until a change, wait_ms (capped at 25 000) or the server stopping; ResponseResult::BrowserPlacements { boot_id (new per server process: the host starts over after a live handoff), rev, placements: Vec<BrowserPlacementInfo { placement, focused, foreground, updated_unix }> }; lease_unknown without the live lease.
+browser.placement_report (companion launcher, phase B): fork-defined (Method::BrowserPlacementReport(BrowserPlacementReportParams { lease_id, id, state, reason? })), connection lane, not client shell, no digest: what the companion does with placement `id` (covering, hidden, moving, unbound, unsupported, elsewhere; anything else is stored as unknown; reason ≤ 300 chars), kept on the board while the placement lives; answers Ok (a report on an id the board does not hold is ignored); lease_unknown without the live lease. browser.get / browser.status gain BrowserGetInfo.placements (Vec<BrowserPlacementStatus { id, state, reason? }>, skip when empty; always current, also on an unchanged answer, so the client copies it like companion_app). The lease answer's server_features gains "placements".
+Companion launcher additions to existing methods (all JSON-only and optional; response types are not digest-covered): browser.get / browser.status gain BrowserGetInfo.companion_app (BrowserCompanionAppInfo { state: not_installed|stopped|starting|running|reconnecting|stopping|crashed|failed|external, managed, pid?, version?, installed?, electron?, update_ready, started_unix?, since_unix?, restarts, next_retry_unix?, last_error?, autostart, log? }; always current, also on an `unchanged` answer, so the client copies it like setup_needed) and BrowserGetInfo.window_off (skip when false; an older server never sends it, its window is on). browser.host_register gains BrowserHostRegisterParams.launch_token (the token the launcher passed with --launch-token; equal to the launcher's current token = a managed lease) and .managed (informational); browser.host_register / browser.host_heartbeat answer BrowserHostLeaseInfo.update (the installed app version while a managed companion runs older app files; the companion's "Update ready · Restart" chip). browser.host_unregister of a managed lease marks the process as quitting on its own (its exit is a stop, not a crash). browser.start {profile: companion} launches it (an old server answered host_unavailable, so no false success); the CLI's `herdr browser start` sends browser.companion start with its caller instead for the companion (`--profile companion`, or no profile while browser.get says window_off), so a start from a pane runs in the background. browser.stop {profile: companion} quits a managed one (the control page's quit, sent and never waited for, or a 0.5 s grace without a live lease of its own; then SIGTERM, SIGKILL; one deadline for the whole stop, 8 s at server exit, which also refuses every launch from then on and drops a scheduled crash restart; a stop during a launch makes the launch stop what it spawns, or spawn nothing) and only detaches one started by hand. A run record's pid is adopted, counted as another session's or signalled only while it is still that process: run.json's start_token (platform::process_start_token at the launch; for a record without one, its started_at against the process's start time). `herdr browser setup --companion` keeps the downloaded Electron across an `npm ci` for a new lock and asks for consent before anything else when the binary must be downloaded. Routing: `[browser] host = "companion"` without a live lease starts the installed companion and waits up to 45 s for its registration (single flight) on the caller's connection thread, and so does an open/show that names the companion (`--profile companion`, a `companion:` tab); the host_unavailable texts name the cause and the fix (not installed / no Electron / failed after 5 crashes / did not start within 45 s / another session's), worded for their reader: an agent's (a pane caller, an MCP tool) say "ask the user to run …", the user's own (the TUI, the CLI from a plain terminal) "run …". Sidecar (host.mjs, HOST_PROTOCOL stays 1): new ops control_quit { profile } and control_raise { profile, args { user } } (companion profiles only), and `focus` passes args { user } to the control page (`focus({view_id, user})`: the user's activates the window, an agent's only orders it front). The control page gains raise({user}) and allows quit() when managed; __crash / __hang exist only with HERDR_COMPANION_TEST_HOOKS=1.
+Companion launcher, the herdr+ window off (`[browser] window = false`, the default): every op on a window profile — `--profile <window profile>` or `new`, a qualified tab like `main:t3`, browser.start {profile: <window profile>}, browser.focus of a window tab — answers the new error code `window_disabled` ("the herdr+ browser window is off ([browser] window = false); agents use the companion browser. Set [browser] window = true to use the window again."), checked before `new` creates a profile; ensure_running of a window profile refuses the same way (the extension fix's restart included). `open` / `show` (and a batch whose first step is one) without a profile go to the companion whatever `[browser] host` says (auto falls back only to an enabled window; `host = "window"` without the window answers window_disabled), started on demand; any other op without --tab whose pane has no current companion tab (none, or a cursor left on a window tab) answers the existing no_current_tab before anything starts (tabs and batch excepted). browser.start without a profile starts the companion; browser.host_register answers host_disabled only for host = "window" with window = true; browser.settings reports the companion in its status / open · stop row while the window is off. `window = true` restores the window exactly (with `host = "auto"` for the old fallback).
 ## 6. Config keys (cross-checked by scripts/config_reference_check.py)
 ui.sidebar_layout, ui.tab_agent_glyphs, ui.tab_agent_glyph_colors, session.backup_agent_transcripts,
 keys.toggle_agent_suspend, keys.move_tab_to_group, keys.toggle_groups_folded, keys.restart_agent, keys.cycle_tab_color, keys.toggle_tab_important, keys.open_news (keys.open_browser directly after it, keys.open_coordinator directly after that, in every list),
@@ -1168,7 +1255,11 @@ keys.sidebar_search (sidebar filters: default "prefix+f", a prefix binding that 
 Fork defaults that differ from upstream (keep them on every sync; an upstream change to the same default or its doc text is a conflict to resolve toward the fork's value): ui.sidebar_layout defaults to "tabs" (a fork key; `#[default] Tabs` on SidebarLayoutConfig and UiConfig's Default; "spaces" still parses and keeps upstream's panels); update.version_check and update.manifest_check default to false (upstream: true; UpdateConfig's Default in src/config/model.rs, the DEFAULT_CONFIG comments `# version_check = false` / `# manifest_check = false` with their herdr+ reason, and the `default` plus the appended herdr+ sentence of both config-reference.json entries; an explicit true in a config still turns them on; `herdr update` itself is unchanged). Upstream client-shell tests build their state from `Config::default()` and assume the spaces layout; the ones that fail under tabs build from `spaces_config()` instead (src/client/shell/tests/mod.rs, `Config::default()` with sidebar_layout Spaces). A new or changed upstream client-shell test that fails after a sync because it expects the space or agent panels gets the same one-word switch, never a Spaces default. docs/next/website/src/content/docs/agents.mdx keeps upstream's "Herdr also checks herdr.dev for remote manifest updates" paragraph unchanged (release docs, not fork prose).
 
 
-browser.host, browser.page_errors (companion browser: strings, defaults "auto" / "agent"; an unknown value is a diagnostic and reads as the default; BrowserConfig in src/config/browser.rs; config-reference.json directly after browser.activity_color; DEFAULT_CONFIG directly after `# mcp_agents = ["claude", "codex"]`; not in configuration.mdx).
+browser.host, browser.page_errors (companion browser: strings, defaults "companion" (companion launcher; was "auto") / "agent"; an unknown value is a diagnostic and reads as the default; BrowserConfig in src/config/browser.rs; config-reference.json directly after browser.activity_color; DEFAULT_CONFIG directly after `# mcp_agents = ["claude", "codex"]`; not in configuration.mdx).
+browser.companion_autostart (companion launcher: bool, default false; BrowserConfig in src/config/browser.rs; config-reference.json directly after browser.page_errors; DEFAULT_CONFIG directly after `# page_errors = "agent"` (with its comment); not in configuration.mdx).
+browser.window (companion launcher: bool, default false, the herdr+ Chromium window; BrowserConfig in src/config/browser.rs; config-reference.json directly after browser.page_errors, before browser.companion_autostart; DEFAULT_CONFIG directly after `# companion_autostart = false` (with its comment); not in configuration.mdx). With it off, `host = "window"` and `autostart = true` are config diagnostics.
+ui.browser_dock_width, ui.browser_view_strip (companion launcher, phase B: percent 20..=80, default 45, out of range a diagnostic and clamped / "auto" | "off", default "auto", anything else a diagnostic reading as auto; UiConfig in src/config/model.rs directly after info_pane_width (struct and Default), DEFAULT/MIN/MAX_BROWSER_DOCK_WIDTH directly after MAX_INFO_PANE_WIDTH, effective_browser_dock_width / browser_view_strip_auto / browser_dock_diagnostics directly before info_pane_width_diagnostic, `.chain(self.ui.browser_dock_diagnostics())` directly after the info_pane_width diagnostic in Config::collect_diagnostics; config-reference.json directly after ui.info_pane_width in that order; DEFAULT_CONFIG directly after `# info_pane_width = 44`; not in configuration.mdx).
+keys.toggle_browser_dock, keys.toggle_browser_view, keys.focus_browser (companion launcher, phase B: defaults "prefix+shift+b", "prefix+shift+z", unset; KeysConfig / KeysConfigOverlay / Keybinds directly after toggle_info_pane in every list; config-reference.json directly after keys.toggle_info_pane, before keys.tab_history_back; DEFAULT_CONFIG comment lines directly after `toggle_info_pane`; not in configuration.mdx).
 ## 7. Per-file merge rules
 docs/next/CHANGELOG.md  take-theirs: fork entries live in section 11
 docs/next/api/herdr-api.schema.json  take-theirs: after every .rs conflict is resolved, regenerate with HERDR_UPDATE_API_SCHEMA=1 cargo nextest run generated_protocol_schema_artifact_is_current, rerun it clean, require git diff --exit-code docs/next/api/
@@ -1561,11 +1652,58 @@ src/client/shell/render.rs  additive: companion browser: ShellRenderState.browse
 src/client/shell/composition.rs  additive: companion browser: both ShellRenderState literals pass browser_attention_tabs after browser_marked_tabs
 src/client/shell/tab_sidebar_detail.rs  additive: companion browser: the `◉` chip (yellow) before the `◎` one, which it replaces while a page needs the user
 src/client/shell/tests/coordinator.rs  additive: companion browser: `browser_attention_tabs: HashSet::new()` after browser_marked_tabs
+src/integration/mod.rs  additive: companion launcher: `pub(crate) mod companion_assets;` (with its comment) directly after `mod command;` (rustfmt order)
+src/api/schema.rs  additive: companion launcher: the BrowserCompanion row directly after BrowserSendPage
+src/api/schema/response.rs  additive: companion launcher: ResponseResult::BrowserCompanion directly after BrowserSendPage
+src/api/schema/tests.rs  additive: companion launcher: browser_companion_is_a_client_shell_method_with_a_frozen_digest last in the file
+src/app/api.rs  additive: companion launcher: the Method::BrowserCompanion dispatch directly after BrowserFix
+src/server/client_commands.rs  additive: companion launcher: the browser.companion digest assert directly after the browser.fix assert; supported_client_shell_method_names().len() 100 → 101 in team_methods_are_advertised_except_the_list_and_the_agent_read
+src/server/headless.rs  additive: companion launcher: `pub(crate) fn stop_browsers_at_exit` (with its own doc) directly before `HeadlessServer`'s doc comment, which stays on the struct; the exit path calls it (replacing the inline stop_with_server_if_configured block) after save_session_on_shutdown
+src/platform/mod.rs  additive: companion launcher: detach_background_command (cfg(unix) setsid, cfg(windows) CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS) directly before current_process_is_detached_server_daemon
+src/main.rs  additive: companion launcher: DEFAULT_CONFIG `# companion_autostart = false` (with its comment) directly after `# page_errors = "agent"`
+src/client/shell/state.rs  additive: companion launcher: ClientContextMenuAction::BrowserCompanion directly after Dnd; ClientContextMenuTarget::Browser.companion and .window its last fields; PendingEndpointKind::BrowserCompanion directly after BrowserFix; ShellHitMap.browser_overlay and browser_overlay_popup directly after team_overlay_popup
+src/client/shell/composition.rs  additive: companion launcher: the ClientShellOverlay::Browser branch (render_browser_overlay, hits.browser_overlay / browser_overlay_popup) directly before the TeamInfo branch
+src/client/shell/overlays.rs  additive: companion launcher: ClientShellOverlay::Browser joins the ContextMenu | GlobalMenu | TeamInfo arm that answers None (composed in composition.rs)
+src/client/shell/mouse.rs  additive: companion launcher: the Browser overlay branch (route_browser_overlay_click, the wheel moves the cursor) directly before the TeamInfo branch
+src/client/shell/actions.rs  additive: companion launcher: PendingEndpointKind::BrowserCompanion in the handle_browser_endpoint_result arm after BrowserStop
+src/client/shell/worktrees.rs  additive: companion launcher: PendingEndpointKind::BrowserCompanion directly after BrowserFix in the not-a-worktree list
+src/client/shell/context_menu.rs  additive: companion launcher: the Browser target's items: the companion items lead (super::browser::companion_menu_items, Stop red), the window items follow in a "Window" section while `window` (Section::Lead when the server has no companion), Open overlay last
+src/client/shell/settings_browser.rs  additive: companion launcher: the `companion` fact (check companion_app) directly after `extension`
+src/client/shell/tests/coordinator.rs  additive: companion launcher: `companion: None` last in the BrowserRow literal
+src/cli/spec.rs  additive: companion launcher: the browser command's about / long_about name the companion browser; the `companion` subcommand (status, start, stop, restart, focus, log) directly after `stop`; setup's `--companion` and `--yes` flags last; spec_models_browser_verbs_and_lifecycle checks them last
+src/main.rs  additive: companion launcher: DEFAULT_CONFIG `# host = "companion"` (its comment rewritten) and `# window = false` (with its comment) directly after `# companion_autostart = false`
+src/api/schema.rs  additive: companion launcher, phase B: `pub mod browser_placement;` directly after `pub mod browser;`, its named re-export directly after `pub use browser::*;`; the BrowserPlacementSet / BrowserPlacements / BrowserPlacementReport rows directly after BrowserCompanion
+src/api/schema/response.rs  additive: companion launcher, phase B: ResponseResult::BrowserPlacements directly after BrowserCompanion
+src/api/schema/tests.rs  additive: companion launcher, phase B: browser_placement_set_is_a_client_shell_method_with_a_frozen_digest last in the file
+src/api/server.rs  additive: companion launcher, phase B: the Method::BrowserPlacements and Method::BrowserPlacementReport connection-lane arms directly after the host lease arm
+src/app/api.rs  additive: companion launcher, phase B: the BrowserPlacementSet / BrowserPlacements / BrowserPlacementReport refusals (invalid_request) directly after the BrowserCompanion dispatch
+src/server/client_commands.rs  additive: companion launcher, phase B: the browser.placement.set digest assert directly after the browser.companion assert; supported_client_shell_method_names().len() 101 → 102
+src/server/headless.rs  additive: companion launcher, phase B: `mod browser_placement;` (with its doc) directly after `mod bootstrap;`
+src/server/headless/endpoint_requests.rs  additive: companion launcher, phase B: the BrowserPlacementSet arm directly after the ClientShellSurfaceSet arm (before the endpoint_busy and surface_active checks); sync_browser_placement_facts after set_client_shell_surface_active in the surface arm
+src/config.rs  additive: companion launcher, phase B: `.chain(self.ui.browser_dock_diagnostics())` directly after the info_pane_width diagnostic; `pub(crate) use self::model::{MAX_BROWSER_DOCK_WIDTH, MIN_BROWSER_DOCK_WIDTH};` directly after the KeysConfig use
+src/config/model.rs  additive: companion launcher, phase B: UiConfig.browser_dock_width / browser_view_strip directly after info_pane_width (struct and Default), DEFAULT/MIN/MAX_BROWSER_DOCK_WIDTH after MAX_INFO_PANE_WIDTH, effective_browser_dock_width / browser_view_strip_auto / browser_dock_diagnostics directly before info_pane_width_diagnostic; KeysConfig / KeysConfigOverlay toggle_browser_dock, toggle_browser_view, focus_browser directly after toggle_info_pane in every list (struct, overlay, apply_field, copy_effective_action_field, Default)
+src/config/keybinds.rs  additive: companion launcher, phase B: toggle_browser_dock, toggle_browser_view, focus_browser directly after toggle_info_pane in Keybinds, its default and apply_action
+src/input/keybindings.rs  additive: companion launcher, phase B: KeybindAction::ToggleBrowserDock / ToggleBrowserView / FocusBrowser directly after ToggleInfoPane, and their table rows directly after toggle_info_pane's
+src/input/keybind_help.rs  additive: companion launcher, phase B: the three help entries directly after "info pane"
+src/main.rs  additive: companion launcher, phase B: DEFAULT_CONFIG `toggle_browser_dock`, `toggle_browser_view`, `focus_browser` comment lines directly after `toggle_info_pane`; the `browser_dock_width` and `browser_view_strip` comment blocks directly after `# info_pane_width = 44`
+src/client/shell.rs  additive: companion launcher, phase B: `mod browser_dock; mod browser_dock_render;` (with their comment) and the BROWSER_PLACEMENT_REQUEST_PREFIX re-export directly after `mod browser;`
+src/client/shell/state.rs  additive: companion launcher, phase B: ClientShellConfig.browser_dock_width / browser_view_strip directly after info_pane_width; ClientShellLayout.browser_band / view_strip last; ShellHitMap.browser_dock directly after info_dock; ClientChromeDrag::BrowserDockWidth last; ClientContextMenuAction::BrowserToggleDock / BrowserToggleView directly after BrowserCompanion (MoveToGroup, RemoveFromGroup follow); ClientContextMenuTarget::Tab.browser_dock and ClientContextMenuTarget::Browser.dock their last fields; ClientShellState.browser_dock directly after info_dock_width_manual (and in new(), from the preferences); `layout` calls config.layout_with_browser with browser_band_for_focused_tab / browser_view_strip_for_focused_tab; the snapshot install runs prune_browser_dock_tabs directly after prune_info_dock_tabs; timer_delay chains next_browser_dock_deadline directly after next_info_dock_deadline
+src/client/shell/config.rs  additive: companion launcher, phase B: `layout` delegates to the new `layout_with_browser` (its two fork arguments; the mobile literal and the final literal carry browser_band / view_strip; the strip and the band are carved directly before the info dock); ClientShellConfig's two fields in from_config and apply_live_config directly after info_pane_width; persist_chrome_preferences writes browser_dock_percent directly after info_dock_width; reload_client_config resets an undragged percent directly after the info dock width
+src/client/shell/preferences.rs  additive: companion launcher, phase B: ClientChromePreferences.browser_dock_percent directly after info_dock_width
+src/client/shell/render.rs  additive: companion launcher, phase B: ShellRenderState.browser_page_tabs directly after browser_attention_tabs
+src/client/shell/actions.rs  additive: companion launcher, phase B: the ToggleBrowserDock / ToggleBrowserView / FocusBrowser arms directly after ToggleInfoPane in record_binding
+src/client/shell/mouse.rs  additive: companion launcher, phase B: browser_dock_press directly after info_dock_press in the left press; the BrowserDockWidth drag and release arms directly after InfoDockWidth's
+src/client/shell/context_menu.rs  additive: companion launcher, phase B: the tab menu's Dock browser / Browser view toggles in its Browser section after the page item; the Browser row menu's Dock browser here after the companion items; their actions (tab target: that tab, without focusing it; Browser target: the focused tab) directly after the tab menu's ToggleInfoPane arm; Tab.browser_dock filled from browser_dock_offered in open_tab_context_menu
+src/client/shell/context_menu_look.rs  additive: companion launcher, phase B: BrowserToggleDock / BrowserToggleView key hints directly after ToggleInfoPane
+src/client/shell/tab_sidebar.rs  additive: companion launcher, phase B: the dim `◎` (overlay0) for a tab with browser pages after the lit `◎` in push_reminder_marks; the Browser row's `◨` in render_fixed_row (its status shrinks by two cells; a status-first row keeps its status, capped to the row) and its hit (hits.browser_dock.row_button) in the pinned rows loop
+src/client/shell/tests/coordinator.rs  additive: companion launcher, phase B: `dock: None` after `companion: None` in the BrowserRow literal; `browser_page_tabs: HashMap::new()` after browser_attention_tabs in the ShellRenderState literal
+src/client/shell/tests/graphics.rs  additive: companion launcher, phase B: `browser_dock: None` last in the ClientContextMenuTarget::Tab literal
+src/client/shell/tests/mod.rs  additive: companion launcher, phase B: `mod browser_dock;` (with its doc) directly after `mod browser;`
 src/client/shell/state.rs  additive: toolbar new tab: PendingEndpointKind::ToolbarNewTab, ToolbarNewTabMove last after ForceableAgentStop
 src/client/shell/actions.rs  additive: toolbar new tab: handle_endpoint_result returns complete_toolbar_new_tab's Some directly before the info dock check; ToolbarNewTab and ToolbarNewTabMove share the Generic match arm
 src/client/shell/worktrees.rs  additive: toolbar new tab: ToolbarNewTab, ToolbarNewTabMove last in handle_worktree_endpoint_result's final Err arm
 src/client/shell/mouse.rs  additive: toolbar new tab: the hits.group_new press calls toolbar_new_tab (was open_move_tab_to_group_overlay; the keybind and the tab menu's Move to group… still open that prompt)
-src/client/shell/state.rs  additive: tab menu groups: ClientContextMenuAction::MoveToGroup, RemoveFromGroup last after Dnd; ClientContextMenuTarget::Tab.grouped directly after browser_page
+src/client/shell/state.rs  additive: tab menu groups: ClientContextMenuAction::MoveToGroup, RemoveFromGroup last, after the companion launcher's BrowserToggleView; ClientContextMenuTarget::Tab.grouped directly after browser_page
 src/client/shell/tests/graphics.rs  additive: tab menu groups: its ClientContextMenuTarget::Tab literal carries `grouped: None` after browser_page
 src/client/shell/overlay_input.rs  additive: tab menu groups: open_move_tab_to_group_overlay finds the focused tab and calls open_move_tab_to_group_overlay_for(tab_id), which builds the prompt for any tab
 src/client/shell/context_menu_look.rs  additive: tab menu groups: item_binding maps MoveToGroup to keys.move_tab_to_group directly after Important
@@ -1872,6 +2010,14 @@ src/app/actions.rs  mid-logic: restart screen: update_terminal_state_with_comple
 src/app/api.rs  mid-logic: restart screen: respawn_shell_for_launch_pane calls App::clear_agent_identity_after_respawn instead of TerminalState::clear_agent_runtime_identity_after_respawn directly
 
 src/config/model.rs  mid-logic: fork defaults (section 6): UpdateConfig::default (version_check, manifest_check false; upstream true). Any upstream change to UpdateConfig, its Default or update_config_defaults_and_parses needs a human check that the fork's off defaults survive
+src/server/headless.rs  mid-logic: companion launcher: the server's exit runs stop_browsers_at_exit(hub(), handoff_in_progress) after save_session_on_shutdown: the managed companion quits with the server but never on a live handoff (the replacement adopts it from run.json). An upstream change to the exit path or to handoff_in_progress needs a human check that both still hold
+src/server/headless.rs  mid-logic: companion launcher, phase B: sync_browser_placement_facts runs first in sync_foreground_client_state (the foreground fact) and in the ClientShellFocus handler right after outer_terminal_focus is set (the focus fact); remove_client drops the client's placement first. An upstream path that changes the foreground client or a client's outer focus without these leaves a stale fact on the board (the companion may follow the wrong client) until the next change
+src/client/shell_runtime.rs  mid-logic: companion launcher, phase B: finish_client_shell_input appends the browser placement request (take_browser_placement_request) to the outgoing requests while the active endpoint is online and no activation is pending: beside the command lane, never queued behind it; install_client_shell_snapshot sends it too, after the compose, for a projected snapshot of the active endpoint (a tab switch without input: an agent's or the companion's tab.focus moves the placement at once, not at the next tick)
+src/client/mod.rs  mid-logic: companion launcher, phase B: a ClientShellEndpointResponseChunk whose request id starts with BROWSER_PLACEMENT_REQUEST_PREFIX is dropped like the surface ones (never fed to EndpointCommands); the tick runs tick_browser_dock directly after tick_info_dock; the ClientLoopEvent::Resize arm calls shell.note_terminal_resized() directly after invalidate_pane_surface (the browser placement asks the terminal for its pixel extent, TIOCGWINSZ, once per resize, never per input event: an upstream resize path that skips the arm leaves the placement on the old extent until a dock or Browser view opens again)
+src/client/shell/composition.rs  mid-logic: companion launcher, phase B: the strip, band and Browser view area are composed (browser_dock_view + browser_dock::compose) directly after the info dock; in Browser view the pane surface is not blitted, hits.panes / pane_splits / info_dock are cleared and the cursor hidden; the notices and toasts lay out beside toast_dock (the info dock and the band) instead of the info dock alone; in Browser view (browser_dock::banner_area: one line on the view strip between its switch and its ◨, else the tab bar's right half) the notice, the primary or newest toast and the agent cards render as their one-line mobile banners there (render_mobile_banner, render_mobile_notification_banner, render_agent_card_banner; the sticky stack is not drawn), never under the companion
+src/client/shell/input.rs  mid-logic: companion launcher, phase B: in Terminal mode, after the info dock's keys, browser_view_swallows_key keeps keys from the hidden panes in Browser view; in Prefix mode a literal prefix is swallowed too; the Text and Paste arms' Terminal-mode pane fallback asks browser_view_swallows_key first (an IME or compose commit or a paste never reaches a hidden pane) and clipboard_image_target answers None in Browser view after its popup check
+src/client/shell/tab_sidebar_detail.rs  mid-logic: companion launcher, phase B: the detail strip's browser chip is `◎ N pages` (its mark ◉ / lit / dim as on the row) plus a `docked` / `browser view` chip, from ShellRenderState.browser_page_tabs
+src/platform/macos.rs  mid-logic: companion launcher, phase B: parent_pid falls back to PROC_PIDT_SHORTBSDINFO when the full BSD info is refused for another user's process (a terminal's root-owned `login`), so process_ancestry reaches the terminal app (the dock binds the terminal window by it). An upstream change to parent_pid needs a human check that a root-owned parent still resolves (parent_pid_reads_another_users_process)
 
 
 ## 9. Identifier watch-list (any hit in the incoming upstream diff = deny "upstream collision")
@@ -2840,6 +2986,27 @@ host_register
 send_page
 TabBrowser
 herdr-companion
+BrowserCompanion
+companion_app
+companion_install
+companion_autostart
+launch_token
+control_quit
+BrowserPlacement
+browser_placement
+browser_dock
+toggle_browser_dock
+toggle_browser_view
+view_strip
+HERDR_TEST_BROWSER_VIEW
+stop_browsers_at_exit
+detach_background_command
+bind_entries
+bind_companion_entries
+new_targets
+last_entry
+pending_entries
+EntryRebound
 ## 10. Fork smoke tests (run by name in the gate)
 server::headless::tests::tab_geometry_tests::fork_smoke_single_client_resize_reflows_only_the_shown_tab
 server::headless::tests::tab_geometry_tests::fork_smoke_switching_dock_and_plain_tabs_reflows_one_tab_at_most
@@ -2946,6 +3113,29 @@ browser::tests::fork_smoke_a_second_companion_is_refused_while_the_first_lease_l
 persist::snapshot::tests::fork_smoke_tab_browser_state_round_trips_and_is_absent_when_empty
 server::headless::tests::fork_smoke::tab_browser_state_survives_a_live_handoff
 app::browser_host::tests::fork_smoke_send_page_to_a_dnd_tab_is_stored_quietly
+browser::companion_app::tests::fork_smoke_an_open_starts_the_installed_companion_and_waits_for_its_registration
+browser::companion_app::tests::fork_smoke_crashes_back_off_1_2_4_8_16_s_and_give_up_after_five_in_five_minutes
+browser::companion_app::tests::fork_smoke_a_new_server_adopts_the_running_companion_from_its_run_record
+browser::companion_install::tests::fork_smoke_setup_installs_once_and_reruns_only_when_the_bundled_version_changes
+browser::companion_app::tests::fork_smoke_a_reused_pid_is_never_adopted_or_signalled
+browser::companion_app::tests::fork_smoke_the_server_exit_cancels_a_scheduled_restart_and_refuses_launches
+browser::companion_install::tests::fork_smoke_a_new_lock_reruns_npm_ci_but_keeps_the_downloaded_electron
+server::headless::tests::fork_smoke::the_managed_companion_stops_with_the_server_but_not_on_a_live_handoff
+server::headless::tests::fork_smoke::a_placement_set_never_promotes_the_client_or_takes_the_command_lane
+server::headless::tests::fork_smoke::placements_reach_the_host_with_focus_and_foreground
+client::shell::tests::browser_dock::fork_smoke_the_dock_takes_45_percent_on_the_right_and_reports_the_narrower_surface
+client::shell::tests::browser_dock::fork_smoke_browser_view_covers_the_pane_area_without_resizing_the_panes
+client::shell::tests::browser_dock::fork_smoke_the_terminal_extent_is_read_once_per_resize_not_per_event
+client::shell::tab_sidebar::fixed_row_tests::fork_smoke_a_narrow_news_row_keeps_its_status_and_the_browser_row_its_label
+client::shell::tests::browser::fork_smoke::the_browser_row_shows_the_companion_state_and_offers_start_stop_restart_focus
+browser::tests::fork_smoke_with_the_window_off_window_profiles_answer_window_disabled_with_the_fix
+browser::companion_app::tests::fork_smoke_no_companion_starts_without_the_browser_helper_it_registers_through
+browser::companion_app::tests::fork_smoke_a_config_that_keeps_the_companion_off_never_starts_it
+client::shell::tests::browser_dock::fork_smoke_without_the_companion_nothing_docks_and_the_notice_says_why
+client::shell::tests::browser_dock::fork_smoke_pastes_and_text_commits_in_browser_view_never_reach_the_hidden_panes
+client::shell::tests::browser_dock::fork_smoke_browser_view_shows_notices_and_toasts_on_its_strip_not_under_the_page
+browser::state::tests::fork_smoke_a_restarted_companion_page_keeps_its_id_attribution_and_cursor
+browser::state::tests::fork_smoke_a_new_page_never_inherits_a_closed_pages_record
 ## 11. Fork changelog (moved out of docs/next/CHANGELOG.md)
 A user-facing feature or fix that changes what herdr+ offers also updates the showcase page `docs/fork/herdr-plus.html` (self-contained, no network resources, no personal data; mockups follow the current code), in the same change.
 ### Added
@@ -3001,6 +3191,9 @@ A user-facing feature or fix that changes what herdr+ offers also updates the sh
 - herdr browser: `[browser] activity_color = "#aa6eff"` (`#rrggbb`; invalid → default with a config diagnostic) colours the activity overlay — frame border and glow (alpha unchanged), cursor fill and ripple — and applies live after `herdr server reload-config` (the directive carries it; an overlay of another colour is re-injected); tab-group colours stay Chrome's per-pane palette.
 - herdr browser, activity overlay (`[browser] show_activity = true`): the tabs an agent pane opens or acts on sit in a Chrome tab group named `<agent> · <herdr tab>` in a stable colour per pane (a bundled MV3 companion extension loaded with `--load-extension`, driven over the DevTools port; expanded while the pane is active, collapsed after `active_glyph_secs`, dissolved when the pane is gone; tabs the user opened are never grouped and a tab the user pulls out stays out), and a purple glow frame with a macOS-style cursor is injected into the page (isolated world, closed shadow root, no pointer events) while an operation runs and for the `active_glyph_secs` window after (originally 3 s); the cursor glides to the element before click/type/fill/select/press/hover and ripples on click; batches take `animate: false` (`--no-animate`); screenshots hide the overlay; `browser status` / `doctor` report the companion (`ready`, `missing`).
 - Agents can mute and put each other in do not disturb: the herdr_agents tools `agents_mute` (`muted=false` unmutes) and `agents_dnd` (`on=false` ends it) take one target or several comma-separated (a team lead quiets every member but the ones it still needs in one call) and answer one outcome line per target; `herdr tab mute|unmute <target>...` and `herdr tab dnd <on|off> <target>...` do the same from the CLI (a tab id, pane id, agent name or tab label). Both go through the new `agents.set_quiet`, checked like suspend: free on the caller's own tab and its team's tabs, refused elsewhere (`outside_team`) and on the coordinator's tab, the coordinator in its user's turn, the user always; every change is in the agents action log as `set_quiet`. Mute and DND behave exactly as the tab menu's items.
+- herdr installs and runs the companion browser itself. `herdr browser setup --companion` installs it under the browser home (its app files, Electron 45.2.1 after asking about the ~115 MB download — `--yes` answers yes — and on macOS a "herdr+ companion" app with the eye-plus icon, ad-hoc signed); a rerun only updates what changed and `herdr browser doctor` has a `companion_app` line. The first page an agent opens starts it in the background (no window, no focus; `[browser] companion_autostart = true` starts it with the server instead); herdr restarts it after a crash (after 1, 2, 4 and 8 s; after 5 crashes in 5 minutes it stops trying until you restart it), quits it with the server and keeps it across a live handoff. Control it from `herdr browser companion status|start|stop|restart|focus|log`, the Browser row (its state and menu: Focus, Start, Restart, Stop companion) and the Browser overlay (state, pid, uptime, restarts, update, last error, with Focus / Restart / Stop buttons); a newer installed version shows "update" and a Restart applies it. An agent's `browser focus` no longer takes the keyboard (the window comes forward, ◉ marks the tab); yours does. herdr starts it only when it can register: without the browser helper an agent's `browser open` answers at once naming `herdr browser setup` (both setup commands when neither is installed) instead of waiting out its 45 s, and with `[browser] host = "window"` and the window on, or the browser disabled, herdr never starts it and nothing offers the companion, the dock or Browser view (`herdr browser companion status` says `disabled` and why; opening a dock says why).
+- The browser docks inside herdr's window. `prefix+⇧B` (`keys.toggle_browser_dock`), the `◨` on the pinned Browser row and in the tab's view strip, the tab menu's Dock browser and the Browser row menu's Dock browser here put the companion browser on the right of the focused tab: herdr keeps a band at the window's right edge (`ui.browser_dock_width`, 45 % of the area right of the sidebar; drag its divider, double-click it for the default; a dragged width is remembered) and the companion covers it exactly (Ghostty's padding, titlebar style and Retina scale are taken into account, read again after a Ghostty config reload changes them; other terminals best effort), stays directly above the terminal window (whatever covers the terminal covers it), hides while the window moves or resizes and comes back aligned, hides while it is minimised, hidden or on another Space, and joins a full-screen Space; it is out of ⌘-Tab and the Dock while docked. Clicking a page gives it the keyboard, clicking the terminal or ⌘⎋ gives it back; a focus on another tab's page leaves the dock on its tab (an agent's marks the page there, yours brings that tab forward). `prefix+⇧Z` (`keys.toggle_browser_view`) and the strip's `▣ Terminal` / `◎ Browser` switch a tab to Browser view, the browser over the whole tab: the panes keep running at their size and keys, pastes and IME text never reach them (the first says how to type into the page, or what the area asks for while no page covers it), and herdr's notices, toasts and agent cards show as one line on the view strip. While the browser is not over its area, the area says why (starting, not running with a Start button, not installed, failed with a Restart button, "click here once" when several terminal windows could be this one, or why it cannot dock: tmux or ssh, no pixel size, a Ghostty split); with several same-size Ghostty windows it binds the one whose herdr got the focus or the click. New: `browser.placement.set` (client shell, digest-frozen), `browser.placements` (the companion's long poll) and `browser.placement_report`, `browser.get` `placements`.
+- Tabs with browser pages wear a dim `◎` on their row (lit while an agent uses the browser, `◉` while a page needs you) and the detail strip says `◎ 3 pages` plus `docked` or `browser view`; the Browser overlay's sessions show the view too. The companion's bar has a count pill (`3 · 12`: pages in this session · pages in every session) whose menu lists every session with pages (◉ when one needs you) and focuses the herdr tab you pick; its window title carries the page count.
 ### Fixed
 - A relaunch that never starts no longer holds the restart card: when a restart, activation or wake typed into the pane's shell starts no agent (a missing binary, a shell error), the server sees the shell back at its prompt with no agent detected about 3 s later and ends the `↻ restarting` / `↻ waking` card at once (was 30 s), with a toast on attached clients, "<name>: restart didn't start — the shell is back" or "<name>: couldn't wake — the shell is back", which focuses the pane on click (none for a muted tab). The server logs `agent.resume.undetected`, also when a relaunched agent is not detected within 30 s, and no longer sets the unrendered failed mark on a pane without a parked agent. No wire change.
 - Force restart always relaunches: a forced restart (`Force restart` on a refused restart's notice, `agent.restart_force`) whose agent had to be killed (`SIGKILL`) now relaunches it once the process is gone and the shell prompt is back, within the usual 30 s; if the shell never comes back it stays suspended with the usual warning. A plain restart still leaves a killed agent suspended.
@@ -3068,6 +3261,8 @@ A user-facing feature or fix that changes what herdr+ offers also updates the sh
 - Browser, audit fixes: a launch whose DevTools never answers stops only a browser that launch started: the `SingletonLock` pid is read once before the first spawn and that pid (a dead browser's lock, possibly reused by an unrelated process) is never signalled. A live `SingletonLock` pid whose `SingletonSocket` does not answer still holds the profile when it is a Chromium process (by process name, like Chromium's own `IsChromeProcess`: the exact file name of the configured binary, or herdr+ Browser; any Chromium or Chrome name only when no binary resolves; macOS and Linux, elsewhere the socket alone decides). `browser profile delete` treats a run record as live only when its DevTools answers too (as the attach does), else it checks the lock.
 - Browser and missing directories, second audit fixes: a live `SingletonLock` pid holds a profile only when its process name is exactly the configured browser binary's (or herdr+ Browser); a Chrome helper, crash handler or chromedriver no longer keeps `browser profile delete` from deleting it. A browser started by one launch attempt that survives its SIGTERM is still stopped by the next attempt (the pre-launch lock pid is read once per launch, not per attempt). `browser profile delete` waits for a run record's DevTools as long as the attach does (1.5 s). A pending "working directory recreated" notice follows its pane when the pane moves to another tab or space (a restart re-arms it on the moved pane), stays saved as parked while its agent is suspended (a restart right after the activation no longer drops one parked for more than 24 h), and a notice dropped in the same pass as another one was queued is saved gone.
 - Context use and the auto handoff no longer jump to 100% after an advisor (or other server-side multi-step) response: such a Claude response's top-level `message.usage` sums every step, so a session at about 62% of a 1M window read as over 1.24M (100%) and the handoff fired. When `usage.iterations` holds a `type: "message"` step, the context is now the last such step's input + cache read + cache creation + output, the same sum as the top level (`agent_context::last_message_iteration_used`); advisor and other non-message steps are ignored, and a line without a message step keeps the top-level sum. Codex is unchanged.
+- An agent keeps its companion page across a companion restart (a crash, the menu's Restart, `herdr browser companion restart`): the restored page keeps its herdr tab id (`companion:t7`), its opener and last actor, and stays the pane's current tab, so the agent's next call works without a `tab`. Before, it came back under a new id as the user's, the old id answered `tab_closed` and the next call `no_current_tab`. The ledger binds each companion tab to its page (`<Tab.browser key>/<entry id>`, from `browser.host_sync`) and moves the record to the page's new target; the companion loads the agents' restored pages at once (hidden) instead of when shown. Entry ids are never reused (a persisted high-water mark, `last_entry` in session.json), so a new page never inherits a closed page's record, and a page the host sync names before its tab is adopted is bound on adoption.
+- herdr's UI shows an agent's first companion page within about 2 s instead of 15: the client pulls `browser.get` every 2 s while an installed companion is stopped (it starts on an agent's open), as it does while it starts or runs. Known gap: that is one pull per client every 2 s for as long as it stays stopped; a start signal from the server could replace it.
 
 ### Changed
 - The `tabs` sidebar toolbar's `+` opens a new plain shell tab instead of the move-to-group prompt: it lands loose (in the ungrouped bucket, never the focused tab's group) at the top of the list and takes the focus, with no name prompt (`tab.create` in the first space, then `tab.move` of that tab to index 0; a failed move leaves the tab where it landed, quietly). Grouping moves to the tab menu: a **Move to group…** item opens the move-to-group prompt for the right-clicked tab (its key hint is `keys.move_tab_to_group` when bound), and a grouped tab gets **Remove from group**, which makes it loose (both in the `tabs` layout). `keys.move_tab_to_group` and dragging a tab onto a group still work.
@@ -3094,6 +3289,8 @@ A user-facing feature or fix that changes what herdr+ offers also updates the sh
 - Agent cards take their accent from the theme (done green, info blue, question and warning red; the glyph tells question `?` from warning `!`) and their chrome from the theme's panel colors (was the fixed Dusk palette), and show the sender's team (`◆ team · role`) inset in the card's top border and before the sender in the narrow banner. The server supplies it: `agent.notices` and the `endpoint.agent-notices.v1` push carry optional `team` (the team's purpose, else the group label) and `role`; a team change re-sends the card list while cards are up. Finished toasts are green to match (were blue). No wire change.
 - herdr's own notification toasts for a tab in a group (finished, needs attention, important and scheduled reminders; the `tabs` layout's rewritten body, so every delivery path) show `group · role` as the second line instead of `agent · folder`: the group named as agent cards name the team (the team's purpose, else the group label), then the pane's team role; just `group` without a role or for a group that is not a team. A tab in the first, ungrouped space keeps `agent · folder`. Client-only (the `endpoint.teams.v1` push already carries roles); teams of another server boot are ignored.
 - Stuck-message notice for a working agent that runs subagents: when a queued message has waited 10 minutes on a target that reads `working` while it has Claude Code subagents running (the `pane.report_subagent` set), its sender's notice says `<target> is running a subagent (Nm); it will read your message when that turn ends` (`N subagents` for several; the time since the set became non-empty, `TerminalState::active_subagents_since`). New trigger: this notice does not wait for the frozen-screen test (a subagent's progress keeps the screen moving, so it would never fire); it still goes once per message and at most once per target every 10 minutes.
+- The herdr+ Chromium window is off by default (`[browser] window = false`): agents use the companion browser, which herdr starts on demand, and `[browser] host` defaults to `companion` (was `auto`). An operation on a window profile answers `window_disabled` with the fix; `[browser] window = true` (and `host = "auto"` for the old fallback) brings the window back exactly as before. Without an installed companion an agent's `browser open` answers `host_unavailable` naming `herdr browser setup --companion` (`herdr browser setup` too while the browser helper is missing). The MCP instructions and `herdr browser help` name the companion browser.
+- The companion is not started without a node binary for the browser helper it registers through: an open or start answers `host_unavailable` naming Node.js and `[browser] node` (`herdr browser doctor` reports it too). A crash's `last_error` leaves out Chromium's `task_policy_set` chatter, and the dock's "not installed" placeholder puts the setup command on a line of its own.
 
 ### Added
 - herdr browser, v1b (visible, act, batch): the `tabs` sidebar gains a pinned Browser row directly above the News row (a state glyph — `◎` running, lit accent while an agent uses a tab, `◐` starting, `◉` dialog open, `×` crashed, `◌` stopped — `Browser` and a short status such as `3 tabs · 2 agents`; hidden while the feature is disabled and no profile has run; left click opens the overlay, right-click offers Focus window, Start / Stop profile and Open overlay), tab rows whose pane used the browser within `browser.active_glyph_secs` (default 120) wear `◎` first in the marker slot, and a Browser overlay (`keys.open_browser`, unset by default; the row; the menu) lists each profile with its tabs, newest activity first — short id, who opened it, who last did what and when, title, URL, a dialog flag — with Enter = `browser.focus` on the tab, `s` = start / stop the profile, Esc closes; on a remote server the list is read-only. The client pulls `browser.get {since_seq}` on the first snapshot of a connection, after every `browser.*` reply, every 2 s while a profile runs or starts or the overlay is open, else every 15 s, and never from a server without the method; pane cursors now carry the pane's herdr tab so the marker survives restarts. The act family arrives: `herdr browser click|type|press|select|fill|hover` (MCP `browser_click` …), targets by aria ref or CSS selector, `force` on background tabs (never an implicit raise), `stale_ref` when a ref is gone, a password field (`input[type=password]`, autocomplete current-/new-password, the focused element for a bare press) refused with `password_field_refused` unless `[browser] type_into_password_fields = true`, the whole family off with `[browser] allow_act = false` (`act_disabled`); the ledger records `act:<kind>` with the element's role and name and a text length, never the text. `herdr browser batch` (MCP `browser_batch`) runs up to 20 steps on the current tab under one deadline, each checked and logged like a single call plus one `batch` entry, stopping at the first error unless told otherwise, optionally ending with a snapshot or screenshot. Leftovers: `[browser] stop_with_server` now closes the browsers at server exit (never on a live handoff), and `open` reports the first document's HTTP status.

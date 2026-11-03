@@ -4,6 +4,8 @@ mod claude_handoff_permissions;
 mod claude_settings;
 mod claude_subagent_hooks;
 mod command;
+// Fork (companion launcher): the companion browser's app files.
+pub(crate) mod companion_assets;
 mod config_edit;
 mod config_file;
 mod env;

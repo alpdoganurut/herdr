@@ -141,6 +141,8 @@ fn item_binding<'a>(
         (Action::RestartAgent, _) => &keys.restart_agent,
         (Action::HandoffCompact, _) => &keys.handoff_compact,
         (Action::ToggleInfoPane, _) => &keys.toggle_info_pane,
+        (Action::BrowserToggleDock, _) => &keys.toggle_browser_dock,
+        (Action::BrowserToggleView, _) => &keys.toggle_browser_view,
         (Action::Important, _) => &keys.toggle_tab_important,
         (Action::MoveToGroup, _) => &keys.move_tab_to_group,
         (Action::NewWorktree, _) => &keys.new_worktree,

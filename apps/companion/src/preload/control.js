@@ -13,5 +13,10 @@ contextBridge.exposeInMainWorld('__herdrCompanion', {
   close: (viewId) => call('close', viewId),
   show: (args) => call('show', args),
   views: () => call('views'),
-  quit: () => call('quit'), // headless (dev/test) runs only; refused otherwise
+  raise: (args) => call('raise', args), // {user}: herdr's "focus companion"
+  quit: () => call('quit'), // herdr's stop of a managed companion, or a headless test run; refused otherwise
+  // test hooks (HERDR_COMPANION_TEST_HOOKS=1 only; unknown_op otherwise)
+  __crash: () => call('__crash'),
+  __hang: () => call('__hang'),
+  dock_debug: () => call('dock_debug'), // the dock's inputs, decision and window bounds
 });

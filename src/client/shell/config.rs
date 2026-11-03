@@ -62,6 +62,10 @@ impl ClientShellState {
             collapsed_groups,
             remote_collapsed_groups,
             info_dock_width: self.info_dock_width_manual.then_some(self.info_dock_width),
+            browser_dock_percent: self
+                .browser_dock
+                .percent_manual
+                .then_some(self.browser_dock.percent),
             active_agents_folded: self.active_agents_folded,
             pinned_agents_folded: self.pinned_agents_folded,
             scheduled_agents_folded: self.scheduled_agents_folded,
@@ -101,6 +105,9 @@ impl ClientShellState {
                 if !self.info_dock_width_manual {
                     self.info_dock_width = self.config.info_pane_width;
                 }
+                if !self.browser_dock.percent_manual {
+                    self.browser_dock.percent = self.config.browser_dock_width;
+                }
                 self.rebalance_notification_cards(std::time::Instant::now());
                 if self.agent_panel_sort_manual {
                     self.config.agent_panel_sort = agent_panel_sort;
@@ -136,6 +143,8 @@ impl ClientShellConfig {
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_layout: config.ui.sidebar_layout,
             info_pane_width: config.ui.effective_info_pane_width(),
+            browser_dock_width: config.ui.effective_browser_dock_width(),
+            browser_view_strip: config.ui.browser_view_strip_auto(),
             sidebar_active_agents: config.ui.sidebar_active_agents,
             sidebar_pinned_agents: config.ui.sidebar_pinned_agents,
             sidebar_scheduled_agents: config.ui.sidebar_scheduled_agents,
@@ -381,6 +390,8 @@ impl ClientShellConfig {
                 self.sidebar_collapsed_mode = ui.sidebar_collapsed_mode;
                 self.sidebar_layout = ui.sidebar_layout;
                 self.info_pane_width = ui.effective_info_pane_width();
+                self.browser_dock_width = ui.effective_browser_dock_width();
+                self.browser_view_strip = ui.browser_view_strip_auto();
                 self.sidebar_active_agents = ui.sidebar_active_agents;
                 self.sidebar_pinned_agents = ui.sidebar_pinned_agents;
                 self.sidebar_scheduled_agents = ui.sidebar_scheduled_agents;
@@ -444,6 +455,35 @@ impl ClientShellConfig {
         sidebar_width: u16,
         info_dock_width: Option<u16>,
     ) -> ClientShellLayout {
+        self.layout_with_browser(
+            cols,
+            rows,
+            sidebar_collapsed,
+            tab_count,
+            sidebar_width,
+            info_dock_width,
+            None,
+            false,
+        )
+    }
+
+    /// Fork (companion launcher): [`Self::layout`] with the browser band
+    /// (`browser_band`: the dock's width in percent of the area right of
+    /// the sidebar) and the view strip. The strip is the pane area's top
+    /// row; the band is carved from the right edge of what remains, before
+    /// the info dock, and only while the terminal keeps its minimum width.
+    #[allow(clippy::too_many_arguments)] // the upstream layout's inputs plus the two fork ones
+    pub(super) fn layout_with_browser(
+        &self,
+        cols: u16,
+        rows: u16,
+        sidebar_collapsed: bool,
+        tab_count: usize,
+        sidebar_width: u16,
+        info_dock_width: Option<u16>,
+        browser_band: Option<u16>,
+        view_strip: bool,
+    ) -> ClientShellLayout {
         if cols <= self.mobile_width_threshold {
             let header_height = rows.min(2);
             return ClientShellLayout {
@@ -452,6 +492,8 @@ impl ClientShellConfig {
                 mobile_header: Rect::new(0, 0, cols, header_height),
                 pane_surface: Rect::new(0, header_height, cols, rows.saturating_sub(header_height)),
                 info_dock: Rect::default(),
+                browser_band: Rect::default(),
+                view_strip: Rect::default(),
             };
         }
 
@@ -497,6 +539,37 @@ impl ClientShellConfig {
             ),
         };
 
+        // Fork (companion launcher): the view strip takes the pane area's
+        // top row; the browser band the right edge of what remains.
+        let view_strip = if view_strip && pane_surface.height > 2 {
+            let strip = Rect::new(pane_surface.x, pane_surface.y, pane_surface.width, 1);
+            pane_surface.y += 1;
+            pane_surface.height -= 1;
+            strip
+        } else {
+            Rect::default()
+        };
+        let browser_band = match browser_band {
+            Some(percent)
+                if pane_surface.width
+                    >= super::browser_dock::BAND_MIN + super::browser_dock::TERM_MIN =>
+            {
+                let wanted = u32::from(main.width) * u32::from(percent) / 100;
+                let width = u16::try_from(wanted).unwrap_or(u16::MAX).clamp(
+                    super::browser_dock::BAND_MIN,
+                    pane_surface.width - super::browser_dock::TERM_MIN,
+                );
+                pane_surface.width -= width;
+                Rect::new(
+                    pane_surface.right(),
+                    pane_surface.y,
+                    width,
+                    pane_surface.height,
+                )
+            }
+            _ => Rect::default(),
+        };
+
         // Fork: the info dock is carved from the right of the pane surface,
         // and only when both it and the terminal keep their minimum width.
         let info_dock = match info_dock_width {
@@ -525,6 +598,8 @@ impl ClientShellConfig {
             mobile_header: Rect::default(),
             pane_surface,
             info_dock,
+            browser_band,
+            view_strip,
         }
     }
 

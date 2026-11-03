@@ -363,13 +363,36 @@ fn tab_chips(
             ]);
         }
     }
-    if state.browser_attention_tabs.contains(&tab.tab_id) {
-        chips.chip(&[(
+    // Fork (companion launcher): `◎ 3 pages` (its mark lit or `◉` as on
+    // the row), and the tab's view while the browser is docked or over it.
+    let pages = state.browser_page_tabs.get(&tab.tab_id);
+    let (mark, mark_color) = if state.browser_attention_tabs.contains(&tab.tab_id) {
+        (
             super::browser::TAB_BROWSER_ATTENTION_MARKER,
-            fg(palette.yellow),
-        )]);
+            Some(palette.yellow),
+        )
     } else if state.browser_marked_tabs.contains(&tab.tab_id) {
-        chips.chip(&[(super::browser::TAB_BROWSER_MARKER, fg(palette.accent))]);
+        (super::browser::TAB_BROWSER_MARKER, Some(palette.accent))
+    } else {
+        (
+            super::browser::TAB_BROWSER_MARKER,
+            pages.map(|_| palette.overlay0),
+        )
+    };
+    match (pages, mark_color) {
+        (Some(pages), Some(color)) if pages.pages > 0 => {
+            let count = format!(
+                " {} page{}",
+                pages.pages,
+                if pages.pages == 1 { "" } else { "s" }
+            );
+            chips.chip(&[(mark, fg(color)), (count.as_str(), fg(palette.overlay1))]);
+        }
+        (_, Some(color)) => chips.chip(&[(mark, fg(color))]),
+        _ => {}
+    }
+    if let Some(view) = pages.and_then(|pages| pages.view) {
+        chips.chip(&[(view, fg(palette.accent))]);
     }
     // Fork (sidebar v3): pinned from the tab menu.
     if facts.pin {

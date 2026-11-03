@@ -1,0 +1,9 @@
+{
+  "name": "herdr-companion-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The Electron runtime of the herdr+ companion, installed by `herdr browser setup --companion`",
+  "dependencies": {
+    "electron": "45.2.1"
+  }
+}

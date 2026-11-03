@@ -1423,6 +1423,27 @@ impl App {
                 return self.handle_browser_settings_set(request.id, params)
             }
             Method::BrowserFix(params) => return self.handle_browser_fix(request.id, params),
+            // Fork (companion launcher).
+            Method::BrowserCompanion(params) => {
+                return self.handle_browser_companion(request.id, params)
+            }
+            // Fork (companion launcher): a placement belongs to an attached
+            // client (the headless server's endpoint lane stores it); the
+            // host's poll and report run on the connection thread.
+            Method::BrowserPlacementSet(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "browser.placement.set is for attached client shells (no client id on this connection)",
+                )
+            }
+            Method::BrowserPlacements(_) | Method::BrowserPlacementReport(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "invalid_request",
+                    "browser.placements and browser.placement_report run on the API socket's connection lane",
+                )
+            }
             Method::NotesGet(params) => return self.handle_notes_get(request.id, params),
             Method::NotesSet(params) => return self.handle_notes_set(request.id, params),
             Method::NotesAppend(params) => return self.handle_notes_append(request.id, params),

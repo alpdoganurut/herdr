@@ -128,7 +128,7 @@ A server-run Claude agent in a pinned `coordinator` tab that watches other agent
 
 ## Browser (`[browser]`)
 
-The herdr-owned Chromium the server runs for agents. It starts on first use.
+The browser herdr runs for agents: the herdr+ companion browser (`herdr browser setup --companion` installs it; the first page an agent opens starts it; `herdr browser companion status|start|stop|restart|focus|log`, the Browser row's menu and the Browser overlay control it). The herdr+ Chromium window is off unless `[browser] window = true`.
 
 | Feature | Default | Where to change | In Settings? |
 |---|---|---|---|
@@ -143,10 +143,26 @@ The herdr-owned Chromium the server runs for agents. It starts on first use.
 | MCP registration | claude and codex | `[browser] mcp_agents = ["claude"]` | Yes (both / claude / codex / none) |
 | `eval`, act family, typing into password fields | on, on, off | `[browser] allow_eval`, `allow_act`, `type_into_password_fields` | No, config only |
 | Restore tabs on relaunch | on | `[browser] restore_tabs = false` | No, config only |
-| Where `open` / `show` go (the companion browser while it runs, else the herdr+ window) | `"auto"` | `[browser] host = "companion"` or `"window"` | No, config only |
+| Where `open` / `show` go (the companion browser, started on demand) | `"companion"` | `[browser] host = "auto"` (the companion while it runs, else the herdr+ window when it is on) or `"window"` (with the window on, herdr never starts the companion and offers no dock or Browser view) | No, config only |
 | Page errors of a tab an agent uses, stored quietly for that Claude agent | `"agent"` | `[browser] page_errors = "off"` | No, config only |
+| Start the companion browser with the server (else on the first page an agent opens) | off | `[browser] companion_autostart = true` | No, config only |
+| The herdr+ Chromium window (off: agents use the companion; a window profile answers `window_disabled`) | off | `[browser] window = true` | No, config only |
 
 The companion browser is the Electron app in `apps/companion`; `apps/companion/scripts/try.sh` tries it against a throwaway herdr in one command (run it in a plain terminal).
+
+### Browser dock and Browser view (`[ui]`, `[keys]`)
+
+The companion browser can sit inside herdr's window: docked on the right of a tab, or over the whole tab (Browser view). herdr keeps the area and the companion covers it, following the terminal window: it hides while the window moves or resizes and comes back aligned, hides while the window is minimised, hidden or on another Space, and joins a full-screen Space. Clicking the page gives it the keyboard; clicking the terminal (or cmd+esc in the browser) gives it back. macOS, the herdr on this machine, herdr directly in a terminal window (Ghostty's geometry is measured exactly from its padding and titlebar settings; other terminals best effort; inside tmux or ssh the area says why it stays empty).
+
+| Feature | Default | Where to change | In Settings? |
+|---|---|---|---|
+| Dock the browser on the focused tab | `prefix+shift+b` | `[keys] toggle_browser_dock`; also the `◨` on the pinned Browser row and in the tab's view strip, the tab menu's Dock browser, the Browser row menu's Dock browser here | No, config only |
+| Dock width | 45 % of the area right of the sidebar | `[ui] browser_dock_width = 20..80`. Drag the divider (its first column) to resize, double-click it for the default; a dragged width is saved per client | No, config only |
+| Browser view (the browser over the whole tab; the panes keep running and keep their size, and keys, pastes and IME text never reach them) | `prefix+shift+z` | `[keys] toggle_browser_view`; also the view strip's `▣ Terminal` / `◎ Browser` and the tab menu's Browser view | No, config only |
+| The view strip (`▣ Terminal  ◎ Browser · 3 … ◨`) | `"auto"`: while the tab has pages, the dock or Browser view | `[ui] browser_view_strip = "off"` | No, config only |
+| Give the companion the keyboard | unbound | `[keys] focus_browser` | No, config only |
+
+While the browser is not over its area, the area says why: starting (a spinner), not running (`[ Start companion ]`), not installed (the setup command), stopped after 5 crashes (`[ Restart ]`), "Click here once to dock the browser to this window" (several terminal windows could be this one), or the reason it cannot dock here. In Browser view herdr's notices, toasts and agent cards show as one line on the view strip (the browser covers the rest of the tab). Tabs with browser pages wear a dim `◎` on their row (lit while an agent uses the browser, `◉` while a page needs you); the detail strip says `◎ 3 pages` and `docked` / `browser view`. In the companion's bar, the count pill (`3 · 12`: pages in this session · in all sessions) lists every session with pages; picking one focuses that herdr tab.
 
 Legacy keys: `wrap_agents` is only read as a fallback for `[agents] wrap` (a Settings change to wrap removes it), and `shell_hook` is inert. The commented default file still says `stop_with_server` is not honoured; it is.
 
@@ -221,6 +237,9 @@ Bind a key with `[keys] <action> = "prefix+x"` (the prefix is `ctrl+b`), or seve
 | `tab_history_back` | `cmd+[`, `alt+,` | Previously focused tab, browser-style |
 | `tab_history_forward` | `cmd+]`, `alt+.` | Forward again after going back |
 | `toggle_info_pane` | unbound | Shows or hides the focused tab's notes pane |
+| `toggle_browser_dock` | `prefix+shift+b` | Docks the companion browser on the right of the focused tab, or undocks it |
+| `toggle_browser_view` | `prefix+shift+z` | The focused tab's Browser view: the companion browser over the whole tab |
+| `focus_browser` | unbound | Gives the companion browser the keyboard |
 | `toggle_agent_suspend` | unbound | Suspends the focused agent, or activates it again |
 | `handoff_compact` | unbound | The focused Claude agent writes a handoff, then `/compact` |
 | `restart_agent` | unbound | Exits the focused idle agent and relaunches it with its resume command |
